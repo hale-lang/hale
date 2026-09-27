@@ -137,7 +137,7 @@ locus Startup {
             projects = projects + 1;
         }
         let summary = to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" });
-        if self.cfg.principal_mode == "oidc" { return "hale dna head: " + head_origin(self.cfg) + "/ (OIDC through " + self.cfg.issuer + " as " + self.cfg.principal_name + "; " + summary + ")"; }
+        if self.cfg.principal_mode == "oidc" { return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (sign in through " + self.cfg.issuer + " as " + self.cfg.principal_name + "; " + summary + "; the token is in " + self.cfg.state_dir + "/head.token)"; }
         return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (a fixture's trusted-local session; " + summary + "; the token is in " + self.cfg.state_dir + "/head.token)";
     }
 }
@@ -219,6 +219,7 @@ fn main() {
         cfg.issuer = std::env::var("HALE_DNA_OIDC_ISSUER");
         cfg.client = std::env::var("HALE_DNA_OIDC_CLIENT");
         cfg.member = std::env::var("HALE_DNA_OIDC_MEMBER");
+        cfg.pin = std::env::var("HALE_DNA_OIDC_KEY");
         let eq = std::str::index_of(cfg.member, "=");
         if len(cfg.issuer) == 0 || len(cfg.client) == 0 || eq < 1 || eq == len(cfg.member) - 1 || !dna::issuer_allowed(cfg.issuer) {
             eprintln("hale dna head: the head serves under OIDC: HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and HALE_DNA_OIDC_MEMBER (`<subject>=<person>`) name the issuer and who signs in (dna/face/start.sh starts the stub provider and sets them); ", dna::TRUSTED_LOCAL_REFUSED);
@@ -226,7 +227,9 @@ fn main() {
         }
         cfg.principal_mode = "oidc";
         cfg.principal_name = cfg.member[(eq + 1)..len(cfg.member)];
-        auth = ui::Ui { principal: "oidc", issuer: cfg.issuer, client: cfg.client, redirect_uri: head_origin(cfg) + "/auth/callback", members: cfg.member };
+        // who may sign in: the person holding the URL the head prints
+        cfg.token = api::launch_token(state_dir);
+        auth = ui::Ui { principal: "oidc", issuer: cfg.issuer, client: cfg.client, redirect_uri: head_origin(cfg) + "/auth/callback", members: cfg.member, pinned: cfg.pin };
         if !auth.discovered() {
             eprintln("hale dna head: the issuer ", cfg.issuer, " is not usable: ", if len(auth.discovery_refused) > 0 { auth.discovery_refused } else { "its discovery document did not answer" }, "; refusing to start");
             std::process::exit(2);

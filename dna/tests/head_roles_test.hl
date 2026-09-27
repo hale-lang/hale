@@ -176,7 +176,7 @@ locus App {
         let sock = scratch + "/head.sock";
         let port = dna::free_port(0);
         let head = Proc { };
-        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
+        std::test::assert(head.start("env\nLOTUS_API=" + sock + "\nHALE_DNA_TRUSTED_LOCAL=1\nHALE_DNA_DISCOVER=off\n" + scratch + "/dna/api/api\n" + self.repo + "\n" + to_string(port)), "the head started");
         let api = Api { };
         std::test::assert(api.connect(sock), "connected to the head's socket");
 

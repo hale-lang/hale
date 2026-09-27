@@ -955,7 +955,9 @@ repository:
   `Authorization: Bearer`, checked the same way without a nonce
   (`bearer_refusal`). The head forwards a verified caller's command to
   its own socket marked `via: oidc:<subject>` (a mark the binding takes
-  from the program's own uid only); the socket's roles map the subject
+  from the program's own process only — its uid and pid — and a body of
+  more than one line is refused, so no line arrives under the head's
+  mark but its own); the socket's roles map the subject
   to its person by `dna.oidc.member` as they map a peer by
   `dna.unix.member`, the gates are the same, and the receipt says
   `principal_mode: oidc`, the person, and the positions they hold
@@ -965,7 +967,18 @@ repository:
   signs in there), configures a project it attaches for that issuer,
   and forwards the session's ID token to the project's API child as
   the bearer, which the child verifies itself; an OIDC child is ready
-  when it refuses an unauthenticated read. The subject — never an email alone
+  when it refuses an unauthenticated read carrying the digest of the
+  proof the face gave it (`X-Hale-Child`), so a process squatting on the
+  child's port is never handed a token. **An issuer on the loopback is
+  anyone's who can bind its port**, so its key is pinned: a head under
+  a loopback issuer does not start without `dna.oidc.key` (the issuer's
+  SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
+  signs under a key made for the launch, its client secret goes by the
+  environment, never argv, the face pins the key into a project it
+  attaches (restarting a child that pinned another), only the browser
+  that opened the URL the face prints (its 0600 launch token) may start
+  or finish a sign-in, and the face answers only as `127.0.0.1` or
+  `localhost` on its port. The subject — never an email alone
   — maps to a member through a reviewed mapping, `git config --add
   dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no
   session. A sign-in's state is used once, expires in ten minutes, and is bound to

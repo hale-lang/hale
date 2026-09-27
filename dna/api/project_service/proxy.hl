@@ -149,12 +149,14 @@ fn proxied_response(up: Upstream) -> std::http::Response {
 
 // The API child's readiness (§2.1): `GET /api/hale/v1/applications`
 // answers 200 and names `identity` as its Record.
-fn api_ready(api_port: Int, identity: String, oidc: Bool) -> Bool {
+fn api_ready(api_port: Int, identity: String, proof: String) -> Bool {
     let up = exchange(api_port, "GET", "/api/hale/v1/applications", "", "", PROBE_TIMEOUT_NS);
     // GH #989: an OIDC child reads nothing to a caller with no token — the
-    // head that started it holds none until a person signs in — so its own
-    // refusal is its readiness; the head started exactly this process
-    if oidc { return up.ok && up.status == 401 && std::str::contains(up.body, "unauthenticated"); }
+    // head holds none until a person signs in — so its refusal is its
+    // readiness, and it is the head's own child only when the refusal
+    // carries the digest of the proof the head gave it: a process
+    // squatting on the port is never handed a person's token
+    if len(proof) > 0 { return up.ok && up.status == 401 && upstream_header(up.headers, "X-Hale-Child") == dna::digest_of(proof); }
     if !up.ok || up.status != 200 { return false; }
     let source = std::json::find_field_raw(up.body, "source");
     return std::json::find_string_field(source, "record_id") == identity;

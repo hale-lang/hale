@@ -25,6 +25,7 @@ type IdClaims {
     email: String = "";
     nonce: String = "";
     exp: Int = 0;
+    nbf: Int = 0; // 0 when the token names none
 }
 
 // GH #989: a head's principal path is the only way in. Trusted-local —
@@ -53,27 +54,42 @@ fn b64url_bytes(s: String) -> Bytes {
 // id-ecPublicKey, prime256v1, and the uncompressed point's 0x04.
 const P256_SPKI_PREFIX: String = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
 
+// A P-256 public key's SubjectPublicKeyInfo (base64) from its JWK
+// coordinates (base64url), "" unless each is 32 bytes.
+fn p256_spki(x_b64url: String, y_b64url: String) -> String {
+    let x = b64url_bytes(x_b64url);
+    let y = b64url_bytes(y_b64url);
+    if len(x) != 32 || len(y) != 32 { return ""; }
+    return std::text::base64::encode(std::bytes::concat(std::text::base64::decode(P256_SPKI_PREFIX), std::bytes::concat(x, y)));
+}
+
 // The signing keys of a JWKS document, `kid\t<SubjectPublicKeyInfo,
 // base64>` per line: the P-256 keys (`kty` EC, `crv` P-256) meant for
-// signatures (no `use`, or `sig`), whose coordinates are 32 bytes each.
+// signatures (no `use`, or `sig`), whose coordinates are 32 bytes each
+// and whose `kid` breaks no line. `pinned` (a SubjectPublicKeyInfo,
+// "" for none) keeps that key alone: a loopback issuer is anyone's on
+// the machine, so its key is the record's to name (`dna.oidc.key`).
 @unbounded
-fn jwks_keys(doc: String) -> String {
+fn jwks_keys(doc: String, pinned: String) -> String {
     let mut out = "";
     let mut it = std::json::array_first(std::json::find_field_raw(doc, "keys"));
     while !it.done {
         let k = it.element;
         let usage = std::json::find_string_field(k, "use");
-        if std::json::find_string_field(k, "kty") == "EC" && std::json::find_string_field(k, "crv") == "P-256" && (len(usage) == 0 || usage == "sig") {
-            let x = b64url_bytes(std::json::find_string_field(k, "x"));
-            let y = b64url_bytes(std::json::find_string_field(k, "y"));
-            if len(x) == 32 && len(y) == 32 {
-                let der = std::bytes::concat(std::text::base64::decode(P256_SPKI_PREFIX), std::bytes::concat(x, y));
-                out = out + std::json::find_string_field(k, "kid") + "\t" + std::text::base64::encode(der) + "\n";
-            }
+        let kid = std::json::find_string_field(k, "kid");
+        if std::json::find_string_field(k, "kty") == "EC" && std::json::find_string_field(k, "crv") == "P-256" && (len(usage) == 0 || usage == "sig") && !std::str::contains(kid, "\t") && !std::str::contains(kid, "\n") {
+            let spki = p256_spki(std::json::find_string_field(k, "x"), std::json::find_string_field(k, "y"));
+            if len(spki) > 0 && (len(pinned) == 0 || spki == pinned) { out = out + kid + "\t" + spki + "\n"; }
         }
         it = std::json::array_next(it);
     }
     return out;
+}
+
+// Whether `url` is an issuer on this machine (plain http to the loopback),
+// whose key a record must pin.
+fn issuer_loopback(url: String) -> Bool {
+    return std::str::starts_with(url, "http://127.0.0.1:") || std::str::starts_with(url, "http://127.0.0.1/") || std::str::starts_with(url, "http://localhost:") || std::str::starts_with(url, "http://localhost/");
 }
 
 // A SubjectPublicKeyInfo (base64) as the PEM the verifier reads.
@@ -148,7 +164,8 @@ fn id_token_claims(jwt: String) -> IdClaims {
         sub: std::json::find_string_field(payload, "sub"),
         email: std::json::find_string_field(payload, "email"),
         nonce: std::json::find_string_field(payload, "nonce"),
-        exp: std::json::find_int_field(payload, "exp")
+        exp: std::json::find_int_field(payload, "exp"),
+        nbf: std::json::find_int_field(payload, "nbf")
     };
 }
 
@@ -167,11 +184,25 @@ fn claims_refusal(c: IdClaims, issuer: String, client: String, nonce: String, no
 fn bearer_refusal(c: IdClaims, issuer: String, client: String, now: Int) -> String {
     if !c.present { return "token: not an ID token"; }
     if c.iss != issuer { return "issuer: `" + c.iss + "` is not `" + issuer + "`"; }
-    let aud_ok = if std::str::starts_with(c.aud, "[") { std::str::contains(c.aud, "\"" + client + "\"") } else { c.aud == client };
-    if !aud_ok { return "audience: the token is not for client `" + client + "`"; }
+    if !audience_names(c.aud, client) { return "audience: the token is not for client `" + client + "`"; }
     if c.exp <= now { return "expired: the token expired at " + to_string(c.exp); }
+    if c.nbf > now + 60 { return "not yet valid: the token is valid from " + to_string(c.nbf); }
     if len(c.sub) == 0 { return "subject: none"; }
     return "";
+}
+
+// Whether an `aud` (a string, or a JSON array of strings) names `client`
+// exactly.
+@unbounded
+fn audience_names(aud: String, client: String) -> Bool {
+    if !std::str::starts_with(aud, "[") { return aud == client; }
+    let mut it = std::json::array_first(aud);
+    while !it.done {
+        let one = std::json::string_field("{\"a\":" + it.element + "}", "a");
+        if one.kind == "string" && one.text == client { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
 }
 
 // The member a subject maps to, from `subject=name` lines ("" when none).

@@ -181,7 +181,9 @@ locus Head {
     // token as the bearer (HALE_DNA_ID_TOKEN); its commands stay on the
     // socket, where the kernel vouches for the peer.
     fn get(path: String) -> Reply {
-        let token = std::env::var("HALE_DNA_ID_TOKEN");
+        // never to plain http off this machine
+        let safe = std::str::starts_with(self.api, "https://") || std::str::starts_with(self.api, "http://127.0.0.1:") || std::str::starts_with(self.api, "http://localhost:");
+        let token = if safe { std::env::var("HALE_DNA_ID_TOKEN") } else { "" };
         let headers = "Accept: application/json" + (if len(token) > 0 { "\r\nAuthorization: Bearer " + token } else { "" });
         let r = self.http("GET", self.api + path, headers, "") or self.transport_failed(err);
         return self.reply(r);

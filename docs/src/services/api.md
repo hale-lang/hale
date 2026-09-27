@@ -355,8 +355,9 @@ page shows the rest greyed out with the role each item needs.
 - A bearer token for HTTP callers waits for the HTTP transport
   (GH #1135); the Unix socket's peer credentials are the one identity
   today. Until then a program may forward: a request line carrying
-  `"via": "<mark>"` is honoured only from a peer whose uid is the
-  program's own (refused as `malformed` from anyone else), the mark
+  `"via": "<mark>"` is honoured only from the program's own process —
+  its uid and its pid, so another process of the same account cannot
+  set it (refused as `malformed` from anyone else) — and the mark
   rides on the receipt's `caller` and in `ctx.via`, and the principal
   is the forwarding process's — an HTTP handler that hands a browser's
   line to its own socket is gated and answered exactly like any peer.

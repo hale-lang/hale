@@ -1,5 +1,6 @@
 // Native integration fixtures. The Record and receipts use their real writers;
 // only the event sequence is synthetic. No body, database or model is started.
+import "../../../oidc" as oidc;
 import "../../../core" as dna;
 import "../../contract/v1/validator" as wire_contract;
 
@@ -316,6 +317,8 @@ locus Fixture {
         self.git("config\ndna.oidc.client\ndna-api-tests");
         self.git("config\ndna.oidc.redirect\n" + self.url() + "/auth/callback");
         self.git("config\ndna.oidc.member\nalice-sub=alice"); self.git("config\ndna.oidc.board\nalice");
+        // the fixture's issuer is on the loopback: the record pins its key (GH #989)
+        self.git("config\ndna.oidc.key\n" + oidc::STUB_SPKI);
         self.start();
     }
     fn sign_in(hint: String) -> HttpResponse {

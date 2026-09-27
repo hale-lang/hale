@@ -125,7 +125,7 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
                 root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
                 definitions: definitions, knowledge: api::LocalKnowledge { root: root },
                 people: commands, socket: socket, organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
-                command_origin: "http://127.0.0.1:" + to_string(port), mode: "oidc", auth: auth
+                command_origin: "http://127.0.0.1:" + to_string(port), mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root }
             } }
         };
         return;

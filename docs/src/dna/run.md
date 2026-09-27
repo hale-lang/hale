@@ -239,9 +239,10 @@ fleet](./operating.md).
 
 ## The surface
 
-`hale dna ui` is parked until OIDC lands on the api head (GH #989): it
-reads, and takes no command — the record's commands are the api head's
-gated topics. It is a Hale program from the toolchain cache serving one
+`hale dna ui` reads, and takes no command — the record's commands are
+the api head's gated topics. It serves only under `dna.principal = oidc`
+(GH #989), a verified sign-in in front of every page; with no principal
+source it refuses to start, trusted-local being a test fixture's mode. It is a Hale program from the toolchain cache serving one
 page and a small API. Every request runs one offline verb of `hale
 dna` in the project root and returns what it printed; the forms send
 a verdict, an intent or a pressure signal the way the CLI does — a
@@ -293,9 +294,11 @@ socket: `owner` is the board, `reviewer` is `position:reviewer`, and
 dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
 these gates can name. The face reaches the same gates over HTTP: the
 head forwards its `POST …/commands` line to its own socket marked
-`via: http-session`, as the head's own uid, so map that uid too; a
-head uid the record maps to nobody is recorded as `uid:<n>`, never
-`$USER`. Revoking a mapping (`git config --local --unset`) takes
+`via: oidc:<subject>` for the caller whose ID token it verified, and the
+gates name the person `dna.oidc.member` maps that subject to (a
+fixture's trusted-local session marks it `via: http-session`, as the
+head's own uid). The binding takes the mark from the head's own process
+only. Revoking a mapping (`git config --local --unset`) takes
 effect when the record next moves, since the source re-reads the
 mapping with the edges then.
 
@@ -311,9 +314,15 @@ the name its subject maps to. The head speaks plain HTTP; put TLS in
 front of it.
 
 **Local mode is OIDC too (GH #989).** `dna/face/start.sh` starts a stub
-identity provider (`dna/oidc`) on the loopback beside the head, and you
-sign in through it as yourself: the subject `local-sub`, mapped to
-`$USER`. There is no head without a principal source: a head started
+identity provider (`dna/oidc`) on the loopback beside the head, under a
+key and a client secret made for that launch (0600, never on a command
+line), and you sign in through it as yourself: the subject `local-sub`,
+mapped to `$USER`. Only the browser that opened the URL the head prints
+(it carries the head's launch token, 0600 in its state directory) may
+sign in, so another account on the machine cannot. An issuer on the
+loopback is anyone's who can bind the port, so a project pins its key
+(`dna.oidc.key`, which the face writes at attach), and a head whose
+issuer does not publish the pinned key refuses to start. There is no head without a principal source: a head started
 with neither `dna.principal = oidc` nor a fixture's
 `HALE_DNA_TRUSTED_LOCAL=1` refuses to start. The trusted-local session
 — a launch token in `.hale/dna/head.token`, `http://…/?token=…` — is a

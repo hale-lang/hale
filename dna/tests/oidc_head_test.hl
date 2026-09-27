@@ -14,6 +14,7 @@
 
 import "../core" as dna;
 import "../operations" as ops;
+import "../api" as api;
 import "../oidc" as oidc;
 
 fn toolchain() -> String {
@@ -36,9 +37,14 @@ fn head_binary() -> String {
 
 // One line of the api wire, POSTed to the head's /commands with the
 // headers a caller that is not a browser sends; `bearer` "" sends none.
+// (the body goes by file: it may hold a line break, which argv cannot)
 fn post(api: String, identity: String, line: String, bearer: String) -> dna::RunResult {
     let auth = if len(bearer) > 0 { "-H\nAuthorization: Bearer " + bearer + "\n" } else { "" };
-    return dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + api + "\n" + auth + "--data\n" + line + "\n" + api + "/api/hale/v1/applications/" + identity + "/commands");
+    let body = "/tmp/dna-oidc-head-" + to_string(std::process::pid()) + ".body";
+    std::io::fs::write_file(body, line) or discard;
+    let r = dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + api + "\n" + auth + "--data-binary\n@" + body + "\n" + api + "/api/hale/v1/applications/" + identity + "/commands");
+    std::io::fs::unlink(body) or discard;
+    return r;
 }
 // The last index of `c` in `s`, -1 when none.
 fn last_of(s: String, c: String) -> Int {
@@ -84,10 +90,12 @@ main locus App {
         let git = dna::GitRecord { repo: repo };
         let identity = git.identity();
         // the graph says who holds what: no local trust, alice at agent, bob nowhere
-        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob\nsh\n" + repo + "\n" + self.issuer;
+        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local --add dna.oidc.member carol-sub=carol && git config --local dna.oidc.key \"$3\"\nsh\n" + repo + "\n" + self.issuer + "\n" + oidc::STUB_SPKI;
         std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
         let as_alice = dna::GitJournal { repo: repo, author: "alice" };
         std::test::assert(as_alice.append(as_alice.revision(), "intent.offered", "i-alice", "alice was here").ok, "alice is a person the record knows");
+        let as_carol = dna::GitJournal { repo: repo, author: "carol" };
+        std::test::assert(as_carol.append(as_carol.revision(), "intent.offered", "i-carol", "carol was here").ok, "carol, who will retire");
         let as_bob = dna::GitJournal { repo: repo, author: "bob" };
         std::test::assert(as_bob.append(as_bob.revision(), "intent.offered", "i-bob", "bob was here").ok, "and so is bob");
         let seat = ops::GraphEdge { kind: "holds" };
@@ -137,6 +145,20 @@ main locus App {
         // ---- a subject no one maps: refused
         let stranger = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "zed-sub", "", 600));
         std::test::assert_eq_str(status_of(stranger), "403", "a subject no person maps to is refused: " + stranger.stdout);
+        // ---- signed by the issuer, and still not for this head: expired, for
+        // another client, from another issuer
+        let expired = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", -10));
+        std::test::assert(status_of(expired) == "401" && std::str::contains(expired.stdout, "expired"), "an expired token is refused: " + expired.stdout);
+        let elsewhere = post(api, identity, claim, oidc::stub_id_token(self.issuer, "another-client", "alice-sub", "", 600));
+        std::test::assert(status_of(elsewhere) == "401" && std::str::contains(elsewhere.stdout, "audience"), "a token for another client is refused: " + elsewhere.stdout);
+        let foreign = post(api, identity, claim, oidc::stub_id_token("https://issuer.example", "dna-local", "alice-sub", "", 600));
+        std::test::assert(status_of(foreign) == "401" && std::str::contains(foreign.stdout, "issuer"), "a token from another issuer is refused: " + foreign.stdout);
+        // ---- a retired person's token reads nothing
+        std::test::assert(j.append(j.revision(), "person.retired", "carol", "{}").ok, "carol retired");
+        // (the record's roles ask whether it moved at most once a second)
+        std::time::sleep(1200ms);
+        let retired = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "carol-sub", "", 600));
+        std::test::assert_eq_str(status_of(retired), "403", "a retired person's token is refused: " + retired.stdout);
 
         // ---- alice's ID token, from the stub's token endpoint
         let issued = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=alice-sub&client_id=dna-local&client_secret=dna-local-secret\n" + self.issuer + "/token");
@@ -146,6 +168,30 @@ main locus App {
         // refuses it as a command he has none of (it names nothing he may not call)
         let bobs = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
         std::test::assert(status_of(bobs) == "404" && std::str::contains(bobs.stdout, "\"kind\":\"unknown\"") && std::str::contains(bobs.stdout, "\"via\":\"oidc:bob-sub\""), "a person who holds no position is refused at the gate: " + bobs.stdout);
+        // ---- bob smuggles a second line under the head's mark, naming alice:
+        // a friction filed as alice would land as a row; a body of more than
+        // one line is refused before the socket, and nothing lands
+        let friction = command_named(std::json::find_field_raw(body_of(described), "value"), "dna.commands.friction.file");
+        std::test::assert(len(friction) > 0, "the head describes friction to alice");
+        let before_rows = j.revision();
+        let smuggled = "{\"a\":\n{\"call\":\"" + friction + "\",\"via\":\"oidc:alice-sub\",\"payload\":{\"request_id\":\"f-smuggled\",\"record_head\":\"" + head_row + "\",\"position\":\"position:agent\",\"attempt_id\":\"\",\"text\":\"filed as alice\"}}\n}";
+        let smuggle = post(api, identity, smuggled, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
+        std::time::sleep(1500ms);
+        let refreshed = j.refresh();
+        let mut landed = false;
+        let mut k = before_rows;
+        while k < j.revision() { if j.read(k).kind == "friction.filed" { landed = true; } k = k + 1; }
+        std::test::assert(status_of(smuggle) == "400" && !landed, "a second line under the head's mark is refused, and nothing lands: " + smuggle.stdout);
+        // ---- another process of the head's own account sets the mark on the
+        // socket itself: refused, whatever it names
+        let fd = std::io::unix::connect(api::head_socket(repo)) or - 1;
+        std::test::assert(fd >= 0, "connected to the head's socket");
+        let stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        stream.send(std::str::replace(claim, "\"payload\"", "\"via\":\"oidc:alice-sub\",\"payload\"") + "\n") or discard;
+        let mut heard = "";
+        let heard_by = std::time::now() + 10;
+        while !std::str::contains(heard, "\n") && std::time::now() < heard_by { heard = heard + (stream.recv(65536) or ""); }
+        std::test::assert(std::str::contains(heard, "\"kind\":\"malformed\"") && std::str::contains(heard, "own transports only"), "a mark from another process of the account is refused: " + heard);
         let accepted = post(api, identity, claim, token);
         let receipt = std::json::find_field_raw(std::json::find_field_raw(body_of(accepted), "value"), "receipt");
         std::test::assert(status_of(accepted) == "200", "alice's claim reaches the head: " + accepted.stdout);

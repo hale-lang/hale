@@ -203,18 +203,32 @@ fi
 # the person running this signs in through it as local-sub.
 if [[ "${HALE_DNA_TRUSTED_LOCAL:-}" != 1 ]]; then
   command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
+  command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
   if [[ -z "$build_dir" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX"); fi
   oidc=$(build_seed dna/oidc/serve serve)
+  # the provider's key, made for this launch and readable by you alone; the
+  # head pins its public half, since anyone on this machine could answer
+  # on the loopback port
+  key_file="$build_dir/oidc.key"
+  (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
+  pub() { openssl ec -in "$key_file" -pubout -outform DER 2>/dev/null; }
+  b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+  spki=$(pub | base64 -w0)
+  key_x=$(pub | tail -c 64 | head -c 32 | b64url)
+  key_y=$(pub | tail -c 32 | b64url)
+  [[ ${#key_x} == 43 && ${#key_y} == 43 && -n "$spki" ]] || fail 'cannot read the provider key'\''s public half'
   secret=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
   [[ ${#secret} == 32 ]] || fail 'no randomness for the provider secret'
-  env -u LOTUS_OBS "$oidc" "$oidc_port" dna-local "$secret" >&2 &
+  env -u LOTUS_OBS HALE_DNA_OIDC_SECRET="$secret" HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
   provider=$!
   for _ in $(seq 1 100); do
     curl -sf "http://127.0.0.1:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
     kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened'
     sleep 0.1
   done
-  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  # the provider answering is ours: it publishes the key made above
+  curl -sf "http://127.0.0.1:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
+  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
 fi
 

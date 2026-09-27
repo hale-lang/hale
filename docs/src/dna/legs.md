@@ -554,10 +554,18 @@ riley's subject (its commands go over the socket, as the peer):
 
 ```sh
 cd "$HALE_SRC" && hale build dna/api/practice_review && hale build dna/oidc/serve
-dna/oidc/serve/serve 8794 dna-local local-secret &
+# the provider's key and secret, made for this run and yours alone
+(umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out ~/voice/.hale/oidc.key)
+pub() { openssl ec -in ~/voice/.hale/oidc.key -pubout -outform DER 2>/dev/null; }
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+secret=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_KEY_FILE=~/voice/.hale/oidc.key \
+    HALE_DNA_OIDC_KEY_X=$(pub | tail -c 64 | head -c 32 | b64url) HALE_DNA_OIDC_KEY_Y=$(pub | tail -c 32 | b64url) \
+    dna/oidc/serve/serve 8794 dna-local &
 git -C ~/voice config --local dna.principal oidc
 git -C ~/voice config --local dna.oidc.issuer http://127.0.0.1:8794
 git -C ~/voice config --local dna.oidc.client dna-local
+git -C ~/voice config --local dna.oidc.key "$(pub | base64 -w0)"   # the loopback issuer's key, pinned
 git -C ~/voice config --local --add dna.oidc.member riley-sub=riley
 mkdir -p ~/voice/.hale/dna
 printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grants":[{"mode":"oidc","name":"riley","authority":"board","practice_propose":false,"review_verdict":false,"recover":true}]}' \
@@ -565,7 +573,7 @@ printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grant
 env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
     HALE_DNA_COMMAND_POLICY=~/voice/.hale/dna/authority.json \
     "$HALE_SRC/dna/api/practice_review/practice_review" ~/voice 8793 &
-export HALE_DNA_ID_TOKEN=$(curl -s -d 'grant_type=urn:hale:dna:stub&sub=riley-sub&client_id=dna-local&client_secret=local-secret' \
+export HALE_DNA_ID_TOKEN=$(curl -s -d "grant_type=urn:hale:dna:stub&sub=riley-sub&client_id=dna-local&client_secret=$secret" \
     http://127.0.0.1:8794/token | sed 's/.*"id_token": *"\([^"]*\)".*/\1/')
 cd ~/voice && HALE_DNA_API=http://127.0.0.1:8793 \
     hale dna work run --as position:api/dev --kind software --worker 1 --wait 0

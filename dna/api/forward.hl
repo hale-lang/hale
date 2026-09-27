@@ -54,9 +54,13 @@ fn socket_live(socket: String) -> Bool {
 }
 
 // The wire line for a forwarded request: the caller's object with the
-// head's mark (`via`); a line that already carries one is refused.
+// head's mark (`via`); a line that already carries one is refused, and so
+// is a body that is more than one line — the binding reads one object per
+// line, and a second line would arrive under the head's own mark with a
+// `via` of the caller's choosing (GH #989).
 fn forwarded_line(body: String, via: String) -> String {
     let t = std::str::trim(body);
+    if std::str::contains(t, "\n") || std::str::contains(t, "\r") { return ""; }
     if !std::json::valid_object(t) || len(std::json::find_field_raw(t, "via")) > 0 { return ""; }
     return t[0..(len(t) - 1)] + (if len(t) > 2 { "," } else { "" }) + "\"via\":" + dna::record_json_quote(via) + "}";
 }
