@@ -129,6 +129,23 @@ fn changed_paths(worktree: String, base: String, candidate: String) -> RunResult
     return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + base + "\n" + candidate);
 }
 
+// The paths of a `git diff --name-only` that are not under `seed` (the
+// repository root when `.`), space-separated: what a change edits outside
+// the grant its class gives it (GH #1156).
+@unbounded
+fn paths_outside(names: String, seed: String) -> String {
+    if seed == "." || len(seed) == 0 { return ""; }
+    let mut out = "";
+    let mut rest = names;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let p = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(p) > 0 && !std::str::starts_with(p, seed + "/") { out = out + (if len(out) > 0 { " " } else { "" }) + p; }
+    }
+    return out;
+}
+
 // Does a `git diff --name-only` name the fleet's shape — a plan
 // (`*.plan.json`) or the manifest (`hale.toml`)? Such a change is a
 // `topology` mutation whatever it was asked as (GH #566 F5).
@@ -233,7 +250,9 @@ locus HaleVerification {
             let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_of(self.repo, seed) + "\n--dump-topology=" + base));
         }
         let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
-        let check = self.record(j, cand, m.id, "check", run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo));
+        let checked = run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo);
+        let check = self.record(j, cand, m.id, "check", checked);
+        let hale_source = !std::str::contains(checked.stdout + checked.stderr, "no .hl files");
         let verify = self.record(j, cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
         let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
         let test = self.record(j, cand, m.id, "test", tests);
@@ -281,7 +300,7 @@ locus HaleVerification {
         // a project with no tests has no test evidence, only an exit code
         let tested = test == 0 && std::str::contains(tests.stdout, ", 0 failed");
         self.last = self.assemble(m.id, cand, shape,
-            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0, fleet_clean: fleet == 0, topology_changed: topology },
+            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0, fleet_clean: fleet == 0, topology_changed: topology, hale_source: hale_source },
             mag, fmt, check, verify, test, diff, rehearsed, fleet, if check == 0 { topo } else { "" }, diff_json, diff_text);
         return self.last;
     }

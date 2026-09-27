@@ -51,7 +51,10 @@ review. Two more facts gate before any of that counts:
 `fleet_clean` — every plan the workspace declares composes and holds
 its claims with the candidate's artifacts (true when it declares
 none) — and `topology_changed` — the candidate's diff names a plan
-or the manifest. A candidate that does not check is `mutation.deny`;
+or the manifest. A candidate that does not check is `mutation.deny`
+(unless the genome has no Hale source at all — `hale check` finds no
+`.hl` file — when the check has nothing to judge, the evidence says so,
+`hale_source` false, and the Review decides on the rest);
 one that breaks the fleet is `mutation.deny` with the witness in
 its receipt; one that changes the fleet's shape is re-classed
 `topology` (`mutation.topology`) whatever it was asked as, which

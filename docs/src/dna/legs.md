@@ -330,7 +330,8 @@ read by the rest.
   behind the leg once a backend is there.
 
 A performer is handed a brief and the hands it may use — git in a
-scratch worktree (never the primary checkout), the forge through
+scratch worktree (never the primary checkout), its last commit
+exported as a patch (`hands.git.patch`), the forge through
 `gh` (the forge decides, a leg never merges), this toolchain; deploy
 and the heart's API refuse until GH #987 hands them over — and answers
 with a performance: the disposition and result, the calls it made,
@@ -462,6 +463,23 @@ sees no verb at all: the leg says so at attach, before it asks
 anything. `hale describe <socket>` lists what a peer may call;
 `hale call <socket> AttemptClaim '{…}'` is the same claim by hand.
 
+## A candidate becomes a Review
+
+A Work whose contract is `Patch` asks for a change. The leg makes it
+in its scratch worktree, commits it, and hands back the commit as
+`result_ref: commit:<sha>` with the commit's own patch as a receipt
+(`hands.git.patch`: `git format-patch`, whose first line, `From
+<sha>`, names the commit). The owner makes that a Mutation bound to
+the attempt: it applies the patch in its gateway worktree at the
+genome's head, only under the seed the Task's class edits, commits,
+verifies, and opens the Review with the leg as its author — the same
+Review an in-process edit gets. The attempt settles `done` on the
+prepared candidate, or `failed` with why (no commit named, no receipt
+that is its patch, a patch that does not apply, a path outside the
+seed, a candidate denied). The leg's worktree goes with it: the patch
+is the candidate, and the Review's commit is kept under
+`refs/dna/candidates/<m>`.
+
 ## Dogfood: the loop on voice
 
 `dna/tests/dogfood_voice_test.hl` runs the legs' loop on the vendored
@@ -498,6 +516,7 @@ cp -r "$HALE_SRC/dna/tests/onboarding/voice" ~/voice && cd ~/voice
 git init -q -b main && git config user.name riley && git config user.email riley@local
 git add -A && git commit -qm voice
 hale dna init .
+git add -A && git commit -qm 'hale dna init'   # its ignores are the genome's
 hale dna memory migrate .            # prints the spine and head DSNs
 hale dna dev . --no-iris &           # the organization, which ratifies and fills
 hale dna review holes approve --as ada --authority board
@@ -545,28 +564,24 @@ refused.
 
 The performer (`dna/tests/dogfood/work.hl.txt`, installed as the
 project's `dna/org/work.hl`) takes the software kind, makes its change
-in a scratch clone, commits it, pushes the commit to
-`refs/legs/candidates/<attempt>` at the forge the project names in
-`.hale/dogfood.forge` — in the fixture a bare scratch repository, never
-the record's own — and hands it back as `result_ref: commit:<sha>` with
-the commit's patch as a receipt. The reviewer's side fetches it from
-there. Run again under a
-new lease it makes the same change and moves the ref to it, which is
-what makes it `idempotent`. Who must sign the change is the graph's
-word:
+in a scratch clone, commits it and hands it back as `result_ref:
+commit:<sha>` with the commit's patch as a receipt; the owner makes it
+a Mutation and opens its Review (above), and the attempt settles on the
+prepared candidate. Run again under a new lease it makes the same
+change in a new clone, which is what makes it `idempotent`. The
+fixture's owner runs with no memory of its own, so the Review's routing
+is the recorded fallback; who must sign the change is the graph's word:
 
 ```sh
-git fetch <forge> '+refs/legs/candidates/*:refs/legs/candidates/*'
-hale dna route --diff HEAD..<sha>     # api's reviewer, for a change under api/
-hale dna route Dockerfile             # nobody: today, the Review's own authority
+hale dna route --diff HEAD..refs/dna/candidates/<m>   # api's reviewer, for a change under api/
+hale dna route Dockerfile                             # nobody: today, the Review's own authority
 ```
 
 A leg killed mid-task, its clone made, leaves its lease to lapse; the
 owner asks again, and the next worker claims the attempt under the
 next token and finishes it.
 
-What does not exist yet is not stood in: the candidate becoming a
-Review (GH #1156); that Review going to the graph's signers, a
+What does not exist yet is not stood in: a
 non-signer's verdict refused, and a change nobody signs refused rather
 than left to the Review's own authority (GH #1157); and the lease's
 position bound to a position the peer's person holds (GH #1162) — the

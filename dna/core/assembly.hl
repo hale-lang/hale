@@ -1808,7 +1808,7 @@ locus Dna {
         // prose is not a path. An application-authored leaf edits as
         // class `application`, at the request's own target
         let plan = self.ask_plan_of(req.task_id);
-        let class = if plan.parsed { if plan.kind == "organism" { "organization" } else if len(plan.change_class) > 0 { plan.change_class } else { "application" } } else { "application" };
+        let class = self.edit_class_of(req.task_id);
         let seed = if class == "organization" { self.org_seed } else { self.genome_seed };
         let under = self.gateway.repo.root() + "/" + (if seed == "." { "" } else { seed + "/" }) + plan.target;
         let planned_target = plan.parsed && len(plan.target) > 0 && !std::str::contains(plan.target, " ") && std::io::fs::file_exists(under);
@@ -1817,6 +1817,15 @@ locus Dna {
         if record_refused(out) { self.held_edits.push(e); return; }
         let m = self.mutation_of_attempt(e.attempt_id);
         self.report_prepared(e, m);
+    }
+    // The class a Task's edit is made as (card 18): an organism change is
+    // `organization`, the Board's; else the class the leader's plan names,
+    // else `application`.
+    fn edit_class_of(task_id: String) -> String {
+        let plan = self.ask_plan_of(task_id);
+        if !plan.parsed { return "application"; }
+        if plan.kind == "organism" { return "organization"; }
+        return if len(plan.change_class) > 0 { plan.change_class } else { "application" };
     }
     // A human leaf's attempt from the workflow engine (card 16): a case
     // for a person, admitted once per attempt — `case.admitted <case>`,
@@ -2173,11 +2182,27 @@ locus Dna {
             self.report(e, "failed", "", "no Mutation was bound to attempt " + e.attempt_id);
             return;
         }
+        let r = self.prepared_result(mutation_id);
+        // in flight: its outcome is reported when it is one
+        if len(r.disposition) > 0 { self.report(e, r.disposition, r.result, r.narrative); }
+    }
+    // What a Mutation bound to an attempt says of it (card 15): done once
+    // its candidate is prepared for review, failed when preparation failed,
+    // no disposition while it is in flight.
+    fn prepared_result(mutation_id: String) -> WorkResult {
         let d = self.disposition_of(mutation_id);
         let prepared = len(self.request_of(mutation_id)) > 0 || d == "release" || d == "applied" || d == "retained";
-        if prepared { self.report(e, "done", mutation_id + ": candidate prepared (" + d + ")", "candidate prepared for review"); return; }
-        if d == "failed" || d == "deny" || d == "refused" { self.report(e, "failed", mutation_id + ": " + d, "preparation failed"); return; }
-        // in flight: its outcome is reported when it is one
+        if prepared { return WorkResult { disposition: "done", result: mutation_id + ": candidate prepared (" + d + ")", narrative: "candidate prepared for review" }; }
+        if d == "failed" || d == "deny" || d == "refused" { return WorkResult { disposition: "failed", result: mutation_id + ": " + d, narrative: "preparation failed: " + self.row_body_of("mutation." + d, mutation_id) }; }
+        return WorkResult { };
+    }
+    // The body of the latest `kind` row of `entity`, "" when none.
+    @unbounded
+    fn row_body_of(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
+        return out;
     }
     // The outcome of a review-waiting attempt, from the durable state of
     // the candidate it waits on: rejected or sent back is failed;
@@ -2325,12 +2350,32 @@ locus Dna {
             else if !live.present || live.holder != s.holder || live.token != s.token || live.expires <= now { why = "memory's claim on attempt " + s.attempt_id + " is not " + s.holder + "'s at token " + to_string(s.token) + " now: stale"; }
         }
         if len(why) > 0 { self.refuse_submission(s, why); return; }
-        self.journal_calls(s.attempt_id, s.calls);
-        let r = WorkResult {
+        let mut r = WorkResult {
             disposition: s.disposition, result: s.result, result_ref: s.result_ref, narrative: s.narrative, evidence: s.evidence_ref,
             performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id,
             request: s.request, hat_digest: s.hat_digest, hat_head: s.hat_head, hat_watermark: s.hat_watermark, prompt_digest: s.prompt_digest, renderer: s.renderer
         };
+        // GH #1156: a Patch Work's candidate is the organism's to review. The
+        // leg's commit, by its own patch, is made a Mutation bound to the
+        // attempt in the gateway — committed, verified and put to its Review
+        // as the editor's is — and the attempt settles on what that made:
+        // done once the candidate is prepared, failed when it could not be
+        if adm.value.request.output_contract == "Patch" && s.disposition == "done" {
+            let mut m = self.mutation_of_attempt(s.attempt_id);
+            if len(m) == 0 {
+                let out = self.mutate_from_leg(attempt_request(adm.value), s, std::time::now());
+                // the Mutation's request did not land: nothing proceeded, and the
+                // relay asks again until the record answers
+                if record_refused(out) { return; }
+                m = self.mutation_of_attempt(s.attempt_id);
+            }
+            let made = if len(m) > 0 { self.prepared_result(m) } else { WorkResult { disposition: "failed", result: "", narrative: "no Mutation was bound to attempt " + s.attempt_id } };
+            if len(made.disposition) == 0 { return; }
+            r.disposition = made.disposition;
+            r.result = made.result + " from " + s.result_ref;
+            r.narrative = made.narrative + " (the leg: " + s.narrative + ")";
+        }
+        self.journal_calls(s.attempt_id, s.calls);
         let x = self.runtime.settle(s.attempt_id, r);
         if !x.ok { self.refuse_submission(s, x.why); return; }
         self.submissions_settled = self.submissions_settled + 1;
@@ -4864,17 +4909,32 @@ locus Dna {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
             return self.mutation_failed(id, "attempt: " + r.narrative);
         }
-        let committed = self.gateway.commit(self.journal, id, "a" + to_string(req.attempt_no), change_class + ": " + objective, lease.token, now);
-        if !committed.ok { return self.mutation_failed(id, "commit: " + committed.refused); }
-        let m = Mutation {
+        return self.candidate_review(Mutation {
             id: id, task_id: task_id, base_commit: base, worktree: wt,
-            candidate_commit: committed.value, candidate_digest: committed.value,
             change_class: change_class, seed: seed, rationale: objective,
             fitness_signals: std::json::find_string_field(r.result, "fitness_signals"),
             disposition: "proposed"
+        }, "a" + to_string(req.attempt_no), self.editor.identity(), lease.token, now);
+    }
+    // The worktree of a Mutation committed as its candidate, verified, and
+    // put to its Review (or denied): the one tail of every candidate — the
+    // editor's in process (`mutate_for`) and a leg's (`mutate_from_leg`).
+    // `m` names everything but the candidate; `author` is whose change it is.
+    @unbounded
+    fn candidate_review(prepared: Mutation, step: String, author: String, token: Int, now: Int) -> String {
+        let id = prepared.id;
+        let committed = self.gateway.commit(self.journal, id, step, prepared.change_class + ": " + prepared.rationale, token, now);
+        if !committed.ok { return self.mutation_failed(id, "commit: " + committed.refused); }
+        let m = Mutation {
+            id: id, task_id: prepared.task_id, base_commit: prepared.base_commit, worktree: prepared.worktree,
+            candidate_commit: committed.value, candidate_digest: committed.value,
+            change_class: prepared.change_class, seed: prepared.seed, rationale: prepared.rationale,
+            fitness_signals: prepared.fitness_signals, disposition: "proposed"
         };
         let report = self.verification.verify(self.journal, m, self.baseline);
-        if !report.evidence.check_clean {
+        // a genome with no Hale source has nothing for the check to judge
+        // (GH #1156): the evidence says so, and the Review decides
+        if report.evidence.hale_source && !report.evidence.check_clean {
             let x = self.journal.append(self.journal.revision(), "mutation.deny", id, "candidate does not check (" + report.steps + ")");
             return id + ": denied: candidate does not check";
         }
@@ -4896,8 +4956,88 @@ locus Dna {
             };
             let y = self.journal.append(self.journal.revision(), "mutation.topology", id, "names a plan or the manifest: the fleet's shape changes, the Board decides");
         }
-        let d = self.review_mutation(reviewed, report, self.editor.identity());
+        let d = self.review_mutation(reviewed, report, author);
         return id + ": " + d;
+    }
+    // A leg's candidate made a Mutation (GH #1156): the outcome of a Patch
+    // Work names its commit (`result_ref: commit:<sha>`) and files that
+    // commit's own patch (`git format-patch`, its `From <sha>` line naming
+    // it) among its receipts. Bound to the attempt as the editor's is (card
+    // 14), the Mutation is opened at the genome's head, the patch applied
+    // in its worktree — only under the seed its class edits — and the
+    // candidate committed, verified and put to its Review by the leg that
+    // made it. What stands in the way is the Mutation's failure, a row.
+    @unbounded
+    fn mutate_from_leg(req: WorkRequest, s: WorkSubmission, now: Int) -> String {
+        let class = self.edit_class_of(req.task_id);
+        let seed = self.seed_for(class);
+        let sha = if std::str::starts_with(s.result_ref, "commit:") { s.result_ref[7..len(s.result_ref)] } else { "" };
+        let found = self.leg_patch(sha, s.evidence_ref);
+        self.bind_owner();
+        self.mutations_minted = self.mutations_minted + 1;
+        let id = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
+        self.last_mutation = id;
+        let base = self.gateway.head();
+        let asked = std::json::Builder { };
+        asked.begin_object();
+        asked.string_field("task_id", req.task_id);
+        asked.string_field("change_class", class);
+        asked.string_field("objective", req.objective);
+        asked.string_field("target", req.target);
+        asked.string_field("base", base);
+        asked.field("binding", encode_binding(binding_of(req)));
+        // whose candidate, and by what: the leg's commit and the receipt that is its patch
+        asked.string_field("leg", s.holder);
+        asked.string_field("leg_commit", sha);
+        asked.string_field("patch", found);
+        asked.end_object();
+        let xr = self.journal.append(self.journal.revision(), "mutation.requested", id, asked.result());
+        if !xr.ok {
+            self.record_refusals = self.record_refusals + 1;
+            self.membrane.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
+            return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
+        }
+        let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + req.task_id + " " + class + ": " + req.objective + " (" + s.holder + "'s commit " + sha + ") at " + base);
+        if len(sha) == 0 { return self.mutation_failed(id, "the leg's outcome names no candidate: a Patch Work's result_ref is `commit:<sha>`, not `" + s.result_ref + "`"); }
+        if len(found) == 0 { return self.mutation_failed(id, "no receipt of the leg's outcome is commit " + sha + "'s patch (`git format-patch`, its `From " + sha + "` line naming it)"); }
+        let text = self.verification.receipts.read(found[7..len(found)]);
+        let lease = self.gateway.take(id, "dna", now);
+        let opened = self.gateway.open(self.journal, id, base, lease.token, now);
+        if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
+        let wt = opened.value;
+        // through a file in the worktree (git reads it relative to it), gone
+        // before anything is staged
+        std::io::fs::write_file(wt + "/.hale-leg.patch", text) or discard;
+        let applied = run_tool("git\n-C\n" + wt + "\napply\n--index\n.hale-leg.patch");
+        let gone = run_tool("rm\n-f\n" + wt + "/.hale-leg.patch");
+        if applied.code != 0 {
+            let x = self.gateway.remove(self.journal, id, lease.token, now);
+            return self.mutation_failed(id, "the leg's patch does not apply at " + base + ": " + trim_nl(applied.stderr));
+        }
+        // the grant: the seed the class edits, nothing beside it
+        let touched = run_tool("git\n-C\n" + wt + "\ndiff\n--cached\n--name-only");
+        let outside = paths_outside(touched.stdout, seed);
+        if len(outside) > 0 {
+            let x = self.gateway.remove(self.journal, id, lease.token, now);
+            return self.mutation_failed(id, "the leg's patch edits outside the " + class + " seed `" + seed + "`: " + outside);
+        }
+        let x1 = self.journal.append(self.journal.revision(), "mutation.located", id, trim_nl(touched.stdout) + " under " + seed + " (the leg's patch)");
+        return self.candidate_review(Mutation {
+            id: id, task_id: req.task_id, base_commit: base, worktree: wt,
+            change_class: class, seed: seed, rationale: req.objective, disposition: "proposed"
+        }, "a" + to_string(req.attempt_no), s.holder, lease.token, now);
+    }
+    // The receipt among `digests` (space-separated `sha256:<hex>`) that is
+    // commit `sha`'s own patch: its first line `From <sha> `. "" when none.
+    @unbounded
+    fn leg_patch(sha: String, digests: String) -> String {
+        if len(sha) == 0 { return ""; }
+        let mut rest = digests + " ";
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " "); let d = rest[0..sp]; rest = rest[(sp + 1)..len(rest)];
+            if std::str::starts_with(d, "sha256:") && std::str::starts_with(self.verification.receipts.read(d[7..len(d)]), "From " + sha + " ") { return d; }
+        }
+        return "";
     }
     fn mutation_failed(id: String, why: String) -> String {
         let x = self.journal.append(self.journal.revision(), "mutation.failed", id, why);

@@ -30,6 +30,12 @@ interface GitHand {
     fn apply(worktree: String, patch: String) -> HandResult;
     // Everything staged and changed, committed: the sha.
     fn commit(worktree: String, message: String) -> HandResult;
+    // The worktree's last commit as its patch (`git format-patch`, the
+    // first line `From <sha>` naming it): what a Patch Work's outcome files
+    // as a receipt beside `result_ref: commit:<sha>`, so the owner makes
+    // the candidate a Mutation and its Review (GH #1156). The worktree
+    // itself goes with `clean`.
+    fn patch(worktree: String) -> HandResult;
 }
 interface ForgeHand {
     // A review opened from the worktree's branch: its url.
@@ -107,6 +113,11 @@ locus ScratchGit {
         if out.code != 0 { return hand_result(out, ""); }
         let sha = dna::run_tool("git\n-C\n" + worktree + "\nrev-parse\nHEAD");
         return hand_result(sha, dna::trim_nl(sha.stdout));
+    }
+    fn patch(worktree: String) -> HandResult {
+        let out = dna::run_tool("git\n-C\n" + worktree + "\nformat-patch\n-1\n--stdout\nHEAD");
+        if out.code == 0 && len(out.stdout) == 0 { return HandResult { error: "the worktree's last commit has no patch" }; }
+        return hand_result(out, out.stdout);
     }
 }
 

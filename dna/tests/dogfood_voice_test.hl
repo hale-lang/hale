@@ -12,18 +12,21 @@
 // this process and relays software work to legs; the head is the
 // practice_review head, its commands on its socket. The performer (the
 // project's own dna/org/work.hl, from dna/tests/dogfood/work.hl.txt)
-// makes its change in a scratch clone, commits it, pushes the commit to
-// `refs/legs/candidates/<attempt>` at a bare scratch forge (never the
-// record's own repository) and hands it back as `result_ref`, its
-// patch filed as a receipt that is the commit's own patch. A leg killed
-// mid-task, its clone made, leaves its lease to lapse; the owner asks
-// again, and another worker claims it under the next token and finishes.
+// makes its change in a scratch clone, commits it and hands it back as
+// `result_ref`, its patch filed as a receipt that is the commit's own
+// patch. The owner makes that patch a Mutation bound to the attempt
+// (GH #1156) — applied in its gateway at the genome's head, committed,
+// verified — and opens its Review; the attempt settles on the prepared
+// candidate. The owner here runs in this process with no memory of its
+// own (a fixture sets no environment), so the Review's routing is the
+// recorded fallback; the graph's word on the candidate is read as a
+// person reads it, `hale dna route`. A leg killed mid-task, its clone made, leaves its lease to
+// lapse; the owner asks again, and another worker claims it under the
+// next token and finishes.
 //
-// What does not exist yet is not stood in. The candidate never becomes a
-// Review (GH #1156), nothing binds the patch receipt to the commit at the
-// head (the fixture checks it), and a Review is not routed to the graph's
-// signers — a non-signer's verdict is not refused, and a change nobody
-// signs falls back to the Review's own authority (GH #1157). The route is
+// What does not exist yet is not stood in. A non-signer's verdict is not
+// refused, and a change nobody signs falls back to the Review's own
+// authority (GH #1157). The route is
 // read as a person reads it today, `hale dna route`, and the fallback is
 // asserted as today's word so the change that replaces it shows here.
 // Nor is the lease's position bound to a position the peer's person
@@ -75,7 +78,7 @@ fn field_of(raw: String, field: String) -> String {
 
 locus App {
     params {
-        repo: String = ""; owner: String = ""; head_dsn: String = ""; identity: String = ""; api: String = ""; forge: String = "";
+        repo: String = ""; owner: String = ""; head_dsn: String = ""; identity: String = ""; api: String = "";
         head: std::process::Child = std::process::Child { };
         core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-dogfood-placeholder" } } };
         journal: dna::RoutedJournal = dna::RoutedJournal { };
@@ -160,6 +163,14 @@ locus App {
         return out;
     }
     fn has_row(kind: String, entity: String) -> Bool { return len(self.row_body(kind, entity)) > 0; }
+    // The Mutation bound to an attempt ("" when none).
+    @unbounded
+    fn mutation_of(attempt: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == "mutation.requested" && dna::decode_binding(e.body).attempt_id == attempt { out = e.entity; } i = i + 1; }
+        return out;
+    }
     @unbounded
     fn wait_row(kind: String, entity: String, what: String) {
         let mut tries = 0;
@@ -206,6 +217,8 @@ locus App {
         self.core = dna::Dna {
             journal: self.journal,
             work: dna::WorkSystem { software: dna::LegRelay { name: "legs", performer_kind: "software" }, software_reconciler: dna::RelayReplay { } },
+            // the gateway the leg's candidate is made a Mutation in: voice's
+            gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: self.repo } },
             verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
             claims: dna::MemoryLeases { repo: self.repo }, knowledge_client: dna::MemoryKnowledge { repo: self.repo },
             org_id: "voice"
@@ -238,6 +251,10 @@ locus App {
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.dna("init\n.");
         std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        // what init wrote is committed, as a person commits it: the ignores
+        // (vendor/, .hale/) are the genome's, so a candidate carries none of it
+        let kept = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git -c user.name=riley -c user.email=riley@dna commit -q -m 'hale dna init'\nsh\n" + self.repo);
+        std::test::assert_eq_int(kept.code, 0, "init's output committed: " + kept.stderr);
         self.ratify("hale dna init");
         self.identity = dna::GitRecord { repo: self.repo }.identity();
         if len(self.owner) > 0 {
@@ -260,13 +277,6 @@ locus App {
         std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
         std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--get\ndna.trust").stdout), "", "and the record declares no trust: the graph says who holds what");
         std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(0)) or discard;
-        // the forge the leg pushes its candidates to: a bare repository of its
-        // own, never the record's
-        self.forge = scratch + "/forge.git";
-        let forged = dna::run_tool("git\ninit\n-q\n--bare\n" + self.forge);
-        std::test::assert_eq_int(forged.code, 0, "a scratch forge: " + forged.stderr);
-        let told = dna::run_tool("mkdir\n-p\n" + self.repo + "/.hale");
-        std::io::fs::write_file(self.repo + "/.hale/dogfood.forge", self.forge) or discard;
         self.start_head();
         self.start_owner();
 
@@ -292,9 +302,8 @@ locus App {
         let hat = std::json::find_field_raw(brief, "hat");
         std::test::assert(std::str::contains(std::json::find_string_field(hat, "objective"), "a note under api/") && std::json::find_string_field(hat, "output_contract") == "Patch", "the hat carries the Work: " + brief);
 
-        // ---- (3)(4) the candidate: a commit in a scratch clone, pushed to the
-        // leg's ref in the project, handed back as the outcome's result_ref,
-        // its patch the receipt
+        // ---- (3)(4) the candidate: a commit in a scratch clone, handed back as
+        // the outcome's result_ref, its own patch the receipt
         let ran = self.work("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n1\n--wait\n0");
         std::test::assert(std::json::find_string_field(ran, "state") == "requested" && std::json::find_string_field(ran, "attempt_id") == a1 && std::json::find_string_field(ran, "holder") == "position:api/dev#1", "the leg claims as the peer, working as api/dev, performs and hands the outcome back: " + ran);
         let requested = self.row_body("attempt.outcome_requested", a1);
@@ -310,28 +319,35 @@ locus App {
         std::test::assert(std::str::starts_with(result_ref, "commit:"), "the outcome names its candidate: " + requested);
         let sha = result_ref[7..len(result_ref)];
         let name = std::str::replace(a1, "/", "-");
-        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.forge + "\nrev-parse\nrefs/legs/candidates/" + name).stdout), sha, "the candidate is at the forge, at the leg's ref");
-        std::test::assert(dna::run_tool("git\n-C\n" + self.repo + "\ncat-file\n-e\n" + sha).code != 0, "and nowhere in the record's own repository");
-        let base = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
-        let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.forge + "\ndiff\n--name-only\n" + base + "\n" + sha).stdout);
-        std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "and it changes one file under api/: " + touched);
+        std::test::assert(dna::run_tool("git\n-C\n" + self.repo + "\ncat-file\n-e\n" + sha).code != 0, "the leg's commit is nowhere in the record's own repository");
         let evidence = std::json::find_string_field(requested, "evidence_ref");
         std::test::assert(std::str::starts_with(evidence, "sha256:"), "its patch is filed as a receipt: " + requested);
         let filed = dna::GitReceipts { repo: self.repo }.read(evidence[7..len(evidence)]);
-        let patch = dna::run_tool("git\n-C\n" + self.forge + "\nformat-patch\n-1\n--stdout\n" + sha).stdout;
-        std::test::assert(len(patch) > 0 && filed == patch, "and the receipt is the candidate's own patch: " + filed);
-        let outcome = self.settled(a1);
-        std::test::assert(std::str::contains(outcome, sha), "the owner settles on the candidate: " + outcome);
+        std::test::assert(std::str::starts_with(filed, "From " + sha + " ") && std::str::contains(filed, "+++ b/api/notes/" + name + ".md"), "and the receipt is the commit's own patch, one note under api/: " + filed);
 
-        // ---- (5)(6) who must sign it, from the graph: api's reviewer for a change
+        // ---- (5) the candidate becomes a Mutation and its Review (GH #1156):
+        // the owner applies the patch at the genome's head, commits, verifies
+        // and opens the Review
+        let base = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
+        let outcome = self.settled(a1);
+        std::test::assert(std::str::contains(outcome, "candidate prepared") && std::str::contains(outcome, "from commit:" + sha), "the attempt settles on the prepared candidate: " + outcome);
+        let m = self.mutation_of(a1);
+        std::test::assert(len(m) > 0, "a Mutation is bound to the attempt");
+        let asked = self.row_body("mutation.requested", m);
+        std::test::assert(std::json::find_string_field(asked, "leg_commit") == sha && std::json::find_string_field(asked, "patch") == evidence && std::json::find_string_field(asked, "leg") == "position:api/dev#1", "bound to the leg's commit, by its patch: " + asked);
+        let review = self.row_body("review.requested", "review:" + m);
+        let candidate = std::json::find_string_field(review, "candidate_commit");
+        std::test::assert(len(candidate) > 0 && std::json::find_string_field(review, "author") == "position:api/dev#1", "the Review is open on the candidate, the leg its author: " + review);
+        let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\ndiff\n--name-only\n" + base + "\n" + candidate).stdout);
+        std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "the candidate changes the one file the leg did: " + touched);
+        std::test::assert(std::str::contains(self.row_body("review.routed", m), "\"why\": \"no memory is named\""), "its routing is recorded, the owner here having no memory: " + self.row_body("review.routed", m));
+
+        // ---- (6) who must sign it, from the graph: api's reviewer for a change
         // under api/; a path the graph holds nobody for falls back, today, to the
         // Review's own authority (GH #1157 is what turns that into a refusal)
         if len(self.owner) > 0 {
             self.project();
-            // the reviewer's side reads the candidate from the forge
-            let fetched = dna::run_tool("git\n-C\n" + self.repo + "\nfetch\n-q\n" + self.forge + "\n+refs/legs/candidates/*:refs/legs/candidates/*");
-            std::test::assert_eq_int(fetched.code, 0, "the candidate fetched from the forge: " + fetched.stderr);
-            let routed = self.dna("route\n--json\n--diff\nHEAD.." + sha);
+            let routed = self.dna("route\n--json\n--diff\n" + base + ".." + candidate);
             std::test::assert_eq_int(routed.code, 0, "route the candidate: " + routed.stderr);
             std::test::assert_eq_str(field_of(std::json::find_field_raw(routed.stdout, "signers"), "position"), "position:api/reviewer\n", "api's reviewer signs a change under api/: " + routed.stdout);
             let unsigned = self.dna("route\n--json\nDockerfile");
@@ -373,7 +389,7 @@ locus App {
         let recovered = self.work("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n3\n--wait\n0");
         std::test::assert(std::json::find_string_field(recovered, "state") == "requested" && std::json::find_string_field(recovered, "attempt_id") == a2 && std::json::find_int_field(recovered, "token") == 2, "another worker claims it under the next token and finishes it: " + recovered);
         let second = self.settled(a2);
-        std::test::assert(std::str::contains(second, "commit:"), "settled on its candidate: " + second);
+        std::test::assert(std::str::contains(second, "candidate prepared") && len(self.mutation_of(a2)) > 0, "settled on its prepared candidate: " + second);
 
         self.stop_head();
         if len(self.owner) > 0 { std::test::assert_eq_str(dna::unmigrate(self.owner, self.identity), "", "this run's schema and roles dropped"); }
