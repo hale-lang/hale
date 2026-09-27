@@ -359,7 +359,12 @@ The key is read during `birth`, so it exists only inside a sealed locus
 from the moment it enters the program — there is no line anywhere in
 your code where you hold it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
-a token or password, plus a `fingerprint()` for logs.
+a token or password, plus a `fingerprint()` for logs, and `reveal()` /
+`reveal_text()` for the cases where a plain credential has to leave as
+text to be usable at all — a Postgres connection string, a CLI's own
+auth. `Signer`'s key never does; `Credential`'s "never becomes a value
+the application can name" is a default, not an absolute, and `reveal`
+is named so a caller of it is grep-able.
 
 When the source is encoded — many venues issue an HMAC secret in
 base64 — name the encoding with `decode:` (`Signer { env_var: "…",
@@ -367,6 +372,32 @@ decode: "base64" }`), so the key is the *decoded* bytes rather than the
 text of the base64. Undecodable input, or an unrecognized transform,
 fails closed: an empty key and `ready() == false`, never a key that
 isn't the one the source names.
+
+A `Credential` can also name `vault:` instead of `env_var:` — a secret
+resolved against a vault rather than an env var or a file. Where the
+other two sources resolve once, at `birth`, `vault:` resolves fresh on
+every privileged call: a vault's whole point is that a value can
+change without restarting every process that reads it.
+
+```hale,fragment
+locus RoleClient {
+    params {
+        password: std::secret::Credential =
+            std::secret::Credential { vault: "postgres-role" };
+    }
+    fn dsn() -> String { return self.password.reveal_text(); }
+}
+```
+
+With no `HALE_VAULT_ADDR` set, this reads a directory of files keyed
+by name — `HALE_VAULT_DIR`, or the per-user cache root the toolchain
+already uses (`std::secret::vault_local_dir()`) — filesystem
+permissions the only access control, no server, no token. Set
+`HALE_VAULT_ADDR`, and it becomes an HTTP `GET` to
+`<addr>/v1/secret/<name>`, authenticated with the per-host token in
+`HALE_VAULT_TOKEN`. Both fail closed the same way the other sources
+do: nothing there is an empty credential, never a partial or stale
+one.
 
 Two more claims worth knowing, because they answer different questions
 about the same boundary. **Where** may the program touch the OS?

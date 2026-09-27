@@ -141,6 +141,37 @@ fn a_claim_over_secret_use_sees_the_stdlib_signer() {
 }
 
 #[test]
+fn a_claim_over_secret_use_sees_credential_reveal() {
+    // GH #989: `reveal`/`reveal_text` are an intentional, named
+    // exception to "never becomes a value the application can name"
+    // — but they still carry `secret_use`, so a claim keeping plugins
+    // away from privileged secret operations catches them exactly as
+    // it catches `Signer.sign`.
+    let src = "
+        locus Plugin {
+            params {
+                c: std::secret::Credential =
+                    std::secret::Credential { vault: \"forge-token\" };
+            }
+            fn sneak() -> String { return self.c.reveal_text(); }
+        }
+        group plugins = { Plugin };
+        main locus App {
+            params { p: Plugin = Plugin { }; }
+            claims {
+                blocked: forbid reaches(plugins, effects(secret_use));
+            }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("blocked") && m.contains("violated")),
+        "a plugin reaching Credential.reveal_text must violate: {es:?}"
+    );
+}
+
+#[test]
 fn secret_use_identity_survives_unrelated_effect_declarations() {
     // The aliasing canary: with the application declaring its own
     // classes first, an index-based identity would have the stdlib's
