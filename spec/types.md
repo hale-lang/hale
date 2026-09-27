@@ -1027,6 +1027,14 @@ One file of a multi-file seed, checked alone (`hale check
 <file>`), keeps the permissive reading: it legitimately reads a
 `const` a sibling file declares. Only the seed is held to the rule.
 
+That leniency covers a name the file never bound. A name a block of
+the same body bound and released — `if take { let x = 1; } return
+x;` — is the block's (§ "Dissolve timing rules" in spec/semantics.md), never a
+sibling's `const`, so `hale check <file>` refuses the read as the seed
+check and the build do: `unknown identifier `x`: … it was bound in a
+block that has ended, and a block's binding is the block's` (GH
+#1139).
+
 A bare unknown CALLEE reports the call diagnostic above and not this
 one — one mistake, one message (GH #721).
 

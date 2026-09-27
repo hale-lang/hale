@@ -8417,6 +8417,14 @@ struct Checker<'a> {
 #[derive(Default)]
 struct ScopeStack {
     frames: Vec<BTreeMap<String, LocalSym>>,
+    /// GH #1139: the names bound in frames of the current body that
+    /// have been popped — a `let` of a block that ended. A read of one
+    /// after its block is never a sibling file's `const` (the block's
+    /// binding was the block's, spec/semantics.md § "Dissolve timing
+    /// rules", GH #1132), so
+    /// the single-file leniency for bare identifiers does not cover
+    /// it. Cleared when the body's own frame pops.
+    closed: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8440,13 +8448,25 @@ impl ScopeStack {
     fn new() -> Self {
         Self {
             frames: vec![BTreeMap::new()],
+            closed: Vec::new(),
         }
     }
     fn push(&mut self) {
         self.frames.push(BTreeMap::new());
     }
     fn pop(&mut self) {
-        self.frames.pop();
+        if let Some(frame) = self.frames.pop() {
+            self.closed.extend(frame.into_keys());
+        }
+        // back at the base frame: the body is over, and its blocks'
+        // names are nobody else's to trip over
+        if self.frames.len() <= 1 {
+            self.closed.clear();
+        }
+    }
+    /// Whether `name` was bound by a frame of this body that has ended.
+    fn was_closed(&self, name: &str) -> bool {
+        self.closed.iter().any(|n| n == name)
     }
     fn insert(&mut self, name: &str, sym: LocalSym) {
         self.frames
@@ -14232,18 +14252,29 @@ impl<'a> Checker<'a> {
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
-            if report_unknown && self.strict_idents {
+            // GH #1139: a name a block of this body bound and then
+            // released is the block's — `hale check <file>` says so as
+            // `hale check <seed>` and the build do, whatever the
+            // leniency for a sibling's const.
+            let closed = self.locals.was_closed(&id.name);
+            if report_unknown && (self.strict_idents || closed) {
                 let hint = self
                     .closest_name_in_scope(&id.name)
                     .map(|h| format!(" — did you mean `{}`?", h))
                     .unwrap_or_default();
+                let ended = if closed {
+                    "; it was bound in a block that has ended, and a \
+                     block's binding is the block's"
+                } else {
+                    ""
+                };
                 self.diags.push(Diag::ty(
                     id.span,
                     format!(
                         "unknown identifier `{}`: no binding, param, \
                          const or declaration with that name is in \
-                         scope{}",
-                        id.name, hint
+                         scope{}{}",
+                        id.name, ended, hint
                     ),
                 ));
             }

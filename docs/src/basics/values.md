@@ -71,6 +71,11 @@ file of a multi-file seed on its own stays permissive — that file
 legitimately reads a `const` its sibling declares, and the checker
 cannot see the sibling.
 
+That leniency is for names the file never bound. A name a block bound
+and released (`if take { let x = 1; } return x;`) is the block's, so
+checking the file alone refuses the read as the seed check and the
+build do, and says the block has ended.
+
 ## A type name that isn't declared is an error too
 
 The same rule holds where a *type* is written. The one that catches
