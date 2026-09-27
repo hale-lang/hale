@@ -496,13 +496,17 @@ hale dna dev . --no-iris &           # the organization, which ratifies and fill
 hale dna review holes approve --as ada --authority board
 hale dna fill api/dev riley --as ada # a Board Review in ada's name
 hale dna review <its id> approve --as grace --authority board
-git config --local --add dna.unix.member "uid:$(id -u)=riley"
+git config --local --unset-all dna.trust   # init seated its maker under local trust
+git config --local --replace-all dna.unix.member "uid:$(id -u)=riley"
 ```
 
 (The fixture writes the ratifications and the `holds` edge as rows
 instead, as `graph_route_test` does. The proposer of a holder may not
-ratify it, so a second person decides it by hand.) The record declares
-no `dna.trust`, so the graph's `holds` edges say who holds what: until
+ratify it, so a second person decides it by hand.) `hale dna init`
+seats whoever runs it — this uid mapped to `$USER`, and `dna.trust =
+local`, where that person holds every position — so the run takes the
+trust back: with no `dna.trust` declared, the graph's `holds` edges say
+who holds what. Until
 riley holds a position the head's socket lists no claim to the peer
 (`hale describe <socket>`), and the leg says so at attach; once riley
 holds `api/dev` the leg claims as that peer, the lease in riley's name.

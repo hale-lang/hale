@@ -249,6 +249,11 @@ locus App {
         // is mapped to riley, and the record declares no trust
         let as_riley = dna::GitJournal { repo: self.repo, author: "riley" };
         std::test::assert(as_riley.append(as_riley.revision(), "intent.offered", "i-riley", "riley was here").ok, "a row in riley's name");
+        // `hale dna init` seats its maker (the uid mapped to $USER, and local
+        // trust declared): this run is about the graph deciding, so the seat
+        // is taken back and the peer mapped to riley alone
+        let unmapped = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--local\n--unset-all\ndna.unix.member");
+        let untrusted = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--local\n--unset-all\ndna.trust");
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
         let mapped = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley");
         std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
