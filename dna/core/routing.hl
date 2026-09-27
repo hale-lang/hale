@@ -23,8 +23,9 @@ const ROUTING_VERSION: Int = 1;
 //
 // The whole family is operational: cases, intents, tasks, decisions,
 // completions, exceptions, schedules, receipts, handoffs, pressure,
-// instances, effects, reports, leases and claims.
-const LEDGER_FAMILIES: String = "case intent task decision completion exception schedule receipt handoff pressure instance effect report lease claim";
+// instances, effects, reports, leases, claims and an application's
+// readings (GH #987).
+const LEDGER_FAMILIES: String = "case intent task decision completion exception schedule receipt handoff pressure instance effect report lease claim reading";
 // Families split by kind — concerns, money, a body's liveness, model
 // calls — and, GH #646 card 05, a workflow execution's own facts: the
 // `workflow`, `step` and `attempt` families and `work.settled` are the

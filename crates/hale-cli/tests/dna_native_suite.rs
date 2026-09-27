@@ -898,6 +898,7 @@ fn dna_fixture_set_is_complete() {
             "handoff_test.hl",
             "harness_test.hl",
             "head_roles_test.hl",
+            "heart_reading_test.hl",
             "journal_contention_test.hl",
             "journal_test.hl",
             "knowledge_binding_recovery_test.hl",

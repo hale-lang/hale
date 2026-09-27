@@ -22,7 +22,9 @@
 // #1123): `org_members` is a view over the graph's `holds` edges — a
 // person holding an `organization` node is its member — where it was a
 // table the spine rewrote from the owners map.
-const MEMORY_SCHEMA_VERSION: Int = 6;
+// 7 (GH #987): the routing table's `reading` family, an application's
+// readings, which the insert function admits to the ledger.
+const MEMORY_SCHEMA_VERSION: Int = 7;
 
 type Migrated {
     ok: Bool = false;

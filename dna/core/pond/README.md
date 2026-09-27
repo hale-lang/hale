@@ -1,6 +1,6 @@
 # dna/core/pond — pinned copies of pond libraries
 
-Copied verbatim from hale-lang/pond. The toolchain embeds these files
+Copied from hale-lang/pond, verbatim but for what is named below. The toolchain embeds these files
 with the core and vendors them beside it (`vendor/dna/pond`), so a
 governed project needs no network and no `hale fetch` to reach its
 memory or its nerves.
@@ -12,6 +12,10 @@ memory or its nerves.
   the node's host and the organization bind their topics to its
   `NatsAdapter`, and a pinned `NatsConn` carries them over NATS
   JetStream.
+  One change of this repository's is not in pond yet: `NatsConn`'s
+  `untyped` prefix, whose messages go out on the local `NatsInbound`
+  topic as they arrived, for the host's reading of an application's
+  events (GH #987). A refresh keeps it until pond has it.
 
 Refresh by copying the directories from pond again and updating the
 commits here; `hale check dna/core/pond/pq` and

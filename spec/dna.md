@@ -15,12 +15,13 @@ one (GH #646).
 |---|---|---|---|
 | **Structure** | what the organism *is*: positions, routes, schedules and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
 | **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
-| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
+| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness, the application's readings | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
 The routing table is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
-`report`, `lease` and `claim` families are the Ledger's, as are
+`report`, `lease`, `claim` and `reading` (an application's events,
+#987) families are the Ledger's, as are
 `concern.requested` / `.raised` / `.refused`, `grant.reserved` /
 `.released` / `.fenced` / `.reservation_refused` (money;
 `grant.refused` — a grant born wider than its ceiling — is authority
@@ -296,7 +297,7 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 6 (GH #1026: 2 made the
+- **The version fence.** The schema version is 7 (GH #1026: 2 made the
   lease table `claims` and the graph's projection one transaction per
   record row — migrating a version-1 memory renames the table in place,
   its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
@@ -305,7 +306,9 @@ host's tick (**The spine**, below).
   GH #946: 5 adds `hats`, hats by digest, which moves no projection;
   GH #1123: 6 makes `org_members` a view over the graph's `holds`
   edges, where it was a table the spine rewrote from the retired owners
-  map, and moves no projection either. Each protocol move empties the
+  map, and moves no projection either; GH #987: 7 adds the `reading`
+  family to the routing table the insert function reads, which moves
+  none. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
@@ -1095,8 +1098,8 @@ repository:
 - **Subjects** are the topics' declared subjects under the
   organization's token — the one memory names its schema with
   (`dna_<record id>`): `<org>.dna.<family>.<event>`
-  (`dna_4f….dna.intent.offered`); an application's own events will be
-  `<org>.app.<app>.<event>` (#987), and what a node tells the heads is
+  (`dna_4f….dna.intent.offered`); an application's own events are
+  `<org>.app.<app>.<event>` (**The heart's events**), and what a node tells the heads is
   `<org>.head.<event>` (**Rows landing**). The connection puts the token on
   what leaves and takes it off what arrives, so a topic keeps its
   declared subject.
@@ -1120,10 +1123,11 @@ repository:
 - **Credentials, one per family**, each a URL with its user: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
-  `<org>.<owner>.dna.>` (the host and the organization), and publishes
+  `<org>.<owner>.dna.>` (the host and the organization), reads
+  `<org>.app.>` through the durable `heart` (the host), and publishes
   `<org>.head.>` and an owner's `<org>.<owner>.head.>`; `head`
   subscribes and publishes nothing; `app`
-  publishes on `<org>.app.>` (#987). `hale dna nerves migrate [dir]`
+  publishes on `<org>.app.*.>` and reads nothing of DNA's. `hale dna nerves migrate [dir]`
   creates or updates the stream with the owner's URL
   (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
   `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG` and
@@ -1162,6 +1166,32 @@ repository:
   collapse, and the host that supervises it ends with it. The row first
   is what makes a loss recoverable: the next node relays every request
   still unanswered.
+- **The heart's events** (GH #987). An application's one hookup to DNA
+  is its events. It declares each as a topic of its own, under its own
+  subject `app.<app>.<event>`, binds it to pond's `NatsAdapter` with a
+  codec that writes one JSON object, and publishes it through a pinned
+  `NatsConn` under the organization's prefix, acknowledged by the
+  stream. It imports nothing of DNA. The event names itself: its body
+  carries an `id` of the application's choosing (letters, digits and
+  `-_.:`, at most 128 bytes). The node's host reads `<org>.app.>`
+  through the durable `heart` on its own connection. There is one
+  durable for the organization, whichever owner's host pulls, so each
+  event goes to one host, and the prefix is the organization's alone.
+  The connection hands the event over as it arrived (pond's
+  `NatsConn.untyped`), since no part of the organism declares an
+  application's events. The host lands it as `reading.recorded`, entity
+  `<app>/<id>`, body `app`, `event`, `id`, `subject` and `payload` (the
+  event's JSON, at most 64 KiB), before anything acts on it. Nothing
+  acts on a reading yet: it is a signal, never a fact, and what the
+  organism does to the application goes the other way, through the API
+  the application exposes. A second arrival of an id already recorded,
+  whether a redelivery or a replay, is refused as a duplicate and lands
+  nothing. Whether the id is recorded is decided at the revisions the
+  row is appended at, so two hosts land it once. A message that names
+  no application and event, or whose body is not a JSON object with
+  such an `id`, is not a reading: the host says why and records
+  nothing. The durable acknowledges an event once it is handed to the
+  host, as the organization's `spine` does.
 - **Rows landing.** For every row its view of the organism gains, a
   node publishes `head.row.landed` (`RowLanded`: the row's `seq`,
   `kind` and `entity`; under an owner's prefix over a shared record),
@@ -4315,7 +4345,8 @@ organization and every owner's, as the head's user, on
 the project's compose `nerves` service while `hale dna dev` has it up
 (asked for, never brought up; asked again every 5 s). With none, only
 the head's own state is pushed. The application view still reads on a
-timer until #987 gives an application its events.
+timer: the application's readings (**The heart's events**) do not reach
+it yet.
 
 **The API** (`dna/api`, source-built; the head starts one per project)
 is a head of memory. It reads the Knowledge graph in its own process

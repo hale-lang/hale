@@ -56,6 +56,11 @@ locus NatsConn {
         // `orders.new` travel as `acme.orders.new`). `subjects` are
         // given without it; a `consumer.filter` is a NATS subject, with it.
         subject_prefix: String = "";
+        // Wire subjects under this prefix are not dispatched to a topic:
+        // each goes out on `NatsInbound` as it arrived, its whole wire
+        // subject and its bytes, for a subscriber that reads them itself
+        // ("" is none). A NATS subject, with `subject_prefix` if any.
+        untyped: String = "";
         // JetStream. `jetstream`: outbound messages are acknowledged by
         // the stream that takes their subject (a PubAck) instead of a
         // PING barrier. `stream` + `consumer.durable`: receive from that
@@ -104,7 +109,10 @@ locus NatsConn {
         retry_at_ns: Int = 0;
     }
 
-    bus { subscribe NatsOutbound as on_out; }
+    // `NatsInbound` is heard here too, and dropped: a program that takes
+    // nothing untyped (most) still has a subscriber for what this conn
+    // publishes, and the one that sets `untyped` subscribes beside it.
+    bus { subscribe NatsOutbound as on_out; publish NatsInbound; subscribe NatsInbound as on_untyped; }
 
     closure delivery { captures: sent, acked, last_error; epoch inline; }
 
@@ -237,11 +245,23 @@ locus NatsConn {
                 return;
             }
         }
-        std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+        self.deliver(f.subject, f.data);
         self.received = self.received + 1;
         if len(f.reply) > 0 { self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard; }
         self.pull_left = self.pull_left - 1;
         if self.pull_left <= 0 { self.pull_open = false; }
+    }
+
+    fn on_untyped(m: Inbound) { }
+
+    // An inbound message to the bus: under `untyped` as it arrived,
+    // otherwise to the topic its subject names.
+    fn deliver(subject: String, data: Bytes) {
+        if len(self.untyped) > 0 && std::str::starts_with(subject, self.untyped) {
+            NatsInbound <- Inbound { subject: subject, data: data };
+            return;
+        }
+        std::bus::__local_dispatch(self.local_subject(subject), data);
     }
 
     // A subject as the program's topics know it: without the prefix.
@@ -256,7 +276,7 @@ locus NatsConn {
         if f.op == "MSG" || f.op == "HMSG" {
             if f.sid == self.ack_sid && self.ack_sid > 0 { self.on_pub_ack(f); return; }
             if f.sid == self.pull_sid && self.pull_sid > 0 { self.on_pulled(f); return; }
-            std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+            self.deliver(f.subject, f.data);
             self.received = self.received + 1;
             return;
         }

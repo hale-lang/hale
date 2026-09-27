@@ -1,0 +1,105 @@
+// The heart's pulse (GH #987).
+//
+// An application's one hookup to DNA is its events, which it declares as
+// its own topics and publishes on its own subjects, `<org>.app.<app>.
+// <event>`, through the bus's NATS adapter. The host reads them through
+// the organization's durable `heart` (dna/core/nerves.hl) and lands each
+// as a `reading.recorded` row before anything acts on it. A reading is a
+// signal, never a fact: nothing acts on one yet, and what the organism
+// does to the application goes the other way, through its API.
+//
+// An event names itself: its body is a JSON object whose `id` the
+// application chose, and the row's entity is `<app>/<id>`. A second
+// arrival of an id already recorded — a redelivery, a replay — is
+// refused. Whether it is there is decided at the revision the row is
+// appended at, so two hosts pulling the same durable land it once.
+
+const READING_KIND: String = "reading.recorded";
+// The largest event body a reading keeps; a larger one is refused.
+const READING_MAX_BYTES: Int = 65536;
+
+// What an inbound message on the heart's subjects says, or why it is not
+// a reading.
+type Reading {
+    app: String = "";
+    event: String = "";
+    id: String = "";
+    payload: String = "";
+    why: String = "";
+}
+
+// An id or an app's name as a row's entity carries it: letters, digits
+// and `-_.:`, at most 128 bytes.
+@unbounded
+fn reading_token(s: String) -> Bool {
+    if len(s) == 0 || len(s) > 128 { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == ":";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The reading `subject` and `body` make, under the heart's `prefix`
+// (`<org>.app.`): the application and the event from the subject, the id
+// from the body.
+fn reading_of(subject: String, prefix: String, body: String) -> Reading {
+    if len(prefix) == 0 || !std::str::starts_with(subject, prefix) { return Reading { why: "not under " + prefix }; }
+    let rest = subject[len(prefix)..len(subject)];
+    let dot = std::str::index_of(rest, ".");
+    if dot <= 0 || dot + 1 >= len(rest) { return Reading { why: "names no application and event" }; }
+    let app = rest[0..dot];
+    let event = rest[(dot + 1)..len(rest)];
+    if !reading_token(app) { return Reading { why: "the application's name is not a token" }; }
+    if len(body) > READING_MAX_BYTES { return Reading { app: app, event: event, why: "the body is over " + to_string(READING_MAX_BYTES) + " bytes" }; }
+    if !std::str::starts_with(std::str::trim(body), "{") { return Reading { app: app, event: event, why: "the body is not a JSON object" }; }
+    let id = std::json::find_string_field(body, "id");
+    if !reading_token(id) { return Reading { app: app, event: event, why: "the body names no `id` (letters, digits and -_.:, at most 128)" }; }
+    return Reading { app: app, event: event, id: id, payload: body };
+}
+
+// Whether `entity`'s reading is in the organism's memory.
+@unbounded
+fn reading_landed(p: Projection, entity: String) -> Bool {
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == READING_KIND && e.entity == entity { return true; }
+        i = i - 1;
+    }
+    return false;
+}
+
+// Land `r` as its row: "" when it landed, `duplicate` when its id is
+// already recorded, else why it could not be written. The row goes where
+// the routing table puts the kind, at the revisions its absence was read
+// at; when a memory moved under it, it is read and decided again.
+@unbounded
+fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory) -> String {
+    let entity = r.app + "/" + r.id;
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("app", r.app);
+    b.string_field("event", r.event);
+    b.string_field("id", r.id);
+    b.string_field("subject", subject);
+    b.string_field("payload", r.payload);
+    b.end_object();
+    let body = b.result();
+    let mut tries = 0;
+    while tries < 50 {
+        tries = tries + 1;
+        let head = record_head(root);
+        if !head.ok { return "the record's head could not be read: " + head.why; }
+        let at = ledger_revision(root, memory);
+        let p = open_projection(root, ".", "", memory);
+        if reading_landed(p, entity) { return "duplicate"; }
+        let why = append_as_at(root, head.id, at, READING_KIND, entity, body, "host", memory);
+        if len(why) == 0 { return ""; }
+        if why != "stale_revision" { return why; }
+    }
+    return "the organism's memory kept moving under it";
+}

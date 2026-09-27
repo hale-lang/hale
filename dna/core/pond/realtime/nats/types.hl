@@ -73,3 +73,20 @@ topic NatsOutbound {
     payload: Outbound;
     subject: "pond.nats.outbound";
 }
+
+/// One inbound message a `NatsConn` hands over undecoded (its subject
+/// is under the conn's `untyped` prefix): the subject as it arrived on
+/// the wire, prefix and all, and its bytes.
+type Inbound {
+    subject: String = "";
+    data: Bytes = b"";
+}
+
+// What a `NatsConn` receives under its `untyped` prefix, as it arrived,
+// for a subscriber that reads the bytes itself: a family of subjects the
+// program does not declare topic by topic. Local only, like the queue
+// above.
+topic NatsInbound {
+    payload: Inbound;
+    subject: "pond.nats.inbound";
+}

@@ -751,7 +751,19 @@ main locus Host {
         // organization's token `dev` handed this host (HALE_DNA_NATS_URL_SPINE,
         // HALE_DNA_NATS_ORG); every publish is acknowledged by the stream.
         // Declared here, not passed in, so its failure reaches this host.
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "dna-node", subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()), jetstream: true };
+        // GH #987: it also reads what the applications say, through the
+        // organization's durable `heart`, handed over as it arrived
+        // (`untyped`): the host declares no application's events.
+        nerves: nats::NatsConn = nats::NatsConn {
+            url: dna::nerves_spine_url(),
+            name: "dna-node",
+            subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()),
+            jetstream: true,
+            stream: dna::nerves_stream_here(),
+            consumer: nats::ConsumerSpec { durable: dna::NERVES_HEART_DURABLE, filter: dna::nerves_heart_filter() },
+            untyped: dna::nerves_heart_prefix()
+        };
+        readings: Int = 0; // readings this host landed (GH #987)
         nerves_on: Bool = false;
         relay: NodeRelay = NodeRelay { };
         // when this node last stopped an organization (monotonic ns; 0
@@ -759,6 +771,8 @@ main locus Host {
         org_stopped_at: Int = 0;
     }
     placement { nerves: pinned; }
+    // GH #987: an application's event, as the heart's durable delivered it
+    bus { subscribe nats::NatsInbound as on_reading; }
     // Every topic the node publishes, onto the nerves: the record's
     // requests it relays, and the observation it reports.
     bindings {
@@ -790,6 +804,19 @@ main locus Host {
         self.stop_to_restart("nerves", dna::NODE_RESTART);
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
+    // GH #987: an application's event, landed as a reading row before
+    // anything acts on it (dna/host/pulse.hl); one whose id is recorded
+    // already is refused.
+    fn on_reading(m: nats::Inbound) {
+        let body = std::str::from_bytes(m.data);
+        let r = reading_of(m.subject, dna::nerves_heart_prefix(), body);
+        if len(r.why) > 0 { self.say("the heart's " + m.subject + " is not a reading: " + r.why); return; }
+        let why = record_reading(self.root, m.subject, r, self.memory);
+        if why == "duplicate" { self.say("reading " + r.app + "/" + r.id + " (" + r.event + ") is recorded already; refused as a duplicate"); return; }
+        if len(why) > 0 { self.say("reading " + r.app + "/" + r.id + " (" + r.event + ") was not recorded: " + why); return; }
+        self.readings = self.readings + 1;
+        self.say("reading " + r.app + "/" + r.id + " (" + r.event + ") recorded");
+    }
     // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
     // credential, as `hale dna secret set` wrote them ("" when none).
     fn secrets_file() -> String {

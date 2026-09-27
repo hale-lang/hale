@@ -16,8 +16,8 @@
 //   <org>.dna.<family>.<event>    what DNA's own parts say: the
 //                                 declared subject of a `dna::` topic
 //                                 (`dna.intent.offered`) under the org
-//   <org>.app.<app>.<subject>     what an application says, under its
-//                                 own name (#987 gives it its events)
+//   <org>.app.<app>.<event>       what an application says, under its
+//                                 own name: its events, its pulse (#987)
 //   <org>.head.<event>            what a node tells the heads: a row
 //                                 landed (`head.row.landed`), outside
 //                                 `dna.` so no organization pulls it
@@ -30,6 +30,9 @@
 // a position, not deleted once one consumer acks it. The organization
 // reads it through its durable consumer `spine`, which keeps its place
 // across restarts.
+// The node's host reads what the applications say through
+// another, `heart` (#987): one for the organization, whichever owner's
+// host pulls it, so an event is taken once.
 //
 // Credentials, one per family, each a URL with its user (placeholders
 // in dna/nats.conf until the vault, #989):
@@ -38,6 +41,7 @@
 //   spine  publishes and reads <org>.dna.>, and publishes <org>.head.>:
 //          the node's host and the organization
 //   head   subscribes, publishes nothing (the face's push)
+//   spine  also reads <org>.app.> through `heart` (#987)
 //   app    publishes on <org>.app.<app>.> (#987)
 
 const NATS_OWNER_URL_ENV: String = "HALE_DNA_NATS_URL_OWNER";
@@ -148,6 +152,18 @@ fn nerves_subject_prefix() -> String { return nerves_prefix_of(nerves_org(), ner
 fn nerves_stream_here() -> String { return nerves_stream(nerves_org()); }
 fn nerves_durable() -> String { return nerves_durable_of(nerves_owner()); }
 fn nerves_filter() -> String { return nerves_filter_of(nerves_org(), nerves_owner()); }
+
+// The heart's side (#987): what every application of the organization
+// says, `<org>.app.>`, read by the node's host through the durable
+// `heart` and handed over as it arrived (pond's `NatsConn.untyped`),
+// since no part of the organism declares an application's events. The
+// prefix is the organization's alone, never an owner's: the heart is
+// the organization's, whichever owner's host takes an event.
+const NERVES_HEART_DURABLE: String = "heart";
+fn nerves_heart_prefix_of(org: String) -> String { return if len(org) == 0 { "" } else { org + ".app." }; }
+fn nerves_heart_filter_of(org: String) -> String { return if len(org) == 0 { "" } else { nerves_heart_prefix_of(org) + ">" }; }
+fn nerves_heart_prefix() -> String { return nerves_heart_prefix_of(nerves_org()); }
+fn nerves_heart_filter() -> String { return nerves_heart_filter_of(nerves_org()); }
 
 // The stream's configuration.
 fn nerves_stream_config(org: String) -> String {
