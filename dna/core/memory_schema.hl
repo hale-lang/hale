@@ -90,8 +90,57 @@ fn owners_of_keys(keys: String) -> String {
     return out;
 }
 
-// Placeholder-local credentials until the vault holds them (GH #989).
-fn role_password(role: String) -> String { return role; }
+// GH #989: the role's password lives in the vault, resolved at use —
+// `std::secret::Credential` fails closed when nothing is there. A
+// real vault (`HALE_VAULT_ADDR` set) is provisioned out of band;
+// this only reads it, so a role with nothing provisioned yet gets no
+// password and no connection, same as any other unresolved secret.
+// Local mode has no server to provision through, so
+// `vault_provision_local` draws a random password from urandom and
+// persists it under the vault's own local-file convention the first
+// time a role is asked for — self-provisioning local dev already
+// had, now a real secret instead of one derivable from the role's
+// own name.
+fn role_password(role: String) -> String {
+    // `role` is project-derived (`spine_role`/`head_role`/`owner_role`
+    // already run it through `identifier_part`, but this is the
+    // credential site, not a trusted-input assumption about its
+    // callers) — run it through the SAME [a-z0-9_] restriction again
+    // before it becomes a vault name, so a name built from it can
+    // never carry a `/`, a `\`, or a `..` regardless of what a future
+    // caller passes.
+    let name = "postgres-" + identifier_part(role, 63);
+    let from_vault = std::secret::Credential { vault: name }.reveal_text();
+    if len(from_vault) > 0 { return from_vault; }
+    return vault_provision_local(name);
+}
+
+// Local mode only (`HALE_VAULT_ADDR` unset): the same directory
+// `std::secret`'s `vault:` source reads, written to directly because
+// its own contract is read-only. Refuses (returns "") when a real
+// vault is configured, `name` is not vault-safe (the same check
+// `vault:` itself refuses through — belt and suspenders, since
+// `role_password` already sanitizes what it passes here), or the
+// directory cannot be prepared. Not a lock: a second caller racing
+// the first may draw a different value, but the read-back after
+// write is what every caller agrees on, so the race converges to
+// whichever write landed last rather than two callers disagreeing
+// about which password a role has.
+fn vault_provision_local(name: String) -> String {
+    if std::env::var_exists("HALE_VAULT_ADDR") { return ""; }
+    if !std::secret::vault_name_is_safe(name) { return ""; }
+    let dir = std::secret::vault_local_dir();
+    let path = dir + "/" + name;
+    let made = run_tool("mkdir\n-p\n" + dir);
+    if made.code != 0 { return ""; }
+    let already = std::io::fs::read_file(path) or "";
+    if len(already) > 0 { return already; }
+    let drawn = run_tool("od\n-An\n-tx1\n-N16\n/dev/urandom");
+    let value = std::str::replace(std::str::replace(drawn.stdout, " ", ""), "\n", "");
+    if drawn.code != 0 || len(value) != 32 { return ""; }
+    std::io::fs::write_file(path, value) or discard;
+    return std::io::fs::read_file(path) or "";
+}
 
 // `owner` with the role in place of the owner's user and password.
 fn role_dsn(owner: Dsn, role: String) -> Dsn {

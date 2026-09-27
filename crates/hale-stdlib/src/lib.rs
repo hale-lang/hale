@@ -346,6 +346,15 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "StaticRoles"], "__StdApiStaticRoles"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
+    // GH #989: the local vault directory, exported so a caller that
+    // must PROVISION a local entry (vault: is read-only otherwise)
+    // writes to the exact path a later read looks in.
+    (&["std", "secret", "vault_local_dir"], "__std_secret_vault_local_dir"),
+    // The same name-safety check `vault:` itself refuses through,
+    // exported so a caller building a name from something less
+    // trusted than a literal can refuse it at the credential site
+    // too, not only as the vault's own last line of defense.
+    (&["std", "secret", "vault_name_is_safe"], "__std_secret_vault_name_is_safe"),
     // std::metrics (promoted from pond/metrics, 2026-07-18).
     (&["std", "metrics", "Counter"], "__StdMetricsCounter"),
     (&["std", "metrics", "Endpoint"], "__StdMetricsEndpoint"),

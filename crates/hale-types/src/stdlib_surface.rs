@@ -662,6 +662,17 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // GH #989: the vault: source's two free-fn escapes — `Credential`
+    // and `Signer` are LOCUS paths (tracked as such, not here) with
+    // no registry row of their own, so their methods carry no entry;
+    // these are the first `std::secret` free fns.
+    NsSurface {
+        ns: &["secret"],
+        fns: &[
+            e("vault_local_dir", EffectSet::ENV), e("vault_name_is_safe", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["str"],
         fns: &[
