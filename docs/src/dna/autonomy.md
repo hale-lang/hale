@@ -51,7 +51,12 @@ review. Two more facts gate before any of that counts:
 `fleet_clean` — every plan the workspace declares composes and holds
 its claims with the candidate's artifacts (true when it declares
 none) — and `topology_changed` — the candidate's diff names a plan
-or the manifest. A candidate that does not check is `mutation.deny`;
+or the manifest. A candidate that does not check is `mutation.deny` —
+unless the seed holds no Hale source at the base or at the candidate (a
+genome of another language): then the check has nothing to judge, the
+evidence says so (`hale_source` false), and the candidate is never
+staged or released, whatever the grant — a person reviews it before
+anything applies;
 one that breaks the fleet is `mutation.deny` with the witness in
 its receipt; one that changes the fleet's shape is re-classed
 `topology` (`mutation.topology`) whatever it was asked as, which

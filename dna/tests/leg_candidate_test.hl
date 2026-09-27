@@ -1,0 +1,192 @@
+// dna/tests/leg_candidate_test.hl — a leg's candidate made a Mutation and
+// its Review, and every way it is not (GH #1156).
+//
+// A scratch Hale genome, an owner in this process relaying software work
+// to legs, and a `Patch` Work. Each case asks the Work, takes the lease
+// as a row (the head's part is attempt_commands_test's), makes the leg's
+// commit in a clone of its own and hands the owner the outcome as the
+// relay would (`on_work_submit`). A commit and its own patch become a
+// Mutation bound to the attempt and a Review with the leg as author, and
+// the attempt settles on the prepared candidate; handed back again, no
+// second Mutation. No commit named, no receipt that is its patch, a patch
+// that does not apply, a path in the organization's own seed (a rename's
+// source counted), a candidate that does not check, and a Mutation left
+// in flight by a restart each settle the attempt `failed`, saying why.
+// The tree decides whether a seed has Hale source, and a candidate that
+// has none is never released by a grant.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(dir: String, script: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && " + script + "\nsh\n" + dir);
+}
+
+const MAIN: String = "fn main() {\n    println(\"hello\");\n}\n";
+const KEEP: String = "fn keep() -> Int {\n    return 1;\n}\n";
+const LEG: String = "position:software#1";
+
+locus App {
+    params {
+        repo: String = "";
+        scratch: String = "";
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-leg-candidate-placeholder" } } };
+        journal: dna::GitJournal = dna::GitJournal { };
+        asks: Int = 0;
+        clones: Int = 0;
+    }
+    fn start() {
+        self.journal = dna::GitJournal { repo: self.repo };
+        self.core = dna::Dna {
+            journal: self.journal,
+            work: dna::WorkSystem { software: dna::LegRelay { name: "legs", performer_kind: "software" }, software_reconciler: dna::RelayReplay { } },
+            gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: self.repo } },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            org_id: "legs"
+        };
+        std::test::assert_eq_str(self.core.catalog.define("change", 1, "record", "a change a leg makes"), "", "change");
+        std::test::assert_eq_str(self.core.catalog.leaf("change", 1, 0, "c", dna::WorkRequest { objective: "change main", output_contract: "Patch" }, 1), "", "c");
+    }
+    @unbounded
+    fn row_body(kind: String, entity: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
+        return out;
+    }
+    @unbounded
+    fn wait_row(kind: String, entity: String, what: String) {
+        let mut tries = 0;
+        while tries < 400 * dna::wait_scale() && len(self.row_body(kind, entity)) == 0 { std::time::sleep(25ms); tries = tries + 1; }
+        std::test::assert(len(self.row_body(kind, entity)) > 0, what + ": no `" + kind + " " + entity + "` row within the deadline");
+    }
+    // The Mutations bound to an attempt, one id per line.
+    @unbounded
+    fn mutations_of(attempt: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == "mutation.requested" && dna::decode_binding(e.body).attempt_id == attempt { out = out + e.entity + "\n"; } i = i + 1; }
+        return out;
+    }
+    // One Patch Work asked and relayed to legs, its lease taken as a row.
+    fn ask() -> String {
+        self.asks = self.asks + 1;
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "change", revision: 1, from: "test" });
+        std::test::assert(len(t) > 0, "admitted: " + t);
+        let attempt = dna::attempt_id_of(t + "/wf1/s0/c", 0);
+        self.wait_row("effect.relayed", "attempt:" + attempt, "the owner relays the Patch Work to legs");
+        let claim = "{\"holder\": \"" + LEG + "\", \"token\": 1, \"until\": " + to_string(std::time::now() + 600) + ", \"effect_class\": \"idempotent\", \"principal_mode\": \"local\", \"principal_name\": \"riley\"}";
+        std::test::assert(self.journal.append(self.journal.revision(), "attempt.claimed", attempt, claim).ok, "the lease, as a row");
+        return attempt;
+    }
+    // The leg's commit: `script` run in a clone of the genome, committed;
+    // the sha and its own patch, "sha\tpatch".
+    fn commit(script: String) -> String {
+        self.clones = self.clones + 1;
+        let dir = self.scratch + "/leg" + to_string(self.clones);
+        let cloned = dna::run_tool("git\nclone\n--quiet\n" + self.repo + "\n" + dir);
+        std::test::assert_eq_int(cloned.code, 0, "a clone: " + cloned.stderr);
+        let made = sh(dir, script + " && git add -A && git -c user.name=legs -c user.email=legs@dna commit -q -m change");
+        std::test::assert_eq_int(made.code, 0, "the leg commits: " + made.stderr);
+        let sha = dna::trim_nl(sh(dir, "git rev-parse HEAD").stdout);
+        return sha + "\t" + sh(dir, "git format-patch -1 --stdout HEAD").stdout;
+    }
+    // The outcome handed to the owner, as the relay hands it: the attempt's
+    // `attempt.outcome` after it, or its refusal.
+    fn hand(attempt: String, request: String, result_ref: String, patch: String) -> String {
+        let digest = if len(patch) > 0 { "sha256:" + dna::GitReceipts { repo: self.repo }.store(patch) } else { "" };
+        self.core.on_work_submit(dna::WorkSubmission {
+            attempt_id: attempt, holder: LEG, token: 1, disposition: "done", result: "a change", result_ref: result_ref,
+            narrative: "the leg's change", evidence_ref: digest, request: request
+        });
+        return self.row_body("attempt.outcome", attempt);
+    }
+    fn failed_with(attempt: String, result_ref: String, patch: String, why: String) {
+        let out = self.hand(attempt, "r-" + attempt, result_ref, patch);
+        std::test::assert(std::json::find_string_field(out, "disposition") == "failed" && std::str::contains(std::json::find_string_field(out, "narrative"), why), "failed, saying `" + why + "`: " + out);
+    }
+    run() {
+        self.scratch = dna::scratch_root("leg-candidate");
+        self.repo = self.scratch + "/genome";
+        let made = dna::run_tool("mkdir\n-p\n" + self.repo + "/dna/org");
+        std::io::fs::write_file(self.repo + "/main.hl", MAIN) or discard;
+        std::io::fs::write_file(self.repo + "/dna/org/keep.hl", KEEP) or discard;
+        std::io::fs::write_file(self.repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh(self.repo, "git init -q -b main && git add -A && git -c user.name=t -c user.email=t@dna commit -q -m base");
+        std::test::assert_eq_int(init.code, 0, "a genome: " + init.stderr);
+        let base = dna::trim_nl(sh(self.repo, "git rev-parse HEAD").stdout);
+        self.start();
+
+        // ---- the rules, as values: the tree says whether a seed has Hale
+        // source; a candidate without any is reviewed whatever the grant;
+        // a change may not edit outside its seed nor the organization's
+        std::test::assert(dna::has_hale_source(self.repo, base, "."), "the genome has Hale source");
+        std::test::assert(!dna::has_hale_source(self.repo, base, "docs"), "a seed with none has none");
+        std::test::assert(!dna::has_hale_source(self.repo, base, "dna"), "and what `hale check` reads is the seed's own files, not its subdirectories'");
+        std::test::assert(dna::has_hale_source(self.repo, base, "dna/org"), "the organization's seed has its own");
+        let grant = dna::Grant { classes: "application", max_magnitude: 100, review: "post" };
+        let clean = dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, rollback_rehearsed: true };
+        std::test::assert_eq_str(dna::disposition_name(dna::dispose(grant, "application", dna::Magnitude { }, clean)), "release", "evidence a post-review grant releases on");
+        let foreign = dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, rollback_rehearsed: true, hale_source: false };
+        std::test::assert_eq_str(dna::disposition_name(dna::dispose(grant, "application", dna::Magnitude { }, foreign)), "review", "no Hale source: reviewed before anything applies");
+        std::test::assert_eq_str(dna::paths_outside("main.hl\nsrc/x.hl\n", ".", "dna/org"), "", "the genome's own paths are its");
+        std::test::assert_eq_str(dna::paths_outside("main.hl\ndna/org/keep.hl\n", ".", "dna/org"), "dna/org/keep.hl", "the organization's seed is fenced");
+        std::test::assert_eq_str(dna::paths_outside("dna/organ/x.hl\n", ".", "dna/org"), "", "by its path, not a prefix of a name");
+        std::test::assert_eq_str(dna::paths_outside("dna/org/keep.hl\n", ".", ""), "", "an organization change edits it");
+        std::test::assert_eq_str(dna::paths_outside("api/x.md\nweb/y.md\n", "api", ""), "web/y.md", "a seed's grant is the seed");
+
+        // ---- a commit and its own patch: a Mutation and its Review
+        let a1 = self.ask();
+        let pair = self.commit("printf 'fn main() {\\n    println(\"hello, legs\");\\n}\\n' > main.hl");
+        let tab = std::str::index_of(pair, "\t");
+        let sha = pair[0..tab]; let patch = pair[(tab + 1)..len(pair)];
+        let out = self.hand(a1, "r1", "commit:" + sha, patch);
+        std::test::assert(std::json::find_string_field(out, "disposition") == "done" && std::str::contains(std::json::find_string_field(out, "result"), "candidate prepared") && std::str::contains(std::json::find_string_field(out, "result"), "from commit:" + sha), "the attempt settles on the prepared candidate: " + out);
+        let m = dna::trim_nl(self.mutations_of(a1));
+        let asked = self.row_body("mutation.requested", m);
+        std::test::assert(std::json::find_string_field(asked, "leg") == LEG && std::json::find_string_field(asked, "leg_commit") == sha && std::str::starts_with(std::json::find_string_field(asked, "patch"), "sha256:"), "the Mutation names the leg, its commit and its patch: " + asked);
+        let review = self.row_body("review.requested", "review:" + m);
+        std::test::assert_eq_str(std::json::find_string_field(review, "author"), LEG, "the Review is open, the leg its author: " + review);
+        let candidate = std::json::find_string_field(review, "candidate_commit");
+        std::test::assert_eq_str(dna::trim_nl(sh(self.repo, "git diff --name-only " + base + " " + candidate).stdout), "main.hl", "the candidate is the leg's change and nothing else");
+        // handed back again, under another request: no second Mutation
+        let again = self.hand(a1, "r1b", "commit:" + sha, patch);
+        std::test::assert_eq_str(self.mutations_of(a1), m + "\n", "one Mutation per attempt");
+
+        // ---- no commit named
+        let a2 = self.ask();
+        self.failed_with(a2, "", patch, "names no candidate");
+        // ---- no receipt that is the named commit's patch
+        let a3 = self.ask();
+        self.failed_with(a3, "commit:0123456789abcdef0123456789abcdef01234567", patch, "no receipt of the leg's outcome is commit");
+        // ---- a patch that does not apply at the genome's head
+        let a4 = self.ask();
+        let stale = self.commit("printf 'x\\n' > main.hl && git add -A && git -c user.name=legs -c user.email=legs@dna commit -q -m first && printf 'y\\n' > main.hl");
+        let t4 = std::str::index_of(stale, "\t");
+        self.failed_with(a4, "commit:" + stale[0..t4], stale[(t4 + 1)..len(stale)], "does not apply");
+        // ---- the organization's own seed, a rename's source counted
+        let a5 = self.ask();
+        let moved = self.commit("git mv dna/org/keep.hl keep.hl");
+        let t5 = std::str::index_of(moved, "\t");
+        self.failed_with(a5, "commit:" + moved[0..t5], moved[(t5 + 1)..len(moved)], "dna/org/keep.hl");
+        // ---- a candidate that does not check
+        let a6 = self.ask();
+        let broken = self.commit("printf 'fn main( {\\n' > main.hl");
+        let t6 = std::str::index_of(broken, "\t");
+        self.failed_with(a6, "commit:" + broken[0..t6], broken[(t6 + 1)..len(broken)], "preparation failed");
+        std::test::assert(std::str::contains(std::json::find_string_field(self.row_body("attempt.outcome", a6), "result"), ": deny"), "denied: " + self.row_body("attempt.outcome", a6));
+        // ---- a Mutation a restart left in flight: failed as interrupted
+        let a7 = self.ask();
+        let bound = "{\"task_id\": \"" + a7[0..std::str::index_of(a7, "/wf")] + "\", \"binding\": " + dna::encode_binding(dna::binding_of(dna::WorkRequest { work_id: a7[0..std::str::index_of(a7, "/a0")], attempt_no: 0 })) + "}";
+        std::test::assert(self.journal.append(self.journal.revision(), "mutation.requested", "m-left", bound).ok, "a Mutation bound and left");
+        self.failed_with(a7, "commit:" + sha, patch, "interrupted");
+
+        dna::scratch_done(self.scratch);
+    }
+}
+
+fn main() { App { }; }

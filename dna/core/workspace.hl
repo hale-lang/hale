@@ -214,6 +214,22 @@ fn last_slash(s: String) -> Int {
     return -1;
 }
 
+// A patch (`git format-patch` or a unified diff) applied in a worktree,
+// index and all (GH #1156): through a file in the worktree, which git
+// reads relative to it, gone before anything is staged.
+fn apply_patch_in(worktree: String, patch: String) -> RunResult {
+    std::io::fs::write_file(worktree + "/.hale-leg.patch", patch) or discard;
+    let applied = run_tool("git\n-C\n" + worktree + "\napply\n--index\n.hale-leg.patch");
+    let gone = run_tool("rm\n-f\n" + worktree + "/.hale-leg.patch");
+    return applied;
+}
+
+// Every path a worktree's index changes, one per line, a rename's source
+// and destination both, unquoted (GH #1156).
+fn staged_paths(worktree: String) -> RunResult {
+    return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--cached\n--name-only\n--no-renames");
+}
+
 fn trim_nl(s: String) -> String {
     let mut e = len(s);
     while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }

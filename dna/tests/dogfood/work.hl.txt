@@ -1,18 +1,16 @@
 // dna/org/work.hl for the dogfood run (GH #946): a deterministic
 // performer standing in for the model. It takes the software kind, makes
-// its change in a scratch clone of the project, commits it, pushes the
-// commit to `refs/legs/candidates/<attempt>` at the forge the project
-// names in `.hale/dogfood.forge` (never the record's own repository),
-// and hands the commit back as the outcome's `result_ref` with its patch
-// as a receipt.
+// its change in a scratch clone of the project, commits it, and hands the
+// commit back as the outcome's `result_ref` with its own patch as a
+// receipt: the owner makes that patch a Mutation and its Review (GH #1156).
 import "vendor/dna" as dna;
 import "vendor/dna/legs" as legs;
 
 locus Candidate {
     params { pause_ms: Int = 0; }
     fn kind() -> String { return "deterministic"; }
-    // run again under a new lease it makes the same change and moves the
-    // ref to it (a forced push): the same end, whatever a dead run left
+    // run again under a new lease it makes the same change in a new clone:
+    // the same end, whatever a dead run left
     fn effect_class() -> String { return "idempotent"; }
     fn takes(performer_kind: String) -> Bool { return performer_kind == "software"; }
     fn failed(why: String, shown: String) -> legs::Performance {
@@ -40,18 +38,12 @@ locus Candidate {
         let committed = hands.git.commit(clone.output, "api: a note for " + brief.attempt_id);
         if !committed.ok { return self.failed("the change did not commit: " + committed.error, shown); }
         let sha = committed.output;
-        // the forge the project names (the fixture's bare scratch repository),
-        // never the record's own repository
-        let forge = dna::trim_nl(std::io::fs::read_file(repo + "/.hale/dogfood.forge") or "");
-        if len(forge) == 0 { return self.failed("no forge named in .hale/dogfood.forge", shown); }
-        let pushed = dna::run_tool("git\n-C\n" + clone.output + "\npush\n--quiet\n" + forge + "\n+HEAD:refs/legs/candidates/" + name);
-        if pushed.code != 0 { return self.failed("the candidate was not pushed: " + pushed.stderr, shown); }
-        let exported = dna::run_tool("git\n-C\n" + clone.output + "\nformat-patch\n-1\n--stdout\nHEAD");
-        if exported.code != 0 || len(exported.stdout) == 0 { return self.failed("the candidate's patch was not exported: " + exported.stderr, shown); }
+        let exported = hands.git.patch(clone.output);
+        if !exported.ok { return self.failed("the candidate's patch was not exported: " + exported.error, shown); }
         return legs::Performance {
             disposition: "done", result: "candidate " + sha, result_ref: "commit:" + sha,
-            narrative: "the change is commit " + sha + " at refs/legs/candidates/" + name,
-            receipts: "[{\"class\": \"internal\", \"body\": " + dna::record_json_quote(exported.stdout) + "}]",
+            narrative: "the change is commit " + sha,
+            receipts: "[{\"class\": \"internal\", \"body\": " + dna::record_json_quote(exported.output) + "}]",
             prompt_digest: shown, renderer: legs::RENDERER_VERSION
         };
     }
