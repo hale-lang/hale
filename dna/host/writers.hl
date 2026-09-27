@@ -719,7 +719,7 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         if no_wait { return answer(requested); }
     }
     // the organism's answer, from the record
-    let deadline = std::time::now() + (if local { 20 } else { 60 });
+    let deadline = std::time::now() + dna::wait_secs(if local { 20 } else { 60 });
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, ".", "", memory);
