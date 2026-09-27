@@ -36,13 +36,19 @@ test('Task creation: exact asks validate and anything beyond an outcome for a lo
     const ok = window.FaceTaskCreate.validate({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
     const rejected = [
       { outcome: '', to: 'org' }, { outcome: 'x', to: '' }, { outcome: 'x', to: 'a\nb' }, { outcome: 'x', to: 'x'.repeat(257) }, { outcome: 'é'.repeat(4097), to: 'org' },
-      { outcome: 'x\u0000y', to: 'org' }, { outcome: 'x', to: 'org', from: 'riley' }, { outcome: 'x', to: 'org', intent_id: 'i1' }, { outcome: 'x' }, { to: 'org' }, null, 'ask', { outcome: 7, to: 'org' }
+      { outcome: 'x\u0000y', to: 'org' }, { outcome: 'x', to: 'org', from: 'riley' }, { outcome: 'x', to: 'org', intent_id: 'i1' }, { outcome: 'x' }, { to: 'org' }, null, 'ask', { outcome: 7, to: 'org' },
+      { outcome: 'x', to: 'org', kind: 'change' }, { outcome: 'x', to: 'org', kind: 7 }, { outcome: 'x', to: 'org', kind: 'judgment', from: 'riley' }
     ].map(value => { try { window.FaceTaskCreate.validate(value); return false; } catch { return true; } });
     const exact = window.FaceTaskCreate.validate({ outcome: 'é'.repeat(4096), to: 'x'.repeat(256) });
-    return { ok, rejected, exactBytes: new TextEncoder().encode(exact.outcome).length, exactTo: exact.to.length };
+    // a judgment says so; an empty kind is a change, as though it were not given
+    const judged = window.FaceTaskCreate.validate({ outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' });
+    const plain = window.FaceTaskCreate.validate({ outcome: 'x', to: 'org', kind: '' });
+    return { ok, rejected, exactBytes: new TextEncoder().encode(exact.outcome).length, exactTo: exact.to.length, judged, plain };
   });
   expect(result.ok).toEqual({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
-  expect(result.rejected).toHaveLength(13); expect(result.rejected.every(Boolean)).toBe(true);
+  expect(result.judged).toEqual({ outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' });
+  expect(result.plain).toEqual({ outcome: 'x', to: 'org' });
+  expect(result.rejected).toHaveLength(16); expect(result.rejected.every(Boolean)).toBe(true);
   expect(result.exactBytes).toBe(8192); expect(result.exactTo).toBe(256);
 });
 

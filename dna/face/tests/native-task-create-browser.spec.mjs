@@ -63,6 +63,26 @@ test('native ask lands as the CLI row: one POST, a real receipt, one intent.requ
   await page.screenshot({ path: info.outputPath('actual-native-task-create.png') });
 });
 
+test('native judgment ask carries its kind onto the CLI row (GH #1144)', async ({ page, service }) => {
+  const posts = []; page.on('request', request => { if (isWrite(request)) posts.push(request.postDataJSON()); });
+  const before = service.journal().head;
+  await page.goto(service.origin + '/#/tasks?' + new URLSearchParams({ app: service.application }));
+  await expect(region(page)).toBeVisible();
+  await region(page).getByRole('textbox', { name: 'What should happen', exact: true }).fill('Is the queue bounded?');
+  await region(page).getByRole('combobox', { name: 'Asked for', exact: true }).selectOption('judgment');
+  await region(page).getByRole('button', { name: 'Review new task', exact: true }).click();
+  await expect(confirmation(page)).toContainText('Ask for this assessment');
+  const reply = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
+  await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
+  const line = await (await reply).json(); expect(line.value.ok).toBe(true);
+  expect(posts).toHaveLength(1); expect(posts[0]).toEqual({ call: 'TaskCreate', payload: { request_id: expect.any(String), record_head: before, outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' } });
+  const rows = asks(service); expect(rows).toHaveLength(1);
+  const body = JSON.parse(rows[0].body);
+  // `kind` right after the ask's three keys, where `hale dna task create --judgment` writes it
+  expect(Object.keys(body).slice(0, 4)).toEqual(['outcome', 'from', 'to', 'kind']);
+  expect(body.kind).toBe('judgment');
+});
+
 test('lost native POST reply survives API restart and reload with GET-only exact-key recovery', async ({ page, service }) => {
   let savedCommand, received; const nativeResponse = new Promise(resolve => { received = resolve; }); let postCount = 0;
   page.on('request', request => { if (isWrite(request)) postCount += 1; });

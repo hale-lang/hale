@@ -37,6 +37,7 @@ type GovernanceCommand {
     // variant requires both empty.
     outcome: String = "";
     to: String = "";
+    ask_kind: String = ""; // raising work: "" a change, "judgment" an assessment a leg performs (GH #1144)
     // A leg's claim (dna.attempt.claim, GH #946): what it performs and
     // may see, and for how long the lease is asked. A leg's outcome
     // (dna.attempt.outcome): the attempt, the lease it settles under, the

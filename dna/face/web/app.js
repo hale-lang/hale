@@ -800,7 +800,7 @@
     if (draft.operation === REVIEW_OPERATION) return { request_id, review_id: metadata.target_id, subject_digest: metadata.subject_digest, verdict: draft.verdict, comment: draft.comment };
     if (draft.operation === TASK_OPERATION) return { request_id, task_id: metadata.target_id, assignment_digest: metadata.subject_digest, assignee: draft.from, to: draft.to };
     if (draft.operation === PERSON_OPERATION) return { request_id, person: metadata.target_id, subject_digest: metadata.subject_digest, to: draft.to };
-    if (draft.operation === TASK_CREATE_OPERATION) return { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to };
+    if (draft.operation === TASK_CREATE_OPERATION) return draft.kind ? { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to, kind: draft.kind } : { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to };
     return { request_id, subject_digest: metadata.subject_digest, text: draft.text, rationale: draft.rationale };
   }
   function commandStillCurrent(token, scope, signal) {
@@ -2997,7 +2997,7 @@
   function prepareTaskCreate(ask) {
     if (state.phase !== "ready" || state.route.view !== "tasks" || !state.app || !commandCapability(state.capabilities, TASK_CREATE_OPERATION).allowed || intervention.metadata || intervention.blocked || intervention.draft || !commandID(state.source?.record_head) || !window.FaceTaskCreate) throw new Error("Reload the handed Tasks and check the current authority before preparing a new task.");
     const exact = window.FaceTaskCreate.validate(ask);
-    intervention.draft = { operation: TASK_CREATE_OPERATION, target: state.app.id, subject: state.source.record_head, record_head: state.source.record_head, outcome: exact.outcome, to: exact.to };
+    intervention.draft = { operation: TASK_CREATE_OPERATION, target: state.app.id, subject: state.source.record_head, record_head: state.source.record_head, outcome: exact.outcome, to: exact.to, kind: exact.kind || "" };
     intervention.phase = "reviewing"; intervention.error = "";
     render(); $("task-create-confirmation")?.focus();
   }
@@ -3015,7 +3015,7 @@
     if (draft?.operation === TASK_CREATE_OPERATION) {
       const confirmation = node("section", "intervention-panel"); confirmation.id = "task-create-confirmation"; confirmation.tabIndex = -1;
       confirmation.setAttribute("role", "group"); confirmation.setAttribute("aria-label", "Confirm new task");
-      confirmation.append(node("h3", "", "Raise this task"), node("p", "outcome-value task-literal", draft.outcome), node("p", "", "For " + (draft.to === "org" ? "the whole organization" : draft.to) + " · asked by " + state.capabilities.principal.name + ". The organism decides whether to admit it; its answer is recorded separately."));
+      confirmation.append(node("h3", "", draft.kind === "judgment" ? "Ask for this assessment" : "Raise this task"), node("p", "outcome-value task-literal", draft.outcome), node("p", "", "For " + (draft.to === "org" ? "the whole organization" : draft.to) + " · asked by " + state.capabilities.principal.name + ". The organism decides whether to admit it; its answer is recorded separately."));
       const confirm = button("Confirm new task", () => submitIntervention(), "button");
       const discard = button("Discard", () => { intervention.draft = null; intervention.phase = "idle"; intervention.error = ""; render(); });
       confirm.disabled = Boolean(intervention.reserving) || !currentDraftEligible(draft); discard.disabled = Boolean(intervention.reserving);

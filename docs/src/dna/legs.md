@@ -147,8 +147,10 @@ organism settled the attempt and the workflow, and the record has the
 rows: `attempt.claimed`, `attempt.outcome_requested`,
 `attempt.outcome`, `workflow.settled`.
 
-**A model performs the next, in worker mode.** Ask again, and start a
-worker that runs one task per child and ends:
+**A model performs the next, in worker mode.** Ask again — from the
+CLI as here, or through the head (`TaskCreate` with `kind: judgment`,
+or "An assessment" on the face's task form) — and start a worker that
+runs one task per child and ends:
 
 ```text
 $ hale dna task create --judgment assess whether the retry policy of the ingest path bounds its queue
