@@ -117,8 +117,6 @@
   let definitionDraftHost = null;
   let organizationDraftController = null;
   let organizationDraftHost = null;
-  let ownershipDraftController = null;
-  let ownershipDraftHost = null;
   let knowledgeDraftController = null;
   let knowledgeDraftHost = null;
   let knowledgePreview = null;
@@ -2139,7 +2137,7 @@
   }
   function requireWorkingContext(route, context) {
     if (route.locus && (!context?.available || !context.positions.some(row => row.position === route.locus))) {
-      throw new ReadError(404, "working_context_unavailable", "The selected locus is not available in the current declared ownership map. Choose another context or clear it.");
+      throw new ReadError(404, "working_context_unavailable", "The selected locus is not available in the graph's current ownership. Choose another context or clear it.");
     }
   }
   function sameContextRecord(context, source) {
@@ -2209,7 +2207,7 @@
       route = { ...route, offset: 0 };
       state.notice = "This page link has no snapshot. Pagination restarted from the first page.";
     }
-    if (route.view === "tasks" && (route.assignee_invalid || route.assignee && !commandID(route.assignee))) throw new ReadError(400, "invalid_assignee", "Choose one exact person from the ownership map, or return to all handed Tasks.");
+    if (route.view === "tasks" && (route.assignee_invalid || route.assignee && !commandID(route.assignee))) throw new ReadError(400, "invalid_assignee", "Choose one exact person from the organizations' members, or return to all handed Tasks.");
     const query = new URLSearchParams({ limit: String(LIMIT), offset: String(route.offset) });
     if (route.view === "tasks" && route.assignee) query.set("assignee", route.assignee);
     if (route.snapshot) query.set("snapshot", route.snapshot);
@@ -2442,9 +2440,6 @@
     organizationDraftController?.destroy();
     organizationDraftController = null;
     organizationDraftHost = null;
-    ownershipDraftController?.destroy();
-    ownershipDraftController = null;
-    ownershipDraftHost = null;
   }
   function destroyKnowledgeDraft() {
     const previous = knowledgeDraftController;
@@ -2553,7 +2548,7 @@
   function render() {
     // A recovery-only render may reattach the same draft DOM. Preserve the
     // editor caret; route/access changes already destroy the controller.
-    const draftFocus = (definitionDraftHost?.contains(document.activeElement) || ownershipDraftHost?.contains(document.activeElement) || organizationDraftHost?.contains(document.activeElement) || knowledgeDraftHost?.contains(document.activeElement)) ? document.activeElement : null;
+    const draftFocus = (definitionDraftHost?.contains(document.activeElement) || organizationDraftHost?.contains(document.activeElement) || knowledgeDraftHost?.contains(document.activeElement)) ? document.activeElement : null;
     const draftCaret = draftFocus && typeof draftFocus.selectionStart === "number" ? [draftFocus.selectionStart, draftFocus.selectionEnd, draftFocus.selectionDirection] : null;
     destroyIndependent();
     if (state.phase !== "ready" || state.route.view !== "definitions" || !state.detail || state.error) destroyDefinitionDraft();
@@ -2684,7 +2679,7 @@
         else ui.content.prepend(recovery);
       }
     }
-    if (draftFocus?.isConnected && (definitionDraftHost?.contains(draftFocus) || ownershipDraftHost?.contains(draftFocus) || organizationDraftHost?.contains(draftFocus) || knowledgeDraftHost?.contains(draftFocus))) {
+    if (draftFocus?.isConnected && (definitionDraftHost?.contains(draftFocus) || organizationDraftHost?.contains(draftFocus) || knowledgeDraftHost?.contains(draftFocus))) {
       draftFocus.focus({ preventScroll: true });
       if (draftCaret) draftFocus.setSelectionRange(...draftCaret);
     }
@@ -2743,7 +2738,7 @@
     append(panel, control, description, actions);
     if (context?.sourceHead) {
       const evidence = node("details", "working-context-evidence");
-      evidence.append(node("summary", "", "Context source"), node("p", "mono", context.sourceHead), node("p", "detail-note", "Paths and owners come from the checked source's declared ownership map. They do not establish occupied positions or permission grants.")); panel.append(evidence);
+      evidence.append(node("summary", "", "Context source"), node("p", "mono", context.sourceHead), node("p", "detail-note", "Paths and owners come from the graph's ownership: the organizations holding each position. They do not establish occupied positions or permission grants.")); panel.append(evidence);
     }
   }
   function targetMatchesContext(item, view = state.route.view) {
@@ -3556,24 +3551,7 @@
       const coverage = append(node("section", "panel organization-coverage"), node("h2", "", "What this source establishes"), node("p", "", basis.declaration_count + " declarations · " + collection.page.total + " static instances · " + basis.uninstantiated_declaration_count + " declarations without static instances."), node("p", "", "Static instances describe source structure, not running occupants or vacancies. A declaration with no static instance is not presented as a vacant position."), node("p", "", "Static containment coverage · " + (basis.exact_ownership ? "exact" : "partial")));
       const host = organizationDraftHost || node("div", "organization-draft-host");
       organizationDraftHost = host;
-      const ownershipHost = ownershipDraftHost || node("div", "ownership-draft-host");
-      ownershipDraftHost = ownershipHost;
-      frame.append(host, coverage, organizationOwnership(collection.ownership), ownershipHost);
-      if (window.FaceOwnershipDraft && !ownershipDraftController) {
-        const token = generation;
-        ownershipDraftController = window.FaceOwnershipDraft.mount(ownershipHost, {
-          applicationId: state.app.id, principal: state.capabilities.principal,
-          basis, recordHead: state.source.record_head, capability: state.capabilities.ownership_drafts,
-          onInvalidate(error) {
-            if (token !== generation) return;
-            const message = error?.message || "Ownership source or access changed. The draft was cleared.";
-            if (error?.status === 401 || error?.status === 403) {
-              const route = state.route; cancel();
-              state = { ...blankState(route), phase: "error", error: new ReadError(error.status, "unauthenticated", message) }; render();
-            } else loadRoute(firstPageRoute(state.route), message, "list");
-          }
-        });
-      }
+      frame.append(host, coverage, organizationOwnership(collection.ownership));
       if (intervention.metadata || intervention.blocked) {
         organizationDraftController?.destroy(); organizationDraftController = null;
         host.replaceChildren(node("p", "detail-note", "Recover or dismiss the saved request before preparing another Organization proposal."));
@@ -4104,7 +4082,7 @@
   }
   function organizationOwnership(ownership) {
     const panel = node("section", "panel organization-coverage");
-    append(panel, node("h2", "", "Declared ownership map"), node("p", "", "Owning-party assignments are a separate model. This source does not establish a binding between these position names and the static instances above."));
+    append(panel, node("h2", "", "Ownership in the graph"), node("p", "", "Owning-party assignments are a separate model. This source does not establish a binding between these position names and the static instances above."));
     const facts = node("dl", "fact-grid");
     fact(facts, "Ownership mode", ownership.mode === "shared" ? "Shared ownership" : "Single owner");
     fact(facts, "Host owner", ownership.host_owner);

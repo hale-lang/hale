@@ -32,7 +32,7 @@ The launcher builds this checkout's native Hale API and the project service in
 temporary storage, side by side, serves
 the bundled browser, and prints its loopback URL. Set `HALE_BIN` if the compiler
 is not on `PATH`. `--port 8793` selects another port. `--source-drafts` opts into
-Organization and ownership preparation; omit it for reads alone. Ctrl-C stops
+Organization source preparation; omit it for reads alone. Ctrl-C stops
 this API and removes its temporary build. The application's existing body and
 services retain their lifecycles. The launcher never initializes or commits the
 project, adopts its Ledger, starts infrastructure or fetches dependencies.
@@ -156,7 +156,8 @@ system, arbitrary source editor or universal command store.
   separate facts.
 - **Organization:** source-backed static instance outline and inspector,
   explicit position groups, typed parameters and message/supervision contracts,
-  source files, dependency fingerprints and separate declared ownership maps.
+  source files, dependency fingerprints and, separately, the ownership the
+  graph states (read from memory, not from source).
   Select an instance, then choose **Enter branch** to show its root and immediate
   children in Topology or Outline. **Whole organization** returns to the current
   page's overview. Breadcrumbs follow returned native parent relationships;
@@ -498,7 +499,7 @@ methods and explicit constructor overrides. The updated chart and export come
 from the native response. Handwritten source edits invalidate structured bindings
 until checked again. Imported declarations, computed defaults and unsupported
 source constructions remain in the source editor without guessed bindings.
-Position membership does not establish an occupant, ownership map or authority.
+Position membership does not establish an occupant, ownership or authority.
 
 After validation, **Compare changes** shows the current and checked candidate
 instances together, including marked outlines for removals. **Current source**
@@ -520,15 +521,11 @@ export. Navigation, access changes and stale source clear the draft. Nothing is
 persisted in browser storage. This editor prepares source; it does not publish a
 proposal or change the running application.
 
-**Edit ownership** below the declared ownership map prepares assignments,
-owner membership and the hosting party in the captured `dna/org/owners` file.
-Forms preserve neighboring entries, comments and line endings. The native DNA
-ownership model previews inherited owners after an assignment is removed,
-changes between shared/single-owner mode, and affected owners and review members.
-Missing review members remain visible. Changing this draft does not replace the
-current viewing-context list or grant session authority. **Download validated
-ownership map** exports the exact checked source; publishing and observing its
-activation remain part of the governed source-change integration.
+The face does not edit ownership. Which organization owns a position and who
+is its member are `holds` edges of the graph, proposed with `hale dna fill` and
+ratified by the Board like any other hold; the ownership panel below the chart
+shows what memory's graph states (GH #1123). The former ownership draft editor
+and its `dna/org/owners` export are retired.
 
 
 ### Knowledge changes
@@ -582,11 +579,12 @@ acceptance.
 ### Shared organizational context
 
 **Working locus** carries a declared ownership scope between Organization,
-Knowledge, Practices, Definitions and Reviews. The choices come from the native
-Organization ownership map. **Work from …** beside that map selects a scope;
-deep links and browser history preserve it. The picker exposes the checked source
-commit and declared owner. It does not bind compiler instance paths to domain
-positions, establish an occupant, impersonate an owner or grant command authority.
+Knowledge, Practices, Definitions and Reviews. The choices come from the
+ownership the native Organization read reports, which is the graph's. **Work
+from …** beside that panel selects a scope; deep links and browser history
+preserve it. The picker exposes the checked source commit and declared owner.
+It does not bind compiler instance paths to domain positions, establish an
+occupant, impersonate an owner or grant command authority.
 
 Knowledge applies the scope through its native target-relevance query, including
 applicable ancestor bindings. Practices and Definitions keep their native pages

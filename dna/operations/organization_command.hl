@@ -12,7 +12,7 @@ type OrganizationCommandFact {
 
 locus OrganizationCommandCodec {
     params { }
-    fn known(operation: String, version: String) -> Bool { return (operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose") && version == "1"; }
+    fn known(operation: String, version: String) -> Bool { return operation == "dna.organization.propose" && version == "1"; }
     fn commit_id(value: String) -> Bool {
         let size = len(value);
         if size != 40 && size != 64 { return false; }
@@ -28,7 +28,7 @@ locus OrganizationCommandCodec {
         let common = GovernanceCommandCodec { };
         return common.context_valid(context) && self.known(c.operation, c.operation_version)
             && c.application_id == context.application_id && c.position_id == "org"
-            && c.target_kind == "dna.organization.module" && c.target_id == (if c.operation == "dna.organization.ownership.propose" { "dna/org/owners" } else { "dna/org/main.hl" })
+            && c.target_kind == "dna.organization.module" && c.target_id == "dna/org/main.hl"
             && common.bounded(c.request_id, 128, true, false) && dna::digest_well_formed(c.subject_digest)
             && self.commit_id(c.source_head) && common.bounded(c.record_head, 256, true, false)
             && (c.dependency_source == "none" || c.dependency_source == "committed_source" || c.dependency_source == "local_vendor_snapshot")
@@ -74,7 +74,6 @@ locus OrganizationCommandCodec {
         return dna::OrganizationSourceRequest {
             application_id: context.application_id, request_id: common.identity(context, c.request_id), command_fingerprint: self.fingerprint(context, c),
             principal_mode: context.principal_mode, by: context.principal_name, authority: grant.authority, authority_basis: grant.basis, source_owner: owner,
-            source_module: if c.operation == "dna.organization.ownership.propose" { "dna/org/owners" } else { "" },
             source_head: c.source_head, module_digest: c.subject_digest, dependency_source: c.dependency_source, dependency_digest: c.dependency_digest,
             record_head: c.record_head, source_text: c.source_text, source_digest: dna::digest_of(c.source_text), rationale: c.rationale
         };

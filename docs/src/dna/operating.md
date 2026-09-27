@@ -158,7 +158,7 @@ placeholder equal to its name, so keep the database where only the
 people and machines you trust can reach it.
 
 The migration is one transaction and can be run again at any time.
-It writes a schema version (version 5), and every store checks it when
+It writes a schema version (version 6), and every store checks it when
 it opens: a host whose memory is at another version refuses to start,
 naming both versions and `hale dna memory migrate`, and a migration
 refuses a schema a newer toolchain wrote. Migrating a version-1 memory
@@ -440,9 +440,11 @@ HALE_DNA_MEMORY_DSN_HEAD_NORTH=postgres://…_head_north:…
 An owner's heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`; the plain
 head role of a shared record reads and writes as no one. Memory holds
 no key: the keys stay the record's until the vault holds them (#989).
-Which members an owner has is the genome's owners map, `dna/org/owners`,
-which every node projects into memory, so changing it is a reviewed
-change of the organization like any other. A host is a principal too:
+Which members an owner has is the graph's: a person is a member of the
+firm whose `organization` node they hold (`holds(organization:acme,
+alice)`), and memory reads that straight from the graph every node
+projects. A membership is proposed with `hale dna fill` and ratified by
+the Board like any other hold. A host is a principal too:
 it writes its own rows as `host`, and its `body.*` rows carry
 `"owner"`, so the record still says whose body it was.
 

@@ -1,7 +1,9 @@
 // Actual prepared source, native Review decisions and leased Git apply. Faults
 // affect named Journal acknowledgments only; no terminal facts are fabricated.
-// The explicit quorum case is a native Review unit composition, not a claim
-// that the fixed-module source profile publishes a separate ownership map.
+// The explicit two-position case is a native Review unit composition: a
+// Review whose route names two positions (GH #1089), each signed by its
+// holder, the way every approval is decided since the owners map retired
+// (GH #1123).
 import "../core" as dna;
 import "../operations" as ops;
 import "../organization_source" as source;
@@ -54,7 +56,7 @@ fn source_body(repo: String, j: SourceApplyJournal, request_id: String, owner: S
         journal: j, organization_source_facts: ops::StrictOrganizationSourceFacts { },
         organization_source_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
         organization_source_apply_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
-        ownership: dna::Ownership { text: owners, me: owner, me_env: "" },
+        ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
@@ -69,7 +71,6 @@ main locus App {
         let dirs = dna::run_tool("mkdir\n-p\n" + repo + "/dna/org");
         std::io::fs::write_file(repo + "/dna/org/main.hl", ORIGINAL) or discard;
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n/vendor/\n") or discard;
-        if len(owners) > 0 { std::io::fs::write_file(repo + "/dna/org/owners", owners) or discard; }
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let added = dna::run_tool("git\n-C\n" + repo + "\nadd\n-A");
         let committed = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase");
@@ -125,7 +126,7 @@ main locus App {
         let review = dna::Review { journal: j, review_id: id, subject_digest: v.subject_digest,
             organization_source_request: r, organization_source_facts: ops::StrictOrganizationSourceFacts { },
             required_authority: dna::native_json_string(req.body, "required_authority"), author: r.by,
-            approvers: if len(quorum) > 0 { quorum } else { dna::native_json_string(req.body, "approvers") } };
+            signers: quorum };
         let decision = review.command_decide(v);
         if j.hide_after_reply {
             std::test::assert_eq_str(decision, "", "lost append reply cannot return acceptance while exact incoming profile is unavailable");
@@ -219,19 +220,19 @@ main locus App {
     fn quorum() {
         let repo = self.repo("quorum-unit", ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
         let r = self.request(repo, j, "quorum-unit", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
-        // This explicit Review unit composition tightens the actual candidate's
-        // quorum. The fixed-module provider does not mutate an ownership map.
-        let first = self.decide(j, r, "north-approval", "bob", "approve", "north=bob south=carol", true);
-        std::test::assert(!std::json::find_bool_field(dna::review_command_decision(j, first.command_id), "settled"), "first owner decision is partial");
+        // This explicit Review unit composition requires two positions of
+        // the actual candidate, each held by one reviewer.
+        let first = self.decide(j, r, "north-approval", "bob", "approve", "position:org/collections=bob position:board=carol", true);
+        std::test::assert(!std::json::find_bool_field(dna::review_command_decision(j, first.command_id), "settled"), "the first position's decision is partial");
         source_body(repo, j, "", "", "");
         let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
-        std::test::assert_eq_int(source_count(j, "review.settled", id), 0, "partial owner approval cannot become Review settlement");
-        std::test::assert_eq_int(source_count(j, "mutation.applied", id), 0, "partial owner approval cannot apply");
+        std::test::assert_eq_int(source_count(j, "review.settled", id), 0, "a partial approval cannot become Review settlement");
+        std::test::assert_eq_int(source_count(j, "mutation.applied", id), 0, "a partial approval cannot apply");
         let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
-        let last_vote = self.decide(fresh, r, "south-approval", "carol", "approve", "north=bob south=carol", true);
-        std::test::assert(std::json::find_bool_field(dna::review_command_decision(fresh, last_vote.command_id), "settled"), "fresh native Review restores prior owner approval");
+        let last_vote = self.decide(fresh, r, "south-approval", "carol", "approve", "position:org/collections=bob position:board=carol", true);
+        std::test::assert(std::json::find_bool_field(dna::review_command_decision(fresh, last_vote.command_id), "settled"), "a fresh native Review restores the prior position's approval");
         source_body(repo, fresh, "", "", ""); self.check_applied(repo, fresh, r, last_vote);
-        let late = self.decide(fresh, r, "late-command", "dave", "approve", "north=bob south=carol", true);
+        let late = self.decide(fresh, r, "late-command", "dave", "approve", "position:org/collections=bob position:board=carol", true);
         std::test::assert(!std::json::find_bool_field(dna::review_command_decision(fresh, late.command_id), "accepted"), "different post-settlement command receives its own refusal");
         source_body(repo, fresh, "", "", ""); std::test::assert_eq_int(source_count(fresh, "expression.restart_requested", id), 1, "refused late command cannot borrow approval and repeat handoff");
         let clean = dna::run_tool("rm\n-rf\n" + repo);

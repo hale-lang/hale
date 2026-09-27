@@ -23,7 +23,7 @@ locus OrganizationDeclarations { capacity { heap rows of OrganizationDeclaration
 locus Organization {
     params {
         artifact: String = "";
-        owners: String = "";
+        ownership: String = ""; // GH #1123: memory's `graph_ownership()` ("" = one owner)
         source_head: String = "";
         record_head: String = "";
         dependency_digest: String = "";
@@ -173,7 +173,7 @@ locus Organization {
     fn load() -> Bool {
         if self.loaded { return self.valid; }
         self.loaded = true;
-        if len(self.artifact) > 8388608 || len(self.owners) > 65536 { return self.refuse("organization input exceeds the read bound"); }
+        if len(self.artifact) > 8388608 || len(self.ownership) > 65536 { return self.refuse("organization input exceeds the read bound"); }
         if len(self.source_head) == 0 || len(self.record_head) == 0 { return self.refuse("organization needs pinned source and Record identities"); }
         let syntax = OrganizationJson { };
         if !syntax.valid(self.artifact) { return self.refuse("organization artifact is malformed JSON"); }
@@ -317,14 +317,15 @@ locus Organization {
         return b.result();
     }
     fn ownership_json() -> String {
-        // Reuse the domain's source-map parser and vocabulary. Static instance
-        // paths and these domain paths have no exported identity join today.
-        let map = dna::Ownership { text: self.owners, me_env: "" };
+        // The domain's view of the graph's ownership (GH #1123). Static
+        // instance paths and these domain paths have no exported identity
+        // join today. The host owner is the organization owning `org`.
+        let map = dna::Ownership { graph: self.ownership, me_env: "" };
         map.load();
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("mode", if map.shared() { "shared" } else { "single_owner" });
-        b.string_field("host_owner", map.host());
+        b.string_field("host_owner", if map.shared() { map.owner_of("org") } else { "" });
         b.string_field("instance_binding", "unavailable");
         b.begin_array_field("positions");
         let mut i = 0;

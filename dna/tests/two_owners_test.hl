@@ -1,7 +1,8 @@
 // dna/tests/two_owners_test.hl — two owners, two bodies, one record (GH #665, B2;
 // GH #1026).
 //
-// Over a shared record each owner's controller holds its own lease in
+// Over a shared record — organizations holding its positions in the
+// graph (GH #1123) — each owner's controller holds its own lease in
 // memory, so two bodies run side by side: acme's beside clone A, north's
 // beside clone B — both nodes of the one record, both active, no
 // coordinator: each projects the record, neither admits anything, and the
@@ -16,6 +17,7 @@
 // north's, handed by north's body, and closed by the assignee.
 
 import "../core" as dna;
+import "../operations" as ops;
 import "../core/pond/realtime/nats" as nats;
 
 // Whether `owner`'s organization comes to read the nerves through a
@@ -262,7 +264,18 @@ main locus App {
         let app = scratch + "/shared";
         self.configure(app, "alice", "acme", "ka");
         std::io::fs::write_file(app + "/dna/org/models.hl", CATALOG) or discard;
-        std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice, carol\nnorth: bob\nhost = acme\n") or discard;
+        // GH #1123: the owners are the graph's — organizations holding
+        // positions, members holding organizations — rows in the record
+        let seats = dna::GitJournal { repo: app };
+        let pairs = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:acme carol\norganization:north bob\n";
+        let mut rest = pairs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let sp = std::str::index_of(line, " ");
+            std::test::assert_eq_str(ops::graph_seat(seats, line[0..sp], line[(sp + 1)..len(line)]), "", "seated " + line);
+        }
         let checked = in_dir(app, toolchain() + "\ncheck\n--matrix\n.");
         std::test::assert_eq_int(checked.code, 0, "the shared organization checks: " + checked.stdout + checked.stderr);
         let a1 = in_dir(app, "git\nadd\n-A");

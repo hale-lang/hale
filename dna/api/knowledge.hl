@@ -26,11 +26,15 @@ type KnowledgeUpstream {
 interface KnowledgeProvider {
     fn supported() -> Bool;
     fn read(request: KnowledgeRequest) -> KnowledgeUpstream;
+    // GH #1123: the graph's ownership, memory's `graph_ownership()` ("" when
+    // there is no memory: one owner)
+    fn ownership() -> String;
 }
 locus NoKnowledge {
     params { }
     fn supported() -> Bool { return false; }
     fn read(request: KnowledgeRequest) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+    fn ownership() -> String { return ""; }
 }
 
 locus KnowledgeWire {

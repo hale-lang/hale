@@ -49,8 +49,9 @@ locus OrganizationFixture {
         std::test::assert(syntax.valid(large), "one MiB native topology-sized string validates");
         std::test::assert(std::time::monotonic_ns() - scan_start < 3000000000, "one MiB scan stays below generous three-second quadratic-regression bound");
         let artifact = self.compile(SOURCE);
-        let owners = "# declared owning parties\norg = acme\norg/support = partner\nacme: alice, carol\npartner: béa\nhost = acme\n";
-        let q = ops::Organization { artifact: artifact, owners: owners, source_head: "source-a", record_head: "record-a" };
+        // GH #1123: the graph's ownership, as memory answers it
+        let owners = dna::graph_ownership_of("position:org organization:acme\nposition:org/support organization:partner\norganization:acme alice\norganization:acme carol\norganization:partner béa\n");
+        let q = ops::Organization { artifact: artifact, ownership: owners, source_head: "source-a", record_head: "record-a" };
         std::test::assert(q.load(), "real native compiler artifact admitted: " + q.error());
         std::test::assert_eq_int(q.count(), 7, "one row per exact static instance");
         std::test::assert_eq_str(q.position_of("Org.support.reviewer").parent_id, "Org.support", "compiler parent edge retained");
@@ -97,7 +98,7 @@ locus OrganizationFixture {
         std::test::assert(deep.load() && deep.count() == 132, "deep containment resolves once and follows cached parent indices");
         std::test::assert_eq_str(deep.position_of("chain127").parent_id, "chain126", "deep static parent identity preserved");
         let map = q.ownership_json();
-        std::test::assert_eq_str(std::json::find_string_field(map, "mode"), "shared", "native source map supplies owning-party mode");
+        std::test::assert_eq_str(std::json::find_string_field(map, "mode"), "shared", "the graph's ownership supplies owning-party mode");
         std::test::assert_eq_str(std::json::find_string_field(map, "instance_binding"), "unavailable", "ownership paths have no invented instance join");
         std::test::assert(std::str::contains(map, "org/support") && std::str::contains(map, "béa") && !std::str::contains(map, "Org.support"), "raw declared ownership vocabulary preserved separately");
         let next = ops::Organization { artifact: artifact, source_head: "source-b", record_head: "record-a" };
@@ -127,7 +128,7 @@ locus OrganizationFixture {
         std::test::assert(!std::json::find_bool_field(no_group.basis_json(), "position_group_declared"), "missing position semantics explicit");
         std::test::assert_eq_str(no_group.position_of("Org.reviewer").role, "structure", "name does not imply position");
         std::test::assert(no_group.position_of("Org.metrics").in_position_outline, "fallback outline is declared structure");
-        std::test::assert_eq_str(std::json::find_string_field(no_group.ownership_json(), "mode"), "single_owner", "empty source map keeps native single-owner meaning");
+        std::test::assert_eq_str(std::json::find_string_field(no_group.ownership_json(), "mode"), "single_owner", "no organization holding anything keeps native single-owner meaning");
     }
     dissolve() {
         if std::str::starts_with(self.root, "/tmp/hale-organization-test.") { let cleaned = dna::run_tool("rm\n-rf\n--\n" + self.root); }

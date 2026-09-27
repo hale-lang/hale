@@ -293,17 +293,32 @@ fn route_law(bound: String, receipts: Receipts) -> String {
     return out;
 }
 
-// The holders of `position`, `,`-joined, from the routing query's holds.
+// The people who hold `position`, `,`-joined, from the routing query's
+// holds: a position an organization holds is held by that organization's
+// members (GH #1123), each once.
 @unbounded
 fn route_held_by(json: String, position: String) -> String {
     let r = Router { };
     r.holds = route_pairs(std::json::find_field_raw(json, "holds"));
-    let mut out = "";
+    let mut people = "";
     let mut rest = r.related(r.holds, position, false);
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
-        out = out + (if len(out) > 0 { "," } else { "" }) + rest[0..nl];
+        let holder = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
+        let each = if std::str::starts_with(holder, "organization:") { r.related(r.holds, holder, false) } else { holder + "\n" };
+        let mut m = each;
+        while len(m) > 0 {
+            let n2 = std::str::index_of(m, "\n");
+            if !route_has(people, m[0..n2]) { people = people + m[0..n2] + "\n"; }
+            m = m[(n2 + 1)..len(m)];
+        }
+    }
+    let mut out = "";
+    while len(people) > 0 {
+        let nl = std::str::index_of(people, "\n");
+        out = out + (if len(out) > 0 { "," } else { "" }) + people[0..nl];
+        people = people[(nl + 1)..len(people)];
     }
     return out;
 }

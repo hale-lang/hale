@@ -138,7 +138,7 @@ fn exercise(repo: String, mode: String) {
     std::test::assert(fresh.lookup(bob, "review").ok, "source lookup works with new writes disabled");
     let live = dna::GitJournal { repo: repo };
     let review = dna::Review { journal: live, organization_source_request: candidate.request, organization_source_facts: ops::StrictOrganizationSourceFacts { }, review_id: candidate.mutation_id, question: common.string(candidate.review_body, "question"), subject_digest: candidate.candidate_commit,
-        required_authority: common.string(candidate.review_body, "required_authority"), author: "alice", approvers: common.string(candidate.review_body, "approvers") };
+        required_authority: common.string(candidate.review_body, "required_authority"), author: "alice" };
     let accepted = review.command_decide(fact.verdict);
     std::test::assert(std::json::find_bool_field(accepted, "accepted") && std::json::find_bool_field(accepted, "settled"), "actual native exact decision accepted");
     let result = service.lookup(bob, "review");

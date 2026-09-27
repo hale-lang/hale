@@ -25,8 +25,11 @@ the read. No time or global cross-store ordering is inferred from a revision.
 digest/origin, compiler artifact and static coverage in `data.basis`. Its opaque
 snapshot binds those inputs and the Record head. Nodes use exact compiler
 instance paths; only an explicit `positions` declaration group marks a role as
-`position`. Ownership maps are returned separately without inventing an identity
-join or grants. Subscription capacity and supervision retry are decimal strings
+`position`. Ownership is returned separately without inventing an identity
+join or grants: it is read from memory's graph (an `organization` node holding a
+position owns it; a person holding an organization is its member, GH #1123), not
+from source, and `host_owner` is the organization owning `org`, empty with one
+owner. Subscription capacity and supervision retry are decimal strings
 or null, preserving values outside JavaScript's exact integer range.
 
 `/dna/definitions` reads an application-injected native `WorkflowCatalog`.
@@ -56,7 +59,8 @@ can be settled while its practice is still unratified. `settled` and
 for a recognized native Review decision, separately from practice activation.
 Review reads may additionally include native `is_mutation` (boolean) and
 `approvers` (string). The current API emits both; they remain optional in the
-schema so legacy read responses stay valid. Their absence disables the restricted
+schema so legacy read responses stay valid. `approvers` is always empty now that
+owner quorums are retired; a Review requires the positions its route names. Their absence disables the restricted
 Review decision action rather than assuming a non-mutation or empty quorum.
 `author` is the knowledge locus (often `org`); `requester` and `rationale`
 attribute the proposal to the person and stated reason. They do not identify
@@ -295,7 +299,7 @@ and retirement candidates using the existing row shape and canonical receipt
 validation. It does not add those candidates to the named Practice list. Generic
 Review pages use this exact source-bound document, not graph projection text.
 
-## Workflows and ownership drafts
+## Workflows
 
 The optional `reads.workflows` capability identifies the trusted-local recorded
 execution reader. `WorkflowsResponse` keeps list summaries separate from exact
@@ -306,13 +310,10 @@ association. It does not advertise live execution, Ledger read completeness or
 hosted visibility. A `task.born` fact without a wf1 admission/refusal is explicitly
 unclassified, because a birth alone cannot identify its execution engine.
 
-`OwnershipDraftRequest`/`OwnershipDraftResponse` describe optional preparation of
-the fixed `dna/org/owners` file. `ownership_drafts` advertises the bounded profile;
-GET returns `parsed_source`, POST returns `valid_draft`, and publication is always
-unavailable. The native adapter verifies exact bytes, digest, principal and source
-basis in addition to schema shape. Impact comes from the native ownership model,
-not a browser-generated policy or a live-work inventory. Hosting/mode changes,
-affected-owner review membership and before/after inherited owners remain explicit.
+There is no ownership draft: the `OwnershipDraft*` schemas and fixtures and the
+`ownership_drafts` capability are retired with the `dna/org/owners` file. Ownership
+and membership are `holds` edges of the graph, proposed with `hale dna fill` and
+ratified by the Board like any other hold.
 
 ### Immutable Organization source candidates
 
@@ -322,7 +323,7 @@ Source evidence requires the explicitly injected Organization authority's **reco
 
 The returned module before/after strings preserve exact UTF-8 and line endings (each at most 16 KiB natively). Verification includes a deliberately selected `semantic_diff` projection with classification, summary counts and declaration identity/change. It omits compiler locations and raw contract/effect/law payloads and diagnostics. `receipt_digest` identifies the original retained native JSON receipt; `digest` identifies the **different returned projection** document. Both retained native diff receipts are bounded to 128 KiB and verified by digest before projection. Unsupported/incomplete semantic evidence is unavailable rather than invented.
 
-Existing receipt restrictions apply to both source modules, base/candidate identities and diff receipts. Missing and withheld exact candidates share 404. Ordinary Review reads additionally emit `organization_source:true` plus source request/digest links when readable; denied or withheld source rows clear those links, author/owners, question and settlement prose. The final Record/candidate/receipt reference fence rejects movement with retryable `snapshot_changed`. The read reports no source application, restart or activation outcome.
+Existing receipt restrictions apply to the source module, base/candidate identities and diff receipts. Missing and withheld exact candidates share 404. Ordinary Review reads additionally emit `organization_source:true` plus source request/digest links when readable; denied or withheld source rows clear those links, author/owners, question and settlement prose. The final Record/candidate/receipt reference fence rejects movement with retryable `snapshot_changed`. The read reports no source application, restart or activation outcome.
 
 ### Organization policy
 

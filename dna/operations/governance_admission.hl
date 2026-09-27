@@ -151,7 +151,6 @@ locus GovernanceCommands {
         retirement_enabled: Bool = false;
         retirement_record: GovernanceBatchRecord = NoGovernanceBatchRecord { };
         organization_enabled: Bool = false;
-        organization_ownership_enabled: Bool = false;
         organization_reviews_enabled: Bool = false;
         organization_owner: String = "";
         organization_authority: GovernanceAuthority = NoGovernanceAuthority { };
@@ -163,7 +162,7 @@ locus GovernanceCommands {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
         let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
-        let source_enabled = if operation == "dna.organization.ownership.propose" { self.organization_ownership_enabled } else { self.organization_enabled };
+        let source_enabled = self.organization_enabled;
         let attempts = AttemptCommandCodec { };
         return codec.known(operation, version) || create.known(operation, version) || attempts.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
     }
@@ -196,7 +195,7 @@ locus GovernanceCommands {
         if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
         if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" || operation == "dna.attempt.renew" || operation == "dna.attempt.release" || operation == "dna.friction.file" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
-        if operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
+        if operation == "dna.organization.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
         if operation == "" && recovery && !self.grant_valid(grant) {
             let source = self.organization_authority.authorize(context, operation, true, j);
@@ -270,14 +269,14 @@ locus GovernanceCommands {
     }
     fn organization_capability(context: GovernanceContext, operation: String, version: String) -> GovernanceCapability {
         let codec = GovernanceCommandCodec { };
-        if !codec.context_valid(context) || version != "1" || (operation != "dna.organization.propose" && operation != "dna.organization.ownership.propose" && operation != "dna.review.verdict") { return GovernanceCapability { reason: "Unsupported source command context." }; }
+        if !codec.context_valid(context) || version != "1" || (operation != "dna.organization.propose" && operation != "dna.review.verdict") { return GovernanceCapability { reason: "Unsupported source command context." }; }
         let source = self.capture();
         if !source.ok || source.application_id != context.application_id { return GovernanceCapability { reason: "The Record is unavailable." }; }
         let journal = GovernanceJournal { snapshot: source };
         if !journal.valid || !self.source_supported(journal) { return GovernanceCapability { reason: "Source commands require complete Record authority." }; }
         let grant = self.organization_authority.authorize(context, operation, false, journal);
         if !self.unchanged(source) { return GovernanceCapability { reason: "The Record changed; refresh its capabilities." }; }
-        let enabled = if operation == "dna.organization.propose" { self.organization_enabled } else if operation == "dna.organization.ownership.propose" { self.organization_ownership_enabled } else { self.organization_reviews_enabled };
+        let enabled = if operation == "dna.organization.propose" { self.organization_enabled } else { self.organization_reviews_enabled };
         let allowed = self.grant_valid(grant);
         return GovernanceCapability { available: enabled, authorized: allowed,
             reason: if !enabled { "This source command profile is not enabled." } else if !allowed { "This principal has no explicit source command grant." } else { "" } };
@@ -498,7 +497,7 @@ locus GovernanceCommands {
                 let candidate = view.candidate(j, command.target_id, j.snapshot.text); let evidence = view.review(j, candidate, j.snapshot.text);
                 if !candidate.ok || candidate.candidate_commit != command.subject_digest || !evidence.ok || evidence.state != "pending" { return "stale_subject"; }
                 if context.principal_name == candidate.request.by { return "forbidden"; }
-                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, fields.string(candidate.review_body, "required_authority"), fields.string(candidate.review_body, "approvers"));
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, fields.string(candidate.review_body, "required_authority"));
                 if len(standing) > 0 { return standing; }
                 let mut n = 0;
                 while n < j.revision() {
@@ -523,7 +522,7 @@ locus GovernanceCommands {
                     i = i + 1;
                 }
                 if context.principal_name == edge.request.by { return "forbidden"; }
-                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority, "");
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority);
                 if len(standing) > 0 { return standing; }
                 return "";
             }
@@ -539,7 +538,7 @@ locus GovernanceCommands {
                     i = i + 1;
                 }
                 if context.principal_name == binding.request.by { return "forbidden"; }
-                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority, "");
+                let standing = verdict_standing(j, command.target_id, context.principal_name, grant.authority, row.required_authority);
                 if len(standing) > 0 { return standing; }
                 return "";
             }
@@ -566,7 +565,7 @@ locus GovernanceCommands {
             i = i + 1;
         }
         if context.principal_name == review.author { return "forbidden"; }
-        return verdict_standing(j, command.target_id, context.principal_name, grant.authority, review.required_authority, "");
+        return verdict_standing(j, command.target_id, context.principal_name, grant.authority, review.required_authority);
     }
     fn result(s: GovernanceSnapshot, j: GovernanceJournal, admission: GovernanceAdmission) -> GovernanceResult {
         if admission.command.operation == "dna.person.retire" {
@@ -594,7 +593,7 @@ locus GovernanceCommands {
             let task = TaskCommandCodec { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: task.project(admission) };
         }
-        if admission.command.operation == "dna.organization.propose" || admission.command.operation == "dna.organization.ownership.propose" {
+        if admission.command.operation == "dna.organization.propose" {
             let org = OrganizationProjection { };
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: org.project(j, admission, j.snapshot.text) };
         }
@@ -894,7 +893,7 @@ locus GovernanceCommands {
                 if appended.error != "stale" { uncertain = true; }
                 continue;
             }
-            if command.operation == "dna.organization.propose" || command.operation == "dna.organization.ownership.propose" {
+            if command.operation == "dna.organization.propose" {
                 if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
                 if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
                 let org = OrganizationCommandCodec { }; let admission = OrganizationAdmission { };
@@ -983,13 +982,13 @@ locus GovernanceCommands {
 // GH #1089: whether `principal` stands to give a typed verdict on
 // `review_id`, by the rule the Review itself applies (review.hl
 // `standing_refusal`), over the latest `review.routed` row: with signers, a
-// holder of a required position, a member of an affected owner, or — where
-// the route left a path to it — the grant's authority; with none, the
-// grant's authority, and membership for an owners change. "" when it
-// does, else `forbidden: <why>`, the refusal naming what the Review
-// requires as the Review's own does.
+// holder of a required position (a member of the organization holding it,
+// GH #1123), or — where the route left a path to it — the grant's
+// authority; with none, the grant's authority. "" when it does, else
+// `forbidden: <why>`, the refusal naming what the Review requires as the
+// Review's own does.
 @unbounded
-fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, authority: String, required: String, approvers: String) -> String {
+fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, authority: String, required: String) -> String {
     let mut routed = "";
     let mut i = 0;
     while i < j.revision() {
@@ -999,13 +998,11 @@ fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, 
     }
     let signers = dna::native_json_string(routed, "signers");
     let as_authority = dna::authority_satisfies(authority, required);
-    let as_owner = approvers != "" && dna::approver_owner(approvers, principal) != "";
     if len(signers) == 0 {
         if !as_authority { return "forbidden: authority " + authority + " does not satisfy " + required; }
-        if approvers != "" && !as_owner { return "forbidden: reviewer " + principal + " is a member of no owner this change affects (" + dna::approver_owners(approvers) + ")"; }
         return "";
     }
     let fallback = std::json::find_bool_field(routed, "fallback");
-    if len(dna::signer_positions(signers, principal)) > 0 || as_owner || (fallback && as_authority) { return ""; }
+    if len(dna::signer_positions(signers, principal)) > 0 || (fallback && as_authority) { return ""; }
     return "forbidden: reviewer " + principal + " holds no position this Review requires (" + dna::approver_owners(signers) + ")" + (if fallback { " and authority " + authority + " does not satisfy " + required } else { "" });
 }

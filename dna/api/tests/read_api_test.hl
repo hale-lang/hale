@@ -428,7 +428,6 @@ locus Cases {
             + "main locus Org { params { team: Team = Team { }; metrics: Metrics = Metrics { }; "
             + (if extra { "audit: Reviewer = Reviewer { }; " } else { "" }) + "} }\nfn main() { Org { }; }\n";
         std::io::fs::write_file(f.root + "/dna/org/main.hl", code) or raise;
-        std::io::fs::write_file(f.root + "/dna/org/owners", "org = acme\norg/team = north\nacme: alice\nnorth: bob\nhost = acme\n") or raise;
         f.git("add\n--\ndna/org"); f.git("commit\n-q\n-m\norganization fixture");
     }
     fn organization_reads() {

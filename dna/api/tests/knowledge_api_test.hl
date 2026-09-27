@@ -14,6 +14,7 @@ const NODE: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 locus KnowledgeHost {
     params { calls: Int = 0; reader: String = ""; request_body: String = ""; override_body: String = ""; status: Int = 200; }
     fn supported() -> Bool { return true; }
+    fn ownership() -> String { return ""; }
     fn read(request: api::KnowledgeRequest) -> api::KnowledgeUpstream {
         self.calls = self.calls + 1; self.reader = request.reader;
         let wire = api::KnowledgeWire { };

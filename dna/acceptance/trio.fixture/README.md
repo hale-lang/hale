@@ -95,3 +95,16 @@ kept as a run's receipt, with the change taken back out, and each new
 key was the one the miss named. No fresh model call was made; every
 answer, token and cost field is unchanged, and the growth edit's output
 differs from the recording by the `main.hl` change alone.
+
+GH #1123 retired the owners map: the graph is the one org chart, so the
+generated organization's `main.hl` lost its five-line `ownership:` field
+(the `Owners (GH #664)` comment and `dna::Ownership { path:
+"dna/org/owners" }`) and nothing else. Two entries carry that file in
+their context. The organization-growth edit (`6553a025bb96…`, was
+`ef1f161b80d5…`) is re-keyed, and its recorded output drops the same
+five lines and nothing else; the growth assessment (`0d1b72eedeb6…`, was
+`65a0575ac8aa…`) is re-keyed for the changed context alone. Each old
+context digest was reproduced from the new context, kept as a run's
+receipt, with the five lines put back, and each new key was the one the
+miss named. No fresh model call was made; every answer, token and cost
+field is unchanged.

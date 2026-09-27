@@ -1179,7 +1179,6 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
     created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&project))?;
     created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
-    created(&mut out, &org_dir.join("owners"), owners_text())?;
     // GH #583 M1: the catalog, from what this machine has
     let found = discover();
     if created(&mut out, &org_dir.join("models.hl"), &models_hl(&found))? {
@@ -1399,11 +1398,31 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&charter, charter_hl(&project)).map_err(|e| format!("write {}: {e}", charter.display()))?;
         out.push(format!("created {}", charter.display()));
     }
-    // GH #664: an organization from before the owners map gets one, empty
+    // GH #1123: the owners map is retired — the graph is the one org chart.
+    // The file goes; what it named is said, to be stated as `holds` edges.
     let owners = org_dir.join("owners");
-    if org_dir.join("main.hl").is_file() && !owners.is_file() {
-        fs::write(&owners, owners_text()).map_err(|e| format!("write {}: {e}", owners.display()))?;
-        out.push(format!("created {}", owners.display()));
+    if owners.is_file() {
+        let text = fs::read_to_string(&owners).unwrap_or_default();
+        fs::remove_file(&owners).map_err(|e| format!("remove {}: {e}", owners.display()))?;
+        out.push(format!("removed {}", owners.display()));
+        let named: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+        if !named.is_empty() {
+            out.push(format!(
+                "note    {} named owners, which the graph states now (GH #1123): an `organization` node per owner, `holds(position:<p>, organization:<o>)` per position, `holds(organization:<o>, <person>)` per member — `hale dna fill`. It said:\n        {}",
+                owners.display(),
+                named.join("\n        ")
+            ));
+        }
+    }
+    // the generated main.hl's owners map line goes with it
+    let main_path = org_dir.join("main.hl");
+    if let Ok(main_text) = fs::read_to_string(&main_path) {
+        if main_text.contains(OWNERS_MAIN_HL) {
+            fs::write(&main_path, main_text.replace(OWNERS_MAIN_HL, "")).map_err(|e| format!("write {}: {e}", main_path.display()))?;
+            out.push(format!("rewrote {} (the owners map's `ownership:` field, retired)", main_path.display()));
+        } else if main_text.contains("dna::Ownership {") && main_text.contains("dna/org/owners") {
+            out.push(format!("note    {}: `dna::Ownership {{ path: \"dna/org/owners\" }}` no longer builds; delete the field — ownership is the graph's (GH #1123)", main_path.display()));
+        }
     }
     // GH #986: the nerves — a NATS server beside memory's Postgres, with
     // one user per family of subjects. The config is new and created; the
@@ -1445,12 +1464,6 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if main_text.contains("self.core.tick(") {
         out.push(format!(
             "note    {}/main.hl calls self.core.tick directly; use self.core.request_tick with the same millisecond clock in the live loop so journal refresh and incoming work run on the owner's queue",
-            ORG_SEED
-        ));
-    }
-    if main_text.contains("main locus Org") && !main_text.contains("ownership: dna::Ownership") {
-        out.push(format!(
-            "note    {}/main.hl names no owners map; a shared record needs one (GH #664): `ownership: dna::Ownership {{ path: \"dna/org/owners\" }}`",
             ORG_SEED
         ));
     }
@@ -2312,11 +2325,6 @@ main locus Org {{
             }},
             // The organization's spend: one policy (models.hl), one owner.
             budget: dna::Budget {{ policy: org_budget() }},
-            // Owners (GH #664): who admits which position. The map is the
-            // genome's file dna/org/owners — empty while this organization
-            // is the only owner; once the record is shared, every position
-            // names its owner and this body says which it is (dna.owner).
-            ownership: dna::Ownership {{ path: "dna/org/owners" }},
             // The Leader's grant, owned by the Board: what the organization
             // may decide on its own terms. An `application` change is outside
             // this grant and escalates to the Board; widen it here, in a
@@ -2772,24 +2780,18 @@ fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usiz
 // GH #596: the leader's charter, and the toolchain's design
 // ---------------------------------------------------------------
 
+/// The generated `main.hl`'s owners map field before GH #1123, which
+/// `upgrade` takes out.
+const OWNERS_MAIN_HL: &str = "            // Owners (GH #664): who admits which position. The map is the
+            // genome's file dna/org/owners — empty while this organization
+            // is the only owner; once the record is shared, every position
+            // names its owner and this body says which it is (dna.owner).
+            ownership: dna::Ownership { path: \"dna/org/owners\" },
+";
+
 /// `dna/org/charter.hl`: what the leader reads before it thinks. A
 /// function returning text, like `purpose`, so a change to the brief
 /// is a mutation of the org program the Board reviews.
-/// `dna/org/owners`: who admits which position (GH #664). Empty is one
-/// owner, the organization itself.
-fn owners_text() -> &'static str {
-    "# dna/org/owners — who admits which position (GH #664).\n\
-# Empty: this organization is the only owner, and every position is its own.\n\
-# A shared record names every position's owner and each owner's members:\n\
-#   org = acme\n\
-#   org/collections = north\n\
-#   acme: alice, carol\n\
-#   north: bob\n\
-# A position not named takes its nearest named ancestor's owner. The body\n\
-# says which owner it is: `git config dna.owner <owner>`. Changing this\n\
-# file is a change to the organization, approved by every owner it affects.\n"
-}
-
 fn charter_hl(project: &str) -> String {
     let text = format!(
         "You are the architect of {project}'s organization: you propose, the Board decides. \

@@ -1898,22 +1898,25 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
         eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no memory is named here (", dna::SPINE_DSN_ENV, "); a body without its memory admits nothing — set it, or run under `hale dna dev`");
         std::process::exit(2);
     }
-    // GH #664: a body over a shared record says which owner it is, and it
-    // must be one the map names — a body that names none admits nothing
-    if (verb == "run" || verb == "dev") && shared_here(root) {
+    // GH #664, #1123: a body over a shared record says which organization
+    // it is, and it must be one the record states — a body that names none
+    // admits nothing. Read from the record, the membership's source, so
+    // it holds before memory answers or with none named.
+    if verb == "run" || verb == "dev" {
         let me = owner_here(root);
-        if len(me) == 0 {
-            eprintln("hale dna ", verb, ": this record's positions have owners (", OWNERS_FILE, ": ", owners_here(root), "); say which this body is — `git config dna.owner <owner>` — or it admits nothing");
+        let owners = organizations_in_record(root);
+        if len(me) == 0 && len(owners) > 0 {
+            eprintln("hale dna ", verb, ": organizations hold this record's positions (", owners, "); say which this body is — `git config dna.owner <organization>` — or it admits nothing");
             std::process::exit(2);
         }
-        if !dna::word_in(me, owners_here(root)) {
-            eprintln("hale dna ", verb, ": dna.owner is `", me, "`, which ", OWNERS_FILE, " does not name (owners: ", owners_here(root), ")");
+        if len(me) > 0 && len(owners) > 0 && !dna::word_in(me, owners) {
+            eprintln("hale dna ", verb, ": dna.owner is `", me, "`, which no organization in the record is (organizations: ", owners, ")");
             std::process::exit(2);
         }
         // GH #665: the owners' controllers coordinate through the ledger —
         // a lease per owner in the store, an epoch on every write
-        if verb == "run" && routing_here(root) == 0 {
-            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`)");
+        if len(me) > 0 && verb == "run" && routing_here(root) == 0 {
+            eprintln("hale dna run: this record is shared (this body is `", me, "`), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`)");
             std::process::exit(2);
         }
     }

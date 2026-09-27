@@ -41,27 +41,71 @@ fn record_remote(repo: String) -> String {
 // git's own keyring or allowed-signers file is the list of who may act).
 fn trust_mode(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.trust(); }
 
-// GH #664: the owner this clone's body is (`git config dna.owner`), "" when unnamed.
+// GH #664: the organization this clone's body is (`git config dna.owner`,
+// the name of its `organization` node, GH #1123), "" when unnamed.
 fn owner_here(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.owner(); }
-const OWNERS_FILE: String = "dna/org/owners";
-// Whether the genome's owners map names any position (the record is shared).
+// Whether this body is one of a shared record's: it names its organization.
 fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.shared(); }
+// GH #1123: the graph's ownership, read from memory as the head reads it
+// (the spine's DSN where no head's is named); "" when no memory is named or
+// it does not answer — one owner, or, for a body that names its
+// organization, nothing it may admit.
+@unbounded
+fn ownership_graph_here(root: String) -> String {
+    let env = if dna::dsn_set(dna::HEAD_DSN_ENV) { dna::HEAD_DSN_ENV } else if dna::dsn_set(dna::SPINE_DSN_ENV) { dna::SPINE_DSN_ENV } else { "" };
+    if len(env) == 0 { return ""; }
+    let store = dna::Pq { dsn_env: env };
+    store.scope(dna::record_scope(root));
+    if !store.reopen() { return ""; }
+    let graph = store.graph_ownership();
+    store.close();
+    return graph;
+}
+// GH #1123: the organizations the record states — `graph.node` rows of
+// kind `organization`, less the retired — read from the record itself,
+// the membership's source, so a shared record is known as one with no
+// memory at all.
+@unbounded
+fn organizations_in_record(root: String) -> String {
+    let j = dna::GitJournal { repo: root };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if std::str::starts_with(e.entity, "organization:") && !std::str::contains(e.entity, "|") {
+            let name = e.entity[13..len(e.entity)];
+            if e.kind == "graph.node" { out = dna::word_add(out, name); }
+            if e.kind == "graph.retired" {
+                let mut kept = "";
+                let mut k = 0;
+                while len(dna::nth_word(out, k)) > 0 {
+                    if dna::nth_word(out, k) != name { kept = dna::word_add(kept, dna::nth_word(out, k)); }
+                    k = k + 1;
+                }
+                out = kept;
+            }
+        }
+        i = i + 1;
+    }
+    return out;
+}
+// Every organization the graph names, as memory projects it.
 fn owners_here(root: String) -> String {
-    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    let o = dna::Ownership { graph: ownership_graph_here(root), me: owner_here(root), me_env: "" };
     return o.owners();
 }
 // Whether a body here admits an intent for `to` — always with one owner,
-// only for this owner's positions over a shared record.
+// only for this organization's positions over a shared record.
 fn admits_here(root: String, to: String) -> Bool {
-    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    let o = dna::Ownership { graph: ownership_graph_here(root), me: owner_here(root), me_env: "" };
     return o.admits(to);
 }
 fn owner_of_person_here(root: String, who: String) -> String {
-    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    let o = dna::Ownership { graph: ownership_graph_here(root), me: owner_here(root), me_env: "" };
     return o.owner_of_person(who);
 }
 fn ownership_note(root: String, to: String) -> String {
-    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    let o = dna::Ownership { graph: ownership_graph_here(root), me: owner_here(root), me_env: "" };
     return o.why_not(to);
 }
 

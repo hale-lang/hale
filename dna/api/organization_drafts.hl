@@ -25,7 +25,7 @@ locus OrganizationDraftWire {
         return w.fields(raw, "source_head dependency_digest dependency_source module_digest record_head", 5) && w.text(raw, "source_head") == artifact.source_head && w.text(raw, "dependency_digest") == artifact.dependency_digest && w.text(raw, "dependency_source") == artifact.dependency_source && w.text(raw, "module_digest") == artifact.module_digest && w.text(raw, "record_head") == source.head;
     }
     fn project(artifact: orgsource::OrganizationArtifact, source: Source) -> String {
-        let q = ops::Organization { artifact: artifact.artifact, owners: artifact.owners, source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
+        let q = ops::Organization { artifact: artifact.artifact, source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
         if !q.load() || q.count() > 256 { return ""; }
         let b = std::json::Builder { };
         b.begin_object(); b.begin_array_field("items");

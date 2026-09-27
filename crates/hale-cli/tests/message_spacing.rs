@@ -39,11 +39,6 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-cli/src/dna.rs",
-        "owners_text",
-        "the generated `dna/org/owners` file's own comment header",
-    ),
-    (
-        "crates/hale-cli/src/dna.rs",
         "report",
         "the `found   <path>` outcome column",
     ),

@@ -92,8 +92,11 @@ locus TaskWriterAdmissionProof {
             println("PASS Task writer exact admission: ", mode); return;
         }
         if mode == "accept-retired-recipient" {
-            std::io::fs::mkdir(root + "/dna") or discard; std::io::fs::mkdir(root + "/dna/org") or discard;
-            std::io::fs::write_file(root + "/dna/org/owners", "host = receiving\norg = receiving\nreceiving: operator\n") or discard;
+            // GH #1123: operator's membership of `receiving` is the graph's,
+            // read from memory as the head; without a head's DSN over a
+            // record where organization:receiving holds operator the case
+            // is not exercised
+            if !dna::dsn_set(dna::HEAD_DSN_ENV) { eprintln("accept-retired-recipient: not exercised (needs ", dna::HEAD_DSN_ENV, " over a record where organization:receiving holds operator)"); return; }
             self.append(j, "task.transfer_requested", id, "{\"owner\":\"sending\",\"to\":\"receiving\",\"assignee\":\"bob\"}");
             let race = RacingTaskAdmission { root: root, kind: "person.retired", entity: "bob", body: "{\"by\":\"concurrent\",\"to\":\"\",\"transferred\":0}" };
             let result = host::task_accept_admit(root, ".", id, "operator", "accept", race, dna::Memory { repo: root });

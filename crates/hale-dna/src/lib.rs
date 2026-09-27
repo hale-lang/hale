@@ -203,7 +203,6 @@ pub const ORGANIZATION_FILES: &[EmbeddedFile] = at![
     "dna/organization_runtime/process.hl",
     "dna/organization_source/organization_dependencies.hl",
     "dna/organization_source/organization_source.hl",
-    "dna/organization_source/ownership_syntax.hl",
     "dna/organization_source/publication_guard.hl",
 ];
 

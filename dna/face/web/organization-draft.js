@@ -24,77 +24,6 @@
   function capable(c) {
     return closed(c, ["profile", "supported", "validation", "publication", "module", "max_request_bytes", "max_source_bytes", "max_instances"]) && c.profile === PROFILE && c.supported === true && c.validation === true && c.publication === false && c.module === "dna/org/main.hl" && c.max_request_bytes === "32768" && c.max_source_bytes === "16384" && c.max_instances === "256";
   }
-  function ownershipCapable(c) {
-    return closed(c, ["profile", "supported", "validation", "publication", "module", "max_request_bytes", "max_source_bytes", "max_entries"]) && c.profile === "dna.organization.ownership.draft.v1" && c.supported === true && c.validation === true && c.publication === false && c.module === "dna/org/owners" && c.max_request_bytes === "32768" && c.max_source_bytes === "16384" && c.max_entries === "256";
-  }
-  function ownershipValid(data) {
-    const o = data.ownership, p = data.impact, string = x => typeof x === "string", strings = x => Array.isArray(x) && x.every(string);
-    return closed(o, ["mode", "host_owner", "instance_binding", "positions", "memberships"]) && ["single_owner", "shared"].includes(o.mode) && string(o.host_owner) && o.instance_binding === "unavailable" &&
-      Array.isArray(o.positions) && o.positions.length <= 256 && o.positions.every(row => closed(row, ["position", "owner"]) && string(row.position) && string(row.owner)) &&
-      Array.isArray(o.memberships) && o.memberships.length <= 256 && o.memberships.every(row => closed(row, ["owner", "members"]) && string(row.owner) && strings(row.members)) &&
-      closed(p, ["host_changed", "mode_changed", "live_obligations", "affected_owners", "scopes"]) && typeof p.host_changed === "boolean" && typeof p.mode_changed === "boolean" && p.live_obligations === "unavailable" &&
-      Array.isArray(p.affected_owners) && p.affected_owners.length <= 512 && p.affected_owners.every(row => closed(row, ["owner", "members"]) && string(row.owner) && strings(row.members)) &&
-      Array.isArray(p.scopes) && p.scopes.length <= 512 && p.scopes.every(row => closed(row, ["position", "before_owner", "after_owner"]) && string(row.position) && string(row.before_owner) && string(row.after_owner));
-  }
-  function ownershipForm(source, data, selectedId, onSelect, onApply) {
-    const panel = el("section", "org-structure-form"); panel.setAttribute("role", "region"); panel.setAttribute("aria-label", "Ownership map editor");
-    const error = el("p", "org-form-error"); error.setAttribute("role", "alert"); panel.append(error);
-    const entries = []; let start = 0;
-    for (const line of source.match(/[^\n]*\n|[^\n]+$/g) || []) {
-      const text = line.trim(), eq = text.indexOf("="), colon = text.indexOf(":");
-      if (text && !text.startsWith("#")) {
-        const assignment = eq >= 0 && (colon < 0 || eq < colon), at = assignment ? eq : colon;
-        entries.push({ start, end: start + line.length, name: text.slice(0, at).trim(), value: text.slice(at + 1).trim(), kind: assignment ? text.slice(0, at).trim() === "host" ? "host" : "assignment" : "membership", ending: line.endsWith("\r\n") ? "\r\n" : line.endsWith("\n") ? "\n" : "" });
-      }
-      start += line.length;
-    }
-    const safe = (value, empty = false) => (empty && !value) || (bytes(value) <= 1024 && value.length > 0 && !/[\s\u0000-\u001f\u007f#,:=]/.test(value));
-    const normalized = value => value.replace(/\/+$/, "") || "/";
-    const field = (label, input) => { input.setAttribute("aria-label", label); return append(el("label", "org-structured-field"), el("span", "", label), input); };
-    function change(entry, text) {
-      error.textContent = "";
-      const candidate = entry ? source.slice(0, entry.start) + text + (text ? entry.ending : "") + source.slice(entry.end) : source + (source && !source.endsWith("\n") ? "\n" : "") + text + "\n";
-      onApply(candidate, "");
-    }
-    for (const kind of ["assignment", "membership"]) {
-      const assignments = kind === "assignment", group = append(el("fieldset"), el("legend", "", assignments ? "Scope assignment" : "Owner membership"));
-      const select = el("select"), fresh = el("option", "", assignments ? "New scope" : "New membership"); fresh.value = ""; select.append(fresh);
-      const rows = entries.filter(row => row.kind === kind);
-      rows.forEach((row, index) => { const option = el("option", "", row.name); option.value = String(index); select.append(option); });
-      const name = el("input"), value = el("input"); name.autocomplete = value.autocomplete = "off";
-      const remove = button(assignments ? "Validate assignment removal" : "Validate membership removal", () => { if (select.value !== "") change(rows[Number(select.value)], ""); }); remove.disabled = true;
-      select.addEventListener("change", () => { const row = select.value === "" ? null : rows[Number(select.value)]; name.value = row?.name || ""; value.value = row?.value || ""; remove.disabled = !row; error.textContent = ""; });
-      group.append(field(assignments ? "Assignment to edit" : "Membership to edit", select), field(assignments ? "Scope path" : "Owner name", name), field(assignments ? "Assigned owner" : "Members", value));
-      group.append(el("p", "detail-note", assignments ? "A scope inherits its nearest declared ancestor's owner. An empty owner leaves that scope unowned. Removing an assignment restores inheritance; it does not retire work." : "Members are names separated by commas or spaces. The native preview identifies affected owners and their review members; this does not grant your current session authority."));
-      group.append(button(assignments ? "Validate assignment" : "Validate membership", () => {
-        const entry = select.value === "" ? null : rows[Number(select.value)];
-        const key = name.value.trim(), val = value.value.trim();
-        if (!safe(key) || (assignments && key === "host") || rows.some(row => row !== entry && (assignments ? normalized(row.name) === normalized(key) : row.name === key))) { error.textContent = "Use a unique scope or owner name without separators or whitespace."; return; }
-        if (assignments ? !safe(val, true) : !val.split(/[ ,\t]+/).filter(Boolean).every(word => safe(word))) { error.textContent = "Use individual names without assignment separators or newlines."; return; }
-        change(entry, key + (assignments ? " = " : ": ") + val);
-      }, "button primary"), remove); panel.append(group);
-    }
-    const host = entries.find(row => row.kind === "host"), hosting = append(el("fieldset"), el("legend", "", "Hosting party")), input = el("input"); input.value = data.ownership.host_owner;
-    hosting.append(field("Host owner", input), el("p", "detail-note", "Changing who hosts the shared Ledger affects every declared owner's trust decision."), button("Validate hosting party", () => {
-      if (!safe(input.value.trim(), true)) { error.textContent = "Use one hosting-party name without separators or whitespace."; return; }
-      change(host, "host = " + input.value.trim());
-    }, "button primary")); panel.append(hosting);
-    return panel;
-  }
-  function ownershipImpact(data) {
-    const panel = append(el("section"), el("h3", "", "Ownership change review"));
-    panel.append(el("p", "", "Candidate mode · " + (data.ownership.mode === "shared" ? "Shared ownership" : "Single owner") + " · Host · " + (data.ownership.host_owner || "Not declared")));
-    if (data.impact.mode_changed) panel.append(el("p", "org-form-error", "Ownership mode changes. With no position assignments, DNA uses single-owner admission."));
-    if (data.impact.host_changed) panel.append(el("p", "detail-note", "The hosting party changes; every affected owner appears in the review list."));
-    const scopes = append(el("table", "declaration-table"), append(el("thead"), append(el("tr"), el("th", "", "Declared scope"), el("th", "", "Current owner"), el("th", "", "Candidate owner")))), body = el("tbody");
-    for (const row of data.impact.scopes) body.append(append(el("tr"), el("td", "mono", row.position), el("td", "", row.before_owner || "Unowned"), el("td", "", row.after_owner || "Unowned")));
-    scopes.append(body); panel.append(scopes, el("p", "detail-note", "Scope rows cover names declared in either map, including inherited owners after removal. Single-owner mode is shown separately; this is not a complete inventory of active work."), el("h4", "", "Affected owner reviews"));
-    const reviews = el("ul");
-    for (const row of data.impact.affected_owners) reviews.append(el("li", "", row.owner + " · " + (row.members.length ? row.members.join(", ") : "No review members declared")));
-    if (!reviews.childElementCount) reviews.append(el("li", "", "No owner holdings, membership or hosting changes."));
-    panel.append(reviews, el("p", "detail-note", "This is the native source model's review preview. Live obligations, active assignments and permission grants are unavailable here. Publication and activation require the governed source-change service."));
-    return panel;
-  }
   // Locate editable source spans without reprinting handwritten Hale. The native
   // compiler remains the authority for syntax, contracts and the resulting chart.
   function sourceModel(source) {
@@ -348,22 +277,22 @@
     return panel;
   }
 
-  function mount(host, { applicationId, principal, basis, recordHead, capability, validateProjection, onInvalidate, selectedId = "", ownership = false, publicationAccess = () => ({ allowed: false, reason: "Organization publishing is unavailable on this connection." }), onPropose = null }) {
-    const profile = ownership ? "dna.organization.ownership.draft.v1" : PROFILE;
-    const enabled = ownership ? ownershipCapable(capability) : capable(capability);
+  function mount(host, { applicationId, principal, basis, recordHead, capability, validateProjection, onInvalidate, selectedId = "", publicationAccess = () => ({ allowed: false, reason: "Organization publishing is unavailable on this connection." }), onPropose = null }) {
+    const profile = PROFILE;
+    const enabled = capable(capability);
     let original = null, result = null, pending = false, disposed = false, version = 0, controller = null, source = "";
     let checked = null, selected = selectedId, mode = "source";
     const urls = new Set();
-    const root = el("section", "panel org-draft"); root.setAttribute("aria-label", ownership ? "Ownership editing" : "Organization editing"); root.setAttribute("role", "region");
-    const heading = append(el("header", "panel-heading"), append(el("div"), el("span", "eyebrow", "Organization administration"), el("h2", "", ownership ? "Prepare an ownership change" : "Prepare a source change")));
-    const open = button(ownership ? "Edit ownership source" : "Edit organization source", () => load("source"));
-    const guided = button(ownership ? "Edit ownership" : "Edit organization", () => load("structured"), "button primary");
-    const status = el("p", "org-draft-status", enabled ? ownership ? "Edit scopes, owner membership and hosting; review the native impact before exporting source." : "Edit the declared structure and inspect the checked change before exporting or proposing it." : "Source editing is unavailable on this connection.");
+    const root = el("section", "panel org-draft"); root.setAttribute("aria-label", "Organization editing"); root.setAttribute("role", "region");
+    const heading = append(el("header", "panel-heading"), append(el("div"), el("span", "eyebrow", "Organization administration"), el("h2", "", "Prepare a source change")));
+    const open = button("Edit organization source", () => load("source"));
+    const guided = button("Edit organization", () => load("structured"), "button primary");
+    const status = el("p", "org-draft-status", enabled ? "Edit the declared structure and inspect the checked change before exporting or proposing it." : "Source editing is unavailable on this connection.");
     status.setAttribute("role", "status"); status.tabIndex = -1;
     const content = el("div", "org-draft-content");
     heading.append(guided, open); guided.disabled = open.disabled = !enabled;
     root.append(heading, status, content); host.replaceChildren(root);
-    const endpoint = "/api/hale/v1/applications/" + encodeURIComponent(applicationId) + (ownership ? "/dna/organization/ownership/draft" : "/dna/organization/draft");
+    const endpoint = "/api/hale/v1/applications/" + encodeURIComponent(applicationId) + "/dna/organization/draft";
     const fail = (message, status = 0) => Object.assign(new Error(message), { status });
     function revoke() { for (const url of urls) URL.revokeObjectURL(url); urls.clear(); }
     function clear() { result = null; revoke(); }
@@ -383,17 +312,13 @@
         if (!response.ok) throw fail(value.error?.message || "The source request failed.", response.status);
         if (value.api_version !== "hale.v1" || value.source?.record_id !== applicationId || value.source?.record_head !== recordHead) throw fail("The application's Record changed. Reload before editing.", 409);
         const data = value.data;
-        if (!closed(data, ["profile", "principal", "base", "module", ...(ownership ? ["ownership", "impact"] : ["projection"]), "validation", "publication"]) || data.profile !== profile || !same(data.principal, principal, ["mode", "name"])) throw fail("The signed-in identity or source response changed.", 409);
+        if (!closed(data, ["profile", "principal", "base", "module", "projection", "validation", "publication"]) || data.profile !== profile || !same(data.principal, principal, ["mode", "name"])) throw fail("The signed-in identity or source response changed.", 409);
         if (!closed(data.base, BASE) || !BASE.every(key => typeof data.base[key] === "string" && data.base[key]) || data.base.record_head !== recordHead || ["source_head", "dependency_digest", "dependency_source"].some(key => data.base[key] !== basis[key])) throw fail("The source or dependencies changed. Reload before editing.", 409);
         if (!closed(data.module, ["path", "text", "digest"]) || data.module.path !== capability.module || typeof data.module.text !== "string" || bytes(data.module.text) > 16384 || data.module.text.includes("\u0000") || data.module.digest !== await digest(data.module.text) || data.publication !== "unavailable") throw fail("The source module or its digest could not be verified.");
-        if (ownership) {
-          if (!ownershipValid(data)) throw fail("The native ownership preview is invalid.");
-        } else {
         if (!data.projection || !Array.isArray(data.projection.items) || data.projection.items.length > 256) throw fail("The checked chart is unavailable.");
         validateProjection(data.projection);
         if (["source_head", "dependency_digest", "dependency_source"].some(key => data.projection.basis[key] !== data.base[key])) throw fail("The checked chart has a different source basis.");
-        }
-        if (!body && (data.validation !== (ownership ? "parsed_source" : "checked_source") || data.base.module_digest !== data.module.digest)) throw fail("The service did not return the checked committed module.");
+        if (!body && (data.validation !== "checked_source" || data.base.module_digest !== data.module.digest)) throw fail("The service did not return the checked committed module.");
         if (body && (data.validation !== "valid_draft" || !same(data.base, original.base, BASE) || data.module.text !== source)) throw fail("The validation does not match this exact source draft.");
         return data;
       } catch (error) {
@@ -408,7 +333,7 @@
       try {
         const data = await request(); if (disposed || token !== version) return;
         original = checked = data; source = data.module.text; clear(); renderEditor();
-        status.textContent = !ownership && publicationAccess().allowed ? "Draft in this browser · validate the exact change before preparing a proposal." : "Draft in this browser · validation and export available · publication unavailable.";
+        status.textContent = publicationAccess().allowed ? "Draft in this browser · validate the exact change before preparing a proposal." : "Draft in this browser · validation and export available · publication unavailable.";
         content.querySelector(mode === "structured" ? "select" : ".org-source-editor")?.focus();
       } catch (error) { if (!disposed && token === version) { if ([401, 403, 409].includes(error.status)) invalidate(error); else status.textContent = error.message; } }
       finally { pending = false; if (!disposed) guided.disabled = open.disabled = !enabled; }
@@ -421,24 +346,24 @@
     function renderEditor() {
       guided.hidden = open.hidden = true;
       const toolbar = el("div", "org-draft-tools");
-      const check = button(ownership ? "Validate ownership map" : "Validate organization", () => validate(), "button primary");
+      const check = button("Validate organization", () => validate(), "button primary");
       const reset = button("Discard draft", () => { version++; controller?.abort(); pending = false; source = original.module.text; checked = original; clear(); mode = "source"; renderEditor(); status.textContent = "Draft reset to the captured source."; content.querySelector("textarea").focus(); });
       toolbar.append(el("span", "mono", original.module.path), check, reset);
       const layout = el("div", "org-draft-layout");
-      const editor = el("textarea", "org-source-editor"); editor.value = source; editor.spellcheck = false; editor.setAttribute("aria-label", ownership ? "Ownership source" : "Organization Hale source");
-      const sourcePane = append(el("details", "org-source-pane"), el("summary", "", ownership ? "Ownership source" : "Hale source"), el("p", "detail-note", "The complete module is preserved, including comments and handwritten code."), editor);
+      const editor = el("textarea", "org-source-editor"); editor.value = source; editor.spellcheck = false; editor.setAttribute("aria-label", "Organization Hale source");
+      const sourcePane = append(el("details", "org-source-pane"), el("summary", "", "Hale source"), el("p", "detail-note", "The complete module is preserved, including comments and handwritten code."), editor);
       sourcePane.open = mode === "source";
-      const formPanel = append(el("details", "org-structured-panel"), el("summary", "", ownership ? "Edit ownership declarations" : "Edit declared structure"));
+      const formPanel = append(el("details", "org-structured-panel"), el("summary", "", "Edit declared structure"));
       formPanel.open = mode === "structured";
       const formHost = el("div"); formPanel.append(formHost);
       const review = el("section", "org-change-review"); review.setAttribute("aria-label", "Proposed source changes");
-      const evidence = el("section", "org-draft-evidence"); evidence.setAttribute("aria-label", ownership ? "Ownership validation" : "Organization validation"); evidence.setAttribute("role", "region");
+      const evidence = el("section", "org-draft-evidence"); evidence.setAttribute("aria-label", "Organization validation"); evidence.setAttribute("role", "region");
       layout.append(sourcePane, review); content.replaceChildren(toolbar, formPanel, layout, evidence);
       function renderForm() {
         if (!checked || checked.module.text !== source) {
-          formHost.replaceChildren(el("p", "detail-note", ownership ? "Validate the current source to refresh ownership forms." : "Validate the current source to refresh the structured editor. Previous instance bindings are no longer used.")); return;
+          formHost.replaceChildren(el("p", "detail-note", "Validate the current source to refresh the structured editor. Previous instance bindings are no longer used.")); return;
         }
-        formHost.replaceChildren((ownership ? ownershipForm : structureForm)(source, checked, selected, id => { selected = id; renderForm(); formHost.querySelector("select")?.focus(); }, (candidate, nextSelection) => {
+        formHost.replaceChildren(structureForm(source, checked, selected, id => { selected = id; renderForm(); formHost.querySelector("select")?.focus(); }, (candidate, nextSelection) => {
           selected = nextSelection; mode = "structured"; editor.value = candidate; update(candidate); void validate();
         }));
       }
@@ -455,12 +380,10 @@
       editor.addEventListener("input", update); update(source);
       async function validate() {
         if (pending || check.disabled) return;
-        const token = ++version; clear(); pending = true; check.disabled = true; evidence.replaceChildren(); status.textContent = ownership ? "Checking ownership with the native DNA model…" : "Checking the captured organization with Hale…";
+        const token = ++version; clear(); pending = true; check.disabled = true; evidence.replaceChildren(); status.textContent = "Checking the captured organization with Hale…";
         try {
           const data = await request(body()); if (disposed || token !== version) return;
-          result = checked = data; renderForm(); status.textContent = ownership ? "Native ownership validation passed. Review the candidate impact below." : "Native organization validation passed. The running application is unchanged.";
-          if (ownership) evidence.append(ownershipImpact(data));
-          else {
+          result = checked = data; renderForm(); status.textContent = "Native organization validation passed. The running application is unchanged.";
           const counts = impact(original.projection.items, data.projection.items);
           evidence.append(el("h3", "", "Checked chart changes"), el("p", "", counts.added.length + " added · " + counts.removed.length + " removed · " + counts.changed.length + " changed"));
           evidence.append(chart(original.projection.items, data.projection.items, counts, id => {
@@ -468,10 +391,9 @@
             formPanel.scrollIntoView({ block: "start" }); formHost.querySelector("select")?.focus({ preventScroll: true });
           }), changeList(counts));
           evidence.append(el("p", "detail-note", "This impact covers declared instances and their contracts. Running obligations, retirement and effective authority require the owning services."));
-          }
-          if (!ownership && typeof onPropose === "function") evidence.append(publication(data));
-          evidence.append(button(ownership ? "Download validated ownership map" : "Download validated Hale", () => { if (result === data) download(data.module.text, ownership ? "owners" : "main.hl", "text/plain;charset=utf-8"); }));
-          evidence.append(button("Download validation evidence", () => { if (result === data) download(JSON.stringify(data, null, 2) + "\n", ownership ? "ownership-validation.json" : "organization-validation.json", "application/json"); }));
+          if (typeof onPropose === "function") evidence.append(publication(data));
+          evidence.append(button("Download validated Hale", () => { if (result === data) download(data.module.text, "main.hl", "text/plain;charset=utf-8"); }));
+          evidence.append(button("Download validation evidence", () => { if (result === data) download(JSON.stringify(data, null, 2) + "\n", "organization-validation.json", "application/json"); }));
           const info = append(el("details"), el("summary", "", "Source basis and validation evidence"), el("pre", "org-evidence-json", JSON.stringify({ principal: data.principal, base: data.base, candidate_digest: data.module.digest, publication: data.publication }, null, 2)));
           evidence.append(info);
           if (root.contains(document.activeElement)) status.focus();
@@ -705,7 +627,7 @@
       if (!list.childElementCount) list.append(el("li", "", "The declared chart and contracts are unchanged. Source-only changes remain visible in the diff."));
       return list;
     }
-    return { publicationMatches(data) { return !ownership && !disposed && !pending && result === data && data.validation === "valid_draft" && source === data.module.text; }, edit(id) { selected = id; if (!original) void load("structured"); else { mode = "structured"; renderEditor(); content.querySelector("select")?.focus(); } root.scrollIntoView({ block: "start" }); }, destroy() { disposed = true; version++; controller?.abort(); revoke(); source = ""; original = checked = result = null; host.replaceChildren(); } };
+    return { publicationMatches(data) { return !disposed && !pending && result === data && data.validation === "valid_draft" && source === data.module.text; }, edit(id) { selected = id; if (!original) void load("structured"); else { mode = "structured"; renderEditor(); content.querySelector("select")?.focus(); } root.scrollIntoView({ block: "start" }); }, destroy() { disposed = true; version++; controller?.abort(); revoke(); source = ""; original = checked = result = null; host.replaceChildren(); } };
   }
   const SOURCE_SUMMARY = ["added", "removed", "renamed", "moved", "split", "joined", "ambiguous", "contract_deltas", "effect_deltas", "certificate_deltas", "law_deltas"];
   const SOURCE_CHANGES = ["persisted", "added", "removed", "renamed", "moved", "split", "joined", "ambiguous"];
@@ -715,10 +637,10 @@
   async function sourceCandidate(data, review, applicationId) {
     const check = condition => { if (!condition) throw new Error("The exact Organization candidate or its evidence could not be verified."); };
     check(closed(data, ["kind", "review_id", "candidate_commit", "document"]) && data.kind === "organization_source_change" && data.review_id === review.id && data.candidate_commit === review.subject_digest && commitId(data.candidate_commit) && validText(data.document, 1048576));
-    const c = JSON.parse(data.document), ownership = c.format === "dna.organization-ownership-candidate/1";
-    check(closed(c, ["format", "application_id", "command_id", "mutation_id", "base", "module", "candidate", "changed_files", "verification", "review", ...(ownership ? ["ownership_impact"] : [])]) && (ownership || c.format === "dna.organization-source-candidate/1") && c.application_id === applicationId && c.command_id === review.organization_source_request_id && c.mutation_id === review.id);
+    const c = JSON.parse(data.document);
+    check(closed(c, ["format", "application_id", "command_id", "mutation_id", "base", "module", "candidate", "changed_files", "verification", "review"]) && c.format === "dna.organization-source-candidate/1" && c.application_id === applicationId && c.command_id === review.organization_source_request_id && c.mutation_id === review.id);
     check(closed(c.base, BASE) && commitId(c.base.source_head) && sourceHash(c.base.module_digest) && validText(c.base.record_head, 256) && validText(c.base.dependency_source, 256) && sourceHash(c.base.dependency_digest));
-    check(closed(c.module, ["path", "base_text", "text", "digest"]) && c.module.path === (ownership ? "dna/org/owners" : "dna/org/main.hl") && validText(c.module.base_text, 16384) && validText(c.module.text, 16384) && sourceHash(c.module.digest) && c.module.digest === review.organization_source_digest);
+    check(closed(c.module, ["path", "base_text", "text", "digest"]) && c.module.path === "dna/org/main.hl" && validText(c.module.base_text, 16384) && validText(c.module.text, 16384) && sourceHash(c.module.digest) && c.module.digest === review.organization_source_digest);
     check(closed(c.candidate, ["commit", "parent", "shape"]) && c.candidate.commit === data.candidate_commit && c.candidate.parent === c.base.source_head && validText(c.candidate.shape, 256));
     check(Array.isArray(c.changed_files) && c.changed_files.length <= 1 && c.changed_files.every(path => path === c.module.path));
     check(closed(c.verification, ["evidence", "semantic_diff"]) && /^fmt=-?\d+ check=-?\d+ verify=-?\d+ test=-?\d+ diff=-?\d+ rollback=-?\d+ fleet=-?\d+$/.test(c.verification.evidence));
@@ -729,14 +651,6 @@
     check(validText(semantic.base_shape, 256) && semantic.candidate_shape === c.candidate.shape && closed(semantic.summary, SOURCE_SUMMARY) && SOURCE_SUMMARY.every(key => Number.isSafeInteger(semantic.summary[key]) && semantic.summary[key] >= 0));
     check(Array.isArray(semantic.declarations) && semantic.declarations.length <= 4096 && semantic.declarations.every(row => closed(row, ["change", "kind", "name"]) && SOURCE_CHANGES.includes(row.change) && validText(row.kind, 256) && validText(row.name, 4096)));
     check(closed(c.review, ["required_authority", "approvers", "quorum"]) && c.review.required_authority === review.required_authority && c.review.approvers === review.approvers && closed(c.review.quorum, ["state", "required_owners", "approved_owners"]) && ["available", "unavailable"].includes(c.review.quorum.state) && validText(c.review.quorum.required_owners, 8192) && validText(c.review.quorum.approved_owners, 8192));
-    if (ownership) {
-      const p = c.ownership_impact, name = x => validText(x, 256) && !/[\s#,:=]/u.test(x);
-      check(closed(p, ["host_changed", "mode_changed", "live_obligations", "affected_owners", "scopes"]) && typeof p.host_changed === "boolean" && typeof p.mode_changed === "boolean" && p.live_obligations === "unavailable");
-      check(Array.isArray(p.affected_owners) && p.affected_owners.length <= 512 && p.affected_owners.every(row => closed(row, ["owner", "members"]) && name(row.owner) && row.owner && Array.isArray(row.members) && row.members.length <= 8192 && row.members.every(member => name(member) && member)));
-      check(new Set(p.affected_owners.map(row => row.owner)).size === p.affected_owners.length && p.affected_owners.map(row => row.owner + "=" + row.members.join(",")).join(" ") === c.review.approvers);
-      check(Array.isArray(p.scopes) && p.scopes.length <= 512 && p.scopes.every(row => closed(row, ["position", "before_owner", "after_owner"]) && name(row.position) && row.position && name(row.before_owner) && name(row.after_owner)));
-      check(new Set(p.scopes.map(row => row.position)).size === p.scopes.length);
-    }
     const hashes = await Promise.all([digest(c.module.base_text), digest(c.module.text), digest(diff.document)]);
     check(hashes[0] === c.base.module_digest && hashes[1] === c.module.digest && hashes[2] === diff.digest);
     check((c.module.base_text === c.module.text) === (c.changed_files.length === 0));
@@ -771,47 +685,10 @@
     }
     frame.append(tools, content, el("p", "detail-note", "Exact retained module bytes. The changed region includes two context lines; it is a source comparison, not a live organization view.")); draw(); return frame;
   }
-  function ownershipReviewMap(c) {
-    const impact = c.ownership_impact, frame = el("section", "source-change-map"); frame.setAttribute("aria-label", "Ownership scope transfers");
-    const controls = el("div", "source-map-controls"), canvas = el("div", "source-map-canvas"), inspector = el("div", "source-map-inspector"); inspector.setAttribute("aria-live", "polite");
-    let all = false, selected = "";
-    const owner = value => value || "Unowned";
-    const inspect = row => {
-      selected = row.position;
-      for (const control of canvas.querySelectorAll("button")) control.setAttribute("aria-pressed", String(control.dataset.scope === selected));
-      inspector.replaceChildren(el("span", "eyebrow", "OWNERSHIP SCOPE"), el("h5", "", row.position));
-      const journey = el("div", "ownership-transfer-journey");
-      for (const [label, value] of [["Captured owner", row.before_owner], ["Proposed owner", row.after_owner]]) {
-        const stop = append(el("div", "ownership-transfer-stop"), el("span", "eyebrow", label), el("strong", "", owner(value)));
-        const voters = impact.affected_owners.find(item => item.owner === value);
-        stop.append(el("span", "detail-note", voters ? voters.members.length ? "Review members · " + voters.members.join(", ") : "No eligible Review members declared" : "No approval required from this owner by the captured map comparison"));
-        journey.append(stop);
-      }
-      inspector.append(journey, el("p", "detail-note", "Approval records agreement to this map. Work transfer and activation remain pending separate operational checks."));
-    };
-    const draw = () => {
-      for (const control of controls.querySelectorAll("button")) control.setAttribute("aria-pressed", String(control.dataset.all === String(all)));
-      canvas.replaceChildren(append(el("div", "source-map-center"), el("span", "source-map-orbit", "◈"), el("strong", "", "Ownership"), el("span", "", impact.affected_owners.length + " affected owners")));
-      const lanes = el("div", "source-map-lanes"), rows = impact.scopes.filter(row => all || row.before_owner !== row.after_owner);
-      for (const row of rows) {
-        const control = button("", () => inspect(row), "source-declaration"); control.dataset.scope = row.position; control.setAttribute("aria-label", "Inspect ownership scope " + row.position);
-        control.append(el("span", "source-declaration-dot"), el("strong", "", row.position), el("small", "", owner(row.before_owner) + " → " + owner(row.after_owner))); lanes.append(control);
-      }
-      canvas.append(lanes);
-      if (rows.length) inspect(rows.find(row => row.position === selected) || rows[0]);
-      else inspector.replaceChildren(el("p", "detail-note", "No scope changes owner. Membership or hosting changes can still require approval; inspect the captured Review and exact map below."));
-    };
-    for (const [value, label] of [[false, "Changing scopes"], [true, "All scopes"]]) { const control = button(label, () => { all = value; draw(); }); control.dataset.all = String(value); controls.append(control); }
-    frame.append(controls, canvas, inspector);
-    if (impact.host_changed) frame.append(el("p", "detail-note", "The hosting party changes in this proposal."));
-    if (impact.mode_changed) frame.append(el("p", "detail-note", "The ownership mode changes in this proposal."));
-    frame.append(el("p", "detail-note", "Captured ownership-map comparison. Live obligations and running occupants are not established by this evidence."));
-    draw(); return frame;
-  }
   function sourceReview(candidate) {
-    const c = candidate.organization, semantic = candidate.semantic, ownership = c.format === "dna.organization-ownership-candidate/1";
+    const c = candidate.organization, semantic = candidate.semantic;
     const frame = el("section", "organization-source-review"); frame.setAttribute("role", "region"); frame.setAttribute("aria-label", "Organization candidate comparison");
-    const classification = ownership ? "Ownership responsibilities change" : { identical: "Artifact unchanged", "source-only": "Shape preserved · source updated", "model-shape": "Organization shape changes", contract: "Contract changes" }[semantic.classification];
+    const classification = { identical: "Artifact unchanged", "source-only": "Shape preserved · source updated", "model-shape": "Organization shape changes", contract: "Contract changes" }[semantic.classification];
     const heading = append(el("header", "source-review-heading"), el("p", "eyebrow accent", "ORGANIZATION / EXACT CANDIDATE"), el("h4", "", classification), el("p", "detail-note", "Inspect the change, then follow its Review. Approval, source application and a running process are separate results."));
     const checks = el("div", "source-verification-strip"); checks.setAttribute("aria-label", "Native verification results");
     for (const entry of c.verification.evidence.split(" ")) {
@@ -855,7 +732,6 @@
     const summary = el("div", "source-semantic-summary");
     for (const [key, label] of [["contract_deltas", "contract"], ["effect_deltas", "effect"], ["law_deltas", "law"], ["certificate_deltas", "certificate"]]) summary.append(el("span", "", semantic.summary[key] + " " + label + " deltas"));
     changes.append(controls, diagram, inspector, summary, el("p", "detail-note", "This view covers native classification, summary counts and declaration identities. Live obligations and ownership transfer require separate impact evidence.")); draw();
-    if (ownership) changes = ownershipReviewMap(c);
     const quorum = el("section", "source-review-quorum"); quorum.setAttribute("aria-label", "Captured Review quorum");
     const q = c.review.quorum, owners = q.required_owners.split(" ").filter(Boolean), approved = new Set(q.approved_owners.split(" ").filter(Boolean));
     quorum.append(el("h5", "", "Review authority · " + c.review.required_authority));
@@ -1083,5 +959,4 @@
   window.FaceOrganizationStatus = { validate: sourceStatus, render: statusJourney };
   window.FaceOrganizationReview = { validate: sourceCandidate, render: sourceReview };
   window.FaceOrganizationDraft = { mount };
-  window.FaceOwnershipDraft = { mount: (host, options) => mount(host, { ...options, ownership: true }) };
 })();
