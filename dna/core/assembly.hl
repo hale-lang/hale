@@ -2437,8 +2437,13 @@ locus Dna {
             rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
             if len(attempt) == 0 || set_has(settled, attempt) { continue; }
             let c = recorded_leg_claim(self.journal, attempt, n);
-            let key = attempt + "@" + to_string(c.token);
-            if c.present && c.expires <= now && !set_has(self.reopened, key) {
+            // a leg's attempt whose effect a person resolved (`hale dna effect
+            // resolve`, after an uncertain performer left it unknown) is taken
+            // again at once, lease or no lease: the resolution is its outcome
+            let said = effect_result_body(self.journal, execution_key(attempt));
+            let resolved = len(said) > 0 && !std::str::starts_with(said, "unknown") && std::str::contains(said, "(resolved by ");
+            let key = if resolved { attempt + "@resolved" } else { attempt + "@" + to_string(c.token) };
+            if c.present && (resolved || c.expires <= now) && !set_has(self.reopened, key) {
                 let adm = recorded_attempt_admission(self.journal, attempt, n);
                 if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
                     self.reopened = set_add(self.reopened, key);

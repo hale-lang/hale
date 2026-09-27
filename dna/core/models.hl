@@ -38,6 +38,21 @@ type ModelResult {
     output_tokens: Int = 0;
     cost_micros: Int = 0;
     refused: String = ""; // why, when !ok
+    // whether the backend may have acted on the request (GH #946, effect
+    // classes): true unless the refusal came before anything was sent or
+    // run — no credential, a data class, a harness not on PATH, a
+    // connection never opened, a 4xx that did no work. A refusal with
+    // `made` true behind an uncertain performer is unresolved, never retried.
+    made: Bool = true;
+}
+
+// Whether a hosted call may have acted, by its status: sent and answered
+// (2xx, 5xx) or sent and lost (0) may have; never sent (-1, the transport
+// refused to open) or refused before work (4xx) did not.
+fn made_by_status(status: Int) -> Bool {
+    if status < 0 { return false; }
+    if status >= 400 && status < 500 { return false; }
+    return true;
 }
 
 interface ModelBackend {
@@ -59,7 +74,7 @@ interface ModelSelection {
 
 fn fake_answer(name: String, model: String, req: ModelRequest, max_bytes: Int, price: Int) -> ModelResult {
     if req.context_bytes > max_bytes {
-        return ModelResult { ok: false, backend: name, model: model, refused: "context too large" };
+        return ModelResult { ok: false, backend: name, model: model, refused: "context too large", made: false };
     }
     return ModelResult {
         ok: true,
@@ -176,12 +191,12 @@ locus FakeModel {
         if !self.allows(req.data_class) {
             ev.refused = "data class " + req.data_class;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
         }
         if self.fail_after > 0 && self.calls > self.fail_after {
             ev.refused = "scripted failure after " + to_string(self.fail_after) + " call(s)";
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
         }
         let found = self.scripted_for(req);
         let scripted = if len(found) > 0 { found } else { self.ruled_for(req) };
@@ -399,7 +414,7 @@ locus OpenAiChat {
             ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
         }
         let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
         let t0 = std::time::monotonic();
@@ -416,7 +431,7 @@ locus OpenAiChat {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,
@@ -424,7 +439,11 @@ locus OpenAiChat {
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        // never opened (`connect_failed`, a bad url or scheme): status -1, the
+        // call was not made; anything after the request went out is 0, and
+        // may have been acted on
+        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
     }
 }
 
@@ -515,7 +534,7 @@ locus AnthropicMessages {
             ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused, made: false };
         }
         let body = anthropic_messages_body(self.model, req, self.temperature_milli, self.max_tokens);
         let t0 = std::time::monotonic();
@@ -532,7 +551,7 @@ locus AnthropicMessages {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
         }
         return ModelResult {
             ok: true, backend: self.name, model: out.reported_model, output: out.text,
@@ -540,7 +559,11 @@ locus AnthropicMessages {
         };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        // never opened (`connect_failed`, a bad url or scheme): status -1, the
+        // call was not made; anything after the request went out is 0, and
+        // may have been acted on
+        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
     }
 }
 
@@ -590,12 +613,16 @@ locus LocalModel {
         self.last = ev;
         ModelCalled <- ev;
         if !out.ok {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused, made: made_by_status(resp.status) };
         }
         return ModelResult { ok: true, backend: self.name, model: out.reported_model, output: out.text, tokens: out.input_tokens + out.output_tokens };
     }
     fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
-        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+        // never opened (`connect_failed`, a bad url or scheme): status -1, the
+        // call was not made; anything after the request went out is 0, and
+        // may have been acted on
+        let never = e.kind == "connect_failed" || e.kind == "bad_url" || e.kind == "unsupported_scheme";
+        return std::http::ClientResponse { status: if never { -1 } else { 0 }, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
     }
 }
 
@@ -672,7 +699,7 @@ locus ModelRouter {
         let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
         let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
-        if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class }; }
+        if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class, made: false }; }
         self.calls = self.calls + 1;
         self.last_backend = cls;
         let r = if cls == "deep" { self.deep.complete(req) }
@@ -879,7 +906,7 @@ locus HarnessModel {
             ev.refused = if self.present { "data class " + req.data_class } else { "harness `" + self.command + "` not on PATH" };
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
         }
         let mask = self.effective_mask(req.mask);
         // A confinement with nothing to mask is not a boundary. Refuse
@@ -889,13 +916,13 @@ locus HarnessModel {
             ev.refused = "no genome to mask: set " + self.genome_env + " (or the org chart's `genome`) before a harness may claim a boundary";
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
         }
         if !self.confined() {
             ev.refused = "unconfined harness not allowed (" + self.confinement.kind() + " unavailable; `allow_unconfined` is the org chart's word)";
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
         }
         // an answer-only request runs in an empty directory of its own:
         // the harness's tools have nothing to reach there either
@@ -917,7 +944,7 @@ locus HarnessModel {
             if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
             self.last = ev;
             ModelCalled <- ev;
-            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused, made: false };
         }
         std::io::fs::write_file(prompt_file, prompt) or discard;
         let mut argv = self.command + "\n" + self.argv;
