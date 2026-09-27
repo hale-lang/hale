@@ -1706,10 +1706,17 @@ memory is named to it.
   may see, the owners it works for and a TTL. The identity is a
   position (`position:<name>`, `#<n>` for one worker of several) the
   record knows, and **one the principal's person holds** (GH #1162): by
-  the graph's live `holds` edges — the edge, its position and its
-  holder not retired, the person not retired — or, under a record that
-  declares `dna.trust = local`, any position; otherwise the claim is
-  refused naming the person and the position. The head picks the first
+  the record's live `holds` edges — a `graph.edge` row, or one a
+  ratified graph proposal carries (`hale dna fill`) — the edge, its
+  position and its holder not retired, memory not having refused it
+  (`hold.refused`), the person not retired; or, under a record that
+  declares `dna.trust = local`, any position. The socket's roles read
+  the same edges (`HoldsReader`). Otherwise the claim is refused naming
+  the person and the position, and so is a renewal once the person no
+  longer holds it (a release stays open) and friction filed as a
+  position the person does not hold. Without local trust the
+  organization's own kind positions (`position:agent`, `leader`, …) are
+  held only by a `holds` edge naming them. The head picks the first
   admitted attempt of that kind that is outstanding — asked to run
   (`effect.requested attempt:<id>`), no outcome — was relayed to legs
   (`effect.relayed attempt:<id>`: the owner records it when a leg relay

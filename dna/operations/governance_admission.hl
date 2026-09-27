@@ -138,6 +138,10 @@ type PersonAdministrationRead {
 
 locus GovernanceCommands {
     params {
+        // GH #1162: who holds what, as of `seats_at` (the merged revision it
+        // was read at): read again when the record moves
+        seats: dna::HoldsReader = dna::HoldsReader { };
+        seats_at: Int = -1;
         record: GovernanceRecord = dna::MemRecord { };
         authority: GovernanceAuthority = NoGovernanceAuthority { };
         limits: GovernanceReadLimits = GovernanceReadLimits { };
@@ -294,6 +298,23 @@ locus GovernanceCommands {
             self.field(b, "reviewer", context.principal_name); self.field(b, "authority", grant.authority); self.field(b, "comment", command.comment);
         }
         b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    // GH #1162: why `person` may not act as `holder`'s position, "" when
+    // they may — a record that declares `dna.trust = local` is its one
+    // person's, and otherwise the graph's holds say who holds what.
+    @unbounded
+    fn seat_refusal(rj: dna::RoutedJournal, person: String, holder: String) -> String {
+        // the trust is the record's config, not a row: asked each time
+        if dna::record_trust_local(self.record.location()) { return ""; }
+        if rj.revision() != self.seats_at {
+            self.seats = dna::HoldsReader { location: self.record.location() };
+            let mut i = 0;
+            while i < rj.revision() { self.seats.take(rj.read(i)); i = i + 1; }
+            self.seats_at = rj.revision();
+        }
+        let seat = holder_base(holder);
+        if self.seats.holds(person, seat) { return ""; }
+        return person + " does not hold " + seat + ": a leg works only as a position its person holds (the graph's `holds` edges; the record declares no local trust)";
     }
     fn attempt_operation(operation: String) -> Bool { return std::str::starts_with(operation, "dna.attempt.") || operation == "dna.friction.file"; }
     // A leg's command found in the journal the attempt kinds live in — the
@@ -638,6 +659,9 @@ locus GovernanceCommands {
                     // tail: nobody admits it, and the head the leg read is not a
                     // fence on it (a leg a row behind still files)
                     if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
+                    // GH #1162: a position's friction is filed by one who holds it
+                    let unseated = self.seat_refusal(rj, context.principal_name, command.performer);
+                    if len(unseated) > 0 { return self.refusal(s, attempts.refused(context, command, unseated)); }
                     let fact = attempts.friction_fact(context, command, grant, s.head);
                     if fact == "" { return GovernanceResult { code: "invalid_command" }; }
                     if !self.unchanged(s) { continue; }
@@ -664,10 +688,8 @@ locus GovernanceCommands {
                     // GH #1162: the lease's position is one the principal's person
                     // holds — by the graph's `holds` edges, or every position under
                     // a record that declares `dna.trust = local`
-                    let seat = holder_base(command.performer);
-                    if !dna::record_trust_local(self.record.location()) && !dna::person_holds(rj, context.principal_name, seat) {
-                        return self.refusal(s, attempts.refused(context, command, context.principal_name + " does not hold " + seat + ": a leg works only as a position its person holds (the graph's `holds` edges; the record declares no local trust)"));
-                    }
+                    let unseated = self.seat_refusal(rj, context.principal_name, command.performer);
+                    if len(unseated) > 0 { return self.refusal(s, attempts.refused(context, command, unseated)); }
                     let scan = attempts.candidates(rj, command);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(command, scan))); }
                     let mut rest = scan.names; let mut taken = ""; let mut lease = dna::Lease { };
@@ -750,6 +772,11 @@ locus GovernanceCommands {
                     // which keeps the token — or given back; either is a row where
                     // the attempt kinds live, and the lease check above is theirs too
                     let mut renewed = dna::Lease { key: "attempt:" + a, holder: command.holder, token: command.token, expires: claim.expires, present: true };
+                    // GH #1162: a lease is renewed only while its person still holds
+                    // its position; one whose seat was retired lapses (a release
+                    // stays open to give it back)
+                    let unseated = if command.operation == "dna.attempt.renew" { self.seat_refusal(rj, context.principal_name, command.holder) } else { "" };
+                    if len(unseated) > 0 { return self.refusal(s, attempts.refused(context, command, unseated)); }
                     if command.operation == "dna.attempt.renew" {
                         if leases.ready() {
                             let l = leases.claim("attempt:" + a, command.holder, command.ttl);

@@ -257,6 +257,31 @@ locus App {
             std::test::assert(gj.append(gj.revision(), "graph.retired", seat.id(), "{}").ok, l + "dave's seat retired");
             let retired = commands.submit(dave, self.claim_of(label + "s4", identity, head_s, "agent", "position:agent#9", "internal public"));
             std::test::assert(retired.ok && retired.receipt.state == "refused" && std::str::contains(retired.receipt.reason, "dave does not hold position:agent"), l + "a retired seat holds nothing: " + retired.receipt.reason);
+            let filed = commands.submit(dave, ops::GovernanceCommand { request_id: label + "sf", operation: "dna.friction.file", operation_version: "1", application_id: identity, position_id: "org", target_kind: "dna.friction", target_id: identity, subject_digest: head_s, record_head: head_s, performer: "position:leader", result: "the brief was thin" });
+            std::test::assert(std::str::contains(filed.receipt.reason, "dave does not hold position:leader"), l + "nor files friction as a position he does not hold: " + filed.code + " " + filed.receipt.reason);
+            // (the proposal here is the check's rows, not a real one, which
+            // memory would refuse to project: the case runs on the record)
+            if !self.with_memory {
+                // a holder the Board seated by fill: the ratified proposal carries
+                // the edge, and it holds until memory refuses it
+                let edge = ops::GraphEdge { kind: "holds" };
+                edge.member("position", "position:agent");
+                edge.member("holder", "frank");
+                let doc = "{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.edge\", \"entity\": " + dna::record_json_quote(edge.id()) + ", \"body\": " + dna::record_json_quote(edge.body()) + "}]}";
+                let filled = "sha256:" + dna::GitReceipts { repo: self.app }.store(doc);
+                std::test::assert(gj.append(gj.revision(), "knowledge.proposed", filled, "{\"kind\": \"graph\", \"name\": \"agent held by frank\", \"target\": \"position:agent\"}").ok, l + "frank proposed for position:agent");
+                std::test::assert(gj.append(gj.revision(), "knowledge.ratified", filled, "{\"decided_by\": \"ada\"}").ok, l + "and ratified");
+                let frank = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "frank" };
+                let as_frank = commands.submit(frank, self.claim_of(label + "s5", identity, record.head("journal").id, "agent", "position:agent#7", "internal public"));
+                std::test::assert(as_frank.ok && !std::str::contains(as_frank.receipt.reason, "does not hold"), l + "a holder seated by a ratified fill holds: " + as_frank.receipt.reason);
+                if as_frank.receipt.state == "claimed" {
+                    let back = commands.submit(frank, self.release_of(label + "s5r", identity, as_frank.receipt.attempt.attempt_id, "position:agent#7", as_frank.receipt.attempt.token));
+                    std::test::assert(back.ok && back.receipt.attempt.state == "released", l + "given back: " + back.code + " " + back.receipt.reason);
+                }
+                std::test::assert(gj.append(gj.revision(), "hold.refused", edge.id(), "{\"why\": \"a process's reviewer is never its dev\", \"by\": \"memory\"}").ok, l + "memory refused frank's hold");
+                let refused_hold = commands.submit(frank, self.claim_of(label + "s6", identity, record.head("journal").id, "agent", "position:agent#7", "internal public"));
+                std::test::assert(refused_hold.ok && std::str::contains(refused_hold.receipt.reason, "frank does not hold position:agent"), l + "a hold memory refused holds nothing: " + refused_hold.receipt.reason);
+            }
             let trusted = in_dir(self.app, "git\nconfig\n--local\ndna.trust\nlocal");
             std::test::assert_eq_int(trusted.code, 0, l + "local trust again: " + trusted.stderr);
         }
@@ -335,6 +360,17 @@ locus App {
         std::test::assert(len(claimed) > 0, l + "the claim is a row");
         std::test::assert_eq_str(std::json::find_string_field(claimed, "principal_name"), "alice", l + "naming the principal that took it");
         std::test::assert_eq_int(std::json::find_int_field(claimed, "token"), token, l + "and the token");
+        // GH #1162: a lease is renewed only while its person holds its
+        // position — with the record's trust taken back, alice holds no seat,
+        // and her renewal is refused, writing nothing; the lease stands
+        if label == "record" {
+            let untrust = in_dir(self.app, "git\nconfig\n--local\n--unset-all\ndna.trust");
+            let rows_r = self.count_rows("attempt.claimed", a1);
+            let unrenewed = commands.submit(alice, self.renewal_of(label + "rs", identity, a1, alice_leg, token));
+            std::test::assert(unrenewed.ok && unrenewed.receipt.state == "refused" && std::str::contains(unrenewed.receipt.reason, "alice does not hold position:agent"), l + "a renewal without the seat is refused: " + unrenewed.receipt.reason);
+            std::test::assert_eq_int(self.count_rows("attempt.claimed", a1), rows_r, l + "and writes nothing");
+            let retrust = in_dir(self.app, "git\nconfig\n--local\ndna.trust\nlocal");
+        }
         let again = commands.lookup(alice, label + "c1");
         std::test::assert(again.ok && again.receipt.attempt.state == "claimed" && again.receipt.attempt.token == token, l + "a lookup reads the same lease");
         // a second leg racing the same attempt at the OLD head (B4): not

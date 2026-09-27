@@ -12,10 +12,12 @@ prints one JSON object and holds nothing afterwards; a verb run twice
 under the same lease is one act, and the second run reads the first's
 receipt. The position a leg works as is the graph's `position:<name>`
 id, never a free string, and one the person the peer maps to holds:
-the graph's `holds` edges say who holds what, or, under a record that
+the graph's `holds` edges say who holds what — a holder `hale dna fill`
+proposed holds once the Board ratifies it — or, under a record that
 declares `dna.trust = local` (what `hale dna new` and `init` declare),
 the one person holds every position. A claim as a position the person
-does not hold is refused, naming both.
+does not hold is refused, naming both; so is renewing a lease once its
+seat is gone, and filing friction as someone else's position.
 
 ```text
 hale dna work next --as position:agent [--worker n] [--effect <class>]   claim the next attempt for a position
