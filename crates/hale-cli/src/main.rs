@@ -286,6 +286,13 @@ fn main() -> ExitCode {
     // stray positional, and `--help` were all silently ignored while
     // the command still reported SUCCESS — the same fail-open that
     // made the topology gates untrustworthy.
+    // GH #785: the stale-binary warning on every command that reads
+    // source or materializes the embedded DNA, not only a build — an
+    // edited dna/core that was never rebuilt in is announced by the
+    // next `hale check` or `hale dna …`, before a fixture runs it.
+    if matches!(cmd.as_str(), "check" | "verify" | "build" | "run" | "test" | "dna" | "inputs") {
+        check_stale_cli();
+    }
     if cmd == "check" || cmd == "verify" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_check_cli(&rest, cmd == "verify");
@@ -8769,8 +8776,9 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // see `apps/log-router/FRICTION.md` 2026-05-10. The check is
     // best-effort: it skips when source files aren't locatable
     // (installed binary, moved workspace), or when the user
-    // explicitly opts out via `HALE_SKIP_STALE_CHECK=1`.
-    check_stale_cli();
+    // explicitly opts out via `HALE_SKIP_STALE_CHECK=1`. Since GH #785
+    // the dispatcher runs it for every source-reading command, this
+    // one included, so it is not run again here.
 
     // File targets follow `import "..."` directives starting from
     // the entry's directory; directory targets bundle every .hl
@@ -9692,6 +9700,7 @@ fn check_stale_cli() {
     if !codegen_dir.exists() {
         return;
     }
+    check_stale_dna(codegen_dir);
     let current = compute_codegen_src_hash(codegen_dir);
     if current != baked_hash {
         eprintln!(
@@ -9709,6 +9718,47 @@ fn check_stale_cli() {
         eprintln!(
             "         (Set HALE_SKIP_STALE_CHECK=1 to silence \
              this warning.)"
+        );
+    }
+}
+
+/// GH #785: the same warning for the DNA source set. `hale dna new`,
+/// `init` and `upgrade` materialize the `dna/` the binary EMBEDS
+/// (`hale_dna::EMBEDDED_DIGEST`, GH #726), and every organism a
+/// fixture starts runs that core — so a `dna/core` edited after the
+/// last build runs nowhere, and nothing said so until `hale dna
+/// status` was asked. The tree digested is the workspace the binary
+/// was built from (the codegen dir's workspace), or the one
+/// `HALE_STALE_DNA_ROOT` names — the regression test's way to hand
+/// the check a tree it may edit.
+fn check_stale_dna(codegen_dir: &Path) {
+    let root = match env::var_os("HALE_STALE_DNA_ROOT").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v),
+        None => match codegen_dir.parent().and_then(|p| p.parent()) {
+            Some(r) => r.to_path_buf(),
+            None => return,
+        },
+    };
+    if !root.join("dna").is_dir() {
+        return;
+    }
+    let Ok(current) = hale_dna::digest_of_tree(&root) else {
+        return;
+    };
+    if current != hale_dna::EMBEDDED_DIGEST {
+        eprintln!(
+            "warning: hale CLI binary embeds an older dna/ source set."
+        );
+        eprintln!(
+            "         {} has changed since the CLI was built; `hale dna \
+             new`, `init` and `upgrade` materialize what the binary \
+             carries, and an organism a fixture starts runs that.",
+            root.join("dna").display()
+        );
+        eprintln!("         Rebuild with: cargo build --release");
+        eprintln!(
+            "         (Set HALE_SKIP_STALE_CHECK=1 to silence this \
+             warning.)"
         );
     }
 }
