@@ -96,8 +96,22 @@ async function observed(page, service, proposal, target = '') {
   await receipt(page).getByRole('button', { name: proposal.binding ? 'Dismiss binding request' : 'Dismiss knowledge request', exact: true }).click();
   return id;
 }
+// A page opened while memory is behind the record is answered
+// knowledge_projection_unavailable once and shows "Knowledge unavailable"
+// without reading again: reload, quiesced, until what the lane needs is
+// there, bounded.
+async function openReady(page, service, url, ready) {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    await service.quiesce(); await page.goto(url);
+    const target = ready(page);
+    await target.waitFor({ timeout: 8_000 }).catch(() => {});
+    if (await target.count() || Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
 async function openPractice(page, service, id) {
-  await service.quiesce(); await page.goto(service.url('practices', { id }));
+  await openReady(page, service, service.url('practices', { id }), p => p.getByRole('link', { name: 'Manage applicability', exact: true }));
   await expect(page.getByRole('link', { name: 'Manage applicability', exact: true })).toBeVisible();
 }
 async function precreate(service) {
@@ -111,7 +125,7 @@ async function precreate(service) {
 test('Practice create and revision entries retain exact native text, provenance and canonical scope', async ({ page, service }, info) => {
   // the lane's own rows, over what the host wrote before it began
   const baseline = service.journal().rows.length;
-  await page.goto(service.url('practices'));
+  await openReady(page, service, service.url('practices'), p => p.getByRole('link', { name: 'Create practice', exact: true }));
   await page.getByRole('link', { name: 'Create practice', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Practice administration', exact: true })).toBeVisible();
   await expect(editor(page).getByLabel('Practice kind', { exact: true })).toBeDisabled();
