@@ -1308,7 +1308,7 @@
           "minLength": 1
         },
         "format": {
-          "const": "dna.workflow-definitions/2"
+          "const": "dna.workflow-definitions/3"
         },
         "provenance_kind": {
           "const": "trusted_host_claims"
@@ -2143,7 +2143,7 @@
           "minLength": 1
         },
         "format": {
-          "const": "dna.workflow-definitions/2"
+          "const": "dna.workflow-definitions/3"
         },
         "provenance_kind": {
           "const": "trusted_host_claims"

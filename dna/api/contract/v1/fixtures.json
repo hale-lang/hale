@@ -747,7 +747,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -785,7 +785,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -855,7 +855,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1139,7 +1139,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1311,7 +1311,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1483,7 +1483,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1659,7 +1659,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -1988,7 +1988,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "",
           "source_path": "app/workflows.hl",
@@ -2161,7 +2161,7 @@
         },
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3488,7 +3488,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3581,7 +3581,7 @@
         "id": "close@-2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3679,7 +3679,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3742,7 +3742,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3794,7 +3794,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3884,7 +3884,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -3978,7 +3978,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4071,7 +4071,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4165,7 +4165,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4258,7 +4258,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4351,7 +4351,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4444,7 +4444,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4537,7 +4537,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4631,7 +4631,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4724,7 +4724,7 @@
         "id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4822,7 +4822,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4879,7 +4879,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -4942,7 +4942,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5005,7 +5005,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5062,7 +5062,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5125,7 +5125,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",
@@ -5188,7 +5188,7 @@
         "base_id": "close@2",
         "basis": {
           "catalog_digest": "sha256:captured-catalog-bytes",
-          "format": "dna.workflow-definitions/2",
+          "format": "dna.workflow-definitions/3",
           "provenance_kind": "trusted_host_claims",
           "source_revision": "loaded-source-a",
           "source_path": "app/workflows.hl",

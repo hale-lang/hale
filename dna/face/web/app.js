@@ -1992,7 +1992,7 @@
   const DEFINITION_LIMITS = [["max_depth", "Maximum depth"], ["max_steps", "Steps per workflow"], ["max_members", "Members per Step"], ["max_attempts", "Attempts per leaf"], ["max_works", "Total Works"]];
   function validDefinitions(data) {
     const basis = data.basis;
-    assert(basis && DEFINITION_BASIS_FIELDS.every((key) => typeof basis[key] === "string") && basis.catalog_digest.length && basis.source_revision.length && basis.source_path.length && basis.format === "dna.workflow-definitions/2" && basis.provenance_kind === "trusted_host_claims" && basis.limits && DEFINITION_LIMITS.every(([key]) => decimal(basis.limits[key]) && basis.limits[key] !== "0"));
+    assert(basis && DEFINITION_BASIS_FIELDS.every((key) => typeof basis[key] === "string") && basis.catalog_digest.length && basis.source_revision.length && basis.source_path.length && basis.format === "dna.workflow-definitions/3" && basis.provenance_kind === "trusted_host_claims" && basis.limits && DEFINITION_LIMITS.every(([key]) => decimal(basis.limits[key]) && basis.limits[key] !== "0"));
   }
   function sameDefinitionBasis(left, right) {
     return DEFINITION_BASIS_FIELDS.every((key) => left[key] === right[key]) && DEFINITION_LIMITS.every(([key]) => left.limits[key] === right.limits[key]);

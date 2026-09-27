@@ -806,7 +806,7 @@ fn work_verb(root: String, hale: String) -> Answer {
 // catalog's probe is. Every definition with its revision, each step with
 // the one store it writes, what a newer revision supersedes, and what is
 // refused at admission for a part not yet built; `--json` is the
-// catalog's own document (`dna.workflow-definitions/2`).
+// catalog's own document (`dna.workflow-definitions/3`).
 fn definitions_verb(root: String, hale: String, json: Bool) -> Answer {
     let src = root + "/dna/org/workflows.hl";
     let catalog = std::io::fs::read_file(src) or "";
@@ -1055,10 +1055,11 @@ fn credential_gap(p: Projection) -> String {
 // the org chart declared, as the record has them; pause and resume are
 // rows in your name that the organism reads at its next tick.
 @unbounded
-fn schedule_verb(root: String, sub: String, id: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn schedule_verb(root: String, seed: String, sub: String, id: String, who_flag: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if sub == "declare" { return schedule_declare(root, seed, id, who, every, cron, definition, args, convener, memory); }
     if sub == "pause" || sub == "resume" {
         if len(id) == 0 { return fail("schedule " + sub + ": which one? `hale dna schedule` lists them"); }
         let s = sync_record(root, memory);
@@ -1079,9 +1080,9 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String, memory
         let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who, memory);
         if !ok { return fail("the record refused the append"); }
         let s2 = sync_record(root, memory);
-        return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; it never fires until resumed)" } else { "resumed (schedule.resumed)" }) + "\n");
+        return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; nothing occurs until it is resumed, and nothing is missed)" } else { "resumed (schedule.resumed)" }) + "\n");
     }
-    if len(sub) > 0 && sub != "list" { return fail("schedule: `hale dna schedule`, `schedule pause <id>`, or `schedule resume <id>`"); }
+    if len(sub) > 0 && sub != "list" { return fail("schedule: `hale dna schedule`, `schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]`, `schedule pause <id>`, or `schedule resume <id>`"); }
     let p = open_projection(root, ".", "", memory);
     let mut out = "";
     let mut ids = "\n";
@@ -1101,30 +1102,89 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String, memory
         n = n + 1;
         let mut decl = "";
         let mut paused = false;
-        let mut fired = 0;
+        let mut occurred = 0;
         let mut skipped = 0;
+        let mut missed = 0;
         let mut task = "";
         let mut k = 0;
         while k < p.rows() {
             let e = p.row(k);
+            if e.kind == "workflow.admitted" && std::str::starts_with(dna::native_json_string(e.body, "request"), "sched:" + sid + "@") { occurred = occurred + 1; task = e.entity; }
             if e.entity == sid {
                 if e.kind == "schedule.declared" { decl = e.body; }
                 if e.kind == "schedule.paused" { paused = true; }
                 if e.kind == "schedule.resumed" { paused = false; }
-                if e.kind == "schedule.fired" { fired = fired + 1; let t = std::json::find_string_field(e.body, "task"); if len(t) > 0 { task = t; } }
-                if e.kind == "schedule.admitted" { let at = std::json::find_string_field(e.body, "task"); if len(at) > 0 { task = at; } }
                 if e.kind == "schedule.skipped" { skipped = skipped + 1; }
+                if e.kind == "schedule.missed" { missed = missed + std::json::find_int_field(e.body, "count"); }
             }
             k = k + 1;
         }
-        let every = std::json::find_int_field(decl, "every_ms");
-        let cron = std::json::find_string_field(decl, "cron");
-        let when = if every > 0 { "every " + to_string(every) + "ms" } else { "cron `" + cron + "` (UTC)" };
-        let what = if std::json::find_string_field(decl, "action") == "optimize" { "the optimize pass" } else { "ask: " + std::json::find_string_field(decl, "ask") };
-        out = out + "  " + sid + " [" + (if paused { "paused" } else { "live" }) + "] " + when + " — " + what + " · fired " + to_string(fired) + ", skipped " + to_string(skipped) + (if len(task) > 0 { " · last task " + task } else { "" }) + "\n";
+        let every_ms = std::json::find_int_field(decl, "every_ms");
+        let when = if every_ms > 0 { "every " + to_string(every_ms) + "ms" } else { "cron `" + std::json::find_string_field(decl, "cron") + "` (UTC)" };
+        out = out + "  " + sid + " [" + (if paused { "paused" } else { "live" }) + "] " + when + " — " + std::json::find_string_field(decl, "definition") + ", convened by " + std::json::find_string_field(decl, "convener") + " · occurred " + to_string(occurred) + ", skipped " + to_string(skipped) + ", missed " + to_string(missed) + (if len(task) > 0 { " · last " + task } else { "" }) + "\n";
     }
-    if n == 0 { return answer("schedules: none declared (the org chart's `birth()` declares them: `self.core.schedule(dna::Schedule { … })`)\n"); }
+    if n == 0 { return answer("schedules: none declared (a ratified practice declares one, or `hale dna schedule declare`)\n"); }
     return answer("schedules: " + to_string(n) + "\n" + out);
+}
+
+// An interval as `hale dna schedule declare --every` takes it: milliseconds
+// with a unit (`500ms`, `30s`, `15m`, `1h`, `1d`); 0 when it is none.
+fn every_ms_of(text: String) -> Int {
+    let t = std::str::trim(text);
+    let unit = if std::str::ends_with(t, "ms") { "ms" } else if len(t) > 0 { t[(len(t) - 1)..len(t)] } else { "" };
+    let digits = if unit == "ms" { t[0..(len(t) - 2)] } else if len(unit) > 0 { t[0..(len(t) - 1)] } else { "" };
+    let n = std::str::parse_int(digits) or 0;
+    if n <= 0 { return 0; }
+    if unit == "ms" { return n; }
+    if unit == "s" { return n * 1000; }
+    if unit == "m" { return n * 60000; }
+    if unit == "h" { return n * 3600000; }
+    if unit == "d" { return n * 86400000; }
+    return 0;
+}
+
+// GH #1143: `hale dna schedule declare`: the schedule asked of the
+// organization, which declares it or refuses it (the definition one its
+// catalog admits, the args what that definition takes, a convening
+// position), answered under the request's id.
+@unbounded
+fn schedule_declare(root: String, seed: String, id: String, who: String, every: String, cron: String, definition: String, args: String, convener: String, memory: dna::Memory) -> Answer {
+    if len(id) == 0 || len(definition) == 0 || len(convener) == 0 || (len(every) == 0) == (len(cron) == 0) { return fail("usage: hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]"); }
+    let every_ms = if len(every) > 0 { every_ms_of(every) } else { 0 };
+    if len(every) > 0 && every_ms <= 0 { return fail("schedule declare: --every " + every + " is no interval (a number and ms, s, m, h or d)"); }
+    let position = if std::str::starts_with(convener, "position:") { convener } else { "position:" + convener };
+    let request_id = request_digest_id(root, "s", id + "\n" + to_string(every_ms) + "\n" + cron + "\n" + definition + "\n" + args + "\n" + position + "\n" + who);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", request_id);
+    b.string_field("schedule", id);
+    b.int_field("every_ms", every_ms);
+    b.string_field("cron", cron);
+    b.string_field("definition", definition);
+    b.string_field("args", if len(args) > 0 { args } else { "{}" });
+    b.string_field("convener", position);
+    b.string_field("by", who);
+    b.end_object();
+    if organism_here(root, memory) {
+        let before = open_projection(root, seed, "", memory).rows();
+        if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+        let deadline = std::time::now() + 60;
+        while std::time::now() <= deadline {
+            let q = open_projection(root, seed, "", memory);
+            let r = find_after(q, before, " schedule.answered ", request_id);
+            if r.seq >= 0 {
+                if !std::json::find_bool_field(r.body, "declared") { return fail("schedule declare: refused: " + std::json::find_string_field(r.body, "why")); }
+                return answer("schedule " + id + " declared: " + definition + (if every_ms > 0 { " every " + every } else { " on cron `" + cron + "` (UTC)" }) + ", convened by " + position + "\n");
+            }
+            std::time::sleep(150ms);
+        }
+        return fail("asked for the schedule, but the organization journaled no answer for " + request_id + " in time");
+    }
+    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+    if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
+    let s = sync_record(root, memory);
+    if !s.ok { return fail(s.summary); }
+    return answer("schedule " + id + " asked of the organization in the record by " + who + " (" + request_id + "); it declares it when it hears it\n");
 }
 
 // ---- protected evidence (GH #606) --------------------------------------

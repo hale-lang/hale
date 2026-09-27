@@ -70,6 +70,22 @@ not built yet (the heart, the vault), or a tree wider than the limits
 units of work) is a refusal at admission, in the record
 (`workflow.refused`), with nothing started.
 
+A definition also says how it runs when a schedule points at it
+([On a schedule](./working.md#on-a-schedule)): what happens to an
+occurrence while the last execution is still open, and which inputs an
+occurrence has to carry.
+
+```hale,fragment
+c.occurs("close-month", 1, "skip", "period");
+```
+
+`skip`, the default, lets the open execution finish and records the
+skipped occurrence; `overlap` runs the new one beside it. The last
+argument is the inputs the definition takes, space-separated: a
+schedule of `close-month` is refused unless its `--args` name
+`period`. The catalog's own `ask-edit` and `ask-person` take
+`objective`.
+
 ## The catalog
 
 DNA ships a catalog. `hale dna new` writes `dna/org/workflows.hl`, which

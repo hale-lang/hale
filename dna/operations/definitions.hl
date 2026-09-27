@@ -167,7 +167,7 @@ locus DefinitionCodec {
             f = std::json::object_next(f, document);
         }
         let format = std::json::find_field_raw(document, "format");
-        if !self.text(format) || self.decoded(format) != "dna.workflow-definitions/2" { return "unsupported catalog format"; }
+        if !self.text(format) || self.decoded(format) != "dna.workflow-definitions/3" { return "unsupported catalog format"; }
         let workflows = std::json::find_field_raw(document, "workflows");
         let members = std::json::find_field_raw(document, "members");
         if !self.array(workflows) || !self.array(members) { return "catalog requires workflows and members arrays"; }
@@ -176,7 +176,7 @@ locus DefinitionCodec {
         while !it.done {
             count = count + 1;
             if count > bounds.max_definitions { return "reader budget: too many definitions"; }
-            if !self.fields(it.element, "id title stores", "revision steps") { return "workflow fields must match the native definition schema and Int64 range"; }
+            if !self.fields(it.element, "id title stores concurrency takes", "revision steps") { return "workflow fields must match the native definition schema and Int64 range"; }
             if len(self.decoded(std::json::find_field_raw(it.element, "id"))) > bounds.max_identifier_bytes { return "reader budget: definition identifier is too long"; }
             it = std::json::array_next(it);
         }
@@ -213,8 +213,13 @@ locus DefinitionCodec {
             let e = it.element;
             let stores = self.decoded(std::json::find_field_raw(e, "stores"));
             if dna::step_words(stores) != (std::str::parse_int(std::json::find_field_raw(e, "steps")) or 0) { return "a workflow names one store per step"; }
-            let gap = catalog.define(self.decoded(std::json::find_field_raw(e, "id")), std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0, stores, self.decoded(std::json::find_field_raw(e, "title")));
+            let did = self.decoded(std::json::find_field_raw(e, "id"));
+            let drev = std::str::parse_int(std::json::find_field_raw(e, "revision")) or 0;
+            let gap = catalog.define(did, drev, stores, self.decoded(std::json::find_field_raw(e, "title")));
             if gap != "" { return gap; }
+            // GH #1143: how it occurs when a schedule points at it
+            let occurs = catalog.occurs(did, drev, self.decoded(std::json::find_field_raw(e, "concurrency")), self.decoded(std::json::find_field_raw(e, "takes")));
+            if occurs != "" { return occurs; }
             it = std::json::array_next(it);
         }
         it = std::json::array_first(members);
@@ -249,7 +254,7 @@ locus DefinitionCodec {
     fn normalized(document: String) -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("format", "dna.workflow-definitions/2");
+        b.string_field("format", "dna.workflow-definitions/3");
         let mut i = 0;
         while i < 2 {
             let key = if i == 0 { "workflows" } else { "members" };
@@ -385,7 +390,7 @@ locus Definitions {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("catalog_digest", self.captured.digest);
-        b.string_field("format", "dna.workflow-definitions/2");
+        b.string_field("format", "dna.workflow-definitions/3");
         b.string_field("provenance_kind", "trusted_host_claims");
         b.string_field("source_revision", self.captured.provenance.source_revision);
         b.string_field("source_path", self.captured.provenance.source_path);

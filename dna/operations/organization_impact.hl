@@ -109,9 +109,11 @@ locus OrganizationImpact {
             return "";
         }
         if e.kind == "schedule.refused" { return if len(e.body) > 0 { "" } else { "impact_source_invalid" }; }
-        if !dna::word_in(e.kind, "schedule.paused schedule.resumed schedule.fired schedule.admitted schedule.skipped") { return "impact_unsupported_history"; }
+        // GH #1143: an occurrence is an execution (its own family); the
+        // schedule's rows are its pause, resume, skips and misses
+        if !dna::word_in(e.kind, "schedule.paused schedule.resumed schedule.skipped schedule.missed") { return "impact_unsupported_history"; }
         if at < 0 { return "impact_source_invalid"; }
-        if (e.kind == "schedule.fired" || e.kind == "schedule.admitted") && !self.object(e.body) { return "impact_source_invalid"; }
+        if (e.kind == "schedule.skipped" || e.kind == "schedule.missed") && !self.object(e.body) { return "impact_source_invalid"; }
         // A declaration is future responsibility even when paused or last fired.
         return "";
     }

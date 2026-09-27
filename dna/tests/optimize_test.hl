@@ -24,7 +24,7 @@ main locus App {
         };
         two: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "two", planned: true };
         // an allowance one pass exhausts: the first pass is paid for, the second is refused
-        three: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "three", planned: true, optimize_every_ms: 60000, budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 1 } } };
+        three: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "three", planned: true, budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 1 } } };
         lead_three: dna::Leader = dna::Leader {
             name: "leader", org: "three", charter: "You are the architect.",
             models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
@@ -55,35 +55,51 @@ main locus App {
         }
         return n;
     }
+    // GH #1143: the optimize pass is a schedule of optimize-walk, convened
+    // by the leader here (a seeded operating practice declares the
+    // organization's own); the occurrence it was declared at.
+    @unbounded
+    fn cadence(d: dna::Dna, every_ms: Int) -> Int {
+        std::test::assert_eq_str(d.schedule(dna::Schedule { id: "optimize", every_ms: every_ms, definition: "optimize-walk", args: "{}", convener: "position:leader" }), "", "the optimize cadence is declared");
+        let mut out = 0;
+        let mut i = 0;
+        while i < d.journal.revision() {
+            let e = d.journal.read(i);
+            if e.kind == "schedule.declared" && e.entity == "optimize" { out = std::json::find_int_field(e.body, "from"); }
+            i = i + 1;
+        }
+        return out;
+    }
     run() {
         // ---- the budget admits the pass, as it admits every model-backed piece of work.
         // First, before the other organisms spend: every model call on this
         // one bus is accounted by every organism on it (a fixture hazard,
         // not a product one: production runs one organism per process).
-        self.three.tick(61000);
+        let t3 = self.cadence(self.three, 60000);
+        self.three.tick(t3 + 60000);
         std::time::sleep(300ms);
         std::test::assert_eq_int(self.three.optimizations, 1, "the first pass ran within the allowance");
         std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "and was answered");
-        self.three.tick(121000);
+        self.three.tick(t3 + 120000);
         std::time::sleep(300ms);
         std::test::assert_eq_int(self.three.optimizations, 1, "the second pass was not taken: the window is spent");
         std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "nothing was asked of the leader");
         std::test::assert_eq_int(self.lead_three.optimizations, 1, "the leader was not walked again");
         let refused = self.last(self.three.journal, "optimize.refused");
-        std::test::assert(std::str::contains(refused, "budget exhausted") && std::str::contains(refused, "waits for the next window"), "the record says why: " + refused);
+        std::test::assert(std::str::contains(refused, "budget exhausted") && std::str::contains(refused, "waits for the next occurrence"), "the record says why: " + refused);
         std::test::assert_eq_int(self.count(self.three.journal, "budget.exhausted"), 1, "the window's exhaustion was announced once");
 
-        // ---- the cadence: nothing fires with no cadence set
+        // ---- the cadence: nothing fires with no schedule declared
         self.one.tick(1000);
         self.one.tick(200000);
-        std::test::assert_eq_int(self.one.optimizations, 0, "no cadence, no pass");
-        // a cadence of 60s: the first pass one window after the start,
-        // the next tick within the window does not fire
-        self.one.optimize_every_ms = 60000;
-        self.one.tick(1000);
-        std::test::assert_eq_int(self.one.optimizations, 0, "not before a window has passed");
-        self.one.tick(61000);
-        self.one.tick(90000);
+        std::test::assert_eq_int(self.one.optimizations, 0, "no schedule, no pass");
+        // a cadence of 60s: the first pass one interval after the
+        // declaration, the next tick within the interval does not fire
+        let t1 = self.cadence(self.one, 60000);
+        self.one.tick(t1 + 1000);
+        std::test::assert_eq_int(self.one.optimizations, 0, "not before an interval has passed");
+        self.one.tick(t1 + 60000);
+        self.one.tick(t1 + 90000);
         std::time::sleep(300ms);
         std::test::assert_eq_int(self.one.optimizations, 1, "one pass after the window, none within the next");
         std::test::assert_eq_int(self.lead_one.optimizations, 1, "the leader walked the machinery once");
@@ -99,7 +115,7 @@ main locus App {
         std::test::assert_eq_int(self.lead_two.optimizations, 0, "the other organism's leader heard nothing: keyed apart");
 
         // ---- a proposal: one small change, entering as an ask in the leader's name
-        self.two.optimize();
+        let walked = self.two.run_workflow(dna::WorkflowAsk { id: "two-walk", definition: "optimize-walk", revision: 1, inputs: "{}" });
         std::time::sleep(600ms);
         let r2 = self.last(self.two.journal, "org.reviewed");
         std::test::assert(std::str::contains(r2, "\"outcome\": \"proposed\"") && std::str::contains(r2, "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"") && std::str::contains(r2, "\"by\": \"leader\""), "the proposal is recorded: " + r2);

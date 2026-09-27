@@ -35,7 +35,7 @@ locus DefinitionDraftCodec {
     fn basis_shape(basis: String) -> Bool {
         let syntax = OrganizationJson { };
         if len(basis) > 32768 || !syntax.valid(basis) || !self.fields(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest limits", 7) || !self.texts(basis, "catalog_digest format provenance_kind source_revision source_path dependency_digest") { return false; }
-        if self.text(basis, "format") != "dna.workflow-definitions/2" || self.text(basis, "provenance_kind") != "trusted_host_claims" { return false; }
+        if self.text(basis, "format") != "dna.workflow-definitions/3" || self.text(basis, "provenance_kind") != "trusted_host_claims" { return false; }
         let limits = self.raw(basis, "limits"); let keys = "max_depth max_steps max_members max_attempts max_works";
         if !self.fields(limits, keys, 5) || !self.texts(limits, keys) { return false; }
         let mut i = 0; while i < 5 { let value = self.text(limits, dna::nth_word(keys, i)); if !self.integer(value, true) || value == "0" { return false; } i = i + 1; }

@@ -172,9 +172,11 @@ contract: the one that serves it, the ones that consume it, the one
 that carries it, over which transport), `names`, `refers`,
 `constrains` (a decision and what it shaped), `runs`, `gates`,
 `witnesses`, `holds` (who holds a position — a person, or an
-organization that owns it — and who is an organization's member) and
+organization that owns it — and who is an organization's member),
 `reviews` (what a
-position signs: a contract, or a document such as a design). A contract
+position signs: a contract, or a document such as a design) and
+`convenes` (a position running a workflow definition on a cadence: a
+declared schedule, with the definition as a node of its own). A contract
 is where the two perspectives meet, so a change to one shows up in both.
 
 There is one org chart, and it is this graph: its positions, its
@@ -280,7 +282,8 @@ binding. Memory keeps
 the graph in `graph_nodes`, `graph_edges` and `graph_members`, and the
 two perspectives are queries over them: the org chart (every position,
 what it sits under, who holds it, what it signs) and the process
-model (every process, where it meets another, what runs it). A node
+model (every process, where it meets another, what runs it, and what
+each position convenes on a cadence). A node
 taken out of the graph leaves both perspectives, though the record keeps
 the edges that named it. A row that names a kind the vocabulary does not
 have, or an edge with one member, stops the projection at that row and
@@ -304,7 +307,9 @@ personal runs { api, brain, postgres, nats, node }
 scaled-out runs { api, brain, postgres, nats, node }
 ```
 
-That is voice's whole process model, as its repository states it.
+That is voice's whole process model, as its repository states it. Once
+a schedule is declared, its rhythm follows the `runs` lines, one per
+schedule — `board convenes optimize-walk every 1d`.
 
 ## Ranking inside the bound
 

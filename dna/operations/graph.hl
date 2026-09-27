@@ -18,13 +18,13 @@ import "../core" as dna;
 
 // The node kinds (GRAPH.md, "Node kinds"), and the ones a `graph.node`
 // row carries.
-const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work organization";
-const GRAPH_ROW_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work organization";
+const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work organization definition";
+const GRAPH_ROW_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work organization definition";
 
 // The hyperedge kinds, arity two or more, and the ones a `graph.edge` row
 // carries.
-const GRAPH_EDGE_KINDS: String = "unfold meets names refers constrains runs gates binds witnesses holds reviews";
-const GRAPH_ROW_EDGE_KINDS: String = "unfold meets names refers constrains runs gates witnesses holds reviews";
+const GRAPH_EDGE_KINDS: String = "unfold meets names refers constrains runs gates binds witnesses holds reviews convenes";
+const GRAPH_ROW_EDGE_KINDS: String = "unfold meets names refers constrains runs gates witnesses holds reviews convenes";
 
 // Each edge kind's members, as `<kind>:<anchor>:<second>:<others>`: the
 // anchor role comes first, exactly once. An edge with a `second` role is
@@ -33,7 +33,7 @@ const GRAPH_ROW_EDGE_KINDS: String = "unfold meets names refers constrains runs 
 // without one takes one or more members in the `others` roles (`,`-joined)
 // and is keyed by its anchor alone: one `meets` per contract, and the
 // latest row says who meets there.
-const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,consumer,carrier names:contract::noun refers:from:to: constrains:axiom::shaped runs:deployment::process gates:gate::guarded witnesses:witness::about holds:position:holder: reviews:position:subject:";
+const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,consumer,carrier names:contract::noun refers:from:to: constrains:axiom::shaped runs:deployment::process gates:gate::guarded witnesses:witness::about holds:position:holder: reviews:position:subject: convenes:position:definition:";
 
 // The node kinds a role requires, where it requires any (`<edge>.<role>:
 // <kind>[,<kind>]`). A `holds` edge is a seat or a membership (GH #1123):
@@ -44,7 +44,7 @@ const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,c
 // document is signed too), a seed (a part's reviewer, its code) or a
 // deployment (its operator, the file it was read from): routing reads
 // these edges and nothing else (GH #1091, B).
-const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position,organization reviews.position:position reviews.subject:contract,document,seed,deployment";
+const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position,organization reviews.position:position reviews.subject:contract,document,seed,deployment convenes.position:position convenes.definition:definition";
 
 const GRAPH_NAME_MAX: Int = 512;
 const GRAPH_MEMBERS_MAX: Int = 256;

@@ -109,7 +109,7 @@ main locus App {
         let odd = bad.expand("t3", "odd", 1, dna::AdmissionLimits { });
         std::test::assert(!odd.ok && std::str::contains(odd.why, "declares `ledger`, which is no store"), "an unknown store refused: " + odd.why);
         let doc = base.encode();
-        std::test::assert(std::str::contains(doc, "\"format\": \"dna.workflow-definitions/2\"") && std::str::contains(doc, "\"stores\": \"record forge record genome heart record\""), "the document carries each step's store: " + doc);
+        std::test::assert(std::str::contains(doc, "\"format\": \"dna.workflow-definitions/3\"") && std::str::contains(doc, "\"stores\": \"record forge record genome heart record\""), "the document carries each step's store: " + doc);
         let back = dna::WorkflowCatalog { };
         std::test::assert_eq_str(back.decode(doc), "", "and reads back");
         std::test::assert_eq_str(dna::definitions_listing(back), listed, "whole");
@@ -203,7 +203,7 @@ main locus App {
         std::test::assert_eq_int(cli.code, 0, "hale dna definitions: " + cli.stdout + cli.stderr);
         std::test::assert(std::str::starts_with(cli.stdout, "catalog dna/org/workflows.hl\n") && std::str::contains(cli.stdout, "concern-escalate@1") && std::str::contains(cli.stdout, "writes the heart (GH #987)"), "listed with revisions: " + cli.stdout);
         let json = in_dir(app, toolchain() + "\ndna\ndefinitions\n--json");
-        std::test::assert(std::str::contains(json.stdout, "\"format\": \"dna.workflow-definitions/2\""), "and as its document: " + json.stdout);
+        std::test::assert(std::str::contains(json.stdout, "\"format\": \"dna.workflow-definitions/3\""), "and as its document: " + json.stdout);
 
         // ---- the project's own definitions are its own; the generated half
         // is rewritten to the current shape by upgrade, whatever it holds

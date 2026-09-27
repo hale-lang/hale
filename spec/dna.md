@@ -13,9 +13,9 @@ one (GH #646).
 
 | Memory | Holds | Lives in | Written by |
 |---|---|---|---|
-| **Structure** | what the organism *is*: positions, routes, schedules and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
+| **Structure** | what the organism *is*: positions, routes, workflow definitions and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
 | **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
-| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
+| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules declared and their occurrences, concerns, handoffs, effect claims, liveness | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
 The routing table is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
@@ -383,8 +383,9 @@ ask comes back to it with the host's relay until it is answered or the
 claim expires (a case is held and driven again by `redrive`; memory
 that cannot be reached is said as such, `not planned: memory could not
 be reached to claim …`). The claim is given back once the plan's
-admission is recorded (the case handed). The optimize pass claims its window, `optimize/<n>` for the
-cadence's length, and leaves it to expire. A claim a node acts on is a
+admission is recorded (the case handed). The optimize pass takes no
+claim: it is a scheduled occurrence, one execution under its key
+(**Schedules**). A claim a node acts on is a
 `claim.taken <key> {holder, token, until}` row and its return a
 `claim.released <key> {holder}` row (the Ledger's), so the record
 shows who took what, and a second node's take after the first one's
@@ -780,70 +781,122 @@ repository:
   handed, `hale dna board` lists it under *tasks waiting* with the
   reason, and its assignee closes it with `hale dna task done`. Without
   an obligation class or a practice in force, a report never suffices.
-- **Schedules (GH #610).** An ask fired on an interval or a cron, in
-  the organism's own name, taking the ordinary road. The org chart
-  declares them in its `birth()` — `self.core.schedule(Schedule {
-  id, every_ms | cron, ask, requires })` — and the substrate's clock
-  (the org program's loop, `request_tick` with a millisecond monotonic
-  clock) queues their processing through the organization's keyed
-  `TickRequested` handler. Synchronous `tick` is for that handler or
-  isolated callers with no incoming bus work; a live loop uses
-  `request_tick` so incoming work cannot enter during journal refresh.
-  A declaration is a row, `schedule.declared <id>
-  {action, every_ms, cron, ask, requires}`, when new or changed; a
-  malformed cron (five fields, minute hour day-of-month month
-  day-of-week; `*`, `a`, `a-b`, `*/n`, lists; ranges checked) is
-  refused at declaration, never when it would first fire, with a
-  `schedule.refused` row. An interval counts from the first tick and
-  fires once per interval; a cron fires once in the UTC minute it
-  names (day-of-month and day-of-week both restricted: either). A fire
-  is **claimed in the record before it is admitted**: `schedule.fired
-  <id> {intent, at}` first — a claim the record refuses admits nothing
-  — then `ask` with `Intent { id: "s:<id>@<at>/<n>", from:
-  "schedule:<id>" }`, routed as `requires` says, then
-  `schedule.admitted <id> {intent, task, at}`; a refusal by the
-  membrane is `schedule.refused`. A declaration after a restart
-  restores the last fire from the record — its time, and for a cron
-  the minute, so a cron does not fire again in the minute it fired —
-  and a claimed occurrence without its admission: the Task born under
-  its intent completes the admission (`recovered: true`), and one never
-  born is admitted at the next tick, once. The optimize pass's fire is
-  likewise a `schedule.fired {action: optimize, at}` row written before
-  the pass runs. **Overlap:** a
-  schedule never fires while the last Task it fired is open (born,
-  pending, handed — anything but done or failed); the skip is a
-  `schedule.skipped <id> {task, state, at}` row, never silent. `hale
-  dna schedule pause <id>` / `resume <id>` append `schedule.paused` /
-  `schedule.resumed` in your name from any clone; the organism reads
-  them at its tick (a git journal is re-read from its ref at most
-  every 5s) and a paused schedule never fires. `hale dna schedule`
-  lists them as the record has them. At birth a schedule's state —
-  its last Task, paused or not — is read back from the record. The
-  optimize pass is a schedule: `optimize_every_ms` declares
-  `optimize` (`action: "optimize"`) at birth and each run is a
-  `schedule.fired optimize` row.
-- **The optimize pass (GH #596 O).** On a cadence the org chart sets
-  (`optimize_every_ms` on the substrate; 0 is never; the org program's
-  loop calls `request_tick` with a millisecond monotonic clock), the substrate
-  first asks the budget — the pass is model-backed work, and none is
-  routed on an exhausted window: `optimize.refused <org>`, and the
-  pass waits for the next window — then claims the window
-  (`optimize/<n>`, the cadence's own length; **Claims by id**, below),
-  so of the nodes running the organism one runs the pass, as an
-  execution of `optimize-walk` (GH #995: **The workflow catalog**) whose
-  one step, `walk`, reads the record's structural signals
-  — asks planned and how many took the defaults, concerns raised,
-  grant contractions, verdicts refused, mutations rolled back — and
-  asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
-  machinery, not the work. The leader answers with one small proposal
-  or none (`OrgReviewed`), and the substrate journals `org.reviewed
-  <org>` either way, with the signals it read and the execution it
-  answers (`task`, carried on `OptimizeRequested` and `OrgReviewed`, so
-  passes that overlap never answer each other), which settles its `walk`
-  step: "if the state is clean, say so". A proposal enters as an ask in the leader's name and takes
-  the whole road — planned, proposed, reviewed by the Board as an
-  organization change. `hale dna` runs the pass on demand through the
-  substrate's `optimize()`.
+- **Schedules (GH #610, GH #1143).** When a workflow runs and who
+  convenes it — nothing else. A schedule points at a definition of the
+  catalog (**The workflow catalog**), never at intent text: `Schedule {
+  id, definition, args, every_ms | cron, convener, paused,
+  last_occurrence }`, plus the state the record rebuilds (`from`,
+  `task`, `fired`, `last_minute`). There is no `ask` and no `requires`,
+  no `schedule.fired` or `schedule.admitted` row, and no claim before
+  an ask: an occurrence is an execution, and its key is its
+  idempotence.
+  **Declared by ratification.** A ratified practice whose receipt
+  carries `schedule` (a JSON object as text) declares it in its
+  `ratify` step; the ratification stands when the declaration is
+  refused — the step is done, `ratified by <who>; its schedule was
+  refused (<why>)`, and the refusal is its own `schedule.refused` row
+  naming the hole. `hale dna schedule
+  declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition
+  <id> --convener <position> [--args <json>] [--as <who>]` asks it of
+  the organization through the store: a `schedule.requested` row the
+  host relays, answered once under the request's id by
+  `schedule.answered {schedule, declared, why, by}` (the CLI takes a
+  bare position name as `position:<name>`). A declaration is
+  `schedule.declared <id> {every_ms, cron, definition, args, convener,
+  from}`, written when new or changed — declaring the same schedule
+  unchanged writes nothing — and `from` is the occurrence it was
+  declared at: nothing at or before it is due. It is refused, a
+  `schedule.refused <id> {why}` row and the reason, when it has no id
+  or one with `@` or a space; names neither an interval nor a cron, or
+  both; names a malformed cron (five fields, minute hour day-of-month
+  month day-of-week; `*`, `a`, `a-b`, `*/n`, lists; ranges checked —
+  at declaration, never when it would first fire); names a convener
+  that is not `position:<name>`, or one that cannot reach the
+  definition's first store; names a definition not in the catalog, one
+  whose expansion the catalog would refuse, or one with a step the
+  organization does not perform; or carries `args` that are not a JSON
+  object naming every input the definition `takes`. **Reach:** the
+  organism's own positions (`leader`, `editor`) reach every store its
+  workflows write; a position of the graph reaches it through who
+  holds it — a person, or an organization's members — as memory's
+  routing says; with no memory named, or memory not answering, a graph
+  convener is refused, nothing assumed. A position nobody holds is a
+  hole: the refusal says "nobody holds position:<p>: it convenes
+  nothing until someone does (`hale dna fill <p> <holder>`)" and the
+  row carries `hole: position:<p>`, the hole #1091's path fills.
+  Declaring also writes the schedule into the graph (**The
+  repository's graph**): a `definition:<id>` node, once, and a
+  `convenes(position, definition)` edge whose body carries its
+  `cadence` (`every 1d`, `every 90s`, `cron <expr>`) and `schedule`.
+  **Occurrences.** The org program's loop ticks with the wall clock in
+  milliseconds (`request_tick(std::time::nanos(std::time::current()) /
+  1000000)`, never a monotonic clock), queued through the
+  organization's keyed `TickRequested` handler. Synchronous `tick` is
+  for that handler or isolated callers with no incoming bus work; a
+  live loop uses `request_tick` so incoming work cannot enter during
+  journal refresh. An occurrence's time is its cadence's: an
+  interval's step from the epoch (`floor(now / every_ms) * every_ms`),
+  or a cron's latest matching minute in UTC (day-of-month and
+  day-of-week both restricted: either; looked for over the last week),
+  a cron evaluated once per minute. A tick in an occurrence's period
+  admits it as an execution of the definition's newest revision
+  through its first store, with the ask id `sched:<id>@<occurrence
+  time>`, `args` as its inputs and the convener as its `from`. That key
+  is the idempotence: a schedule's state is rebuilt from the record
+  (from its declaration's `from`, the admissions under its key, its
+  skipped, refused and missed rows, and its pauses), so a restart, or
+  a second ask of the same occurrence, is one execution. The
+  occurrences whose period passed with no tick — the organism was
+  down — are one `schedule.missed <id> {first, last, count, why}` row
+  per run of them, and nothing else in this slice. A refused admission
+  is `schedule.refused <id> {occurrence, why}`. **Concurrency** is the
+  definition's (`WorkflowDef.concurrency`): under `skip`, the default,
+  an occurrence while the last execution is open (admitted, not yet
+  `workflow.settled`) is a `schedule.skipped <id> {occurrence, task}`
+  row, never silent; under `overlap` it is admitted beside it.
+  **Amendments.** `hale dna schedule pause <id>` / `resume <id>` append
+  `schedule.paused` / `schedule.resumed {by}` in the caller's name from
+  any clone; the organism reads them at its tick (a git journal is
+  re-read from its ref at most every 5s). A paused schedule is not
+  due: its occurrences pass unfired and unmissed, and a resume goes on
+  from the next one. `hale dna schedule` lists each as the record has
+  it — ``<id> [live|paused] every <n>ms|cron `<expr>` (UTC) —
+  <definition>, convened by <position> · occurred N, skipped N, missed
+  N · last <task>``, *occurred* counting the admissions under its key.
+  **Not in this slice**, by name: terms (an edge's `until` firing a
+  definition), turnarounds (a row's age firing one), calendars and
+  offsets beyond UTC, per-person availability, derived cadence holes
+  (ingest proposing that a process has no cadence), `on_miss: late`
+  and a `queue` concurrency, declaring a refused schedule again once
+  its hole is filled, and who fires on a multi-node spine — the tick
+  is the body's that holds the lease, and a memory compare-and-swap on
+  the occurrence key is owed when spine nodes multiply.
+- **The optimize pass (GH #596 O).** The pass is an execution of
+  `optimize-walk` (GH #995: **The workflow catalog**) and nothing
+  else: there is no `optimize_every_ms` and no `Dna.optimize()`. Its
+  cadence is a schedule (above) that the seeded operating practice
+  `operating/optimize-cadence` declares once the Board ratifies it —
+  `{"id": "optimize", "every_ms": 86400000, "definition":
+  "optimize-walk", "args": "{}", "convener": "position:board"}` —
+  convened by the Board, so it is refused as a hole until someone
+  holds the Board; a different cadence is an amendment the Board
+  ratifies. The tick is the body's that holds the lease, and an
+  occurrence asked twice is one pass. Its one step, `walk`, first
+  asks the budget — the pass is model-backed work, and none is routed
+  on an exhausted window: `optimize.refused <org>` ("the pass waits
+  for the next occurrence") and the step fails saying so — then reads
+  the record's structural signals — asks planned and how many took the
+  defaults, concerns raised, grant contractions, verdicts refused,
+  mutations rolled back — and asks the leader (`OptimizeRequested`,
+  keyed by `org_id`, once per incarnation) to walk the machinery, not
+  the work. The leader answers with one small proposal or none
+  (`OrgReviewed`), and the substrate journals `org.reviewed <org>`
+  either way, with the signals it read and the execution it answers
+  (`task`, carried on `OptimizeRequested` and `OrgReviewed`, so passes
+  that overlap never answer each other), which settles its `walk`
+  step: "if the state is clean, say so". A proposal enters as an ask
+  in the leader's name and takes the whole road — planned, proposed,
+  reviewed by the Board as an organization change.
 - **Grants layer by containment (GH #596).** The substrate may hold a
   `ceiling`: the grant above the child's — the organism's, the Board's
   to widen. A child's boundary reads its grant through the ceiling **as
@@ -1068,8 +1121,8 @@ repository:
   The organism's answers (`intent.offered`, `task.born`,
   `review.settled`, `review.refused`) return the same way. The body
   writes `intent.offered`, so the asker is not its author: the row's
-  body names who asked — `<outcome> (from alice)`, a schedule, an
-  optimizer — and a head's ask carries the person the head identified.
+  body names who asked — `<outcome> (from alice)`, an optimizer — and
+  a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
   entity. `hale dna task create --no-wait` appends and returns, on either
   path: beside a live organism once the row is appended, from a clone
@@ -1253,7 +1306,7 @@ record's.
 | `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
 | `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node stops and exits 75 for its unit to start it again, and the next node relays every unanswered request again (GH #986) |
 | `observation.requested` / `observation.refused` | record | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it; refused, unrelayed, when the row is not verified under `signed` trust (GH #986) |
-| `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` — and gave it back: `holder`, and for a take its `token` and `until` |
+| `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the principal that took it (`principal_mode`, `principal_name`: whose outcome the lease admits), the attempt's task, work and performer kind, and the command that took it |
 | `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result (`result`, `result_ref`), the receipts it filed (`evidence_ref`), the calls it made (`calls`), the hat it wore (`hat_digest`, `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
 | `attempt.outcome_refused` | ledger | why the owner would not settle a leg's outcome (`why`, `holder`, `token`, `request`) |
@@ -1265,8 +1318,9 @@ record's.
 | `body.provisioned` | record | a machine made able to run it |
 | `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is set where the body runs |
 | `secret.rotated` | record | a credential set or rotated — the name and the place, never the value |
-| `schedule.declared` / `schedule.refused` | ledger | a schedule the org chart declares, or one that would not be admitted |
-| `schedule.fired` / `schedule.skipped` | ledger | the Task a schedule made, or why it did not fire |
+| `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization (`hale dna schedule declare`), relayed by the host; its answer under the request's id: `declared`, `why` |
+| `schedule.declared` / `schedule.refused` | ledger | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`); or one that would not be declared (`why`, and `hole` for a convener nobody holds), or an occurrence whose admission was refused (`occurrence`, `why`) |
+| `schedule.skipped` / `schedule.missed` | ledger | an occurrence not admitted while the last execution is open (`occurrence`, `task`); occurrences whose period passed with no tick (`first`, `last`, `count`, `why`) |
 | `schedule.paused` / `schedule.resumed` | ledger | paused and resumed by hand, in your name |
 | `receipt.classified` / `receipt.withheld` | ledger | a protected body memory keeps sealed, or one withheld because no memory could keep it |
 | `receipt.disclosed` | ledger | a reader authorized, for a purpose |
@@ -1346,13 +1400,27 @@ a later revision changes nothing an earlier revision expands to.
 A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
-one JSON document (`format: dna.workflow-definitions/2`: each workflow's
-`steps` and its `stores`) and `decode(text)` reads one back, refusing a
+one JSON document (`format: dna.workflow-definitions/3`: each workflow's
+`steps`, its `stores`, and how it occurs on a schedule — `concurrency`
+and `takes`) and `decode(text)` reads one back, refusing a
 document that does not close, another format, an id outside the grammar,
 an already defined revision, a document that defines one revision twice,
-or a workflow whose `stores` do not name one per step, and adding
+a workflow whose `stores` do not name one per step, or a `concurrency`
+that is not `skip` or `overlap` (an absent one is `skip`), and adding
 nothing then. `latest(id)` is the newest revision the catalog holds: what
 a new Task binds.
+
+How a definition occurs when a schedule points at it (GH #1143,
+**Schedules**) is the definition's:
+`occurs(id, revision, concurrency, takes)` sets
+`WorkflowDef.concurrency` — `skip` (the default: an occurrence while
+an execution of it is open is skipped) or `overlap` (admitted beside
+it) — and `takes`, the input names, space-separated, that a schedule's
+`args` must carry; it refuses another concurrency, or a definition the
+catalog does not hold. The baseline's `ask-edit@1` and `ask-person@1`
+take `objective`. `hale dna definitions` prints `occurs: <concurrency>
+while open[, takes <inputs>]` under a definition only when it says more
+than the default.
 
 `encode_bound()` writes one bound execution as a recipe (`format:
 dna.workflow-recipe/1`; an admission nests it as an object of its own,
@@ -1470,10 +1538,13 @@ what an admission would refuse each definition for.
   rule that always did. A source over the threshold with no proposal and
   no execution running for it is escalated once at birth by an execution
   that raises nothing more (its raises are the record's).
-- **optimize-walk** is the optimize pass: the pass's budget and window
-  claim are its admission's gate (`optimize.refused` as before); `walk`
-  reads the machinery's signals, asks the leader once per incarnation and
-  is done at its `org.reviewed` row, which names the execution (`task`).
+- **optimize-walk** is the optimize pass, and occurs on the schedule
+  `operating/optimize-cadence` declares (**The optimize pass**): `walk`
+  asks the budget first — an exhausted one is `optimize.refused` and
+  fails the step, and the pass waits for the next occurrence — then
+  reads the machinery's signals, asks the leader once per incarnation
+  and is done at its `org.reviewed` row, which names the execution
+  (`task`).
 
 **The record is the local-mode floor; the ledger is the runtime.** Every
 step is a few rows of the day's work (`step.*`, `attempt.*`,
@@ -3528,7 +3599,10 @@ The live half is memory's, projected from the record by the spine
   organization whose record never held it. Its receipts carry
   provenance `design`, which marks a toolchain-seeded practice of
   either family; `HALE_DNA_DESIGN_SUFFIX` (fixtures only) appends to
-  every practice of both.
+  every practice of both. A receipt may also carry a `schedule`, which
+  the practice declares when it is ratified (**Schedules**):
+  `operating/optimize-cadence` carries the optimize pass's, convened by
+  the Board once a day (**The optimize pass**).
 - **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
   function returning text like `purpose`: the leader's brief, saying
   that it is the organism's architect — it proposes, the Board
@@ -3549,8 +3623,8 @@ The live half is memory's, projected from the record by the spine
   model that answers, whose plans take the defaults, and which spends
   nothing. The CLI fixtures set it.
 - **An ask is admitted as a workflow, in the one engine (card 18).**
-  `Dna.ask(Intent)` — intent through the membrane, a schedule's, an
-  optimizer's — passes the membrane's gate, the owner's (GH #664) and
+  `Dna.ask(Intent)` — intent through the membrane, an optimizer's —
+  passes the membrane's gate, the owner's (GH #664) and
   the budget's, journals `intent.offered`, and admits a workflow for
   it (`workflow.admitted`, the one positive discriminator, under the
   intent's id as the admission's identity — offered again it is the
@@ -3700,7 +3774,8 @@ The live half is memory's, projected from the record by the spine
   `dna/operations/graph.hl`. **Node kinds**: `purpose`, `axiom`,
   `process`, `seed`, `contract`, `noun`, `deployment`, `practice`,
   `gate`, `document`, `witness`, `position`, `work`, `organization`
-  (a firm, GH #1123); a node's id is `<kind>:<name>`. **Hyperedge
+  (a firm, GH #1123), `definition` (a workflow catalog definition a
+  schedule convenes, GH #1143); a node's id is `<kind>:<name>`. **Hyperedge
   kinds**, arity two or more, each a list of members `{role, node}`
   whose first is its anchor:
   `unfold(parent, child)`, `meets(contract; server…, consumer…, carrier…)`,
@@ -3710,7 +3785,12 @@ The live half is memory's, projected from the record by the spine
   `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
   `reviews(position, subject)` — the subject a contract, a document, a
   seed or a deployment: what the position signs a change to, a design
-  document being signed too. A `holds` edge is a seat or a membership
+  document being signed too — and `convenes(position, definition)`
+  (GH #1143), a position convening a definition on a cadence, written
+  when a schedule is declared (**Schedules**), its body carrying the
+  `cadence` (`every 1d`, `every 90s`, `cron <expr>`) and the
+  `schedule`; its `position` is a `position` node and its `definition`
+  a `definition` node. A `holds` edge is a seat or a membership
   (GH #1123): `holds(position:<p>, <person>)` is a person's seat,
   `holds(position:<p>, organization:<o>)` is organization `o` owning
   position `p`, and `holds(organization:<o>, <person>)` is the person's
@@ -3720,7 +3800,7 @@ The live half is memory's, projected from the record by the spine
   organization (**Owners**). A position has one owning organization and
   a person one: memory refuses a second of either as a `hold.refused`
   row, and `hale dna fill` refuses to propose it. A pair kind (`unfold`, `refers`,
-  `holds`, `reviews`) is exactly its two members and is keyed by both,
+  `holds`, `reviews`, `convenes`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says
   who meets there. An edge's id is `<kind>:<anchor>` or
@@ -3765,8 +3845,9 @@ The live half is memory's, projected from the record by the spine
   record's order, each with the node it unfolds from (`under`), its
   `holders` and the contracts and documents it `reviews`;
   `graph_perspective("processes")` is the processes, every `meets` (`contract`, `via`,
-  `servers`, `consumers`, `carriers`, `outside`) and every `runs`
-  (`deployment`, `processes`), each as JSON the server builds.
+  `servers`, `consumers`, `carriers`, `outside`), every `runs`
+  (`deployment`, `processes`) and every `convenes` (`position`,
+  `definition`, `cadence`, `schedule`), each as JSON the server builds.
   `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
   `practice` counts the practices proposed or ratified and `binds` the
   ratified practices that bind something, one hyperedge each.
@@ -3992,7 +4073,10 @@ The live half is memory's, projected from the record by the spine
   process model** is a line per `meets` — its outside parties and
   consumers, the arrow `--<via>: <contract>-->`, its servers or
   `(nobody here)`, and `(carried by <carriers>)` after — then one
-  `<deployment> runs { <processes> }` per `runs`. `--json` prints one object: `perspective`, `record_rows` (the
+  `<deployment> runs { <processes> }` per `runs`, then one
+  `<position> convenes <definition> <cadence>` per `convenes` (`board
+  convenes optimize-walk every 1d`). `--json` prints one object:
+  `perspective`, `record_rows` (the
   record's length), `projected_rows` (memory's watermark), `stamp_valid`
   and `graph`, the query's answer as memory built it. How memory stands to
   the record is said on stderr, never in the perspective: behind it

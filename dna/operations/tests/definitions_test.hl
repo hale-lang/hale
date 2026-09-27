@@ -104,7 +104,7 @@ fn test_validation() {
     let a = cat.define("root", 1, "record", "ASCII A");
     let b = cat.leaf("root", 1, 0, "one", dna::WorkRequest { objective: "leaf" }, 1);
     let doc = cat.encode();
-    invalid("{\"format\":\"dna.workflow-definitions/2\"}", "missing arrays");
+    invalid("{\"format\":\"dna.workflow-definitions/3\"}", "missing arrays");
     invalid(doc + "{}", "trailing JSON");
     invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": true"), "boolean integer");
     invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": 1.0"), "decimal integer");
@@ -113,7 +113,7 @@ fn test_validation() {
     invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": null"), "missing text type");
     invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": \"leaf\", \"private\": \"x\""), "unknown field");
     invalid(std::str::replace(doc, "\"title\": \"ASCII A\"", "\"title\": \"ASCII A\", \"id title\": \"joined\""), "unknown joined workflow field");
-    invalid(std::str::replace(doc, "\"format\": \"dna.workflow-definitions/2\"", "\"format\": \"dna.workflow-definitions/2\", \"format workflows\": []"), "unknown joined catalog field");
+    invalid(std::str::replace(doc, "\"format\": \"dna.workflow-definitions/3\"", "\"format\": \"dna.workflow-definitions/3\", \"format workflows\": []"), "unknown joined catalog field");
     invalid(std::str::replace(doc, "ASCII A", "bad\\q"), "bad escape");
     invalid(std::str::replace(doc, "ASCII A", "bad\\u0000"), "NUL escape");
     invalid(std::str::replace(doc, "\"workflow\": \"root\"", "\"workflow\": \"absent\""), "orphan member");

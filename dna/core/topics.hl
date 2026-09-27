@@ -337,6 +337,22 @@ type HoldRequest {
 }
 topic HoldRequested { payload: HoldRequest; subject: "dna.hold.requested"; }
 
+// GH #1143: a schedule asked of the organization (`hale dna schedule
+// declare`): the host relays the request row, and the organization declares
+// it — the definition one the catalog admits, the args what it takes —
+// or refuses it, answering `schedule.answered` under the request's id.
+type ScheduleRequest {
+    request_id: String = "";
+    schedule: String = ""; // the schedule's id
+    every_ms: Int = 0;
+    cron: String = "";
+    definition: String = "";
+    args: String = "{}";
+    convener: String = ""; // `position:<name>`
+    by: String = "";
+}
+topic ScheduleRequested { payload: ScheduleRequest; subject: "dna.schedule.requested"; }
+
 // A scoped native command asks the Body to propose a generic Knowledge node.
 // Admission supplies the exact candidate and binding scope; Review still owns
 // adoption. request_id is the command's durable identity, not a graph node ID.

@@ -108,3 +108,19 @@ context digest was reproduced from the new context, kept as a run's
 receipt, with the five lines put back, and each new key was the one the
 miss named. No fresh model call was made; every answer, token and cost
 field is unchanged.
+
+GH #1143 moved the optimize pass onto a schedule, which changed three
+places in the generated organization's `main.hl`: the `optimize_every_ms`
+field and its comment go (a comment above `planned: true` says the pass
+occurs on the cadence a ratified practice declares), the comment above
+the `run()` loop says the schedules occur on its tick, and the loop ticks
+on the wall clock (`std::time::nanos(std::time::current())`) where it
+ticked on the monotonic one. Two entries carry that file in their
+context. The organization-growth edit (`911a2531e52e…`, was
+`6553a025bb96…`) is re-keyed, and its recorded output carries the same
+three changes and nothing else; the growth assessment (`0f8fa3aab6c4…`,
+was `0d1b72eedeb6…`) is re-keyed for the changed context alone. Each old
+context digest was reproduced from the new context, kept as a run's
+receipt, with the three changes taken back out, and each new key was the
+one the miss named. No fresh model call was made; every answer, token and
+cost field is unchanged.

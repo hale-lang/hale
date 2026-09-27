@@ -384,17 +384,14 @@ locus Dna {
         gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
-        // this organism's leader; `optimize_every_ms` is the cadence
-        // the Board sets on the org chart (0 = never); the org program's
-        // loop calls `request_tick`.
+        // this organism's leader; the pass is an execution of
+        // optimize-walk, occurring on the cadence a ratified practice
+        // declares (GH #1143); the org program's loop calls `request_tick`.
         org_id: String = "org";
-        optimize_every_ms: Int = 0;
-        last_optimized: Int = 0;
         optimizations: Int = 0;
-        // GH #610: the schedules the org chart declared (`schedule`),
-        // with their state; `optimize_every_ms` becomes one at birth
+        // GH #1143: the schedules the record declares, with their state
         schedules: ScheduleRows = ScheduleRows { };
-        schedules_read: Int = 0; // record rows read for pause/resume
+        schedules_read: Int = 0; // record rows read for declarations, pause and resume
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -444,10 +441,8 @@ locus Dna {
         self.review_journal.bind(self.journal);
         self.organization_source_review_facts.bind(self.organization_source_facts);
         self.rehydrate();
-        // GH #610: the optimize pass is a schedule, not a special case
-        if self.optimize_every_ms > 0 {
-            let why = self.schedule(Schedule { id: "optimize", every_ms: self.optimize_every_ms, action: "optimize", requires: "" });
-        }
+        // GH #1143: the schedules the record declares
+        self.read_schedule_rows();
         // GH #596, layering: a child grant wider than the organism's is
         // the early error — refused in the record, and bound by the
         // ceiling from here on (the use-time check does the binding)
@@ -505,6 +500,7 @@ locus Dna {
         subscribe ConcernRaised as on_concern;
         subscribe PracticeRequested as on_practice_requested;
         subscribe HoldRequested as on_hold_requested;
+        subscribe ScheduleRequested as on_schedule_requested;
         subscribe KnowledgeNodeRequested as on_knowledge_node_requested;
         subscribe KnowledgeBindingRequested as on_knowledge_binding_requested;
         subscribe KnowledgeEdgeRequested as on_knowledge_edge_requested;
@@ -1475,29 +1471,6 @@ locus Dna {
             + "mutations rolled back: " + to_string(rolled_back) + "\n"
             + "record rows: " + to_string(n);
     }
-    // Ask the leader to walk the machinery. Once per cadence, or on
-    // demand.
-    fn optimize() {
-        // GH #583 M1 holds here too: the pass is model-backed work, and
-        // none is routed on an exhausted budget; it waits for the next
-        // window rather than spending what the Board did not allow.
-        let now = std::time::now();
-        if self.budget_exhausted(now) {
-            let x = self.journal.append(self.journal.revision(), "optimize.refused", self.org_id, "budget exhausted (" + self.budget.describe(now) + "); the pass waits for the next window");
-            return;
-        }
-        // GH #1026: one pass per window among the nodes running this
-        // organism: the window is claimed for its own length, and a node
-        // that finds it taken leaves it to the node that took it
-        let window = if self.optimize_every_ms > 0 { (now * 1000) / self.optimize_every_ms } else { now };
-        let ttl = if self.optimize_every_ms >= 1000 { self.optimize_every_ms / 1000 } else { 1 };
-        if !self.take_claim("optimize/" + to_string(window), ttl) { return; }
-        self.note_claim("optimize/" + to_string(window));
-        // GH #995: the pass is an execution of optimize-walk, one step: the
-        // walk, answered by the leader (a proposal is an ask of its own)
-        self.optimizations = self.optimizations + 1;
-        let t = self.run_workflow(WorkflowAsk { id: "optimize:" + to_string(window), definition: "optimize-walk", revision: self.catalog.latest("optimize-walk"), inputs: "{\"window\": " + to_string(window) + "}" });
-    }
     // Enter through the owner's queue, so work arriving during a
     // journal refresh waits for its cached view to be complete. Calling
     // tick directly from the parent's loop allowed a queued handler to
@@ -1512,17 +1485,6 @@ locus Dna {
     // the Board's.
     @unbounded
     fn tick(now: Int) {
-        // the cadence is the Board's and may be set after birth
-        if self.optimize_every_ms > 0 {
-            let mut have = -1;
-            let mut k = 0;
-            while k < self.schedules.len() {
-                let x = self.schedules.get(k) or Schedule { };
-                if x.id == "optimize" { have = x.every_ms; }
-                k = k + 1;
-            }
-            if have != self.optimize_every_ms { let why = self.schedule(Schedule { id: "optimize", every_ms: self.optimize_every_ms, action: "optimize", requires: "" }); }
-        }
         // pause/resume rows appended from a clone reach the record the
         // organism holds; read what arrived (a git journal is re-read
         // from its ref at most every 5s of wall time)
@@ -1545,169 +1507,221 @@ locus Dna {
         // GH #667: a transfer another owner's member accepted for this
         // owner becomes this owner's handed Task
         if self.ownership.shared() { self.admit_transfers(); }
+        // GH #1143: every schedule the record declares, at `now`
+        self.read_schedule_rows();
         let n = self.schedules.len();
-        if n == 0 { return; }
-        self.read_schedule_controls();
         let mut i = 0;
         while i < n {
             let mut s = self.schedules.get(i) or Schedule { };
-            if s.paused { i = i + 1; continue; }
-            // an occurrence claimed before a restart and never born: admitted
-            // now, under the intent it was claimed with, once
-            if len(s.pending_intent) > 0 && s.action != "optimize" {
-                let pt = self.ask(Intent { id: s.pending_intent, outcome: s.ask, from: "schedule:" + s.id });
-                if std::str::starts_with(pt, "refused") {
-                    let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, pt);
-                } else if pt == "planning" {
-                    // card 18: the leader's word is out; the intent stays
-                    // pending and is asked again at the next tick, which
-                    // finds the admission once it landed
-                    i = i + 1;
-                    continue;
-                } else {
-                    s.task = pt;
-                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + s.pending_intent + "\", \"task\": \"" + pt + "\", \"at\": " + to_string(s.last_at) + "}");
-                }
-                s.pending_intent = "";
+            if !s.paused { self.schedules.set(i, self.evaluate(s, now)) or discard; }
+            else {
+                // paused, nothing is due: its occurrences pass unfired and
+                // unmissed, and a resume goes on from the next one
+                let cur = occurrence_at(s, now);
+                if cur > s.last_occurrence { s.last_occurrence = cur; self.schedules.set(i, s) or discard; }
             }
-            let mut due = false;
-            if s.every_ms > 0 {
-                // armed at the first tick; then once per interval
-                // an interval counts from the clock's origin (the optimize
-                // pass always did), or from its last fire in the record,
-                // so a restart does not fire again before its time
-                if !s.armed {
-                    s.armed = true;
-                    if s.last_at > 0 { s.last_ms = now - (wall - s.last_at) * 1000; }
-                }
-                if now - s.last_ms >= s.every_ms { s.last_ms = now; due = true; }
-            } else if len(s.cron) > 0 {
-                let minute = wall / 60;
-                if minute != s.last_minute && cron_matches(s.cron, wall) { s.last_minute = minute; due = true; }
-            }
-            if due {
-                if s.action == "optimize" {
-                    // the fire is claimed in the record before the pass runs
-                    let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"action\": \"optimize\", \"at\": " + to_string(wall) + "}");
-                    if x.ok {
-                        s.fired = s.fired + 1;
-                        s.last_at = wall;
-                        self.optimize();
-                    }
-                } else {
-                    // overlap: never while the last Task it fired is open — the skip is a row.
-                    // card 18: an admitted execution is open until its workflow settled
-                    let st = if len(s.task) == 0 { "done" }
-                    else if self.workflow_admitted(s.task) { if self.has_row("workflow.settled", s.task) { "done" } else { "pending" } }
-                    else { self.task_state(s.task) };
-                    if len(s.task) > 0 && st != "done" && st != "failed" {
-                        let x = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, "{\"task\": \"" + s.task + "\", \"state\": \"" + (if len(st) == 0 { "pending" } else { st }) + "\", \"at\": " + to_string(wall) + "}");
-                    } else {
-                        // the occurrence is claimed in the record before it is
-                        // admitted: a restart after the claim restores it (admitted
-                        // once, never twice), and a claim the record refuses admits
-                        // nothing
-                        let intent = "s:" + s.id + "@" + to_string(wall) + "/" + to_string(s.fired + 1);
-                        let claim = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"intent\": \"" + intent + "\", \"at\": " + to_string(wall) + "}");
-                        if claim.ok {
-                            s.fired = s.fired + 1;
-                            s.last_at = wall;
-                            let t = self.ask(Intent { id: intent, outcome: s.ask, from: "schedule:" + s.id });
-                            if std::str::starts_with(t, "refused") {
-                                let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
-                            } else if t == "planning" {
-                                // card 18: admitted once the leader's word lands;
-                                // the next tick asks again and records it
-                                s.pending_intent = intent;
-                            } else {
-                                s.task = t;
-                                let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + intent + "\", \"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
-                            }
-                        }
-                    }
-                }
-            }
-            self.schedules.set(i, s) or discard;
             i = i + 1;
         }
     }
-    // GH #610: declare a schedule. A malformed cron is refused here,
-    // not when it would first fire; the declaration is a row when it
-    // is new or changed. "" when accepted, else why.
+    // GH #1143: one schedule at `now` (wall milliseconds). An occurrence
+    // is due from its time until the next one's, and a tick in that
+    // period evaluates it; the occurrences whose period passed with no
+    // tick are missed, one `schedule.missed` row per run of them and
+    // nothing else. The occurrence itself is admitted under the
+    // definition's concurrency. A cron is evaluated once per minute.
+    @unbounded
+    fn evaluate(sched: Schedule, now: Int) -> Schedule {
+        let mut s = sched;
+        if len(s.cron) > 0 {
+            let minute = now / 60000;
+            if minute == s.last_minute { return s; }
+            s.last_minute = minute;
+        }
+        let cur = occurrence_at(s, now);
+        if cur <= 0 || cur <= s.last_occurrence { return s; }
+        if s.last_occurrence <= 0 {
+            // declared with no occurrence to count from: the first tick places it
+            s.last_occurrence = cur;
+            return s;
+        }
+        let missed = missed_between(s, s.last_occurrence, cur);
+        if missed.count > 0 {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("first", missed.first);
+            b.int_field("last", missed.last);
+            b.int_field("count", missed.count);
+            b.string_field("why", "no tick evaluated " + (if missed.count == 1 { "it" } else { "them" }) + " in " + (if missed.count == 1 { "its" } else { "their" }) + " period: the organization was not running");
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "schedule.missed", s.id, b.result());
+            if missed.last > s.last_occurrence { s.last_occurrence = missed.last; }
+        }
+        return self.occur(s, cur);
+    }
+    // The definition an occurrence of `s` binds: the catalog's newest.
+    fn definition_of(s: Schedule) -> WorkflowDef { return self.catalog.definition(s.definition, self.catalog.latest(s.definition)); }
+    // Whether an execution is still open: admitted, and not settled.
+    fn execution_open(task: String) -> Bool { return len(task) > 0 && !self.has_row("workflow.settled", task); }
+    // Occurrence `t` of `s`, under its definition's concurrency: admitted,
+    // or, while the last execution is open, skipped (a row naming it) —
+    // or admitted beside it, where the definition overlaps.
+    @unbounded
+    fn occur(sched: Schedule, t: Int) -> Schedule {
+        let mut s = sched;
+        if self.definition_of(s).concurrency != "overlap" && self.execution_open(s.task) {
+            if t > s.last_occurrence { s.last_occurrence = t; }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("occurrence", t);
+            b.string_field("task", s.task);
+            b.end_object();
+            let k = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, b.result());
+            return s;
+        }
+        return self.admit_occurrence(s, t);
+    }
+    // Admit occurrence `t` of `s`: an execution of the definition through
+    // its first store, with the ask id `sched:<id>@<t>` — the occurrence's
+    // key, so a restart or a redelivery asking it again is one execution —
+    // and the convener as its position. A refusal is a row naming the
+    // occurrence.
+    @unbounded
+    fn admit_occurrence(sched: Schedule, t: Int) -> Schedule {
+        let mut s = sched;
+        if t > s.last_occurrence { s.last_occurrence = t; }
+        let key = s.id + "@" + to_string(t);
+        let task = self.run_workflow(WorkflowAsk { id: "sched:" + key, definition: s.definition, revision: self.catalog.latest(s.definition), inputs: s.args, from: s.convener });
+        if len(task) == 0 || std::str::starts_with(task, "refused") {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("occurrence", t);
+            b.string_field("why", if len(task) == 0 { "not admitted" } else { task });
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, b.result());
+            return s;
+        }
+        s.task = task;
+        s.fired = s.fired + 1;
+        return s;
+    }
+    // GH #1143: declare a schedule — the path a ratified practice and
+    // `hale dna schedule declare` take. The definition must be one the
+    // catalog would admit, the inputs an object naming what it takes, the
+    // convener a position; a refusal is a `schedule.refused` row and the
+    // reason. A declaration is a row when it is new or changed, and names
+    // the occurrence it was made at: nothing before it is due. "" when
+    // declared, else why not.
     @unbounded
     fn schedule(s: Schedule) -> String {
-        if len(s.id) == 0 { return "a schedule needs an id"; }
-        if s.every_ms <= 0 && len(s.cron) == 0 { return "schedule " + s.id + ": an interval (every_ms) or a cron expression"; }
-        if s.every_ms > 0 && len(s.cron) > 0 { return "schedule " + s.id + ": an interval or a cron, not both"; }
-        if s.action == "ask" && len(s.ask) == 0 { return "schedule " + s.id + ": an ask to fire"; }
-        if len(s.cron) > 0 {
-            let why = cron_check(s.cron);
-            if len(why) > 0 {
-                let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, "cron `" + s.cron + "`: " + why);
-                return "schedule " + s.id + ": cron `" + s.cron + "`: " + why;
-            }
+        let why = self.schedule_refusal(s);
+        if len(why) > 0 {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("why", why);
+            // the hole a convener nobody holds leaves, for #1091's path
+            if std::str::starts_with(why, "nobody holds ") { b.string_field("hole", s.convener); }
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, b.result());
+            return "schedule " + s.id + ": " + why;
         }
-        // state from the record: the last Task it fired, paused or not
-        let mut fresh = Schedule { id: s.id, every_ms: s.every_ms, cron: s.cron, ask: s.ask, requires: s.requires, action: s.action };
-        let mut last_decl = "";
+        let mut last = "";
         let n = self.journal.revision();
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.entity == s.id && e.kind == "schedule.declared" { last_decl = e.body; }
-            if e.entity == s.id && e.kind == "schedule.fired" {
-                let t = std::json::find_string_field(e.body, "task");
-                if len(t) > 0 { fresh.task = t; }
-                fresh.fired = fresh.fired + 1;
-                fresh.last_at = std::json::find_int_field(e.body, "at");
-                // the minute it fired, so a cron does not fire again in it
-                fresh.last_minute = fresh.last_at / 60;
-                // the occurrence it claimed, until its admission is in the record
-                fresh.pending_intent = std::json::find_string_field(e.body, "intent");
-            }
-            if e.entity == s.id && e.kind == "schedule.admitted" {
-                fresh.task = std::json::find_string_field(e.body, "task");
-                if std::json::find_string_field(e.body, "intent") == fresh.pending_intent { fresh.pending_intent = ""; }
-            }
-            if e.entity == s.id && e.kind == "schedule.refused" { fresh.pending_intent = ""; }
-            if e.entity == s.id && e.kind == "schedule.paused" { fresh.paused = true; }
-            if e.entity == s.id && e.kind == "schedule.resumed" { fresh.paused = false; }
+            if e.kind == "schedule.declared" && e.entity == s.id { last = e.body; }
             i = i + 1;
         }
-        // a claimed occurrence whose Task was born before the restart: that
-        // Task is its admission, completed in the record now
-        if len(fresh.pending_intent) > 0 {
-            let mut j = 0;
-            while j < n && len(fresh.pending_intent) > 0 {
-                let e = self.journal.read(j);
-                if e.kind == "task.born" && std::str::starts_with(e.body, fresh.pending_intent + ": ") {
-                    fresh.task = e.entity;
-                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + fresh.pending_intent + "\", \"task\": \"" + e.entity + "\", \"at\": " + to_string(fresh.last_at) + ", \"recovered\": true}");
-                    fresh.pending_intent = "";
-                }
-                j = j + 1;
-            }
+        if len(last) == 0 || schedule_terms(last) != schedule_terms(schedule_json(s)) {
+            let mut d = s;
+            d.from = occurrence_at(s, wall_ms());
+            let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, schedule_json(d));
+            if !x.ok { return "schedule " + s.id + ": the record did not take the declaration (" + x.error + ")"; }
+            self.convenes_rows(s);
         }
-        let decl = schedule_json(fresh);
-        if decl != last_decl { let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, decl); }
-        let mut k = 0;
-        while k < self.schedules.len() {
-            let have = self.schedules.get(k) or Schedule { };
-            if have.id == s.id { self.schedules.set(k, fresh) or discard; return ""; }
-            k = k + 1;
-        }
-        self.schedules.push(fresh);
-        self.schedules_read = self.journal.revision();
+        self.read_schedule_rows();
         return "";
     }
-    // Pause/resume rows appended since the last read (by `hale dna
-    // schedule pause|resume`, from any clone) change the state here.
+    // GH #1143: the rhythm in the graph — the definition as a node, once,
+    // and `convenes(position, definition)` with the cadence in its body;
+    // memory projects them as it does every graph row.
     @unbounded
-    fn read_schedule_controls() {
+    fn convenes_rows(s: Schedule) {
+        let node = "definition:" + s.definition;
+        if !self.has_row("graph.node", node) {
+            let nb = std::json::Builder { };
+            nb.begin_object();
+            nb.string_field("kind", "definition");
+            nb.string_field("name", s.definition);
+            nb.end_object();
+            let n = self.journal.append(self.journal.revision(), "graph.node", node, nb.result());
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("kind", "convenes");
+        b.begin_array_field("members");
+        b.begin_object(); b.string_field("role", "position"); b.string_field("node", s.convener); b.end_object();
+        b.begin_object(); b.string_field("role", "definition"); b.string_field("node", node); b.end_object();
+        b.end_array();
+        b.string_field("cadence", cadence_text(s));
+        b.string_field("schedule", s.id);
+        b.end_object();
+        let e = self.journal.append(self.journal.revision(), "graph.edge", "convenes:" + s.convener + "|" + node, b.result());
+    }
+    // Why `s` cannot be declared, "" when it can.
+    @unbounded
+    fn schedule_refusal(s: Schedule) -> String {
+        if len(s.id) == 0 || std::str::contains(s.id, "@") || std::str::contains(s.id, " ") { return "a schedule needs an id, with no `@` or space"; }
+        if s.every_ms <= 0 && len(s.cron) == 0 { return "an interval (every_ms) or a cron expression"; }
+        if s.every_ms > 0 && len(s.cron) > 0 { return "an interval or a cron, not both"; }
+        if len(s.cron) > 0 {
+            let bad = cron_check(s.cron);
+            if len(bad) > 0 { return "cron `" + s.cron + "`: " + bad; }
+        }
+        if !std::str::starts_with(s.convener, "position:") || len(s.convener) <= 9 { return "a convener, the position that convenes it (`position:<name>`)"; }
+        let hole = self.convener_hole(s.convener);
+        if len(hole) > 0 { return hole; }
+        let rev = self.catalog.latest(s.definition);
+        if rev <= 0 { return "no definition `" + s.definition + "` in the catalog"; }
+        let x = self.catalog.expand("schedule:" + s.id, s.definition, rev, AdmissionLimits { });
+        if !x.ok { return "the catalog would refuse it: " + x.why; }
+        let unperformed = self.catalog.unperformed(s.definition, rev);
+        if len(unperformed) > 0 { return "the catalog would refuse it: " + unperformed; }
+        let inputs = std::str::trim(s.args);
+        if !std::str::starts_with(inputs, "{") || !std::json::valid(inputs) { return "its inputs are a JSON object"; }
+        let takes = self.catalog.definition(s.definition, rev).takes;
+        let mut k = 0;
+        while len(nth_word(takes, k)) > 0 {
+            if len(std::json::find_field_raw(inputs, nth_word(takes, k))) == 0 { return definition_name(s.definition, rev) + " takes `" + nth_word(takes, k) + "`, which the inputs do not name"; }
+            k = k + 1;
+        }
+        return "";
+    }
+    // GH #1143: why `convener` cannot reach a definition's first store, ""
+    // when it can. The organism's own positions (the leader, the editor)
+    // reach every store its workflows write; a position of the graph
+    // reaches it through who holds it — a person, or an organization's
+    // members — as memory's graph says, and one nobody holds is the hole
+    // the declaration names. With no memory to ask, nothing is assumed.
+    @unbounded
+    fn convener_hole(convener: String) -> String {
+        if word_in(convener[9..len(convener)], ORGANISM_POSITIONS) { return ""; }
+        if !self.knowledge_client.ready() { return "who holds " + convener + " is the graph's, and no memory is named to ask"; }
+        let data = self.knowledge_client.routing();
+        if len(data) == 0 { return "who holds " + convener + " is the graph's, and memory did not answer"; }
+        if len(route_held_by(data, convener)) == 0 { return "nobody holds " + convener + ": it convenes nothing until someone does (`hale dna fill " + convener[9..len(convener)] + " <holder>`)"; }
+        return "";
+    }
+    // GH #1143: the schedules as the record holds them — declarations,
+    // pause and resume from any clone, and each one's occurrences so far,
+    // read from where they were last read.
+    @unbounded
+    fn read_schedule_rows() {
         let n = self.journal.revision();
         let mut i = self.schedules_read;
         while i < n {
             let e = self.journal.read(i);
+            if e.kind == "schedule.declared" { self.install_schedule(e.entity, e.body); }
             if e.kind == "schedule.paused" || e.kind == "schedule.resumed" {
                 let mut k = 0;
                 while k < self.schedules.len() {
@@ -1719,6 +1733,45 @@ locus Dna {
             i = i + 1;
         }
         self.schedules_read = n;
+    }
+    // A declaration of `id`, with its state from the record: the last
+    // occurrence evaluated, the last execution admitted, one held in the
+    // queue, whether it is paused.
+    @unbounded
+    fn install_schedule(id: String, body: String) {
+        let mut s = schedule_of(id, body);
+        s.last_occurrence = s.from;
+        let prefix = "sched:" + id + "@";
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && std::str::starts_with(native_json_string(e.body, "request"), prefix) {
+                let req = native_json_string(e.body, "request");
+                let t = std::str::parse_int(req[len(prefix)..len(req)]) or 0;
+                if t > s.last_occurrence { s.last_occurrence = t; }
+                s.task = e.entity;
+                s.fired = s.fired + 1;
+            }
+            if e.entity == id && (e.kind == "schedule.skipped" || e.kind == "schedule.refused") {
+                let t = std::json::find_int_field(e.body, "occurrence");
+                if t > s.last_occurrence { s.last_occurrence = t; }
+            }
+            if e.entity == id && e.kind == "schedule.missed" {
+                let t = std::json::find_int_field(e.body, "last");
+                if t > s.last_occurrence { s.last_occurrence = t; }
+            }
+            if e.entity == id && e.kind == "schedule.paused" { s.paused = true; }
+            if e.entity == id && e.kind == "schedule.resumed" { s.paused = false; }
+            i = i + 1;
+        }
+        let mut k = 0;
+        while k < self.schedules.len() {
+            let have = self.schedules.get(k) or Schedule { };
+            if have.id == id { self.schedules.set(k, s) or discard; return; }
+            k = k + 1;
+        }
+        self.schedules.push(s);
     }
     // The leader's answer: clean, or one small proposal — which enters
     // as an ask in the leader's name and takes the whole road (planned,
@@ -2909,6 +2962,22 @@ locus Dna {
     // projection's to check when it is ratified (the store is the gate);
     // here only its shape is. Answered once, however often it is relayed.
     @unbounded
+    // GH #1143: a schedule asked of the organization, declared or refused,
+    // answered once under the request's id.
+    fn on_schedule_requested(r: ScheduleRequest) {
+        if len(r.request_id) == 0 { return; }
+        if len(self.governance_event("schedule.answered", r.request_id).kind) > 0 { return; }
+        let why = self.schedule(Schedule { id: r.schedule, every_ms: r.every_ms, cron: r.cron, definition: r.definition, args: if len(r.args) > 0 { r.args } else { "{}" }, convener: r.convener });
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("schedule", r.schedule);
+        b.bool_field("declared", len(why) == 0);
+        b.string_field("why", why);
+        b.string_field("by", r.by);
+        b.end_object();
+        let x = self.governance_once("schedule.answered", r.request_id, b.result());
+    }
+    @unbounded
     fn on_hold_requested(r: HoldRequest) {
         let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
@@ -3974,6 +4043,24 @@ locus Dna {
             if std::str::starts_with(t, "refused") { eprintln("organization: the ratification of ", review_id, " was ", t); }
         }
     }
+    // GH #1143: the schedule a ratified practice carries (its receipt's
+    // `schedule`, a JSON object as text), declared; "" when it carries none
+    // or it was declared, else why not.
+    @unbounded
+    fn declare_practice_schedule(digest: String) -> String {
+        let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let doc = self.verification.receipts.read(raw);
+        let sched = std::json::find_string_field(doc, "schedule");
+        if len(sched) == 0 { return ""; }
+        return self.schedule(Schedule {
+            id: std::json::find_string_field(sched, "id"),
+            every_ms: std::json::find_int_field(sched, "every_ms"),
+            cron: std::json::find_string_field(sched, "cron"),
+            definition: std::json::find_string_field(sched, "definition"),
+            args: if len(std::json::find_string_field(sched, "args")) > 0 { std::json::find_string_field(sched, "args") } else { "{}" },
+            convener: std::json::find_string_field(sched, "convener")
+        });
+    }
     @unbounded
     fn practice_step(task: String, key: String, x: String) -> StepVerdict {
         let digest = std::json::find_string_field(x, "digest");
@@ -3990,7 +4077,16 @@ locus Dna {
             // AND the retirement of what it supersedes; a write the record
             // refused leaves the step waiting, to be written again
             let r = self.resume_knowledge_result(review_id, outcome, by);
-            if outcome == "approve" && r && self.knowledge_ratified(digest) { return step_done(digest, "ratified by " + by); }
+            if outcome == "approve" && r && self.knowledge_ratified(digest) {
+                // GH #1143: a practice that carries a schedule declares it once
+                // ratified — the cadence is the practice's, amended by the
+                // next. The ratification stands either way: a refused
+                // schedule is its own row (`schedule.refused`, naming the
+                // hole), not a failed ratification
+                let why = self.declare_practice_schedule(digest);
+                if len(why) > 0 { return step_done(digest, "ratified by " + by + "; its schedule was refused (" + why + ")"); }
+                return step_done(digest, "ratified by " + by);
+            }
             if outcome != "approve" && len(self.governance_event("knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
             let refused = self.governance_event("knowledge.refused", digest);
             if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
@@ -4094,7 +4190,16 @@ locus Dna {
             i = i + 1;
         }
         if !std::str::contains(self.optimize_asked, "\n" + task + "\n") {
+            // GH #583 M1: the pass is model-backed work, and none is routed on
+            // an exhausted budget; the occurrence fails saying so, and the
+            // next one on the cadence asks again
+            let now = std::time::now();
+            if self.budget_exhausted(now) {
+                let x = self.journal.append(self.journal.revision(), "optimize.refused", self.org_id, "budget exhausted (" + self.budget.describe(now) + "); the pass waits for the next occurrence");
+                return step_failed("budget exhausted: the pass waits for the next occurrence");
+            }
             self.optimize_asked = self.optimize_asked + task + "\n";
+            self.optimizations = self.optimizations + 1;
             self.last_signals = self.signals();
             OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals, task: task };
         }
@@ -5699,11 +5804,12 @@ fn cron_matches(expr: String, secs: Int) -> Bool {
 fn schedule_json(s: Schedule) -> String {
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("action", s.action);
     b.int_field("every_ms", s.every_ms);
     b.string_field("cron", s.cron);
-    b.string_field("ask", s.ask);
-    b.string_field("requires", s.requires);
+    b.string_field("definition", s.definition);
+    b.string_field("args", s.args);
+    b.string_field("convener", s.convener);
+    b.int_field("from", s.from);
     b.end_object();
     return b.result();
 }
@@ -5720,4 +5826,79 @@ fn routed_body(definition: String, need: RouteRequirement, why: String) -> Strin
     if len(why) > 0 { b.string_field("why", why); }
     b.end_object();
     return b.result();
+}
+
+// GH #1143: a cadence as the graph shows it: `every 1d`, `every 90s`, or
+// `cron <expr>` (UTC).
+fn cadence_text(s: Schedule) -> String {
+    if len(s.cron) > 0 { return "cron " + s.cron; }
+    let ms = s.every_ms;
+    if ms % 86400000 == 0 { return "every " + to_string(ms / 86400000) + "d"; }
+    if ms % 3600000 == 0 { return "every " + to_string(ms / 3600000) + "h"; }
+    if ms % 60000 == 0 { return "every " + to_string(ms / 60000) + "m"; }
+    if ms % 1000 == 0 { return "every " + to_string(ms / 1000) + "s"; }
+    return "every " + to_string(ms) + "ms";
+}
+
+// GH #1143: the organism's own positions: they convene with no holder.
+const ORGANISM_POSITIONS: String = "leader editor";
+
+// A declaration's terms — everything but the occurrence it was made at —
+// so declaring the same schedule again writes nothing.
+fn schedule_terms(body: String) -> String {
+    return to_string(std::json::find_int_field(body, "every_ms")) + "|" + std::json::find_string_field(body, "cron") + "|" + std::json::find_string_field(body, "definition") + "|" + std::json::find_string_field(body, "args") + "|" + std::json::find_string_field(body, "convener");
+}
+
+// A schedule as its declaration row holds it.
+fn schedule_of(id: String, body: String) -> Schedule {
+    return Schedule {
+        id: id, every_ms: std::json::find_int_field(body, "every_ms"), cron: std::json::find_string_field(body, "cron"),
+        definition: std::json::find_string_field(body, "definition"), args: std::json::find_string_field(body, "args"),
+        convener: std::json::find_string_field(body, "convener"), from: std::json::find_int_field(body, "from")
+    };
+}
+
+// The wall clock in milliseconds: what an occurrence is named by.
+fn wall_ms() -> Int { return std::time::nanos(std::time::current()) / 1000000; }
+
+// GH #1143: the occurrence of `s` due at `now` (wall ms): an interval's
+// step from the epoch, or a cron's latest matching minute within the last
+// week; 0 when none.
+@unbounded
+fn occurrence_at(s: Schedule, now: Int) -> Int {
+    if s.every_ms > 0 { return (now / s.every_ms) * s.every_ms; }
+    if len(s.cron) == 0 { return 0; }
+    let minute = now / 60000;
+    let mut k = 0;
+    while k <= 10080 {
+        if cron_matches(s.cron, (minute - k) * 60) { return (minute - k) * 60000; }
+        k = k + 1;
+    }
+    return 0;
+}
+
+// Occurrences of `s` strictly between `after` and `before`: how many, the
+// first and the last. A cron's are counted over the last week before
+// `before` at most.
+type OccurrenceRun { count: Int = 0; first: Int = 0; last: Int = 0; }
+
+@unbounded
+fn missed_between(s: Schedule, after: Int, before: Int) -> OccurrenceRun {
+    if s.every_ms > 0 {
+        let n = (before - after) / s.every_ms - 1;
+        if n <= 0 { return OccurrenceRun { }; }
+        return OccurrenceRun { count: n, first: after + s.every_ms, last: before - s.every_ms };
+    }
+    let mut out = OccurrenceRun { };
+    let low = if before / 60000 - after / 60000 > 10080 { before / 60000 - 10080 } else { after / 60000 + 1 };
+    let mut m = before / 60000 - 1;
+    while m >= low {
+        if cron_matches(s.cron, m * 60) {
+            if out.count == 0 { out.last = m * 60000; }
+            out.first = m * 60000;
+            out.count = out.count + 1;
+        }
+        m = m - 1;
+    }
+    return out;
 }

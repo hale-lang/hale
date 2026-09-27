@@ -106,10 +106,10 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     assert!(!app.join("dna_constitution.hl").exists(), "no law is written into the application");
     let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
     assert!(org.contains("dna::ReviewVerdict: nats::NatsAdapter { }"), "the organization binds its facts to the nerves: {org}");
-    // GH #596 O: the optimize cadence is milliseconds, so the loop ticks
-    // with a millisecond clock — `now()` is seconds and made a 60s
-    // cadence an hour's.
-    assert!(org.contains("self.core.request_tick(std::time::monotonic_ns() / 1000000)"), "the loop queues the substrate's cadence with a millisecond clock: {org}");
+    // GH #1143: a schedule's occurrence is named by the wall clock in
+    // milliseconds, so the loop ticks with it (`now()` is seconds, and a
+    // monotonic clock names no occurrence).
+    assert!(org.contains("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000)"), "the loop queues the schedules' tick on the wall clock in milliseconds: {org}");
 
     // …and it still passes its previous checks, plus the matrix, and builds.
     let (ok, out) = hale(&["check", "."], &app);
@@ -230,13 +230,24 @@ fn upgrade_retires_the_owners_map() {
     let anchor = "            budget: dna::Budget { policy: org_budget() },\n";
     assert!(text.contains(anchor), "the generated main.hl has its budget line");
     let old = "            // Owners (GH #664): who admits which position. The map is the\n            // genome's file dna/org/owners — empty while this organization\n            // is the only owner; once the record is shared, every position\n            // names its owner and this body says which it is (dna.owner).\n            ownership: dna::Ownership { path: \"dna/org/owners\" },\n";
-    std::fs::write(&main, text.replace(anchor, &format!("{anchor}{old}"))).unwrap();
+    // GH #1143: and the older generator's optimize field and monotonic tick
+    let older = text
+        .replace(anchor, &format!("{anchor}{old}"))
+        .replace(
+            "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true\n",
+            "            planned: true,\n            // GH #596 O: the optimize pass — the leader walks the machinery\n            // on this cadence, in milliseconds; 0 is never. The Board's to set.\n            optimize_every_ms: 0\n",
+        )
+        .replace("self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }", "self.core.request_tick(std::time::monotonic_ns() / 1000000); }");
+    assert!(older.contains("optimize_every_ms: 0") && older.contains("monotonic_ns()"), "the older generator's main.hl is built");
+    std::fs::write(&main, older).unwrap();
     std::fs::write(app.join("dna/org/owners"), "# who admits what\norg = acme\nacme: alice\n").unwrap();
     let (ok, out) = hale(&["dna", "upgrade", "."], &app);
     assert!(ok, "{out}");
     assert!(!app.join("dna/org/owners").exists(), "the owners file is removed: {out}");
     assert!(out.contains("org = acme") && out.contains("acme: alice") && out.contains("holds(position:<p>, organization:<o>)"), "and what it named is said, to be restated as holds edges: {out}");
-    assert_eq!(std::fs::read_to_string(&main).unwrap(), text, "the generated ownership field is taken out, and nothing else changes");
+    assert!(out.contains("the optimize pass is a schedule"), "the cadence's rewrite is said: {out}");
+    let upgraded = std::fs::read_to_string(&main).unwrap();
+    assert!(!upgraded.contains("optimize_every_ms") && !upgraded.contains("monotonic_ns()"), "the older field and tick are gone: {upgraded}");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
