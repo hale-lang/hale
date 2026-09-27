@@ -52,15 +52,16 @@ permissions:
 
 jobs:
   macos:
-    name: build + run (macos-14, Apple Silicon, ${{ matrix.part }}/3)
+    name: build + run (macos-14, Apple Silicon, ${{ matrix.part }}/4)
     runs-on: macos-14
     strategy:
       fail-fast: false
       # The DNA fixture suite is the whole job (25 of its 30 minutes on one
-      # 3-core runner). Three parts, each running every third slice, so
-      # the wall clock is one part's, not the suite's.
+      # 3-core runner). Four parts, each running every fourth slice, so
+      # each of the four heavy slices (0 to 3, one fixture each) leads a
+      # part of its own and the wall clock is one part's, not the suite's.
       matrix:
-        part: [1, 2, 3]
+        part: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
@@ -286,16 +287,16 @@ jobs:
           LIBRARY_PATH: /opt/homebrew/lib
           HALE_DNA_WAIT_SCALE: "3"
         run: |
-          # Every third fixture slice belongs to this part; every other
+          # Every fourth fixture slice belongs to this part; every other
           # test in the binary (coverage, guards, the spelling checks) rides
-          # with part 1. Names are exact so slice_1 does not also select
+          # with part 4, the lightest. Names are exact so slice_1 does not also select
           # slice_10: the list comes from the binary itself.
           all=$(cargo test --release -p hale-cli --test dna_native_suite -- --list --format terse 2>/dev/null | sed -n 's/: test$//p')
           names=()
           for t in $all; do
             case "$t" in
-              dna_fixtures_slice_*) i=${t#dna_fixtures_slice_}; [ $(( i % 3 )) -eq $(( ${{ matrix.part }} - 1 )) ] && names+=("$t") ;;
-              *) [ ${{ matrix.part }} -eq 1 ] && names+=("$t") ;;
+              dna_fixtures_slice_*) i=${t#dna_fixtures_slice_}; [ $(( i % 4 )) -eq $(( ${{ matrix.part }} - 1 )) ] && names+=("$t") ;;
+              *) [ ${{ matrix.part }} -eq 4 ] && names+=("$t") ;;
             esac
           done
           echo "part ${{ matrix.part }}: ${names[*]}"
