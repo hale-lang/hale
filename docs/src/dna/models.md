@@ -29,10 +29,11 @@ fn org_budget() -> dna::BudgetPolicy {
 }
 ```
 
-The generated organization takes its three routers from here —
+The generated organization takes its routers from here —
 `models: leader_models()` on the Leader, `editor_models()` on the
-`SourceEditor`, `agent_models()` on the `AgentPerformer` — and names
-no adapter itself. They can differ, and the split that makes sense
+`SourceEditor` — and names no adapter itself; `agent_models()` is
+the model leg's, behind the performer in `dna/org/work.hl`, since
+agent work is a leg's (the organization wires the relay). They can differ, and the split that makes sense
 is the obvious one: the judgement of what gets applied on the
 strongest model, the production of candidates on a cheaper one. A
 new position as the organization grows is one more router function;

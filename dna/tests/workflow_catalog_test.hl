@@ -72,7 +72,7 @@ main locus App {
         std::test::assert(std::str::contains(listed, "refused at admission: workflow change-deliver@1 step 4 (deploy) writes the heart (GH #987)"), "change-deliver names the heart: " + listed);
         std::test::assert(std::str::contains(listed, "refused at admission: workflow secret-rotate@1 step 0 (rotate) writes the vault (GH #989)"), "secret-rotate names the vault: " + listed);
         std::test::assert(std::str::contains(listed, "ask-triage@1") && std::str::contains(listed, "the organization does not perform this definition's steps yet"), "ask-triage is seeded and refused, saying why: " + listed);
-        let names = "ask-triage change-deliver practice-ratify deploy-observe concern-escalate optimize-walk secret-rotate body-provision ask-edit ask-person";
+        let names = "ask-triage change-deliver practice-ratify deploy-observe concern-escalate optimize-walk secret-rotate body-provision ask-edit ask-person ask-judge";
         let mut k = 0;
         while k < dna::word_count(names) {
             std::test::assert_eq_int(base.latest(dna::nth_word(names, k)), 1, dna::nth_word(names, k) + " is at revision 1");

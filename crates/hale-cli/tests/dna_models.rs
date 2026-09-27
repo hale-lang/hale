@@ -105,9 +105,12 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
         assert!(catalog.contains(needle), "missing {needle:?} in:\n{catalog}");
     }
     let main = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
-    for needle in ["models: leader_models()", "models: editor_models()", "models: agent_models()", "budget: dna::Budget { policy: org_budget() }"] {
+    // GH #946: agent work is a leg's (the relay), performed with the catalog
+    // through the performers in work.hl, never a router in the main
+    for needle in ["models: leader_models()", "models: editor_models()", "agent: dna::LegRelay { name: \"legs\" }", "agent_reconciler: dna::RelayReplay { }", "budget: dna::Budget { policy: org_budget() }"] {
         assert!(main.contains(needle), "the organization takes {needle:?} from the catalog:\n{main}");
     }
+    assert!(!main.contains("AgentPerformer"), "no agent performer in process:\n{main}");
     assert!(!main.contains("dna::OpenAiChat") && !main.contains("HostedModel"), "no adapter is named inline in the main:\n{main}");
     // the organization still checks, with its law, and builds
     let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);

@@ -475,7 +475,7 @@ pub fn run(args: &[String]) -> ExitCode {
         // working tree's (`--from-tree <dir>`, a checkout holding
         // `dna/core`) before it trusts a mutation result.
         Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
-        // `hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>`
+        // `hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>`
         // (asking is one kind of task; the face exposes the same operation
         // as `dna.task.create`), and GH #596 W: `hale dna task done <id> …`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -828,8 +828,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
-    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--no-wait] <outcome…>");
-    eprintln!("                                    ask for an outcome: a row in the record, which a node relays to the organism; prints the Task born or the refusal");
+    eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
+    eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
     eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
@@ -1229,6 +1229,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
             (Some(app), Some((art, _))) => {
                 let n = seed_journal(&app.root, app, art)?;
                 out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed)"));
+                out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
                 // the declared purpose's proposal and the graph in one
@@ -1237,6 +1238,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
                 let graph = seed_repository(&root, &purpose_text)?;
                 out.push(format!("seeded  {RECORD_REF} (the purpose, proposed; then the graph)"));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
+                out.push(seat_initializer(&root, true)?);
             }
         }
         // GH #995: the declared purpose, a proposal the Board ratifies
@@ -1311,6 +1313,14 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("models  {line}"));
         }
         let main = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+        // GH #946: agent work is a leg's; an organization from before the
+        // legs still performs it in process
+        if main.contains("dna::AgentPerformer") {
+            out.push(format!(
+                "note    {}/main.hl performs agent work in process (dna::AgentPerformer); a leg performs it now: `agent: dna::LegRelay {{ name: \"legs\" }}, agent_reconciler: dna::RelayReplay {{ }}` in the work system, and `hale dna work` claims it",
+                ORG_SEED
+            ));
+        }
         if main.contains("dna::HostedModel") || main.contains("dna::ModelRouter {") {
             out.push(format!(
                 "note    {}/main.hl wires its routers inline (dna::HostedModel is now dna::OpenAiChat); point each position at the catalog: `models: leader_models()`, `editor_models()`, `agent_models()`, and `budget: dna::Budget {{ policy: org_budget() }}` on the substrate",
@@ -1336,6 +1346,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         if !main.contains("catalog: workflows()") {
             out.push(format!("note    {}/main.hl: point the substrate at it, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
         }
+    }
+    // GH #946, #1104 piece 5: a record from before the seat: this uid
+    // mapped to its user, so the head's socket knows the peer; the trust
+    // an existing record declares, or does not, is its own
+    if record_exists(&root)? {
+        out.push(seat_initializer(&root, false)?);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -2249,9 +2265,13 @@ main locus Org {{
             // models.hl (a backend is a constructor function there; a
             // hosted one presents its credential from a sealed locus and
             // is not a permitted backend without it). Every call journals
-            // its evidence, never the prompt.
+            // its evidence, never the prompt. Agent work — a judgment, an
+            // analysis — is a leg's (GH #946): the relay answers pending,
+            // and `hale dna work` claims it, performs it with the performers
+            // in work.hl, and hands the outcome back.
             work: dna::WorkSystem {{
-                agent: dna::AgentPerformer {{ name: "agent", models: agent_models() }}
+                agent: dna::LegRelay {{ name: "legs" }},
+                agent_reconciler: dna::RelayReplay {{ }}
             }},
             // The organization's spend: one policy (models.hl), one owner.
             budget: dna::Budget {{ policy: org_budget() }},
@@ -2411,7 +2431,7 @@ import "vendor/dna" as dna;
 group board = { dna::Board };
 group leader = { dna::Leader };
 group substrate = { dna::Dna };
-group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::LegRelay, dna::RelayReplay, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
 group editors = { dna::SourceEditor, dna::WorktreeTools };
 group knowledge = { dna::Knowledge, dna::MemoryKnowledge };
 group credentials = { dna::CredentialSource, dna::HostedCredential };
@@ -2442,6 +2462,44 @@ constitution Org {
 }
 "#
     .to_string()
+}
+
+/// The person who runs `init`, as the host names them (`USER`, else `human`).
+fn initializer() -> String {
+    std::env::var("USER").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| "human".to_string())
+}
+
+/// GH #946, GH #1104 piece 5: the record's first seat. The head's socket
+/// lists a verb to a peer whose person the record says holds a position;
+/// a record that declares `dna.trust = local` is one person's, who holds
+/// every position as they hold every authority there, so the seat is
+/// the record's local config alone: the initializer's uid mapped to them
+/// (`dna.unix.member`), and — only where the record is made, by `new`
+/// or `init` — the trust declared. `upgrade` maps the uid and says how
+/// to declare, never declaring for a record it did not make: an
+/// existing record's authorization is its own. No row in the record —
+/// the graph's positions and holders stay the graph's. Says what it did.
+fn seat_initializer(root: &Path, declare_trust: bool) -> Result<String, String> {
+    let name = initializer();
+    let uid = Command::new("id").arg("-u").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    if uid.is_empty() {
+        return Ok(format!("seated  this uid could not be read; map it to {name} for the head's socket: git config --local --add dna.unix.member \"uid:<n>={name}\""));
+    }
+    let entry = format!("uid:{uid}={name}");
+    let have = git(root, &["config", "--local", "--get-all", "dna.unix.member"]).unwrap_or_default();
+    if !have.lines().any(|l| l.trim() == entry) {
+        git(root, &["config", "--local", "--add", "dna.unix.member", &entry])?;
+    }
+    // the trust the record declares, wherever git reads it from
+    let trust = git(root, &["config", "--get", "dna.trust"]).unwrap_or_default().trim().to_string();
+    if declare_trust && trust.is_empty() {
+        git(root, &["config", "--local", "dna.trust", "local"])?;
+        return Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = local, where they hold every position"));
+    }
+    if trust.is_empty() {
+        return Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares no trust, so the graph's holds edges say who holds what — `git config --local dna.trust local` declares one person's record"));
+    }
+    Ok(format!("seated  the head's socket knows uid {uid} as {name} (dna.unix.member); the record declares dna.trust = {trust}"))
 }
 
 /// The seed events, collected then appended to the record in order.
