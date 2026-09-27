@@ -3322,9 +3322,10 @@ The live half is memory's, projected from the record by the spine
   names a file the genome has under the seed the class edits; a
   model's prose is not a path — else class `application` at the ask's
   own target; card 15 reports its outcome). An ask for a judgment
-  (`hale dna task create --judgment`, or the head's `TaskCreate` with
-  `kind: judgment`, and the face's task form; the intent row carries
-  `kind: judgment`, GH #946, #1144) is the asker's word: no plan is asked, and it is
+  (`hale dna task create --judgment`, the head's `TaskCreate` with
+  `kind: judgment`, or the face's task form; the intent row carries
+  `kind: judgment`, and the receipt echoes it, GH #946, #1144) is the
+  asker's word: no plan is asked, and it is
   admitted under `ask-judge` — one leaf requiring judgment under the
   `Assessment` contract, which capability-first routing hands to an
   agent on the first attempt (the legs' relay: a leg claims it through

@@ -68,7 +68,7 @@ export function commandReceipt(fields = {}) {
     organization: { proposal_state: 'pending', source_head: '', source_digest: '', mutation_id: '', candidate_commit: '', application_state: 'pending', application_reason_code: '', restart_handoff_state: 'pending', ...organization },
     task: { state: '', from: '', to: '', event_id: '', ...task },
     person: { state: '', from: '', to: '', event_id: '', transferred: -1, ...person },
-    task_create: { intent_id: '', intent_state: '', task_id: '', event_id: '', ...task_create },
+    task_create: { intent_id: '', intent_state: '', task_id: '', event_id: '', kind: '', ...task_create },
     attempt: { state: '', attempt_id: '', work_id: '', task_id: '', performer_kind: '', holder: '', token: -1, until: 0, disposition: '', reason: '', event_id: '', ...attempt },
   };
 }
@@ -94,7 +94,7 @@ export function wireLine(command) {
     'dna.organization.propose': () => ({ request_id, ...p.base, source_text: a.source_text, rationale: a.rationale }),
     'dna.task.reassign': () => ({ request_id, task_id: target.id, assignment_digest: p.subject_digest, assignee: p.assignee, to: a.to }),
     'dna.person.retire': () => ({ request_id, person: target.id, subject_digest: p.subject_digest, to: a.to }),
-    'dna.task.create': () => ({ request_id, record_head: p.record_head, outcome: a.outcome, to: a.to }),
+    'dna.task.create': () => ({ request_id, record_head: p.record_head, outcome: a.outcome, to: a.to, ...(a.kind ? { kind: a.kind } : {}) }),
   };
   // A Knowledge change: the head derives every target but an edge's.
   if (Object.hasOwn(KNOWLEDGE_CALLS, operation)) {

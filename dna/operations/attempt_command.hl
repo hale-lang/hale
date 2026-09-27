@@ -186,7 +186,7 @@ locus AttemptCommandCodec {
         if !self.known(c.operation, c.operation_version) || !common.context_valid(context) || c.application_id != context.application_id || c.position_id != "org"
             || !common.bounded(c.request_id, 128, true, false) { return false; }
         if c.text != "" || c.rationale != "" || c.expected_review_state != "" || c.verdict != "" || c.comment != "" || c.expected_assignee != "" || c.new_assignee != ""
-            || c.source_head != "" || c.dependency_source != "" || c.dependency_digest != "" || c.source_text != "" || c.outcome != "" || c.to != "" { return false; }
+            || c.source_head != "" || c.dependency_source != "" || c.dependency_digest != "" || c.source_text != "" || c.outcome != "" || c.to != "" || c.ask_kind != "" { return false; }
         if self.claim(c.operation) {
             return c.target_kind == "dna.work" && c.target_id == context.application_id && common.bounded(c.record_head, 256, true, false) && c.subject_digest == c.record_head
                 && common.bounded(c.performer_kind, 64, true, false) && !std::str::contains(c.performer_kind, " ") && holder_ok(c.performer)

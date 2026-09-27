@@ -268,7 +268,7 @@
     return "Propose an organization-wide replacement. The service checks your current authority; viewing a position does not grant it.";
   }
   function validDraft(draft) {
-    if (draft?.operation === TASK_CREATE_OPERATION) return commandID(draft.record_head) && draft.subject === draft.record_head && commandID(draft.target) && unicodeText(draft.outcome) && byteLength(draft.outcome) > 0 && byteLength(draft.outcome) <= COMMAND_BOUNDS.outcome && commandID(draft.to);
+    if (draft?.operation === TASK_CREATE_OPERATION) return commandID(draft.record_head) && draft.subject === draft.record_head && commandID(draft.target) && unicodeText(draft.outcome) && byteLength(draft.outcome) > 0 && byteLength(draft.outcome) <= COMMAND_BOUNDS.outcome && commandID(draft.to) && ["", "judgment"].includes(draft.kind ?? "");
     if (draft?.operation === PERSON_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && (draft.to === "" || commandID(draft.to)) && draft.target !== draft.to;
     if (draft?.operation === TASK_OPERATION) return sourceDigest(draft.subject) && commandID(draft.target) && commandID(draft.from) && commandID(draft.to) && draft.from !== draft.to;
     if (draft?.operation === REVIEW_OPERATION) return typeof draft.verdict === "string" && Object.hasOwn(VERDICTS, draft.verdict) && unicodeText(draft.comment) && byteLength(draft.comment) <= COMMAND_BOUNDS.comment;
@@ -691,7 +691,7 @@
     organization: [["proposal_state", "source_head", "source_digest", "mutation_id", "candidate_commit", "application_state", "application_reason_code", "restart_handoff_state"], []],
     task: [["state", "from", "to", "event_id"], []],
     person: [["state", "from", "to", "event_id"], ["transferred"]],
-    task_create: [["intent_id", "intent_state", "task_id", "event_id"], []],
+    task_create: [["intent_id", "intent_state", "task_id", "event_id", "kind"], []],
     attempt: [["state", "attempt_id", "work_id", "task_id", "performer_kind", "holder", "disposition", "reason", "event_id"], ["token", "until"]]
   };
   function typedObject(value, text, integers) {
@@ -742,7 +742,9 @@
       assert(method !== "POST" || expectedTask && r.task.from === expectedTask.from && r.task.to === expectedTask.to);
     } else if (isCreate) {
       const t = r.task_create;
-      assert(["requested", "offered", "refused", "born", "unknown"].includes(t.intent_state));
+      assert(["requested", "offered", "refused", "born", "unknown"].includes(t.intent_state) && ["", "judgment"].includes(t.kind));
+      // the ask landed as what was asked: a kind the head dropped would land as a change
+      assert(method !== "POST" || expectedTask && t.kind === expectedTask.kind);
       assert(t.intent_state === "unknown" ? r.state === "outcome_unknown" && t.intent_id === "" && t.task_id === "" && t.event_id === "" : r.state === "succeeded" && /^i[0-9a-f]{1,16}$/.test(t.intent_id) && sourceCommit(t.event_id) && (t.intent_state === "born" ? commandID(t.task_id) : t.task_id === ""));
     } else if (isOrganization) validOrganizationReceipt(r, metadata);
     else if (isVerdict) {
@@ -789,7 +791,7 @@
       if (reply.code === "command_context_changed") throw new ReadError(409, "command_context_changed", "The signed-in identity changed before submission.");
       throw new ReadError(REPLY_STATUS[reply.code] || 400, reply.code || "command_unconfirmed", "The request outcome could not be confirmed.");
     }
-    const expectedTask = metadata.operation === PERSON_OPERATION ? { from: payload?.person, to: payload?.to } : metadata.operation === TASK_OPERATION ? { from: payload?.assignee, to: payload?.to } : null;
+    const expectedTask = metadata.operation === PERSON_OPERATION ? { from: payload?.person, to: payload?.to } : metadata.operation === TASK_OPERATION ? { from: payload?.assignee, to: payload?.to } : metadata.operation === TASK_CREATE_OPERATION ? { kind: payload?.kind || "" } : null;
     return { receipt: validCommandReceipt(reply, metadata, method, payload?.verdict, expectedTask), source: { record_id: reply.application_id, record_head: reply.head, record_revision: String(reply.revision) } };
   }
   // The flat payload of a draft's call: its arguments and preconditions,
@@ -800,7 +802,7 @@
     if (draft.operation === REVIEW_OPERATION) return { request_id, review_id: metadata.target_id, subject_digest: metadata.subject_digest, verdict: draft.verdict, comment: draft.comment };
     if (draft.operation === TASK_OPERATION) return { request_id, task_id: metadata.target_id, assignment_digest: metadata.subject_digest, assignee: draft.from, to: draft.to };
     if (draft.operation === PERSON_OPERATION) return { request_id, person: metadata.target_id, subject_digest: metadata.subject_digest, to: draft.to };
-    if (draft.operation === TASK_CREATE_OPERATION) return draft.kind ? { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to, kind: draft.kind } : { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to };
+    if (draft.operation === TASK_CREATE_OPERATION) return draft.kind === "judgment" ? { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to, kind: draft.kind } : { request_id, record_head: draft.record_head, outcome: draft.outcome, to: draft.to };
     return { request_id, subject_digest: metadata.subject_digest, text: draft.text, rationale: draft.rationale };
   }
   function commandStillCurrent(token, scope, signal) {
@@ -3036,7 +3038,7 @@
       panel.append(renderCommandStages([
         { key: "command", title: "Request", value: r.state === "succeeded" ? "Recorded" : "Unconfirmed", tone: r.state === "succeeded" ? "confirmed" : "unknown", explanation: r.state === "succeeded" ? "The service recorded this ask once, in your name, at the Record head you prepared it against." : "Keep this request identity and check its status. No replacement request is sent automatically." },
         { key: "intent", title: "Intent", value: t.intent_state === "unknown" ? "Not established" : t.intent_id + " · " + t.intent_state, tone: t.intent_state === "refused" ? "refused" : t.intent_state === "born" || t.intent_state === "offered" ? "confirmed" : t.intent_state === "requested" ? "pending" : "unknown", explanation: t.intent_state === "requested" ? "The ask is in the Record. The host beside the organism relays it; the organism's answer is a later fact." : t.intent_state === "offered" ? "The organism admitted the ask. Its Task is minted next." : t.intent_state === "refused" ? "The organism refused this ask; its reason is in the Record. This request is complete." : t.intent_state === "born" ? "The organism admitted the ask and minted its Task." : "No intent is named for an unconfirmed ask." },
-        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? "The Task exists. It joins the handed Tasks once the leader hands it to a person." : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
+        { key: "task", title: "Task", value: t.task_id || (t.intent_state === "refused" ? "None" : "Not yet born"), tone: t.task_id ? "confirmed" : t.intent_state === "refused" ? "refused" : "pending", explanation: t.task_id ? (t.kind === "judgment" ? "The Task exists. Its judgment is a leg's to claim and answer; the organism admitted it without a plan." : "The Task exists. It joins the handed Tasks once the leader hands it to a person.") : "Check again to follow the ask through offer and birth. A born Task is named here before it is handed." }
       ], r));
     } else panel.append(node("p", "detail-note", intervention.phase === "submitting" ? "Recording the ask…" : intervention.phase === "recovering" ? "Checking the saved request…" : "The request outcome is not yet confirmed."));
     if (intervention.error) { const error = node("p", "intervention-error", intervention.error); error.setAttribute("role", "alert"); panel.append(error); }

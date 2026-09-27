@@ -18,7 +18,7 @@
   function validate(input) {
     const check = condition => { if (!condition) throw new Error("The new task could not be verified: say what should happen, for one declared locus."); };
     const keys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input) : [];
-    check(keys.length >= 2 && keys.length <= 3 && Object.hasOwn(input, "outcome") && Object.hasOwn(input, "to") && (keys.length === 2 || Object.hasOwn(input, "kind")));
+    check(keys.length >= 2 && keys.length <= 3 && Object.hasOwn(input, "outcome") && Object.hasOwn(input, "to") && (keys.length === 2 || typeof input.kind === "string"));
     check(text(input.outcome) && bytes(input.outcome) > 0 && bytes(input.outcome) <= MAX_OUTCOME_BYTES && position(input.to) && (input.kind === undefined || KINDS.includes(input.kind)));
     return input.kind ? { outcome: input.outcome, to: input.to, kind: input.kind } : { outcome: input.outcome, to: input.to };
   }
@@ -61,6 +61,7 @@
     }
     outcome.addEventListener("input", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
     select.addEventListener("change", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
+    kind.addEventListener("change", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
     form.addEventListener("submit", async event => {
       event.preventDefault();
       if (!allowed || pending || prepared) return;

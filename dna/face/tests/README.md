@@ -828,7 +828,9 @@ built project service is a separate native lane that skips without
 
 `task-create.spec.mjs` is the standalone contract for `web/task-create.js`, the
 "New task" form (`window.FaceTaskCreate`): exact validation of an outcome for a
-locus, the whole organization first and declared working-context loci after it,
+locus and its kind (`judgment`, or none for a change; GH #1144), the whole
+organization first and declared working-context loci after it, the kind select
+("A change" by default, "An assessment (a judgment)") and its disabled states,
 byte bounds, literal markup, denied sessions, DOM-tampered choices and the
 pending/corrected preparation flow. The module sends no request and stores
 nothing. `task-create-read.spec.mjs` exercises the full app with scripted
@@ -851,8 +853,10 @@ the real face through the real composed API into a fresh Git Record and
 proves one POST, a real receipt, and exactly one `intent.requested` row whose
 entity is the receipt's intent id, whose author is the principal, and whose body
 begins with the bytes `hale dna ask` writes for the same outcome/from/to before
-the command fields; then GET-only recovery across an API restart and a
-stale-head refusal. No relay or organism runs in this lane, so the ask stays
+the command fields; a judgment asked from the form, whose payload carries
+`kind: judgment`, whose row carries `kind` right after `outcome`, `from` and
+`to`, and whose receipt echoes it; then GET-only recovery across an API
+restart and a stale-head refusal. No relay or organism runs in this lane, so the ask stays
 `requested`; offer, refusal and birth are the organism's later facts and a
 follow-up case. Without both binary paths the lane skips visibly.
 

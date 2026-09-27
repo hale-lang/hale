@@ -78,7 +78,7 @@ type CommandRequest {
 type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
 // The admitted ask and, re-derived on every read, the organism's answer to it.
-type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
+type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; kind: String = ""; }
 // A leg's claim or outcome as it reads back (GH #946): the attempt and its lease, or the refusal.
 type AttemptCommandOutcome {
     state: String = ""; attempt_id: String = ""; work_id: String = ""; task_id: String = ""; performer_kind: String = "";

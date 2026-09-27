@@ -7,7 +7,8 @@
 // answer (intent.offered, task.born, intent.refused) is a separate fact,
 // re-derived from the Record on every read.
 import "../core" as dna;
-type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
+// `kind` echoes what was asked ("" a change, "judgment"), so a caller sees a misspelt kind land as a change (GH #1144)
+type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; kind: String = ""; }
 type TaskCreateFact { valid: Bool = false; context: GovernanceContext = GovernanceContext { }; command: GovernanceCommand = GovernanceCommand { }; grant: GovernanceGrant = GovernanceGrant { }; head: String = ""; intent_id: String = ""; }
 locus TaskCreateCommandCodec {
     params { }
@@ -132,6 +133,6 @@ locus TaskCreateCommandCodec {
         return GovernanceReceipt { command_id: a.command_id, request_id: c.request_id, application_id: context.application_id, operation: c.operation, operation_version: c.operation_version,
             principal_mode: context.principal_mode, principal_name: context.principal_name, position_id: c.position_id, target_kind: c.target_kind, target_id: c.target_id,
             subject_digest: c.subject_digest, fingerprint: a.fingerprint, proposal_state: "", state: if a.unknown { "outcome_unknown" } else { "succeeded" },
-            task_create: TaskCreateOutcome { intent_id: if a.unknown { "" } else { a.entity }, intent_state: state, task_id: task, event_id: if a.unknown { "" } else { a.event_id } } };
+            task_create: TaskCreateOutcome { intent_id: if a.unknown { "" } else { a.entity }, intent_state: state, task_id: task, event_id: if a.unknown { "" } else { a.event_id }, kind: c.ask_kind } };
     }
 }

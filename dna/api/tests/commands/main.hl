@@ -109,7 +109,7 @@ locus ScriptedCommands {
             target_kind: "dna.record", target_id: command.target_id, subject_digest: command.subject_digest,
             fingerprint: self.fingerprint(command), state: if unknown { "outcome_unknown" } else { "succeeded" }, reason: "",
             proposal_state: "", review_state: "unavailable", activation_state: "unknown",
-            task_create: api::TaskCreateOutcome { intent_id: if unknown { "" } else { "i1f4" }, intent_state: state, task_id: if state == "born" { "org:t1" } else { "" }, event_id: if unknown { "" } else { "cccccccccccccccccccccccccccccccccccccccc" } }
+            task_create: api::TaskCreateOutcome { intent_id: if unknown { "" } else { "i1f4" }, intent_state: state, task_id: if state == "born" { "org:t1" } else { "" }, event_id: if unknown { "" } else { "cccccccccccccccccccccccccccccccccccccccc" }, kind: command.ask_kind }
         };
         let mut source = context.source;
         if len(self.result_head) > 0 { source.head = self.result_head; source.revision = source.revision + 1; }
