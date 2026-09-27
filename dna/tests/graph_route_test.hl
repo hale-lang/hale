@@ -1,7 +1,7 @@
 // dna/tests/graph_route_test.hl — a change set to the positions that must
 // sign it, from the graph's `meets` and `gates` (GH #1087).
 //
-// On voice (a32b295f, hale-lang/voice#5) with its holes ratified: a change
+// On voice (a32b295f, hale-lang/voice#6) with its holes ratified: a change
 // to spec/openapi.yaml is signed by api's reviewer, which signs the
 // contract, and node's and ui's, which consume it, against the runs of
 // ci/api and ci/contracts; a change under api/ by api's reviewer alone,

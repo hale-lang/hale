@@ -2,7 +2,7 @@
 // are queries over memory, and on voice they are GRAPH.md's two renderings
 // (GH #1086).
 //
-// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#5), vendored
+// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#6), vendored
 // under dna/tests/onboarding/voice. `hale dna init` reads it into the
 // record; the holes GRAPH.md fills for its org chart (the ones init
 // derives from the edges: a board, a dev where a gate guards a part, a
