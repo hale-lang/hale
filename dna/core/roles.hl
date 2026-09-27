@@ -221,15 +221,63 @@ locus HoldsReader {
         }
         self.live = kept;
     }
+    // Whether `person` holds `position`: in their own name, or as a member
+    // of an organization that holds it (GH #1123) — the route's reading of
+    // a firm-held position. A membership alone is no seat.
+    @unbounded
     fn holds(person: String, position: String) -> Bool {
-        if len(person) == 0 || len(position) == 0 { return false; }
-        return std::str::contains(self.live, "\t" + position + "\t" + person + "\n");
+        if len(person) == 0 || !std::str::starts_with(position, "position:") { return false; }
+        if std::str::contains(self.live, "\t" + position + "\t" + person + "\n") { return true; }
+        let mut firms = self.memberships(person);
+        while len(firms) > 0 {
+            let nl = std::str::index_of(firms, "\n");
+            if std::str::contains(self.live, "\t" + position + "\t" + firms[0..nl] + "\n") { return true; }
+            firms = firms[(nl + 1)..len(firms)];
+        }
+        return false;
     }
     fn is_retired(person: String) -> Bool { return std::str::contains(self.retired, "\n" + person + "\n"); }
-    fn holds_any(person: String) -> Bool { return len(person) > 0 && std::str::contains(self.live, "\t" + person + "\n"); }
-    // The positions `person` holds, space-separated, in the order held.
+    // Whether `person` holds any position at all, in their own name or
+    // through an organization: never by a membership alone.
+    @unbounded
+    fn holds_any(person: String) -> Bool {
+        if len(person) == 0 { return false; }
+        let holders = "\n" + person + "\n" + self.memberships(person);
+        let mut rest = self.live[1..len(self.live)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let t1 = std::str::index_of(line, "\t");
+            let tail = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(tail, "\t");
+            if std::str::starts_with(tail, "position:") && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n") { return true; }
+        }
+        return false;
+    }
+    // The organizations `person` is a member of, one node id per line.
+    @unbounded
+    fn memberships(person: String) -> String {
+        let mut out = "";
+        let mut rest = self.live[1..len(self.live)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let t1 = std::str::index_of(line, "\t");
+            let tail = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(tail, "\t");
+            if std::str::starts_with(tail, "organization:") && tail[(t2 + 1)..len(tail)] == person { out = out + tail[0..t2] + "\n"; }
+        }
+        return out;
+    }
+    // The positions `person` holds, space-separated, in the order held: in
+    // their own name or through an organization they belong to (GH
+    // #1123) — never an organization node itself.
     @unbounded
     fn positions_of(person: String) -> String {
+        if len(person) == 0 { return ""; }
+        let holders = "\n" + person + "\n" + self.memberships(person);
         let mut out = "";
         let mut rest = self.live[1..len(self.live)];
         while len(rest) > 0 {
@@ -240,7 +288,7 @@ locus HoldsReader {
             let tail = line[(t1 + 1)..len(line)];
             let t2 = std::str::index_of(tail, "\t");
             let position = tail[0..t2];
-            if tail[(t2 + 1)..len(tail)] == person && !word_in(position, out) { out = out + (if len(out) > 0 { " " } else { "" }) + position; }
+            if std::str::starts_with(position, "position:") && std::str::contains(holders, "\n" + tail[(t2 + 1)..len(tail)] + "\n") && !word_in(position, out) { out = out + (if len(out) > 0 { " " } else { "" }) + position; }
         }
         return out;
     }

@@ -104,6 +104,19 @@ main locus App {
         }
         std::test::assert(std::str::contains(why, "already a member of north"), "the second membership is refused, as a row: " + why);
         std::test::assert(!std::str::contains(store.graph_ownership(), "[\"organization:acme\", \"bob\"]"), "and memory does not hold it");
+        // and a position has one owning organization: a second is refused
+        std::test::assert_eq_str(ops::graph_seat(j, "position:org", "organization:north"), "", "north seated as org's owner too, by hand");
+        let twice = ops::apply_record_to(store, j, dna::GitReceipts { repo: app }, j.revision(), "", "local", j);
+        std::test::assert_eq_str(twice.error, "", "the record projects again");
+        let mut owned_why = "";
+        let moved = refused.refresh();
+        k = 0;
+        while k < refused.revision() {
+            let e = refused.read(k);
+            if e.kind == "hold.refused" && e.entity == "holds:position:org|organization:north" { owned_why = e.body; }
+            k = k + 1;
+        }
+        std::test::assert(std::str::contains(owned_why, "owned by acme already"), "a second owning organization is refused, as a row: " + owned_why);
         store.close();
         // ---- a body over a shared record says which owner it is
         let unnamed = self.in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");

@@ -1761,7 +1761,10 @@ memory is named to it.
   position and its holder not retired, memory not having refused it
   (`hold.refused`), the person not retired; or, under a record that
   declares `dna.trust = local`, any position. The socket's roles read
-  the same edges (`HoldsReader`). Otherwise the claim is refused naming
+  the same edges (`HoldsReader`): a person holds a position in their own
+  name, or as a member of an organization holding it (GH #1123, as the
+  route reads a firm-held position); a membership alone is no seat, so
+  it grants neither `position` nor any other role. Otherwise the claim is refused naming
   the person and the position, and so is a renewal once the person no
   longer holds it (a release stays open) and friction filed as a
   position the person does not hold. Without local trust the
@@ -2814,7 +2817,8 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   owner, the organization itself, and nothing about a single-owner
   organism changes. The organism's `Ownership` is built from memory's
   `graph_ownership()` (JSON `[node, holder]` pairs of every live
-  `holds` edge an organization is in), read again at rehydrate and on
+  `holds` edge an organization is in; memory not answering is no
+  ownership, so a view that may have moved is dropped), read again at rehydrate and on
   every reconciliation, so the Ledger's gate (`org_members`) and every
   admission read one projection. A body over a shared record says
   which organization it is (`git config dna.owner acme`, the bare name
@@ -3713,7 +3717,9 @@ The live half is memory's, projected from the record by the spine
   membership of `o`; its `position` role takes a `position` or an
   `organization` node, its `holder` is a person or, for a position, an
   `organization` node, and an organization never holds another
-  organization (**Owners**). A pair kind (`unfold`, `refers`,
+  organization (**Owners**). A position has one owning organization and
+  a person one: memory refuses a second of either as a `hold.refused`
+  row, and `hale dna fill` refuses to propose it. A pair kind (`unfold`, `refers`,
   `holds`, `reviews`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says

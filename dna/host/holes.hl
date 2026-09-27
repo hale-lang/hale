@@ -161,6 +161,12 @@ fn fill_check(root: String, position: String, holder: String) -> FillCheck {
     if std::str::starts_with(holder, "organization:") {
         if !std::str::starts_with(position, "position:") { return FillCheck { why: "an organization holds a position, not another organization" }; }
         if !std::str::contains(st.positions, "\n" + holder + "\n") { return FillCheck { why: "`" + holder + "` is no organization the record states or proposes" }; }
+        let at = std::str::index_of(st.holds, "\n" + position + "\torganization:");
+        if at >= 0 {
+            let line = st.holds[(at + 1)..len(st.holds)];
+            let owner = line[(len(position) + 1)..std::str::index_of(line, "\n")];
+            if owner != holder { return FillCheck { why: position + " is owned by " + owner[13..len(owner)] + " already; a position has one owning organization" }; }
+        }
         return FillCheck { };
     }
     let joining = std::str::starts_with(position, "organization:");

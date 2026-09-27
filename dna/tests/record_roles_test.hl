@@ -68,6 +68,24 @@ locus App {
         std::test::assert(!self.roles.holds(grace, "reviewer"), "api/reviewer is not the reviewer position");
         self.holds("reviewer", "grace");
         std::test::assert(self.roles.holds(grace, "reviewer"), "position:reviewer is");
+        // GH #1123: a membership alone is no seat; a position an
+        // organization holds is held by its members, as the route reads it
+        let ghost_joins = ops::GraphEdge { kind: "holds" };
+        ghost_joins.member("position", "organization:north");
+        ghost_joins.member("holder", "ghost");
+        self.append("graph.node", "organization:north", ops::graph_node_body("organization", "north", "", ""));
+        self.append("graph.edge", ghost_joins.id(), ghost_joins.body());
+        std::test::assert(!self.roles.holds(ghost, "position"), "a member of north with no seat holds no position");
+        std::test::assert(!self.roles.holds(ghost, "owner"), "nor the board");
+        self.position("org/collections");
+        let north_owns = ops::GraphEdge { kind: "holds" };
+        north_owns.member("position", "position:org/collections");
+        north_owns.member("holder", "organization:north");
+        self.append("graph.edge", north_owns.id(), north_owns.body());
+        std::test::assert(self.roles.holds(ghost, "org_collections") && self.roles.holds(ghost, "position"), "north holds org/collections: its member does, and so holds a position");
+        std::test::assert(!self.roles.holds(ghost, "owner"), "and still not the board");
+        self.append("graph.retired", north_owns.id(), "{}");
+        std::test::assert(!self.roles.holds(ghost, "position"), "north's seat retired: its member holds nothing again");
         // the person a principal is recorded as
         std::test::assert_eq_str(self.roles.person(ada), "ada", "the mapped person");
         std::test::assert_eq_str(self.roles.person(ghost), "ghost", "mapped, seated or not");

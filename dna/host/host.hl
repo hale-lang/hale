@@ -1288,7 +1288,7 @@ main locus Host {
         if len(previous.kind) > 0 {
             let a = source.attempt(basis); return OrganizationLaunchPreparation { valid: codec.valid(a), attempt: a };
         }
-        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: basis.request.source_owner };
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: basis.request.source_owner, ownership: ownership_graph_here(self.root) };
         if !guard.available() || !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return OrganizationLaunchPreparation { }; }
         let shell = dna::OrganizationLaunchAttempt { attempt_id: attempt_id };
         let dir = source.directory(shell);
@@ -1321,7 +1321,7 @@ main locus Host {
         if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a, self.memory.leases) { return false; }
         let requested = source.fact("organization.source.launch_requested", a.attempt_id);
         let basis = source.basis(a.mutation_id);
-        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner, ownership: ownership_graph_here(self.root) };
         if requested.body != codec.attempt_body(a) || !source.matches(a, basis)
             || !guard.applied(basis.request, basis.worktree, basis.candidate).ok || !self.body_assert("the retained prepared organization") { return false; }
         let dir = source.directory(a);
@@ -1358,7 +1358,7 @@ main locus Host {
         if existing.valid {
             return if existing.pid == live.pid && existing.process_key == live.process_key && existing.process_started == live.process_started { existing } else { dna::OrganizationLaunchReceipt { } };
         }
-        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner, ownership: ownership_graph_here(self.root) };
         if !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return dna::OrganizationLaunchReceipt { }; }
         let pid = write_text(self.dna_dir + "/org.pid", to_string(live.pid)) or false; if !pid { return dna::OrganizationLaunchReceipt { }; }
         let saved = organization_launch_write(self.root, "organization.source.launched", a.attempt_id, codec.launch_body(a, live.pid, live.process_key, live.process_started), self.memory);
@@ -1366,7 +1366,7 @@ main locus Host {
     }
     fn rollback_organization_launch(basis: org_runtime::OrganizationLaunchBasis, code: Int) -> Bool {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
-        let rollback = OrganizationRollbackCodec { }; let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        let rollback = OrganizationRollbackCodec { }; let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner, ownership: ownership_graph_here(self.root) };
         let exited = source.exited(a); let failure = source.fact("organization.source.launch_exited", a.attempt_id);
         if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a, self.memory.leases) || a.host_pid != std::process::pid()
             || !self.body_assert("the prepared organization rollback") { return false; }

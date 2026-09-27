@@ -52,6 +52,9 @@ fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthorit
 // organization, nothing it may admit.
 @unbounded
 fn ownership_graph_here(root: String) -> String {
+    // one owner — the record states no organization and this body names
+    // none — asks memory nothing
+    if len(owner_here(root)) == 0 && len(organizations_in_record(root)) == 0 { return ""; }
     let env = if dna::dsn_set(dna::HEAD_DSN_ENV) { dna::HEAD_DSN_ENV } else if dna::dsn_set(dna::SPINE_DSN_ENV) { dna::SPINE_DSN_ENV } else { "" };
     if len(env) == 0 { return ""; }
     let store = dna::Pq { dsn_env: env };

@@ -934,7 +934,7 @@ locus Pq {
     fn graph_held_by(holder: String) -> String {
         let a = db::Args { };
         a.add(holder);
-        let rows = self.conn.query_params("SELECT a.node FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' JOIN graph_members h ON h.edge = e.id AND h.role = 'holder' WHERE e.kind = 'holds' AND h.node = $1 ORDER BY a.node", a);
+        let rows = self.conn.query_params("SELECT a.node FROM graph_edges e JOIN graph_members a ON a.edge = e.id AND a.role = 'position' JOIN graph_members h ON h.edge = e.id AND h.role = 'holder' WHERE e.kind = 'holds' AND h.node = $1 AND " + graph_live_sql("a.node") + " ORDER BY a.node", a);
         if !rows.ok { self.note("graph held", rows.err); return ""; }
         return rows.csv;
     }

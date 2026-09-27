@@ -4514,14 +4514,15 @@ locus Dna {
     fn bind_owner() {
         self.gateway.namespace = self.ownership.me;
     }
-    // GH #1123: who owns which position is the graph's, read from memory;
-    // with no memory, or before it answers, the view stays as it was (one
-    // owner at birth).
+    // GH #1123: who owns which position is the graph's, read from memory
+    // on every reconciliation. An answer memory does not give ("") is no
+    // ownership at all: a body that names its organization then admits
+    // nothing rather than keep a view that may have moved; with no memory
+    // named the view stays as born (one owner, or nothing for a named body).
     @unbounded
     fn refresh_ownership() {
         if !self.knowledge_client.ready() { return; }
-        let graph = self.knowledge_client.ownership();
-        if len(graph) > 0 { self.ownership.reload(graph); }
+        self.ownership.reload(self.knowledge_client.ownership());
     }
     // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
     // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.

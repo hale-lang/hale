@@ -323,8 +323,20 @@ fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: Str
     let bar = std::str::index_of(id, "|");
     let position = id[6..bar];
     let holder = id[(bar + 1)..len(id)];
-    // GH #1123: a firm owning a position is no person's seat
-    if std::str::starts_with(holder, "organization:") { return ""; }
+    // GH #1123: a firm owning a position is no person's seat, and a
+    // position has one owner — a second organization is refused
+    if std::str::starts_with(holder, "organization:") {
+        let mut it = std::json::array_first(store.graph_ownership());
+        while !it.done {
+            let two = dna::show_strings(it.element);
+            let nl = std::str::index_of(two, "\n");
+            let node = if nl < 0 { two } else { two[0..nl] };
+            let other = if nl < 0 { "" } else { dna::trim_nl(two[(nl + 1)..len(two)]) };
+            if node == position && std::str::starts_with(other, "organization:") && other != holder { return position + " is owned by " + other[13..len(other)] + " already; a position has one owning organization"; }
+            it = std::json::array_next(it);
+        }
+        return "";
+    }
     if store.person_retired(holder) { return holder + " retired from this organism"; }
     // a membership is what makes a person known to a shared record: its
     // holder need not have written before, only be a person, and a
