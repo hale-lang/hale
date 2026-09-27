@@ -1,0 +1,19 @@
+// dna/oidc/serve — the stub OpenID provider as a program (GH #989):
+// `serve <port> [client] [secret]`, on 127.0.0.1 only. `hale dna dev`
+// starts it for a record under `dna.principal = oidc` whose issuer is the
+// local one; a fixture hosts `oidc::StubIssuer` in its own process.
+
+import ".." as oidc;
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "")) or 0;
+    if port < 1 || port > 65535 {
+        eprintln("usage: serve <port> [client] [secret]");
+        std::process::exit(2);
+    }
+    let client = std::env::arg_or(2, "dna-local");
+    let secret = std::env::arg_or(3, "dna-local-secret");
+    let base = "http://127.0.0.1:" + to_string(port);
+    println("hale dna oidc: ", base, " (stub provider; client ", client, ")");
+    std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: base, client: client, secret: secret } };
+}

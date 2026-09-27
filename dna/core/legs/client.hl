@@ -176,8 +176,14 @@ locus Head {
         }
         return Reply { ok: true, status: r.status, body: text };
     }
+    // A read over the head's HTTP. Under OIDC (GH #989) a head reads
+    // nothing to a caller with no token: the leg presents its person's ID
+    // token as the bearer (HALE_DNA_ID_TOKEN); its commands stay on the
+    // socket, where the kernel vouches for the peer.
     fn get(path: String) -> Reply {
-        let r = self.http("GET", self.api + path, "Accept: application/json", "") or self.transport_failed(err);
+        let token = std::env::var("HALE_DNA_ID_TOKEN");
+        let headers = "Accept: application/json" + (if len(token) > 0 { "\r\nAuthorization: Bearer " + token } else { "" });
+        let r = self.http("GET", self.api + path, headers, "") or self.transport_failed(err);
         return self.reply(r);
     }
     fn prefix() -> String { return "/api/hale/v1/applications/" + self.application; }

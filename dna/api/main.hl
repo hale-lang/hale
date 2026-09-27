@@ -197,6 +197,7 @@ locus Api {
         // work without a DNA session. Every Record read still passes auth below.
         if self.web.serves(path) { return self.web.response(path); }
         let mut actor = self.local_name;
+        let mut subject = "";
         if self.mode == "oidc" {
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
@@ -210,8 +211,19 @@ locus Api {
                 self.auth.end_session(req);
                 return ui::redirect("/auth/login", "dna_session=; Max-Age=0; Path=/");
             }
-            actor = self.auth.session_name(req);
-            if len(actor) == 0 { return http.error(401, "unauthenticated", "sign in at /auth/login", false); }
+            // GH #989: a caller that is not a browser presents its ID token
+            // as a bearer, verified against the issuer's keys; a browser
+            // carries the session its sign-in set
+            if len(std::http::header(req, "Authorization")) > 0 {
+                subject = self.auth.bearer_subject(req);
+                if len(subject) == 0 { return http.error(401, "unauthenticated", "the bearer token is refused: " + self.auth.bearer_refused, false); }
+                actor = dna::member_of(self.auth.members, subject);
+                if len(actor) == 0 { return http.error(403, "forbidden", "subject `" + subject + "` maps to no person (`git config --add dna.oidc.member \"" + subject + "=<person>\"`)", false); }
+            } else {
+                actor = self.auth.session_name(req);
+                subject = self.auth.session_subject(req);
+                if len(actor) == 0 { return http.error(401, "unauthenticated", "sign in at /auth/login, or present an ID token as a bearer", false); }
+            }
         }
         if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
         let knowledge_path = std::str::contains(path, "/dna/knowledge/");
@@ -234,7 +246,7 @@ locus Api {
         if path == prefix + "/dna/reviews/candidate" { return self.review_candidate_read(command_context, query, raw_query); }
         if path == prefix + "/dna/organization/source-status" { let status = OrganizationStatusWire { }; return status.read(command_context, query, raw_query, self.organization_candidates, self.organization_runtime); }
         if path == prefix + "/dna/organization/source-impact" { let impact = OrganizationImpactWire { }; return impact.read(command_context, query, raw_query, self.organization_candidates); }
-        if path == prefix + "/commands" { return self.forward_command(req, raw_query); }
+        if path == prefix + "/commands" { return self.forward_command(req, raw_query, subject); }
         if path == prefix + "/dna/definitions/draft" {
             return self.definition_draft_handle(req, cut >= 0, command_context);
         }
@@ -304,19 +316,22 @@ locus Api {
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
         return http.success(source, b.result());
     }
-    // HTTP as a forwarding transport (forward.hl): the browser's line to
+    // HTTP as a forwarding transport (forward.hl): the caller's line to
     // the head's own socket, under the CSRF discipline every mutation
-    // here has, in the local session only.
-    fn forward_command(req: std::http::Request, query: String) -> std::http::Response {
+    // here has. Under OIDC the line carries the verified subject
+    // (`oidc:<sub>`), which the binding's roles map to the person
+    // (GH #989); in a fixture's trusted-local session, the head's own.
+    fn forward_command(req: std::http::Request, query: String, subject: String) -> std::http::Response {
         let http = Http { };
         let wire = CommandWire { };
-        if self.mode != "local" { return http.error(503, "commands_unsupported", "the HTTP session forwards the local principal only; use the api socket", false); }
+        let via = if self.mode == "oidc" { "oidc:" + subject } else { "http-session" };
+        if self.mode == "oidc" && (len(subject) == 0 || len(via) > 64) { return http.error(403, "forbidden", "the caller's subject cannot be carried to the api socket (at most 59 characters)", false); }
         if len(self.socket) == 0 { return http.error(503, "commands_unavailable", "the head has no api socket to forward to", false); }
         let mut line = "";
         if req.method == "GET" {
             let id = wire.lookup_id(query);
             if len(id) == 0 { return wire.error("invalid_query"); }
-            line = forwarded_line("{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":" + dna::record_json_quote(id) + "}}");
+            line = forwarded_line("{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":" + dna::record_json_quote(id) + "}}", via);
         } else {
             if len(query) > 0 { return wire.error("invalid_query"); }
             let guard = wire.guard(req, self.command_origin);
@@ -325,7 +340,7 @@ locus Api {
             let call = wire.text(req.body, "call");
             let node = (call == "KnowledgeNodePropose" || call == "KnowledgeNodeRevise") && len(req.body) <= 98304;
             if len(guard) > 0 && !(guard == "command_too_large" && node) { return wire.error(guard); }
-            line = forwarded_line(req.body);
+            line = forwarded_line(req.body, via);
             if len(line) == 0 { return http.error(400, "invalid_command", "one JSON object of the api wire, without a \"via\"", false); }
         }
         let forward = Forward { socket: self.socket };
@@ -503,6 +518,30 @@ fn local_person(root: String) -> String {
 // head's URL, Jupyter style. The shell at `/` and every POST need it;
 // a process that can read the file is the user, which is what "trusted
 // local" meant all along — any local process is not.
+// The head's OIDC principal source (GH #989), from the record's config:
+// the issuer, this head's client id, where the issuer sends a browser
+// back (`dna.oidc.redirect`, else this head's /auth/callback), and who
+// each subject is (`dna.oidc.member`). The discovery document and the
+// issuer's signing keys are read now, once: a head that cannot read them
+// does not start, and never falls back to anything.
+fn oidc_ui(record: dna::GitRecord, port: Int, label: String) -> ui::Ui {
+    let issuer = record.setting("oidc.issuer");
+    let client = record.setting("oidc.client");
+    let named = record.setting("oidc.redirect");
+    let redirect_uri = if len(named) > 0 { named } else { "http://127.0.0.1:" + to_string(port) + "/auth/callback" };
+    if len(issuer) == 0 || len(client) == 0 || !dna::issuer_allowed(issuer) {
+        eprintln(label, ": configured OIDC requires an allowed issuer and client; refusing any fallback");
+        std::process::exit(2);
+    }
+    let members = record.git("config\n--get-all\ndna.oidc.member");
+    let auth = ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout };
+    if !auth.discovered() {
+        eprintln(label, ": the issuer ", issuer, " is not usable: ", if len(auth.discovery_refused) > 0 { auth.discovery_refused } else { "its discovery document did not answer" }, "; refusing to start");
+        std::process::exit(2);
+    }
+    return auth;
+}
+
 fn launch_token(dir: String) -> String {
     let drawn = dna::run_tool("od\n-An\n-tx1\n-N16\n/dev/urandom");
     let token = std::str::replace(std::str::replace(drawn.stdout, " ", ""), "\n", "");
@@ -664,21 +703,18 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     let command_label = if commands.supported("dna.practice.propose", "1") || commands.supported("dna.review.verdict", "1") { "composed command provider" } else if knowledge_commands.supported() { "Knowledge commands in-process" } else { "no writes" };
     let socket = head_socket(root);
     if mode == "oidc" {
-        let issuer = record.setting("oidc.issuer");
-        let client = record.setting("oidc.client");
-        let redirect_uri = record.setting("oidc.redirect");
-        if len(issuer) == 0 || len(client) == 0 || len(redirect_uri) == 0 || !dna::issuer_allowed(issuer) {
-            eprintln("hale dna api: configured OIDC requires an allowed issuer, client and redirect; refusing local fallback");
-            std::process::exit(2);
-        }
-        let members = record.git("config\n--get-all\ndna.oidc.member");
+        let auth = oidc_ui(record, port, "hale dna api");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
         Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
-            srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } } };
+            srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: auth } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
         eprintln("hale dna api: unsupported principal source; refusing local fallback");
+        std::process::exit(2);
+    }
+    if !dna::trusted_local_fixture() {
+        eprintln("hale dna api: ", dna::TRUSTED_LOCAL_REFUSED);
         std::process::exit(2);
     }
     // The local session is the head's own uid: the person the record maps

@@ -27,8 +27,9 @@ serves the ten browser assets from the head. The project is optional: without it
 the head starts detached and the browser's Projects workspace creates,
 initializes or attaches one. Use `--api BINARY` for an existing
 application-composed API and `--head BINARY` for a built head. The launcher
-inherits private service configuration; the head is trusted-local and refuses
-a project configured for OIDC. See the face's README for fresh-project source
+inherits private service configuration; it starts the stub OpenID provider
+(`dna/oidc`) and the head signs you in through it (GH #989), configures an
+attached project for that issuer, and refuses a project another issuer serves. See the face's README for fresh-project source
 capture and service configuration.
 
 From the Hale source checkout, using a current Hale compiler:
@@ -367,15 +368,18 @@ the local session `/capabilities` names is that same person (else
 `uid:<n>`, never `$USER`), so a forwarded receipt matches the session.
 The forwarder connects to its own socket only when this very process
 answers on it (peer pid), so a clone of the record sharing the path is
-never forwarded into. The local session's trust until OIDC (GH #989) is
-the launch token: minted per launch into `<root>/.hale/dna/head.token`
-(0600) and printed in the head's URL; the shell at `/` and every POST
-carry it (the `dna_local` cookie the URL sets, or `X-Hale-Token`), and
-without it they are refused. Revoking a `dna.unix.member` mapping takes
-effect when the record next moves. The
-local session only: an OIDC session's person is not a socket peer, so
-that mode answers `commands_unsupported` here. `/capabilities` names the
-route as `api.http`.
+never forwarded into. Under OIDC (GH #989) the forwarder marks the line
+`via: oidc:<subject>` for the verified caller — a bearer ID token, or
+the session a sign-in set — the roles map that subject by
+`dna.oidc.member`, and the receipt carries `principal_mode: oidc`, the
+person and `principal_positions`. A fixture's trusted-local session
+(`HALE_DNA_TRUSTED_LOCAL=1`, and nowhere else) is the launch token:
+minted per launch into `<root>/.hale/dna/head.token` (0600) and printed
+in the head's URL; the shell at `/` and every POST carry it (the
+`dna_local` cookie the URL sets, or `X-Hale-Token`), and without it they
+are refused. Revoking a `dna.unix.member` or `dna.oidc.member` mapping
+takes effect when the record next moves. `/capabilities` names the route
+as `api.http`.
 
 ## Practice and Review command providers
 
@@ -619,7 +623,11 @@ a 0600 one-line file under `${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/`
 or an environment variable the run's shell reads — and the file is unlinked
 once the verb succeeded. A request carrying `value` anywhere is 400.
 
-The head is trusted-local: its principal is `USER`, every child runs as it,
+The head's principal is the person who signs in through the issuer
+`dna/face/start.sh` names (`HALE_DNA_OIDC_ISSUER`, `_CLIENT`, `_SECRET`,
+`_MEMBER`, GH #989); it forwards that session's ID token to the API child
+as the bearer, and every child runs as `USER`. In a fixture's
+trusted-local session (`HALE_DNA_TRUSTED_LOCAL=1`) its principal is `USER`
 and it proxies no `/auth/*`. Restarting a head over the same state directory
 answers every earlier `request_id` with the same terminal receipt and
 re-attaches the last activated project. `tests/journal_test.hl`,
@@ -781,12 +789,16 @@ hat is readable.
 
 ## Identity and content
 
-With no configured principal source, or `dna.principal=local`, loopback access is
-trusted and the reader is server-derived. `dna.principal=oidc` reuses the existing
-issuer, client, redirect and member mapping configuration. Start at `/auth/login`;
-`dna.oidc.redirect` must point to this service's `/auth/callback`. The service uses
-`HALE_DNA_OIDC_SECRET` for the configured exchange. Missing, unmapped or expired
-sessions cannot read the API. Unknown principal modes fail startup. No query
+`dna.principal=oidc` is the head's principal source (GH #989): the issuer,
+client, redirect (default: this service's `/auth/callback`) and member mapping
+configuration. The discovery document and the issuer's JWKS are read once at
+start, and every ID token is verified — ES256 under the issuer's key, then its
+issuer, audience and expiry. Start at `/auth/login`, or present an ID token as
+`Authorization: Bearer`. The service uses `HALE_DNA_OIDC_SECRET` for the
+configured exchange. Missing, forged, unmapped or expired tokens and sessions
+cannot read the API. With no principal source the service refuses to start
+unless a fixture sets `HALE_DNA_TRUSTED_LOCAL=1`, where loopback access is
+trusted and the reader is server-derived. Unknown principal modes fail startup. No query
 parameter changes the authenticated member or supplies an acting role.
 
 Sessions are in memory. Restart requires another login; Record identities and

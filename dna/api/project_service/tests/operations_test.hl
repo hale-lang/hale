@@ -138,7 +138,7 @@ locus OperationCases {
         std::test::assert(attached.ok && attached.refused == "", "attach the made project: " + attached.reason);
         std::test::assert(attached.application_id == self.identity && attached.name == "alpha" && attached.authority_written, "the attach result");
         std::test::assert(head::child_view(self.cfg, "api").alive, "the API child is alive");
-        std::test::assert(head::api_ready(self.cfg.api_port, self.identity), "the API child answers with the project's Record");
+        std::test::assert(head::api_ready(self.cfg.api_port, self.identity, false), "the API child answers with the project's Record");
         let policies = head::policies_of(self.project, self.identity);
         std::test::assert(policies.command && policies.task && !policies.organization && !policies.organization_present, "the two synthesized policies decode");
         std::test::assert(std::str::contains(head::policy_env(self.project), "HALE_DNA_COMMAND_POLICY=" + self.project + "/.hale/dna/face/authority.json\n") && !std::str::contains(head::policy_env(self.project), "ORGANIZATION"), "the policy environment names the files that exist");

@@ -37,11 +37,13 @@ locus RecordRoles {
     params {
         root: String = "."; // the record; given where the source is built
         mapping: String = ""; // `uid:<n>=<person>` per line (fixtures); "" = the record's own `git config --local dna.unix.member`, re-read when the record moves
+        oidc: String = ""; // GH #989: `<subject>=<person>` per line (fixtures); "" = the record's `git config --local dna.oidc.member`
         memory: Bool = false; // a fixture's record: the rows `remember` was given, never git
         rows: EventRows = EventRows { };
         git: GitJournal = GitJournal { };
         opened: Bool = false;
         given: Bool = false; // the mapping was handed in, not read from the record
+        oidc_given: Bool = false;
         trust: String = ""; // `dna.trust` as read from the record ("" = local); a fixture hands one in
         local_trust: Bool = false; // under local trust the person a peer maps to holds every position
         scanned: Int = -1; // the revision the live edges were read at
@@ -52,6 +54,7 @@ locus RecordRoles {
         if self.opened { return; }
         self.opened = true;
         self.given = len(self.mapping) > 0;
+        self.oidc_given = len(self.oidc) > 0;
         if len(self.root) == 0 { self.root = "."; }
         if !self.memory { self.git = GitJournal { repo: self.root }; }
     }
@@ -82,6 +85,10 @@ locus RecordRoles {
         if !self.given {
             let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
             self.mapping = if r.code == 0 { r.stdout } else { "" };
+        }
+        if !self.oidc_given {
+            let o = self.git.record.git("config\n--local\n--get-all\ndna.oidc.member");
+            self.oidc = if o.code == 0 { o.stdout } else { "" };
         }
         let t = self.git.record.git("config\n--get\ndna.trust");
         self.local_trust = trim_nl(if t.code == 0 { t.stdout } else { "" }) == "local";
@@ -118,7 +125,7 @@ locus RecordRoles {
     fn holds(p: std::api::Principal, r: String) -> Bool {
         if p.uid < 0 || len(r) == 0 { return false; }
         self.scan();
-        let person = member_of(self.mapping, p.name);
+        let person = self.person_named(p);
         if len(person) == 0 || self.seats.is_retired(person) { return false; }
         if self.local_trust { return true; }
         if r == "position" { return self.seats.holds_any(person); }
@@ -129,9 +136,25 @@ locus RecordRoles {
     fn person(p: std::api::Principal) -> String {
         if p.uid < 0 { return ""; }
         self.scan();
-        let person = member_of(self.mapping, p.name);
+        let person = self.person_named(p);
         if len(person) == 0 || self.seats.is_retired(person) { return ""; }
         return person;
+    }
+    // Who `p` names before retirement is asked: a line the head's own
+    // transport forwarded under a verified OIDC subject (`via` =
+    // `oidc:<sub>`, a mark the binding takes from the program's own uid
+    // only) is that subject's person by `dna.oidc.member`; any other peer
+    // is its account's by `dna.unix.member` (GH #989).
+    fn person_named(p: std::api::Principal) -> String {
+        if std::str::starts_with(p.via, "oidc:") { return member_of(self.oidc, p.via[5..len(p.via)]); }
+        return member_of(self.mapping, p.name);
+    }
+    // The positions `p`'s person holds by the record's holds edges,
+    // space-separated ("" for nobody; under local trust the one person
+    // holds every position without an edge naming one).
+    fn positions(p: std::api::Principal) -> String {
+        let person = self.person(p);
+        return if len(person) == 0 { "" } else { self.seats.positions_of(person) };
     }
 }
 
@@ -204,6 +227,23 @@ locus HoldsReader {
     }
     fn is_retired(person: String) -> Bool { return std::str::contains(self.retired, "\n" + person + "\n"); }
     fn holds_any(person: String) -> Bool { return len(person) > 0 && std::str::contains(self.live, "\t" + person + "\n"); }
+    // The positions `person` holds, space-separated, in the order held.
+    @unbounded
+    fn positions_of(person: String) -> String {
+        let mut out = "";
+        let mut rest = self.live[1..len(self.live)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let t1 = std::str::index_of(line, "\t");
+            let tail = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(tail, "\t");
+            let position = tail[0..t2];
+            if tail[(t2 + 1)..len(tail)] == person && !word_in(position, out) { out = out + (if len(out) > 0 { " " } else { "" }) + position; }
+        }
+        return out;
+    }
 }
 
 // Whether the record at `repo` declares `dna.trust = local`: one person

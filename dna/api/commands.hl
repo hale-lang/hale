@@ -20,6 +20,7 @@ type CommandContext {
     source: Source = Source { };
     principal_mode: String = "";
     principal_name: String = "";
+    principal_positions: String = ""; // GH #989: the positions the person holds, space-separated
 }
 type CommandRequest {
     valid: Bool = false;
@@ -102,6 +103,9 @@ type CommandReceipt {
     operation_version: String = "1";
     principal_mode: String = "";
     principal_name: String = "";
+    // GH #989: the positions the caller's person holds by the record's
+    // holds edges when the command was admitted, space-separated
+    principal_positions: String = "";
     position_id: String = "org";
     target_kind: String = "dna.practice";
     target_id: String = "";
@@ -388,18 +392,23 @@ locus CommandAdmission {
     }
     birth() { self.reader.root = self.root; }
     // The caller as the record knows them: the person `dna.unix.member`
-    // maps the peer to, else `uid:<n>` — never $USER (only an ungated
-    // command reaches here unmapped). Rows say `local`: the peer is a
-    // local account the kernel vouched for.
+    // maps the peer to — or, for a line the head forwarded under a
+    // verified OIDC subject, the person `dna.oidc.member` maps it to
+    // (GH #989) — else `uid:<n>`, never $USER (only an ungated command
+    // reaches here unmapped). Rows say `local` for a local account the
+    // kernel vouched for, `oidc` for an issuer's subject.
     fn context(ctx: std::api::Context) -> CommandContext {
         let source = self.reader.read();
         let person = self.roles.person(ctx.caller);
         let name = if len(person) > 0 { person } else { ctx.caller.name };
-        return CommandContext { root: self.root, source: source, principal_mode: "local", principal_name: name };
+        let mode = if std::str::starts_with(ctx.caller.via, "oidc:") { "oidc" } else { "local" };
+        return CommandContext { root: self.root, source: source, principal_mode: mode, principal_name: name, principal_positions: self.roles.positions(ctx.caller) };
     }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }
-    fn reply(result: CommandResult) -> CommandReply {
-        return CommandReply { ok: result.ok, code: result.code, application_id: result.source.identity, head: result.source.head, revision: result.source.revision, receipt: result.receipt };
+    fn reply(result: CommandResult, context: CommandContext) -> CommandReply {
+        let mut receipt = result.receipt;
+        receipt.principal_positions = context.principal_positions;
+        return CommandReply { ok: result.ok, code: result.code, application_id: result.source.identity, head: result.source.head, revision: result.source.revision, receipt: receipt };
     }
     // The operations' own rule for this operation, as GovernanceCommands
     // restates it before admission.
@@ -426,7 +435,7 @@ locus CommandAdmission {
         if !self.admissible(context, request) { return self.refused("invalid_command"); }
         request.valid = true;
         if !self.provider.supported(request.operation, request.operation_version) { return self.refused("commands_unsupported"); }
-        return self.reply(self.provider.submit(context, request));
+        return self.reply(self.provider.submit(context, request), context);
     }
     fn propose(p: PracticeProposal, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: p.request_id, operation: "dna.practice.propose", target_kind: "dna.practice", target_id: p.subject_digest, subject_digest: p.subject_digest, text: p.text, rationale: p.rationale });
@@ -472,7 +481,7 @@ locus CommandAdmission {
         if !self.wire.bounded(l.request_id, 128, true, false) { return self.refused("invalid_query"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
-        return self.reply(self.provider.lookup(context, l.request_id));
+        return self.reply(self.provider.lookup(context, l.request_id), context);
     }
 }
 

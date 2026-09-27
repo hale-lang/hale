@@ -299,22 +299,25 @@ head uid the record maps to nobody is recorded as `uid:<n>`, never
 effect when the record next moves, since the source re-reads the
 mapping with the edges then.
 
-**The local session's trust, until OIDC (GH #989).** A local head
-mints a launch token into `<root>/.hale/dna/head.token` (mode 0600)
-and prints its URL with it, `http://127.0.0.1:8792/?token=…`, Jupyter
-style. The shell at `/` opens only with that token (the URL sets the
-`dna_local` cookie for the rest of the session), and every POST
-carries it — the cookie, or `X-Hale-Token` from a tool that read the
-file. A process that can read the file is the user; any local process
-is not, and a bare `GET /` or a POST without the token is refused. The
-reads over HTTP stay as they were.
-
 Then nothing is served without signing in, a verdict from the page is
 recorded in the name the subject maps to — with the board's authority
 if `dna.oidc.board` lists that name — and a subject you have not mapped
-gets no session at all. The head speaks plain HTTP; put TLS in front of
-it. Without `dna.principal`, the surface trusts whoever can reach it,
-as it always has.
+gets no session at all. The head reads the issuer's discovery document
+and its signing keys (JWKS) once, when it starts, and verifies every ID
+token against them: ES256 only, so an issuer that signs RS256 alone is
+refused at start. A caller that is not a browser presents its ID token
+as `Authorization: Bearer <token>`, and its commands are recorded in
+the name its subject maps to. The head speaks plain HTTP; put TLS in
+front of it.
+
+**Local mode is OIDC too (GH #989).** `dna/face/start.sh` starts a stub
+identity provider (`dna/oidc`) on the loopback beside the head, and you
+sign in through it as yourself: the subject `local-sub`, mapped to
+`$USER`. There is no head without a principal source: a head started
+with neither `dna.principal = oidc` nor a fixture's
+`HALE_DNA_TRUSTED_LOCAL=1` refuses to start. The trusted-local session
+— a launch token in `.hale/dna/head.token`, `http://…/?token=…` — is a
+test fixture's mode, never a project's.
 
 ### The head
 
@@ -348,6 +351,10 @@ re-adopts them. Secrets never enter the head: `dna.secret.set` names
 a *source* — a `0600` one-line file under
 `${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, consumed once
 the verb succeeded, or an environment variable the run's shell reads —
-and the value is in no request, journal line or log. The head is
-trusted-local: it acts as `USER`, and a project whose
-`dna.principal` is `oidc` is refused at attach.
+and the value is in no request, journal line or log. The head signs
+you in through the stub provider `start.sh` starts, and configures a
+project it attaches for that provider (`dna.principal`,
+`dna.oidc.issuer`, `dna.oidc.client`, and your `dna.oidc.member`); a
+project served under another issuer is refused at attach. Every read
+and command it proxies to the project's API child carries your ID
+token, which the child verifies itself.

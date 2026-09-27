@@ -41,15 +41,16 @@ fn trust_of(root: String) -> String {
     return if len(declared) == 0 { "local" } else { declared };
 }
 
-// §2.8: one board grant for the head's principal.
-fn authority_policy_json(application_id: String, principal_name: String) -> String {
+// §2.8: one board grant for the head's principal, in its mode (`oidc`
+// for the person who signed in, GH #989; `local` in a fixture's session).
+fn authority_policy_json(application_id: String, principal_mode: String, principal_name: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("format", "dna.practice-review-authority/1");
     b.string_field("application_id", application_id);
     b.begin_array_field("grants");
     b.begin_object();
-    b.string_field("mode", "local");
+    b.string_field("mode", principal_mode);
     b.string_field("name", principal_name);
     b.string_field("authority", "board");
     b.bool_field("practice_propose", true);
@@ -93,13 +94,15 @@ fn ensure_policy_dir(root: String) -> Bool {
 // Writes the two synthesized files that are absent; true when
 // `authority.json` was written now (the receipt's `authority_written`).
 // Idempotent: a second attach writes nothing.
-fn write_policies(root: String, application_id: String, principal_name: String) -> Bool {
+fn write_policies(root: String, application_id: String, principal_mode: String, principal_name: String) -> Bool {
     if !ensure_policy_dir(root) { return false; }
     let mut wrote = false;
     if !std::io::fs::file_exists(authority_path(root)) {
-        wrote = write_private(authority_path(root), authority_policy_json(application_id, principal_name));
+        wrote = write_private(authority_path(root), authority_policy_json(application_id, principal_mode, principal_name));
     }
-    if !std::io::fs::file_exists(task_policy_path(root)) {
+    // the Task authority grants a local principal alone: under OIDC no Task
+    // policy is synthesized, and the child serves no Task commands (GH #989)
+    if principal_mode == "local" && !std::io::fs::file_exists(task_policy_path(root)) {
         let w = write_private(task_policy_path(root), task_policy_json(application_id, principal_name));
     }
     return wrote;

@@ -198,7 +198,7 @@ locus NervesWatch {
         let reg = Registry { state_dir: self.cfg.state_dir };
         let a = reg.active();
         if !a.ok { return -1; }
-        if api_ready(self.cfg.api_port, a.application_id) { self.api_ready_pid = pid; return pid; }
+        if api_ready(self.cfg.api_port, a.application_id, self.cfg.principal_mode == "oidc") { self.api_ready_pid = pid; return pid; }
         return -1;
     }
     @unbounded

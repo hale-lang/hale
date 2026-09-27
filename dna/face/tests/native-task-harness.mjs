@@ -28,7 +28,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const evidence = fs.mkdtempSync(path.join(evidenceParent, 'native-task-'));
   const root = path.join(evidence, 'project'); fs.mkdirSync(path.join(root, '.hale/dna'), { recursive: true });
   const inherited = isolatedEnvironment();
-  const env = Object.fromEntries(['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER'].filter(k => inherited[k] !== undefined).map(k => [k, inherited[k]]));
+  const env = Object.fromEntries(['PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_DNA_TRUSTED_LOCAL'].filter(k => inherited[k] !== undefined).map(k => [k, inherited[k]]));
   Object.assign(env, { USER: actor, LOGNAME: actor });
   const run = (command, args, options = {}) => {
     const result = spawnSync(command, args, { cwd: root, env, encoding: 'utf8', timeout: 15_000, maxBuffer: 4 * 1024 * 1024, ...options });

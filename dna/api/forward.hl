@@ -7,9 +7,10 @@
 // record source decide exactly as for a socket peer; the principal is
 // the head process's, mapped through `dna.unix.member` — never the bare
 // local principal. No second command table: the line is forwarded as
-// written and the receipt comes back as written. The local session only:
-// an OIDC session's person is not a socket peer, so that mode answers
-// `commands_unsupported` here until the binding grows an HTTP transport.
+// written and the receipt comes back as written. Under OIDC the mark names
+// the verified subject (`oidc:<sub>`, GH #989): the binding's roles map it
+// through `dna.oidc.member`, as they map a peer through `dna.unix.member`,
+// and the receipt says `oidc` and the person.
 
 // One forwarded line, and its receipt ("" when the socket did not
 // answer within the deadline).
@@ -53,11 +54,11 @@ fn socket_live(socket: String) -> Bool {
 }
 
 // The wire line for a forwarded request: the caller's object with the
-// head's mark; a line that already carries one is refused.
-fn forwarded_line(body: String) -> String {
+// head's mark (`via`); a line that already carries one is refused.
+fn forwarded_line(body: String, via: String) -> String {
     let t = std::str::trim(body);
     if !std::json::valid_object(t) || len(std::json::find_field_raw(t, "via")) > 0 { return ""; }
-    return t[0..(len(t) - 1)] + (if len(t) > 2 { "," } else { "" }) + "\"via\":\"http-session\"}";
+    return t[0..(len(t) - 1)] + (if len(t) > 2 { "," } else { "" }) + "\"via\":" + dna::record_json_quote(via) + "}";
 }
 
 // The HTTP status a receipt earns: the binding's own answer, or its
