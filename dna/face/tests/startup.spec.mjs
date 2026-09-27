@@ -14,6 +14,24 @@ async function port() {
   const server = net.createServer(); await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const number = server.address().port; await new Promise(resolve => server.close(resolve)); return number;
 }
+// CI may build HALE_NATIVE_HEAD_BIN beside the first case instead of
+// before the suite (GH #1147): HALE_NATIVE_HEAD_BUILD_STATUS then names the
+// file that build writes its exit status to when it ends, and a case that
+// hands the launcher that head waits for it first. The first case builds
+// its own head and never waits, so no case depends on another having run.
+async function prebuiltHeadReady() {
+  const status = process.env.HALE_NATIVE_HEAD_BUILD_STATUS;
+  if (!status) return;
+  const deadline = Date.now() + 600000;
+  for (;;) {
+    let code;
+    try { code = (await readFile(status, 'utf8')).trim(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (code === '0') return;
+    if (code !== undefined) throw new Error(`The head built beside the suite failed (exit ${code}); its output follows the suite in the log.`);
+    if (Date.now() > deadline) throw new Error('The head built beside the suite did not finish within the build budget.');
+    await sleep(250);
+  }
+}
 async function stop(child) {
   if (child.exitCode !== null || child.signalCode) return;
   const closed = new Promise(resolve => child.once('close', resolve));
@@ -67,7 +85,7 @@ const test = base.extend({
         // the API also supplies a built head when the environment names one,
         // and otherwise takes the build budget for the head it will build.
         const prebuiltHead = process.env.HALE_NATIVE_HEAD_BIN || '';
-        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) options.push('--head', prebuiltHead); }
+        if (!build) { options.push('--api', process.env.HALE_API_BIN); if (prebuiltHead) { await prebuiltHeadReady(); options.push('--head', prebuiltHead); } }
         else { childEnv.TMPDIR = path.join(scratch, 'build temporary'); await mkdir(childEnv.TMPDIR); }
         const builds = build || !prebuiltHead;
         // Bound the real compiler/API tree without holding the native build lock

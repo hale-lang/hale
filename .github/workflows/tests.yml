@@ -830,14 +830,16 @@ jobs:
 
   # The browser suite in two shards, by what dominates each. `startup` is
   # startup.spec.mjs alone: its first case is the one-command launcher
-  # building the head and its API from a fresh checkout copy, two
-  # single-threaded `hale build`s in turn (9.4 of the suite's 20 minutes
+  # building the head and its API from a fresh checkout copy (side by
+  # side since GH #1147; in turn they were 9.4 of the suite's 20 minutes
   # on 2026-09-26), and it is the longest shard however the rest is cut.
   # `rest` is every other spec (about 7 minutes of cases). A third shard
   # would only add a runner's setup: `rest` already finishes before
-  # `startup`. Each shard builds, warms and caches as below; the two
-  # share the builds cache and the toolchain cache, and the second saver
-  # of either logs that the entry exists and carries on.
+  # `startup`. Each shard warms and restores as below. The builds cache
+  # is `rest`'s to fill and save: `startup` builds only the API before
+  # the suite and its head beside the first case (see its step). The
+  # toolchain cache is shared, and its second saver logs that the entry
+  # exists and carries on.
   face-browser:
     name: face (browser, ${{ matrix.shard }})
     needs: scope
@@ -949,21 +951,32 @@ jobs:
         # turn, warm then builds took 17 minutes, 2026-09-26), and on a
         # cache hit not at all: it checks the restored three are there and
         # executable.
+        #
+        # The startup shard needs only the API and the head, and it builds
+        # the head beside its first case instead (in the suite's step, below;
+        # GH #1147): that case builds its own head and API through the
+        # launcher, so a head built here held the suite back by its build
+        # for a case that comes after. So on a miss it builds the API
+        # alone here, and it never saves the builds cache (rest does).
         env:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
         run: |
           set -euo pipefail
-          seeds=()
-          if [ "${{ steps.face-builds.outputs.cache-hit }}" != "true" ]; then
-            seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
-          fi
-          # the rest shard's native command lanes start the composed head (GH #1029)
-          built=(dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge)
-          if [ "${{ matrix.shard }}" = "rest" ]; then
-            [ -x dna/api/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
-            built+=(dna/api/practice_review/practice_review)
-          fi
+          hit=${{ steps.face-builds.outputs.cache-hit == 'true' }}
+          case "${{ matrix.shard }}" in
+            rest)
+              seeds=()
+              [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
+              # the native command lanes start the composed head (GH #1029)
+              [ -x dna/api/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
+              built=(dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge
+                dna/api/practice_review/practice_review) ;;
+            startup)
+              seeds=()
+              [ "$hit" = true ] || seeds=(dna/api)
+              built=(dna/api/api) ;;
+          esac
           scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
           for b in "${built[@]}"; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
@@ -977,7 +990,7 @@ jobs:
       # the builds just wrote their outputs under dna/, which would change
       # the hash.
       - name: Save the DNA API and the head
-        if: steps.face-builds.outputs.cache-hit != 'true'
+        if: matrix.shard == 'rest' && steps.face-builds.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1007,6 +1020,14 @@ jobs:
         # `rest` inverts the same pattern (Playwright's --grep matches a
         # case's file path as well as its title), so between them every
         # spec runs exactly once.
+        #
+        # The startup shard's head, when the builds cache missed, is built
+        # here beside the suite (GH #1147): its first case builds its own
+        # through the launcher and takes minutes, and only the cases after
+        # it hand the launcher this one. The build writes its exit status
+        # to HALE_NATIVE_HEAD_BUILD_STATUS when it ends and a case that
+        # needs the head waits for that; its output is printed after the
+        # suite, as its own group, and the step fails if it failed.
         env:
           HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
           HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
@@ -1018,16 +1039,48 @@ jobs:
             rest) select=(--grep-invert 'startup\.spec\.mjs') ;;
             *) echo "::error::unknown shard $SHARD"; exit 1 ;;
           esac
+          head_build=
+          if [ "$SHARD" = startup ] && [ ! -x "$GITHUB_WORKSPACE/dna/api/project_service/project_service" ]; then
+            head_build=$RUNNER_TEMP/head-build
+            (
+              cd "$GITHUB_WORKSPACE"
+              start=$SECONDS
+              if ./target/release/hale build dna/api/project_service --target-cpu baseline; then status=0; else status=$?; fi
+              echo "(dna/api/project_service: $((SECONDS - start)) s)"
+              echo "$status" > "$head_build.status.tmp" && mv "$head_build.status.tmp" "$head_build.status"
+            ) > "$head_build.log" 2>&1 &
+            head_pid=$!
+            export HALE_NATIVE_HEAD_BUILD_STATUS=$head_build.status
+          fi
+          # The Knowledge fixture is the rest shard's: the startup shard does
+          # not build it, and tests/run.mjs refuses a named binary that is not there.
+          knowledge=()
+          if [ "$SHARD" = rest ]; then
+            knowledge=(
+              HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+              HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api"
+              HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+            )
+          fi
           npm ci
           npx playwright install --with-deps chromium --only-shell
           HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
             HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
             HALE_NATIVE_COMMAND_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
-            HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
-            HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
-            HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
-            npm test -- "${select[@]}"
+            env "${knowledge[@]}" npm test -- "${select[@]}" || result=$?
+          if [ -n "$head_build" ]; then
+            wait "$head_pid" || true
+            status=$(cat "$head_build.status" 2>/dev/null || echo missing)
+            echo "::group::dna/api/project_service, built beside the suite: exit $status"
+            cat "$head_build.log"
+            echo "::endgroup::"
+            if [ "$status" != 0 ]; then
+              echo "::error::hale build dna/api/project_service failed (its group above has the output)"
+              result=${result:-1}
+            fi
+          fi
+          exit "${result:-0}"
 
       - name: Preserve face browser failure evidence
         if: failure()

@@ -28,7 +28,8 @@ API child once a project is attached. The browser then opens on **Projects**,
 where a project is created, initialized or attached from the browser; see
 [Projects and the project service](#projects-and-the-project-service).
 
-The launcher builds this checkout's native Hale API in temporary storage, serves
+The launcher builds this checkout's native Hale API and the project service in
+temporary storage, side by side, serves
 the bundled browser, and prints its loopback URL. Set `HALE_BIN` if the compiler
 is not on `PATH`. `--port 8793` selects another port. `--source-drafts` opts into
 Organization and ownership preparation; omit it for reads alone. Ctrl-C stops

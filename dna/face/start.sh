@@ -100,10 +100,18 @@ if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" && ! "$HALE_DNA_MEMORY_DSN_HEAD" =~ ^po
 fi
 
 build_dir=
+builds=()
 child=
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
+  # A build still running when the launch is stopped: without job
+  # control a background command ignores the terminal's SIGINT, so it is
+  # stopped here, before its directory goes.
+  if ((${#builds[@]})); then
+    kill -TERM "${builds[@]}" 2>/dev/null || true
+    wait "${builds[@]}" 2>/dev/null || true
+  fi
   if [[ -n "$child" ]]; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -124,34 +132,56 @@ hale=$(command -v -- "$hale")
 valid_path "$hale" || fail 'compiler paths cannot contain newlines'
 export HALE_BIN=$hale
 
-# Builds one seed of this checkout into the temporary build directory, as
-# CI builds it: the seed directory itself is the program. The checkout's
-# Hale sources the seeds import (dna/, and the host's iris/process_identity)
-# are copied there once, so the build writes nothing into the checkout.
-# Not a one-line seed importing the checkout: an imported `main locus` is
-# inert (its placement is the entry's to declare), and the head's server
-# and watcher would run one after the other on the main thread.
-build_seed() {
-  local seed=$1 name=$2
-  if [[ ! -d "$build_dir/src/dna" ]]; then
-    mkdir -p -- "$build_dir/src"
-    (cd -- "$checkout" && find dna iris/process_identity -name '*.hl' -print0 | tar --null -T - -cf -) | tar -xf - -C "$build_dir/src" || fail 'cannot copy the checkout'\''s Hale sources'
-  fi
-  printf 'face: building %s from this checkout…\n' "$seed" >&2
-  # Observation belongs to the application. Do not attach the compiler or the head.
-  env -u LOTUS_OBS "$hale" build "$build_dir/src/$seed" >&2 || fail "cannot build $seed"
-  printf '%s\n' "$build_dir/src/$seed/$name"
+# Builds the seeds this launch was not handed into the temporary build
+# directory, as CI builds them: each seed directory itself is the program.
+# The checkout's Hale sources the seeds import (dna/, and the host's
+# iris/process_identity) are copied there once, so the builds write
+# nothing into the checkout. Not a one-line seed importing the checkout:
+# an imported `main locus` is inert (its placement is the entry's to
+# declare), and the head's server and watcher would run one after the
+# other on the main thread.
+#
+# The builds run side by side, as scripts/warm-and-build.sh runs CI's:
+# each `hale build` is one single-threaded process, and in turn the two
+# took about 9 minutes on a CI runner (GH #1147). Every build is waited
+# for even after one fails, each one's output is then printed as its own
+# group, in the order the seeds were named, and the launch fails if
+# either failed.
+build_seeds() {
+  local i seed status failed=()
+  mkdir -p -- "$build_dir/src" "$build_dir/logs"
+  (cd -- "$checkout" && find dna iris/process_identity -name '*.hl' -print0 | tar --null -T - -cf -) | tar -xf - -C "$build_dir/src" || fail 'cannot copy the checkout'\''s Hale sources'
+  for i in "${!seeds[@]}"; do
+    printf 'face: building %s from this checkout…\n' "${seeds[$i]}" >&2
+    # Observation belongs to the application. Do not attach the compiler or the head.
+    env -u LOTUS_OBS "$hale" build "$build_dir/src/${seeds[$i]}" > "$build_dir/logs/$i.log" 2>&1 &
+    builds+=("$!")
+  done
+  for i in "${!seeds[@]}"; do
+    seed=${seeds[$i]}
+    if wait "${builds[$i]}"; then status=built; else status=FAILED; failed+=("$seed"); fi
+    printf 'face: ── %s: %s\n' "$seed" "$status" >&2
+    cat -- "$build_dir/logs/$i.log" >&2
+  done
+  builds=()
+  ((${#failed[@]} == 0)) || fail "cannot build ${failed[*]} (its output is above)"
 }
 absolute_executable() {
   valid_path "$1" || fail "$2 paths cannot contain newlines"
   [[ -f "$1" && -x "$1" ]] || fail "$2 binary must be an executable file"
   printf '%s\n' "$(cd -- "$(dirname -- "$1")" && pwd -P)/$(basename -- "$1")"
 }
-# One build directory for both seeds, made here rather than inside the
-# command substitution that calls build_seed, so cleanup removes it.
-if [[ -z "$api" || -z "$head" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX"); fi
-if [[ -z "$api" ]]; then api=$(build_seed dna/api/practice_review practice_review); else api=$(absolute_executable "$api" API); fi
-if [[ -z "$head" ]]; then head=$(build_seed dna/api/project_service project_service); else head=$(absolute_executable "$head" head); fi
+# A binary handed in is checked before anything is built, so a wrong path
+# fails at once rather than after the builds.
+seeds=()
+if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
+if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
+if ((${#seeds[@]})); then
+  build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
+  build_seeds
+  [[ -n "$api" ]] || api=$build_dir/src/dna/api/practice_review/practice_review
+  [[ -n "$head" ]] || head=$build_dir/src/dna/api/project_service/project_service
+fi
 
 printf 'face: starting http://127.0.0.1:%s/\n' "$port"
 if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi

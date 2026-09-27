@@ -398,6 +398,11 @@ source, existing-binary startup, independent process shutdown, temporary-build
 cleanup and incomplete private-service configuration. It does not seed a sample
 Record/catalog, run an organization body or model, or initialize Postgres/Compose.
 Native processes remain bounded; these are startup checks, not foundation suites.
+The cases after the first hand the launcher `HALE_API_BIN` and, when it is set,
+`HALE_NATIVE_HEAD_BIN`. CI builds that head beside the first case rather than
+before the suite (GH #1147) and sets `HALE_NATIVE_HEAD_BUILD_STATUS` to the file
+its build writes its exit status to when it ends; a case that needs the head
+waits for that file, and fails with the build's status if it is not `0`.
 
 ## Knowledge interaction
 
