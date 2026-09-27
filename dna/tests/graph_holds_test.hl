@@ -78,7 +78,7 @@ const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the hol
 type Filled { answer: String = ""; stderr: String = ""; }
 
 locus App {
-    params { repo: String = ""; }
+    params { repo: String = ""; head: String = ""; }
     // The organization runs: its pid file is written and the process is alive.
     fn organization_up(tries: Int) -> Bool {
         let mut n = 0;
@@ -103,8 +103,8 @@ locus App {
         return false;
     }
     // `hale dna fill`, and the organization's answer. The organization
-    // answers a hold behind the executions it is running (GH #995), on
-    // this git-backed record a commit per row, so the answer is followed in
+    // answers a hold behind the executions it is running (GH #995), their
+    // rows in the ledger, so the answer is followed in
     // the record past the CLI's own wait, as a verdict's is: the
     // `hold.proposed` or `hold.refused` row for the request after the
     // revision the fill was asked at, bounded by `secs` (the slice is the
@@ -136,8 +136,9 @@ locus App {
     // A verdict on one Review, written without the CLI's wait, and the
     // Review's answer read from the record: `settled: <body>` or
     // `refused: <body>`, "" when none came in `secs`. After the Board's
-    // decisions the organization runs a practice-ratify execution each, a
-    // commit per row on this record, and answers a verdict behind them:
+    // decisions the organization runs a practice-ratify execution each, its
+    // rows in the ledger, and answers a verdict behind them (a Review's own
+    // rows, and a hold's, stay on the record, where these read them):
     // the fixture asserts the answer, not how soon it comes (GH #995).
     @unbounded
     fn decide(review: String, args: String, secs: Int) -> String {
@@ -215,7 +216,12 @@ locus App {
         }
         return last;
     }
+    // `hale dna <args>` in the project; once memory is migrated, as the
+    // head, which is where an adopted ledger's body lease is read
     fn dna(args: String) -> dna::RunResult {
+        if len(self.head) > 0 {
+            return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+        }
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
     }
     run() {
@@ -238,10 +244,31 @@ locus App {
         let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
         let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
-        let started = dna::run_tool("sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain());
-        let body = dna::trim_nl(started.stdout);
+        self.head = head;
+        let start = "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
+        let started = dna::run_tool(start);
+        let mut body = dna::trim_nl(started.stdout);
         std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
         std::test::assert(self.logged("a repository: no application runs under this host", 240), "with no application to express: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        // ---- the ledger adopted (GH #1150), as a deployment adopts it: asked
+        // for, carried out on the organization's tick, then the organization
+        // started again so it carries the lease the host hands a body on a
+        // ledger (an organization running when the ledger is adopted keeps
+        // appending unfenced until it restarts, and the host does not yet
+        // restart it or hand it the lease on adoption: deferred, #1150);
+        // each decision's execution rows then land in the ledger, fenced,
+        // not as commits
+        let adopted = self.dna("ledger\nadopt\n--as\nada");
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
+        let adopt_by = std::time::now() + 300;
+        while self.count_rows("ledger.adopted") == 0 && std::time::now() <= adopt_by { std::time::sleep(500ms); }
+        std::test::assert(self.count_rows("ledger.adopted") > 0, "the organization adopts the ledger on its tick: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        let stopped = dna::run_tool("kill\n" + body);
+        std::test::assert(self.gone(body, 600), "the organization stops after adopting");
+        body = dna::trim_nl(dna::run_tool(start).stdout);
+        std::test::assert(self.organization_up(600), "and runs again on the ledger: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        let ledger = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        std::test::assert(ledger.ensure_open(), "the record's ledger opens for the fixture: " + ledger.failure);
 
         // ---- the Board ratifies the holes the holds need, each by its own Review
         let seats = "board\napi/dev\napi/reviewer\ncompose/support\n";
@@ -258,6 +285,21 @@ locus App {
         let ratify_by = std::time::now() + 600;
         while self.count_rows("knowledge.ratified") < 4 && std::time::now() <= ratify_by { std::time::sleep(200ms); }
         std::test::assert_eq_int(self.count_rows("knowledge.ratified"), 4, "the four holes ratified by the organism");
+        // and the executions behind them ran on the ledger, not as commits
+        let refreshed = ledger.refresh();
+        let mut in_ledger = 0;
+        let mut li = 0;
+        while li < ledger.revision() {
+            let e = ledger.read(li);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" { in_ledger = in_ledger + 1; }
+            li = li + 1;
+        }
+        std::test::assert_eq_int(in_ledger, 4, "the four practice-ratify executions are in the ledger: " + ledger.failure);
+        let git = dna::GitJournal { repo: self.repo };
+        let mut as_commits = 0;
+        let mut gi = 0;
+        while gi < git.revision() { if git.read(gi).kind == "workflow.admitted" { as_commits = as_commits + 1; } gi = gi + 1; }
+        std::test::assert_eq_int(as_commits, 0, "and none of them is a commit on the record");
         // (the chart pads its names to the widest it shows: compose's)
         let seated = self.show_until(head, "  compose  support\n", 240);
         std::test::assert(std::str::contains(seated, "  board\n") && std::str::contains(seated, "  api      dev, reviewer(openapi.yaml)\n") && std::str::contains(seated, "  compose  support\n"), "the four holes are the org chart's: " + seated);

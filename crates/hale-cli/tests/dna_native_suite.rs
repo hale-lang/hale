@@ -34,16 +34,19 @@ fn repo_root() -> PathBuf {
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
-/// fifteen minutes a slice had then. One wedged fixture still ends in a named
-/// failure within the group's timeout.
+/// fifteen minutes a slice had then, when graph_holes ran on the git
+/// record. One wedged fixture still ends in a named failure within the
+/// group's timeout.
 const SLICES: usize = 20;
 
 /// The fixtures that take minutes of a slice on CI's runners: an
-/// organization run through dozens of Board decisions on a git-backed
-/// record (GH #995: graph_holes_test and graph_holds_test, the two halves
-/// of what ran 523 to 1500 s as one fixture and alone ran past a slice's
-/// twenty-five minutes; books_slice_test ~280 s; receipt_retention_test
-/// ~110 s), the body fixtures that build the host
+/// organization run through dozens of Board decisions (GH #995:
+/// graph_holes_test and graph_holds_test, the two halves of what ran 523
+/// to 1500 s as one fixture on a git-backed record; each now runs its
+/// organization on the adopted ledger, GH #1150, locally ~54 s and ~295 s,
+/// and each still leads a slice for the minutes a loaded runner adds;
+/// books_slice_test ~280 s; receipt_retention_test ~110 s), the body
+/// fixtures that build the host
 /// cold in a cache of their own (body_claim_expired_test ~425 s,
 /// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test
 /// and dogfood_voice_test, which build a head. The sorted listing's
