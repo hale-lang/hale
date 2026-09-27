@@ -78,7 +78,7 @@ const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the hol
 type Filled { answer: String = ""; stderr: String = ""; }
 
 locus App {
-    params { repo: String = ""; }
+    params { repo: String = ""; head: String = ""; }
     // The organization runs: its pid file is written and the process is alive.
     fn organization_up(tries: Int) -> Bool {
         let mut n = 0;
@@ -215,7 +215,12 @@ locus App {
         }
         return last;
     }
+    // `hale dna <args>` in the project; once memory is migrated, as the
+    // head, which is where an adopted ledger's body lease is read
     fn dna(args: String) -> dna::RunResult {
+        if len(self.head) > 0 {
+            return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head + "\n" + toolchain() + "\ndna\n" + args);
+        }
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && shift && exec \"$@\"\nsh\n" + self.repo + "\n" + toolchain() + "\ndna\n" + args);
     }
     run() {
@@ -238,10 +243,18 @@ locus App {
         let migrated = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_MEMORY_DSN_OWNER=\"$2\" exec \"$3\" dna memory migrate\nsh\n" + self.repo + "\n" + owner + "\n" + toolchain());
         let head = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
+        self.head = head;
         let started = dna::run_tool("sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + self.repo + "\n" + owner + "\n" + nats + "\n" + toolchain());
         let body = dna::trim_nl(started.stdout);
         std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
         std::test::assert(self.logged("a repository: no application runs under this host", 240), "with no application to express: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
+        // ---- the ledger adopted (GH #1150): the runtime the spec names, so
+        // each decision's execution rows land in the ledger, not as commits
+        let adopted = self.dna("ledger\nadopt\n--as\nada");
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
+        let adopt_by = std::time::now() + 300;
+        while self.count_rows("ledger.adopted") == 0 && std::time::now() <= adopt_by { std::time::sleep(500ms); }
+        std::test::assert(self.count_rows("ledger.adopted") > 0, "the organization adopts the ledger on its tick: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
 
         // ---- the Board ratifies the holes the holds need, each by its own Review
         let seats = "board\napi/dev\napi/reviewer\ncompose/support\n";
