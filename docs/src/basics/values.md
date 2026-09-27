@@ -93,6 +93,16 @@ A name with a `::` in it (`lib::Thing`, `std::text::Sink`) is not
 held to this: it names something in another seed, which the checker
 can only see once the whole seed is in front of it.
 
+## A field declared twice is an error
+
+A `type` names each field once, and an enum names each variant once.
+Declaring `a` a second time in the same type is an error at the
+second declaration, which names the first: `field `a` is already
+declared in type `T``, with the first declaration's line beside it.
+The same holds for a locus's or a perspective's `params`, a
+`contract`'s members and an interface's methods — a name is one
+slot.
+
 ## Some ordinary words are reserved
 
 Hale's keywords are ordinary English: `epoch`, `where`, `rich`,

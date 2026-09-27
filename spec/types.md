@@ -56,6 +56,25 @@ the lifetime contract.
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
 
+### One name, one field (GH #1141)
+
+A struct declares each field once, and an enum declares each variant
+once. A second declaration of a name already declared in the same
+`type` is a type error at the second, naming the first:
+
+```text
+main.hl:4:5: type error: field `a` is already declared in type `T`;
+a name is one slot, so declare it once
+main.hl:2:5: the first declaration
+```
+
+The same rule holds for a locus's or a perspective's `params`, for
+the named members of a `contract`, and for an `interface`'s methods.
+Before it, the second declaration passed `hale check` and one of the
+two won the slot, with nothing in the source to say which — while
+the json codecs and the api binding's description assume one slot
+per name.
+
 ### A struct binding is a copy (GH #713)
 
 `let b = <place>;` where the place holds a struct — a field of `self`
