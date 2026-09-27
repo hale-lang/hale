@@ -4,7 +4,9 @@
 //! (`hale.application.v1`) that serves the face's shell and its boundary
 //! test, the intake-control example that proves an application-owned
 //! control through that service (GH #1008), plus the browser fixtures'
-//! Organization source declaration and Record fixture. A compiler change
+//! Organization source declaration, Record fixture and memory fixture
+//! (`tests/memory`, which migrates and drops a Record's memory for the
+//! native lanes). A compiler change
 //! that breaks any of them fails this build instead of the browser suite.
 
 use std::path::PathBuf;
