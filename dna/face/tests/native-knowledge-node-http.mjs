@@ -10,7 +10,7 @@ import os from 'node:os';
 import { startNodeService, nodeEnvironmentPresent } from './native-knowledge-node-harness.mjs';
 import { wireLine } from './command-wire.mjs';
 
-assert(nodeEnvironmentPresent(), 'Supply HALE_NATIVE_COMMAND_{API,BODY,RELAY} and HALE_DNA_MEMORY_DSN_OWNER.');
+assert(nodeEnvironmentPresent(), 'Supply HALE_BIN, HALE_NATIVE_COMMAND_API, HALE_FACE_MEMORY_BIN, HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent), 'Evidence parent must be absolute.');
 await mkdir(parent, { recursive: true });

@@ -552,13 +552,17 @@ Settled Reviews retain their canonical binding document with decisions disabled.
 The pagination case is declared skipped on GH #1148 (its annotation names
 it): under it the composed head dies with SIGSEGV partway through the 27
 reviewed bindings and their restarts. It comes back with the fix.
-Twelve more native lanes are declared skipped on GH #1029, their own issue,
-each annotation naming what the real host showed (locally, on main after
-#1129): a setup command refused `command_busy` or `snapshot_changed` as the
-record moves under the harness, a page reading a projection one tick behind,
-a receipt the editor does not report as proposed, and a row bound that was
-the stand-in Body's. They come back as the harness learns each; nine native
-lanes run green.
+The other native lanes run on the real host: a setup command the head
+refuses `command_busy` or `snapshot_changed` (the record moved under it on the
+host's tick) is sent again with a fresh head, a lookup the head answers so is
+asked again, a page that read a projection one tick behind is reloaded until
+it observes the outcome, and a lane's row bound counts its own rows over
+what the host wrote before it began. Before sending, the Knowledge editor
+knows only the snapshot; whether a relationship is reviewed is the policy's,
+and the receipt says which (GH #1129).
+Two lanes stay declared skipped on the page's race with the host's tick, their
+annotations naming it: the edge-review creation-and-removal case and the
+lifecycle applicability-and-retirement case; every other native lane runs.
 The proposer Alice cannot decide her own binding Review. A separately granted
 Bob authenticates for the decision; returning to Alice recovers only her original
 Knowledge request. Actor switching changes API identity, not a browser authority

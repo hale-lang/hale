@@ -10,7 +10,7 @@ import path from 'node:path';
 import { startBindingService, bindingEnvironmentPresent } from './native-knowledge-binding-harness.mjs';
 import { wireLine } from './command-wire.mjs';
 
-assert(bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
+assert(bindingEnvironmentPresent(), 'Supply HALE_BIN, HALE_NATIVE_COMMAND_API, HALE_FACE_MEMORY_BIN, HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER.');
 const parent = process.env.HALE_NATIVE_COMMAND_EVIDENCE || os.tmpdir();
 assert(path.isAbsolute(parent)); await mkdir(parent, { recursive: true });
 const evidence = await mkdtemp(path.join(parent, 'native-binding-http-'));

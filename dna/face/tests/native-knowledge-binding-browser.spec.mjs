@@ -15,7 +15,7 @@ const test = base.extend({
   }, { timeout: serviceFixtureTimeout }],
   page: async ({ page, service }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await service.attach(page); await use(page); expect(errors).toEqual([]); },
 });
-test.skip(!bindingEnvironmentPresent(), 'Supply matching native API, Body, relay and Knowledge service binaries.');
+test.skip(!bindingEnvironmentPresent(), 'Supply HALE_BIN, HALE_NATIVE_COMMAND_API, HALE_FACE_MEMORY_BIN, HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER.');
 test.setTimeout(120_000);
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
 const receipt = page => page.getByRole('region', { name: 'Knowledge binding request', exact: true });
@@ -80,9 +80,7 @@ async function openResult(page, service, proposal, extra = {}) {
 }
 async function dismiss(page) { await receipt(page).getByRole('button', { name: 'Dismiss binding request', exact: true }).click(); await expect(receipt(page)).toHaveCount(0); }
 
-test.skip('native bindings: reviewed applicability reaches a new branch and exact removal preserves descendant binding', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the lane's setup command is refused command_busy — the composed head still holds the previous command when the next is sent; the harness has to wait for the head, not the journal." },
-}, async ({ page, service }, testInfo) => {
+test('native bindings: reviewed applicability reaches a new branch and exact removal preserves descendant binding', async ({ page, service }, testInfo) => {
   const idea = await service.createItem(), before = service.candidate(idea), posts = trackPosts(page);
   expect((await service.bindings(idea, 'org/support')).length).toBe(0);
   const binding = await propose(page, service, { idea });
@@ -105,9 +103,7 @@ test.skip('native bindings: reviewed applicability reaches a new branch and exac
   await page.setViewportSize({ width: 390, height: 844 }); await receipt(page).scrollIntoViewIfNeeded(); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); await page.screenshot({ path: testInfo.outputPath('binding-removal-observed-mobile.png') });
 });
 
-test.skip('native bindings: lost unbind reply restarts all services and recovers by GET with original tuple', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the lane's setup command is refused snapshot_changed — the record moved between the harness reading its head and the command carrying it (the host's tick appends); the harness has to take its precondition after quiescing." },
-}, async ({ page, service }) => {
+test('native bindings: lost unbind reply restarts all services and recovers by GET with original tuple', async ({ page, service }) => {
   const initial = await service.applyBinding(service.practice, 'org/support'), posts = trackPosts(page);
   await prepare(page, service, { bindingId: initial.receipt.binding.binding_id }); await service.pauseDelivery(); let admitted;
   await page.route('**/commands', async route => {
@@ -120,9 +116,7 @@ test.skip('native bindings: lost unbind reply restarts all services and recovers
   expect((await service.bindings(service.practice)).some(row => row.id === initial.receipt.binding.binding_id)).toBe(true);
 });
 
-test.skip('native bindings: rejected Review leaves the binding effect declined and graph unchanged', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the lane's setup command is refused snapshot_changed — the record moved between the harness reading its head and the command carrying it (the host's tick appends); the harness has to take its precondition after quiescing." },
-}, async ({ page, service }) => {
+test('native bindings: rejected Review leaves the binding effect declined and graph unchanged', async ({ page, service }) => {
   const proposal = await propose(page, service); await decide(page, service, proposal, { verdict: 'reject', effect: 'declined' }); await openResult(page, service, proposal);
   await expect(receipt(page).getByRole('button', { name: 'Binding effect', exact: true })).toContainText('declined'); await expect(receipt(page)).not.toContainText('Binding observed');
   expect((await service.bindings(service.practice)).some(row => row.id === proposal.native.binding.binding_id)).toBe(false);

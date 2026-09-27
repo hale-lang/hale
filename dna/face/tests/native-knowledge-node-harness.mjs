@@ -68,7 +68,21 @@ export async function startNodeService(options = {}) {
       const source = await service.read(service.apiPath + '/capabilities');
       return { request_id: requestId, operation: 'dna.knowledge.' + operation, operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: operation === 'node.propose' ? 'dna.knowledge.collection' : 'dna.knowledge.node', id: target }, preconditions: { principal: service.principal, record_head: source.json.source.record_head }, arguments: arguments_ };
     },
-    post: command => forward(wireLine(command)),
+    // A POST the head refuses command_busy or snapshot_changed was not
+    // admitted (nothing was appended): on the real host the record moved
+    // under the command's head. Quiesce, take the head again, send again,
+    // bounded.
+    async post(command) {
+      let sent;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        sent = await forward(wireLine(command));
+        if (!['command_busy', 'snapshot_changed'].includes(sent.code)) return sent;
+        await service.quiesce();
+        const source = await service.read(service.apiPath + '/capabilities');
+        if (command.preconditions?.record_head) command.preconditions.record_head = source.json.source.record_head;
+      }
+      return sent;
+    },
     async waitNode(requestId, predicate) {
       const deadline = Date.now() + 20_000; let last;
       while (Date.now() < deadline) {

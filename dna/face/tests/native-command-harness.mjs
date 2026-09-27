@@ -127,6 +127,9 @@ export async function startService(options = {}) {
   }
   const slot = `${process.ppid}-${process.env.TEST_PARALLEL_INDEX ?? process.pid}`;
   const root = options.rootPrefix ? path.join(fs.mkdtempSync(options.rootPrefix), 'project') : path.join(os.tmpdir(), `hale-face-browser.native-${slot}`, 'project');
+  // The slot's root outlives one service so a worker restart keeps its build
+  // cache; it goes when the worker does.
+  if (!options.rootPrefix) process.once('exit', () => { try { fs.rmSync(path.dirname(root), { recursive: true, force: true }); } catch {} });
   const policy = path.join(evidence, 'authority.json');
   const isolated = isolatedEnvironment();
   const env = Object.fromEntries([
@@ -259,11 +262,16 @@ export async function startService(options = {}) {
   }
   const projecting = result => result.status === 503 && result.json.error?.code === 'knowledge_projection_unavailable';
   async function quiesce() {
+    let previous = '';
     for (let round = 0; ; round++) {
       const head = await stableHead();
       if (!alive(api) || !alive(host) || host.paused) return;
       await wait('Knowledge projection at the Record head', () => get(apiPath() + '/dna/knowledge/nodes?limit=1'), result => !projecting(result), 30_000);
-      if (journal().head === head || round >= 4) return;
+      if (journal().head === head) return;
+      // the record moved while memory caught up: once more, bounded — a
+      // record that never settles is a finding, not a quiet return
+      assert(round < 4, `The Record did not settle in five rounds: ${previous} then ${head}, now ${journal().head}`);
+      previous = head;
     }
   }
   // `hale dna dev` in place of the Body and the relay: it migrates memory and
@@ -396,10 +404,6 @@ export async function startService(options = {}) {
       // live, not a snapshot: a lane that spreads this service still sees each launch's
       token: () => token,
       read, journal, quiesce, startHost, stopHost, startAPI, pauseDelivery, resumeDelivery, restart, stop, exportEvidence,
-      // The Body and the relay are one process now, the host; the old names
-      // still name what they name.
-      startBody: () => startHost(), startRelay: async () => { assert(alive(host), 'The host is the relay: start it'); },
-      stopBody: () => stopHost(host?.paused), stopRelay: () => stopHost(host?.paused),
       processes: () => [...[...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })), ...hostChildren(root).filter(({ pid }) => running(pid)).map(({ name, pid }) => ({ name, pid, alive: true, paused: host?.paused ?? false }))],
       stopAPI: () => stopProcess(api),
       facts: (kind, entity) => journal().rows.filter(row => row.kind === kind && (entity === undefined || row.entity === entity)),
@@ -415,7 +419,8 @@ export async function startService(options = {}) {
         // The head's lookup reads the record under its fence and gives up
         // when the record keeps moving — on the real host it moves on the
         // host's tick — answering command_busy (or snapshot_changed from its
-        // read). That is not the receipt: ask again until the deadline.
+        // read). That is not the receipt: ask again until the deadline. A
+        // GET answered command_busy is the head's to fix (PR #1145, Deferred).
         let transient = '';
         try {
           return await wait(`command ${requestId}`, async () => {

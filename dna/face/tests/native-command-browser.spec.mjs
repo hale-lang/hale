@@ -21,7 +21,7 @@ const test = base.extend({
     expect(errors, 'No unhandled face JavaScript error').toEqual([]);
   },
 });
-test.skip(!nativeCommandEnvironmentPresent(), 'Supply explicit HALE_NATIVE_COMMAND_API/BODY/RELAY binaries for real native browser acceptance.');
+test.skip(!nativeCommandEnvironmentPresent(), 'Supply HALE_BIN, HALE_NATIVE_COMMAND_API (dna/api/practice_review), HALE_FACE_MEMORY_BIN, HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER for real native browser acceptance.');
 test.setTimeout(75_000);
 
 const recovery = page => page.getByRole('region', { name: 'Command recovery', exact: true });
@@ -191,9 +191,7 @@ test('real native browser: a lost reply survives API/body restart and reload rec
   await recovery(page).screenshot({ path: testInfo.outputPath('native-browser-recovered-mobile.png') });
 });
 
-test.skip('real native browser: competing replacements keep Review approval separate from adoption refusal', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the lane's setup command is refused command_busy — the composed head still holds the previous command when the next is sent; the harness has to wait for the head, not the journal." },
-}, async ({ page, service }, testInfo) => {
+test('real native browser: competing replacements keep Review approval separate from adoption refusal', async ({ page, service }, testInfo) => {
   const posts = postRequests(page);
   const first = await propose(page, service, 'First replacement of the shared predecessor.');
   await dismiss(page);

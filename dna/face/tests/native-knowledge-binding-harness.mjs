@@ -36,7 +36,14 @@ export async function startBindingService(options = {}) {
   async function decide(candidate, reviewId, verdict = 'approve') {
     await service.quiesce(); await asActor('bob');
     const command = { request_id: randomUUID(), operation: 'dna.review.verdict', operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: 'dna.review', id: reviewId }, preconditions: { subject_digest: candidate, principal: { mode: 'local', name: 'bob' }, review_state: 'pending' }, arguments: { verdict, comment: 'Decide independently on the exact native fixture candidate.' } };
-    const response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+    // a verdict the head refuses command_busy or snapshot_changed was not
+    // admitted; on the real host the record moved under it: send it again
+    let response;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      response = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+      if (response.body.value?.ok === true || !['command_busy', 'snapshot_changed'].includes(response.body.value?.code)) break;
+      await service.quiesce();
+    }
     assert.equal(response.status, 200, JSON.stringify(response)); assert.equal(response.body.value?.ok, true, JSON.stringify(response)); await service.waitCommand(command.request_id, value => value.verdict.state === 'accepted'); await asActor('alice');
     return command;
   }

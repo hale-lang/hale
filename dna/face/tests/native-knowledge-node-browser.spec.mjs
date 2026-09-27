@@ -20,7 +20,7 @@ const test = base.extend({
     await use(page); expect(errors).toEqual([]);
   },
 });
-test.skip(!nodeEnvironmentPresent(), 'Supply matching native Review API, Body, relay and Knowledge service binaries.');
+test.skip(!nodeEnvironmentPresent(), 'Supply HALE_BIN, HALE_NATIVE_COMMAND_API, HALE_FACE_MEMORY_BIN, HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER.');
 test.setTimeout(90_000);
 
 const editor = page => page.getByRole('region', { name: 'Knowledge change editor', exact: true });
@@ -49,8 +49,7 @@ async function prepare(page, service, { operation = 'node.propose', id = '', nam
     await editor(page).getByLabel('Target locus', { exact: true }).fill('org');
   }
   await editor(page).getByLabel('Reason for knowledge change', { exact: true }).fill('Preserve exact evidence and its history.');
-  await editor(page).getByRole('button', { name: 'Review knowledge draft', exact: true }).click();
-  await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
+  await reviewDraft(page);
 }
 async function send(page, service) {
   const pending = statusResponse(page, service.commandPath, 'POST');
@@ -65,6 +64,18 @@ async function show(page, service, requestId, predicate = value => value.node.pr
   expect((await pending).status()).toBe(200);
   await expect(receipt(page)).toContainText(requestId);
   return native;
+}
+// The draft's review reads the service; right after a restart the page's
+// pooled connection to the old process is dead and the first read says the
+// service could not be reached. Review again, bounded.
+async function reviewDraft(page, button = 'Review knowledge draft') {
+  for (let attempt = 0; ; attempt++) {
+    await editor(page).getByRole('button', { name: button, exact: true }).click();
+    await expect(editor(page).getByRole('status')).toContainText(/Draft reviewed against the current visible snapshot|could not be reached/);
+    if (!(await editor(page).getByRole('status').textContent()).includes('could not be reached') || attempt >= 3) break;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
 }
 async function propose(page, service, options = {}) {
   await prepare(page, service, options); await expect(editor(page).getByRole('button', { name: 'Submit knowledge change', exact: true })).toBeEnabled();
@@ -101,14 +112,22 @@ async function approve(page, service, proposal, activation = 'adopted') {
   return native;
 }
 async function openObserved(page, service, id, retiring = false) {
-  await service.quiesce(); await page.goto(service.url('knowledge', { id }));
-  await expect(receipt(page)).toContainText(retiring ? 'Retirement observed' : 'Adoption observed');
+  // The activation the organism adopts lands on a tick after the verdict's,
+  // and the page reads the graph once: reload until the receipt observes it.
+  const observed = retiring ? 'Retirement observed' : 'Adoption observed';
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    await service.quiesce(); await page.goto(service.url('knowledge', { id }));
+    const seen = receipt(page).filter({ hasText: observed });
+    await seen.waitFor({ timeout: 8_000 }).catch(() => {});
+    if (await seen.count() || Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  await expect(receipt(page)).toContainText(observed);
   await expect(detail(page)).toContainText(id);
 }
 
-test.skip('native Knowledge nodes: create a generic idea, decide its exact Review, revise and retire with history retained', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the request panel never reaches 'Adoption observed' — the activation the organism adopts is projected on a later tick than the lane waits for." },
-}, async ({ page, service }, testInfo) => {
+test('native Knowledge nodes: create a generic idea, decide its exact Review, revise and retire with history retained', async ({ page, service }, testInfo) => {
   const submitted = posts(page);
   const first = await propose(page, service);
   // A proposal names its collection; the head derives the target from it.
@@ -166,9 +185,7 @@ test('native Knowledge nodes: stale Record precondition refuses admission withou
   service.resumeDelivery();
 });
 
-test.skip('native Knowledge nodes: approved competing revision reports adoption refusal separately', {
-  annotation: { type: 'issue', description: "Gated on GH #1029 (the lane's own issue): on the real host the request panel never reaches 'Adoption observed' — the activation the organism adopts is projected on a later tick than the lane waits for." },
-}, async ({ page, service }, testInfo) => {
+test('native Knowledge nodes: approved competing revision reports adoption refusal separately', async ({ page, service }, testInfo) => {
   const original = await propose(page, service); await approve(page, service, original);
   const id = original.native.node.candidate_digest; await openObserved(page, service, id); await dismissNode(page);
   const first = await propose(page, service, { operation: 'node.revise', id, text: 'First independently reviewed revision.' }); await dismissNode(page);
