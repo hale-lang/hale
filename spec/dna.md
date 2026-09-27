@@ -2631,12 +2631,13 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   fallback. A route that names no held position defines no signers:
   with no memory named, or before anyone holds a signing position (the
   Board's own first holder is ratified this way), the Review keeps its
-  required authority, and that fallback is recorded too — `review.routed`
-  with no signers and `why` (`no memory is named`, `no position the route
-  names is held`), which `hale dna review <id>` shows. A practice-ratify
-  Review on its fallback is routed again while it is open, after a
-  restart, so a Board seated since signs it; a change-deliver Review's
-  row is final. **The Review is not opened** — and reconciliation asks
+  required authority. A change-deliver Review's fallback is recorded
+  too, and final — `review.routed` with no signers and `why` (`no memory
+  is named`, `no position the route names is held`), which `hale dna
+  review <id>` shows; a practice-ratify Review writes nothing on its
+  fallback and is routed again each time it is rebuilt (a restart), so a
+  Board seated since signs it, and rebuilding a record's proposals
+  appends nothing. **The Review is not opened** — and reconciliation asks
   again — when memory is named and does not answer, when git cannot name
   the paths the candidate changes (no base, or a failed diff), or when
   the record does not take its routing; so no Review opens on its

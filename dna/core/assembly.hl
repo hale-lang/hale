@@ -792,13 +792,14 @@ locus Dna {
     // definition names — change-deliver the route of the paths its
     // candidate changes, practice-ratify the Board — and writes
     // `review.routed`; afterwards, a restart included, the row is what the
-    // Review requires. The fallback is a row too — no signers, and `why`:
-    // no memory is named, or no position the route names is held — and a
-    // knowledge Review on it routes again while it is open, so a Board
-    // seated later signs it; a change's never does. Memory that is named
-    // and does not answer routes nothing: the Review is not opened
-    // (`recorded: false`) and reconcile asks again, so it never opens on
-    // its claimed authority alone.
+    // Review requires. A change's fallback is a row too — no signers, and
+    // `why`: no memory is named, or no position the route names is held —
+    // and final. A proposal's writes nothing on its fallback, and is routed
+    // again each time it is rebuilt, so a Board seated later signs it:
+    // rebuilding the seeded proposals at a restart appends nothing. Memory
+    // that is named and does not answer routes nothing: the Review is not
+    // opened (`recorded: false`) and reconcile asks again, so it never
+    // opens on its claimed authority alone.
     @unbounded
     fn review_routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool) -> RouteRequirement {
         let row = self.routed_row(review_id);
@@ -821,11 +822,11 @@ locus Dna {
         if !self.governance_once("review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
         return need;
     }
-    // The fallback, recorded once with why: a Review on it is decided by
-    // its own required authority.
+    // The fallback: a Review on it is decided by its own required
+    // authority. A change's is recorded once, with why.
     @unbounded
     fn route_fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
-        if len(row) > 0 { return RouteRequirement { }; }
+        if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
         if !self.governance_once("review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
         return RouteRequirement { };
     }
