@@ -4923,7 +4923,7 @@ locus Dna {
         }
         // GH #1089: the positions the candidate's route requires, and the
         // gates whose runs are its evidence, recorded before the Review opens
-        let changed = if len(m.base_commit) > 0 { run_tool("git\n-C\n" + m.worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + m.base_commit + "\n" + m.candidate_commit).stdout } else { "" };
+        let changed = changed_paths(m.worktree, m.base_commit, m.candidate_commit);
         let need = self.review_routing(m.id, "change-deliver", changed, true, !prepared);
         if !need.recorded { return "failed: the record did not take the Review's routing"; }
         if !prepared {
