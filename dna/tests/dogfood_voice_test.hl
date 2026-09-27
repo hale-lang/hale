@@ -1,0 +1,359 @@
+// dna/tests/dogfood_voice_test.hl — the legs' loop on voice, through the
+// head's socket, with a deterministic performer standing in for the model
+// (GH #946, item D: the dogfood run).
+//
+// The vendored voice repository (dna/tests/onboarding/voice) is read into
+// its graph (`hale dna init`), its holes ratified, and the suite's user
+// mapped to riley (`dna.unix.member`). The record declares no trust, so
+// the graph's `holds` edges say who holds what: until riley holds a
+// position the head's socket lists no claim to the peer, and the leg
+// says so at attach; once riley holds api/dev the socket lists it, and
+// the leg claims as that peer, working as api/dev. The owner runs in
+// this process and relays software work to legs; the head is the
+// practice_review head, its commands on its socket. The performer (the
+// project's own dna/org/work.hl, from dna/tests/dogfood/work.hl.txt)
+// makes its change in a scratch clone, commits it, pushes the commit to
+// `refs/legs/candidates/<attempt>` and hands it back as `result_ref`, its
+// patch filed as a receipt that is the commit's own patch. A leg killed
+// mid-task, its clone made, leaves its lease to lapse; the owner asks
+// again, and another worker claims it under the next token and finishes.
+//
+// What does not exist yet is not stood in. The candidate never becomes a
+// Review (GH #1156), nothing binds the patch receipt to the commit at the
+// head (the fixture checks it), and a Review is not routed to the graph's
+// signers — a non-signer's verdict is not refused, and a change nobody
+// signs falls back to the Review's own authority (GH #1157). The route is
+// read as a person reads it today, `hale dna route`, and the fallback is
+// asserted as today's word so the change that replaces it shows here.
+// Nor is the lease's position bound to a position the peer's person
+// holds (GH #1162): the gate is "holds a live position".
+//
+// Without memory (HALE_DNA_MEMORY_DSN_OWNER) the route is not read; the
+// rest runs on the record either way.
+
+import "../core" as dna;
+import "../host" as host;
+import "../operations" as ops;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn head_binary() -> String {
+    if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
+    let seed = source() + "/dna/api/practice_review";
+    let built = dna::run_tool(toolchain() + "\nbuild\n" + seed);
+    std::test::assert_eq_int(built.code, 0, "the head builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
+    return seed + "/practice_review";
+}
+
+// The performer the project runs, with the pause a dying leg dies in.
+fn performer_source(pause_ms: Int) -> String {
+    let text = std::io::fs::read_file(source() + "/dna/tests/dogfood/work.hl.txt") or "";
+    std::test::assert(len(text) > 0, "the performer's source is in the repository");
+    return std::str::replace(text, "@@PAUSE@@", to_string(pause_ms));
+}
+
+// A JSON array's objects' `field`, one per line.
+@unbounded
+fn field_of(raw: String, field: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(raw);
+    while !it.done {
+        out = out + std::json::find_string_field(it.element, field) + "\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+locus App {
+    params {
+        repo: String = ""; owner: String = ""; head_dsn: String = ""; identity: String = ""; api: String = "";
+        head: std::process::Child = std::process::Child { };
+        core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-dogfood-placeholder" } } };
+        journal: dna::RoutedJournal = dna::RoutedJournal { };
+        asks: Int = 0;
+    }
+    // `hale dna <args>` in the project, reading memory as the head does.
+    fn dna(args: String) -> dna::RunResult {
+        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head_dsn + "\n" + toolchain() + "\ndna\n" + args);
+    }
+    // `hale dna work <args>` in the project, against the head; its exit code checked.
+    fn work_argv(args: String) -> String {
+        return "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args;
+    }
+    fn work_rc(args: String, rc: Int) -> String {
+        let r = dna::run_tool(self.work_argv(args));
+        std::test::assert_eq_int(r.code, rc, "hale dna work " + std::str::replace(args, "\n", " ") + ": " + r.stdout + r.stderr);
+        return dna::trim_nl(r.stdout + r.stderr);
+    }
+    fn work(args: String) -> String { return self.work_rc(args, 0); }
+    // The head's socket, as its capabilities name it to the leg.
+    fn socket() -> String {
+        let caps = dna::run_tool("curl\n-sf\n" + self.api + "/api/hale/v1/applications/" + self.identity + "/capabilities");
+        return std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(caps.stdout, "data"), "api"), "socket");
+    }
+    // Whether the socket lists the leg's claim to this peer.
+    fn claim_listed() -> Bool {
+        let d = dna::run_tool(toolchain() + "\ndescribe\n" + self.socket());
+        return d.code == 0 && std::str::contains(d.stdout + d.stderr, "AttemptClaim");
+    }
+    // Ratify every proposal `author` made, as the review path writes it.
+    @unbounded
+    fn ratify(author: String) {
+        let j = dna::GitJournal { repo: self.repo };
+        let mut rows = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "author") == author { rows = rows + e.entity + "\t" + std::json::find_string_field(e.body, "review_id") + "\t" + std::json::find_string_field(e.body, "kind") + "\t" + std::json::find_string_field(e.body, "target") + "\n"; }
+            if e.kind == "knowledge.ratified" { rows = std::str::replace(rows, e.entity + "\t", "done\t"); }
+            i = i + 1;
+        }
+        while len(rows) > 0 {
+            let nl = std::str::index_of(rows, "\n");
+            let line = rows[0..nl];
+            rows = rows[(nl + 1)..len(rows)];
+            if std::str::starts_with(line, "done\t") { continue; }
+            let t1 = std::str::index_of(line, "\t");
+            let after = line[(t1 + 1)..len(line)];
+            let t2 = std::str::index_of(after, "\t");
+            let tail = after[(t2 + 1)..len(after)];
+            let t3 = std::str::index_of(tail, "\t");
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("digest", line[0..t1]);
+            b.string_field("review_id", after[0..t2]);
+            b.string_field("decided_by", "ada");
+            b.string_field("outcome", "approve");
+            b.string_field("kind", tail[0..t3]);
+            b.string_field("target", tail[(t3 + 1)..len(tail)]);
+            b.string_field("class", "initiative");
+            b.end_object();
+            std::test::assert(j.append(j.revision(), "knowledge.ratified", line[0..t1], b.result()).ok, "ratified " + line[0..t1]);
+        }
+    }
+    // The record projected into memory, where the route reads the graph.
+    fn project() {
+        let spine = dna::migrated(self.owner, self.identity);
+        std::test::assert(spine.ok, "memory migrates: " + spine.why);
+        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.identity };
+        std::test::assert(store.open(), "memory opens: " + store.last_error());
+        let j = dna::GitJournal { repo: self.repo };
+        let r = ops::apply_record_to(store, j, dna::GitReceipts { repo: self.repo }, j.revision(), "", "local", j);
+        std::test::assert_eq_str(r.error, "", "the record projects clean");
+        store.close();
+    }
+    // ---- rows
+    @unbounded
+    fn row_body(kind: String, entity: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = ""; let mut i = 0;
+        while i < self.journal.revision() { let e = self.journal.read(i); if e.kind == kind && e.entity == entity { out = e.body; } i = i + 1; }
+        return out;
+    }
+    fn has_row(kind: String, entity: String) -> Bool { return len(self.row_body(kind, entity)) > 0; }
+    @unbounded
+    fn wait_row(kind: String, entity: String, what: String) {
+        let mut tries = 0;
+        while tries < 400 * dna::wait_scale() && !self.has_row(kind, entity) { std::time::sleep(25ms); tries = tries + 1; }
+        std::test::assert(self.has_row(kind, entity), what + ": no `" + kind + " " + entity + "` row within the deadline");
+    }
+    fn relay_once() -> Int {
+        let relay = host::NodeRelay { root: self.repo, verb: "test", live: true, relayed: "\n" };
+        let n = relay.relay(dna::Memory { repo: self.repo, dsn_env: dna::own_dsn_env() });
+        std::test::assert_eq_str(relay.error, "", "the relay published: " + relay.error);
+        return n;
+    }
+    // ---- the head, over the record, watched: it dies with this process
+    fn start_head() {
+        let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
+        let dir = dna::run_tool("mkdir\n-p\n" + self.repo + "/.hale/dna");
+        std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
+        let port = dna::free_port(71);
+        self.api = "http://127.0.0.1:" + to_string(port);
+        let argv = "sh\n-c\ncd \"$1\" && export USER=riley HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + head_binary() + "\n" + to_string(port);
+        let child = std::process::spawn(argv) or std::process::Child { };
+        self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
+        child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
+        std::test::assert(self.head.pid > 0, "the head spawned");
+        let watched = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(self.head.pid));
+        let deadline = std::time::now() + dna::wait_secs(30);
+        while std::time::now() < deadline {
+            let up = dna::run_tool("curl\n-sf\n" + self.api + "/api/hale/v1/applications");
+            if up.code == 0 { return; }
+            let state = std::process::try_wait(self.head) or - 1;
+            std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
+            std::time::sleep(200ms);
+        }
+        std::test::assert(false, "the head did not come up: " + (std::io::fs::read_file(self.repo + "/.hale/head.log") or ""));
+    }
+    fn stop_head() {
+        if self.head.pid > 0 { std::process::kill(self.head) or discard; }
+        self.head.pid = -1;
+    }
+    dissolve() { self.stop_head(); }
+    // ---- the owner, in this process: software work goes to legs
+    fn start_owner() {
+        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV } };
+        self.core = dna::Dna {
+            journal: self.journal,
+            work: dna::WorkSystem { software: dna::LegRelay { name: "legs", performer_kind: "software" }, software_reconciler: dna::RelayReplay { } },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            claims: dna::MemoryLeases { repo: self.repo }, knowledge_client: dna::MemoryKnowledge { repo: self.repo },
+            org_id: "voice"
+        };
+        std::test::assert_eq_str(self.core.catalog.define("note", 1, "record", "a note under api/"), "", "note");
+        std::test::assert_eq_str(self.core.catalog.leaf("note", 1, 0, "n", dna::WorkRequest { objective: "add a note under api/ for the caller API's readers", output_contract: "Patch" }, 2), "", "n");
+    }
+    fn ask() -> String {
+        self.asks = self.asks + 1;
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "note", revision: 1, from: "test" });
+        std::test::assert(len(t) > 0, "admitted: " + t);
+        let attempt = dna::attempt_id_of(t + "/wf1/s0/n", 0);
+        self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
+        self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        return attempt;
+    }
+    // Hand the outcome to the owner and wait for it to settle.
+    fn settled(attempt: String) -> String {
+        std::test::assert_eq_int(self.relay_once(), 1, "the relay carries the outcome");
+        self.wait_row("attempt.outcome", attempt, "the owner settles " + attempt);
+        return self.row_body("attempt.outcome", attempt);
+    }
+    run() {
+        self.owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+        let scratch = dna::scratch_root("dogfood");
+        self.repo = scratch + "/voice";
+
+        // ---- voice, a repository of its own, read into its graph, holes ratified
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
+        std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
+        let init = self.dna("init\n.");
+        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+        self.ratify("hale dna init");
+        self.identity = dna::GitRecord { repo: self.repo }.identity();
+        if len(self.owner) > 0 {
+            let m = dna::migrate(dna::parse_dsn(self.owner), self.identity);
+            std::test::assert(m.ok, "memory migrates: " + m.why);
+            self.head_dsn = m.head_dsn;
+        }
+
+        // ---- riley is a person the record knows (a row in her name), the peer
+        // is mapped to riley, and the record declares no trust
+        let as_riley = dna::GitJournal { repo: self.repo, author: "riley" };
+        std::test::assert(as_riley.append(as_riley.revision(), "intent.offered", "i-riley", "riley was here").ok, "a row in riley's name");
+        let me = std::str::trim(dna::run_tool("id\n-u").stdout);
+        let mapped = dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--local\n--add\ndna.unix.member\nuid:" + me + "=riley");
+        std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
+        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--get\ndna.trust").stdout), "", "and the record declares no trust: the graph says who holds what");
+        std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(0)) or discard;
+        self.start_head();
+        self.start_owner();
+
+        // ---- (1) riley holds nothing yet: the socket lists no claim to the peer
+        std::test::assert(len(self.socket()) > 0, "the head names its socket");
+        std::test::assert(!self.claim_listed(), "a peer whose person holds no position is listed no claim");
+        let unseated = self.work_rc("next\n--as\nposition:api/dev\n--kind\nsoftware", 1);
+        std::test::assert(std::str::contains(unseated, "this peer holds no position"), "and the leg says so at attach: " + unseated);
+        // riley takes api/dev (the ratified hole), and the socket lists the claim
+        let hold = ops::GraphEdge { kind: "holds" };
+        hold.member("position", "position:api/dev");
+        hold.member("holder", "riley");
+        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert(j.append(j.revision(), "graph.edge", hold.id(), hold.body()).ok, "riley holds api/dev");
+        let mut listed = self.claim_listed();
+        let mut tries = 0;
+        while !listed && tries < 40 * dna::wait_scale() { std::time::sleep(250ms); listed = self.claim_listed(); tries = tries + 1; }
+        std::test::assert(listed, "once riley holds a position the socket lists the claim to the peer");
+
+        // ---- (2) the brief: the hat the head renders for the attempt
+        let a1 = self.ask();
+        let brief = self.work("brief\n--attempt\n" + a1);
+        let hat = std::json::find_field_raw(brief, "hat");
+        std::test::assert(std::str::contains(std::json::find_string_field(hat, "objective"), "a note under api/") && std::json::find_string_field(hat, "output_contract") == "Patch", "the hat carries the Work: " + brief);
+
+        // ---- (3)(4) the candidate: a commit in a scratch clone, pushed to the
+        // leg's ref in the project, handed back as the outcome's result_ref,
+        // its patch the receipt
+        let ran = self.work("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n1\n--wait\n0");
+        std::test::assert(std::json::find_string_field(ran, "state") == "requested" && std::json::find_string_field(ran, "attempt_id") == a1 && std::json::find_string_field(ran, "holder") == "position:api/dev#1", "the leg claims as the peer, working as api/dev, performs and hands the outcome back: " + ran);
+        let requested = self.row_body("attempt.outcome_requested", a1);
+        let claim = self.row_body("attempt.claimed", a1);
+        std::test::assert_eq_str(std::json::find_string_field(claim, "principal_name"), "riley", "the lease is riley's, the peer's person: " + claim);
+        let result_ref = std::json::find_string_field(requested, "result_ref");
+        std::test::assert(std::str::starts_with(result_ref, "commit:"), "the outcome names its candidate: " + requested);
+        let sha = result_ref[7..len(result_ref)];
+        let name = std::str::replace(a1, "/", "-");
+        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nrev-parse\nrefs/legs/candidates/" + name).stdout), sha, "the candidate is in the project, at the leg's ref");
+        let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\ndiff\n--name-only\nHEAD\n" + sha).stdout);
+        std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "and it changes one file under api/: " + touched);
+        let evidence = std::json::find_string_field(requested, "evidence_ref");
+        std::test::assert(std::str::starts_with(evidence, "sha256:"), "its patch is filed as a receipt: " + requested);
+        let filed = dna::GitReceipts { repo: self.repo }.read(evidence[7..len(evidence)]);
+        let patch = dna::run_tool("git\n-C\n" + self.repo + "\nformat-patch\n-1\n--stdout\n" + sha).stdout;
+        std::test::assert(len(patch) > 0 && filed == patch, "and the receipt is the candidate's own patch: " + filed);
+        let outcome = self.settled(a1);
+        std::test::assert(std::str::contains(outcome, sha), "the owner settles on the candidate: " + outcome);
+
+        // ---- (5)(6) who must sign it, from the graph: api's reviewer for a change
+        // under api/; a path the graph holds nobody for falls back, today, to the
+        // Review's own authority (GH #1157 is what turns that into a refusal)
+        if len(self.owner) > 0 {
+            self.project();
+            let routed = self.dna("route\n--json\n--diff\nHEAD.." + sha);
+            std::test::assert_eq_int(routed.code, 0, "route the candidate: " + routed.stderr);
+            std::test::assert_eq_str(field_of(std::json::find_field_raw(routed.stdout, "signers"), "position"), "position:api/reviewer\n", "api's reviewer signs a change under api/: " + routed.stdout);
+            let unsigned = self.dna("route\n--json\nDockerfile");
+            std::test::assert_eq_int(unsigned.code, 0, "route a path nobody signs: " + unsigned.stderr);
+            std::test::assert_eq_str(field_of(std::json::find_field_raw(unsigned.stdout, "signers"), "position"), "", "nobody signs it: " + unsigned.stdout);
+            std::test::assert(std::str::contains(unsigned.stdout, "\"fallback_to\": \"the Review's own authority"), "and today it falls back to the Review's own authority: " + unsigned.stdout);
+        } else {
+            eprintln("dogfood_voice_test: the route is not read (HALE_DNA_MEMORY_DSN_OWNER is not set)");
+        }
+
+        // ---- (7) a leg killed mid-task, its clone made: the lease lapses, the
+        // owner asks again, another worker claims it under the next token and
+        // finishes it
+        std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(20000)) or discard;
+        let a2 = self.ask();
+        let dying = std::process::spawn(self.work_argv("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n2\n--ttl\n3\n--wait\n0")) or std::process::Child { };
+        std::test::assert(dying.pid > 0, "a leg starts on the second attempt");
+        // whatever happens below, the leg does not outlive this process
+        let guarded = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill -9 \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(dying.pid));
+        let marker = self.repo + "/.hale/dogfood.cloned";
+        let mut waited = 0;
+        while waited < 600 * dna::wait_scale() && !std::io::fs::file_exists(marker) { std::time::sleep(100ms); waited = waited + 1; }
+        std::test::assert(std::io::fs::file_exists(marker), "the leg claims the attempt and makes its clone");
+        std::test::assert(self.has_row("attempt.claimed", a2), "under a lease");
+        let clone = dna::trim_nl(std::io::fs::read_file(marker) or "");
+        std::process::signal(dying, 9) or discard;
+        let mut code = std::process::try_wait(dying) or - 1;
+        waited = 0;
+        while code == -2 && waited < 100 { std::time::sleep(100ms); waited = waited + 1; code = std::process::try_wait(dying) or - 1; }
+        std::test::assert(code != -2, "the leg is dead, mid-task");
+        let swept = dna::run_tool("rm\n-rf\n" + clone + "\n" + marker);
+        std::test::assert(!self.has_row("attempt.outcome_requested", a2), "no outcome came from it");
+        std::time::sleep(3500ms);
+        tries = 0;
+        while tries < 40 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a2) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
+        std::test::assert(self.has_row("effect.redelivered", "attempt:" + a2), "the lease lapsed with no outcome: the owner asks again");
+        std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(0)) or discard;
+        let recovered = self.work("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n3\n--wait\n0");
+        std::test::assert(std::json::find_string_field(recovered, "state") == "requested" && std::json::find_string_field(recovered, "attempt_id") == a2 && std::json::find_int_field(recovered, "token") == 2, "another worker claims it under the next token and finishes it: " + recovered);
+        let second = self.settled(a2);
+        std::test::assert(std::str::contains(second, "commit:"), "settled on its candidate: " + second);
+
+        self.stop_head();
+        if len(self.owner) > 0 { std::test::assert_eq_str(dna::unmigrate(self.owner, self.identity), "", "this run's schema and roles dropped"); }
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }
