@@ -1754,16 +1754,26 @@ memory is named to it.
   `hands.git.patch`). The owner mints a Mutation bound to the attempt
   (`mutation.requested` carrying the binding, the leg, its commit and
   the receipt), opens its gateway worktree at the genome's head,
-  applies the patch there — only under the seed the Task's class edits
-  — and commits, verifies and opens the Review exactly as for the
-  editor's candidate, the leg its author. The attempt settles `done`
+  applies the patch there — only under the seed the Task's class edits,
+  every path counted (a rename's source too), and never the
+  organization's own seed unless the class is `organization` — and
+  commits, verifies and opens the Review exactly as for the editor's
+  candidate, the leg its author. The patch is the candidate: what it
+  carries is what is verified and reviewed, and verification runs the
+  candidate's own tests on the owner, as it does the editor's. The attempt settles `done`
   on the prepared candidate (`<m>: candidate prepared (<disposition>)
   from commit:<sha>`), or `failed` with the Mutation's failure — no
   commit named, no receipt that is its patch, a patch that does not
   apply at the head, one that edits outside the seed, a candidate
-  denied — so the Work's allowance decides what follows. A submission
-  relayed again finds the Mutation bound to the attempt and makes no
-  second. A `LegRelay` performer answers
+  denied, a Review that could not open — so the Work's allowance
+  decides what follows. A submission relayed again finds the Mutation
+  bound to the attempt and makes no second; one found still in flight
+  (the owner restarted while making it) is failed as interrupted. The
+  outcome names the bound Mutation's commit, whichever lease handed it
+  back. A candidate whose seed holds no Hale source at the base or at
+  the candidate is not denied for a check with nothing to judge
+  (`hale_source` false in its evidence) and is never staged or released
+  by a grant: it is reviewed before anything applies. A `LegRelay` performer answers
   pending for the kinds a program hands to legs, so the attempt waits
   for one instead of running in process (stage 1 of the legs; the
   in-process performers go as each stage lands), and `RelayReplay` is

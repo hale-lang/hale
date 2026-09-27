@@ -129,21 +129,32 @@ fn changed_paths(worktree: String, base: String, candidate: String) -> RunResult
     return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + base + "\n" + candidate);
 }
 
-// The paths of a `git diff --name-only` that are not under `seed` (the
-// repository root when `.`), space-separated: what a change edits outside
-// the grant its class gives it (GH #1156).
+// The paths of a `git diff --name-only --no-renames` a change may not
+// edit, space-separated: those not under `seed` (the repository root when
+// `.`), and those under `fenced` — the organization's own seed, for a
+// change of any other class (GH #1156).
 @unbounded
-fn paths_outside(names: String, seed: String) -> String {
-    if seed == "." || len(seed) == 0 { return ""; }
+fn paths_outside(names: String, seed: String, fenced: String) -> String {
     let mut out = "";
     let mut rest = names;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let p = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if len(p) > 0 && !std::str::starts_with(p, seed + "/") { out = out + (if len(out) > 0 { " " } else { "" }) + p; }
+        let outside = seed != "." && len(seed) > 0 && !std::str::starts_with(p, seed + "/");
+        let fence = len(fenced) > 0 && (p == fenced || std::str::starts_with(p, fenced + "/"));
+        if len(p) > 0 && (outside || fence) { out = out + (if len(out) > 0 { " " } else { "" }) + p; }
     }
     return out;
+}
+
+// Whether the tree at `rev` holds a `.hl` file in the seed directory
+// itself — what `hale check <seed>` reads (GH #1156).
+fn has_hale_source(worktree: String, rev: String, seed: String) -> Bool {
+    if len(rev) == 0 { return false; }
+    let under = if len(seed) == 0 || seed == "." { "" } else { "\n--\n" + seed + "/" };
+    let listed = run_tool("git\n-C\n" + worktree + "\nls-tree\n--name-only\n" + rev + under);
+    return listed.code == 0 && (std::str::contains(listed.stdout, ".hl\n") || std::str::ends_with(listed.stdout, ".hl"));
 }
 
 // Does a `git diff --name-only` name the fleet's shape — a plan
@@ -252,7 +263,10 @@ locus HaleVerification {
         let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
         let checked = run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo);
         let check = self.record(j, cand, m.id, "check", checked);
-        let hale_source = !std::str::contains(checked.stdout + checked.stderr, "no .hl files");
+        // from the tree, never the check's words: Hale source in the seed
+        // at the base or at the candidate (a candidate that deletes every
+        // .hl file is still a Hale genome's, and is denied)
+        let hale_source = has_hale_source(m.worktree, m.base_commit, seed) || has_hale_source(m.worktree, cand, seed);
         let verify = self.record(j, cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
         let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
         let test = self.record(j, cand, m.id, "test", tests);

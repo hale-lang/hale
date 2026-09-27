@@ -140,7 +140,7 @@ type Evidence {
     rollback_rehearsed: Bool = false;
     fleet_clean: Bool = true; // every fleet the workspace declares composes and holds its claims with the candidate's artifacts (GH #566 F5); true when it declares none
     topology_changed: Bool = false; // the candidate names a plan or the manifest: the change is the fleet's shape, not one service's source
-    hale_source: Bool = true; // the seed has Hale source for the Hale gates to judge; false in a genome of another language (GH #1156): the candidate is not denied for a check with nothing to check, and the Review decides on the rest
+    hale_source: Bool = true; // the seed has Hale source, at the base or the candidate, for the Hale gates to judge; false in a genome of another language (GH #1156): the candidate is not denied for a check with nothing to check, and it is reviewed before anything applies
 }
 
 // The disposition of a proposed change (#521): release inside an
@@ -443,6 +443,10 @@ fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> Disposi
     if !permitted { return Disposition::Escalate; }
     let mag = magnitude_sum(m);
     if mag > g.max_magnitude { return Disposition::Escalate; }
+    // a candidate the Hale gates cannot speak for — a genome of another
+    // language — has no evidence to be staged or released on: a person
+    // reviews it before anything applies, whatever the grant (GH #1156)
+    if !e.hale_source { return Disposition::Review; }
     let required = mag + m.novelty * 2;
     let have = evidence_score(e);
     if have < required { return Disposition::Stage; }

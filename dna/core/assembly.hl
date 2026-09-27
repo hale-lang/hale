@@ -2362,17 +2362,26 @@ locus Dna {
         // done once the candidate is prepared, failed when it could not be
         if adm.value.request.output_contract == "Patch" && s.disposition == "done" {
             let mut m = self.mutation_of_attempt(s.attempt_id);
+            let mut interrupted = "interrupted before its candidate was prepared (the owner restarted)";
             if len(m) == 0 {
                 let out = self.mutate_from_leg(attempt_request(adm.value), s, std::time::now());
                 // the Mutation's request did not land: nothing proceeded, and the
                 // relay asks again until the record answers
                 if record_refused(out) { return; }
                 m = self.mutation_of_attempt(s.attempt_id);
+                interrupted = "left in flight: " + out;
             }
-            let made = if len(m) > 0 { self.prepared_result(m) } else { WorkResult { disposition: "failed", result: "", narrative: "no Mutation was bound to attempt " + s.attempt_id } };
-            if len(made.disposition) == 0 { return; }
+            if len(m) == 0 { self.refuse_submission(s, "no Mutation was bound to attempt " + s.attempt_id); return; }
+            // a submission is handled whole, in turn: a Mutation still in flight
+            // here was interrupted, and nothing else will finish it
+            if len(self.prepared_result(m).disposition) == 0 { let failed = self.mutation_failed(m, interrupted); }
+            let made = self.prepared_result(m);
+            // the candidate is the bound Mutation's, whichever leg's lease
+            // handed this outcome back
+            let asked = self.row_body_of("mutation.requested", m);
             r.disposition = made.disposition;
-            r.result = made.result + " from " + s.result_ref;
+            r.result = made.result + " from commit:" + std::json::find_string_field(asked, "leg_commit");
+            r.result_ref = "commit:" + std::json::find_string_field(asked, "leg_commit");
             r.narrative = made.narrative + " (the leg: " + s.narrative + ")";
         }
         self.journal_calls(s.attempt_id, s.calls);
@@ -4957,6 +4966,10 @@ locus Dna {
             let y = self.journal.append(self.journal.revision(), "mutation.topology", id, "names a plan or the manifest: the fleet's shape changes, the Board decides");
         }
         let d = self.review_mutation(reviewed, report, author);
+        // a Review that could not open (its routing unrecorded, its paths
+        // unknown) or a post-review apply that failed is the Mutation's
+        // failure, a row: nothing is left in flight that nothing finishes
+        if std::str::starts_with(d, "failed") { return self.mutation_failed(id, d[(if std::str::starts_with(d, "failed: ") { 8 } else { 6 })..len(d)]); }
         return id + ": " + d;
     }
     // A leg's candidate made a Mutation (GH #1156): the outcome of a Patch
@@ -5014,12 +5027,15 @@ locus Dna {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
             return self.mutation_failed(id, "the leg's patch does not apply at " + base + ": " + trim_nl(applied.stderr));
         }
-        // the grant: the seed the class edits, nothing beside it
-        let touched = run_tool("git\n-C\n" + wt + "\ndiff\n--cached\n--name-only");
-        let outside = paths_outside(touched.stdout, seed);
+        // the grant: the seed the class edits, nothing beside it — every path
+        // the patch touches, a rename's source too — and never the
+        // organization's own seed unless the change is the organization's
+        let touched = run_tool("git\n-C\n" + wt + "\n-c\ncore.quotePath=false\ndiff\n--cached\n--name-only\n--no-renames");
+        let fenced = if class == "organization" { "" } else { self.org_seed };
+        let outside = if touched.code != 0 { "(its paths are unknown: " + trim_nl(touched.stderr) + ")" } else { paths_outside(touched.stdout, seed, fenced) };
         if len(outside) > 0 {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
-            return self.mutation_failed(id, "the leg's patch edits outside the " + class + " seed `" + seed + "`: " + outside);
+            return self.mutation_failed(id, "the leg's patch edits outside what a " + class + " change may (the seed `" + seed + "`" + (if len(fenced) > 0 { ", never the organization's `" + fenced + "`" } else { "" }) + "): " + outside);
         }
         let x1 = self.journal.append(self.journal.revision(), "mutation.located", id, trim_nl(touched.stdout) + " under " + seed + " (the leg's patch)");
         return self.candidate_review(Mutation {

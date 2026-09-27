@@ -338,6 +338,9 @@ locus App {
         let review = self.row_body("review.requested", "review:" + m);
         let candidate = std::json::find_string_field(review, "candidate_commit");
         std::test::assert(len(candidate) > 0 && std::json::find_string_field(review, "author") == "position:api/dev#1", "the Review is open on the candidate, the leg its author: " + review);
+        // voice has no Hale source for the Hale gates to judge: the candidate
+        // is not denied for it, and nothing applies before the Review decides
+        std::test::assert(std::json::find_string_field(review, "disposition") != "release" && std::str::starts_with(std::json::find_string_field(review, "question"), "apply "), "reviewed before anything applies: " + review);
         let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\ndiff\n--name-only\n" + base + "\n" + candidate).stdout);
         std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "the candidate changes the one file the leg did: " + touched);
         std::test::assert(std::str::contains(self.row_body("review.routed", m), "\"why\": \"no memory is named\""), "its routing is recorded, the owner here having no memory: " + self.row_body("review.routed", m));
