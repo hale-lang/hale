@@ -1705,8 +1705,10 @@ memory is named to it.
   (`effect.relayed attempt:<id>`: the owner records it when a leg relay
   answered the attempt pending, and only then — an edit the organism's
   editor holds, or a case a person does, is outstanding the same way and
-  is never a leg's, GH #1158), fits the filter, and
-  is not held by another leg under a live lease; takes memory's claim
+  is never a leg's, GH #1158; a row the record would not take is
+  recorded when the next ask redelivers the attempt, and a leg is
+  refused it until then), fits the filter, and is not held by another
+  leg under a live lease; takes memory's claim
   `attempt:<id>` for the performer with the TTL under the head's role
   (GH #1026: the store decides between two legs racing; without memory
   nothing races); and appends `attempt.claimed` naming the lease and
@@ -1736,8 +1738,9 @@ memory is named to it.
   per task hold out of process — and settles the attempt through the
   path every reply takes: `attempt.outcome` by exact append, naming
   the request it answers and carrying `result_ref` and the hat, the
-  Work and the task after it; a submission it will not settle — a
-  stale lease, a second outcome after settlement — is an
+  Work and the task after it; a submission it will not settle — an
+  attempt never relayed to a leg (no `effect.relayed`), a stale lease,
+  a second outcome after settlement — is an
   `attempt.outcome_refused` row naming why and the request, which
   answers it, so the relay stops. A `LegRelay` performer answers
   pending for the kinds a program hands to legs, so the attempt waits

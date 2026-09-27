@@ -42,6 +42,7 @@ type Executed {
     fenced: Bool = false; // the write was refused by the fence: this holder's lease is not live as of the reading
     reconciled: Bool = false; // the outcome was established without running: the adapter said it acted, or a person resolved the claim
     unresolved: Bool = false; // nothing could establish whether the attempt acted: it waits, visibly, for a person
+    unmarked: Bool = false; // a leg relay answered pending and the record would not take `effect.relayed` yet (GH #1158): the incarnation keeps nothing of the dispatch, so the next ask issues it again and records it
     disposition: String = ""; // the recorded outcome's, "" while the attempt is outstanding
     outcome: AttemptOutcome = AttemptOutcome { };
     why: String = "";
@@ -277,7 +278,7 @@ fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttem
     if reply_outstanding(r) {
         if r.leg_relayed {
             let marked = mark_relayed(j, id, r.performer, f);
-            if len(marked) > 0 { return Executed { ok: true, ran: true, redelivered: redelivered, why: "attempt " + id + " is outstanding, and no leg is handed it yet: " + marked }; }
+            if len(marked) > 0 { return Executed { ok: true, ran: true, redelivered: redelivered, unmarked: true, why: "attempt " + id + " is outstanding, and no leg is handed it yet: " + marked }; }
         }
         return Executed { ok: true, ran: true, redelivered: redelivered, why: "attempt " + id + " is outstanding: the performer will answer later" };
     }
@@ -292,8 +293,10 @@ fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttem
 // (`effect.relayed`, GH #1158), once: the head hands a claiming leg only
 // such attempts, so one the organism performs in process — an edit its
 // editor holds, a case a person does — is never a leg's to settle. ""
-// when it is recorded (now or before); else why not. A redelivery that
-// finds it missing records it then.
+// when it is recorded (now or before); else why not, and the dispatch
+// is `unmarked`: the runtime keeps no claim of it, so the next ask finds
+// the attempt claimed by nobody alive, the relay's reconciliation
+// redelivers it, and the row is recorded then.
 @unbounded
 fn mark_relayed(j: Journal, attempt_id: String, relay: String, f: Fence) -> String {
     let key = execution_key(attempt_id);

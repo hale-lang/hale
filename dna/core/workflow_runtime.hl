@@ -249,8 +249,10 @@ locus WorkflowRuntime {
         // fence is the executor's, at each write's own reading
         let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id), self.fence());
         if x.fenced { self.fenced_off = self.fenced_off + 1; }
-        if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
-        if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
+        // an unmarked relay (GH #1158) is kept as neither: the next ask
+        // redelivers it and records it relayed
+        if x.ran && !x.redelivered && !x.unmarked { self.claimed = set_add(self.claimed, r.attempt_id); }
+        if x.redelivered && !x.unmarked { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
     }
     // GH #946 hardening (D3): an attempt a leg held under a lease that

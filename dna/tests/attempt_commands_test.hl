@@ -314,6 +314,10 @@ locus App {
         // the organism's own, so it is never a leg's (GH #1158)
         std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "performed in the organism, not relayed to a leg"), l + "nothing awaits a human leg: " + r3.receipt.reason);
         std::test::assert_eq_int(self.count_rows("attempt.claimed", ap), 0, l + "and no claim lands on the person's case");
+        // and an outcome handed back for it anyway settles nothing: the owner
+        // refuses a leg's word on an attempt never relayed to one
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: ap, holder: "position:human#" + pass, token: 1, disposition: "done", result: "signed", request: label + "sp" });
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", ap), "was never relayed to a leg") && !self.has_row("attempt.outcome", ap), l + "the owner refuses a leg's outcome on the person's case: " + self.row_body("attempt.outcome_refused", ap));
         // the hat the leg wears, and the outcome under the lease
         let hat = self.hat_of(a1);
         let r4 = commands.submit(alice, self.outcome_of(label + "o0", identity, a1, alice_leg, token + 1, hat));
