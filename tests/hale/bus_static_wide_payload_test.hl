@@ -1,0 +1,64 @@
+// GH #1155 / #1174: the static-bucket path's NON-flat branch
+// (lotus_bus_dispatch_static, the general fallback — a String field
+// makes the payload managed, not flat) called serialize_fn straight
+// into the runtime's 64 KiB TLS wire buffer and used the RETURNED
+// size regardless. Once the serializer started honouring its cap
+// (writing nothing past it, but still reporting the size the payload
+// needs), that stopped crashing and started reading past the 64 KiB
+// array instead — an out-of-bounds read ASan cannot see (a TLS array
+// has no redzones) that silently delivered stale bytes to the
+// subscriber. `big.msg` is a literal subject with exactly one
+// subscriber, so codegen assigns it a static bucket; both arms
+// (LOTUS_NO_BUS_DEVIRT unset and set — see bus_devirt_differential.rs
+// for the paired build) must deliver the SAME 1 MiB string whole.
+//
+// The payload is built at runtime (doubled in a loop, not a literal)
+// so codegen cannot fold it away. Length and content are both
+// checked, and content is sampled right at the old 64 KiB boundary —
+// the exact place a stale-byte bug would show and a length-only
+// check would miss.
+
+type Msg { text: String; }
+
+locus Printer {
+    params {
+        got: String = "";
+        got_len: Int = -1;
+    }
+    bus { subscribe "big.msg" as on_msg of type Msg; }
+    fn on_msg(m: Msg) {
+        self.got = m.text;
+        self.got_len = len(m.text);
+    }
+}
+
+locus Producer {
+    bus { publish "big.msg" of type Msg; }
+    run() {
+        let mut t = "0123456789abcdef";
+        let mut i = 0;
+        while i < 16 {
+            t = t + t;
+            i = i + 1;
+        }
+        "big.msg" <- Msg { text: t };
+    }
+}
+
+fn main() {
+    let printer = Printer { };
+    Producer { };
+
+    std::test::assert_eq_int(printer.got_len, 1048576, "the whole 1 MiB string reached the subscriber");
+    std::test::assert_eq_int(len(printer.got), 1048576, "and the field itself carries all of it");
+
+    // pattern = "0123456789abcdef" (16 bytes); byte i is pattern[i % 16].
+    std::test::assert_eq_str(printer.got[0..1], "0", "byte 0 is the pattern's");
+    std::test::assert_eq_str(printer.got[15..16], "f", "byte 15 is the pattern's");
+    std::test::assert_eq_str(printer.got[16..17], "0", "byte 16 is the pattern's");
+    std::test::assert_eq_str(printer.got[65535..65536], "f", "byte 65535, right at the old 64 KiB TLS buffer's edge, is the pattern's — not stale");
+    std::test::assert_eq_str(printer.got[65536..65537], "0", "byte 65536, one past the old edge, is the pattern's — not stale");
+    std::test::assert_eq_str(printer.got[65537..65538], "1", "byte 65537 is the pattern's");
+    std::test::assert_eq_str(printer.got[524288..524289], "0", "byte 524288 (halfway) is the pattern's");
+    std::test::assert_eq_str(printer.got[1048575..1048576], "f", "the last byte is the pattern's");
+}

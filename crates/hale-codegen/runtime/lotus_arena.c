@@ -11346,6 +11346,84 @@ int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
     return matched;
 }
 
+/* GH #1155: the wire form of a payload, bounded by what the payload
+ * needs. The synthesized serializer honours its cap — it writes
+ * nothing past it and returns the size the payload needs — so a
+ * payload past the TLS wire buffer is serialized again into a buffer
+ * of its own (`*owned` says so; the caller frees it). The local
+ * fanout copies the wire bytes into cells, so the size is the
+ * arena's to bound; a remote transport's frame is LOTUS_PAYLOAD_MAX,
+ * and a payload past it is not sent there — `lotus_bus_wire_fits_remote`
+ * says why, once per subject. A reply that used to overrun the buffer
+ * and die in the serializer crosses whole now. */
+static char *lotus_bus_wire_encode(lotus_serialize_fn serialize_fn,
+                                   const void *struct_payload,
+                                   ssize_t *size_out, int *owned) {
+    char *buf = g_tls_bus_wire_buf;   /* off the coro stack */
+    *owned = 0;
+    ssize_t n = serialize_fn(struct_payload, buf, LOTUS_PAYLOAD_MAX);
+    if (n > (ssize_t)LOTUS_PAYLOAD_MAX) {
+        char *big = (char *)malloc((size_t)n);
+        if (!big) { *size_out = -1; return NULL; }
+        ssize_t m = serialize_fn(struct_payload, big, (size_t)n);
+        if (m != n) { free(big); *size_out = -1; return NULL; }
+        buf = big;
+        *owned = 1;
+    }
+    *size_out = n;
+    return buf;
+}
+static int lotus_bus_wire_fits_remote(const char *subject, ssize_t wire_size) {
+    if (wire_size <= (ssize_t)LOTUS_PAYLOAD_MAX) return 1;
+    /* GH #1174: `subject` may be a computed string whose backing
+     * storage does not outlive this call — storing the pointer and
+     * strcmp'ing it on a later call was a use-after-free. `strdup` it
+     * into a cache entry owned here instead (never freed: at most 64
+     * short strings, once each — and skipped on OOM rather than
+     * caching a NULL a later strcmp would crash on). Multiple pool
+     * threads reach this function concurrently on the same subject,
+     * so the cache is mutex-guarded rather than a bare said_n++, and
+     * the scan is bounded by the LOCKED said_n rather than a value
+     * read outside the lock. Past 64 distinct oversized subjects
+     * (unusual — most programs have one or two), a new subject can
+     * never be cached; one "further subjects suppressed" line replaces
+     * what would otherwise be a per-call repeat forever. */
+    static char *said[64];
+    static size_t said_n = 0;
+    static int overflow_noted = 0;
+    static pthread_mutex_t said_lock = PTHREAD_MUTEX_INITIALIZER;
+    enum { LOTUS_WIRE_NOTE_NONE, LOTUS_WIRE_NOTE_SUBJECT, LOTUS_WIRE_NOTE_OVERFLOW } note = LOTUS_WIRE_NOTE_NONE;
+    pthread_mutex_lock(&said_lock);
+    int already = 0;
+    for (size_t i = 0; i < said_n; i++) {
+        if (strcmp(said[i], subject) == 0) { already = 1; break; }
+    }
+    if (!already) {
+        if (said_n < 64) {
+            char *copy = strdup(subject);
+            if (copy) said[said_n++] = copy;
+            note = LOTUS_WIRE_NOTE_SUBJECT;   /* said or not: warn this once for it */
+        } else if (!overflow_noted) {
+            overflow_noted = 1;
+            note = LOTUS_WIRE_NOTE_OVERFLOW;
+        }
+    }
+    pthread_mutex_unlock(&said_lock);
+    if (note == LOTUS_WIRE_NOTE_SUBJECT) {
+        fprintf(stderr,
+                "hale: bus: a payload on `%s` is %zd bytes on the wire, past "
+                "the %d-byte frame a remote transport carries; it reached the "
+                "local subscribers and no remote one\n",
+                subject, wire_size, (int)LOTUS_PAYLOAD_MAX);
+    } else if (note == LOTUS_WIRE_NOTE_OVERFLOW) {
+        fprintf(stderr,
+                "hale: bus: past 64 distinct subjects with a payload over "
+                "the %d-byte remote frame; further ones are silent\n",
+                (int)LOTUS_PAYLOAD_MAX);
+    }
+    return 0;
+}
+
 LOTUS_HOT_ALIGN
 void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                               const char *subject,
@@ -11355,13 +11433,15 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                               uint64_t key_lo,
                               uint64_t key_hi) {
     if (serialize_fn) {
-        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
-        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                         LOTUS_PAYLOAD_MAX);
-        if (wire_size > 0) {
+        ssize_t wire_size = 0;
+        int owned = 0;
+        char *wire_buf = lotus_bus_wire_encode(serialize_fn, struct_payload,
+                                               &wire_size, &owned);
+        if (wire_buf && wire_size > 0) {
             lotus_bus_dispatch_wire_keyed(
                 subject, wire_buf, (size_t)wire_size, key_lo, key_hi);
-            if (lotus_bus_has_remote_entries()) {
+            if (lotus_bus_has_remote_entries()
+                && lotus_bus_wire_fits_remote(subject, wire_size)) {
                 /* Remote fanout: v0.1 sends the wire bytes
                  * unkeyed to remote subscribers; remote-side bus
                  * routers filter on their end (route metadata is
@@ -11370,8 +11450,8 @@ void lotus_bus_dispatch_keyed(lotus_bus_queue_t *queue,
                 lotus_bus_remote_fanout(subject, wire_buf,
                                          (size_t)wire_size);
             }
-            return;
         }
+        if (owned) free(wire_buf);
         return;
     }
     /* No serialize codec: dispatch verbatim with key filter. */
@@ -11398,7 +11478,9 @@ void lotus_bus_dispatch_keyed_flat(lotus_bus_queue_t *queue,
         char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
         ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
                                          LOTUS_PAYLOAD_MAX);
-        if (wire_size > 0) {
+        if (wire_size > 0 && !lotus_bus_wire_fits_remote(subject, wire_size)) {
+            /* GH #1155: past the frame; the local fanout above had it */
+        } else if (wire_size > 0) {
             /* Remote fanout is unkeyed at v0.1 (mirrors
              * lotus_bus_dispatch_keyed); remote bus routers filter on
              * the payload's keyed_by field on their end. */
@@ -11475,10 +11557,11 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
      * the dangling-by-design behavior the pre-Task-11 v1
      * shipped with. */
     if (serialize_fn) {
-        char *wire_buf = g_tls_bus_wire_buf;   /* off the coro stack */
-        ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                         LOTUS_PAYLOAD_MAX);
-        if (wire_size > 0) {
+        ssize_t wire_size = 0;
+        int owned = 0;
+        char *wire_buf = lotus_bus_wire_encode(serialize_fn, struct_payload,
+                                               &wire_size, &owned);
+        if (wire_buf && wire_size > 0) {
             /* Local fanout via per-sub deserialize-into-sub-arena.
              * Reuses the wire-dispatch path's TLS routing
              * machinery. */
@@ -11488,12 +11571,15 @@ void lotus_bus_dispatch(lotus_bus_queue_t *queue,
              * this subject. The serialize cost is amortized
              * across local + remote (was previously paid only
              * for remote). */
-            if (lotus_bus_has_remote_entries()) {
+            if (lotus_bus_has_remote_entries()
+                && lotus_bus_wire_fits_remote(subject, wire_size)) {
                 lotus_bus_remote_fanout(subject, wire_buf,
                                          (size_t)wire_size);
             }
+            free(owned ? wire_buf : NULL);
             return;
         }
+        if (owned) free(wire_buf);
         /* serialize failure → drop the publish. The cooperative
          * surface treats this as a no-op (matches the prior
          * remote-only failure mode). */
@@ -11540,7 +11626,13 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
         ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
                                          LOTUS_PAYLOAD_MAX);
         if (wire_size > 0) {
-            lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+            /* GH #1174: dispatch_keyed and dispatch already gate their
+             * remote fanout on lotus_bus_wire_fits_remote; this path
+             * (and the static-bucket flat branch) had been missed —
+             * add the same guard so every flat path is consistent. */
+            if (lotus_bus_wire_fits_remote(subject, wire_size)) {
+                lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
+            }
         } else if (lotus_bus_log_drop_enabled()) {
             fprintf(stderr,
                     "[bus] remote publish dropped: serialize_fn returned "
@@ -19053,7 +19145,8 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             char *wire_buf = g_tls_bus_wire_buf;
             ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
                                              LOTUS_PAYLOAD_MAX);
-            if (wire_size > 0) {
+            /* GH #1174: same fits_remote guard as every other path. */
+            if (wire_size > 0 && lotus_bus_wire_fits_remote(subject, wire_size)) {
                 lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
             }
         }
@@ -19133,10 +19226,11 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         return;
     }
 
-    char *wire_buf = g_tls_bus_wire_buf;
-    ssize_t wire_size = serialize_fn(struct_payload, wire_buf,
-                                     LOTUS_PAYLOAD_MAX);
-    if (wire_size <= 0) {
+    ssize_t wire_size = 0;
+    int wire_owned = 0;
+    char *wire_buf = lotus_bus_wire_encode(serialize_fn, struct_payload,
+                                           &wire_size, &wire_owned);
+    if (!wire_buf || wire_size <= 0) {
         if (lotus_bus_log_drop_enabled()) {
             fprintf(stderr,
                     "[bus] publish dropped: serialize_fn returned %zd for "
@@ -19144,6 +19238,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                     wire_size, subject ? subject : "(null)", id,
                     (size_t)struct_size);
         }
+        if (wire_owned) free(wire_buf);
         return;
     }
 
@@ -19207,9 +19302,11 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     lotus_current_caller_arena = prev_tls;
     (void)delivered;
     /* Remote fanout: same wire bytes, mirror lotus_bus_dispatch. */
-    if (lotus_bus_has_remote_entries()) {
+    if (lotus_bus_has_remote_entries()
+        && lotus_bus_wire_fits_remote(subject, wire_size)) {
         lotus_bus_remote_fanout(subject, wire_buf, (size_t)wire_size);
     }
+    if (wire_owned) free(wire_buf);
 }
 
 /* === Direct-call devirtualization (build #1b slice-2) =============

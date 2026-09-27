@@ -16,6 +16,15 @@ pub(crate) trait BusWire<'ctx> {
         &mut self,
         type_name: &str,
     ) -> Result<(), CodegenError>;
+    /// A memcpy into the wire that honours the serializer's cap (GH
+    /// #1155): outside a serializer body it is the plain memcpy.
+    fn emit_ser_memcpy(
+        &mut self,
+        dst: PointerValue<'ctx>,
+        src: PointerValue<'ctx>,
+        n: inkwell::values::IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError>;
 
     fn emit_bounded_field_wire_memcpy(
         &mut self,
@@ -83,6 +92,40 @@ pub(crate) trait BusWire<'ctx> {
 }
 
 impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
+    fn emit_ser_memcpy(
+        &mut self,
+        dst: PointerValue<'ctx>,
+        src: PointerValue<'ctx>,
+        n: inkwell::values::IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        let Some((base, cap)) = self.ser_bound else {
+            return self.emit_memcpy_call(dst, src, n, name);
+        };
+        let i64_t = self.context.i64_type();
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let dst_i = self.builder.build_ptr_to_int(dst, i64_t, &format!("{name}.dst.i")).map_err(e)?;
+        let base_i = self.builder.build_ptr_to_int(base, i64_t, &format!("{name}.base.i")).map_err(e)?;
+        let off = self.builder.build_int_sub(dst_i, base_i, &format!("{name}.off")).map_err(e)?;
+        let end = self.builder.build_int_add(off, n, &format!("{name}.end")).map_err(e)?;
+        let fits = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::ULE, end, cap, &format!("{name}.fits"))
+            .map_err(e)?;
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .expect("serializer body has a function");
+        let write_bb = self.context.append_basic_block(func, &format!("{name}.write"));
+        let join_bb = self.context.append_basic_block(func, &format!("{name}.join"));
+        self.builder.build_conditional_branch(fits, write_bb, join_bb).map_err(e)?;
+        self.builder.position_at_end(write_bb);
+        self.emit_memcpy_call(dst, src, n, name)?;
+        self.builder.build_unconditional_branch(join_bb).map_err(e)?;
+        self.builder.position_at_end(join_bb);
+        Ok(())
+    }
     fn synthesize_serializer(
         &mut self,
         type_name: &str,
@@ -178,7 +221,16 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             .get_nth_param(1)
             .expect("ser dst arg")
             .into_pointer_value();
-        let _ = ser_fn.get_nth_param(2); // cap, ignored at v0.1
+        // GH #1155: the cap is honoured — see `emit_ser_memcpy`.
+        let cap = ser_fn.get_nth_param(2).expect("ser cap arg").into_int_value();
+        let cap = if cap.get_type() == self.context.i64_type() {
+            cap
+        } else {
+            self.builder
+                .build_int_z_extend(cap, self.context.i64_type(), "ser.cap.i64")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        self.ser_bound = Some((ser_dst, cap));
 
         let total_written: inkwell::values::IntValue<'ctx> =
             if let Some((struct_ty, field_order, fields)) = &struct_layout
@@ -192,7 +244,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 )?
             } else {
                 let size_iv = enum_size.expect("enum size present");
-                self.emit_memcpy_call(
+                self.emit_ser_memcpy(
                     ser_dst,
                     ser_src,
                     size_iv,
@@ -200,6 +252,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 )?;
                 size_iv
             };
+        self.ser_bound = None;
         // The body computes the byte count in i64; narrow to the ssize_t
         // return width (no-op native, i64->i32 trunc on wasm32).
         let total_written = self.size_to_usize(total_written)?;
@@ -347,7 +400,15 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         } else {
             (field_storage_ptr, wire_at_cursor)
         };
-        self.emit_memcpy_call(dst, src, total_iv, site)?;
+        // GH #1174: the cap only means anything when writing INTO the
+        // wire buffer; a deserialize copy writes into the field's own
+        // storage, so it goes through the plain memcpy, not the
+        // serializer's cap check.
+        if to_wire {
+            self.emit_ser_memcpy(dst, src, total_iv, site)?;
+        } else {
+            self.emit_memcpy_call(dst, src, total_iv, site)?;
+        }
         let after = self
             .builder
             .build_int_add(cursor_iv, total_iv, &format!("{}.after", site))
@@ -412,7 +473,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                         .build_gep(i8_t, dst, &[cursor_iv], "ser.arr.dst")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 };
-                self.emit_memcpy_call(
+                self.emit_ser_memcpy(
                     dst_at_cursor,
                     arr_ptr,
                     total_iv,
@@ -783,7 +844,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                     self.builder
                         .build_store(len_alloca, str_len)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.emit_memcpy_call(
+                    self.emit_ser_memcpy(
                         dst_at_cursor,
                         len_alloca,
                         i64_t.const_int(8, false),
@@ -807,7 +868,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     };
-                    self.emit_memcpy_call(
+                    self.emit_ser_memcpy(
                         dst_after_len,
                         str_ptr,
                         str_len,
@@ -833,7 +894,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Decimal => {
                     let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
-                    self.emit_memcpy_call(
+                    self.emit_ser_memcpy(
                         dst_at_cursor,
                         src_field_ptr,
                         nbytes_iv,
@@ -882,7 +943,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                             "ser.bytes.total",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.emit_memcpy_call(
+                    self.emit_ser_memcpy(
                         dst_at_cursor,
                         bytes_ptr,
                         total,
