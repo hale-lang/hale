@@ -286,14 +286,17 @@ jobs:
           LIBRARY_PATH: /opt/homebrew/lib
           HALE_DNA_WAIT_SCALE: "3"
         run: |
-          # Every third slice belongs to this part; the suite's own small
-          # tests (coverage, DSN) ride with part 1. Names are exact so
-          # slice_1 does not also select slice_10.
+          # Every third fixture slice belongs to this part; every other
+          # test in the binary (coverage, guards, the spelling checks) rides
+          # with part 1. Names are exact so slice_1 does not also select
+          # slice_10: the list comes from the binary itself.
+          all=$(cargo test --release -p hale-cli --test dna_native_suite -- --list --format terse 2>/dev/null | sed -n 's/: test$//p')
           names=()
-          for i in $(seq 0 15); do
-            if [ $(( i % 3 )) -eq $(( ${{ matrix.part }} - 1 )) ]; then names+=(dna_fixtures_slice_$i); fi
+          for t in $all; do
+            case "$t" in
+              dna_fixtures_slice_*) i=${t#dna_fixtures_slice_}; [ $(( i % 3 )) -eq $(( ${{ matrix.part }} - 1 )) ] && names+=("$t") ;;
+              *) [ ${{ matrix.part }} -eq 1 ] && names+=("$t") ;;
+            esac
           done
-          if [ ${{ matrix.part }} -eq 1 ]; then
-            names+=(a_slice_database_edits_only_the_database_of_the_dsn the_slices_cover_every_fixture_once)
-          fi
+          echo "part ${{ matrix.part }}: ${names[*]}"
           cargo test --release -p hale-cli --test dna_native_suite -- --exact "${names[@]}"
