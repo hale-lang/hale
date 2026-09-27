@@ -663,6 +663,11 @@ jobs:
         # across two jobs, running four-wide (the `dna-fixtures`
         # group in .config/nextest.toml) now that nothing else
         # competes for the four cores.
+        env:
+          # The free 4-core runner answers a proposal slower than the suite's
+          # default wait (2) allows while four slices run beside each other;
+          # macOS already runs at 3.
+          HALE_DNA_WAIT_SCALE: "3"
         run: |
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
