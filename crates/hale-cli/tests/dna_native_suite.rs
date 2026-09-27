@@ -46,8 +46,9 @@ const SLICES: usize = 20;
 /// ~110 s), the body fixtures that build the host
 /// cold in a cache of their own (body_claim_expired_test ~425 s,
 /// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test
-/// and dogfood_voice_test, which build a head. The sorted listing's modulo paired them by
-/// accident — adding or removing any fixture reshuffled which shared a
+/// and dogfood_voice_test, which build a head. The sorted listing's
+/// modulo paired them by accident — adding or removing any fixture
+/// reshuffled which shared a
 /// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.

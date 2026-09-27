@@ -182,6 +182,26 @@ locus App {
         // is another leg's and is not raced for
         let pass = if label == "record" { "1" } else { "2" };
         let alice_leg = "position:agent#" + pass; let bob_leg = "position:editor#" + pass; let carol_leg = "position:leader#" + pass;
+        // ---- a ratified hole is a position only when its own rows state one
+        // (GH #1166): `hale dna init` proposes holes of kind `graph`, a work
+        // hole `api` and a position hole `api/dev` alike. The rows here are
+        // the check's, not a real proposal's, which memory would refuse to
+        // project, so the case runs where the record is all there is
+        if label == "record" && !self.with_memory {
+            let receipts = dna::GitReceipts { repo: self.app };
+            let work = "sha256:" + receipts.store("{\"rows\": [{\"kind\": \"graph.node\", \"entity\": \"work:api\", \"body\": \"{}\"}]}");
+            let seat = "sha256:" + receipts.store("{\"rows\": [{\"kind\": \"graph.node\", \"entity\": \"position:api/dev\", \"body\": \"{}\"}]}");
+            let hj = dna::GitJournal { repo: self.app };
+            std::test::assert(hj.append(hj.revision(), "knowledge.proposed", work, "{\"kind\": \"graph\", \"name\": \"api\", \"target\": \"process:api\"}").ok, "a work hole proposed");
+            std::test::assert(hj.append(hj.revision(), "knowledge.ratified", work, "{\"decided_by\": \"ada\"}").ok, "and ratified");
+            std::test::assert(hj.append(hj.revision(), "knowledge.proposed", seat, "{\"kind\": \"graph\", \"name\": \"api/dev\", \"target\": \"process:api\"}").ok, "a position hole proposed");
+            std::test::assert(hj.append(hj.revision(), "knowledge.ratified", seat, "{\"decided_by\": \"ada\"}").ok, "and ratified");
+            let head_h = record.head("journal").id;
+            let as_work = commands.submit(alice, self.claim_of(label + "cw", identity, head_h, "agent", "position:api#1", "internal public"));
+            std::test::assert(as_work.ok && as_work.receipt.state == "refused" && std::str::contains(as_work.receipt.reason, "is not a position the record knows"), l + "a ratified work hole names no position: " + as_work.receipt.reason);
+            let as_seat = commands.submit(alice, self.claim_of(label + "cs", identity, head_h, "agent", "position:api/dev#1", "internal public"));
+            std::test::assert(as_seat.ok && !std::str::contains(as_seat.receipt.reason, "is not a position the record knows"), l + "a ratified position hole is a position: " + as_seat.receipt.reason);
+        }
         // ---- t0: the effect classes, on a judgment of their own
         let head_c = record.head("journal").id;
         // the classes a Work admits: an edit, which changes source, admits no

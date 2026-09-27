@@ -13,7 +13,8 @@
 // practice_review head, its commands on its socket. The performer (the
 // project's own dna/org/work.hl, from dna/tests/dogfood/work.hl.txt)
 // makes its change in a scratch clone, commits it, pushes the commit to
-// `refs/legs/candidates/<attempt>` and hands it back as `result_ref`, its
+// `refs/legs/candidates/<attempt>` at a bare scratch forge (never the
+// record's own repository) and hands it back as `result_ref`, its
 // patch filed as a receipt that is the commit's own patch. A leg killed
 // mid-task, its clone made, leaves its lease to lapse; the owner asks
 // again, and another worker claims it under the next token and finishes.
@@ -74,7 +75,7 @@ fn field_of(raw: String, field: String) -> String {
 
 locus App {
     params {
-        repo: String = ""; owner: String = ""; head_dsn: String = ""; identity: String = ""; api: String = "";
+        repo: String = ""; owner: String = ""; head_dsn: String = ""; identity: String = ""; api: String = ""; forge: String = "";
         head: std::process::Child = std::process::Child { };
         core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-dogfood-placeholder" } } };
         journal: dna::RoutedJournal = dna::RoutedJournal { };
@@ -178,7 +179,7 @@ locus App {
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
         let port = dna::free_port(71);
         self.api = "http://127.0.0.1:" + to_string(port);
-        let argv = "sh\n-c\ncd \"$1\" && export USER=riley HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + head_binary() + "\n" + to_string(port);
+        let argv = "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + self.repo + "\n" + head_binary() + "\n" + to_string(port);
         let child = std::process::spawn(argv) or std::process::Child { };
         self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
@@ -259,6 +260,13 @@ locus App {
         std::test::assert_eq_int(mapped.code, 0, "the peer is mapped to riley: " + mapped.stderr);
         std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nconfig\n--get\ndna.trust").stdout), "", "and the record declares no trust: the graph says who holds what");
         std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(0)) or discard;
+        // the forge the leg pushes its candidates to: a bare repository of its
+        // own, never the record's
+        self.forge = scratch + "/forge.git";
+        let forged = dna::run_tool("git\ninit\n-q\n--bare\n" + self.forge);
+        std::test::assert_eq_int(forged.code, 0, "a scratch forge: " + forged.stderr);
+        let told = dna::run_tool("mkdir\n-p\n" + self.repo + "/.hale");
+        std::io::fs::write_file(self.repo + "/.hale/dogfood.forge", self.forge) or discard;
         self.start_head();
         self.start_owner();
 
@@ -292,17 +300,25 @@ locus App {
         let requested = self.row_body("attempt.outcome_requested", a1);
         let claim = self.row_body("attempt.claimed", a1);
         std::test::assert_eq_str(std::json::find_string_field(claim, "principal_name"), "riley", "the lease is riley's, the peer's person: " + claim);
+        // over the socket, not the forwarder: the head's HTTP commands take the
+        // launch token the head printed, which a leg never holds, so a command
+        // posted without it is refused, and the leg's claim can only have come
+        // over the socket (the rows do not say which way a command came)
+        let forwarded = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + self.api + "\n--data\n{\"call\": \"CommandLookup\", \"payload\": {\"request_id\": \"x\"}}\n" + self.api + "/api/hale/v1/applications/" + self.identity + "/commands");
+        std::test::assert_eq_str(dna::trim_nl(forwarded.stdout), "401", "the forwarder refuses a command without the launch token");
         let result_ref = std::json::find_string_field(requested, "result_ref");
         std::test::assert(std::str::starts_with(result_ref, "commit:"), "the outcome names its candidate: " + requested);
         let sha = result_ref[7..len(result_ref)];
         let name = std::str::replace(a1, "/", "-");
-        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nrev-parse\nrefs/legs/candidates/" + name).stdout), sha, "the candidate is in the project, at the leg's ref");
-        let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\ndiff\n--name-only\nHEAD\n" + sha).stdout);
+        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + self.forge + "\nrev-parse\nrefs/legs/candidates/" + name).stdout), sha, "the candidate is at the forge, at the leg's ref");
+        std::test::assert(dna::run_tool("git\n-C\n" + self.repo + "\ncat-file\n-e\n" + sha).code != 0, "and nowhere in the record's own repository");
+        let base = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout);
+        let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.forge + "\ndiff\n--name-only\n" + base + "\n" + sha).stdout);
         std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "and it changes one file under api/: " + touched);
         let evidence = std::json::find_string_field(requested, "evidence_ref");
         std::test::assert(std::str::starts_with(evidence, "sha256:"), "its patch is filed as a receipt: " + requested);
         let filed = dna::GitReceipts { repo: self.repo }.read(evidence[7..len(evidence)]);
-        let patch = dna::run_tool("git\n-C\n" + self.repo + "\nformat-patch\n-1\n--stdout\n" + sha).stdout;
+        let patch = dna::run_tool("git\n-C\n" + self.forge + "\nformat-patch\n-1\n--stdout\n" + sha).stdout;
         std::test::assert(len(patch) > 0 && filed == patch, "and the receipt is the candidate's own patch: " + filed);
         let outcome = self.settled(a1);
         std::test::assert(std::str::contains(outcome, sha), "the owner settles on the candidate: " + outcome);
@@ -312,6 +328,9 @@ locus App {
         // Review's own authority (GH #1157 is what turns that into a refusal)
         if len(self.owner) > 0 {
             self.project();
+            // the reviewer's side reads the candidate from the forge
+            let fetched = dna::run_tool("git\n-C\n" + self.repo + "\nfetch\n-q\n" + self.forge + "\n+refs/legs/candidates/*:refs/legs/candidates/*");
+            std::test::assert_eq_int(fetched.code, 0, "the candidate fetched from the forge: " + fetched.stderr);
             let routed = self.dna("route\n--json\n--diff\nHEAD.." + sha);
             std::test::assert_eq_int(routed.code, 0, "route the candidate: " + routed.stderr);
             std::test::assert_eq_str(field_of(std::json::find_field_raw(routed.stdout, "signers"), "position"), "position:api/reviewer\n", "api's reviewer signs a change under api/: " + routed.stdout);
@@ -345,9 +364,10 @@ locus App {
         std::test::assert(code != -2, "the leg is dead, mid-task");
         let swept = dna::run_tool("rm\n-rf\n" + clone + "\n" + marker);
         std::test::assert(!self.has_row("attempt.outcome_requested", a2), "no outcome came from it");
-        std::time::sleep(3500ms);
+        // the lease is 3 s: the owner is driven until it asks again, for as long
+        // as the ttl and the owner's pass take
         tries = 0;
-        while tries < 40 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a2) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
+        while tries < 80 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a2) { let n = self.core.redrive(); std::time::sleep(250ms); tries = tries + 1; }
         std::test::assert(self.has_row("effect.redelivered", "attempt:" + a2), "the lease lapsed with no outcome: the owner asks again");
         std::io::fs::write_file(self.repo + "/dna/org/work.hl", performer_source(0)) or discard;
         let recovered = self.work("run\n--as\nposition:api/dev\n--kind\nsoftware\n--worker\n3\n--wait\n0");

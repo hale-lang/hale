@@ -1,9 +1,10 @@
 // dna/org/work.hl for the dogfood run (GH #946): a deterministic
 // performer standing in for the model. It takes the software kind, makes
 // its change in a scratch clone of the project, commits it, pushes the
-// commit to `refs/legs/candidates/<attempt>` in the project (the leg's
-// own namespace, never the record's), and hands the commit back as the
-// outcome's `result_ref` with its patch as a receipt.
+// commit to `refs/legs/candidates/<attempt>` at the forge the project
+// names in `.hale/dogfood.forge` (never the record's own repository),
+// and hands the commit back as the outcome's `result_ref` with its patch
+// as a receipt.
 import "vendor/dna" as dna;
 import "vendor/dna/legs" as legs;
 
@@ -39,7 +40,11 @@ locus Candidate {
         let committed = hands.git.commit(clone.output, "api: a note for " + brief.attempt_id);
         if !committed.ok { return self.failed("the change did not commit: " + committed.error, shown); }
         let sha = committed.output;
-        let pushed = dna::run_tool("git\n-C\n" + clone.output + "\npush\n--quiet\norigin\n+HEAD:refs/legs/candidates/" + name);
+        // the forge the project names (the fixture's bare scratch repository),
+        // never the record's own repository
+        let forge = dna::trim_nl(std::io::fs::read_file(repo + "/.hale/dogfood.forge") or "");
+        if len(forge) == 0 { return self.failed("no forge named in .hale/dogfood.forge", shown); }
+        let pushed = dna::run_tool("git\n-C\n" + clone.output + "\npush\n--quiet\n" + forge + "\n+HEAD:refs/legs/candidates/" + name);
         if pushed.code != 0 { return self.failed("the candidate was not pushed: " + pushed.stderr, shown); }
         let exported = dna::run_tool("git\n-C\n" + clone.output + "\nformat-patch\n-1\n--stdout\nHEAD");
         if exported.code != 0 || len(exported.stdout) == 0 { return self.failed("the candidate's patch was not exported: " + exported.stderr, shown); }

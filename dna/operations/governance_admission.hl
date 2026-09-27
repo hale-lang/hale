@@ -633,7 +633,7 @@ locus GovernanceCommands {
                     // a position's friction is a fact of the record, filed at its
                     // tail: nobody admits it, and the head the leg read is not a
                     // fence on it (a leg a row behind still files)
-                    if !attempts.known_position(rj, command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
+                    if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows")); }
                     let fact = attempts.friction_fact(context, command, grant, s.head);
                     if fact == "" { return GovernanceResult { code: "invalid_command" }; }
                     if !self.unchanged(s) { continue; }
@@ -656,7 +656,7 @@ locus GovernanceCommands {
                     // not turned away with `stale_subject`; the loser of the race
                     // gets a refusal receipt, and a claim taken in memory that
                     // ends in no row is given back on the way out.
-                    if !attempts.known_position(rj, command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
+                    if !attempts.known_position(rj, self.record.location(), command.performer) { return self.refusal(s, attempts.refused(context, command, "`" + command.performer + "` is not a position the record knows (a `position:<name>` the graph names, or one of the organization's own)")); }
                     let scan = attempts.candidates(rj, command);
                     if len(scan.names) == 0 { return self.refusal(s, attempts.refused(context, command, attempts.nothing_awaits(command, scan))); }
                     let mut rest = scan.names; let mut taken = ""; let mut lease = dna::Lease { };

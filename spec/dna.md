@@ -1759,7 +1759,10 @@ memory is named to it.
   keyed on the lease, so run twice they are one act; `next` mints a
   fresh id per call (a claim by its holder renews); `renew` is counted
   by the caller. A leg's identity is a position the record knows —
-  `position:<name>` from the graph or the organization's own, with
+  `position:<name>` from the graph (a `graph.node` row, or a hole
+  `hale dna init` proposed whose own rows state that position, once the
+  Board ratified it) or the organization's own, `/` allowed in the name
+  as the graph spells a process's positions (`position:api/dev`), with
   `#<n>` for one worker of several — never free text, at the head as
   at the verb. While an outcome under a lease awaits the owner the
   lease is neither renewed nor given back, and the attempt awaits no

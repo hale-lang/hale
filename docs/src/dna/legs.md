@@ -483,8 +483,10 @@ work: dna::WorkSystem {
 }
 ```
 
-By hand, the project and its seat (memory needs
-`HALE_DNA_MEMORY_DSN_OWNER`, or the project's `dna/compose.yaml`):
+By hand, the project and its seat, the organization's own way rather
+than the fixture's (it writes the ratifications and the holds edge as
+rows); memory needs `HALE_DNA_MEMORY_DSN_OWNER`, or the project's
+`dna/compose.yaml`:
 
 ```sh
 cp -r "$HALE_SRC/dna/tests/onboarding/voice" ~/voice && cd ~/voice
@@ -500,16 +502,16 @@ git config --local --unset-all dna.trust   # init seated its maker under local t
 git config --local --replace-all dna.unix.member "uid:$(id -u)=riley"
 ```
 
-(The fixture writes the ratifications and the `holds` edge as rows
-instead, as `graph_route_test` does. The proposer of a holder may not
-ratify it, so a second person decides it by hand.) `hale dna init`
-seats whoever runs it — this uid mapped to `$USER`, and `dna.trust =
-local`, where that person holds every position — so the run takes the
-trust back: with no `dna.trust` declared, the graph's `holds` edges say
-who holds what. Until
-riley holds a position the head's socket lists no claim to the peer
-(`hale describe <socket>`), and the leg says so at attach; once riley
-holds `api/dev` the leg claims as that peer, the lease in riley's name.
+(The proposer of a holder may not ratify it, so a second person decides
+it.) `hale dna init` seats whoever runs it — this uid mapped to `$USER`,
+and `dna.trust = local`, where that person holds every position — so the
+run takes the trust back: with no `dna.trust` declared, the graph's
+`holds` edges say who holds what. Until riley holds a position the
+head's socket lists no claim to the peer (`hale describe <socket>`), and
+the leg says so at attach; once riley holds `api/dev` the leg claims as
+that peer, working as `position:api/dev`, the lease in riley's name. A
+hole `init` proposed is a position once the Board ratifies it, when its
+own rows state one.
 
 The head runs from the toolchain's source, with a policy naming who
 may recover a lease, and without the spine's role:
@@ -523,20 +525,33 @@ env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
     HALE_DNA_COMMAND_POLICY=~/voice/.hale/dna/authority.json \
     "$HALE_SRC/dna/api/practice_review/practice_review" ~/voice 8793 &
 cd ~/voice && HALE_DNA_API=http://127.0.0.1:8793 \
-    hale dna work run --as position:api/dev --kind software --worker 1
+    hale dna work run --as position:api/dev --kind software --worker 1 --wait 0
 ```
+
+By hand the leg finds nothing to claim until an owner relays software
+work to legs and a Work of that kind is asked: the organization `init`
+generates does neither, so the fixture's own owner (`start_owner` in
+`dna/tests/dogfood_voice_test.hl`: the wiring above, and a `note`
+workflow whose one Work it asks) is the reference until a project wires
+its `dna/org/main.hl` so. The head's HTTP commands take the launch token
+the head prints, which a leg never holds: a leg's commands go over the
+socket, and a command posted to the forwarder without the token is
+refused.
 
 The performer (`dna/tests/dogfood/work.hl.txt`, installed as the
 project's `dna/org/work.hl`) takes the software kind, makes its change
 in a scratch clone, commits it, pushes the commit to
-`refs/legs/candidates/<attempt>` (the leg's namespace, never the
-record's `refs/dna/`), and hands it back as `result_ref:
-commit:<sha>` with the commit's patch as a receipt. Run again under a
+`refs/legs/candidates/<attempt>` at the forge the project names in
+`.hale/dogfood.forge` — in the fixture a bare scratch repository, never
+the record's own — and hands it back as `result_ref: commit:<sha>` with
+the commit's patch as a receipt. The reviewer's side fetches it from
+there. Run again under a
 new lease it makes the same change and moves the ref to it, which is
 what makes it `idempotent`. Who must sign the change is the graph's
 word:
 
 ```sh
+git fetch <forge> '+refs/legs/candidates/*:refs/legs/candidates/*'
 hale dna route --diff HEAD..<sha>     # api's reviewer, for a change under api/
 hale dna route Dockerfile             # nobody: today, the Review's own authority
 ```
