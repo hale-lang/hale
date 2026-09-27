@@ -175,22 +175,26 @@ locus App {
         std::test::assert(std::str::contains(rename.stdout, "position:api/reviewer") && std::str::contains(rename.stdout, "position:node/reviewer"), "the moved contract keeps its signers: " + rename.stdout);
 
         // ---- a reviews row naming a dev: the edge is the authority, so the
-        // dev signs; a consumer no position under it reviews is said, not
-        // dropped
+        // dev signs, for the document and for what it consumes; a part no
+        // position under it reviews the contract for is said, not dropped
         let jr = dna::GitJournal { repo: self.repo };
         let dev = ops::GraphEdge { kind: "reviews" };
         dev.member("position", "position:api/dev");
         dev.member("subject", "document:DIRECTION.md");
         std::test::assert(jr.append(jr.revision(), "graph.edge", dev.id(), dev.body()).ok, "api/dev reviews DIRECTION.md, by hand");
+        // (a contract's meets is one row: the latest says who meets there)
         let uses = ops::GraphEdge { kind: "meets" };
         uses.member("contract", "contract:spec/node.yaml");
+        uses.member("server", "process:node");
         uses.member("consumer", "seed:spec/validate");
-        std::test::assert(jr.append(jr.revision(), "graph.edge", uses.id(), uses.body()).ok, "spec/validate consumes node.yaml, by hand");
+        uses.member("consumer", "document:DIRECTION.md");
+        std::test::assert(jr.append(jr.revision(), "graph.edge", uses.id(), uses.body()).ok, "spec/validate and DIRECTION.md consume node.yaml, by hand");
         self.project();
         let direction = self.dna("route\n--json\nDIRECTION.md");
         std::test::assert_eq_str(field_of(std::json::find_field_raw(direction.stdout, "signers"), "position"), "position:api/dev\n", "the dev the edge names signs: " + direction.stdout);
         let node_api = self.dna("route\n--json\nspec/node.yaml");
         std::test::assert(std::str::contains(node_api.stdout, "\"node\": \"seed:spec/validate\"") && std::str::contains(node_api.stdout, "consumes node.yaml; no position reviews it"), "spec/validate consumes it and nothing under it reviews node.yaml: said, not dropped: " + node_api.stdout);
+        std::test::assert_eq_str(field_of(std::json::find_field_raw(node_api.stdout, "signers"), "position"), "position:node/reviewer\nposition:api/dev\n", "node's reviewer, and whoever reviews the document consuming it: " + node_api.stdout);
 
         // ---- the derived holes give a dev no reviews edge
         std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "no derived edge routes to a dev");

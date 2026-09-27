@@ -886,6 +886,7 @@ fn dna_fixture_set_is_complete() {
             "grant_layering_test.hl",
             "grant_resources_test.hl",
             "graph_holds_test.hl",
+            "graph_holes_edges_test.hl",
             "graph_holes_test.hl",
             "graph_ingest_refusals_test.hl",
             "graph_ingest_test.hl",

@@ -1,0 +1,69 @@
+// dna/tests/graph_holes_edges_test.hl — the holes' derivation on graphs
+// voice does not have (GH #1091): a contract a process's seed serves, two
+// parts delivering one contract, a validated contract no part serves whose
+// file shares a part's name, and the roles a structure policy names. Built
+// by hand, no record and no memory: `ops::graph_holes` is a function of
+// the ingest's edges and the roles.
+
+import "../core" as dna;
+import "../operations" as ops;
+
+// A graph: process api over seed api, which serves x.yaml (ci/x validates
+// it); seed web, no process's, consumes it; seeds a and b both serve
+// y.yaml (ci/y), neither gated; spec/vendor/api, validated by ci/v, is
+// served by nobody; one deployment.
+fn graph() -> ops::GraphIngest {
+    let g = ops::GraphIngest { root: "" };
+    g.purpose = "purpose:shop";
+    g.processes = "\napi\n";
+    g.seeds = "\napi\nweb\na\nb\n";
+    g.unfolds = "process:api\tseed:api\n";
+    g.served = "seed:api\tcontract:x.yaml\nseed:a\tcontract:y.yaml\nseed:b\tcontract:y.yaml\n";
+    g.consumed = "seed:web\tcontract:x.yaml\n";
+    g.guards = "contract:x.yaml\tgate:ci/x\ncontract:y.yaml\tgate:ci/y\ncontract:spec/vendor/api\tgate:ci/v\n";
+    g.deployments = "deployment:compose\n";
+    return g;
+}
+
+// How often `needle` occurs; a proposal's own `"name"` is once per line.
+@unbounded
+fn count(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    while std::str::contains(rest, needle) {
+        rest = rest[(std::str::index_of(rest, needle) + len(needle))..len(rest)];
+        n = n + 1;
+    }
+    return n;
+}
+
+fn main() {
+    let h = ops::graph_holes(graph(), "");
+    std::test::assert_eq_str(h.error, "", "the holes derive");
+    let p = h.proposals;
+
+    // a cell naming the seed names the process it belongs to
+    std::test::assert(std::str::contains(p, "`api/reviewer` under process api, signing its code and x.yaml"), "api's reviewer signs what its seed serves: " + p);
+    std::test::assert(std::str::contains(p, "`api/dev` under process api") && std::str::contains(p, "the work `x.yaml`: done when ci/x passes"), "and api delivers x.yaml: " + p);
+    std::test::assert(!std::str::contains(p, "`x.yaml/dev`"), "x.yaml is served, so no dev of its own: " + p);
+    std::test::assert(std::str::contains(p, "`web/reviewer` under seed web, signing its code and x.yaml"), "a consuming seed's reviewer signs what it consumes: " + p);
+
+    // two parts delivering one contract: one work item
+    std::test::assert_eq_int(count(p, "\"name\": \"y.yaml\""), 1, "y.yaml is one work item: " + p);
+    std::test::assert(std::str::contains(p, "`a/dev`") && std::str::contains(p, "`b/dev`"), "each part serving it has a dev: " + p);
+
+    // a validated contract no part serves, named where its file is a part's
+    std::test::assert(std::str::contains(p, "`spec/vendor/api/dev` under contract spec/vendor/api") && std::str::contains(p, "the work `spec/vendor/api`: done when ci/v passes"), "named by its whole path, never api's: " + p);
+    std::test::assert_eq_int(count(p, "\"name\": \"api/dev\""), 1, "api/dev is proposed once: " + p);
+    std::test::assert(!std::str::contains(p, "/support`"), "no role unless the project names one: " + p);
+
+    // the roles: known ones, each once, whatever the whitespace
+    let opted = ops::graph_holes(graph(), " support\tsupport\non-call ");
+    std::test::assert_eq_str(opted.error, "", "the roles derive");
+    std::test::assert_eq_int(opted.count, h.count + 2, "two roles under one deployment");
+    std::test::assert_eq_int(count(opted.proposals, "\"name\": \"compose/support\""), 1, "support once: " + opted.proposals);
+    std::test::assert(std::str::contains(opted.proposals, "`compose/on-call` under deployment compose, proposed empty"), "on-call under the deployment, empty: " + opted.proposals);
+    let odd = ops::graph_holes(graph(), "operator");
+    std::test::assert(std::str::contains(odd.error, "dna/org/structure.hl names `operator`, which is not an operational role (support accounts billing on-call)"), "a derived seat is no role: " + odd.error);
+    std::test::assert(len(ops::graph_holes(graph(), "support dev").error) > 0, "nor is dev");
+}

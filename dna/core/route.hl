@@ -11,8 +11,9 @@
 //                   reviews the part's seed and every contract the part
 //                   serves or consumes, a deployment's operator reviews
 //                   the deployment;
-//   a contract    — beside those, the positions reviewing a contract that
-//                   consumes it, and the `board` where the contract is law
+//   a contract    — beside those, the positions reviewing a consumer that
+//                   is no part (a contract, a document, a deployment that
+//                   consumes it), and the `board` where the contract is law
 //                   (a practice ratified as law — its receipt says
 //                   `law: true` — is bound to it; advice is not law).
 //
@@ -157,13 +158,14 @@ locus Router {
         }
         return n;
     }
-    // A consumer of `spec`: a consuming contract's reviewers sign; a
-    // consuming process or seed signs through its reviewer, which reviews
-    // what the part consumes — said when no position under it does.
+    // A consumer of `spec`: a consuming process or seed signs through its
+    // reviewer, which reviews what the part consumes; any other consumer (a
+    // contract, a document, a deployment) through the positions reviewing
+    // it — said, either way, when no position does.
     @unbounded
     fn consumer(node: String, spec: String) -> Int {
         let because = "consumes " + show_name(spec);
-        if std::str::starts_with(node, "contract:") {
+        if !std::str::starts_with(node, "process:") && !std::str::starts_with(node, "seed:") {
             let n = self.sign_all(self.related(self.reviews, node, true), because);
             if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
             return n;

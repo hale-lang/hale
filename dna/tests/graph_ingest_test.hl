@@ -166,6 +166,20 @@ locus App {
         std::test::assert_eq_int(again.code, 0, "init again: " + again.stderr);
         std::test::assert(std::str::contains(again.stdout, "a record exists; not reseeded") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
 
+        // ---- the structure policy, written before init (GH #1091): the
+        // operational roles it names, each once, under every deployment;
+        // a word that is no role refuses the seed, and no record is born
+        let opted = scratch + "/opted";
+        let odd = scratch + "/odd";
+        let copies = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d\" && cp -r \"$3/dna/tests/onboarding/voice/.\" \"$d/\" && (cd \"$d\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice && mkdir -p dna/org) || exit 1; done && printf 'fn operational_roles() -> String {\\n    return \"support on-call support\";\\n}\\n' > \"$1/dna/org/structure.hl\" && printf 'fn operational_roles() -> String {\\n    return \"oncall\";\\n}\\n' > \"$2/dna/org/structure.hl\"\nsh\n" + opted + "\n" + odd + "\n" + source());
+        std::test::assert_eq_int(copies.code, 0, "two copies with a structure policy each: " + copies.stderr);
+        let with_roles = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + opted + "\n" + toolchain());
+        std::test::assert_eq_int(with_roles.code, 0, "init with roles: " + with_roles.stdout + with_roles.stderr);
+        std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 31 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
+        let refused = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + odd + "\n" + toolchain());
+        std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "dna/org/structure.hl names `oncall`, which is not an operational role"), "a word that is no role is refused: " + refused.stdout + refused.stderr);
+        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + odd + "\nfor-each-ref\nrefs/dna").stdout), "", "and no record is born");
+
         dna::scratch_done(scratch);
     }
 }

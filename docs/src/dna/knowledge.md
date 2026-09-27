@@ -190,8 +190,9 @@ an operator under every deployment; and the practices your documents
 mark. The one choice that is yours is `dna/org/structure.hl`:
 `operational_roles()` names the roles no artifact implies — support,
 accounts, billing, on-call — that each deployment should also get, and
-returns `""`, none, until you opt in (`hale dna upgrade` keeps what you
-named). `hale dna review` lists the proposals in their groups, and
+returns `""`, none, unless you opt in. `init` reads it once, when it seeds
+the record, and keeps a file that is already there: to opt in, write it
+before `hale dna init`. `hale dna review` lists the proposals in their groups, and
 `hale dna review holes approve --as <you> --authority board` decides them
 in turn; ratify them and they are the org chart, in the order they were
 proposed.

@@ -152,6 +152,35 @@ fn hole_first(lines: String) -> String {
 fn hole_has_second(pairs: String, second: String) -> Bool { return std::str::contains(pairs, "\t" + second + "\n"); }
 
 // How a question names a part's kind: a process, or a seed.
+// The operational roles a project may opt into (dna/org/structure.hl).
+const HOLE_ROLES: String = "support accounts billing on-call";
+
+// `pairs` (`<node>\t<other>` per line) with a seed a process unfolds into
+// read as that process: a cell naming the seed (a link, a path inside it)
+// names the part it belongs to.
+@unbounded
+fn hole_by_part(pairs: String, unfolds: String) -> String {
+    let mut out = "";
+    let mut rest = pairs;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let t = std::str::index_of(line, "\t");
+        let node = line[0..t];
+        let mut owner = node;
+        let mut ups = if std::str::starts_with(node, "seed:") { unfolds } else { "" };
+        while len(ups) > 0 {
+            let n2 = std::str::index_of(ups, "\n");
+            let up = ups[0..n2];
+            ups = ups[(n2 + 1)..len(ups)];
+            if std::str::ends_with(up, "\t" + node) { owner = up[0..std::str::index_of(up, "\t")]; ups = ""; }
+        }
+        out = out + owner + line[t..len(line)] + "\n";
+    }
+    return out;
+}
+
 fn hole_kind(part: String) -> String { return if std::str::starts_with(part, "seed:") { "seed" } else { "process" }; }
 
 // Every hole of the graph an ingest read, as proposals in the order the
@@ -162,6 +191,18 @@ fn hole_kind(part: String) -> String { return if std::str::starts_with(part, "se
 fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
     let mut out = HolesAnswer { };
     let mut docs = "";
+    // the roles the project names: known ones, each once
+    let mut opted = "";
+    let spaced = std::str::replace(std::str::replace(std::str::replace(roles, "\t", " "), "\r", " "), "\n", " ");
+    let mut r = 0;
+    while len(dna::nth_word(spaced, r)) > 0 {
+        let role = dna::nth_word(spaced, r);
+        r = r + 1;
+        if !dna::word_in(role, HOLE_ROLES) { return HolesAnswer { error: "dna/org/structure.hl names `" + role + "`, which is not an operational role (" + HOLE_ROLES + ")" }; }
+        if !dna::word_in(role, opted) { opted = opted + (if len(opted) > 0 { " " } else { "" }) + role; }
+    }
+    let served = hole_by_part(g.served, g.unfolds);
+    let consumed = hole_by_part(g.consumed, g.unfolds);
     if len(g.purpose) > 0 {
         let d = HoleDoc { name: "board", target: g.purpose, text: "The Board: whoever holds this organization's authority, and ratifies what it becomes." };
         d.question = "ratify the position `board` under the purpose: it ratifies what this organization becomes";
@@ -189,6 +230,13 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
     }
     // a reviewer, and a dev, per part as its edges say
     let mut work = ""; // `<target>\t<name>\t<gate>` per work item, in order
+    let mut named = "\n"; // every part's name, then every work item's
+    let mut ps = parts;
+    while len(ps) > 0 {
+        let nl = std::str::index_of(ps, "\n");
+        named = named + ps[(std::str::index_of(ps, ":") + 1)..nl] + "\n";
+        ps = ps[(nl + 1)..len(ps)];
+    }
     let mut rest = parts;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -196,8 +244,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         rest = rest[(nl + 1)..len(rest)];
         let p = part[(std::str::index_of(part, ":") + 1)..len(part)];
         let seed = if std::str::starts_with(part, "seed:") { part } else { hole_first(hole_seconds(g.unfolds, part)) };
-        let serves = hole_seconds(g.served, part);
-        let consumes = hole_seconds(g.consumed, part);
+        let serves = hole_seconds(served, part);
+        let consumes = hole_seconds(consumed, part);
         // the gate that is its done-when: its seed's, else a served contract's
         // and what the work is called: the part, or the contract it delivers
         let mut gate = if len(seed) > 0 { hole_first(hole_seconds(g.guards, seed)) } else { "" };
@@ -216,7 +264,11 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
             if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
             docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
             out.count = out.count + 1;
-            work = work + part + "\t" + deliverable + "\t" + gate + "\n";
+            // two parts delivering one contract: one work item, the first's
+            if deliverable == p || !std::str::contains(named, "\n" + deliverable + "\n") {
+                work = work + part + "\t" + deliverable + "\t" + gate + "\n";
+                if deliverable != p { named = named + deliverable + "\n"; }
+            }
         }
         if len(serves) > 0 || len(consumes) > 0 {
             let rev = HoleDoc { name: p + "/reviewer", target: part, text: "Signs changes to " + p + " and to what it serves and consumes; never the same holder as " + p + "/dev." };
@@ -252,8 +304,12 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         guarded = guarded[(nl + 1)..len(guarded)];
         let t = std::str::index_of(line, "\t");
         let node = line[0..t];
-        if !std::str::starts_with(node, "contract:") || hole_has_second(g.served, node) { continue; }
-        let c = dna::show_name(node);
+        if !std::str::starts_with(node, "contract:") || hole_has_second(served, node) { continue; }
+        // named for its file, or its whole path where a part or a work item
+        // already has that name
+        let short = dna::show_name(node);
+        let c = if std::str::contains(named, "\n" + short + "\n") { node[9..len(node)] } else { short };
+        named = named + c + "\n";
         let dev = HoleDoc { name: c + "/dev", target: node, text: "Writes " + c + ", bound by its practices." };
         dev.question = "ratify the position `" + c + "/dev` under contract " + c + ": it writes " + c;
         dev.unfold(node, dev.node("position", c + "/dev", dev.text));
@@ -281,8 +337,8 @@ fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
         docs = docs + hole_line(op.document(), op.question, "holes", "graph", op.name, op.target);
         out.count = out.count + 1;
         let mut k = 0;
-        while len(dna::nth_word(roles, k)) > 0 {
-            let role = dna::nth_word(roles, k);
+        while len(dna::nth_word(opted, k)) > 0 {
+            let role = dna::nth_word(opted, k);
             k = k + 1;
             let h = HoleDoc { name: d + "/" + role, target: deployment, text: "The " + role + " of " + d + "; no artifact implies it, and the Board names who holds it." };
             h.question = "ratify the position `" + h.name + "` under deployment " + d + ", proposed empty: the Board names who holds it";

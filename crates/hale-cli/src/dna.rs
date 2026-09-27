@@ -1192,8 +1192,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("workflows.hl"), WORKFLOWS_HL)?;
     created(&mut out, &org_dir.join("own_workflows.hl"), OWN_WORKFLOWS_HL)?;
     // GH #1091 (B): the one structure policy — the operational roles the
-    // project opts into, none by default; the holes follow the graph's edges
-    created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
+    // project opts into, none by default; the holes follow the graph's
+    // edges. A repository's alone: its record is born with the holes. One
+    // written before `init` is kept, and is what the holes read.
+    if app.is_none() {
+        created(&mut out, &org_dir.join("structure.hl"), &structure_hl(""))?;
+    }
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
@@ -1355,14 +1359,19 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             }
         }
         // GH #1091 (B): the structure policy, regenerated to the current
-        // shape; the roles the project opted into are its own and carried over
+        // shape; the roles the project opted into are its own and carried
+        // over, and what else the file said is named, never silently lost
         let structure = org_dir.join("structure.hl");
-        let roles = fs::read_to_string(&structure).ok().map(|t| structure_roles(&t)).unwrap_or_default();
-        let current = structure_hl(&roles);
-        if fs::read_to_string(&structure).ok().as_deref() != Some(current.as_str()) {
-            let was = structure.is_file();
-            fs::write(&structure, &current).map_err(|e| format!("write {}: {e}", structure.display()))?;
-            out.push(format!("{} {}", if was { "rewrote" } else { "created" }, structure.display()));
+        if let Ok(old) = fs::read_to_string(&structure) {
+            let current = structure_hl(&structure_roles(&old));
+            if old != current {
+                fs::write(&structure, &current).map_err(|e| format!("write {}: {e}", structure.display()))?;
+                out.push(format!("rewrote {}", structure.display()));
+                let dropped: Vec<&str> = old.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//") && !current.lines().any(|c| c.trim() == *l)).collect();
+                if !dropped.is_empty() {
+                    out.push(format!("note    {}: the rewrite kept only the roles operational_roles returns; it dropped:\n        {}", structure.display(), dropped.join("\n        ")));
+                }
+            }
         }
         let own = org_dir.join("own_workflows.hl");
         if !own.is_file() {
@@ -2453,7 +2462,9 @@ fn structure_hl(roles: &str) -> String {
 // for each one a gate guards, an operator under each deployment. What no
 // edge implies is here: the operational roles each deployment also gets,
 // proposed empty for the Board to fill — none by default. Name them
-// space-separated, from `support accounts billing on-call`.
+// space-separated, from `support accounts billing on-call`; any other word
+// is refused. They are read once, when `hale dna init` seeds the record:
+// to opt in, write this file before `init`, which keeps it.
 
 fn operational_roles() -> String {{
     return "{roles}";
