@@ -50,6 +50,7 @@ pub mod purity;
 pub mod quantitative;
 pub mod resolve;
 pub mod resource_budget;
+pub mod flows;
 pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;

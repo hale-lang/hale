@@ -938,7 +938,7 @@ certify a path — plus one tier you get for free because your
 | **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
-| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof) | opt-in reports |
+| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --flows` (which `release` clause makes each type a flow); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof) | opt-in reports |
 
 ### Where law lives
 

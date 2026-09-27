@@ -4216,6 +4216,45 @@ fn locate_span(
     None
 }
 
+/// GH #736: `hale check --flows` — every flow type, and the `release`
+/// clauses that make it one, in the spelling the author wrote and at the
+/// file and line each sits.
+fn render_flows(
+    flows: &[hale_types::flows::Flow],
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+    import_renames: &[(Vec<String>, String)],
+) -> String {
+    let spell = |s: &str| hale_types::stdlib_bodies::demangle_str(s, import_renames);
+    if flows.is_empty() {
+        return "flows: none — every accept'd child is a resident: it ends by its own `terminate;` or in its owner's dissolve cascade\n".to_string();
+    }
+    let mut out = format!(
+        "flows: {} locus type(s) reclaimed when their run() completes — a `release(c: T)` anywhere in the program, imported seeds included, makes every T a flow, whether or not its declaring locus is instantiated:\n",
+        flows.len()
+    );
+    // sorted as printed, not by the mangled key
+    let mut shown: Vec<&hale_types::flows::Flow> = flows.iter().collect();
+    shown.sort_by_key(|f| spell(&f.child));
+    for f in shown {
+        out.push_str(&format!("\n  {} — a flow, by:\n", spell(&f.child)));
+        for c in &f.clauses {
+            let at = locate_span(c.span, file_bases, sources)
+                .map(|(path, l, col)| format!("{path}:{l}:{col}"))
+                .unwrap_or_else(|| "(no seed location)".to_string());
+            out.push_str(&format!(
+                "    release({}: {}) in {}  {}\n",
+                c.param,
+                spell(&f.child),
+                spell(&c.owner),
+                at
+            ));
+        }
+    }
+    out.push_str("\nA resident's run() returning means \"ready\"; it lives on, ends by its own `terminate;` or with its owner's dissolve cascade. Dropping one owner's hook leaves T a flow while any clause above remains.\n");
+    out
+}
+
 /// GH #856: the note a stdlib-origin span renders as, in place of a
 /// `file:line:col` it has no right to. The embedded stdlib parses at
 /// base 0 in its own space, so its offsets collide with the seed's:
@@ -5137,6 +5176,8 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     // GH #738
     ("--strict-fallible", false),
     ("--sealable", false),
+    // GH #736
+    ("--flows", false),
     ("--workspace", false),
     // GH #409
     ("--env", true),
@@ -5200,6 +5241,8 @@ fn check_usage(verify: bool) {
     println!("  --strict-secret                 fail-closed `@secret` containment check");
     println!("  --strict-fallible               a bare fallible stdlib call is an error, not a warning");
     println!("  --sealable                      report which loci could be `@sealed`");
+    println!("  --flows                         report which locus types are flows, and the");
+    println!("                                 `release(c: T)` clause(s) that make each one");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
@@ -6820,6 +6863,17 @@ fn run_check_impl_labelled(
             bundle.programs.values().copied().collect();
         let rows = hale_types::sealability::survey(&progs);
         eprint!("{}", hale_types::sealability::render(&rows));
+    }
+    // GH #736: which `release` clause makes a locus type a flow. Whether
+    // `T` is a flow is decided over the whole program, imported seeds
+    // included, so a child still reclaimed when its `run()` returns after
+    // its own owner dropped the hook is answered here: every clause that
+    // names its type, with the file and line.
+    if std::env::args().any(|a| a == "--flows") {
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        let flows = hale_types::flows::survey(&progs);
+        eprint!("{}", render_flows(&flows, &file_bases, &sources, &import_renames));
     }
     if std::env::args().any(|a| a == "--strict-secret") {
         let progs: Vec<&hale_syntax::ast::Program> =

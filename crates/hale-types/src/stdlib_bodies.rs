@@ -144,7 +144,7 @@ pub(crate) fn demangle_table(
 }
 
 /// Demangle ONE string through the same table.
-pub(crate) fn demangle_str(
+pub fn demangle_str(
     s: &str,
     import_renames: &[(Vec<String>, String)],
 ) -> String {
