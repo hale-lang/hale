@@ -82,7 +82,8 @@ fn holder_ok(s: String) -> Bool {
     let mut i = 0;
     while i < len(name) {
         let c = name[i..(i + 1)];
-        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_" || c == "-" || c == ".";
+        // `/` spells a graph position under its process (`position:api/dev`)
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_" || c == "-" || c == "." || c == "/";
         if !ok { return false; }
         i = i + 1;
     }
@@ -291,18 +292,30 @@ locus AttemptCommandCodec {
         return GovernanceGrant { allowed: true, authority: context.principal_name, basis: "dna.attempt/1:authenticated-principal:" + context.principal_mode };
     }
     // Whether the record knows a position (GH #946 review): a `graph.node`
-    // row for its id, or one the generated organization's kinds name
+    // row for its id, a hole `hale dna init` proposed that the Board
+    // ratified, or one the generated organization's kinds name
     // (`position:leader`, `position:editor`, `position:agent`,
     // `position:human`, `position:service`, `position:software`).
     @unbounded
-    fn known_position(j: dna::Journal, holder: String) -> Bool {
+    fn known_position(j: dna::Journal, location: String, holder: String) -> Bool {
         let base = holder_base(holder);
         if base == "position:leader" || base == dna::hat_position_of("edit") || base == dna::hat_position_of("agent") || base == dna::hat_position_of("human") || base == dna::hat_position_of("service") || base == dna::hat_position_of("software") { return true; }
+        // a position the graph states (`graph.node`), or one a hole `hale
+        // dna init` proposed states in its own rows, once the Board ratified
+        // it (never merely a hole of that name: a work hole `api` is no
+        // position); a retirement ends either
+        let mut proposed = "\n";
         let mut i = 0;
         let mut known = false;
         while i < j.revision() {
             let e = j.read(i);
             if e.kind == "graph.node" && e.entity == base { known = true; }
+            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" { proposed = proposed + e.entity + "\n"; }
+            if e.kind == "knowledge.ratified" && std::str::contains(proposed, "\n" + e.entity + "\n") && len(location) > 0 {
+                let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
+                let rows = dna::proposal_rows(dna::GitRecord { repo: location }.body(raw).text);
+                if std::str::contains(rows, "\"kind\": \"graph.node\", \"entity\": " + dna::record_json_quote(base) + ",") { known = true; }
+            }
             if e.kind == "graph.retired" && e.entity == base { known = false; }
             i = i + 1;
         }

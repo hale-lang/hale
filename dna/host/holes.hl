@@ -109,12 +109,7 @@ fn held_state(root: String) -> HeldState {
         if e.kind == "graph.node" || e.kind == "graph.edge" { rows = hole_row(e.kind, e.entity, e.body); }
         if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" && !std::str::contains(refused, "\n" + e.entity + "\n") {
             let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
-            let doc = rec(root).body(raw).text;
-            let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
-            while !it.done {
-                rows = rows + hole_row(std::json::find_string_field(it.element, "kind"), std::json::find_string_field(it.element, "entity"), std::json::find_string_field(it.element, "body"));
-                it = std::json::array_next(it);
-            }
+            rows = rows + dna::proposal_rows(rec(root).body(raw).text);
         }
         let mut rest = rows;
         while len(rest) > 0 {

@@ -198,3 +198,26 @@ fn graph_member(body: String, role: String) -> String {
     }
     return "";
 }
+
+// The graph rows a hole proposal carries (`hale dna init`: a
+// `knowledge.proposed` of kind `graph` whose stored document holds
+// `rows`), one `{"kind", "entity", "body"}` object per line: what the
+// record gains when the Board ratifies it. Read by `hale dna fill` and
+// by the head's position check, so a ratified hole names exactly the
+// positions its own rows state (GH #1166).
+@unbounded
+fn proposal_rows(doc: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(doc, "rows"));
+    while !it.done {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("kind", std::json::find_string_field(it.element, "kind"));
+        b.string_field("entity", std::json::find_string_field(it.element, "entity"));
+        b.string_field("body", std::json::find_string_field(it.element, "body"));
+        b.end_object();
+        out = out + b.result() + "\n";
+        it = std::json::array_next(it);
+    }
+    return out;
+}

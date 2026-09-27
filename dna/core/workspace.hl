@@ -333,10 +333,11 @@ fn scratch_register(dir: String) {
 // The fixture is done with `dir` and passed: the root goes, and its
 // registry entry with it. `HALE_DNA_KEEP_SCRATCH` keeps both and says
 // where the root is, which is the knob for looking at what a fixture
-// built.
+// built. The word goes to stderr: a leg cleans its hands with this, and
+// its stdout is its answer.
 fn scratch_done(dir: String) {
     if keep_scratch() {
-        println("kept (HALE_DNA_KEEP_SCRATCH): ", dir);
+        eprintln("kept (HALE_DNA_KEEP_SCRATCH): ", dir);
         return;
     }
     let gone = run_tool("rm\n-rf\n" + dir);

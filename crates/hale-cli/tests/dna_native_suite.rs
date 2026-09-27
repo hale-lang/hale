@@ -45,13 +45,14 @@ const SLICES: usize = 20;
 /// twenty-five minutes; books_slice_test ~280 s; receipt_retention_test
 /// ~110 s), the body fixtures that build the host
 /// cold in a cache of their own (body_claim_expired_test ~425 s,
-/// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test,
-/// which builds a head. The sorted listing's modulo paired them by
-/// accident — adding or removing any fixture reshuffled which shared a
+/// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test
+/// and dogfood_voice_test, which build a head. The sorted listing's
+/// modulo paired them by accident — adding or removing any fixture
+/// reshuffled which shared a
 /// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.
-const HEAVY: [&str; 8] = [
+const HEAVY: [&str; 9] = [
     "graph_holes_test.hl",
     "graph_holds_test.hl",
     "body_claim_expired_test.hl",
@@ -60,6 +61,7 @@ const HEAVY: [&str; 8] = [
     "body_lease_start_test.hl",
     "legs_test.hl",
     "receipt_retention_test.hl",
+    "dogfood_voice_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -870,6 +872,7 @@ fn dna_fixture_set_is_complete() {
             "concern_identity_test.hl",
             "concern_restart_test.hl",
             "deployment_test.hl",
+            "dogfood_voice_test.hl",
             "edge_projection_test.hl",
             "edge_unlink_test.hl",
             "editing_test.hl",

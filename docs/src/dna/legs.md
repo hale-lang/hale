@@ -459,6 +459,116 @@ sees no verb at all: the leg says so at attach, before it asks
 anything. `hale describe <socket>` lists what a peer may call;
 `hale call <socket> AttemptClaim '{…}'` is the same claim by hand.
 
+## Dogfood: the loop on voice
+
+`dna/tests/dogfood_voice_test.hl` runs the legs' loop on the vendored
+voice repository, through the head's socket, with a deterministic
+performer standing in for the model. The processes it stands up:
+
+| Process | What runs | What it reads |
+|---|---|---|
+| memory | Postgres, the record's spine and head roles (`hale dna memory migrate`) | `HALE_DNA_MEMORY_DSN_OWNER`; only the route needs it |
+| head | `dna/api/practice_review`, its commands on the record's socket, its reads on HTTP | the record, and the policy `HALE_DNA_COMMAND_POLICY` names |
+| owner | the organization, relaying software work to legs | the record |
+| leg | `hale dna work run`, the project's `dna/org/work.hl` | the head (`HALE_DNA_API`), the socket it names |
+
+The owner is the one part no generated organization is yet: the one
+`hale dna init` writes relays no work to legs. The fixture runs an
+owner in its own process, wired as a project would wire its
+`dna/org/main.hl`, with a workflow whose one Work (`output_contract:
+"Patch"`, no requirement, so the software kind) is asked of it:
+
+```text
+work: dna::WorkSystem {
+    software: dna::LegRelay { name: "legs", performer_kind: "software" },
+    software_reconciler: dna::RelayReplay { }
+}
+```
+
+By hand, the project and its seat, the organization's own way rather
+than the fixture's (it writes the ratifications and the holds edge as
+rows); memory needs `HALE_DNA_MEMORY_DSN_OWNER`, or the project's
+`dna/compose.yaml`:
+
+```sh
+cp -r "$HALE_SRC/dna/tests/onboarding/voice" ~/voice && cd ~/voice
+git init -q -b main && git config user.name riley && git config user.email riley@local
+git add -A && git commit -qm voice
+hale dna init .
+hale dna memory migrate .            # prints the spine and head DSNs
+hale dna dev . --no-iris &           # the organization, which ratifies and fills
+hale dna review holes approve --as ada --authority board
+hale dna fill api/dev riley --as ada # a Board Review in ada's name
+hale dna review <its id> approve --as grace --authority board
+git config --local --unset-all dna.trust   # init seated its maker under local trust
+git config --local --replace-all dna.unix.member "uid:$(id -u)=riley"
+```
+
+(The proposer of a holder may not ratify it, so a second person decides
+it.) `hale dna init` seats whoever runs it — this uid mapped to `$USER`,
+and `dna.trust = local`, where that person holds every position — so the
+run takes the trust back: with no `dna.trust` declared, the graph's
+`holds` edges say who holds what. Until riley holds a position the
+head's socket lists no claim to the peer (`hale describe <socket>`), and
+the leg says so at attach; once riley holds `api/dev` the leg claims as
+that peer, working as `position:api/dev`, the lease in riley's name. A
+hole `init` proposed is a position once the Board ratifies it, when its
+own rows state one.
+
+The head runs from the toolchain's source, with a policy naming who
+may recover a lease, and without the spine's role:
+
+```sh
+cd "$HALE_SRC" && hale build dna/api/practice_review
+mkdir -p ~/voice/.hale/dna
+printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grants":[{"mode":"local","name":"riley","authority":"board","practice_propose":false,"review_verdict":false,"recover":true}]}' \
+    "$(git -C ~/voice rev-list --max-parents=0 refs/dna/journal)" > ~/voice/.hale/dna/authority.json
+env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
+    HALE_DNA_COMMAND_POLICY=~/voice/.hale/dna/authority.json \
+    "$HALE_SRC/dna/api/practice_review/practice_review" ~/voice 8793 &
+cd ~/voice && HALE_DNA_API=http://127.0.0.1:8793 \
+    hale dna work run --as position:api/dev --kind software --worker 1 --wait 0
+```
+
+By hand the leg finds nothing to claim until an owner relays software
+work to legs and a Work of that kind is asked: the organization `init`
+generates does neither, so the fixture's own owner (`start_owner` in
+`dna/tests/dogfood_voice_test.hl`: the wiring above, and a `note`
+workflow whose one Work it asks) is the reference until a project wires
+its `dna/org/main.hl` so. The head's HTTP commands take the launch token
+the head prints, which a leg never holds: a leg's commands go over the
+socket, and a command posted to the forwarder without the token is
+refused.
+
+The performer (`dna/tests/dogfood/work.hl.txt`, installed as the
+project's `dna/org/work.hl`) takes the software kind, makes its change
+in a scratch clone, commits it, pushes the commit to
+`refs/legs/candidates/<attempt>` at the forge the project names in
+`.hale/dogfood.forge` — in the fixture a bare scratch repository, never
+the record's own — and hands it back as `result_ref: commit:<sha>` with
+the commit's patch as a receipt. The reviewer's side fetches it from
+there. Run again under a
+new lease it makes the same change and moves the ref to it, which is
+what makes it `idempotent`. Who must sign the change is the graph's
+word:
+
+```sh
+git fetch <forge> '+refs/legs/candidates/*:refs/legs/candidates/*'
+hale dna route --diff HEAD..<sha>     # api's reviewer, for a change under api/
+hale dna route Dockerfile             # nobody: today, the Review's own authority
+```
+
+A leg killed mid-task, its clone made, leaves its lease to lapse; the
+owner asks again, and the next worker claims the attempt under the
+next token and finishes it.
+
+What does not exist yet is not stood in: the candidate becoming a
+Review (GH #1156); that Review going to the graph's signers, a
+non-signer's verdict refused, and a change nobody signs refused rather
+than left to the Review's own authority (GH #1157); and the lease's
+position bound to a position the peer's person holds (GH #1162) — the
+gate today is "holds any live position".
+
 ## Through `hale mcp`
 
 The `hale_dna_work` tool takes a verb and its flags as given on the
