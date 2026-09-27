@@ -6,12 +6,14 @@
 // under its own subject and publishes it through pond's NATS adapter,
 // importing nothing of DNA. A running organism's host reads it through
 // the organization's durable `heart` and lands it as `reading.recorded`,
-// entity `voice/<id>`, before anything acts on it. The same id published
-// again — a replay — is refused as a duplicate, and an event that names
-// no id is not a reading at all. Without a NATS server
-// (HALE_DNA_NATS_URL_OWNER), nothing here is exercised.
+// entity `voice/usage.recorded/<id>`, before anything acts on it. The same
+// id published again — a replay — is refused as a duplicate; the same id
+// under another event is a reading of its own; a body whose `id` is not a
+// string, or that names none, is not a reading at all. Without a NATS
+// server (HALE_DNA_NATS_URL_OWNER), nothing here is exercised.
 
 import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -116,10 +118,10 @@ main locus App {
 
         // ---- one usage event: a reading row
         let id = "u" + to_string(std::process::pid());
-        let entity = "voice/" + id;
+        let entity = "voice/usage.recorded/" + id;
         let once = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
         std::test::assert(std::str::contains(once.stdout, "heart: usage " + id + " published"), "the stream took the heart's event: " + once.stdout + once.stderr);
-        std::test::assert(logged(a, "reading " + entity + " (usage.recorded) recorded", 60), "the host recorded it as a reading: " + host_log(a));
+        std::test::assert(logged(a, "reading " + entity + " recorded", 60), "the host recorded it as a reading: " + host_log(a));
         std::test::assert_eq_int(readings(a, entity), 1, "one reading row, in the record's routing");
         let body = reading_body(a, entity);
         std::test::assert(std::json::find_string_field(body, "app") == "voice" && std::json::find_string_field(body, "event") == "usage.recorded" && std::json::find_string_field(body, "subject") == org + ".app.voice.usage.recorded", "the row names the application, the event and the subject: " + body);
@@ -129,13 +131,27 @@ main locus App {
         // ---- the same id again: refused, still one row
         let again = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
         std::test::assert(std::str::contains(again.stdout, "published"), "the replay reached the stream: " + again.stdout + again.stderr);
-        std::test::assert(logged(a, "reading " + entity + " (usage.recorded) is recorded already; refused as a duplicate", 60), "the host refused the replay: " + host_log(a));
+        std::test::assert(logged(a, "reading " + entity + " is recorded already; refused as a duplicate", 60), "the host refused the replay: " + host_log(a));
         std::test::assert_eq_int(readings(a, entity), 1, "a replayed event lands no second row");
 
         // ---- an event that names no id: not a reading
         let anonymous = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n-");
         std::test::assert(std::str::contains(anonymous.stdout, "published"), "the anonymous event reached the stream: " + anonymous.stdout + anonymous.stderr);
-        std::test::assert(logged(a, "the heart's " + org + ".app.voice.usage.recorded is not a reading: the body names no `id`", 60), "the host refused it: " + host_log(a));
+        std::test::assert(logged(a, "the heart's " + org + ".app.voice.usage.recorded is not a reading: the body names no string `id`", 60), "the host refused it: " + host_log(a));
+
+        // ---- raw, as any holder of the application's credential could
+        // publish: an `id` that is not a string is no id, and the same id
+        // under another event is a reading of its own
+        let c = nats::NatsClient { url: app_url, name: "heart-raw", timeout: 2s };
+        std::test::assert(c.open(), "the fixture reaches the nerves as the application: " + c.last_error);
+        let n1 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": null, \"why\": \"nothing\"}")) or nats::PubAck { };
+        let n2 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": \"" + id + "\", \"why\": \"no capacity\"}")) or nats::PubAck { };
+        c.close();
+        std::test::assert(logged(a, "the heart's " + org + ".app.voice.request.failed is not a reading: the body names no string `id`", 60), "a null id is no id: " + host_log(a));
+        let failed = "voice/request.failed/" + id;
+        std::test::assert(logged(a, "reading " + failed + " recorded", 60), "the same id under another event is its own reading: " + host_log(a));
+        std::test::assert_eq_int(readings(a, failed), 1, "one row for it");
+        std::test::assert_eq_int(readings(a, entity), 1, "and the usage reading is still one");
 
         let k1 = dna::run_tool("kill\n" + host_pid);
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);

@@ -60,6 +60,9 @@ locus NatsConn {
         // each goes out on `NatsInbound` as it arrived, its whole wire
         // subject and its bytes, for a subscriber that reads them itself
         // ("" is none). A NATS subject, with `subject_prefix` if any.
+        // One pulled from the durable consumer is not acknowledged here:
+        // the subscriber acknowledges it when it is done with it
+        // (`nats_ack`), so what it never finishes comes again.
         untyped: String = "";
         // JetStream. `jetstream`: outbound messages are acknowledged by
         // the stream that takes their subject (a PubAck) instead of a
@@ -112,6 +115,8 @@ locus NatsConn {
     // `NatsInbound` is heard here too, and dropped: a program that takes
     // nothing untyped (most) still has a subscriber for what this conn
     // publishes, and the one that sets `untyped` subscribes beside it.
+    // A pulled message only this no-op hears is never acknowledged, so
+    // it is not lost: it comes again.
     bus { subscribe NatsOutbound as on_out; publish NatsInbound; subscribe NatsInbound as on_untyped; }
 
     closure delivery { captures: sent, acked, last_error; epoch inline; }
@@ -140,6 +145,10 @@ locus NatsConn {
     // the conn if they stop.
     @unbounded
     fn on_out(o: Outbound) {
+        if o.ack {
+            if self.client.connected { self.client.pub_msg(o.subject, "", o.data) or discard; }
+            return;
+        }
         self.pending.push(o.subject, o.data);
         self.acks.push(0);
         self.queued.push(std::time::monotonic_ns());
@@ -245,24 +254,20 @@ locus NatsConn {
                 return;
             }
         }
-        self.deliver(f.subject, f.data);
         self.received = self.received + 1;
-        if len(f.reply) > 0 { self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard; }
+        if self.is_untyped(f.subject) {
+            NatsInbound <- Inbound { subject: f.subject, data: f.data, reply: f.reply };
+        } else {
+            std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+            if len(f.reply) > 0 { self.client.pub_msg(f.reply, "", std::bytes::from_string("+ACK")) or discard; }
+        }
         self.pull_left = self.pull_left - 1;
         if self.pull_left <= 0 { self.pull_open = false; }
     }
 
     fn on_untyped(m: Inbound) { }
 
-    // An inbound message to the bus: under `untyped` as it arrived,
-    // otherwise to the topic its subject names.
-    fn deliver(subject: String, data: Bytes) {
-        if len(self.untyped) > 0 && std::str::starts_with(subject, self.untyped) {
-            NatsInbound <- Inbound { subject: subject, data: data };
-            return;
-        }
-        std::bus::__local_dispatch(self.local_subject(subject), data);
-    }
+    fn is_untyped(subject: String) -> Bool { return len(self.untyped) > 0 && std::str::starts_with(subject, self.untyped); }
 
     // A subject as the program's topics know it: without the prefix.
     fn local_subject(s: String) -> String {
@@ -276,7 +281,12 @@ locus NatsConn {
         if f.op == "MSG" || f.op == "HMSG" {
             if f.sid == self.ack_sid && self.ack_sid > 0 { self.on_pub_ack(f); return; }
             if f.sid == self.pull_sid && self.pull_sid > 0 { self.on_pulled(f); return; }
-            self.deliver(f.subject, f.data);
+            // a core subscription's message: nothing to acknowledge
+            if self.is_untyped(f.subject) {
+                NatsInbound <- Inbound { subject: f.subject, data: f.data };
+            } else {
+                std::bus::__local_dispatch(self.local_subject(f.subject), f.data);
+            }
             self.received = self.received + 1;
             return;
         }

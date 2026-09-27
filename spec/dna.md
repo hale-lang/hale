@@ -1172,26 +1172,37 @@ repository:
   codec that writes one JSON object, and publishes it through a pinned
   `NatsConn` under the organization's prefix, acknowledged by the
   stream. It imports nothing of DNA. The event names itself: its body
-  carries an `id` of the application's choosing (letters, digits and
-  `-_.:`, at most 128 bytes). The node's host reads `<org>.app.>`
-  through the durable `heart` on its own connection. There is one
-  durable for the organization, whichever owner's host pulls, so each
-  event goes to one host, and the prefix is the organization's alone.
-  The connection hands the event over as it arrived (pond's
-  `NatsConn.untyped`), since no part of the organism declares an
-  application's events. The host lands it as `reading.recorded`, entity
-  `<app>/<id>`, body `app`, `event`, `id`, `subject` and `payload` (the
-  event's JSON, at most 64 KiB), before anything acts on it. Nothing
-  acts on a reading yet: it is a signal, never a fact, and what the
-  organism does to the application goes the other way, through the API
-  the application exposes. A second arrival of an id already recorded,
-  whether a redelivery or a replay, is refused as a duplicate and lands
-  nothing. Whether the id is recorded is decided at the revisions the
-  row is appended at, so two hosts land it once. A message that names
-  no application and event, or whose body is not a JSON object with
-  such an `id`, is not a reading: the host says why and records
-  nothing. The durable acknowledges an event once it is handed to the
-  host, as the organization's `spine` does.
+  is one well-formed JSON object in UTF-8 with a string `id` of the
+  application's choosing (letters, digits and `-_.:`, at most 128
+  bytes, as the application's and the event's names are). The node's
+  host reads `<org>.app.>` through the durable `heart` on its own
+  connection, at most 64 unacknowledged at once. There is one durable
+  for the organization, whichever owner's host pulls, so each event goes
+  to one host, and the prefix is the organization's alone. The
+  connection hands each event over as it arrived and does not
+  acknowledge it (pond's `NatsConn.untyped`), since no part of the
+  organism declares an application's events. The host lands it as
+  `reading.recorded`, entity `<app>/<event>/<id>`, body `app`, `event`,
+  `id`, `subject` and `payload` (the event's JSON, at most 64 KiB),
+  before anything acts on it. Nothing acts on a reading yet: it is a
+  signal, never a fact, and what the organism does to the application
+  goes the other way, through the API the application exposes.
+  - **Duplicates.** A second arrival of an entity already recorded,
+    whether a redelivery or a replay, is refused as a duplicate and
+    lands nothing. Whether it is recorded is decided at the revisions the
+    row is appended at, so two hosts land it once.
+  - **Shared records.** Over a shared record that keeps its rows in git
+    (routing 0), each owner's clone appends on its own, and only the
+    ledger can decide an id across owners. There readings wait in the
+    stream until the ledger is adopted, and the host says so once.
+  - **Not a reading.** A message that names no application and event, or
+    whose body is not such an object, is not a reading: the host says
+    why and records nothing.
+  - **Acknowledgement.** The host acknowledges the durable's message once
+    its row has landed, or once it has been refused as a duplicate or as
+    not a reading. One whose row could not be written stays
+    unacknowledged and comes again, so a host that stops between the
+    hand-off and the row loses nothing.
 - **Rows landing.** For every row its view of the organism gains, a
   node publishes `head.row.landed` (`RowLanded`: the row's `seq`,
   `kind` and `entity`; under an owner's prefix over a shared record),

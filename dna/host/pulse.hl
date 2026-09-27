@@ -8,11 +8,19 @@
 // signal, never a fact: nothing acts on one yet, and what the organism
 // does to the application goes the other way, through its API.
 //
-// An event names itself: its body is a JSON object whose `id` the
-// application chose, and the row's entity is `<app>/<id>`. A second
-// arrival of an id already recorded — a redelivery, a replay — is
-// refused. Whether it is there is decided at the revision the row is
-// appended at, so two hosts pulling the same durable land it once.
+// The row comes first in delivery too: the durable's message is
+// acknowledged only once its row has landed or it has been refused for
+// good (a duplicate, or not a reading). Anything else leaves it
+// unacknowledged, and the stream delivers it again.
+//
+// An event names itself: its body is a JSON object whose string `id` the
+// application chose, and the row's entity is `<app>/<event>/<id>`. A
+// second arrival of an entity already recorded — a redelivery, a replay —
+// is refused. Whether it is there is decided at the revision the row is
+// appended at, so two hosts pulling the same durable land it once. Over a
+// shared record that holds its rows in git (routing 0), each owner's clone
+// appends on its own, so only the ledger can decide an id across owners:
+// there a reading waits in the stream until the ledger is adopted.
 
 const READING_KIND: String = "reading.recorded";
 // The largest event body a reading keeps; a larger one is refused.
@@ -28,8 +36,16 @@ type Reading {
     why: String = "";
 }
 
-// An id or an app's name as a row's entity carries it: letters, digits
-// and `-_.:`, at most 128 bytes.
+// What landing a reading came to: `landed`; `duplicate` (its entity is
+// recorded already); `waiting` (it cannot be decided here yet: leave it in
+// the stream); `failed` (the write did not happen: it comes again).
+type Landing {
+    outcome: String = "";
+    why: String = "";
+}
+
+// An id or a name as a row's entity carries it: letters, digits and
+// `-_.:`, at most 128 bytes.
 @unbounded
 fn reading_token(s: String) -> Bool {
     if len(s) == 0 || len(s) > 128 { return false; }
@@ -45,7 +61,7 @@ fn reading_token(s: String) -> Bool {
 
 // The reading `subject` and `body` make, under the heart's `prefix`
 // (`<org>.app.`): the application and the event from the subject, the id
-// from the body.
+// from the body, which is one well-formed JSON object in UTF-8.
 fn reading_of(subject: String, prefix: String, body: String) -> Reading {
     if len(prefix) == 0 || !std::str::starts_with(subject, prefix) { return Reading { why: "not under " + prefix }; }
     let rest = subject[len(prefix)..len(subject)];
@@ -53,13 +69,16 @@ fn reading_of(subject: String, prefix: String, body: String) -> Reading {
     if dot <= 0 || dot + 1 >= len(rest) { return Reading { why: "names no application and event" }; }
     let app = rest[0..dot];
     let event = rest[(dot + 1)..len(rest)];
-    if !reading_token(app) { return Reading { why: "the application's name is not a token" }; }
+    if !reading_token(app) || !reading_token(event) { return Reading { why: "the application's or the event's name is not a token (letters, digits and -_.:, at most 128)" }; }
     if len(body) > READING_MAX_BYTES { return Reading { app: app, event: event, why: "the body is over " + to_string(READING_MAX_BYTES) + " bytes" }; }
-    if !std::str::starts_with(std::str::trim(body), "{") { return Reading { app: app, event: event, why: "the body is not a JSON object" }; }
-    let id = std::json::find_string_field(body, "id");
-    if !reading_token(id) { return Reading { app: app, event: event, why: "the body names no `id` (letters, digits and -_.:, at most 128)" }; }
-    return Reading { app: app, event: event, id: id, payload: body };
+    if std::str::cp_count(body) < 0 { return Reading { app: app, event: event, why: "the body is not UTF-8" }; }
+    if !std::json::valid_object(body) { return Reading { app: app, event: event, why: "the body is not a JSON object" }; }
+    let id = std::json::string_field(body, "id");
+    if id.kind != "string" || !reading_token(id.text) { return Reading { app: app, event: event, why: "the body names no string `id` (letters, digits and -_.:, at most 128)" }; }
+    return Reading { app: app, event: event, id: id.text, payload: body };
 }
+
+fn reading_entity(r: Reading) -> String { return r.app + "/" + r.event + "/" + r.id; }
 
 // Whether `entity`'s reading is in the organism's memory.
 @unbounded
@@ -73,13 +92,15 @@ fn reading_landed(p: Projection, entity: String) -> Bool {
     return false;
 }
 
-// Land `r` as its row: "" when it landed, `duplicate` when its id is
-// already recorded, else why it could not be written. The row goes where
-// the routing table puts the kind, at the revisions its absence was read
-// at; when a memory moved under it, it is read and decided again.
+// Land `r` as its row, where the routing table puts the kind, at the
+// revisions its absence was read at; when a memory moved under it, it is
+// read and decided again.
 @unbounded
-fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory) -> String {
-    let entity = r.app + "/" + r.id;
+fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory) -> Landing {
+    if shared_here(root) && dna::route(routing_here(root), READING_KIND) == "record" {
+        return Landing { outcome: "waiting", why: "this record is shared and keeps its rows in git, where each owner's clone appends on its own; only the ledger decides an id across owners (`hale dna ledger adopt`)" };
+    }
+    let entity = reading_entity(r);
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("app", r.app);
@@ -93,13 +114,15 @@ fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory
     while tries < 50 {
         tries = tries + 1;
         let head = record_head(root);
-        if !head.ok { return "the record's head could not be read: " + head.why; }
-        let at = ledger_revision(root, memory);
+        if !head.ok { return Landing { outcome: "failed", why: "the record's head could not be read: " + head.why }; }
+        // the projection refreshes the ledger: its revision is read after,
+        // so it is the one the scan saw
         let p = open_projection(root, ".", "", memory);
-        if reading_landed(p, entity) { return "duplicate"; }
+        let at = ledger_revision(root, memory);
+        if reading_landed(p, entity) { return Landing { outcome: "duplicate" }; }
         let why = append_as_at(root, head.id, at, READING_KIND, entity, body, "host", memory);
-        if len(why) == 0 { return ""; }
-        if why != "stale_revision" { return why; }
+        if len(why) == 0 { return Landing { outcome: "landed" }; }
+        if why != "stale_revision" { return Landing { outcome: "failed", why: why }; }
     }
-    return "the organism's memory kept moving under it";
+    return Landing { outcome: "failed", why: "the organism's memory kept moving under it" };
 }
