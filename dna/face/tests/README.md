@@ -560,16 +560,18 @@ it observes the outcome, and a lane's row bound counts its own rows over
 what the host wrote before it began. Before sending, the Knowledge editor
 knows only the snapshot; whether a relationship is reviewed is the policy's,
 and the receipt says which (GH #1129).
-Fifteen lanes stay declared skipped on what the runner showed, each annotation
+Sixteen lanes stay declared skipped on what the runner showed, each annotation
 naming its observed failure: on the runner the record moves on every tick — the
 organism's ratification workflow appends step, attempt and effect rows — so a
 page's reads answer `snapshot_changed` and the face gives up after one
 automatic restart, a page opened while memory is behind shows "Knowledge
 unavailable" without reading again, the head refuses to start when the record
 moves under its startup read, and a request from before a full service restart
-is `command_not_found` afterwards. Locally, with the record quiet, they pass.
+is `command_not_found` afterwards, and a page's own proposal is refused
+`snapshot_changed` when the record moved since the page read its head.
+Locally, with the record quiet, they pass.
 A failed lane's report carries the record it ran against and every process
-log. The six lanes green on the runner run; the skipped ones are the track's
+log. The five lanes green on the runner run; the skipped ones are the track's
 ready items.
 The proposer Alice cannot decide her own binding Review. A separately granted
 Bob authenticates for the decision; returning to Alice recovers only her original
