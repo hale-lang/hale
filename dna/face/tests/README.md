@@ -560,12 +560,13 @@ it observes the outcome, and a lane's row bound counts its own rows over
 what the host wrote before it began. Before sending, the Knowledge editor
 knows only the snapshot; whether a relationship is reviewed is the policy's,
 and the receipt says which (GH #1129).
-Four lanes stay declared skipped on the page's race with the host's tick,
-their annotations naming it: the edge-review creation-and-removal case, the
-lifecycle applicability-and-retirement case, and the two node cases whose
-receipt observes the graph through three reads at one snapshot (nodes,
-bindings, edges) that the runner's host moves between; every other native
-lane runs.
+Eight lanes stay declared skipped on the runner's record moving every second,
+their annotations naming it: on the runner the record moves on each of the
+host's ticks while a lane runs, the page's reads answer `snapshot_changed`,
+and the face gives up after one automatic restart; locally the record is
+quiet and they pass. A failed lane's report now carries the record it ran
+against and every process log, so the next artifact says what moves it.
+Every other native lane runs.
 The proposer Alice cannot decide her own binding Review. A separately granted
 Bob authenticates for the decision; returning to Alice recovers only her original
 Knowledge request. Actor switching changes API identity, not a browser authority

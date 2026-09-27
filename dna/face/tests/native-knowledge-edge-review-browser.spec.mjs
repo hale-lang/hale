@@ -3,12 +3,12 @@
 import { test as base, expect } from '@playwright/test';
 import { startEdgeReviewService, edgeReviewEnvironmentPresent, edgeReviewGrant } from './native-knowledge-edge-review-harness.mjs';
 import { callOf, isKnowledgeCall, settleKnowledge } from './command-wire.mjs';
-import { serviceFixtureTimeout } from './native-command-harness.mjs';
+import { serviceFixtureTimeout, attachEvidence } from './native-command-harness.mjs';
 const test = base.extend({
   service: [async ({}, use, testInfo) => {
     const service = await startEdgeReviewService();
     try { await use(service); }
-    finally { await service.stop(); await testInfo.attach('native-edge-review-service', { path: service.evidence + '/service.json', contentType: 'application/json' }); expect(service.processes()).toEqual([]); }
+    finally { await service.stop(); await attachEvidence(testInfo, service, 'native-edge-review-service'); expect(service.processes()).toEqual([]); }
   }, { timeout: serviceFixtureTimeout }],
   page: async ({ page, service }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await service.attach(page); await use(page); expect(errors).toEqual([]); },
 });

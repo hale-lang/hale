@@ -96,6 +96,19 @@ export function headMemory({ hale, root, env, owner }) {
 }
 
 /** Caller owns stop(). Keeping the returned service alive supports a preview. */
+// A lane's evidence, attached to its report: the service description
+// always, and when the lane failed also the record it ran against and
+// every process log the harness captured (the host's, each API's), so a
+// runner-only red says what moved the record.
+export async function attachEvidence(testInfo, service, name) {
+  await testInfo.attach(name, { path: service.evidence + '/service.json', contentType: 'application/json' });
+  if (testInfo.status === testInfo.expectedStatus) return;
+  for (const file of fs.readdirSync(service.evidence).sort()) {
+    if (file === 'service.json' || !/\.(log|jsonl|txt)$/.test(file)) continue;
+    await testInfo.attach(`${name}-${file}`, { path: path.join(service.evidence, file), contentType: 'text/plain' });
+  }
+}
+
 export async function startService(options = {}) {
   assert.equal(process.platform, 'linux', 'Native command fixtures require Linux process groups and resource limits.');
   const absolute = (name, value) => {
