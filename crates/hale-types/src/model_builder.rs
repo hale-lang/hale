@@ -193,6 +193,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
+    // GH #1159: the rename table once per derivation, not per string.
+    let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
     let (top, _diags) = crate::resolve::build_top_scope(bundle);
     let graph = crate::bus_graph::build_bus_graph(bundle, &top);
     let summary = alloc_summary::summarize_programs_with_renames(
@@ -2792,7 +2794,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     let shown = if ast.interfaces.iter().any(|(n, _)| *n == i.as_str()) {
                         i.clone()
                     } else {
-                        crate::stdlib_bodies::demangle_str(i, &bundle.import_renames)
+                        crate::stdlib_bodies::demangle_with(i, &rename_table)
                     };
                     (shown, next.fn_name.clone())
                 });
@@ -2801,10 +2803,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             let entry_provenance =
                 intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
-                crate::stdlib_bodies::demangle_str(
-                    &kk.display(),
-                    &bundle.import_renames,
-                )
+                crate::stdlib_bodies::demangle_with(&kk.display(), &rename_table)
             };
             let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
             let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
@@ -2864,10 +2863,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     .as_ref()
                                     .map(|i| {
                                         (
-                                            crate::stdlib_bodies::demangle_str(
-                                                i,
-                                                &bundle.import_renames,
-                                            ),
+                                            crate::stdlib_bodies::demangle_with(i, &rename_table),
                                             nn.fn_name.clone(),
                                         )
                                     });

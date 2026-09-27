@@ -143,15 +143,24 @@ pub(crate) fn demangle_table(
     table
 }
 
-/// Demangle ONE string through the same table.
+/// Demangle ONE string through the same table. Builds the table for
+/// that one string: a caller with many strings builds it once with
+/// `demangle_table` and goes through `demangle_with` (GH #1159 — the
+/// model builder did this per absorbed edge, and the table was 92%
+/// of `hale check` on a generated organization).
 pub fn demangle_str(
     s: &str,
     import_renames: &[(Vec<String>, String)],
 ) -> String {
+    demangle_with(s, &demangle_table(import_renames))
+}
+
+/// Demangle ONE string through a table `demangle_table` built.
+pub(crate) fn demangle_with(s: &str, table: &[(String, String)]) -> String {
     let mut out = s.to_string();
-    for (mangled, public) in demangle_table(import_renames) {
-        if out.contains(&mangled) {
-            out = out.replace(&mangled, &public);
+    for (mangled, public) in table {
+        if out.contains(mangled.as_str()) {
+            out = out.replace(mangled.as_str(), public);
         }
     }
     out
