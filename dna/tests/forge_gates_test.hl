@@ -1,0 +1,56 @@
+// dna/tests/forge_gates_test.hl — a gate's run is the forge's (GH #1161).
+//
+// A pending mutation Review whose route requires gate:ci/api and
+// gate:ci/web, opened at a forge of files. The host's forge sync reads
+// the forge's check runs at the candidate and writes each completed run
+// of a gate the route names as `gate.observed` on the Review, once: a
+// run still going, and a job no gate names, write nothing, and a sync
+// again writes nothing new. That row is the only gate run a Review
+// weighs (review_signers_test); no verdict cites one.
+
+import "../core" as dna;
+import "../host" as host;
+
+const CANDIDATE: String = "c0ffee0000000000000000000000000000000001";
+
+fn observed(repo: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "gate.observed" && e.entity == "m1" { out = out + std::json::find_string_field(e.body, "gate") + " " + std::json::find_string_field(e.body, "conclusion") + " " + std::json::find_string_field(e.body, "forge") + "\n"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("forge-gates");
+        let repo = scratch + "/record";
+        let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/.hale/dna/forge\" && cd \"$1\" && git init -q -b main && printf 'fn main() {}\\n' > main.hl && git add -A && git -c user.name=t -c user.email=t@dna commit -q -m base\nsh\n" + repo);
+        std::test::assert_eq_int(made.code, 0, "a record: " + made.stderr);
+        let forge = repo + "/.hale/dna/forge";
+        let j = dna::GitJournal { repo: repo, author: "dna" };
+        std::test::assert(j.append(j.revision(), "review.requested", "review:m1", "{\"question\": \"apply m1?\", \"subject_digest\": \"" + CANDIDATE + "\", \"required_authority\": \"board\", \"author\": \"dev1\", \"mutation_id\": \"m1\", \"candidate_commit\": \"" + CANDIDATE + "\"}").ok, "a mutation Review");
+        std::test::assert(j.append(j.revision(), "review.routed", "m1", "{\"definition\": \"change-deliver\", \"signers\": \"position:api/reviewer=grace\", \"gates\": \"gate:ci/api gate:ci/web\", \"fallback\": false}").ok, "its route requires two gates");
+        std::test::assert(j.append(j.revision(), "github.pr", "m1", "{\"number\": 1, \"url\": \"" + forge + "/1\", \"head\": \"dna/m1\", \"candidate\": \"" + CANDIDATE + "\", \"forge\": \"file\"}").ok, "opened at the forge");
+        std::io::fs::write_file(forge + "/1.review", "title: apply m1?\n") or discard;
+        // ci/api passed, ci/web is still going, and lint guards nothing routed
+        std::io::fs::write_file(forge + "/1.checks", "api success " + CANDIDATE + " https://ci.example/1\nweb - " + CANDIDATE + " https://ci.example/2\nlint success " + CANDIDATE + " https://ci.example/3\n") or discard;
+        let files = host::FileForge { dir: forge };
+        let memory = dna::Memory { repo: repo };
+        let s1 = host::forge_sync(repo, ".", files, memory);
+        std::test::assert(s1.ok, "the sync ran: " + s1.text);
+        std::test::assert_eq_str(observed(repo), "gate:ci/api success file\n", "ci/api's run observed; a run still going and a job no gate names are not");
+        let s2 = host::forge_sync(repo, ".", files, memory);
+        std::test::assert_eq_str(observed(repo), "gate:ci/api success file\n", "a sync again writes nothing new");
+        std::io::fs::write_file(forge + "/1.checks", "api success " + CANDIDATE + " https://ci.example/1\nweb failure " + CANDIDATE + " https://ci.example/2\n") or discard;
+        let s3 = host::forge_sync(repo, ".", files, memory);
+        std::test::assert_eq_str(observed(repo), "gate:ci/api success file\ngate:ci/web failure file\n", "ci/web concluded: observed as it concluded");
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

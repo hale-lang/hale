@@ -32,11 +32,16 @@ interface Forge {
     fn open_review(candidate: String, title: String, body: String) -> ReviewRef;
     // Every verdict on a review, one per line as `who\toutcome\twhen\tkey`.
     fn verdicts(review: String) -> String;
+    // GH #1161: every check run the forge reports for the review's
+    // candidate `sha`, one per line as `name\tconclusion\tsha\turl`
+    // (conclusion "" while it runs): what the host observes as a gate's
+    // run, since the forge ran it, not whoever says it did.
+    fn checks(review: String, sha: String) -> String;
     fn comment(review: String, text: String) -> Bool;
     fn close_review(review: String, why: String) -> Bool;
 }
 
-type MemReview { ref: String = ""; candidate: String = ""; title: String = ""; body: String = ""; verdicts: String = ""; closed: String = ""; comments: Int = 0; }
+type MemReview { ref: String = ""; candidate: String = ""; title: String = ""; body: String = ""; verdicts: String = ""; closed: String = ""; comments: Int = 0; checks: String = ""; }
 
 @form(hashmap)
 locus MemReviews {
@@ -61,23 +66,34 @@ locus MemForge {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
         let key = who + ":" + r.candidate + ":" + outcome;
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts + who + "\t" + outcome + "\t" + when + "\t" + key + "\n", closed: r.closed, comments: r.comments });
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts + who + "\t" + outcome + "\t" + when + "\t" + key + "\n", closed: r.closed, comments: r.comments, checks: r.checks });
         return true;
     }
     fn verdicts(review: String) -> String {
         let r = self.reviews.get(review) or MemReview { };
         return r.verdicts;
     }
+    // A fixture's CI reports a run.
+    fn report(review: String, name: String, conclusion: String, sha: String, url: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments, checks: r.checks + name + "\t" + conclusion + "\t" + sha + "\t" + url + "\n" });
+        return true;
+    }
+    fn checks(review: String, sha: String) -> String {
+        let r = self.reviews.get(review) or MemReview { };
+        return r.checks;
+    }
     fn comment(review: String, text: String) -> Bool {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments + 1 });
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments + 1, checks: r.checks });
         return true;
     }
     fn close_review(review: String, why: String) -> Bool {
         let r = self.reviews.get(review) or MemReview { };
         if len(r.ref) == 0 { return false; }
-        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: why, comments: r.comments });
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: why, comments: r.comments, checks: r.checks });
         return true;
     }
 }
@@ -90,6 +106,7 @@ locus NoForge {
     fn name() -> String { return "none (a bare remote)"; }
     fn open_review(candidate: String, title: String, body: String) -> ReviewRef { return ReviewRef { why: "no forge" }; }
     fn verdicts(review: String) -> String { return ""; }
+    fn checks(review: String, sha: String) -> String { return ""; }
     fn comment(review: String, text: String) -> Bool { return false; }
     fn close_review(review: String, why: String) -> Bool { return false; }
 }

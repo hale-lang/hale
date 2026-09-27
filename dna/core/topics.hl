@@ -421,8 +421,6 @@ type Verdict {
     reviewer: String = "";
     authority: String = ""; // the authority the reviewer claims
     comment: String = "";
-    // GH #1089: the gate runs it cites, receipt digests space-separated
-    evidence: String = "";
 }
 topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
 

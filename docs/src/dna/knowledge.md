@@ -221,18 +221,18 @@ From then on:
   Claiming the board's authority does not change that.
 - The Review settles approved only once every required position has
   approved.
-- Every gate needs a passing run at the candidate. You cite a run as
-  evidence: file its result as a receipt, then give its digest with
-  `hale dna review <id> approve --evidence <receipt>`.
+- Every gate needs a passing run at the candidate, as the forge reports
+  it. A gate is a CI job (`ci/api` is the `api` job of
+  `.github/workflows/ci.yml`). When the host syncs the forge
+  (`hale dna github sync`), it reads the job's check run for the
+  candidate commit and records it on the Review as `gate.observed`.
+  Nobody cites a run, and a receipt filed by hand counts for nothing:
+  the run is the forge's word, not the reviewer's.
 
-The receipt is a small document:
-
-```json
-{"kind": "gate.run", "gate": "ci/api", "sha": "<the candidate commit>", "conclusion": "success", "url": "<the run>"}
-```
-
-A run at another commit is stale, and a run that did not pass is
-rejected. Either refuses the verdict, saying why.
+A run at another commit, a run that did not pass, and another gate's run
+count for nothing. Approvals that arrive before the runs are kept, and
+the Review settles on the last of them once every gate's passing run is
+in.
 
 An approval that settles nothing yet is answered with who signed and
 what the Review still awaits. If the route left some path to nobody, the

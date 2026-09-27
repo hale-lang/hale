@@ -51,6 +51,13 @@ locus GitHubForge {
         }
         return out;
     }
+    // The check runs GitHub reports for the candidate commit — a gate is a
+    // workflow's job, and its run is the job's check run.
+    fn checks(review: String, sha: String) -> String {
+        let c = gh("api\nrepos/" + self.repo + "/commits/" + sha + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv");
+        if c.code != 0 { return "error\t" + dna::trim_nl(c.stderr) + "\t\t\n"; }
+        return c.stdout;
+    }
     fn comment(review: String, text: String) -> Bool {
         let c = gh("pr\ncomment\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--body\n" + text);
         return c.code == 0;
@@ -70,8 +77,10 @@ fn review_number(review: String) -> String {
 // A forge of files, for fixtures: a review opened is
 // `.hale/dna/forge/<n>.review` (title, candidate, body); its verdicts
 // are the lines of `.hale/dna/forge/<n>.verdicts`, `who outcome when`
-// each, which a fixture writes as a reviewer would decide; a comment
-// appends to `<n>.comments`. What the host does with a verdict is the
+// each, which a fixture writes as a reviewer would decide; its check
+// runs the lines of `<n>.checks`, `name conclusion sha url` each (`-`
+// for a run still going), as its CI would report them; a comment appends
+// to `<n>.comments`. What the host does with a verdict is the
 // same as with GitHub's.
 locus FileForge {
     params { dir: String = ".hale/dna/forge"; }
@@ -116,6 +125,19 @@ locus FileForge {
             let outcome = if b < 0 { more } else { more[0..b] };
             let when = if b < 0 { "" } else { more[(b + 1)..len(more)] };
             out = out + who + "\t" + outcome + "\t" + when + "\t" + who + "@" + when + "@" + outcome + "\n";
+        }
+        return out;
+    }
+    @unbounded
+    fn checks(review: String, sha: String) -> String {
+        let text = std::io::fs::read_file(review + ".checks") or "";
+        let mut out = "";
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(line) > 0 { out = out + std::str::replace(std::str::replace(line, " - ", "  "), " ", "\t") + "\n"; }
         }
         return out;
     }

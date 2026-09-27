@@ -11,7 +11,8 @@
 // Attempt. A capable performer with the wrong standing does not settle
 // it. With a route, it settles approved only when every required
 // position has approved and every gate guarding the change has a
-// passing run at the candidate cited as evidence (GH #1089).
+// passing run at the candidate, as the host observed it at the forge
+// (GH #1089, #1161).
 //
 // The AutonomyBoundary is owned by the PARENT for one child
 // relationship. It computes the disposition from the grant, the
@@ -65,14 +66,6 @@ locus ReviewJournal {
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
 }
 
-// The receipts a Review reads a verdict's evidence from, bound by the
-// assembly like the journal.
-locus ReviewReceipts {
-    params { inner: Receipts = FileReceipts { }; }
-    fn bind(r: Receipts) { self.inner = r; }
-    fn read(digest: String) -> String { return self.inner.read(digest); }
-}
-
 // The positions among `signers` (`<position>=<holder>,<holder> …`) that
 // `person` holds, space-separated.
 @unbounded
@@ -107,7 +100,6 @@ fn review_command_body(v: Verdict, accepted: Bool, refusal: String, settled: Boo
     b.bool_field("settled", settled);
     b.string_field("outcome", outcome);
     b.string_field("comment", v.comment);
-    if len(v.evidence) > 0 { b.string_field("evidence", v.evidence); }
     b.end_object();
     return b.result();
 }
@@ -120,8 +112,7 @@ fn review_command_verdict(command_id: String, body: String) -> Verdict {
         verdict: native_json_string(body, "verdict"),
         reviewer: native_json_string(body, "reviewer"),
         authority: native_json_string(body, "authority"),
-        comment: native_json_string(body, "comment"),
-        evidence: native_json_string(body, "evidence")
+        comment: native_json_string(body, "comment")
     };
 }
 
@@ -130,8 +121,7 @@ fn review_command_matches(body: String, v: Verdict) -> Bool {
     return native_json_string(body, "command_id") == v.command_id
         && old.review_id == v.review_id && old.subject_digest == v.subject_digest
         && old.verdict == v.verdict && old.reviewer == v.reviewer
-        && old.authority == v.authority && old.comment == v.comment
-        && old.evidence == v.evidence;
+        && old.authority == v.authority && old.comment == v.comment;
 }
 
 @unbounded
@@ -165,14 +155,14 @@ locus Review {
         signers: String = "";
         signed: String = ""; // positions whose approval is in, space-separated
         // the gates guarding the change, space-separated: each needs a
-        // passing run at the candidate cited as evidence before it settles approved
+        // passing run at the candidate, as the forge reported it to the host
+        // (`gate.observed`, GH #1161), before it settles approved
         gates: String = "";
-        evidenced: String = ""; // gates with such a run cited, space-separated
+        evidenced: String = ""; // gates with such a run observed, space-separated
         // the route left some path to the Review's own required authority:
         // an approval carrying it is required beside every position
         fallback: Bool = false;
         authority_signed: Bool = false; // such an approval is in
-        receipts: ReviewReceipts = ReviewReceipts { };
         blocking: Bool = true;
         verdicts: VerdictRows = VerdictRows { };
         settled: Bool = false;
@@ -206,8 +196,60 @@ locus Review {
         publish ReviewSettled;
     }
     // GH #1089: the holders of the positions it requires, routed again;
-    // the positions and what they signed stay.
-    fn on_routed(r: ReviewRouting) { if len(r.signers) > 0 && len(self.signers) > 0 { self.signers = r.signers; } }
+    // the positions and what they signed stay. GH #1161: routed again too
+    // when a gate run was observed, and the approvals it holds are weighed
+    // again — every gate's passing run in, it settles on the last of them.
+    @unbounded
+    fn on_routed(r: ReviewRouting) {
+        if len(r.signers) > 0 && len(self.signers) > 0 { self.signers = r.signers; }
+        if self.recheck() { ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment }; }
+    }
+    // Whether the approvals admitted, with the gate runs observed since,
+    // now settle it: the last approval decides, as it would have had the
+    // runs been in when it arrived. Never after a settlement the record holds.
+    @unbounded
+    fn recheck() -> Bool {
+        if self.settled || len(self.organization_source_request.request_id) > 0 { return false; }
+        let moved = self.journal.refresh();
+        let mut last = Verdict { };
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == self.review_id { return false; }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.verdicts.len() {
+            let v = self.verdicts.get(i) or Verdict { };
+            if v.verdict == "approve" { last = v; }
+            i = i + 1;
+        }
+        if last.verdict != "approve" || !self.settles_with(last) { return false; }
+        self.evidenced = self.observed_gates();
+        self.settled = true;
+        self.outcome = "approve";
+        self.decided_by = last.reviewer;
+        self.comment = last.comment + " (" + self.approvals() + ")";
+        return true;
+    }
+    // GH #1161: the gates guarding the change with a passing run at the
+    // candidate, as the host observed it at the forge (`gate.observed`
+    // rows on this Review, which only the host's forge sync writes; a
+    // receipt anyone files is no run), space-separated.
+    @unbounded
+    fn observed_gates() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "gate.observed" && e.entity == self.review_id {
+                let gate = gate_id(native_json_string(e.body, "gate"));
+                if word_in(gate, self.gates) && native_json_string(e.body, "sha") == self.subject_digest && native_json_string(e.body, "conclusion") == "success" { out = word_add(out, gate); }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
     @unbounded
     fn on_verdict(v: Verdict) {
         if len(v.command_id) > 0 {
@@ -308,16 +350,16 @@ locus Review {
         return self.refusal(v);
     }
     // Why a verdict on this candidate is not admitted, "" when it is: the
-    // digest it names, the reviewer's standing, independence from the
-    // author, and the evidence it cites. One rule for the membrane, a
-    // command and a restart.
+    // digest it names, the reviewer's standing and independence from the
+    // author. One rule for the membrane, a command and a restart. A gate's
+    // run is no verdict's to cite: the host observes it (GH #1161).
     @unbounded
     fn refusal(v: Verdict) -> String {
         if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
         let why = self.standing_refusal(v);
         if len(why) > 0 { return why; }
         if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
-        return self.evidence_refusal(v);
+        return "";
     }
     // Whether the reviewer stands to decide it. With no signers, the
     // Review's own required authority, and for an owners change membership
@@ -337,42 +379,6 @@ locus Review {
         if len(signer_positions(self.signers, v.reviewer)) > 0 || as_owner || (self.fallback && as_authority) { return ""; }
         return "reviewer " + v.reviewer + " holds no position this Review requires (" + approver_owners(self.signers) + ")" + (if self.fallback { " and authority " + v.authority + " does not satisfy " + self.required_authority } else { "" });
     }
-    // GH #1089: each run a verdict cites is a gate run of a gate guarding
-    // the change, at the candidate, that passed. A run at another commit
-    // is stale and a run that did not pass is rejected; either refuses the
-    // verdict whole.
-    @unbounded
-    fn evidence_refusal(v: Verdict) -> String {
-        let mut i = 0;
-        while len(nth_word(v.evidence, i)) > 0 {
-            let d = nth_word(v.evidence, i);
-            i = i + 1;
-            let raw = if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d };
-            if !digest_well_formed("sha256:" + raw) { return "evidence " + d + " is no receipt digest"; }
-            let doc = self.receipts.read(raw);
-            if len(doc) == 0 { return "evidence " + d + " is no receipt this organization holds"; }
-            if native_json_string(doc, "kind") != "gate.run" { return "evidence " + d + " is no gate run (kind `" + native_json_string(doc, "kind") + "`)"; }
-            let gate = gate_id(native_json_string(doc, "gate"));
-            if !word_in(gate, self.gates) { return "evidence " + d + " is a run of " + gate + ", which guards nothing this change touches" + (if len(self.gates) > 0 { " (" + self.gates + ")" } else { "" }); }
-            let sha = native_json_string(doc, "sha");
-            if sha != self.subject_digest { return "evidence " + d + " is stale: " + gate + " ran at " + sha + ", not at the candidate " + self.subject_digest; }
-            let conclusion = native_json_string(doc, "conclusion");
-            if conclusion != "success" { return "evidence " + d + " is rejected: " + gate + " concluded `" + conclusion + "` at the candidate"; }
-        }
-        return "";
-    }
-    // The gates `v`'s evidence runs, space-separated (its evidence admitted).
-    @unbounded
-    fn evidence_gates(v: Verdict) -> String {
-        let mut out = "";
-        let mut i = 0;
-        while len(nth_word(v.evidence, i)) > 0 {
-            let d = nth_word(v.evidence, i);
-            out = word_add(out, gate_id(native_json_string(self.receipts.read(if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d }), "gate")));
-            i = i + 1;
-        }
-        return out;
-    }
     // Whether an admitted `v` settles the Review: anything but an
     // abstention or an approval settles it; an approval does once every
     // required position, every affected owner and every gate is in.
@@ -382,14 +388,14 @@ locus Review {
         if v.verdict != "approve" { return true; }
         let owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
         let signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
-        let evidenced = words_add(self.evidenced, self.evidence_gates(v));
+        let evidenced = self.observed_gates();
         let authority = self.authority_signed || (self.fallback && authority_satisfies(v.authority, self.required_authority));
         return words_within(approver_owners(self.approvers), owners) && words_within(approver_owners(self.signers), signed) && words_within(self.gates, evidenced) && (!self.fallback || authority);
     }
     // An admitted verdict's standing and evidence, kept.
     @unbounded
     fn note(v: Verdict) {
-        self.evidenced = words_add(self.evidenced, self.evidence_gates(v));
+        self.evidenced = self.observed_gates();
         if v.verdict != "approve" { return; }
         self.approved_owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
         self.signed = words_add(self.signed, signer_positions(self.signers, v.reviewer));
@@ -488,12 +494,12 @@ locus Review {
         let mut out = "";
         if len(self.approvers) > 0 { out = "every affected owner approved: " + self.approved_owners; }
         if len(self.signers) > 0 { out = out + (if len(out) > 0 { "; " } else { "" }) + "every required position approved: " + self.signed; }
-        if len(self.gates) > 0 { out = out + "; evidenced by " + self.evidenced; }
+        if len(self.gates) > 0 { out = out + "; evidenced by " + self.evidenced + " (the forge's runs)"; }
         return out;
     }
     fn verdict_count() -> Int { return self.verdicts.len(); }
     // GH #1089: what an approval still waits for — the required positions
-    // not in, the gates with no passing run cited — "" when nothing.
+    // not in, the gates with no passing run observed — "" when nothing.
     @unbounded
     fn awaiting() -> String {
         let mut out = "";
@@ -504,8 +510,9 @@ locus Review {
             i = i + 1;
         }
         i = 0;
+        let observed = self.observed_gates();
         while len(nth_word(self.gates, i)) > 0 {
-            if !word_in(nth_word(self.gates, i), self.evidenced) { out = word_add(out, nth_word(self.gates, i)); }
+            if !word_in(nth_word(self.gates, i), observed) { out = word_add(out, nth_word(self.gates, i)); }
             i = i + 1;
         }
         if self.fallback && !self.authority_signed { out = word_add(out, "authority:" + self.required_authority); }
