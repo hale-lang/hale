@@ -380,7 +380,7 @@ locus Dna {
         cases_admitted: Int = 0;
         reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
-        gate_runs_seen: Int = 0; // GH #1161: the record rows read for gate runs the host observed
+        gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
         // this organism's leader; `optimize_every_ms` is the cadence
@@ -810,8 +810,8 @@ locus Dna {
         if len(data) == 0 { return RouteRequirement { recorded: false }; }
         let mut need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), self.verification.receipts))) };
         if len(need.signers) == 0 { return self.route_fallback(review_id, definition, row, "no position the route names is held"); }
-        // a prepared source's verdict is a typed command that cites no run:
-        // its Review takes the route's positions, and no gate
+        // a prepared source's Review is never opened at a forge, where a
+        // gate's run is observed: it takes the route's positions, and no gate
         if !gated { need.gates = ""; }
         if len(row) > 0 {
             let x = self.journal.append(self.journal.revision(), "review.routed", review_id, routed_body(definition, need, ""));
@@ -884,19 +884,22 @@ locus Dna {
             if x.ok { ReviewRouted <- ReviewRouting { review_id: id, signers: now_held }; }
         }
     }
-    // GH #1161: a gate run the host observed at the forge (`gate.observed`,
-    // since the last reading) is told to its Review, routed again as it
-    // stands, and the Review weighs its approvals with the run in. From
-    // the start of the record after a restart: a Review rebuilt then hears
-    // every run, and one already settled ignores it.
+    // GH #1161: a gate run the host observed at the forge (`gate.observed`)
+    // is told to its Review, once, routed again as it stands, and the
+    // Review weighs its approvals with the run in. Known by the row's
+    // digest, not its position: a merged order is rebuilt when a ledger is
+    // adopted. Every run again after a restart: a Review rebuilt then hears
+    // them all, and one already settled ignores them.
     @unbounded
     fn announce_gate_runs() {
-        let n = self.journal.revision();
         let mut told = "\n";
-        while self.gate_runs_seen < n {
-            let e = self.journal.read(self.gate_runs_seen);
-            self.gate_runs_seen = self.gate_runs_seen + 1;
-            if e.kind != "gate.observed" || std::str::contains(told, "\n" + e.entity + "\n") { continue; }
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            i = i + 1;
+            if e.kind != "gate.observed" || std::str::contains(self.gate_runs_told, "\n" + e.digest + "\n") { continue; }
+            self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
+            if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
             told = told + e.entity + "\n";
             ReviewRouted <- ReviewRouting { review_id: e.entity, signers: native_json_string(self.routed_row(e.entity), "signers") };
         }

@@ -1384,7 +1384,8 @@ fn routed_gates(p: Projection, id: String) -> String {
 
 // The gate among `gates` (`gate:<workflow>/<job>`) a check run `name`d
 // for its job is the run of, "" when none: a gate is a workflow's job,
-// and the forge names a job's run by the job.
+// and the forge names a job's run by the job — a matrix leg as `job
+// (<values>)`, a reusable workflow's as `job / <callee job>`.
 @unbounded
 fn gate_of_run(gates: String, name: String) -> String {
     let mut i = 0;
@@ -1393,7 +1394,9 @@ fn gate_of_run(gates: String, name: String) -> String {
         i = i + 1;
         let bare = if std::str::starts_with(g, "gate:") { g[5..len(g)] } else { g };
         let sl = std::str::index_of(bare, "/");
-        if sl >= 0 && bare[(sl + 1)..len(bare)] == name { return g; }
+        if sl < 0 { continue; }
+        let job = bare[(sl + 1)..len(bare)];
+        if name == job || std::str::starts_with(name, job + " (") || std::str::starts_with(name, job + " / ") { return g; }
     }
     return "";
 }
@@ -1497,7 +1500,9 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
                 if len(line) == 0 { continue; }
                 let name = tab_field(line, 0);
                 let conclusion = tab_field(line, 1);
-                if name == "error" { return fail("the forge did not answer: " + conclusion); }
+                // one Review's runs unread (a rate limit, a sha the forge does
+                // not know) is said, and the sync goes on with the rest
+                if name == "error" { out = out + r.id + ": the forge did not answer for its check runs: " + conclusion + "\n"; break; }
                 let gate = gate_of_run(gates, name);
                 // a run still going concludes nothing yet
                 if len(gate) == 0 || len(conclusion) == 0 { continue; }

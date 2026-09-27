@@ -39,6 +39,11 @@ main locus App {
         std::io::fs::write_file(forge + "/1.review", "title: apply m1?\n") or discard;
         // ci/api passed, ci/web is still going, and lint guards nothing routed
         std::io::fs::write_file(forge + "/1.checks", "api success " + CANDIDATE + " https://ci.example/1\nweb - " + CANDIDATE + " https://ci.example/2\nlint success " + CANDIDATE + " https://ci.example/3\n") or discard;
+        // a matrix leg and a reusable workflow's job are the job's runs; a
+        // job whose name only begins like the gate's is not
+        std::test::assert_eq_str(host::gate_of_run("gate:ci/api gate:ci/web", "api (ubuntu, 18)"), "gate:ci/api", "a matrix leg");
+        std::test::assert_eq_str(host::gate_of_run("gate:ci/api gate:ci/web", "web / build"), "gate:ci/web", "a reusable workflow's job");
+        std::test::assert_eq_str(host::gate_of_run("gate:ci/api gate:ci/web", "apiary"), "", "not a prefix of a name");
         let files = host::FileForge { dir: forge };
         let memory = dna::Memory { repo: repo };
         let s1 = host::forge_sync(repo, ".", files, memory);

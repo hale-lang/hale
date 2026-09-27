@@ -77,6 +77,10 @@ main locus App {
         return dna::Verdict { command_id: command, review_id: id, subject_digest: CANDIDATE, verdict: word, reviewer: who, authority: "board", comment: "" };
     }
     // The host observed a run of `gate` at the forge, for Review `id`.
+    // The Review opened at the memory forge, as forge_sync records it.
+    fn opened(id: String) {
+        std::test::assert(self.journal.append(self.journal.revision(), "github.pr", id, "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}").ok, "opened at the forge");
+    }
     fn observed(id: String, gate: String, sha: String, conclusion: String) {
         std::test::assert(self.journal.append(self.journal.revision(), "gate.observed", id, run_body(gate, sha, conclusion)).ok, "a run observed");
     }
@@ -111,17 +115,33 @@ main locus App {
         std::test::assert(r3.consider(self.verdict("m3", "", "grace", "approve")) && r3.consider(self.verdict("m3", "", "hopper", "approve")), "both positions approve");
         std::test::assert(!r3.settled, "no passing run at the candidate: not settled");
         std::test::assert_eq_str(r3.awaiting(), "gate:ci/api", "it waits for ci/api's run");
+        self.opened("m3");
         self.observed("m3", "ci/api", OTHER, "success");
         self.observed("m3", "gate:ci/api", CANDIDATE, "failure");
+        // a run another forge reported is not the forge the Review was opened at
+        std::test::assert(self.journal.append(self.journal.revision(), "gate.observed", "m3", "{\"gate\": \"ci/api\", \"sha\": \"" + CANDIDATE + "\", \"conclusion\": \"success\", \"forge\": \"file\"}").ok, "a file forge's run");
         self.observed("m3", "ci/web", CANDIDATE, "success");
         self.observed("m3x", "ci/api", CANDIDATE, "success");
-        std::test::assert(!r3.recheck() && !r3.settled, "a stale run, a failed one, another gate's and another Review's settle nothing");
+        std::test::assert(!r3.recheck() && !r3.settled, "a stale run, a failed one, another gate's, another forge's and another Review's settle nothing");
         std::test::assert_eq_str(r3.awaiting(), "gate:ci/api", "it still waits for ci/api's run");
         // the forge reports ci/api passing at the candidate: the approvals in
         // settle it, on the last of them
         self.observed("m3", "ci/api", CANDIDATE, "success");
         std::test::assert(r3.recheck() && r3.settled && r3.outcome == "approve" && r3.decided_by == "hopper" && std::str::contains(r3.comment, "evidenced by gate:ci/api"), "settled, evidenced: " + r3.comment);
         std::test::assert(!r3.recheck(), "and settled once");
+
+        // ---- a restart between the approvals and the run: the plain verdicts
+        // the record holds are admitted again, and the run settles on them
+        let before_restart = review(self.rj, "m9g", "gate:ci/api");
+        std::test::assert(before_restart.consider(self.verdict("m9g", "", "grace", "approve")) && before_restart.consider(self.verdict("m9g", "", "hopper", "approve")) && !before_restart.settled, "both positions approve; the run is not in");
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"grace\", \"authority\": \"board\", \"comment\": \"\"}").ok, "grace's verdict row");
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"hopper\", \"authority\": \"board\", \"comment\": \"\"}").ok, "hopper's verdict row");
+        std::test::assert(self.journal.append(self.journal.revision(), "review.verdict", "m9g", "{\"review_id\": \"m9g\", \"subject_digest\": \"" + CANDIDATE + "\", \"verdict\": \"approve\", \"reviewer\": \"mallory\", \"authority\": \"board\", \"comment\": \"\"}").ok, "mallory's verdict row");
+        let rebuilt = review(self.rj, "m9g", "gate:ci/api");
+        std::test::assert_eq_str(rebuilt.signed, "position:api/reviewer position:node/reviewer", "rebuilt, it holds both approvals, and not mallory's");
+        self.opened("m9g");
+        self.observed("m9g", "ci/api", CANDIDATE, "success");
+        std::test::assert(rebuilt.recheck() && rebuilt.settled && rebuilt.outcome == "approve", "the run observed after the restart settles it on them");
 
         // ---- restart or a lost response: a command is decided once
         let r4 = review(self.rj, "m4", "gate:ci/api");
@@ -132,6 +152,7 @@ main locus App {
         std::test::assert_eq_int(self.journal.revision(), rows, "and writes nothing new");
         let refused = r4.command_decide(self.verdict("m4", "c2", "mallory", "approve"));
         std::test::assert(!std::json::find_bool_field(refused, "accepted") && std::str::contains(refused, "holds no position this Review requires"), "mallory's command is refused: " + refused);
+        self.opened("m4");
         self.observed("m4", "ci/api", CANDIDATE, "success");
         // the organization restarts: the Review is rebuilt from the record
         let again = review(self.rj, "m4", "gate:ci/api");
@@ -140,7 +161,7 @@ main locus App {
         std::test::assert_eq_int(again.refused, 1, "and mallory's refusal");
         std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c1", "grace", "approve")), first, "c1 asked of the rebuilt Review answers the same decision");
         std::test::assert_eq_str(again.command_decide(self.verdict("m4", "c2", "mallory", "approve")), refused, "and so does c2");
-        std::test::assert_eq_int(self.journal.revision(), rows + 2, "still nothing new: mallory's refusal and the observed run");
+        std::test::assert_eq_int(self.journal.revision(), rows + 3, "still nothing new: mallory's refusal, the forge's review and the observed run");
         let last = again.command_decide(self.verdict("m4", "c3", "ada", "approve"));
         std::test::assert(std::json::find_bool_field(last, "settled") && again.settled && again.outcome == "approve", "ada's approval completes it: " + last);
         let after = review(self.rj, "m4", "gate:ci/api");
@@ -216,6 +237,7 @@ main locus App {
         let before2 = dna::GitJournal { repo: self.repo }.revision();
         dna::ReviewVerdict <- dna::Verdict { review_id: rid2, subject_digest: digest2, verdict: "approve", reviewer: "ada", authority: "board" };
         std::test::assert_eq_str(self.answer_within(before2, "review.settled", rid2, 3), "", "ada's approval waits for the gate's run");
+        std::test::assert(j.append(j.revision(), "github.pr", rid2, "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}").ok, "opened at the forge");
         std::test::assert(j.append(j.revision(), "gate.observed", rid2, run_body("ci/api", digest2, "success")).ok, "the host observes ci/api passing at the forge");
         let moved = self.org.journal.refresh();
         self.org.announce_gate_runs();

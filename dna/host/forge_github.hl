@@ -54,7 +54,7 @@ locus GitHubForge {
     // The check runs GitHub reports for the candidate commit — a gate is a
     // workflow's job, and its run is the job's check run.
     fn checks(review: String, sha: String) -> String {
-        let c = gh("api\nrepos/" + self.repo + "/commits/" + sha + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv");
+        let c = gh("api\n--paginate\nrepos/" + self.repo + "/commits/" + sha + "/check-runs?per_page=100\n--jq\n.check_runs[] | [.name, (.conclusion // \"\"), .head_sha, .html_url] | @tsv");
         if c.code != 0 { return "error\t" + dna::trim_nl(c.stderr) + "\t\t\n"; }
         return c.stdout;
     }

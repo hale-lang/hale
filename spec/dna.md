@@ -2679,13 +2679,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   `<n>.checks` in fixtures) when it syncs the forge, and records once per
   run as `gate.observed <review> {gate, sha, conclusion, url, forge,
   run}` — completed runs of the gates the Review's route names, matched
-  by job name. Only the host's forge sync writes that row, and it is the
-  only run a Review weighs: a run at another commit, one whose conclusion
-  is not `success`, or another gate's counts for nothing, and a verdict
-  cites no run (a receipt anyone files is no gate's word). When such a
+  by job name (a matrix leg `job (…)` and a reusable workflow's `job /
+  …` are the job's). The host's forge sync writes that row, and it is
+  the only run a Review weighs, and only from the forge its `github.pr`
+  row names: a run at another commit, one whose conclusion is not
+  `success` (`skipped` included), another gate's, or another forge's
+  counts for nothing, and a verdict cites no run (a receipt anyone files
+  is no gate's word; `--evidence` is refused). The row is trusted as
+  every record row is, by who may write the record. When such a
   row lands, the organization tells the Review (`ReviewRouted`, on its
-  reconciliation), and the approvals it holds are weighed again: with
-  every gate's passing run in, it settles on the last of them. A
+  reconciliation, once per row), and the approvals it holds are weighed
+  again: with every gate's passing run in, it settles on the last of
+  them. A Review rebuilt at a restart admits the plain verdicts the
+  record holds for it again, so the approvals given before the runs
+  survive it. A
   prepared source's Review (an organization change) takes the route's
   positions and no gate. A command verdict (`command_id`) is decided once by
   the same rules: redelivered after a lost response, or asked of the

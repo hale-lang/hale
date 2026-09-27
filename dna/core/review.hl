@@ -173,7 +173,10 @@ locus Review {
         last_refusal: String = "";
         command_verdicts: VerdictRows = VerdictRows { };
     }
-    birth() { self.restore_command_decisions(); }
+    birth() {
+        self.restore_command_decisions();
+        self.restore_verdicts();
+    }
     contract {
         expose review_id: String;
         expose settled: Bool;
@@ -233,16 +236,20 @@ locus Review {
         return true;
     }
     // GH #1161: the gates guarding the change with a passing run at the
-    // candidate, as the host observed it at the forge (`gate.observed`
-    // rows on this Review, which only the host's forge sync writes; a
-    // receipt anyone files is no run), space-separated.
+    // candidate, as the host observed it at the forge the Review was
+    // opened at (`gate.observed` rows naming the forge its `github.pr`
+    // row names; the host's forge sync writes them, and a receipt anyone
+    // files is no run), space-separated.
     @unbounded
     fn observed_gates() -> String {
         let mut out = "";
+        let mut forge = "";
         let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
-            if e.kind == "gate.observed" && e.entity == self.review_id {
+            // the forge the Review was opened at: a run counts only from it
+            if e.kind == "github.pr" && e.entity == self.review_id { forge = native_json_string(e.body, "forge"); }
+            if e.kind == "gate.observed" && e.entity == self.review_id && len(forge) > 0 && native_json_string(e.body, "forge") == forge {
                 let gate = gate_id(native_json_string(e.body, "gate"));
                 if word_in(gate, self.gates) && native_json_string(e.body, "sha") == self.subject_digest && native_json_string(e.body, "conclusion") == "success" { out = word_add(out, gate); }
             }
@@ -329,6 +336,28 @@ locus Review {
                 }
             }
             i = i + 1;
+        }
+    }
+    // GH #1161: the plain verdicts the record holds for it (the membrane's,
+    // the forge's), admitted again by the same rules, so a Review rebuilt
+    // at a restart keeps the approvals it held while its gates' runs were
+    // not in; a run observed later settles it on them. Nothing settles
+    // here: the organization tells it of the runs (`announce_gate_runs`).
+    @unbounded
+    fn restore_verdicts() {
+        if len(self.organization_source_request.request_id) > 0 { return; }
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            i = i + 1;
+            if e.kind != "review.verdict" || e.entity != self.review_id || len(native_json_string(e.body, "command_id")) > 0 { continue; }
+            let v = Verdict {
+                review_id: self.review_id, subject_digest: native_json_string(e.body, "subject_digest"), verdict: native_json_string(e.body, "verdict"),
+                reviewer: native_json_string(e.body, "reviewer"), authority: native_json_string(e.body, "authority"), comment: native_json_string(e.body, "comment")
+            };
+            if len(self.refusal(v)) > 0 { continue; }
+            self.verdicts.push(v);
+            self.note(v);
         }
     }
     fn source_verdict_admitted(v: Verdict, before: Int) -> Bool {
