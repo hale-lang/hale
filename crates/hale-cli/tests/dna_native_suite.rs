@@ -870,6 +870,7 @@ fn dna_fixture_set_is_complete() {
             "body_scan_test.hl",
             "books_slice_test.hl",
             "budget_test.hl",
+            "build_fingerprint_location_test.hl",
             "claims_test.hl",
             "command_relay_trust_test.hl",
             "concern_identity_test.hl",

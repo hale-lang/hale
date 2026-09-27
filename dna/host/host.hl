@@ -351,6 +351,37 @@ fn input_digests(hale: String, root: String, seed_dir: String) -> String {
     return out;
 }
 
+// `seed_dir` relative to `root`, so a fingerprint is of the PROJECT
+// (which seed, under which root-relative name) and never of where
+// that root happens to sit. Two organisms at different temp roots
+// with byte-identical sources and the same relative seed name are
+// one cache entry, not two — the whole point of a content
+// fingerprint, which the raw absolute `seed_dir` quietly defeated:
+// every fixture's own uniquely-named scratch root made every
+// organism's build cache-cold, no two ever sharing an entry (GH
+// #1147 follow-up — CI time at the cause).
+//
+// Deliberately does NOT canonicalize `root` the way `input_digests`
+// canonicalizes file paths (a `pwd -P`, macOS's /tmp being an alias
+// of /private/tmp): every caller of `build_seed` constructs
+// `seed_dir` FROM this same `root` value, in whatever form it
+// happens to be (`seed_dir()` returns `self.root + "/" + self.seed`
+// verbatim) — canonicalizing one side and not the other is exactly
+// what broke this on macOS the first time (`root` resolved through
+// /private/tmp, `seed_dir` still said /tmp, and the two never
+// matched as a prefix). Comparing both in the SAME representation
+// they already share needs no resolving at all.
+fn seed_relative(root: String, seed_dir: String) -> String {
+    // The default project's own app IS its root (`seed_dir()` returns
+    // `self.root` unchanged when `self.seed` is "." or ""), so
+    // `seed_dir` equals the root exactly — no trailing slash for a
+    // prefix strip to find. "." is the same convention `seed_dir()`
+    // itself reads that case from.
+    if seed_dir == root { return "."; }
+    let prefix = root + "/";
+    return if std::str::starts_with(seed_dir, prefix) { seed_dir[len(prefix)..len(seed_dir)] } else { seed_dir };
+}
+
 // The content fingerprint of a build of `seed_dir`; "" when any part
 // of it could not be read, which is how the cache declines rather
 // than guesses.
@@ -365,7 +396,7 @@ fn build_fingerprint(hale: String, root: String, seed_dir: String) -> String {
     let mut t = "hale dna build cache v1\n";
     t = t + "toolchain " + std::env::var("HALE_DNA_TOOLCHAIN") + "\n";
     t = t + "compiler " + dna::trim_nl(id.stdout) + "\n";
-    t = t + "seed " + seed_dir + "\n";
+    t = t + "seed " + seed_relative(root, seed_dir) + "\n";
     let mut rest = BUILD_ENV_KNOBS + " ";
     while len(rest) > 0 {
         let sp = std::str::index_of(rest, " ");
