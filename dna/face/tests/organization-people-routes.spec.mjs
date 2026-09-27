@@ -127,7 +127,7 @@ test('Scripted people routes: duplicate or empty assignee route refuses before T
   const script = await fixture(page);
   for (const suffix of ['assignee=', 'assignee=mara&assignee=dev']) {
     await page.goto(host.origin + '/#/tasks?app=' + APP + '&' + suffix); await expect(page.getByRole('heading', { name: 'Unable to read the application', exact: true })).toBeVisible();
-    await expect(page.getByText('Choose one exact person from the ownership map, or return to all handed Tasks.', { exact: true })).toBeVisible();
+    await expect(page.getByText("Choose one exact person from the organizations' members, or return to all handed Tasks.", { exact: true })).toBeVisible();
   }
   expect(script.reads).toEqual([]); expect(script.posts).toEqual([]);
 });

@@ -164,20 +164,26 @@ It also carries the **repository as one graph**. The organization and
 its product are a single hypergraph, and the org chart and the process
 model are two ways of looking at it. The record holds its nodes —
 purpose, axioms, processes, seeds, contracts and the nouns they name,
-deployments, gates, documents, witnesses, positions, work — as
+deployments, gates, documents, witnesses, positions, work, and the
+organizations (firms) that share a record — as
 `graph.node` rows, and its hyperedges as `graph.edge` rows: `unfold`
 (what a node is made of), `meets` (the processes that meet at a
 contract: the one that serves it, the ones that consume it, the one
 that carries it, over which transport), `names`, `refers`,
 `constrains` (a decision and what it shaped), `runs`, `gates`,
-`witnesses`, `holds` (who holds a position) and `reviews` (what a
+`witnesses`, `holds` (who holds a position — a person, or an
+organization that owns it — and who is an organization's member) and
+`reviews` (what a
 position signs: a contract, or a document such as a design). A contract
 is where the two perspectives meet, so a change to one shows up in both.
 
-There is one org chart, and it is this graph: its positions and who holds
-them. The organization's generated `dna/org` files and the owners map are
-renderings of it, never where a position is decided (deriving them is
-[#1123](https://github.com/hale-lang/hale/issues/1123)).
+There is one org chart, and it is this graph: its positions, its
+organizations, and who holds them. Which firm owns a position and who
+belongs to which firm are `holds` edges too, never a file — the old
+owners map, `dna/org/owners`, is gone
+([#1123](https://github.com/hale-lang/hale/issues/1123)). The
+organization's generated `dna/org` files are never where a position is
+decided.
 
 Nobody writes the positions by hand, and nobody lists them either: `init`
 derives them from the graph's edges and proposes each with a Board Review
@@ -206,7 +212,10 @@ you work alone (`dna.trust = local`), and refused once the record is
 shared — by the CLI, and again where memory takes the ratified hold.
 Memory also refuses a holder the record never knew or who retired, and
 says so as a `hold.refused` row; someone who retires later gives their
-seats back.
+seats back. On a record several firms share, `fill` also says which
+firm owns a position (`hale dna fill org/collections organization:north`)
+and who belongs to a firm (`hale dna fill organization:north bob`);
+a person belongs to one firm at most.
 
 The graph also says who must sign a change.
 Routing follows the same edges: a position signs what it `reviews`, whatever

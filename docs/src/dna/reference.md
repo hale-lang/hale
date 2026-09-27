@@ -67,11 +67,14 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              a routed Review admits only holders of the positions it requires,
                              and weighs only the gate runs the host observed at the forge
 hale dna history [<entity>]  walk the record by causal links (offline)
-hale dna fill <position> <holder> [project] [--as <who>]
+hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]
                              ask the organization to propose who holds a position: a Board Review in
                              your name; the holder is a person the record knows; dev and reviewer of
                              one process as one person is a warning under dna.trust = local, refused
-                             elsewhere, here and where memory projects it
+                             elsewhere, here and where memory projects it. `<position>
+                             organization:<o>` proposes that firm owning the position;
+                             `organization:<o> <person>` proposes the person's membership (they need
+                             not be known yet; one organization per person)
 hale dna route [--json] (<path>… | --diff <range>)
                              who must sign a change set, from the graph: each touched seed's process
                              reviewer, a contract's reviewers and its consumers', the board where a

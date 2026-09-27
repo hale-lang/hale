@@ -8,15 +8,10 @@ import "../../organization_source" as orgsource;
 const ORIGINAL: String = "main locus Org {\n    params { title: String = \"Original\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
 const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n    params { title: String = \"Prepared\"; }\n    run() { }\n}\nfn main() { Org { }; }\n";
 
-const OWNERS_BEFORE: String = "org = acme\norg/support = north\nacme: alice, carol\nnorth: bob\nhost = acme\n";
-const OWNERS_AFTER: String = "# Exact équipe 🧭 <literal>\r\norg = acme\r\norg/support = south\r\nacme: alice, carol\r\nnorth: bob\r\nsouth: dora\r\nhost = acme\r\n";
-
 locus SourceCandidateCases {
-    params { ownership: Bool = false; }
     fn setup(root: String) {
         std::test::assert_eq_int(dna::run_tool("mkdir\n-p\n" + root + "/dna/org").code, 0, "isolated source directory");
         std::io::fs::write_file(root + "/dna/org/main.hl", ORIGINAL) or raise;
-        if self.ownership { std::io::fs::write_file(root + "/dna/org/owners", OWNERS_BEFORE) or raise; }
         std::io::fs::write_file(root + "/.gitignore", "/.hale/\n/vendor/\n") or raise;
         let record = dna::GitRecord { repo: root };
         std::test::assert_eq_int(record.git("init\n-q\n-b\nmain").code, 0, "initialize source Git");
@@ -25,10 +20,10 @@ locus SourceCandidateCases {
         let j = dna::GitJournal { repo: root }; std::test::assert(j.append_exact(0, "application.observed", "org", "{}").ok, "Record genesis");
     }
     fn body(root: String, id: String) {
-        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: if self.ownership { "acme" } else { "" } }; let journal = dna::GitJournal { repo: root };
+        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" }; let journal = dna::GitJournal { repo: root };
         let body = dna::Dna {
             journal: journal, organization_source_facts: ops::StrictOrganizationSourceFacts { }, organization_source_inputs: inputs,
-            ownership: dna::Ownership { me: if self.ownership { "acme" } else { "" }, me_env: "" },
+            ownership: dna::Ownership { me_env: "" },
             gateway: dna::MutationGateway { leases: dna::GitLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
             review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
@@ -49,18 +44,18 @@ locus SourceCandidateCases {
         std::test::assert_eq_str(w.text(row, "organization_source_request_id"), "", "source request link masked");
     }
     fn run_cases(root: String) {
-        let original = if self.ownership { OWNERS_BEFORE } else { ORIGINAL };
-        let prepared = if self.ownership { OWNERS_AFTER } else { PREPARED };
-        let module_path = if self.ownership { "dna/org/owners" } else { "dna/org/main.hl" };
+        let original = ORIGINAL;
+        let prepared = PREPARED;
+        let module_path = "dna/org/main.hl";
         self.setup(root); let record = dna::GitRecord { repo: root }; let app = record.identity();
         let policy_wire = ops::OrganizationAuthorityPolicyCodec { };
-        let policy = policy_wire.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_ownership_propose\":true,\"organization_review\":false,\"recover\":true},{\"mode\":\"local\",\"name\":\"bob\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":true,\"recover\":true}]}", app, "local");
+        let policy = policy_wire.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":false,\"recover\":true},{\"mode\":\"local\",\"name\":\"bob\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":true,\"recover\":true}]}", app, "local");
         std::test::assert(policy.valid, "separate explicit source policy");
-        let authority = ops::FixedOrganizationAuthority { policy: policy }; let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: if self.ownership { "acme" } else { "" } };
-        let service = ops::GovernanceCommands { record: record, organization_authority: authority, organization_enabled: true, organization_ownership_enabled: true, organization_inputs: inputs };
+        let authority = ops::FixedOrganizationAuthority { policy: policy }; let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" };
+        let service = ops::GovernanceCommands { record: record, organization_authority: authority, organization_enabled: true, organization_inputs: inputs };
         let inspector = orgsource::OrganizationSource { root: root, allow_drafts: true }; let basis = inspector.read(); std::test::assert(basis.ok, "actual source basis");
         let alice = ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "alice" };
-        let command = ops::GovernanceCommand { request_id: "immutable-source", operation: if self.ownership { "dna.organization.ownership.propose" } else { "dna.organization.propose" }, application_id: app, target_kind: "dna.organization.module", target_id: module_path, subject_digest: dna::digest_of(original), source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal").id, source_text: prepared, rationale: "Clarify the exact source." };
+        let command = ops::GovernanceCommand { request_id: "immutable-source", operation: "dna.organization.propose", application_id: app, target_kind: "dna.organization.module", target_id: module_path, subject_digest: dna::digest_of(original), source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest, record_head: record.head("journal").id, source_text: prepared, rationale: "Clarify the exact source." };
         let admitted = service.submit(alice, command); std::test::assert(admitted.ok, "actual source admission: " + admitted.code);
         self.body(root, admitted.receipt.command_id);
         let result = service.lookup(alice, command.request_id); std::test::assert(result.ok && result.receipt.organization.proposal_state == "created", "actual candidate and Review: " + result.code);
@@ -85,19 +80,9 @@ locus SourceCandidateCases {
         std::test::assert_eq_str(w.text(semantic, "digest"), dna::digest_of(projected), "returned semantic projection hash is exact");
         std::test::assert_eq_str(w.text(semantic, "receipt_digest"), "sha256:" + ops::raw_digest(w.text(candidate.review_body, "diff_json")), "retained receipt digest is explicitly separate");
         std::test::assert_eq_str(w.text(projected, "coverage"), "classification_summary_declarations", "semantic coverage is explicit");
-        std::test::assert_eq_str(w.text(projected, "classification"), if self.ownership { "identical" } else { "source-only" }, "actual native semantic classification");
+        std::test::assert_eq_str(w.text(projected, "classification"), "source-only", "actual native semantic classification");
         std::test::assert(!std::str::contains(projected, "path") && w.raw(projected, "contracts") == "" && w.raw(projected, "effects") == "", "no raw compiler location or diagnostics escape");
         std::test::assert(!std::str::contains(document, root) && !std::str::contains(document, "activation_state") && !std::str::contains(document, "application_state"), "read exposes neither local paths nor lifecycle claims");
-        if self.ownership {
-            std::test::assert_eq_str(w.text(document, "format"), "dna.organization-ownership-candidate/1", "ownership has a distinct exact profile");
-            std::test::assert_eq_str(w.text(module_data, "path"), "dna/org/owners", "fixed ownership module");
-            std::test::assert_eq_str(w.text(w.raw(document, "review"), "approvers"), "north=bob south=dora", "exact affected-owner quorum");
-            let impact = w.raw(document, "ownership_impact");
-            std::test::assert_eq_str(w.text(impact, "live_obligations"), "unavailable", "source comparison does not claim operational handover");
-            std::test::assert(std::str::contains(impact, "north") && std::str::contains(impact, "south"), "both sides of scope transfer are visible");
-            let altered = ops::OrganizationCandidateEvidence { ok: true, request: candidate.request, candidate_commit: candidate.candidate_commit, candidate_key: candidate.candidate_key, review_body: std::str::replace(candidate.review_body, "north=bob south=dora", "south=dora") };
-            std::test::assert(!reader.source_objects(record, journal, altered).ok, "a reduced recorded quorum cannot expose an ownership candidate");
-        }
         let review_response = head.handle(std::http::Request { method: "GET", path: review_path });
         let row = self.first(review_response);
         let evidence_root = root;
@@ -149,10 +134,9 @@ locus SourceCandidateCases {
 }
 fn main() {
     let given = std::env::arg(1);
-    if len(given) > 0 { let cases = SourceCandidateCases { ownership: std::env::arg(2) == "ownership" }; cases.run_cases(given); return; }
+    if len(given) > 0 { let cases = SourceCandidateCases { }; cases.run_cases(given); return; }
     // under `hale test`: the main-module profile over a scratch root of its
-    // own; the ownership profile is the unfinished increment of the
-    // checkpoint (its runtime cases never ran) and stays by hand
+    // own, the one profile since the ownership map retired (GH #1123)
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-candidate.XXXXXX");
     std::test::assert_eq_int(made.code, 0, "candidate fixture scratch: " + made.stderr);
     let root = dna::trim_nl(made.stdout);

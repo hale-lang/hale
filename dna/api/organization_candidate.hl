@@ -120,14 +120,6 @@ locus OrganizationCandidateWire {
         if paths.code != 0 { return OrganizationCandidateRead { code: "candidate_unavailable" }; }
         let changed = dna::trim_nl(paths.stdout);
         if changed != "" && changed != native.module_for(r) { return OrganizationCandidateRead { }; }
-        if native.ownership(r) {
-            let inputs = orgsource::OrganizationPublicationInputs { root: record.repo, source_owner: r.source_owner };
-            let quorum = inputs.ownership_quorum(r, commit); let text = ops::GovernanceCommandCodec { };
-            if !quorum.ok || quorum.approvers != text.string(candidate.review_body, "approvers") { return OrganizationCandidateRead { }; }
-            let base_map = inputs.ownership_blob(record, r.source_head); let next_map = inputs.ownership_blob(record, commit);
-            if !base_map.present || !next_map.present { return OrganizationCandidateRead { }; }
-            return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base_map.text, candidate_text: next_map.text, changed: changed != "" };
-        }
         let base = self.module_blob(record, r.source_head); let prepared = self.module_blob(record, commit);
         if !base.ok || !prepared.ok || dna::digest_of(base.text) != r.module_digest || dna::digest_of(prepared.text) != r.source_digest || prepared.text != r.source_text { return OrganizationCandidateRead { }; }
         return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base.text, candidate_text: prepared.text, changed: changed != "" };
@@ -160,17 +152,13 @@ locus OrganizationCandidateWire {
         let c = read.candidate; let r = c.request; let text = ops::GovernanceCommandCodec { }; let view = ops::OrganizationProjection { };
         let native = dna::OrganizationSourceRequestCodec { };
         let review = view.review_evidence(journal, c, rows); let progress = review.review.ok && review.review.state != "unavailable";
-        let b = std::json::Builder { }; b.begin_object(); b.string_field("format", if native.ownership(r) { "dna.organization-ownership-candidate/1" } else { "dna.organization-source-candidate/1" });
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("format", "dna.organization-source-candidate/1");
         b.string_field("application_id", r.application_id); b.string_field("command_id", r.request_id); b.string_field("mutation_id", c.mutation_id);
         b.begin_object_field("base"); b.string_field("source_head", r.source_head); b.string_field("module_digest", r.module_digest);
         b.string_field("dependency_source", r.dependency_source); b.string_field("dependency_digest", r.dependency_digest); b.string_field("record_head", r.record_head); b.end_object();
         b.begin_object_field("module"); b.string_field("path", native.module_for(r)); b.field("base_text", dna::record_json_quote(read.base_text)); b.field("text", dna::record_json_quote(read.candidate_text)); b.string_field("digest", r.source_digest); b.end_object();
         b.begin_object_field("candidate"); b.string_field("commit", c.candidate_commit); b.string_field("parent", r.source_head); b.string_field("shape", text.string(c.review_body, "candidate_shape")); b.end_object();
         b.begin_array_field("changed_files"); if read.changed { b.string_value(native.module_for(r)); } b.end_array();
-        if native.ownership(r) {
-            let ownership = OwnershipDraftWire { };
-            b.field("ownership_impact", ownership.impact(read.base_text, read.candidate_text));
-        }
         b.begin_object_field("verification"); b.string_field("evidence", text.string(c.review_body, "evidence"));
         b.begin_object_field("semantic_diff"); b.string_field("receipt_digest", "sha256:" + ops::raw_digest(text.string(c.review_body, "diff_json"))); b.string_field("digest", dna::digest_of(read.semantic_diff)); b.field("document", dna::record_json_quote(read.semantic_diff)); b.end_object(); b.end_object();
         b.begin_object_field("review"); b.string_field("required_authority", text.string(c.review_body, "required_authority")); b.string_field("approvers", text.string(c.review_body, "approvers"));

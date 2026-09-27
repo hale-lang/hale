@@ -35,7 +35,8 @@ const APP: String = "fn main() { println(\"app\"); }\n";
 const PLAN: String = "kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-approval\nmara handles it";
 // for the asks of the shared root (`north: ...`), the leader names bob, north's
 const RULES: String = "plan|Ask: north: |kind: person\\nclass: docs\\ntarget: none\\ncount: 1\\nassignee: bob\\nobligation: expense-approval\\nbob handles it";
-const OWNERS: String = "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n";
+// GH #1123: who owns what, in the graph's terms
+const OWNERS: String = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:north bob\n";
 
 locus Delayed {
     params { calls: Int = 0; }
@@ -265,7 +266,7 @@ main locus App {
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
             journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: refuse_kind, refused: len(refuse_kind) == 0 },
-            ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
+            ownership: dna::Ownership { me: me, me_env: "", graph: dna::graph_ownership_of(OWNERS) },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }

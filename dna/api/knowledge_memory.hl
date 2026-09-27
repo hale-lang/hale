@@ -319,6 +319,14 @@ locus LocalKnowledge {
         let r = graph_read(q, self.store, self.store, j, self.memory.ledger);
         return KnowledgeUpstream { transport_ok: true, status: r.status, body: r.body };
     }
+    fn ownership() -> String {
+        if !self.supported() { return ""; }
+        let j = dna::GitJournal { repo: self.root, author: "api" };
+        let moved = j.refresh();
+        self.store.scope(j.genesis());
+        if !self.store.healthy() && !self.store.reopen() { return ""; }
+        return self.store.graph_ownership();
+    }
 }
 
 // Knowledge commands admitted into the record in this process.

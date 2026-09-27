@@ -14,6 +14,7 @@
 // under its request id lands once.
 
 import "../core" as dna;
+import "../operations" as ops;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -229,7 +230,17 @@ main locus App {
         let made2 = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
         std::test::assert_eq_int(made2.code, 0, "hale dna new: " + made2.stdout + made2.stderr);
         let shared = scratch + "/shared";
-        std::io::fs::write_file(shared + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\nhost = acme\n") or discard;
+        // GH #1123: the owners are the graph's, rows in the record
+        let seats = dna::GitJournal { repo: shared };
+        let pairs = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:north bob\n";
+        let mut rest = pairs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let sp = std::str::index_of(line, " ");
+            std::test::assert_eq_str(ops::graph_seat(seats, line[0..sp], line[(sp + 1)..len(line)]), "", "seated " + line);
+        }
         let g1 = in_dir(shared, "git\nconfig\nuser.name\nalice");
         let g2 = in_dir(shared, "git\nconfig\nuser.email\nalice@local");
         let g3 = in_dir(shared, "git\nconfig\ndna.owner\nacme");
@@ -248,7 +259,7 @@ main locus App {
         let adopted = as_head(shared, acme, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
         std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
         std::test::assert(len(record_row(shared, "ledger.adopted", "ledger", 300)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
-        std::test::assert(chart_holds(acme, srecord, "org_members WHERE person = 'bob' AND owner = 'north'", 300), "the nodes project the owners map into memory: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
+        std::test::assert(chart_holds(acme, srecord, "org_members WHERE person = 'bob' AND owner = 'north'", 300), "the nodes project the graph's memberships into memory: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
         // a head's write in its owner's member's name lands, in her name, done
         std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "i4", "{}", "alice", ""), "", "acme's head writes in alice's name");
         let rows = as_head(shared, acme, toolchain() + "\ndna\nledger\nrows").stdout;

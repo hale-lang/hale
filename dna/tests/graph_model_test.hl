@@ -309,6 +309,20 @@ locus App {
         code.member("position", "position:api/reviewer");
         code.member("subject", "seed:api");
         std::test::assert(ops::graph_edge_row(code.id(), code.body()).ok, "a part's code is reviewed, its seed");
+        // GH #1123: a firm owns a position, a person joins a firm; a firm
+        // never holds another
+        let owns = ops::GraphEdge { kind: "holds" };
+        owns.member("position", "position:org/collections");
+        owns.member("holder", "organization:north");
+        std::test::assert(ops::graph_edge_row(owns.id(), owns.body()).ok, "an organization holds a position");
+        let joins = ops::GraphEdge { kind: "holds" };
+        joins.member("position", "organization:north");
+        joins.member("holder", "bob");
+        std::test::assert(ops::graph_edge_row(joins.id(), joins.body()).ok, "a person holds an organization: its member");
+        let nested = ops::GraphEdge { kind: "holds" };
+        nested.member("position", "organization:north");
+        nested.member("holder", "organization:acme");
+        std::test::assert(std::str::contains(ops::graph_edge_row(nested.id(), nested.body()).why, "an organization holds a position, not another organization"), "an organization holds no organization: " + ops::graph_edge_row(nested.id(), nested.body()).why);
         let ops_edge = ops::GraphEdge { kind: "reviews" };
         ops_edge.member("position", "position:compose/operator");
         ops_edge.member("subject", "deployment:compose");
@@ -462,7 +476,7 @@ locus App {
         late.member("holder", "carol");
         self.append("graph.edge", late.id(), late.body());
         // and a holder the record never knew holds nothing either (GH
-        // #1087 review, G4): zed wrote no row and is no owner's member
+        // #1087 review, G4): zed wrote no row and is no organization's member
         let stranger = ops::GraphEdge { kind: "holds" };
         stranger.member("position", "position:api/dev");
         stranger.member("holder", "zed");

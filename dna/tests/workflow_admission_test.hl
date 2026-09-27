@@ -43,7 +43,7 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = ask\nask: alice\n", me: "ask", me_env: "" }
+            ownership: dna::Ownership { graph: dna::graph_ownership_of("position:org organization:ask\norganization:ask alice\n"), me: "ask", me_env: "" }
         };
         // a body over a shared record that names no owner: it admits
         // nothing (GH #664), workflows included
@@ -56,7 +56,7 @@ main locus App {
             review_policy: dna::PostReviewRefactors { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
-            ownership: dna::Ownership { text: "org = acme\n", me: "", me_env: "" }
+            ownership: dna::Ownership { graph: dna::graph_ownership_of("position:org organization:acme\n"), me: "", me_env: "" }
         };
     }
     @unbounded

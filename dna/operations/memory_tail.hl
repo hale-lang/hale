@@ -323,8 +323,36 @@ fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: Str
     let bar = std::str::index_of(id, "|");
     let position = id[6..bar];
     let holder = id[(bar + 1)..len(id)];
+    // GH #1123: a firm owning a position is no person's seat, and a
+    // position has one owner — a second organization is refused
+    if std::str::starts_with(holder, "organization:") {
+        let mut it = std::json::array_first(store.graph_ownership());
+        while !it.done {
+            let two = dna::show_strings(it.element);
+            let nl = std::str::index_of(two, "\n");
+            let node = if nl < 0 { two } else { two[0..nl] };
+            let other = if nl < 0 { "" } else { dna::trim_nl(two[(nl + 1)..len(two)]) };
+            if node == position && std::str::starts_with(other, "organization:") && other != holder { return position + " is owned by " + other[13..len(other)] + " already; a position has one owning organization"; }
+            it = std::json::array_next(it);
+        }
+        return "";
+    }
     if store.person_retired(holder) { return holder + " retired from this organism"; }
-    if !hold_known(store, authors, i, holder) { return holder + " is no person this record knows (no row before row " + to_string(i) + " in their name, and no owner's member)"; }
+    // a membership is what makes a person known to a shared record: its
+    // holder need not have written before, only be a person, and a
+    // member of one organization
+    if std::str::starts_with(position, "organization:") {
+        if !hold_person(holder) { return holder + " is a name the organism writes as, not a person"; }
+        let mut held = store.graph_held_by(holder);
+        while len(held) > 0 {
+            let nl = std::str::index_of(held, "\n");
+            let node = if nl < 0 { held } else { held[0..nl] };
+            held = if nl < 0 { "" } else { held[(nl + 1)..len(held)] };
+            if std::str::starts_with(node, "organization:") && node != position { return holder + " is already a member of " + node[13..len(node)] + "; a person belongs to one organization"; }
+        }
+        return "";
+    }
+    if !hold_known(store, authors, i, holder) { return holder + " is no person this record knows (no row before row " + to_string(i) + " in their name, and no organization's member)"; }
     let sibling = if std::str::ends_with(position, "/dev") { position[0..(len(position) - 4)] + "/reviewer" } else if std::str::ends_with(position, "/reviewer") { position[0..(len(position) - 9)] + "/dev" } else { "" };
     if len(sibling) == 0 || !std::str::contains("\n" + store.graph_held_by(holder) + "\n", "\n" + sibling + "\n") { return ""; }
     let why = holder + " holds " + sibling + "; a process's reviewer is never the same holder as its dev";
@@ -332,12 +360,18 @@ fn hold_refusal(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, id: Str
     return why + " (dna.trust = " + trust + ")";
 }
 
+// Whether `holder` can be a person at all: never a name the organism
+// writes as.
+fn hold_person(holder: String) -> Bool {
+    return len(holder) > 0 && !dna::word_in(holder, "dna host spine org ledger board hale") && !std::str::starts_with(holder, "hale dna");
+}
+
 // Whether `holder` is a person the record knew before row `i` (GH #1087
-// review, G4): an owner's member, or who wrote a row in their own name —
-// never a name the organism writes as.
+// review, G4): an organization's member (GH #1123), or who wrote a row in
+// their own name — never a name the organism writes as.
 @unbounded
 fn hold_known(store: dna::KnowledgeStore, authors: RowAuthors, i: Int, holder: String) -> Bool {
-    if len(holder) == 0 || dna::word_in(holder, "dna host spine org ledger board hale") || std::str::starts_with(holder, "hale dna") { return false; }
+    if !hold_person(holder) { return false; }
     if store.org_member(holder) { return true; }
     let mut k = 0;
     while k < i {
@@ -557,8 +591,6 @@ locus MemoryProjection {
         // GH #1026: the commit the projection stops at ("" = the record's
         // end): the host projects only what the remote holds
         until: String = "";
-        // the owners map as last projected into `org_members`
-        members: String = "?";
     }
     birth() {
         self.j.repo = self.root;
@@ -623,29 +655,6 @@ locus MemoryProjection {
         let r = self.project(false);
         self.until = "";
         return r;
-    }
-    // The genome's owners map into `org_members` (GH #1026), when it has
-    // changed since it was last put there: `<person> <owner>` per member.
-    @unbounded
-    fn sync_members() -> Bool {
-        let owners = dna::Ownership { path: self.root + "/dna/org/owners", me_env: "" };
-        let names = owners.owners();
-        let mut pairs = "";
-        let mut i = 0;
-        while len(dna::nth_word(names, i)) > 0 {
-            let o = dna::nth_word(names, i);
-            let members = owners.members_of(o);
-            let mut k = 0;
-            while len(dna::nth_word(members, k)) > 0 {
-                pairs = pairs + dna::nth_word(members, k) + " " + o + "\n";
-                k = k + 1;
-            }
-            i = i + 1;
-        }
-        if pairs == self.members { return true; }
-        if !self.store.set_members(pairs) { self.last_error = "the org chart could not be projected: " + self.store.last_error(); return false; }
-        self.members = pairs;
-        return true;
     }
     fn projection_refused(why: String) -> ProjectionApplied {
         self.last_error = "the Knowledge projection cannot proceed over this Record: " + why;
@@ -712,7 +721,6 @@ locus MemoryProjection {
         if !self.ensure_open() { return ProjectionApplied { error: self.last_error }; }
         let basis = self.store.projection_basis();
         if !basis.ok { return self.projection_refused("memory holds no valid projection stamp (" + self.store.last_error() + "); `hale dna memory migrate` sets one"); }
-        if !self.sync_members() { return ProjectionApplied { error: self.last_error }; }
         let whole = self.j.revision();
         let last = if whole > 0 { self.j.read(whole - 1).digest } else { "" };
         if whole > 0 && last != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + last + "`"); }

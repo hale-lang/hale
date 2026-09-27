@@ -93,11 +93,12 @@ fn check() {
     let input = j.append_exact(j.revision(), "knowledge.node.requested", r.request_id, codec.started(r));
     std::test::assert(input.ok, "actual native request input");
     let trust = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.trust\nsigned");
+    // south's body (GH #1123): what it owns is the graph's, and before
+    // memory says so — none is named here — it admits nothing
     let owner = dna::run_tool("git\n-C\n" + root + "\nconfig\ndna.owner\nsouth");
-    let wrote = host::write_text(root + "/dna/org/owners", "org = north\norg/team = south\n") or false;
-    std::test::assert(trust.code == 0 && owner.code == 0 && wrote, "explicit other-owner signed profile");
+    std::test::assert(trust.code == 0 && owner.code == 0, "explicit named-organization signed profile");
     let state = relay_once(root);
-    std::test::assert_eq_int(state.relayed_count, 0, "another owner's request is not relayed");
+    std::test::assert_eq_int(state.relayed_count, 0, "a request this body is not known to own is not relayed");
     std::test::assert_eq_str(state.relayed, "\n", "another owner's unsigned request is not marked refused by this keyring");
     let refreshed = j.refresh();
     std::test::assert_eq_int(j.revision(), 1, "routing writes no other-owner outcome");

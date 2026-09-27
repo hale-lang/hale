@@ -93,13 +93,16 @@ reason the verb prints:
 
 1. a kind that is not the Ledger's (`ledger_kind`, the routing table
    above as data): it is appended to the record instead;
-2. an author the calling role does not hold. `memory_principals`,
+2. a person the record retired (`org_retired`, below) — checked before
+   the author, since a retirement also ends the person's memberships,
+   and the refusal says so;
+3. an author the calling role does not hold. `memory_principals`,
    owner-only, maps each role to whom it writes as: `*` any author and
    no person checks (the spine's role, and the schema's owner); `@` any
    person (the head's role over a record with one owner); an owner's
-   name, that owner's members (each owner's head role over a shared
-   record, **The owners' roles**, below); `host` for any head;
-3. a person the record retired (`org_retired`, below);
+   name, that owner's members — the persons who hold its `organization`
+   node (each owner's head role over a shared record, **The owners'
+   roles**, below); `host` for any head;
 4. a `task.transfer_accepted` for a Task not offered to an owner, or in
    the name of someone who is not the member of the owner it is offered
    to;
@@ -131,15 +134,18 @@ An adoption and an abandonment are the record's `ledger.adopting` and
 `ledger.abandoning` rows above, carried out by a node under a claim on
 the asking row (**Claims by id**, below).
 
-**The org chart in memory (GH #1026).** The checks above read what the
-spine projects: `org_members(person, owner)` is the genome's owners map
-(`dna/org/owners`), replaced whole in one transaction whenever its text
-changes; `org_retired(person, seq)` is the record's `person.retired`
-rows, projected in the same per-row transaction as the graph (and
-emptied with it on a rebuild). The head reads both, so a verb that
-checks before writing — a retired person, a transfer's owner — says so
-in its own words; the store's check is the gate, the head's the
-message.
+**The org chart in memory (GH #1026, #1123).** The checks above read
+what the spine projects, and the org chart is the graph's (**The
+repository's graph**, below): `org_members(person, owner)` is a view
+over the graph's live `holds` edges whose position side is an
+`organization` node — a person holding `organization:<o>` is `o`'s
+member, and `owner` is the organization's name — so it moves with the
+graph's own projection and nothing rewrites it; `org_retired(person,
+seq)` is the record's `person.retired` rows, projected in the same
+per-row transaction as the graph (and emptied with it on a rebuild).
+The head reads both, so a verb that checks before writing — a retired
+person, a transfer's owner — says so in its own words; the store's
+check is the gate, the head's the message.
 
 **The owners' roles (GH #1026).** Over a shared record each owner's
 heads write the Ledger as that owner's role, `<schema>_head_<owner>`,
@@ -290,15 +296,17 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 5 (GH #1026: 2 made the
+- **The version fence.** The schema version is 6 (GH #1026: 2 made the
   lease table `claims` and the graph's projection one transaction per
   record row — migrating a version-1 memory renames the table in place,
   its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
   org chart it checks and the roles' principals; GH #1085: 4 adds the
   repository's graph, `graph_nodes`, `graph_edges` and `graph_members`;
-  GH #946: 5 adds `hats`, hats by digest, which moves no projection.
-  Each protocol move empties the graph once for
-  the projectors to rebuild). A store's `open`
+  GH #946: 5 adds `hats`, hats by digest, which moves no projection;
+  GH #1123: 6 makes `org_members` a view over the graph's `holds`
+  edges, where it was a table the spine rewrote from the retired owners
+  map, and moves no projection either. Each protocol move empties the
+  graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
   DSN; it also refuses a schema whose claim names another record (`it
@@ -307,7 +315,7 @@ host's tick (**The spine**, below).
 - **Grants.** A head's role — the head's, or an owner's — has `SELECT`
   on the ledger, knowledge, org-chart and meta tables (`memory_meta`,
   `ledger_rows`, `ledger_meta`, `ledger_requests`, `claims`,
-  `knowledge_*`, `graph_*`, `org_members`, `org_retired`), `INSERT` and `UPDATE`
+  `knowledge_*`, `graph_*`, `org_members` (a view), `org_retired`), `INSERT` and `UPDATE`
   on `claims` only, to take and fence a claim, and `EXECUTE` on
   `receipt_file`, `receipt_read` and `ledger_append`: a head writes the
   Ledger through its gate and no table directly. The spine's role reads
@@ -1105,8 +1113,9 @@ repository:
   `spine_<owner>`, filtered to `<org>.<owner>.dna.>` — so no
   organization pulls a fact another owner's host published, and refuses
   it, which the relay would take as the answer. The host names its
-  owner from the clone (`dna.owner`) and hands it to the organization
-  (`HALE_DNA_OWNER`); an owner's name in a subject or a durable keeps
+  owner from the clone (`dna.owner`, the name of its `organization`
+  node) and hands it to the organization (`HALE_DNA_OWNER`); an owner's
+  name in a subject or a durable keeps
   its letters, digits, `-` and `_`, anything else `_`.
 - **Credentials, one per family**, each a URL with its user: `owner`
   creates the stream and is held by no process that runs the organism;
@@ -1194,7 +1203,7 @@ record's.
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
 | `graph.retired` | record | the node or edge the entity names leaves the graph |
-| `hold.requested` | record | someone asks the organization to propose a holder for a position (`hale dna fill`) |
+| `hold.requested` | record | someone asks the organization to propose a holder for a position — a person or an organization — or a member for an organization (`hale dna fill`) |
 | `hold.proposed` / `hold.refused` | record | the organization proposed it to the Board (`digest`, `review_id`), or why not; `hold.refused <hold id>` is also memory's refusal of a hold it would not project (`why`, `row`, `by: memory`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `law.deferred` | record | a clause `init` could not certify |
@@ -1752,7 +1761,10 @@ memory is named to it.
   position and its holder not retired, memory not having refused it
   (`hold.refused`), the person not retired; or, under a record that
   declares `dna.trust = local`, any position. The socket's roles read
-  the same edges (`HoldsReader`). Otherwise the claim is refused naming
+  the same edges (`HoldsReader`): a person holds a position in their own
+  name, or as a member of an organization holding it (GH #1123, as the
+  route reads a firm-held position); a membership alone is no seat, so
+  it grants neither `position` nor any other role. Otherwise the claim is refused naming
   the person and the position, and so is a renewal once the person no
   longer holds it (a release stays open) and friction filed as a
   position the person does not hold. Without local trust the
@@ -2717,7 +2729,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   {`definition`, `signers`, `gates`}; that row is what the Review
   requires from then on, a restart included. `signers` is every position
   the route names with the holders it has then,
-  `<position>=<holder>,<holder> …`; `gates` is the gates guarding the
+  `<position>=<holder>,<holder> …` — a position an organization holds
+  is held, for signing, by that organization's members (GH #1123: the
+  route expands the organization into its members, each once), so any
+  one of them signs for it; `gates` is the gates guarding the
   change, and `fallback` whether the route left some path to the
   fallback. A route that names no held position defines no signers:
   with no memory named, or before anyone holds a signing position (the
@@ -2737,14 +2752,13 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   candidate is applied. With signers, **a verdict is
   admitted only from a holder of a required position**, whatever
   authority it claims (`reviewer <who> holds no position this Review
-  requires (<positions>)`) — or from a member of an affected owner for an
-  owners change (GH #664), or, **where the route left a path to the
+  requires (<positions>)`) — or, **where the route left a path to the
   fallback, from one claiming the Review's own required authority**; a
   verdict counts toward every requirement it meets. The author is still
   refused; one rejection or revision from a required position settles
   it; **approval settles only once every required position has
-  approved** — one holder of two positions signs for both — every
-  affected owner, the required authority where the route left it a path,
+  approved** — one holder of two positions signs for both — the
+  required authority where the route left it a path,
   and **every gate has a passing run at the candidate, as the forge
   reported it**. An approval that settles nothing is answered all the same,
   `review.signed <review> {by, awaiting}`, and `hale dna review <id>`
@@ -2788,31 +2802,54 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   (`hale dna review <id> approve --as <who>`) names its reviewer as the
   row's writer says, so under `dna.trust = signed` the position check is
   as strong as the writer's signature.
-- **Owners (stage B2, GH #664).** A shared record's org chart has
-  one owner per position: the firm whose controller admits intents
-  for it. The map is the genome's file `dna/org/owners` (`org =
-  acme`, `org/collections = north`; `acme: alice, carol` names an
-  owner's members), read by `Ownership` in the org program; a
-  position not named takes its nearest named ancestor's owner, and
-  one under no named ancestor is unowned — admitted by no one. An
-  empty map is one owner, the organization itself, and nothing about
-  a single-owner organism changes. A body over a shared record says
-  which owner it is (`git config dna.owner`, carried as
-  `HALE_DNA_OWNER`) or the host refuses to run it; it admits an intent
-  (`Intent.to`, the position it is for; "" is `org`) only for a
-  position its owner holds, refusing one offered to it for another's
-  by name (`intent.refused`: "not this organization's to admit"). A
-  head never offers such an intent to the body beside it: `hale dna
-  task create --to` writes it to the record for the owner's controller, the
-  host relays only `intent.requested` rows for positions its owner
-  holds, and `status` lists the rest as `[unadmitted]` with the owner.
-  Changing the map is a change to the organization approved by every
-  owner it affects — an owner whose holdings or members differ between
-  the current map and the candidate's — each through one of its
-  members: the Review carries `approvers` (`acme=alice,carol
-  north=bob`), a verdict from a member of no affected owner is
-  refused, one rejection settles, and approval settles only once every
-  affected owner has approved. Ids and effect claims carry their owner
+- **Owners (stage B2, GH #664; the graph's, GH #1123).** A shared
+  record's org chart has one owner per organism position: the firm
+  whose controller admits intents for it. The org chart is the graph's
+  (**The repository's graph**): a firm is an `organization` node, it
+  owns a position by holding it (`holds(position:org,
+  organization:acme)`, `holds(position:org/collections,
+  organization:north)`), and a person is its member by holding the
+  organization (`holds(organization:acme, alice)`). A position no
+  organization holds takes the owner of its nearest held ancestor by
+  path (`org/collections/late` takes `org/collections`'s, up to `org`),
+  and one under no held ancestor is unowned — admitted by no
+  controller. A graph in which no organization holds anything is one
+  owner, the organization itself, and nothing about a single-owner
+  organism changes. The organism's `Ownership` is built from memory's
+  `graph_ownership()` (JSON `[node, holder]` pairs of every live
+  `holds` edge an organization is in; memory not answering is no
+  ownership, so a view that may have moved is dropped), read again at rehydrate and on
+  every reconciliation, so the Ledger's gate (`org_members`) and every
+  admission read one projection. A body over a shared record says
+  which organization it is (`git config dna.owner acme`, the bare name
+  of its `organization` node, carried as `HALE_DNA_OWNER`); a body that
+  names its organization admits nothing until memory says what it
+  holds — it fails closed. The host's `run` and `dev` read which
+  organizations exist straight from the record's `graph.node` rows of
+  kind `organization` (the record is the membership's source), so a
+  shared record is known as one without memory: over a record that
+  states organizations, a body that names none does not run, nor one
+  that names an organization the record does not state; and `run` of a
+  body that names its organization needs the ledger adopted. The
+  host's admission helpers read memory as a head does
+  (`HALE_DNA_MEMORY_DSN_HEAD`, else the spine's DSN). A body admits an
+  intent (`Intent.to`, the position it is for; "" is `org`) only for a
+  position its organization owns, refusing one offered to it for
+  another's by name (`intent.refused`: "not this organization's to
+  admit"). A head never offers such an intent to the body beside it:
+  `hale dna task create --to` writes it to the record for the owner's
+  controller, the host relays only `intent.requested` rows for
+  positions its owner holds, and `status` lists the rest as
+  `[unadmitted]` with the owner. **Ownership and membership change like
+  any other hold**: proposed (`hale dna fill <position>|organization:<name>
+  <holder>|organization:<name>`) and ratified by the Board
+  (practice-ratify, which requires the `board` position); no quorum of
+  owners approves anything — every approval is the route's (**Signers
+  from the route**), and a position an organization holds is signed by
+  any of its members (a Review's wire form keeps its `approvers` field,
+  always empty). There is no verb yet to propose a new
+  `organization` node: a fixture or an operator writes its `graph.node`
+  row. Ids and effect claims carry their owner
   (GH #666): a controller mints in its own namespace — `acme:t3`,
   `acme:m2` — and claims an apply as `acme:apply:<candidate>`, so two
   controllers never contend for one id, each restores its count from
@@ -2835,10 +2872,12 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   as their owner's role, which writes only in its owner's members'
   names (**The owners' roles**); who the person is remains the head's
   to establish — its issuer under `dna.principal = oidc`. With one
-  owner, the head's role writes as any person.
-  The map may still name `host = <owner>` (GH #669); changing it
-  affects every owner, so every owner approves, and memory does not
-  read it.
+  owner, the head's role writes as any person. The organization that
+  owns `org` is `ownership.host_owner` in the API's organization read
+  (empty with one owner), which builds `ownership` from memory under
+  the head's role; the owners map's `host = <owner>` (GH #669) went
+  with the map. An organization source published by a named source
+  owner is published only when that owner owns `org` in the graph.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding
@@ -2859,7 +2898,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
 - **One body per owner: the body lease, and its epoch (GH #665).**
   A record admits one body per owner at a time — one body when the
   organization is the one owner (bounded attachment; the initial
-  controller model). Over a shared record (the owners map above) the
+  controller model). Over a shared record (**Owners**, above) the
   lease is a row of memory's `claims` table per owner, `owner/<owner>`,
   taken like the single body's `body` row, so two
   firms' controllers run side by side over one record and a firm's
@@ -3660,9 +3699,10 @@ The live half is memory's, projected from the record by the spine
   one record, one projection, no second store. The vocabulary is
   `dna/operations/graph.hl`. **Node kinds**: `purpose`, `axiom`,
   `process`, `seed`, `contract`, `noun`, `deployment`, `practice`,
-  `gate`, `document`, `witness`, `position`, `work`; a node's id is
-  `<kind>:<name>`. **Hyperedge kinds**, arity two or more, each a list
-  of members `{role, node}` whose first is its anchor:
+  `gate`, `document`, `witness`, `position`, `work`, `organization`
+  (a firm, GH #1123); a node's id is `<kind>:<name>`. **Hyperedge
+  kinds**, arity two or more, each a list of members `{role, node}`
+  whose first is its anchor:
   `unfold(parent, child)`, `meets(contract; server…, consumer…, carrier…)`,
   `names(contract; noun…)`, `refers(from, to)`,
   `constrains(axiom; shaped…)`, `runs(deployment; process…)`,
@@ -3670,7 +3710,16 @@ The live half is memory's, projected from the record by the spine
   `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
   `reviews(position, subject)` — the subject a contract, a document, a
   seed or a deployment: what the position signs a change to, a design
-  document being signed too. A pair kind (`unfold`, `refers`,
+  document being signed too. A `holds` edge is a seat or a membership
+  (GH #1123): `holds(position:<p>, <person>)` is a person's seat,
+  `holds(position:<p>, organization:<o>)` is organization `o` owning
+  position `p`, and `holds(organization:<o>, <person>)` is the person's
+  membership of `o`; its `position` role takes a `position` or an
+  `organization` node, its `holder` is a person or, for a position, an
+  `organization` node, and an organization never holds another
+  organization (**Owners**). A position has one owning organization and
+  a person one: memory refuses a second of either as a `hold.refused`
+  row, and `hale dna fill` refuses to propose it. A pair kind (`unfold`, `refers`,
   `holds`, `reviews`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says
@@ -3678,7 +3727,8 @@ The live half is memory's, projected from the record by the spine
   `<kind>:<anchor>|<second>`, and no name or holder holds a `|`, so an id
   reads one way. A role may require a node kind (a
   `meets` contract is a `contract:` node, a `runs` process a
-  `process:`); a `holder` is a person, not a node; `meets` also
+  `process:`); a `holder` is a person or an `organization` node;
+  `meets` also
   carries its transport (`via`) and the parties it reaches that are
   not nodes (`outside`, e.g. callers). Two kinds are never graph rows:
   a `practice` is a knowledge idea of kind `practice` — advice unless the
@@ -3698,12 +3748,18 @@ The live half is memory's, projected from the record by the spine
   its id (an edge's members with it) and taken out by `graph.retired`; a
   retired node's edges stay as the record left them, and the perspectives
   leave its memberships out (an edge whose anchor is gone is not shown).
-  **There is one org chart, and it is the graph**: its `position` nodes
-  and their `holds` edges, proposed and ratified as holes (below). The
-  organization's generated `dna/org` files, the owners map and the
-  organism's program are renderings of it, never its source — pending
-  GH #1123, which derives them; until then they are written beside it,
-  and nothing reads a position from them that the graph states.
+  **There is one org chart, and it is the graph**: its `position` and
+  `organization` nodes and their `holds` edges, proposed and ratified as
+  holes and holds (below). Who owns a position and who is a firm's
+  member are `holds` edges, never a file: the owners map
+  (`dna/org/owners`) is retired, not rendered (GH #1123) — `hale dna
+  init` and `new` write none, and `hale dna upgrade` removes one,
+  noting the lines it named to be stated again as `holds` edges, and
+  takes the generated `ownership:` field out of `dna/org/main.hl` (or
+  notes it where the file was edited by hand). The organization's
+  generated `dna/org` files and the organism's program are written
+  beside the graph, never its source, and nothing reads a position from
+  them that the graph states.
   **Perspectives are queries over memory**:
   `KnowledgeStore.graph_perspective("org")` is the positions in the
   record's order, each with the node it unfolds from (`under`), its
@@ -3714,6 +3770,8 @@ The live half is memory's, projected from the record by the spine
   `graph_nodes_count(kind)` and `graph_edges_count(kind)` count them;
   `practice` counts the practices proposed or ratified and `binds` the
   ratified practices that bind something, one hyperedge each.
+  `Pq.graph_ownership()` is JSON `[node, holder]` pairs of every live
+  `holds` edge an organization is in (**Owners**).
 - **Ingest: `hale dna init` on a repository (GH #1090).** A directory
   with no Hale source of its own that is no workspace's seed is a
   repository, not one application: `init` makes the organization there
@@ -3831,8 +3889,12 @@ The live half is memory's, projected from the record by the spine
   groups `holes`, `practices` and `holds` together, as it does `design`
   and `operating`, and `hale dna review <group> approve|reject` decides
   each pending one in turn.
-  **`hale dna fill <position> <holder> [project] [--as <who>]`** asks the
-  running organization for a holder,
+  **`hale dna fill <position>|organization:<name>
+  <holder>|organization:<name> [project] [--as <who>]`** asks the
+  running organization for a holder — a person's seat, a firm owning a
+  position (`fill org/collections organization:north`) or a person's
+  membership of a firm (`fill organization:north bob`), each a `holds`
+  edge (GH #1123) —
   as `hale dna practice propose` asks for a practice (`init` alone writes
   proposals directly, since no organism exists yet): a
   `hold.requested <id> {request_id, position, holder, by}` row in the
@@ -3840,21 +3902,29 @@ The live half is memory's, projected from the record by the spine
   `hold.proposed` (`digest`, `review_id`) or `hold.refused` (`why`). The
   organization proposes it like any hole (`group: holds`), in the asker's
   name, so the asker may not ratify it. The CLI checks first that the
-  position is one the record states or proposes and has not retired
-  (`graph.retired`), that the holder is a person the record knows — who
-  wrote a row in their own name, or an owner's member — and has not
-  retired (`person.retired`), and the same-holder rule. **The store is the
+  position or organization is one the record states or proposes and has
+  not retired (`graph.retired`); a firm holding a position needs no
+  person checks — only that the firm is an organization the record
+  states or proposes, and that it holds a position, never another
+  organization; a person must not be a name the organism writes as,
+  must not have retired (`person.retired`), and, for a seat, must be a
+  person the record knows — who wrote a row in their own name, or an
+  organization's member — under the same-holder rule. A membership's
+  holder need not have written a row before: joining an organization is
+  how a person becomes known to a shared record. **The store is the
   gate**: a hold is checked again where memory projects it, however it
-  reached the record — a holder the record never knew before the row (no
-  row in their name, and no owner's member) is not projected, nor is a
-  retired one, and a part's `reviewer` held by its `dev`'s holder is a
-  warning on stderr under `dna.trust = local` (one person holds every
-  role) and not projected under any other trust. A hold the store refuses
-  is a row, once: `hold.refused <hold id>` (`why`, `row`, `by: memory`).
-  A person retired after their hold was projected gives every seat back
-  where the retirement is projected. `fill` and `practice propose` name a
-  request by its digest at the record's head (`h…`, `p…`), so two requests
-  in one millisecond never share an id.
+  reached the record — a seat whose holder the record never knew before
+  the row (no row in their name, and no organization's member) is not
+  projected, nor is a retired holder's, nor a membership of a second
+  organization (a person belongs to at most one), and a part's
+  `reviewer` held by its `dev`'s holder is a warning on stderr under
+  `dna.trust = local` (one person holds every role) and not projected
+  under any other trust. A hold the store refuses is a row, once:
+  `hold.refused <hold id>` (`why`, `row`, `by: memory`). A person
+  retired after their hold was projected gives every seat and
+  membership back where the retirement is projected. `fill` and
+  `practice propose` name a request by its digest at the record's head
+  (`h…`, `p…`), so two requests in one millisecond never share an id.
 - **A repository record runs its organization alone (GH #1091).** When the
   record's seed holds no Hale source of its own, `hale dna dev` and
   `hale dna run` check and build the organization only; there is no application

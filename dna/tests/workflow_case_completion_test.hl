@@ -50,7 +50,8 @@ fn dna_cli(app: String, args: String) -> String {
 
 const APP: String = "fn main() { println(\"app\"); }\n";
 const PLAN: String = "kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-approval\nmara handles it";
-const OWNERS: String = "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n";
+// GH #1123: who owns what, in the graph's terms
+const OWNERS: String = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:north bob\n";
 
 locus Boot {
     params {
@@ -234,7 +235,7 @@ main locus App {
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
             journal: dna::GitJournal { repo: repo },
-            ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
+            ownership: dna::Ownership { me: me, me_env: "", graph: dna::graph_ownership_of(OWNERS) },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }

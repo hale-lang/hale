@@ -447,6 +447,15 @@ locus MemoryKnowledge {
         self.store.forget_error();
         return self.store.graph_perspective("routing");
     }
+    // The graph's ownership (GH #1123): JSON `[node, holder]` pairs of
+    // the `holds` edges an organization is in, "" when memory is not there
+    // or does not answer.
+    @unbounded
+    fn ownership() -> String {
+        if !self.ready() || !self.ensure_open() { return ""; }
+        self.store.forget_error();
+        return self.store.graph_ownership();
+    }
     // The body memory keeps under a hat's digest, "" when none.
     @unbounded
     fn hat(digest: String) -> String {

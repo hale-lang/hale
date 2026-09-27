@@ -13,8 +13,7 @@
 // Review a restart rebuilds from the record, it answers the same decision
 // and writes nothing new. A Review whose route defines no signers keeps
 // its own required authority; one whose route left a path to it requires
-// that authority beside every position. An owners change admits a member
-// of an affected owner beside the positions; re-routed, the Review takes
+// that authority beside every position. Re-routed, the Review takes
 // who holds its positions now. Over a git record, a restart rebuilds a
 // proposal's Review from its `review.routed` row, and it refuses anyone
 // but the Board's holder. graph_route_test computes the requirement from
@@ -180,15 +179,6 @@ main locus App {
         std::test::assert_eq_str(r6.awaiting(), "authority:board", "it awaits the Board's authority");
         std::test::assert(!r6.consider(dna::Verdict { review_id: "m6", subject_digest: CANDIDATE, verdict: "approve", reviewer: "mallory", authority: "leader" }) && std::str::contains(r6.last_refusal, "holds no position this Review requires (position:api/reviewer) and authority leader does not satisfy board"), "a weaker authority is refused: " + r6.last_refusal);
         std::test::assert(r6.consider(dna::Verdict { review_id: "m6", subject_digest: CANDIDATE, verdict: "approve", reviewer: "ada", authority: "board" }) && r6.settled && r6.outcome == "approve", "the Board's approval completes it");
-
-        // ---- an owners change beside a route: a member of an affected
-        // owner counts toward the owners, a holder toward the positions
-        let r7 = dna::Review { journal: self.rj, review_id: "m7", question: "apply m7?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1", signers: "position:api/reviewer=grace", approvers: "acme=alice" };
-        std::test::assert(r7.consider(self.verdict("m7", "", "alice", "approve")) && !r7.settled, "alice, a member of acme and no signer, is admitted for acme");
-        std::test::assert(r7.consider(self.verdict("m7", "", "grace", "approve")) && r7.settled, "grace completes it: every owner and every position approved");
-        // without a route, an owners change keeps its rule: the authority and a member
-        let r8 = dna::Review { journal: self.rj, review_id: "m8", question: "apply m8?", subject_digest: CANDIDATE, required_authority: "board", author: "dev1", approvers: "acme=alice" };
-        std::test::assert(!r8.consider(self.verdict("m8", "", "mallory", "approve")) && std::str::contains(r8.last_refusal, "is a member of no owner this change affects (acme)"), "the Board's authority without membership is refused: " + r8.last_refusal);
 
         // ---- re-routed: who holds the positions now signs, and who left does not
         let r9 = review(self.rj, "m9", "");

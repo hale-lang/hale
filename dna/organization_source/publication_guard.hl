@@ -12,6 +12,9 @@ locus OrganizationPublicationInputs {
         root: String = ".";
         compiler: String = "";
         source_owner: String = "";
+        // GH #1123: the graph's ownership (memory's `graph_ownership()`),
+        // by which the source owner publishes only if it owns `org`
+        ownership: String = "";
         worktree_root: String = "";
         inspection_seconds: Int = 30;
     }
@@ -64,64 +67,16 @@ locus OrganizationPublicationInputs {
         // validator; it is never persisted or returned as captured evidence.
         let checked = self.with_receipt(r, if preparing && r.dependency_source == "local_vendor_snapshot" && r.dependency_receipt == "" { dna::digest_of("uncaptured") } else { r.dependency_receipt });
         if (r.dependency_source != "local_vendor_snapshot" && r.dependency_receipt != "") || !codec.valid(checked) || !self.commit_id(r.source_head) || !self.commit_id(r.record_head) || !self.component(self.source_owner, true) || r.source_owner != self.source_owner { return false; }
-        if codec.ownership(r) { let syntax = OwnershipSourceSyntax { }; if syntax.source_error(r.source_text) != "" { return false; } }
         let record = dna::GitRecord { repo: self.root };
         return len(self.root) > 1 && record.identity() == r.application_id;
     }
     fn owner(artifact: OrganizationArtifact) -> Bool {
-        let ownership = dna::Ownership { text: artifact.owners, me: self.source_owner, me_env: "" };
+        let ownership = dna::Ownership { graph: self.ownership, me: self.source_owner, me_env: "" };
         return ownership.admits("org");
     }
     fn basis(r: dna::OrganizationSourceRequest, a: OrganizationArtifact) -> Bool {
-        let codec = dna::OrganizationSourceRequestCodec { };
-        return a.ok && a.source_head == r.source_head && (if codec.ownership(r) { dna::digest_of(a.owners) } else { a.module_digest }) == r.module_digest
+        return a.ok && a.source_head == r.source_head && a.module_digest == r.module_digest
             && a.dependency_source == r.dependency_source && a.dependency_digest == r.dependency_digest && self.owner(a);
-    }
-    // Owners is runtime input, so the compiler's input list cannot prove it.
-    // Read one fixed tracked regular file, including a genuinely empty blob.
-    fn ownership_blob(record: dna::GitRecord, commit: String) -> dna::Kept {
-        if !self.commit_id(commit) { return dna::Kept { }; }
-        let object = commit + ":dna/org/owners";
-        let hash = record.git_out("rev-parse\n--verify\n" + object);
-        if !self.commit_id(hash) || record.git_out("cat-file\n-t\n" + object) != "blob" { return dna::Kept { }; }
-        let mode = record.git("ls-tree\n" + commit + "\n--\ndna/org/owners");
-        if mode.code != 0 || mode.stdout != "100644 blob " + hash + "\tdna/org/owners\n" { return dna::Kept { }; }
-        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
-        if size < 0 || size > 16384 { return dna::Kept { }; }
-        let text = record.git("show\n" + object); let syntax = OwnershipSourceSyntax { };
-        if text.code != 0 || len(text.stdout) != size || syntax.source_error(text.stdout) != "" { return dna::Kept { }; }
-        return dna::Kept { present: true, text: text.stdout };
-    }
-    fn ownership_file(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection, edited: Bool) -> String {
-        let record = dna::GitRecord { repo: worktree }; let before = self.ownership_blob(record, r.source_head);
-        if !before.present || dna::digest_of(before.text) != r.module_digest { return "organization_candidate_invalid"; }
-        let at = self.ownership_blob(record, commit);
-        if !at.present { return "organization_candidate_invalid"; }
-        let plain = inspection.execute("sh\n-c\nfor p in \"$1/dna\" \"$1/dna/org\" \"$1/dna/org/owners\"; do [ ! -L \"$p\" ] || exit 1; done; [ -f \"$1/dna/org/owners\" ]\nsh\n" + worktree, "/", 4096);
-        if plain.code != 0 { return "organization_candidate_invalid"; }
-        let path = worktree + "/dna/org/owners"; let size = std::io::fs::file_size(path) or - 1;
-        let expected = if edited { r.source_text } else { before.text };
-        if size < 0 || size > 16384 || size != len(expected) || (std::io::fs::read_file(path) or "") != expected { return "organization_candidate_invalid"; }
-        let syntax = OwnershipSourceSyntax { };
-        return if syntax.source_error(expected) == "" { "" } else { "invalid_command" };
-    }
-    // Immutable quorum read: current HEAD or a cached live Ownership never
-    // substitutes for either map in the reviewed candidate. No source effect.
-    fn ownership_quorum(r: dna::OrganizationSourceRequest, candidate: String) -> dna::OrganizationSourceQuorum {
-        let codec = dna::OrganizationSourceRequestCodec { };
-        if !codec.ownership(r) || !self.request_valid(r, false) || !self.commit_id(candidate) { return dna::OrganizationSourceQuorum { }; }
-        let record = dna::GitRecord { repo: self.root };
-        if record.git_out("rev-list\n--parents\n-n\n1\n" + candidate) != candidate + " " + r.source_head { return dna::OrganizationSourceQuorum { }; }
-        let changed = record.git("diff\n--name-only\n--no-renames\n" + r.source_head + "\n" + candidate + "\n--");
-        if changed.code != 0 || (dna::trim_nl(changed.stdout) != "" && dna::trim_nl(changed.stdout) != codec.module_for(r)) { return dna::OrganizationSourceQuorum { }; }
-        let before = self.ownership_blob(record, r.source_head); let after = self.ownership_blob(record, candidate);
-        if !before.present || !after.present || dna::digest_of(before.text) != r.module_digest
-            || after.text != r.source_text || dna::digest_of(after.text) != r.source_digest { return dna::OrganizationSourceQuorum { }; }
-        let approvers = dna::ownership_approvers(before.text, after.text);
-        // Existing Review wire bounds remain unchanged. Empty member sets are
-        // preserved (unsatisfiable quorum), never downgraded to no quorum.
-        if len(approvers) > 8192 { return dna::OrganizationSourceQuorum { }; }
-        return dna::OrganizationSourceQuorum { ok: true, approvers: approvers };
     }
     fn source() -> Bool {
         let inspection = OrganizationInspection { };
@@ -232,14 +187,8 @@ locus OrganizationPublicationInputs {
         if !base.ok { return dna::OrganizationSourcePreparation { code: base.code }; }
         if !self.owner(base) { return dna::OrganizationSourcePreparation { code: "forbidden" }; }
         if !self.basis(r, base) { return dna::OrganizationSourcePreparation { code: "stale_subject" }; }
-        let profile = dna::OrganizationSourceRequestCodec { };
-        if profile.ownership(r) {
-            let syntax = OwnershipSourceSyntax { };
-            if syntax.source_error(r.source_text) != "" { return dna::OrganizationSourcePreparation { code: "invalid_command" }; }
-        } else {
-            let checked = source.draft(base, r.source_text);
-            if !checked.ok { return dna::OrganizationSourcePreparation { code: checked.code }; }
-        }
+        let checked = source.draft(base, r.source_text);
+        if !checked.ok { return dna::OrganizationSourcePreparation { code: checked.code }; }
         let scratch = source.scratch(); if len(scratch) == 0 { return dna::OrganizationSourcePreparation { }; }
         let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
         if !self.safe_metadata(inspection) { source.remove_scratch(scratch); return dna::OrganizationSourcePreparation { }; }
@@ -300,10 +249,6 @@ locus OrganizationPublicationInputs {
     // source files that could enter a real worktree or the destination build.
     fn inputs_exact(r: dna::OrganizationSourceRequest, worktree: String, commit: String, inspection: OrganizationInspection, edited: Bool) -> String {
         let profile = dna::OrganizationSourceRequestCodec { };
-        if profile.ownership(r) {
-            let map = self.ownership_file(r, worktree, commit, inspection, edited);
-            if map != "" { return map; }
-        }
         // `hale inputs` names canonical paths, and on macOS `/tmp` is
         // itself an alias of `/private/tmp`: compare against the
         // worktree's physical spelling or every input reads as outside
@@ -345,7 +290,6 @@ locus OrganizationPublicationInputs {
         let common = inspection.execute("git\n-C\n" + worktree + "\nrev-parse\n--path-format=absolute\n--git-common-dir", "/", 4096);
         let record = dna::GitRecord { repo: self.root }; let expected_common = record.git_out("rev-parse\n--path-format=absolute\n--git-common-dir");
         if common.code != 0 || dna::trim_nl(common.stdout) != expected_common { return false; }
-        if codec.ownership(r) && inspection.execute("sh\n-c\n[ ! -L \"$1/dna/org/owners\" ] && [ -f \"$1/dna/org/owners\" ]\nsh\n" + worktree, "/", 4096).code != 0 { return false; }
         return inspection.execute("sh\n-c\nfor p in \"$1/dna\" \"$1/dna/org\" \"$1/dna/org/main.hl\" \"$1/vendor\"; do [ ! -L \"$p\" ] || exit 1; done; [ -f \"$1/dna/org/main.hl\" ]\nsh\n" + worktree, "/", 4096).code == 0;
     }
     fn only_module(record: dna::GitRecord, base: String, commit: String, module_path: String) -> Bool {
@@ -463,9 +407,6 @@ locus OrganizationPublicationInputs {
     // current/candidate's original-base checks, invokes apply, or reports a
     // deployment. The caller must correlate its durable apply effect first.
     fn applied(r: dna::OrganizationSourceRequest, worktree: String, commit: String) -> dna::OrganizationSourceCheck {
-        let profile = dna::OrganizationSourceRequestCodec { };
-        // Ownership Review is supported separately from live ownership handover.
-        if profile.ownership(r) { return self.refusal("organization_ownership_activation_unavailable"); }
         if !self.source() || !self.request_valid(r, false) || !self.commit_id(commit) { return self.refusal("invalid_command"); }
         let helper = OrganizationSource { root: self.root, compiler: self.compiler }; let scratch = helper.scratch();
         if scratch == "" { return self.refusal("organization_source_unavailable"); }

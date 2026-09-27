@@ -254,6 +254,30 @@ fn wait_secs(secs: Int) -> Int { return secs * wait_scale(); }
 
 // ---- a port a fixture's service can have (GH #873) -------------------
 
+// GH #1123: `<node> <holder>` lines — `position:org organization:acme`,
+// `organization:acme alice` — as memory's `graph_ownership()` answers
+// them, JSON `[node, holder]` pairs: a fixture states who owns what in the
+// graph's own terms without a memory to hold it.
+@unbounded
+fn graph_ownership_of(lines: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = lines;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = trim_nl(if nl < 0 { rest } else { rest[0..nl] });
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let sp = std::str::index_of(line, " ");
+        if sp <= 0 { continue; }
+        b.begin_array();
+        b.string_value(line[0..sp]);
+        b.string_value(line[(sp + 1)..len(line)]);
+        b.end_array();
+    }
+    b.end_array();
+    return b.result();
+}
+
 // A loopback port nothing is listening on: bound here, closed, and
 // handed back.
 //

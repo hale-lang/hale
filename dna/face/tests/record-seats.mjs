@@ -59,3 +59,28 @@ export function seatRecord(root, env, person, positions) {
 export function unseatRecord(root, env, person, positions) {
   for (const position of positions) appendRow(root, env, 'graph.retired', holds(position, person), '{}');
 }
+
+// GH #1123: who owns what is the graph's — `<node> <holder>` lines, a
+// firm holding a position (`position:org organization:acme`) or a person
+// holding a firm (`organization:acme alice`). Each node an edge names is
+// stated first, once, then the `holds` edge; the rows are the ones
+// `ops::graph_seat` writes.
+export function seatGraph(root, env, lines) {
+  for (const line of lines.split('\n').map(l => l.trim()).filter(Boolean)) {
+    const [node, holder] = line.split(' ');
+    for (const id of [node, holder.startsWith('organization:') ? holder : null].filter(Boolean)) {
+      if (git(root, env, ['show', 'refs/dna/journal:journal.jsonl']).includes(`"kind": "graph.node", "entity": ${JSON.stringify(id)}`)) continue;
+      const colon = id.indexOf(':');
+      appendRow(root, env, 'graph.node', id, JSON.stringify({ kind: id.slice(0, colon), name: id.slice(colon + 1) }));
+    }
+    const body = JSON.stringify({ kind: 'holds', members: [{ role: 'position', node }, { role: 'holder', node: holder }] });
+    appendRow(root, env, 'graph.edge', `holds:${node}|${holder}`, body);
+  }
+}
+// The `holds` edges of `lines` taken out again.
+export function unseatGraph(root, env, lines) {
+  for (const line of lines.split('\n').map(l => l.trim()).filter(Boolean)) {
+    const [node, holder] = line.split(' ');
+    appendRow(root, env, 'graph.retired', `holds:${node}|${holder}`, '{}');
+  }
+}

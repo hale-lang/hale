@@ -18,8 +18,8 @@ import "../core" as dna;
 
 // The node kinds (GRAPH.md, "Node kinds"), and the ones a `graph.node`
 // row carries.
-const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work";
-const GRAPH_ROW_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work";
+const GRAPH_NODE_KINDS: String = "purpose axiom process seed contract noun deployment practice gate document witness position work organization";
+const GRAPH_ROW_NODE_KINDS: String = "purpose axiom process seed contract noun deployment gate document witness position work organization";
 
 // The hyperedge kinds, arity two or more, and the ones a `graph.edge` row
 // carries.
@@ -36,12 +36,15 @@ const GRAPH_ROW_EDGE_KINDS: String = "unfold meets names refers constrains runs 
 const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,consumer,carrier names:contract::noun refers:from:to: constrains:axiom::shaped runs:deployment::process gates:gate::guarded witnesses:witness::about holds:position:holder: reviews:position:subject:";
 
 // The node kinds a role requires, where it requires any (`<edge>.<role>:
-// <kind>[,<kind>]`). A `holder` is a person, never a node. What a position
+// <kind>[,<kind>]`). A `holds` edge is a seat or a membership (GH #1123):
+// a position held by a person or by an `organization` (a firm owning it),
+// or an organization held by a person (its member). A `holder` is a
+// person, or an organization node holding a position. What a position
 // reviews — and so signs a change to — is a contract, a document (a design
 // document is signed too), a seed (a part's reviewer, its code) or a
 // deployment (its operator, the file it was read from): routing reads
 // these edges and nothing else (GH #1091, B).
-const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position reviews.position:position reviews.subject:contract,document,seed,deployment";
+const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position,organization reviews.position:position reviews.subject:contract,document,seed,deployment";
 
 const GRAPH_NAME_MAX: Int = 512;
 const GRAPH_MEMBERS_MAX: Int = 256;
@@ -266,11 +269,14 @@ fn graph_edge_row(entity: String, body: String) -> GraphRow {
         if n > 0 && role == anchor { return graph_refused("a " + kind + " edge has one `" + anchor + "`"); }
         if n > 0 && len(second) > 0 && (n > 1 || role != second) { return graph_refused("a " + kind + " edge is exactly (" + anchor + ", " + second + ")"); }
         if n > 0 && len(second) == 0 && !dna::word_in(role, others) { return graph_refused("`" + role + "` is not a role of a " + kind + " edge (" + anchor + ", then " + others + ")"); }
-        let ok = if role == "holder" { graph_text_ok(node) && !graph_ref_ok(node, "") } else { graph_ref_ok(node, graph_role_kind(kind, role)) };
+        let ok = if role == "holder" { graph_holder_ok(node) } else { graph_ref_ok(node, graph_role_kind(kind, role)) };
         if !ok {
             let want = std::str::replace(graph_role_kind(kind, role), ",", " or ");
-            return graph_refused("the " + kind + " edge's `" + role + "` `" + node + "` " + (if role == "holder" { "is not a person" } else if len(want) > 0 { "is not a " + want + " node id" } else { "is not a node id (<kind>:<name>)" }));
+            return graph_refused("the " + kind + " edge's `" + role + "` `" + node + "` " + (if role == "holder" { "is not a person or an organization node id" } else if len(want) > 0 { "is not a " + want + " node id" } else { "is not a node id (<kind>:<name>)" }));
         }
+        // an organization holds a position, and a person an organization:
+        // never an organization another
+        if role == "holder" && std::str::starts_with(node, "organization:") && std::str::contains(lines, "position\torganization:") { return graph_refused("an organization holds a position, not another organization"); }
         lines = lines + role + "\t" + node + "\n";
         n = n + 1;
         it = std::json::array_next(it);
@@ -292,6 +298,50 @@ fn graph_edge_row(entity: String, body: String) -> GraphRow {
     return GraphRow { ok: true, id: id, kind: kind, members: raw };
 }
 
+// GH #1123: `holds(node, holder)` appended straight to a record, with the
+// nodes it names — the position or organization, and an organization that
+// holds — stated first where the record does not yet. A shared record's
+// fixtures seat its organizations and members this way; a live
+// organization proposes the same edge through `hale dna fill`. "" when it
+// landed, else why not.
+@unbounded
+fn graph_seat(j: dna::Journal, node: String, holder: String) -> String {
+    let mut stated = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "graph.node" { stated = stated + e.entity + "\n"; }
+        i = i + 1;
+    }
+    let mut want = node + "\n" + (if std::str::starts_with(holder, "organization:") { holder + "\n" } else { "" });
+    while len(want) > 0 {
+        let nl = std::str::index_of(want, "\n");
+        let id = want[0..nl];
+        want = want[(nl + 1)..len(want)];
+        if std::str::contains(stated, "\n" + id + "\n") { continue; }
+        let colon = std::str::index_of(id, ":");
+        let body = graph_node_body(id[0..colon], id[(colon + 1)..len(id)], "", "");
+        let checked = graph_node_row(id, body);
+        if !checked.ok { return checked.why; }
+        if !j.append(j.revision(), "graph.node", id, body).ok { return "the record refused " + id; }
+        stated = stated + id + "\n";
+    }
+    let e = GraphEdge { kind: "holds" };
+    e.member("position", node);
+    e.member("holder", holder);
+    let row = graph_edge_row(e.id(), e.body());
+    if !row.ok { return row.why; }
+    if !j.append(j.revision(), "graph.edge", e.id(), e.body()).ok { return "the record refused " + e.id(); }
+    return "";
+}
+
+// A `holds` edge's holder: a person (a name that is no node id), or an
+// organization node (GH #1123).
+fn graph_holder_ok(node: String) -> Bool {
+    if !graph_text_ok(node) { return false; }
+    return !graph_ref_ok(node, "") || graph_ref_ok(node, "organization");
+}
+
 // A `graph.retired` row names the node or edge it takes out: a node's id,
 // or an edge's — its anchor, and for a pair kind its second, each a node
 // id (a holder, a person).
@@ -309,7 +359,7 @@ fn graph_retired_row(entity: String) -> GraphRow {
     if !graph_ref_ok(anchor, "") { return refused; }
     if bar > 0 {
         let second = rest[(bar + 1)..len(rest)];
-        let ok = if graph_shape(kind, 2) == "holder" { graph_text_ok(second) && !graph_ref_ok(second, "") } else { graph_ref_ok(second, "") };
+        let ok = if graph_shape(kind, 2) == "holder" { graph_holder_ok(second) } else { graph_ref_ok(second, "") };
         if !ok { return refused; }
     }
     return GraphRow { ok: true, id: entity, kind: kind };

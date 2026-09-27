@@ -206,9 +206,9 @@ Once adopted, the leases move too: the mutation leases the gateway
 takes and the body lease `hale dna run` holds are rows of memory's
 `claims` table, swapped by their token, and the fence renews a row rather
 than a ref. A host that lost its lease presents a stale token and is
-refused. Over a shared record (the owners map) the body lease is one
-row per owner, `owner/<owner>`, so every owner's body runs side by
-side; the lease's token is an epoch the host hands its organization,
+refused. Over a shared record (several organizations, each owning its
+positions in the graph) the body lease is one row per owner,
+`owner/<owner>`, so every owner's body runs side by side; the lease's token is an epoch the host hands its organization,
 and a write under a lease that was taken over, released or expired is
 refused `fenced`. If memory becomes unreachable, the fence keeps the
 lease it last proved until just before it expires and then stops the

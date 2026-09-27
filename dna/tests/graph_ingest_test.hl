@@ -2,7 +2,7 @@
 // the graph (GH #1090).
 //
 // The fixture is hale-lang/voice at a32b295faf5b96e6c965fc5bff2f66324fbbda10
-// (hale-lang/voice#5), vendored whole under dna/tests/onboarding/voice and
+// (hale-lang/voice#6), vendored whole under dna/tests/onboarding/voice and
 // never fetched. Its GRAPH.md says what init should yield; this runs the
 // real `hale dna init` on a copy (a repository with no application at its
 // root, a seed per process) and reads the record back: the counts under

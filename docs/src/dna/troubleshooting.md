@@ -183,7 +183,9 @@ live at the epoch the row names (`fenced`), or `the role … does not
 write as …`: over a shared record a head writes as its owner's role,
 only in its owner's members' names — check which DSN this head was
 given (`HALE_DNA_MEMORY_DSN_HEAD`, the owner's line `hale dna memory
-migrate` printed) and the owners map. A decision read at a ledger
+migrate` printed) and which organization the person belongs to in
+the graph (`holds(organization:<owner>, <person>)`, proposed with
+`hale dna fill organization:<owner> <person>`). A decision read at a ledger
 revision that has since moved is `stale_revision`; the verb reads
 again and decides again (a transfer's acceptance is not refused for
 it — the gate checks the transfer itself).

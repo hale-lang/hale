@@ -32,7 +32,6 @@ locus PublicationGuardCases {
         self.write(self.repo + "/hale.toml", "[package]\nname = \"guard-fixture\"\nversion = \"0.0.0\"\n");
         self.write(self.repo + "/.gitignore", "vendor/\n.hale/\nignored.hl\n");
         self.write(self.repo + "/dna/org/main.hl", BASE);
-        self.write(self.repo + "/dna/org/owners", "org = acme\nacme: alice, bob\n");
         self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
         std::io::fs::write_bytes(self.repo + "/vendor/binary.dat", b"a\x00b\xff") or self.io_failed(err);
         self.git("add\n-A");
@@ -42,7 +41,7 @@ locus PublicationGuardCases {
         std::test::assert(genesis.id != "", "real Record identity");
         let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler, allow_drafts: true };
         let base = source.read(); std::test::assert(base.ok, "native source basis: " + base.code);
-        let guard = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "acme" };
+        let guard = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "acme", ownership: dna::graph_ownership_of("position:org organization:acme\norganization:acme alice\norganization:acme bob\n") };
         std::test::assert(guard.available(), "real source guard advertises apply-recovery support");
         let request = self.command(base, record, CANDIDATE, "guard-1");
         let prepared = guard.prepare(request);
@@ -63,7 +62,7 @@ locus PublicationGuardCases {
         std::test::assert(guard.manifest(r, record).ok, "manifest addressed by native retained receipt");
         std::test::assert_eq_str(record.head("journal").id, request.record_head, "preparation creates no admission fact");
         std::test::assert_eq_str(self.git("rev-parse\nHEAD"), request.source_head, "preparation does not change source HEAD");
-        let denied = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "north" };
+        let denied = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: self.compiler, source_owner: "north", ownership: dna::graph_ownership_of("position:org organization:acme\norganization:north carol\n") };
         std::test::assert(!denied.current(r).ok, "trusted source owner cannot be substituted by request");
         let codec = dna::OrganizationSourceRequestCodec { };
         let worktrees = dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" };
@@ -114,7 +113,7 @@ locus PublicationGuardCases {
         std::test::assert_eq_str(guard.applied(r, worktree.path, commit).code, "organization_candidate_invalid", "applied recovery still requires unchanged owned candidate worktree");
         self.tool("git\n-C\n" + worktree.path + "\nrestore\ndna/org/main.hl");
         std::test::assert(worktrees.remove(codec.mutation_id(r)), "owned worktree cleanup");
-        let bad_compiler = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: "/bin/false", source_owner: "acme" };
+        let bad_compiler = orgsource::OrganizationPublicationInputs { root: self.repo, compiler: "/bin/false", source_owner: "acme", ownership: dna::graph_ownership_of("position:org organization:acme\norganization:acme alice\norganization:acme bob\n") };
         std::test::assert_eq_str(bad_compiler.current(r).code, "organization_check_failed", "inspection failure stays unavailable and cannot become terminal stale");
     }
 }

@@ -203,31 +203,50 @@ reviewed commit, and the record shows who did.
 
 ## Whose positions they are
 
-One organization, one owner: every position is its own, and the file
-`dna/org/owners` the scaffold writes beside `main.hl` stays empty. When
-a record is shared between firms (stage B2), the map names an owner per
-position and each owner's members:
+One organization, one owner: every position is its own, and nothing
+says so — no file, no edge. When a record is shared between firms
+(stage B2), ownership lives in the graph, the one org chart. A firm
+is an `organization` node, and `holds` edges say both who owns a position
+and who belongs to a firm:
 
 ```
-org = acme
-org/collections = north
-acme: alice, carol
-north: bob
+holds(position:org, organization:acme)                acme owns org
+holds(position:org/collections, organization:north)   north owns org/collections
+holds(organization:acme, alice)                       alice is acme's member
+holds(organization:acme, carol)                       so is carol
+holds(organization:north, bob)                        bob is north's
 ```
 
-A position not named takes its nearest named ancestor's owner. Each
-body says which owner it is (`git config dna.owner acme`) or `hale dna
-run` refuses to start it, and it admits intents only for positions its
-owner holds. `hale dna task create --to org/collections` from acme's clone does
-not go to acme's body: it goes into the record, where north's controller
-relays it, and `hale dna status` in acme's clone shows it as
-`[unadmitted]` with north's name until then. Changing the map is a
-mutation of the organization that every affected owner approves, each
-through one of its members; one rejection settles it. Each owner's body
-holds its own lease in memory, `owner/<owner>` (a shared record runs
-no body until its ledger is adopted), and a write the body makes after
-its lease was taken over is refused `fenced`, whatever the body still
-believes.
+A position no organization holds takes its nearest held ancestor's
+owner (`org/collections/late` is north's), and one with no held
+ancestor is unowned: no controller admits it. A person belongs to one
+organization at most, and an organization never holds another. Each
+body says which organization it is (`git config dna.owner acme`, the
+bare name of its `organization` node); over a record that states
+organizations, `hale dna run` and `dev` refuse to start a body that
+names none, or one the record does not state. A body admits intents only for
+positions its organization owns, and until memory has told it what that
+is, it admits nothing. `hale dna task create --to org/collections` from
+acme's clone does not go to acme's body: it goes into the record, where
+north's controller relays it, and `hale dna status` in acme's clone
+shows it as `[unadmitted]` with north's name until then.
+
+Ownership and membership change the way every hold does. You propose
+one with `hale dna fill` — `hale dna fill org/collections
+organization:north` gives north the position, `hale dna fill
+organization:north bob` makes bob a member — and the Board ratifies it.
+Joining an organization is how a person becomes known to a shared
+record, so bob need not have written anything first. There is no
+separate vote of owners: a change is signed by the positions its route
+names, and a position an organization holds is signed by any one of
+that organization's members. There is no verb yet to state a new
+organization; a new `organization` node is a `graph.node` row an
+operator writes.
+
+Each owner's body holds its own lease in memory, `owner/<owner>` (a
+shared record runs no body until its ledger is adopted), and a write
+the body makes after its lease was taken over is refused `fenced`,
+whatever the body still believes.
 Each owner mints its own ids (`acme:t3`, `acme:m2`) and claims its own
 effects (`acme:apply:<candidate>`), so nothing two owners do contends
 for one name; a birth the store says is already claimed is minted again.
@@ -246,10 +265,12 @@ redacted evidence, none coordinating
 heads write the ledger as that owner's role in memory, which writes
 only in its own members' names; the migration makes a role per owner
 from the owners' keys (`HALE_DNA_OWNER_KEYS`, `<owner>=<key> …`), and
-the members are the genome's owners map, which every node projects
-([Operating](./operating.md#shared-records-and-owners-roles)). The map may
-also name a `host = <owner>`, changed only with every owner's
-approval; it no longer decides where anything runs.
+the members are the organization's `holds` edges, which every node
+projects ([Operating](./operating.md#shared-records-and-owners-roles)).
+
+If your organization still has a `dna/org/owners` file from before,
+`hale dna upgrade` removes it and prints what it named, for you to
+state again as `holds` edges with `hale dna fill`.
 
 ## Who decides what
 

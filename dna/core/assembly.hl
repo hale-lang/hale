@@ -327,8 +327,9 @@ locus Dna {
         // package it answers becomes the hat the attempt carries by digest
         // and the brief the editor gets (GH #946)
         knowledge_client: MemoryKnowledge = MemoryKnowledge { };
-        // GH #664: who admits which position. One owner unless the genome's
-        // owners map says otherwise; then only this owner's positions.
+        // GH #664: who admits which position. One owner unless the graph
+        // says organizations hold positions (GH #1123); then only this
+        // organization's.
         ownership: Ownership = Ownership { };
         // GH #606: where a protected body goes — the knowledge service, and
         // nowhere else
@@ -923,7 +924,6 @@ locus Dna {
             subject_digest: native_json_string(req, "subject_digest"),
             required_authority: native_json_string(req, "required_authority"),
             author: native_json_string(req, "author"),
-            approvers: native_json_string(req, "approvers"),
             signers: need.signers, gates: need.gates, fallback: need.fallback,
             settled: len(settlement.kind) > 0, outcome: outcome
         };
@@ -1536,6 +1536,7 @@ locus Dna {
             // (a redelivery's) reads the record without examining every
             // case, and must not stand for the examination
             if self.journal.revision() > self.cases_examined { let completed = self.revisit_cases(); }
+            self.refresh_ownership();
             self.reconcile_governance();
             self.reroute_reviews();
             self.announce_gate_runs();
@@ -2912,11 +2913,13 @@ locus Dna {
         let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
         if len(self.governance_event("hold.proposed", r.request_id).kind) > 0 || len(self.governance_event("hold.refused", r.request_id).kind) > 0 { return; }
-        let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else { "" };
-        if len(name) == 0 || len(r.holder) == 0 || len(r.by) == 0 || std::str::contains(r.holder, "|") || std::str::contains(name, "|") {
+        // GH #1123: a position, or an organization a person joins
+        let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else if std::str::starts_with(r.position, "organization:") { r.position[13..len(r.position)] } else { "" };
+        let nested = std::str::starts_with(r.position, "organization:") && std::str::starts_with(r.holder, "organization:");
+        if len(name) == 0 || len(r.holder) == 0 || len(r.by) == 0 || std::str::contains(r.holder, "|") || std::str::contains(name, "|") || nested {
             let rb = std::json::Builder { };
             rb.begin_object();
-            rb.string_field("why", "a hold names a position (`position:<name>`), a holder with no `|`, and who asks");
+            rb.string_field("why", "a hold names a position (`position:<name>`) or an organization (`organization:<name>`), a holder with no `|` — a person, or an organization holding a position — and who asks");
             rb.end_object();
             let x = self.governance_once("hold.refused", r.request_id, rb.result());
             return;
@@ -2929,7 +2932,7 @@ locus Dna {
         edge.begin_object(); edge.string_field("role", "holder"); edge.string_field("node", r.holder); edge.end_object();
         edge.end_array();
         edge.end_object();
-        let question = "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes";
+        let question = if std::str::starts_with(r.position, "organization:") { "ratify " + r.holder + " joining the organization `" + name + "`, as " + r.by + " proposes" } else { "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes" };
         let d = std::json::Builder { };
         d.begin_object();
         d.string_field("author", r.by);
@@ -3228,10 +3231,6 @@ locus Dna {
     }
     fn organization_source_review_matches(r: OrganizationSourceRequest, candidate: String, body: String) -> Bool {
         let codec = OrganizationSourceRequestCodec { };
-        if codec.ownership(r) {
-            let quorum = self.organization_source_inputs.ownership_quorum(r, candidate);
-            if !quorum.ok || quorum.approvers != native_json_string(body, "approvers") { return false; }
-        }
         return native_json_string(body, "organization_source_request_id") == r.request_id
             && native_json_string(body, "organization_source_digest") == r.source_digest
             && native_json_string(body, "mutation_id") == codec.mutation_id(r)
@@ -3259,7 +3258,7 @@ locus Dna {
             journal: self.review_journal, review_id: id, question: native_json_string(req.body, "question"), subject_digest: candidate,
             signers: need.signers, gates: need.gates, fallback: need.fallback,
             organization_source_request: r, organization_source_facts: self.organization_source_review_facts,
-            required_authority: native_json_string(req.body, "required_authority"), author: r.by, approvers: native_json_string(req.body, "approvers"),
+            required_authority: native_json_string(req.body, "required_authority"), author: r.by,
             settled: len(outcome) > 0, outcome: outcome
         };
         self.organization_source_reviews.push(id); return true;
@@ -3334,7 +3333,6 @@ locus Dna {
         let codec = OrganizationSourceRequestCodec { }; let req = self.request_of(id);
         let r = self.organization_source_request(native_json_string(req, "organization_source_request_id"));
         if !codec.valid(r) || codec.mutation_id(r) != id { return "pending: exact prepared source unavailable"; }
-        if codec.ownership(r) { return "pending: ownership activation requires operational handover"; }
         let mut v = Verdict { }; let mut i = 0;
         while i < self.journal.revision() {
             let e = self.journal.read(i);
@@ -4516,6 +4514,16 @@ locus Dna {
     fn bind_owner() {
         self.gateway.namespace = self.ownership.me;
     }
+    // GH #1123: who owns which position is the graph's, read from memory
+    // on every reconciliation. An answer memory does not give ("") is no
+    // ownership at all: a body that names its organization then admits
+    // nothing rather than keep a view that may have moved; with no memory
+    // named the view stays as born (one owner, or nothing for a named body).
+    @unbounded
+    fn refresh_ownership() {
+        if !self.knowledge_client.ready() { return; }
+        self.ownership.reload(self.knowledge_client.ownership());
+    }
     // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
     // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.
     fn refuse_spend(child: String, s: Spend, why: String) -> Admission {
@@ -5115,20 +5123,11 @@ locus Dna {
             if applied != "applied" { return "failed: " + applied; }
         }
         let question = (if post { "post-review: applied " } else { "apply " }) + m.id + " (" + m.change_class + "): " + m.rationale + "?";
-        // GH #664: a candidate that changes the owners map is approved by
-        // every owner it affects, each through one of its members
-        let source_profile = OrganizationSourceRequestCodec { };
-        let mut approvers = self.ownership.approvers_for(m.candidate_commit);
-        if prepared && source_profile.ownership(source) {
-            let exact = self.organization_source_inputs.ownership_quorum(source, m.candidate_commit);
-            if !exact.ok { return "pending: exact ownership quorum unavailable"; }
-            approvers = exact.approvers;
-        }
         if !prepared {
             Review {
                 journal: self.review_journal,
                 review_id: m.id, question: question, subject_digest: m.candidate_commit,
-                required_authority: authority, author: author, approvers: approvers,
+                required_authority: authority, author: author,
                 signers: need.signers, gates: need.gates, fallback: need.fallback
             };
         }
@@ -5138,7 +5137,6 @@ locus Dna {
         b.string_field("subject_digest", m.candidate_commit);
         b.string_field("required_authority", authority);
         b.string_field("author", author);
-        if len(approvers) > 0 { b.string_field("approvers", approvers); }
         b.string_field("mutation_id", m.id);
         b.string_field("task_id", m.task_id);
         b.string_field("change_class", m.change_class);
@@ -5180,6 +5178,8 @@ locus Dna {
     // rehydrated here.
     @unbounded
     fn rehydrate() {
+        // who owns which position, before anything is admitted
+        self.refresh_ownership();
         // a revocation in the record binds before anything is admitted
         self.restore_contractions();
         self.restore_revocations();
@@ -5241,8 +5241,7 @@ locus Dna {
                         question: std::json::find_string_field(e.body, "question"),
                         subject_digest: std::json::find_string_field(e.body, "subject_digest"),
                         required_authority: std::json::find_string_field(e.body, "required_authority"),
-                        author: std::json::find_string_field(e.body, "author"),
-                        approvers: std::json::find_string_field(e.body, "approvers")
+                        author: std::json::find_string_field(e.body, "author")
                     };
                     self.rehydrated = self.rehydrated + 1;
                 } else if std::str::starts_with(settlement, "approve by ") && std::str::contains(e.body, "\"mutation_id\"") {

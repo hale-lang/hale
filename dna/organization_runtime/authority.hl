@@ -21,7 +21,9 @@ locus HostAuthority {
     fn owner() -> String { let r = dna::GitRecord { repo: self.root }; return r.setting("owner"); }
     fn trust() -> String { let r = dna::GitRecord { repo: self.root }; let t = r.setting("trust"); return if len(t) == 0 { "local" } else { t }; }
     fn row_verified(sha: String) -> Bool { let r = dna::GitRecord { repo: self.root }; return r.signer(sha).verified; }
-    fn shared() -> Bool { let o = dna::Ownership { path: self.root + "/dna/org/owners", me: self.owner(), me_env: "" }; return o.shared(); }
+    // GH #1123: a body that names its organization (`dna.owner`) is one
+    // of a shared record's bodies; which positions it owns is the graph's.
+    fn shared() -> Bool { return len(self.owner()) > 0; }
     fn routing() -> Int { let j = dna::GitJournal { repo: self.root, author: "host" }; return dna::routing_of(j); }
     fn lease_key() -> String { if self.shared() { return "owner/" + self.owner(); } return "body"; }
     fn parse_lease(sha: String, text: String) -> BodyLeaseView {

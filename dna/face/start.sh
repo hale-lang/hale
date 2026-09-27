@@ -25,7 +25,7 @@ purpose and are re-adopted by the next head.
   --port PORT        Loopback port of the head, 1..65535 (default: 8792).
   --api-port PORT    Loopback port of the API child, 1..65535 (default: 8793).
   --oidc-port PORT   Loopback port of the stub OpenID provider, 1..65535 (default: 8794).
-  --source-drafts    Enable Organization and ownership source preparation.
+  --source-drafts    Enable Organization source preparation.
   --help            Show this help.
 
 Existing service configuration is inherited:

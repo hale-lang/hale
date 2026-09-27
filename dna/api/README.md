@@ -69,7 +69,7 @@ Use the returned id in the following routes:
 | `/api/hale/v1/applications/{id}/dna/practices` | Named practice proposals, lifecycle, attribution and available canonical text |
 | `/api/hale/v1/applications/{id}/dna/reviews` | Review identity, exact subject, required authority and recorded decision |
 | `/api/hale/v1/applications/{id}/dna/tasks` | Current handed Tasks, preserved responsibility and exact assignment history |
-| `/api/hale/v1/applications/{id}/dna/organization` | Checked declared structure, explicit position groups, contracts and separate ownership map |
+| `/api/hale/v1/applications/{id}/dna/organization` | Checked declared structure, explicit position groups, contracts and separate ownership read from the graph |
 | `/api/hale/v1/applications/{id}/dna/definitions` | Application-injected workflow definitions, ordered Steps, leaf specifications and exact child references |
 | `/api/hale/v1/applications/{id}/dna/knowledge/nodes` | Visible native Knowledge nodes, preserving exact signed revisions |
 | `/api/hale/v1/applications/{id}/dna/knowledge/edges` | Stored edges incident to an exact visible node |
@@ -116,13 +116,20 @@ Committed source is bounded to 16,384 files, 16 MiB per file and 128 MiB total.
 Dependencies are bounded to 8,192 files, 8 MiB per file and 64 MiB total. Each
 inspection subprocess has a 30-second deadline and its captured output is limited
 to 2 MiB per stream. The topology artifact is limited to 8 MiB and the ownership
-map to 64 KiB. These are inspection bounds, not a sandbox for untrusted projects.
+input to 64 KiB. These are inspection bounds, not a sandbox for untrusted projects.
+
+The response's `ownership` is not read from source. It is built from memory's
+view of the graph, read under the head's role: an `organization` node owns a
+position by holding it, and a person is its member by holding the organization
+(GH #1123). With no memory, or no organization holding anything, it reports one
+owner (`mode: single_owner`). `ownership.host_owner` is the organization that
+owns `org`, empty with one owner. There is no `dna/org/owners` file.
 
 The response's `basis` names the source commit, dependency origin/digest,
 compiler artifact digest and schema, and static coverage. Its page snapshot binds
 that basis and the Record head. Static instances and explicit `groups.positions`
 membership establish declared structure. They do not establish runtime liveness,
-occupancy, effective grants or authority. Source-declared ownership paths remain
+occupancy, effective grants or authority. The graph's ownership paths remain
 separate from compiler instance paths until the application provides that join.
 Capacity and retry values travel as decimal strings (or null when unspecified).
 
@@ -435,6 +442,8 @@ The first native practice-review profile is non-mutation, has no approver quorum
 and declares required authority `board`; that label cannot establish the caller's
 grant. Review reads expose existing `is_mutation` and `approvers` facts so clients
 can distinguish this shape; those fields are optional for older read responses.
+`approvers` is always empty: owner quorums are retired, and every Review requires
+the positions its route names (GH #1123).
 An overall settled Review cannot establish this caller's command outcome:
 the provider must correlate the exact request, including refusal beside another
 command's approval. Existing Review-ID-only native joins do not establish that
@@ -857,28 +866,6 @@ contract for the HTTP reads.
 
 ### Organization source preparation
 
-The same host opt-in also exposes `dna.organization.ownership.draft.v1` through
-`GET` and `POST /api/hale/v1/applications/{application_id}/dna/organization/ownership/draft`.
-This captures the committed `dna/org/owners` map, including an absent/empty map,
-and previews changes through the existing native `Ownership` model and
-`owners_affected`. The response includes candidate assignments, memberships,
-hosting, inherited owners for every scope named in either map, and affected
-owner review members (candidate membership, falling back to original membership
-as the domain does). Empty memberships and a change to single-owner mode are
-reported; they do not establish permission to adopt the source.
-
-The ownership editing profile is bounded to 16 KiB and 256 entries. Each
-non-comment line must be `scope = owner`, `owner: members`, or `host = owner`;
-names cannot contain whitespace or assignment/list/comment delimiters. Empty
-owner/member lists are representable. Duplicate normalized scopes, duplicate
-memberships and repeated hosts are refused instead of silently accepting the
-domain parser's first/last-match behavior. Existing maps outside this profile
-remain readable through the Organization read API but are not editable here.
-The endpoint uses the same exact principal/source/dependency/Record fences,
-Origin/framing guard and 32 KiB request bound as organization source drafts.
-It performs no project or Record writes. Live obligations, instance bindings,
-publication and activation remain unavailable in this preparation profile.
-
 Set `HALE_DNA_ORG_DRAFTS=1` on the native API host to offer the optional
 `dna.organization.draft.v1` capability. The browser can then read and edit the
 exact committed `dna/org/main.hl`, inspect a source diff, validate the complete
@@ -896,6 +883,15 @@ Record or running application. This is source preparation: publication,
 retirement, reassignment of live obligations and activation require the owning
 services. Viewing a chart position grants no authority. The capability is off
 by default and does not change `read_only` or any command capability.
+
+There is no ownership draft. Which organization owns a position, and who is its
+member, are `holds` edges of the graph, proposed with `hale dna fill` and ratified
+by the Board like any other hold (GH #1123); the former
+`/dna/organization/ownership/draft` route, its `ownership_drafts` capability, the
+`dna.organization.ownership.propose` command and its
+`organization_ownership_propose` policy grant are retired. An organization source
+published by a named source owner is published only when that owner owns `org` in
+the graph.
 
 ### Recorded workflow reads
 

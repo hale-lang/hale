@@ -210,7 +210,7 @@ main locus App {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
             membrane: dna::Board { who: "board" },
-            ownership: dna::Ownership { text: "org = north\norg/team = south\n", me: "south", me_env: "" }
+            ownership: dna::Ownership { graph: dna::graph_ownership_of("position:org organization:north\nposition:org/team organization:south\n"), me: "south", me_env: "" }
         };
         let foreign = request("node/foreign", "propose", "idea", "Another owner's scope.", "");
         owned.on_knowledge_node_requested(foreign);

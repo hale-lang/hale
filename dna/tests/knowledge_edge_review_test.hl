@@ -199,28 +199,28 @@ main locus App {
     }
     fn ownership(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest, owners: String) {
         let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { },
-            ownership: dna::Ownership { text: owners, me: "acme", me_env: "" } };
+            ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: "acme", me_env: "" } };
         body.on_knowledge_edge_requested(r);
     }
     fn owner_and_verdict() {
         let repo = self.repo("owners"); let j = EdgeStageJournal { inner: dna::GitJournal { repo: repo } };
         let from = self.bootstrap(repo, j); let to = self.node(repo, j, "foreign", "org/support");
         let r = self.request(repo, j, "owners", "link", from, to, "supports");
-        self.ownership(repo, j, r, "org = acme\norg/support = north\nacme: board-member\n");
+        self.ownership(repo, j, r, "position:org organization:acme\nposition:org/support organization:north\norganization:acme board-member\n");
         std::test::assert_eq_int(count(j, "knowledge.edge.started", r.request_id), 0, "second endpoint's target owner is enforced");
         std::test::assert_eq_int(count(j, "knowledge.edge.refused", r.request_id), 0, "another owner cannot refuse the request");
-        self.ownership(repo, j, r, "org = acme\norg/source = north\nacme: board-member\n");
+        self.ownership(repo, j, r, "position:org organization:acme\nposition:org/source organization:north\norganization:acme board-member\n");
         std::test::assert_eq_int(count(j, "knowledge.edge.started", r.request_id), 0, "first endpoint's target owner is enforced too");
         let authored = self.node_at(repo, j, "foreign-author", "org/support", "org");
         let author_request = self.request(repo, j, "authors", "link", from, authored, "author-scoped");
-        self.ownership(repo, j, author_request, "org = acme\norg/support = north\nacme: board-member\n");
+        self.ownership(repo, j, author_request, "position:org organization:acme\nposition:org/support organization:north\norganization:acme board-member\n");
         std::test::assert_eq_int(count(j, "knowledge.edge.started", author_request.request_id), 0, "second endpoint's author owner is enforced");
         let reverse_request = self.request(repo, j, "reverse-authors", "link", authored, from, "author-scoped");
-        self.ownership(repo, j, reverse_request, "org = acme\norg/support = north\nacme: board-member\n");
+        self.ownership(repo, j, reverse_request, "position:org organization:acme\nposition:org/support organization:north\norganization:acme board-member\n");
         std::test::assert_eq_int(count(j, "knowledge.edge.started", reverse_request.request_id), 0, "first endpoint's author owner is enforced");
         let codec = dna::KnowledgeEdgeCodec { }; let receipts = dna::GitReceipts { repo: repo }; let e = codec.endpoints(j, receipts, r, j.revision());
         std::test::assert_eq_str(e.from_target, "org/source", "first scope is receipt-derived"); std::test::assert_eq_str(e.to_target, "org/support", "second scope is receipt-derived");
-        self.ownership(repo, j, r, "org = acme\nacme: board-member\n");
+        self.ownership(repo, j, r, "position:org organization:acme\norganization:acme board-member\n");
         std::test::assert_eq_int(count(j, "knowledge.edge.proposed", r.request_id), 1, "same owner handles both native endpoint scopes");
         self.decide(repo, j, r, "abstain", "abstain", "review.command_decided");
         std::test::assert_eq_int(count(j, "review.settled", codec.review_id(r.candidate_digest)), 0, "abstain has no settlement or relationship effect");

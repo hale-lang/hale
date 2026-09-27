@@ -217,6 +217,30 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
 }
 
 #[test]
+fn upgrade_retires_the_owners_map() {
+    // GH #1123: the graph is the one org chart. An organization from before
+    // the cut has `dna/org/owners` and the generated `ownership:` field;
+    // upgrade removes both, and says what the file named
+    let app = pipeline_app("owners-cut");
+    let (ok, out) = hale(&["dna", "init", "."], &app);
+    assert!(ok, "{out}");
+    assert!(!app.join("dna/org/owners").exists(), "init writes no owners file: {out}");
+    let main = app.join("dna/org/main.hl");
+    let text = std::fs::read_to_string(&main).unwrap();
+    let anchor = "            budget: dna::Budget { policy: org_budget() },\n";
+    assert!(text.contains(anchor), "the generated main.hl has its budget line");
+    let old = "            // Owners (GH #664): who admits which position. The map is the\n            // genome's file dna/org/owners — empty while this organization\n            // is the only owner; once the record is shared, every position\n            // names its owner and this body says which it is (dna.owner).\n            ownership: dna::Ownership { path: \"dna/org/owners\" },\n";
+    std::fs::write(&main, text.replace(anchor, &format!("{anchor}{old}"))).unwrap();
+    std::fs::write(app.join("dna/org/owners"), "# who admits what\norg = acme\nacme: alice\n").unwrap();
+    let (ok, out) = hale(&["dna", "upgrade", "."], &app);
+    assert!(ok, "{out}");
+    assert!(!app.join("dna/org/owners").exists(), "the owners file is removed: {out}");
+    assert!(out.contains("org = acme") && out.contains("acme: alice") && out.contains("holds(position:<p>, organization:<o>)"), "and what it named is said, to be restated as holds edges: {out}");
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), text, "the generated ownership field is taken out, and nothing else changes");
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
+#[test]
 fn init_refuses_a_seed_without_a_main_locus() {
     let d = workdir("nomain");
     std::fs::write(d.join("main.hl"), "fn main() { println(\"hi\"); }\n").unwrap();

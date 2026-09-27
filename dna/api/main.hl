@@ -167,7 +167,7 @@ locus Api {
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
         // `…/applications/{id}/commands` exactly: no other path takes a line
         let commands_path = std::str::starts_with(path, API_PREFIX + "/") && std::str::ends_with(path, "/commands") && len(path) > len(API_PREFIX) + 10 && !std::str::contains(path[(len(API_PREFIX) + 1)..(len(path) - 9)], "/");
-        let draft_path = std::str::starts_with(path, API_PREFIX + "/") && (std::str::ends_with(path, "/dna/definitions/draft") || std::str::ends_with(path, "/dna/organization/draft") || std::str::ends_with(path, "/dna/organization/ownership/draft"));
+        let draft_path = std::str::starts_with(path, API_PREFIX + "/") && (std::str::ends_with(path, "/dna/definitions/draft") || std::str::ends_with(path, "/dna/organization/draft"));
         // Preserve the standalone head's existing unsupported-mutation behavior.
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
@@ -256,10 +256,6 @@ locus Api {
             let authoring = OrganizationDraftWire { };
             return authoring.handle(req, cut >= 0, command_context, self.organization, self.command_origin);
         }
-        if path == prefix + "/dna/organization/ownership/draft" {
-            let authoring = OwnershipDraftWire { };
-            return authoring.handle(req, cut >= 0, command_context, self.organization, self.command_origin);
-        }
         if path == prefix + "/capabilities" {
             if len(raw_query) > 0 { return http.error(400, "invalid_query", "capabilities takes no query fields", false); }
             // a socket is advertised only while this process answers on it
@@ -268,8 +264,7 @@ locus Api {
             let authoring = OrganizationDraftWire { };
             let command_wire = CommandWire { };
             if self.organization.allow_drafts && self.organization.declared() && command_wire.origin_valid(self.command_origin) {
-                let ownership_authoring = OwnershipDraftWire { };
-                return http.success(source, capabilities[0..(len(capabilities) - 1)] + ",\"organization_drafts\":" + authoring.capability() + ",\"ownership_drafts\":" + ownership_authoring.capability() + "}");
+                return http.success(source, capabilities[0..(len(capabilities) - 1)] + ",\"organization_drafts\":" + authoring.capability() + "}");
             }
             return http.success(source, capabilities);
         }
@@ -476,7 +471,7 @@ locus Api {
         }
         // The pure projection validates strict JSON and artifact integrity
         // before reading fields; do not scan the same large artifact twice.
-        let q = ops::Organization { artifact: artifact.artifact, owners: artifact.owners, source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
+        let q = ops::Organization { artifact: artifact.artifact, ownership: self.knowledge.ownership(), source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
         if !q.load() { return http.error(503, "organization_malformed", q.error(), false); }
         let snapshot = q.snapshot();
         if len(query.snapshot) > 0 && query.snapshot != snapshot {

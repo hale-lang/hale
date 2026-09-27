@@ -24,9 +24,7 @@ locus OrganizationAuthorityPolicyCodec {
         let mut seen = "\n"; let mut count = 0; let mut it = std::json::array_first(grants);
         while !it.done {
             let row = it.element;
-            let ownership = std::json::find_field_raw(row, "organization_ownership_propose");
-            if count >= 128 || !fields.fields(row, "mode name authority organization_propose organization_review recover" + (if ownership != "" { " organization_ownership_propose" } else { "" }), if ownership == "" { 6 } else { 7 })
-                || (ownership != "" && ownership != "true" && ownership != "false")
+            if count >= 128 || !fields.fields(row, "mode name authority organization_propose organization_review recover", 6)
                 || !fields.boolean(row, "organization_propose") || !fields.boolean(row, "organization_review") || !fields.boolean(row, "recover") { return OrganizationAuthorityPolicy { }; }
             let context = GovernanceContext { application_id: application_id, principal_mode: fields.text(row, "mode"), principal_name: fields.text(row, "name") };
             if !common.context_valid(context) || !fields.authority(fields.text(row, "authority")) { return OrganizationAuthorityPolicy { }; }
@@ -44,12 +42,12 @@ locus OrganizationAuthorityPolicyCodec {
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant {
         let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
         if !self.policy.valid || len(self.policy.basis) == 0 || context.application_id != self.policy.application_id || !common.context_valid(context)
-            || (operation == "" && !recovery) || (operation != "" && operation != "dna.organization.propose" && operation != "dna.organization.ownership.propose" && operation != "dna.review.verdict") { return GovernanceGrant { }; }
+            || (operation == "" && !recovery) || (operation != "" && operation != "dna.organization.propose" && operation != "dna.review.verdict") { return GovernanceGrant { }; }
         let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "grants"));
         while !it.done {
             let row = it.element;
             if fields.text(row, "mode") == context.principal_mode && fields.text(row, "name") == context.principal_name {
-                let field = if recovery { "recover" } else if operation == "dna.organization.propose" { "organization_propose" } else if operation == "dna.organization.ownership.propose" { "organization_ownership_propose" } else { "organization_review" };
+                let field = if recovery { "recover" } else if operation == "dna.organization.propose" { "organization_propose" } else { "organization_review" };
                 return GovernanceGrant { allowed: std::json::find_field_raw(row, field) == "true", authority: fields.text(row, "authority"), basis: self.policy.basis };
             }
             it = std::json::array_next(it);

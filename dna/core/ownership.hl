@@ -1,23 +1,23 @@
-// dna/core/ownership.hl — who admits which position (GH #664, stage B2).
+// dna/core/ownership.hl — who admits which position (GH #664, stage B2),
+// read from the graph (GH #1123).
 //
-// A shared record's org chart has one owner per position: the firm whose
-// controller admits intents for it, reserves against its own allowances
-// and answers for its work. The map is a file of the genome, so changing
-// it is a mutation of the organization — reviewed, and by every owner it
-// affects. An empty map is one owner, the organization itself, and every
-// position is its own: nothing about a single-owner organism changes.
-// This body learns which owner it is from HALE_DNA_OWNER (the host reads
-// `dna.owner`); a body over a shared record that names no owner admits
-// nothing.
+// A shared record's org chart has one owner per organism position: the
+// firm whose controller admits intents for it, reserves against its own
+// allowances and answers for its work. The graph is the one org chart: a
+// firm is an `organization` node, it owns a position by holding it
+// (`holds(position:org/collections, organization:north)`), and a person is
+// its member by holding it (`holds(organization:north, bob)`). A position
+// no organization holds takes its nearest held ancestor's owner; with none
+// held it is unowned, and no controller admits it. A graph in which no
+// organization holds a position is one owner, the organization itself,
+// and every position is its own: nothing about a single-owner organism
+// changes. This body learns which organization it is from HALE_DNA_OWNER
+// (the host reads `dna.owner`, the organization node's name); a body over a
+// shared record that names none admits nothing.
 //
-// The file, one entry per line, `#` for a comment:
-//   org = acme               a position and its owner
-//   org/collections = north  a position under another owner
-//   acme: alice, carol       an owner's members — whose verdicts count as its
-//   north: bob
-//   host = acme              who runs the shared record's ledger service (GH #669)
-// A position not named takes its nearest named ancestor's owner; with no
-// ancestor named it is unowned, and no controller admits it.
+// The view is built from memory's `graph_ownership()` — JSON `[node,
+// holder]` pairs — so the Ledger's gate (`org_members`, a view over the
+// same edges) and every admission read one projection.
 
 type Owned { position: String = ""; owner: String = ""; }
 @form(vec)
@@ -86,15 +86,12 @@ fn position_name(p: String) -> String {
 
 locus Ownership {
     params {
-        path: String = ""; // the map's file under the genome ("" = one owner, nothing to read)
-        text: String = ""; // the map given as text (fixtures; wins over the file)
+        graph: String = ""; // memory's `graph_ownership()`: JSON `[node, holder]` pairs ("" = one owner)
         me_env: String = "HALE_DNA_OWNER";
-        me: String = ""; // the owner this body is ("" = unnamed)
-        source: SourceReader = SourceReader { }; // the genome at a revision, for a candidate's map
+        me: String = ""; // the organization this body is ("" = unnamed)
         loaded: Bool = false;
         positions: OwnedRows = OwnedRows { };
         memberships: MembershipRows = MembershipRows { };
-        hosting: String = ""; // GH #669: the owner (or third party) that runs the ledger service
     }
     birth() {
         if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) { self.me = std::env::var(self.me_env); }
@@ -103,30 +100,47 @@ locus Ownership {
     fn load() {
         if self.loaded { return; }
         self.loaded = true;
-        let mut t = self.text;
-        if len(t) == 0 && len(self.path) > 0 { t = std::io::fs::read_file(self.path) or ""; }
-        let mut rest = t + "\n";
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = strip_blanks(if nl < 0 { rest } else { rest[0..nl] });
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(line) > 0 && line[0..1] != "#" {
-                let eq = std::str::index_of(line, "=");
-                let colon = std::str::index_of(line, ":");
-                if eq >= 0 && (colon < 0 || eq < colon) && strip_blanks(line[0..eq]) == "host" {
-                    self.hosting = strip_blanks(line[(eq + 1)..len(line)]);
-                } else if eq >= 0 && (colon < 0 || eq < colon) {
-                    self.positions.push(Owned { position: position_name(line[0..eq]), owner: strip_blanks(line[(eq + 1)..len(line)]) });
-                } else if colon >= 0 {
-                    self.memberships.push(Membership { owner: strip_blanks(line[0..colon]), members: words_of(line[(colon + 1)..len(line)]) });
-                }
+        let mut it = std::json::array_first(self.graph);
+        while !it.done {
+            let two = show_strings(it.element);
+            let nl = std::str::index_of(two, "\n");
+            let node = if nl < 0 { two } else { two[0..nl] };
+            let holder = if nl < 0 { "" } else { trim_nl(two[(nl + 1)..len(two)]) };
+            if std::str::starts_with(node, "position:") && std::str::starts_with(holder, "organization:") {
+                self.positions.push(Owned { position: position_name(node[9..len(node)]), owner: holder[13..len(holder)] });
+            } else if std::str::starts_with(node, "organization:") {
+                self.join(node[13..len(node)], holder);
             }
+            it = std::json::array_next(it);
         }
     }
-    // Whether the record is shared: the map names any position.
-    fn shared() -> Bool { self.load(); return self.positions.len() > 0; }
-    // GH #669: who runs the shared record's ledger service, "" when unnamed.
-    fn host() -> String { self.load(); return self.hosting; }
+    @unbounded
+    fn join(owner: String, person: String) {
+        let mut i = 0;
+        while i < self.memberships.len() {
+            let m = self.memberships.get(i) or Membership { };
+            if m.owner == owner {
+                self.memberships.set(i, Membership { owner: owner, members: word_add(m.members, person) }) or discard;
+                return;
+            }
+            i = i + 1;
+        }
+        self.memberships.push(Membership { owner: owner, members: person });
+    }
+    // The graph's ownership again, when memory's answer changed: the view
+    // is rebuilt from it on the next read.
+    @unbounded
+    fn reload(graph: String) {
+        if graph == self.graph && self.loaded { return; }
+        self.graph = graph;
+        self.loaded = false;
+        while self.positions.len() > 0 { let gone = self.positions.pop() or Owned { }; }
+        while self.memberships.len() > 0 { let gone = self.memberships.pop() or Membership { }; }
+    }
+    // Whether the record is shared: an organization holds a position, or
+    // this body names which organization it is — then only what the graph
+    // says it holds is admitted, and nothing before memory has said it.
+    fn shared() -> Bool { self.load(); return self.positions.len() > 0 || len(self.me) > 0; }
     // The owner of a position: named, or its nearest named ancestor's; ""
     // when no ancestor is named (unowned).
     @unbounded
@@ -146,7 +160,7 @@ locus Ownership {
         }
         return "";
     }
-    // The positions an owner holds by name, in the map's order.
+    // The positions an organization holds, in the record's order.
     @unbounded
     fn holdings(owner: String) -> String {
         self.load();
@@ -181,7 +195,7 @@ locus Ownership {
         }
         return "";
     }
-    // Every owner the map names, positions first then memberships, once each.
+    // Every organization the graph names, owners first then memberships, once each.
     @unbounded
     fn owners() -> String {
         self.load();
@@ -211,20 +225,9 @@ locus Ownership {
     fn why_not(position: String) -> String {
         let p = position_name(position);
         let owner = self.owner_of(p);
-        if len(owner) == 0 { return "`" + p + "` has no owner in " + (if len(self.path) > 0 { self.path } else { "the owners map" }) + "; no controller admits it"; }
+        if len(owner) == 0 { return "`" + p + "` has no owner: no organization holds it or a position above it in the graph; no controller admits it"; }
         if len(self.me) == 0 { return "`" + p + "` is owned by " + owner + ", and this body names no owner (HALE_DNA_OWNER)"; }
         return "`" + p + "` is owned by " + owner + ", not " + self.me;
-    }
-    // The owners a candidate's map affects and who may approve for each,
-    // as `<owner>=<member>,<member> …`; "" when the candidate leaves the
-    // map as it is (or there is no map). A member list comes from the
-    // candidate's map, or the current one for an owner the candidate drops.
-    @unbounded
-    fn approvers_for(candidate: String) -> String {
-        if len(self.path) == 0 { return ""; }
-        let before = self.source.read(self.path);
-        let after = self.source.read_at(candidate, self.path);
-        return ownership_approvers(before, after);
     }
     fn describe() -> String {
         self.load();
@@ -233,64 +236,8 @@ locus Ownership {
     }
 }
 
-// Shared native quorum semantics over exact retained maps. Candidate membership
-// wins; an owner removed from the candidate falls back to its original members.
-@unbounded
-fn ownership_approvers(before: String, after: String) -> String {
-    if before == after { return ""; }
-    let affected = owners_affected(before, after);
-    if len(affected) == 0 { return ""; }
-    let was = Ownership { text: before, me_env: "" };
-    let will = Ownership { text: after, me_env: "" };
-    let mut out = "";
-    let mut i = 0;
-    while len(nth_word(affected, i)) > 0 {
-        let w = nth_word(affected, i);
-        let mut members = will.members_of(w);
-        if len(members) == 0 { members = was.members_of(w); }
-        out = word_add(out, w + "=" + commas(members));
-        i = i + 1;
-    }
-    return out;
-}
-
-// Space-separated words as a comma list: "alice carol" -> "alice,carol".
-@unbounded
-fn commas(words: String) -> String {
-    let mut out = "";
-    let mut i = 0;
-    while len(nth_word(words, i)) > 0 {
-        out = out + (if i > 0 { "," } else { "" }) + nth_word(words, i);
-        i = i + 1;
-    }
-    return out;
-}
-
-// The owners whose holdings or membership differ between two maps: every
-// one of them approves the change (GH #664). Space-separated.
-@unbounded
-fn owners_affected(before: String, after: String) -> String {
-    let was = Ownership { text: before, me_env: "" };
-    let will = Ownership { text: after, me_env: "" };
-    let mut all = was.owners();
-    let mut i = 0;
-    while len(nth_word(will.owners(), i)) > 0 {
-        all = word_add(all, nth_word(will.owners(), i));
-        i = i + 1;
-    }
-    // GH #669: who hosts the service is every owner's trust decision
-    if was.host() != will.host() { return all; }
-    let mut out = "";
-    i = 0;
-    while len(nth_word(all, i)) > 0 {
-        let w = nth_word(all, i);
-        if was.holdings(w) != will.holdings(w) || was.members_of(w) != will.members_of(w) { out = word_add(out, w); }
-        i = i + 1;
-    }
-    return out;
-}
-
-// The owner a person belongs to among `approvers` ("acme=alice,carol north=bob"), "" when none.
+// The key a person is listed under among `k=v,v` entries (a route's
+// signers, `position:board=alice,carol`), "" when none.
 @unbounded
 fn approver_owner(approvers: String, person: String) -> String {
     let mut i = 0;
@@ -302,7 +249,7 @@ fn approver_owner(approvers: String, person: String) -> String {
     }
     return "";
 }
-// The owners named by `approvers`, space-separated.
+// The keys of `k=v,v` entries (a route's positions), space-separated.
 @unbounded
 fn approver_owners(approvers: String) -> String {
     let mut out = "";

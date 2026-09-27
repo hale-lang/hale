@@ -7,7 +7,11 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
-import { seatRecord } from './record-seats.mjs';
+import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
+
+// An organization fixture's ownership (GH #1123): acme holds the
+// organization, partner holds support; alice is acme's, bob partner's.
+const OWNERSHIP = 'position:org organization:acme\nposition:org/support organization:partner\norganization:acme alice\norganization:partner bob\n';
 
 const execute = promisify(execFile);
 const executeNative = (command, args, options, limits) => {
@@ -97,12 +101,19 @@ export const test = base.extend({
     // record with the owner's DSN, projects it the way the spine's tick
     // does, and prints the head's DSN; the API reads with that alone. The
     // owner's DSN goes to the fixture program and to nothing else.
-    const owner = knowledge ? memoryOwner() : '';
-    if (knowledge && !owner) throw new Error('Knowledge fixtures read memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate a record into.');
-    const fixtureEnv = knowledge ? { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner } : env;
+    // An organization fixture's ownership is the graph's (GH #1123), which
+    // the API reads from memory too: the Knowledge fixture program projects it.
+    const organized = organization === true || organization === 'large';
+    const memory = knowledge || organized;
+    const memoryNative = knowledge ? native : process.env.HALE_FACE_KNOWLEDGE_BIN;
+    const owner = memory ? memoryOwner() : '';
+    if (memory && !owner) throw new Error('Knowledge and organization fixtures read memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres the fixture may migrate a record into.');
+    if (memory && !memoryNative) throw new Error('Organization fixtures project the graph with the Knowledge fixture program: supply HALE_FACE_KNOWLEDGE_BIN.');
+    const fixtureEnv = memory ? { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner } : env;
     let child;
     let relay;
     let seeded = false;
+    let ownership = OWNERSHIP;
     let dropped = false;
     let log = '';
     let memoryLog = '';
@@ -110,12 +121,12 @@ export const test = base.extend({
     const dropSync = () => {
       if (!seeded || dropped) return;
       dropped = true;
-      const bounded = boundedNative(native, [root, 'drop'], { lock: false });
+      const bounded = boundedNative(memoryNative, [root, 'drop'], { lock: false });
       try { execFileSync(bounded.command, bounded.args, { env: fixtureEnv, timeout: 15_000, stdio: 'ignore' }); } catch { /* exiting: there is no test left to fail */ }
     };
     const exitCleanup = () => {
       if (child?.exitCode === null) child.kill('SIGKILL');
-      if (knowledge) dropSync();
+      if (memory) dropSync();
     };
     process.once('exit', exitCleanup);
     try {
@@ -136,13 +147,16 @@ export const test = base.extend({
       seeded = true;
       if (seats.length) seatRecord(root, env, env.USER, seats);
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));
-      if (knowledge) {
-        const projected = await executeNative(native, [root, 'project'], { env: fixtureEnv, timeout: 30_000 });
+      // One tick of the spine's projection; the first names the head's DSN.
+      const project = async () => {
+        const projected = await executeNative(memoryNative, [root, 'project'], { env: fixtureEnv, timeout: 30_000 });
         memoryLog += projected.stderr;
+        if (relay) return;
         const head = headDsn(projected.stdout.trim().split('\n').pop());
         relay = await memoryRelay(head.host, head.port);
         env.HALE_DNA_MEMORY_DSN_HEAD = head.through(relay.port());
-      }
+      };
+      if (knowledge) await project();
       const git = async args => (await execute('git', ['-C', root, ...args], { env, timeout: 5_000 })).stdout.trim();
       const orgSource = path.join(root, 'dna/org/main.hl');
       let originalOrganization;
@@ -157,12 +171,14 @@ export const test = base.extend({
           originalOrganization = originalOrganization.replace('        metrics: Metrics', `${members}\n        metrics: Metrics`);
           await writeFile(orgSource, originalOrganization);
         }
-        // Domain ownership names intentionally do not equal compiler instance
-        // paths. The UI must expose the map without inventing their binding.
-        await writeFile(path.join(root, 'dna/org/owners'), 'org = acme\norg/support = partner\nacme: alice\npartner: bob\nhost = acme\n');
         await git(['add', 'dna/org']);
         await git(['commit', '-q', '-m', 'Declare browser organization fixture']);
         data.organizationHead = await git(['rev-parse', 'HEAD']);
+        // Domain ownership names intentionally do not equal compiler instance
+        // paths. The UI must expose the graph's ownership without inventing
+        // their binding (GH #1123).
+        seatGraph(root, env, ownership);
+        await project();
       } else if (organization === 'generated') {
         originalOrganization = await readFile(orgSource, 'utf8');
         originalDependency = await readFile(dependency, 'utf8');
@@ -228,12 +244,15 @@ export const test = base.extend({
           }
           await writeFile(path.join(root, 'command-mode'), mode);
         },
-        changeOwnership: async text => {
-          if (!organization) throw new Error('This test did not request an organization fixture.');
-          await writeFile(path.join(root, 'dna/org/owners'), text);
-          await git(['add', 'dna/org/owners']);
-          await git(['commit', '-q', '-m', 'Change declared ownership scopes']);
-          return git(['rev-parse', 'HEAD']);
+        // GH #1123: what the graph says who owns, replaced — retired edges
+        // out, new ones in — and projected, as the spine's next tick does
+        changeOwnership: async lines => {
+          if (!organized) throw new Error('This test did not request an organization fixture.');
+          unseatGraph(root, env, ownership);
+          seatGraph(root, env, lines);
+          ownership = lines;
+          await project();
+          return git(['rev-parse', 'refs/dna/journal']);
         },
         changeOrganization: async ({ valid = true, commit = true } = {}) => {
           if (!organization) throw new Error('This test did not request an organization fixture.');
@@ -262,15 +281,15 @@ export const test = base.extend({
       await stop(child);
       await relay?.close();
       let dropFailure;
-      if (knowledge && seeded && !dropped) {
+      if (memory && seeded && !dropped) {
         dropped = true;
-        try { memoryLog += (await executeNative(native, [root, 'drop'], { env: fixtureEnv, timeout: 15_000 })).stderr; }
+        try { memoryLog += (await executeNative(memoryNative, [root, 'drop'], { env: fixtureEnv, timeout: 15_000 })).stderr; }
         catch (error) { dropFailure = error; memoryLog += String(error.stderr || error.message); }
       }
       process.removeListener('exit', exitCleanup);
       if (testInfo.status !== testInfo.expectedStatus || dropFailure) {
         await testInfo.attach('api.log', { body: log, contentType: 'text/plain' });
-        if (knowledge) await testInfo.attach('memory.log', { body: memoryLog, contentType: 'text/plain' });
+        if (memory) await testInfo.attach('memory.log', { body: memoryLog, contentType: 'text/plain' });
       }
       await rm(root, { recursive: true, force: true });
       if (dropFailure) throw new Error(`The Knowledge fixture could not drop its record's memory.\n${memoryLog}`);

@@ -4,7 +4,8 @@ import { isWrite } from './command-wire.mjs';
 test.use({ organization: true });
 const context = page => page.getByRole('region', { name: 'Working context', exact: true });
 const query = page => new URLSearchParams(new URL(page.url()).hash.split('?')[1]);
-const owners = 'org = acme\norg/support = partner\norg/support/équipe = partner\norg/finance = acme\nacme: alice\npartner: bob\nhost = acme\n';
+// GH #1123: who owns what, in the graph's terms
+const owners = 'position:org organization:acme\nposition:org/support organization:partner\nposition:org/support/équipe organization:partner\nposition:org/finance organization:acme\norganization:acme alice\norganization:partner bob\n';
 async function choose(page, value) {
   await page.getByLabel('Working locus', { exact: true }).selectOption(value);
   await expect.poll(() => query(page).get('locus') || '').toBe(value);
@@ -50,7 +51,7 @@ test('Declared scopes carry across DNA workspaces and mark only exact practice t
 test('Removed and unknown scopes do not silently broaden the workspace; clearing and refreshed ownership recover', async ({ page, service }) => {
   await page.goto(service.url('practices', { locus: 'org/support' }));
   await expect(context(page)).toContainText('Declared owner · partner');
-  await service.changeOwnership('org = acme\norg/finance = acme\nacme: alice\nhost = acme\n');
+  await service.changeOwnership('position:org organization:acme\nposition:org/finance organization:acme\norganization:acme alice\n');
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Working context unavailable', exact: true })).toBeVisible();
   await expect(page.locator('.record-link')).toHaveCount(0);

@@ -312,11 +312,11 @@ locus App {
         let stranger = self.dna("fill\napi/dev\nzed\n--as\ngrace");
         std::test::assert(stranger.code != 0 && std::str::contains(stranger.stderr, "zed is no person this record knows"), "a holder is a person the record knows: " + stranger.stderr);
         let nowhere = self.dna("fill\nnowhere/dev\nada\n--as\ngrace");
-        std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position the record states or proposes"), "for a position it states: " + nowhere.stderr);
+        std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position or organization the record states or proposes"), "for a position it states: " + nowhere.stderr);
         let rj = dna::GitJournal { repo: self.repo };
         std::test::assert(rj.append(rj.revision(), "graph.retired", "position:compose/operator", "{}").ok, "a position retired");
         let gone = self.dna("fill\ncompose/operator\nada\n--as\ngrace");
-        std::test::assert(gone.code != 0 && std::str::contains(gone.stderr, "is no position the record states or proposes"), "a retired position holds no one: " + gone.stderr);
+        std::test::assert(gone.code != 0 && std::str::contains(gone.stderr, "is no position or organization the record states or proposes"), "a retired position holds no one: " + gone.stderr);
         let own = self.fill("board\nada\n--as\nada", 900);
         std::test::assert(std::str::starts_with(own.answer, "proposed: "), "ada proposes herself for the board: " + own.answer + own.stderr);
         let listed_holds = self.dna("review");

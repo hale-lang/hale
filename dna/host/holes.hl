@@ -117,7 +117,7 @@ fn held_state(root: String) -> HeldState {
             let row = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
             let entity = std::json::find_string_field(row, "entity");
-            if std::json::find_string_field(row, "kind") == "graph.node" && std::str::starts_with(entity, "position:") && !std::str::contains(out.positions, "\n" + entity + "\n") { out.positions = out.positions + entity + "\n"; }
+            if std::json::find_string_field(row, "kind") == "graph.node" && (std::str::starts_with(entity, "position:") || std::str::starts_with(entity, "organization:")) && !std::str::contains(out.positions, "\n" + entity + "\n") { out.positions = out.positions + entity + "\n"; }
             if std::str::starts_with(entity, "holds:") {
                 let bar = std::str::index_of(entity, "|");
                 let pair = entity[6..bar] + "\t" + entity[(bar + 1)..len(entity)];
@@ -126,19 +126,15 @@ fn held_state(root: String) -> HeldState {
         }
         i = i + 1;
     }
-    // the owners map's members are persons the record knows too
-    let owners = dna::Ownership { path: root + "/dna/org/owners", me_env: "" };
-    let names = owners.owners();
-    let mut k = 0;
-    while len(dna::nth_word(names, k)) > 0 {
-        let members = owners.members_of(dna::nth_word(names, k));
-        let mut m = 0;
-        while len(dna::nth_word(members, m)) > 0 {
-            let who = dna::nth_word(members, m);
-            if !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
-            m = m + 1;
-        }
-        k = k + 1;
+    // an organization's members are persons the record knows too (GH #1123)
+    let mut pairs = out.holds;
+    while len(pairs) > 0 {
+        let nl = std::str::index_of(pairs, "\n");
+        let pair = pairs[0..nl];
+        pairs = pairs[(nl + 1)..len(pairs)];
+        let tab = std::str::index_of(pair, "\t");
+        let who = pair[(tab + 1)..len(pair)];
+        if tab > 0 && std::str::starts_with(pair, "organization:") && !std::str::contains(out.persons, "\n" + who + "\n") { out.persons = out.persons + who + "\n"; }
     }
     return out;
 }
@@ -158,9 +154,24 @@ type FillCheck { why: String = ""; warning: String = ""; }
 
 fn fill_check(root: String, position: String, holder: String) -> FillCheck {
     let st = held_state(root);
-    if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position the record states or proposes" }; }
-    if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name, with no `|`" }; }
-    if !std::str::contains(st.persons, "\n" + holder + "\n") { return FillCheck { why: holder + " is no person this record knows (no row in their name, and no owner's member)" }; }
+    if !std::str::contains(st.positions, "\n" + position + "\n") { return FillCheck { why: "`" + position + "` is no position or organization the record states or proposes" }; }
+    if std::str::contains(holder, "|") || len(holder) == 0 { return FillCheck { why: "a holder is a person's name or an organization, with no `|`" }; }
+    // GH #1123: an organization owns a position; a person joins an
+    // organization, known to the record by that membership
+    if std::str::starts_with(holder, "organization:") {
+        if !std::str::starts_with(position, "position:") { return FillCheck { why: "an organization holds a position, not another organization" }; }
+        if !std::str::contains(st.positions, "\n" + holder + "\n") { return FillCheck { why: "`" + holder + "` is no organization the record states or proposes" }; }
+        let at = std::str::index_of(st.holds, "\n" + position + "\torganization:");
+        if at >= 0 {
+            let line = st.holds[(at + 1)..len(st.holds)];
+            let owner = line[(len(position) + 1)..std::str::index_of(line, "\n")];
+            if owner != holder { return FillCheck { why: position + " is owned by " + owner[13..len(owner)] + " already; a position has one owning organization" }; }
+        }
+        return FillCheck { };
+    }
+    let joining = std::str::starts_with(position, "organization:");
+    if held_machine(holder) { return FillCheck { why: holder + " is a name the organism writes as, not a person" }; }
+    if !joining && !std::str::contains(st.persons, "\n" + holder + "\n") { return FillCheck { why: holder + " is no person this record knows (no row in their name, and no organization's member)" }; }
     if std::str::contains(st.retired, "\n" + holder + "\n") { return FillCheck { why: holder + " retired from this organism (person.retired)" }; }
     let sibling = hold_sibling(position);
     if len(sibling) > 0 && std::str::contains(st.holds, "\n" + sibling + "\t" + holder + "\n") {
@@ -177,10 +188,10 @@ fn fill_check(root: String, position: String, holder: String) -> FillCheck {
 // host beside the organization relays it until it is answered.
 @unbounded
 fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag: String, memory: dna::Memory) -> Answer {
-    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna fill <position> <holder> [project] [--as <who>]"); }
+    if len(name) == 0 || len(holder) == 0 { return fail("usage: hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]"); }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let position = if std::str::starts_with(name, "position:") { name } else { ops::graph_node_id("position", name) };
+    let position = if std::str::starts_with(name, "position:") || std::str::starts_with(name, "organization:") { name } else { ops::graph_node_id("position", name) };
     let check = fill_check(root, position, holder);
     if len(check.why) > 0 { return fail("fill: " + check.why); }
     if len(check.warning) > 0 { eprintln("hale dna fill: warning: ", check.warning); }

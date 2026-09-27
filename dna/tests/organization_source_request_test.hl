@@ -72,8 +72,8 @@ fn source_body(repo: String, st: Stage, request_id: String, owner: String, owner
     let body = dna::Dna {
         journal: SourceStageJournal { inner: dna::GitJournal { repo: repo }, stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
         organization_source_facts: ops::StrictOrganizationSourceFacts { },
-        organization_source_inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner },
-        ownership: dna::Ownership { text: owners, me: owner, me_env: "" },
+        organization_source_inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner, ownership: dna::graph_ownership_of(owners) },
+        ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
@@ -82,13 +82,14 @@ fn source_body(repo: String, st: Stage, request_id: String, owner: String, owner
 }
 
 main locus App {
+    params { owners: String = ""; } // the graph's ownership, `<node> <holder>` lines (GH #1123)
     fn repo(label: String, owners: String) -> String {
         let repo = "/tmp/dna-source-request-" + to_string(std::process::pid()) + "-" + label;
         let cleaned = dna::run_tool("rm\n-rf\n" + repo);
         let dirs = dna::run_tool("mkdir\n-p\n" + repo + "/dna/org");
         std::io::fs::write_file(repo + "/dna/org/main.hl", ORIGINAL) or discard;
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n/vendor/\n") or discard;
-        if len(owners) > 0 { std::io::fs::write_file(repo + "/dna/org/owners", owners) or discard; }
+        self.owners = owners;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let added = dna::run_tool("git\n-C\n" + repo + "\nadd\n-A");
         let committed = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase");
@@ -101,7 +102,7 @@ main locus App {
         let c = ops::GovernanceCommand { application_id: context.application_id, request_id: label, operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl",
             subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest,
             record_head: std::str::clone(j.head()), source_text: PREPARED, rationale: "Prepare exact Organization source." };
-        let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner };
+        let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner, ownership: dna::graph_ownership_of(self.owners) };
         let r = codec.request(context, c, ops::GovernanceGrant { allowed: true, authority: "organization-editor", basis: "native-source-test-policy" }, owner);
         let prepared = guard.prepare(r); std::test::assert(prepared.ok, "shared guard accepts exact candidate inputs: " + prepared.code);
         let fact = codec.fact(context, c, prepared.request); std::test::assert(len(fact) > 0, "strict native incoming fact");
@@ -167,13 +168,13 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn owner_and_default() {
-        let owners = "org = north\nnorth: board-member\nsouth: other\n";
+        let owners = "position:org organization:north\norganization:north board-member\norganization:south other\n";
         let repo = self.repo("owners", owners); let mut st = Stage { };
         let r = self.request(repo, reader(repo), "owners", "north");
         source_body(repo, st, r.request_id, "south", owners);
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "another owner cannot start whole-module source work");
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.refused", r.request_id), 0, "another owner cannot falsely finish it");
-        let closed = dna::Dna { journal: dna::GitJournal { repo: repo }, ownership: dna::Ownership { text: owners, me: "north", me_env: "" } };
+        let closed = dna::Dna { journal: dna::GitJournal { repo: repo }, ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: "north", me_env: "" } };
         closed.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: r.request_id });
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "default fact adapter is unavailable");
         let codec = dna::OrganizationSourceRequestCodec { };

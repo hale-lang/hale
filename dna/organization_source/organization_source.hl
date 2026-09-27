@@ -14,7 +14,6 @@ type OrganizationArtifact {
     module_text: String = "";
     module_digest: String = "";
     artifact: String = "";
-    owners: String = "";
     code: String = "organization_unavailable";
     error: String = "the committed project has no organization seed at dna/org";
 }
@@ -186,13 +185,11 @@ locus OrganizationSource {
         if size < 1 || size > 8388608 {
             return OrganizationArtifact { available: true, source_head: h, code: "organization_limit_exceeded", error: "the organization artifact is empty or exceeds the 8 MiB read bound" };
         }
-        let owner_size = std::io::fs::file_size(source + "/dna/org/owners") or - 1;
-        if owner_size > 65536 { return OrganizationArtifact { available: true, source_head: h, code: "organization_limit_exceeded", error: "the organization owner map exceeds the 64 KiB read bound" }; }
         return OrganizationArtifact {
             ok: true, available: true, source_head: h, source_root: source,
             dependency_digest: dependency_digest, dependency_source: dependency_source,
             module_text: module_text, module_digest: module_digest,
-            artifact: std::io::fs::read_file(output) or "", owners: std::io::fs::read_file(source + "/dna/org/owners") or "", code: "", error: ""
+            artifact: std::io::fs::read_file(output) or "", code: "", error: ""
         };
     }
 }

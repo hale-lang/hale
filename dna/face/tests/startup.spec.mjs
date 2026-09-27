@@ -151,7 +151,6 @@ test('One-command startup builds the native face for a fresh DNA project without
   expect(data.data.basis.dependency_source).toBe('local_vendor_snapshot');
   await expect(page.getByRole('region', { name: 'Declared containment topology', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit organization', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Edit ownership', exact: true })).toBeEnabled();
   const capabilities = await page.request.get(`${service.origin}/api/hale/v1/applications/${service.application}/capabilities`);
   // Record commands are the head socket's gated topics (GH #1104 piece 5):
   // capabilities name that socket and the HTTP route that forwards one wire

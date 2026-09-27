@@ -122,12 +122,12 @@ main locus App {
         std::test::assert_eq_int(decisions(after, ambiguous.command_id), 1, "ambiguous persistence is not appended twice");
 
         let owners_record = dna::GitJournal { repo: repo };
-        let owners = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", approvers: "A=alice B=bob" };
+        let owners = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", signers: "position:a=alice position:b=bob" };
         let first_owner = owners.command_decide(verdict("command/owner-a", "review/owners", "approve", "alice"));
-        std::test::assert(std::json::find_bool_field(first_owner, "accepted") && !std::json::find_bool_field(first_owner, "settled"), "partial owner approval is accepted without settlement");
-        let owners_again = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", approvers: "A=alice B=bob" };
+        std::test::assert(std::json::find_bool_field(first_owner, "accepted") && !std::json::find_bool_field(first_owner, "settled"), "one required position's approval is accepted without settlement");
+        let owners_again = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", signers: "position:a=alice position:b=bob" };
         let last_owner = owners_again.command_decide(verdict("command/owner-b", "review/owners", "approve", "bob"));
-        std::test::assert(std::json::find_bool_field(last_owner, "accepted") && std::json::find_bool_field(last_owner, "settled"), "restart restores prior owner approval before deciding the last one");
+        std::test::assert(std::json::find_bool_field(last_owner, "accepted") && std::json::find_bool_field(last_owner, "settled"), "restart restores the prior position's approval before deciding the last one");
 
         let legacy = dna::Review { review_id: "legacy", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
         std::test::assert(legacy.consider(verdict("", "legacy", "approve", "riley")) && legacy.settled, "legacy admission remains unchanged");
