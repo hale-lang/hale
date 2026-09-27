@@ -154,6 +154,27 @@ locus Api {
         return "";
     }
 
+    // The next line that is not a stream frame (or "" after the bound):
+    // the answer to a line that carries no `id` to echo, such as a refusal
+    // of one that is not JSON. Frames on the way are counted (GH #1142).
+    fn next_reply() -> String {
+        let mut i = 0;
+        while i < 200 {
+            let line = self.next_line();
+            if len(line) == 0 {
+                return "";
+            }
+            if std::str::starts_with(line, "{\"stream\":") {
+                self.frames = self.frames + 1;
+                self.last_frame = line;
+            } else {
+                return line;
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
     // Wait for one stream frame, returning it (or "" after the bound).
     fn next_frame() -> String {
         let mut i = 0;
@@ -241,7 +262,7 @@ fn drive(api: Api) {
 
     // A line that is not a request.
     api.send("not json");
-    let r0 = api.next_line();
+    let r0 = api.next_reply();
     std::test::assert(std::str::contains(r0, "\"kind\":\"malformed\""), "a non-request line is refused: " + r0);
 }
 
