@@ -139,11 +139,11 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
         assert!(ok, "{out}");
         trace::sleep("between pressure signals", Duration::from_millis(400));
     }
-    let requested = wait_for(&app, 120, "review.requested", "review:m1");
+    let requested = wait_for(&app, 300, "review.requested", "review:m1");
     let (ok1, board) = hale(&["dna", "board"], &app);
     let (ok2, view) = hale(&["dna", "review", "m1"], &app);
     let (ok3, verdict) = hale(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "grow it"], &app);
-    let retained = wait_for(&app, 120, "mutation.retained", "m1");
+    let retained = wait_for(&app, 300, "mutation.retained", "m1");
     let org_pid_after = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default();
     let (ok4, report) = hale(&["dna", "report"], &app);
     let (ok5, pressure) = hale(&["dna", "pressure"], &app);

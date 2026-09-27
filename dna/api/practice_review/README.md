@@ -44,10 +44,10 @@ the surface is the entrypoint seed's own loci and an imported main's
 bindings are inert. The socket is one per record under
 `$XDG_RUNTIME_DIR/hale/dna/`, named in `/capabilities` (`api.socket`);
 `LOTUS_API` overrides it. `hale check --dump-api dna/api/practice_review`
-lists them as `api::…`. An application with
-its own Workflow catalog can compose `PracticeReviewCommands` and call
-`api::serve_with_commands` with that catalog instead of this head's
-`NoWorkflowCatalog`. Retain the authority, native service and adapter for the
+lists them as `api::…`. The head serves the organization's own Workflow
+catalog (`ProjectWorkflowCatalog`: what `hale dna definitions --json`
+reads, the baseline alone without a `dna/org/workflows.hl`). Retain the
+authority, native service and adapter for the
 entire server lifetime.
 
 ## Explicit authority

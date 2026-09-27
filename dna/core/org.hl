@@ -114,7 +114,7 @@ locus Leader {
         let proposal = plan_line(text, "proposal");
         let none = len(proposal) == 0 || std::str::lower(proposal) == "none" || std::str::lower(proposal) == "none." || std::str::lower(proposal) == "clean";
         OrgReviewed <- OrgReview {
-            org: req.org,
+            org: req.org, task: req.task, signals: req.signals,
             proposal: if none { "" } else { proposal },
             narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
             package: self.last_package, by: self.name

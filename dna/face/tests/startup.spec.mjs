@@ -138,7 +138,8 @@ test('One-command startup builds the native face for a fresh DNA project without
   // Record commands are the head socket's gated topics (GH #1104 piece 5):
   // capabilities name that socket and the HTTP route that forwards one wire
   // line to it, and carry no command profile; HTTP itself writes nothing.
-  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(false); expect(caps.data.read_only).toBe(true);
+  // The head reads the organization's workflow catalog (GH #995).
+  const caps = await capabilities.json(); expect(caps.data.reads.definitions).toBe(true); expect(caps.data.read_only).toBe(true);
   expect(caps.data.writes).toBeUndefined(); expect(caps.data.commands).toBeUndefined();
   expect(caps.data.api.transport).toBe('unix'); expect(caps.data.api.socket).toMatch(new RegExp('/' + service.application.slice(0, 12) + '\\.sock$'));
   expect(caps.data.api.http).toBe(`/api/hale/v1/applications/${service.application}/commands`);

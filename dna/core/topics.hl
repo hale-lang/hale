@@ -477,9 +477,12 @@ topic PlanRequested { payload: PlanRequest; subject: "dna.plan.requested"; keyed
 type OptimizeRequest {
     org: String = "org";
     signals: String = "";
+    task: String = ""; // the optimize-walk execution asking (GH #995)
 }
 type OrgReview {
     org: String = "org";
+    task: String = ""; // the optimize-walk execution it answers
+    signals: String = ""; // the signals the leader read
     proposal: String = ""; // "" = clean
     narrative: String = "";
     package: String = "";

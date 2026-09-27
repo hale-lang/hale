@@ -33,14 +33,15 @@ ask is an edit.
 
 ## Definitions
 
-A definition is written in code, in `dna/org/workflows.hl`, and bound
+A definition is written in code, in `dna/org/own_workflows.hl`, and bound
 whole before anything runs. It is ordered steps, and each step names
 the **one store it writes** — `record`, `forge`, `genome`, `heart`,
 `graph`, `nerves`, `memory`, `vault` or `host` — one word per step, so
 the words are also the step count. A step is where a fact is written:
 reading something, or waiting for another writer, belongs to the step
-whose fact it serves. A step is a set of members; a member is a **leaf** (one unit of work, with an objective,
-the capability words it requires, and how many attempts it may take)
+whose fact it serves. A step is a set of members; a member is a
+**leaf** (one unit of work, with an objective, the capability words it
+requires, and how many attempts it may take)
 or a **child** (another definition, run as its own execution under
 this step). The canonical example the engine's proofs use:
 
@@ -71,8 +72,12 @@ units of work) is a refusal at admission, in the record
 
 ## The catalog
 
-DNA ships a catalog, and `hale dna new` writes `dna/org/workflows.hl`
-to return it plus your own; `hale dna definitions` lists it. Each
+DNA ships a catalog. `hale dna new` writes `dna/org/workflows.hl`, which
+returns it plus your own from `dna/org/own_workflows.hl`; `hale dna
+upgrade` rewrites the first to the current shape and never touches the
+second (a definition the first held of its own is named, for you to move
+into the second). `hale dna definitions` lists the catalog, and fails,
+saying why, when one of your own definitions is refused. Each
 baseline definition is a chain in which every step writes one store:
 
 | id | steps (store) | runs today |
@@ -82,7 +87,7 @@ baseline definition is a chain in which every step writes one store:
 | `optimize-walk` | walk (record) | the optimize pass |
 | `ask-triage` | offered · classify · plan (record) | refused: the ask path still admits `ask-edit` / `ask-person` after the leader plans |
 | `change-deliver` | candidate (record) · review (forge) · verdict (record) · apply (genome) · deploy (heart) · settle (record) | refused: the heart is not built |
-| `deploy-observe` | deploy (heart) · rollback (genome) · settle (record) | refused: the heart is not built |
+| `deploy-observe` | deploy (heart) · settle (record) | refused: the heart is not built |
 | `secret-rotate` | rotate (vault) · recorded (record) | refused: the vault is not built |
 | `body-provision` | provision · start (host) · lease (memory) · observed (record) | refused: a person provisions a host with `hale dna body provision` |
 
@@ -100,11 +105,14 @@ names the parent it is routed to, and at the threshold it is proposed.
 handful of rows of the day's work. On a git-backed record — what a new
 organization starts on, one person working alone — each row is a commit,
 so an execution costs tens of them: the Board deciding a repository's 35
-seeded proposals waits minutes for the ratifications, where an adopted
-ledger (`hale dna ledger adopt`, [The record](./record.md)) takes the same
-rows in about a second. Run an organization with its ledger adopted.
+seeded proposals waits some 15 to 18 seconds for the ratifications, where
+an adopted ledger (`hale dna ledger adopt`, [The record](./record.md))
+takes the same rows in about a second. Run an organization with its ledger adopted.
 `hale dna review <group> approve` writes every verdict of the group
 before it waits for the answers, once.
+
+The face's definitions views read the same catalog: the head serves
+what `hale dna definitions --json` reads.
 
 `hale dna upgrade` brings the toolchain's newer baseline, a new
 revision of a definition: a Task already running finishes under the
