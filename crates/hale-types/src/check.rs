@@ -6384,6 +6384,7 @@ fn check_main_and_bindings(
     }
     check_api_binding(&programs_vec, diags);
     check_api_roles(&programs_vec, diags);
+    check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -6468,6 +6469,107 @@ fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
 /// topic cannot also be bound to a transport in `bindings { }`: that
 /// transport has no gate, so the annotation would promise a check
 /// that does not run.
+/// GH #1141: a struct, a locus's `params`, a `contract` and an
+/// `interface` declare each name once. A second declaration of one
+/// name used to pass silently — one of the two won the slot, and the
+/// source could not say which — while the json codecs and the api
+/// description assumed one slot per name. Now the second is a type
+/// error naming the first.
+fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
+    fn once(
+        what: &str,
+        owner: &str,
+        names: impl Iterator<Item = (String, Span)>,
+        diags: &mut Vec<Diag>,
+    ) {
+        let mut seen: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
+        for (name, span) in names {
+            if let Some(first) = seen.get(&name) {
+                diags.push(
+                    Diag::ty(
+                        span,
+                        format!(
+                            "{what} `{name}` is already declared in {owner}; \
+                             a name is one slot, so declare it once"
+                        ),
+                    )
+                    .with_related(*first, "the first declaration"),
+                );
+            } else {
+                seen.insert(name, span);
+            }
+        }
+    }
+    for p in programs {
+        walk_decls(&p.items, &mut |item| match item {
+            TopDecl::Type(t) => match &t.body {
+                TypeDeclBody::Struct(fields) => {
+                    once(
+                        "field",
+                        &format!("type `{}`", t.name.name),
+                        fields.iter().map(|f| (f.name.name.clone(), f.name.span)),
+                        diags,
+                    );
+                }
+                TypeDeclBody::Enum(variants) => {
+                    once(
+                        "variant",
+                        &format!("type `{}`", t.name.name),
+                        variants.iter().map(|v| (v.name.name.clone(), v.name.span)),
+                        diags,
+                    );
+                }
+                TypeDeclBody::Alias(_) => {}
+            },
+            TopDecl::Interface(i) => once(
+                "method",
+                &format!("interface `{}`", i.name.name),
+                i.methods.iter().map(|m| (m.name.name.clone(), m.name.span)),
+                diags,
+            ),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    match m {
+                        LocusMember::Params(pb) => once(
+                            "param",
+                            &format!("locus `{}`", l.name.name),
+                            pb.params.iter().map(|d| (d.name.name.clone(), d.name.span)),
+                            diags,
+                        ),
+                        LocusMember::Contract(cb) => {
+                            if let ContractKind::Members(members) = &cb.kind {
+                                once(
+                                    "contract member",
+                                    &format!("locus `{}`", l.name.name),
+                                    members.iter().filter_map(|c| match &c.name {
+                                        ContractName::Named(n) => Some((n.name.clone(), n.span)),
+                                        ContractName::Inferred => None,
+                                    }),
+                                    diags,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            TopDecl::Perspective(p) => {
+                for m in &p.members {
+                    if let PerspectiveMember::Params(pb) = m {
+                        once(
+                            "param",
+                            &format!("perspective `{}`", p.name.name),
+                            pb.params.iter().map(|d| (d.name.name.clone(), d.name.span)),
+                            diags,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+}
+
 fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
     use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
     use std::collections::{BTreeMap, BTreeSet};
