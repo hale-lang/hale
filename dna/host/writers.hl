@@ -61,6 +61,11 @@ fn no_organism(root: String) -> String {
 }
 
 // An event after `from` of one of `kinds` (space-separated) naming `entity`.
+// `from` is a position in THIS projection: a merged order is arrival
+// order within one `RoutedJournal`, and a fresh one lists every record
+// row before every ledger row, so under an adopted ledger a record row
+// that lands later sits BEFORE the mark in a projection opened after it.
+// A wait marks and polls one projection, refreshed in place (`watch`).
 fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::Event {
     let mut i = from;
     while i < p.rows() {
@@ -719,26 +724,26 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         if no_wait { return answer(requested); }
     }
     // the organism's answer, from the record
-    let deadline = std::time::now() + (if local { 20 } else { 60 });
+    let deadline = std::time::now() + dna::wait_secs(if local { 20 } else { 60 });
     while true {
         if !local { let s = sync_record(root, memory); }
-        let q = open_projection(root, ".", "", memory);
-        let refused = find_after(q, before, " intent.refused ", intent_id);
+        let fresh = watch(p);
+        let refused = find_after(p, before, " intent.refused ", intent_id);
         if refused.seq >= 0 { return answer("refused: " + refused.body + "\n"); }
         // card 18: the ask's own execution — the admission that names this
         // intent as its request — never the next birth in the record,
         // which may be another ask's; its state is the projection's
         let mut i = before;
-        while i < q.rows() {
-            let t = q.row(i);
+        while i < p.rows() {
+            let t = p.row(i);
             if t.kind == "workflow.admitted" && std::json::find_string_field(t.body, "request") == intent_id {
-                let projected = q.task_of(t.entity);
+                let projected = p.task_of(t.entity);
                 let state = if len(projected.state) > 0 { projected.state } else { "active" };
                 return answer("task " + t.entity + " born for intent " + intent_id + " [" + state + "]\n");
             }
             i = i + 1;
         }
-        if std::time::now() > deadline { return fail("requested intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(q.rows()) + ")"); }
+        if std::time::now() > deadline { return fail("requested intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(p.rows()) + ")"); }
         std::time::sleep(if local { 150ms } else { 1000ms });
     }
     return fail("unreachable");
@@ -964,18 +969,18 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
         }
         if len(asked) == 0 { return fail("no pending " + id + " Review"); }
         if no_wait { return answer(out); }
-        let deadline = std::time::now() + 60 + 5 * count;
+        let deadline = std::time::now() + dna::wait_secs(60 + 5 * count);
         let mut left = asked;
         while len(left) > 0 {
             if !local { let s = sync_record(root, memory); }
-            let q = open_projection(root, seed, "", memory);
+            let fresh = watch(p);
             let mut still = "";
             let mut rest = left;
             while len(rest) > 0 {
                 let nl = std::str::index_of(rest, "\n");
                 let rid = rest[0..nl];
                 rest = rest[(nl + 1)..len(rest)];
-                let e = find_after(q, before, " review.settled review.refused review.signed ", rid);
+                let e = find_after(p, before, " review.settled review.refused review.signed ", rid);
                 if e.seq < 0 { still = still + rid + "\n"; }
                 else if e.kind == "review.settled" { out = out + "review " + rid + " settled: " + e.body + "\n"; }
                 else if e.kind == "review.signed" { out = out + "review " + rid + " signed by " + dna::native_json_string(e.body, "by") + "; it awaits " + dna::native_json_string(e.body, "awaiting") + "\n"; }
@@ -1022,11 +1027,11 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     // the organism answers after the steps it is running, and on a
     // git-backed record each of their rows is a commit (GH #995): a local
     // organism is given the time a remote one is
-    let deadline = std::time::now() + 60;
+    let deadline = std::time::now() + dna::wait_secs(60);
     while true {
         if !local { let s = sync_record(root, memory); }
-        let q = open_projection(root, seed, "", memory);
-        let e = find_after(q, before, " review.settled review.refused review.signed ", id);
+        let fresh = watch(p);
+        let e = find_after(p, before, " review.settled review.refused review.signed ", id);
         if e.seq >= 0 {
             if e.kind == "review.settled" { return answer("review " + id + " settled: " + e.body + "\n"); }
             // GH #1089: a required position signed, and the Review awaits the rest
@@ -1120,13 +1125,14 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             // organization relays it onto the nerves, and the organization
             // answers a request once, however often it is delivered
             b.end_object();
-            let before = open_projection(root, seed, "", memory).rows();
+            let watched = open_projection(root, seed, "", memory);
+            let before = watched.rows();
             if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
             // the organization answers from its bus; give a busy one a minute
-            let deadline = std::time::now() + 60;
+            let deadline = std::time::now() + dna::wait_secs(60);
             while std::time::now() <= deadline {
-                let q = open_projection(root, seed, "", memory);
-                let r = find_after(q, before, " practice.proposed practice.refused ", request_id);
+                let fresh = watch(watched);
+                let r = find_after(watched, before, " practice.proposed practice.refused ", request_id);
                 if r.seq >= 0 {
                     if r.kind == "practice.refused" { return fail("practice " + name + " refused: " + r.body); }
                     let digest = std::json::find_string_field(r.body, "digest");
@@ -1363,6 +1369,10 @@ fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool 
     }
     return false;
 }
+
+// The projection a wait marked, read again in place: its merged order
+// only grows, so a row that lands after the mark is after it (GH #1182).
+fn watch(p: Projection) -> Bool { return p.j.refresh(); }
 
 @unbounded
 fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {

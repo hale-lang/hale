@@ -245,7 +245,9 @@ jobs:
     # The paid 8-core runner (org group Large, label L1) only for this
     # repo's own pushes and PRs; a fork's PR runs the same job on the
     # free runner, so nobody else's build spends the org's minutes.
-    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'L1' || 'ubuntu-latest' }}
+    # L1 stopped taking jobs on 2026-09-27 (queued from 06:54Z, no runner assigned); back on the
+    # free runner until the org's runner or its spending limit is looked at, then restore the L1 expression.
+    runs-on: ubuntu-latest
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
@@ -577,7 +579,9 @@ jobs:
     # The paid 8-core runner (org group Large, label L1) only for this
     # repo's own pushes and PRs; a fork's PR runs the same job on the
     # free runner, so nobody else's build spends the org's minutes.
-    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'L1' || 'ubuntu-latest' }}
+    # L1 stopped taking jobs on 2026-09-27 (queued from 06:54Z, no runner assigned); back on the
+    # free runner until the org's runner or its spending limit is looked at, then restore the L1 expression.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -659,10 +663,15 @@ jobs:
         # across two jobs, running four-wide (the `dna-fixtures`
         # group in .config/nextest.toml) now that nothing else
         # competes for the four cores.
+        env:
+          # The free 4-core runner answers a proposal slower than the suite's
+          # default wait (2) allows while four slices run beside each other;
+          # macOS already runs at 3.
+          HALE_DNA_WAIT_SCALE: "3"
         run: |
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
-            --profile ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && 'large' || 'default' }} \
+            --profile small \
             --partition hash:${{ matrix.part }}/2
 
       - name: sccache stats
