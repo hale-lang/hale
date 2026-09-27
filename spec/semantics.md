@@ -705,8 +705,23 @@ run-completion, and an owner that declares no `release` simply has
 no bookend called.
 
 Whether `T` is a flow is decided over the whole program, imported
-seeds included; an explanation names every `release(c: T)` clause
-(GH #736).
+seeds included, and a clause on a locus that is never instantiated
+counts all the same. `hale check --flows` reports every flow type with
+each `release(c: T)` clause that makes it one, by its declaring locus,
+file and line, in the spelling the author wrote (GH #736); it is an
+opt-in report, never a diagnostic, since a release declaration is
+legitimate.
+
+**Three ends, kept apart.** A *flow* ends by completing: its `run()`
+returns (or it `terminate`s), and it is reclaimed on the spot, its
+owner's `release` firing between its drain and its dissolve. A
+*resident* never completes that way — its `run()` returning means
+"ready" — and ends one of two other ways: by its own `terminate;`,
+typically from a bus handler (the handler returns, then it drains and
+dissolves; no `release` fires, for none names its type), or in its
+owner's dissolve cascade, children first. A resident that disappears
+when its `run()` returns is a flow by some clause elsewhere; the report
+above names it.
 
 **A resident and what a handler hands it.** A payload delivered to a
 handler, and any container the handler builds while it runs, belong

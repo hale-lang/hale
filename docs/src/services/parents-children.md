@@ -196,7 +196,8 @@ locus Server {
   a flow, whoever accepted it. Removing the clause from one owner
   does not make its children residents while another owner still
   declares it; if a child you meant to keep is reclaimed when its
-  `run()` returns, search the whole program for `release(c: T)`.
+  `run()` returns, `hale check --flows` lists every `release(c: T)`
+  in the program, imported seeds included, with its file and line.
 - What a handler hands a resident lives only for that dispatch.
   The payload and any container a handler builds (`@form(vec)` rows,
   Strings) are reclaimed when the handler returns, so a resident
@@ -205,7 +206,12 @@ locus Server {
   later from the handler's arena is a use after free.
 - A locus can also end *itself* early with **`terminate;`** —
   the locus analogue of `return`. It exits the method and lets
-  the runtime tear the locus down.
+  the runtime tear the locus down. For a resident that is the
+  handler-driven end (an `on_close` handler that `terminate`s):
+  it drains and dissolves when the handler returns, and no
+  `release` fires, since no parent releases its type. Otherwise a
+  resident ends in its parent's dissolve cascade. Neither is a
+  flow's completion.
 
 The same "`run()` returned" event means "reclaim me" for a flow
 and "I'm ready" for a resident — disambiguated by whether the
