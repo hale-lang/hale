@@ -266,8 +266,9 @@ A reading is a signal, never a fact: nothing acts on one yet. The event
 is acknowledged to the stream only once its row has landed, so a host
 that stops first loses nothing, and the event comes again. The same
 event and id arriving again is refused (`recorded already; refused as
-a duplicate`). A body that is not a JSON object with a string `id` is
-not a reading at all, and the host says why. Whatever the organism does
+a duplicate`). A body that is not a JSON object with a string `id` (as
+`std::json::valid_object` admits one: at most 64 top-level members,
+unique keys) is not a reading at all, and the host says why. Whatever the organism does
 to the application goes the other way: through the API the application
 exposes, from a leg.
 `dna/tests/heart` is the smallest application that does this, and

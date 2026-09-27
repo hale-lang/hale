@@ -1172,8 +1172,9 @@ repository:
   codec that writes one JSON object, and publishes it through a pinned
   `NatsConn` under the organization's prefix, acknowledged by the
   stream. It imports nothing of DNA. The event names itself: its body
-  is one well-formed JSON object in UTF-8 with a string `id` of the
-  application's choosing (letters, digits and `-_.:`, at most 128
+  is one JSON object as `std::json::valid_object` admits it (well-formed
+  UTF-8, unique unescaped keys, at most 64 top-level members, nesting
+  at most 64 deep) with a string `id` of the application's choosing (letters, digits and `-_.:`, at most 128
   bytes, as the application's and the event's names are). The node's
   host reads `<org>.app.>` through the durable `heart` on its own
   connection, at most 64 unacknowledged at once. There is one durable
@@ -1194,7 +1195,8 @@ repository:
   - **Shared records.** Over a shared record that keeps its rows in git
     (routing 0), each owner's clone appends on its own, and only the
     ledger can decide an id across owners. There readings wait in the
-    stream until the ledger is adopted, and the host says so once.
+    stream until the ledger is adopted, and the host says so once. They
+    wait at most as long as the stream keeps them (a week).
   - **Not a reading.** A message that names no application and event, or
     whose body is not such an object, is not a reading: the host says
     why and records nothing.
@@ -1202,7 +1204,10 @@ repository:
     its row has landed, or once it has been refused as a duplicate or as
     not a reading. One whose row could not be written stays
     unacknowledged and comes again, so a host that stops between the
-    hand-off and the row loses nothing.
+    hand-off and the row loses nothing — within the stream's retention:
+    an event not landed within a week (`NERVES_MAX_AGE_SECS`) ages out of
+    the stream unrecorded. One whose write keeps failing comes again
+    every ack wait (30 s) and holds one of the durable's 64 places.
 - **Rows landing.** For every row its view of the organism gains, a
   node publishes `head.row.landed` (`RowLanded`: the row's `seq`,
   `kind` and `entity`; under an owner's prefix over a shared record),
