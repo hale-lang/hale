@@ -1,15 +1,16 @@
 // dna/tests/graph_route_test.hl — a change set to the positions that must
 // sign it, from the graph's `meets` and `gates` (GH #1087).
 //
-// On voice (6ad244d2, hale-lang/voice#4) with its holes ratified: a change
+// On voice (a32b295f, hale-lang/voice#5) with its holes ratified: a change
 // to spec/openapi.yaml is signed by api's reviewer, which signs the
-// contract, and node's, which consumes it — ui consumes it too and is a
-// seed no position reviews, which is said — against the runs of ci/api and
-// ci/contracts; a change under api/ by api's reviewer alone, against
-// ci/api; a change to spec/store.md, once a ratified practice makes it
-// law, by the board too; a path the graph does not hold is left to the
-// fallback. No dev ever signs. The route is read from memory as the head
-// reads it: without HALE_DNA_MEMORY_DSN_OWNER the fixture is not
+// contract, and node's and ui's, which consume it, against the runs of
+// ci/api and ci/contracts; a change under api/ by api's reviewer alone,
+// against ci/api; a change to spec/store.md, once a ratified practice
+// makes it law, by the board too; a path the graph does not hold is left
+// to the fallback. Routing reads the `reviews` edges and nothing else: a
+// consumer no position reviews is said, not dropped, and a dev signs
+// exactly where an edge says so. The route is read from memory as the
+// head reads it: without HALE_DNA_MEMORY_DSN_OWNER the fixture is not
 // exercised.
 
 import "../core" as dna;
@@ -130,9 +131,9 @@ locus App {
         // consumer's, against the gates guarding it
         let api = self.dna("route\n--json\nspec/openapi.yaml");
         std::test::assert_eq_int(api.code, 0, "route openapi.yaml: " + api.stderr);
-        std::test::assert_eq_str(field_of(std::json::find_field_raw(api.stdout, "signers"), "position"), "position:api/reviewer\nposition:node/reviewer\n", "api's reviewer signs it, node's consumes it, and advice bound to it is no law the board signs: " + api.stdout);
+        std::test::assert_eq_str(field_of(std::json::find_field_raw(api.stdout, "signers"), "position"), "position:api/reviewer\nposition:node/reviewer\nposition:ui/reviewer\n", "api's reviewer signs it, node's and ui's consume it, and advice bound to it is no law the board signs: " + api.stdout);
         std::test::assert_eq_str(dna::show_strings(std::json::find_field_raw(api.stdout, "evidence")), "gate:ci/api\ngate:ci/contracts\n", "judged against ci/api and ci/contracts: " + api.stdout);
-        std::test::assert(std::str::contains(api.stdout, "\"node\": \"seed:ui\"") && std::str::contains(api.stdout, "consumes openapi.yaml; no position reviews it"), "ui consumes it and no position reviews ui: said, not dropped: " + api.stdout);
+        std::test::assert(!std::str::contains(api.stdout, "no position reviews it"), "every consumer has a reviewer: " + api.stdout);
         std::test::assert(std::str::contains(api.stdout, "[grace] signs openapi.yaml"), "a signer with who holds it: " + api.stdout);
 
         // ---- a change under api/: api's reviewer alone, against ci/api
@@ -173,19 +174,26 @@ locus App {
         let rename = self.dna("route\n--json\n--diff\nHEAD~1..HEAD");
         std::test::assert(std::str::contains(rename.stdout, "position:api/reviewer") && std::str::contains(rename.stdout, "position:node/reviewer"), "the moved contract keeps its signers: " + rename.stdout);
 
-        // ---- a reviews row naming a dev: the node goes to the fallback,
-        // never silently to nobody
+        // ---- a reviews row naming a dev: the edge is the authority, so the
+        // dev signs; a consumer no position under it reviews is said, not
+        // dropped
         let jr = dna::GitJournal { repo: self.repo };
-        let bad = ops::GraphEdge { kind: "reviews" };
-        bad.member("position", "position:api/dev");
-        bad.member("subject", "document:DIRECTION.md");
-        std::test::assert(jr.append(jr.revision(), "graph.edge", bad.id(), bad.body()).ok, "api/dev reviews DIRECTION.md, by hand");
+        let dev = ops::GraphEdge { kind: "reviews" };
+        dev.member("position", "position:api/dev");
+        dev.member("subject", "document:DIRECTION.md");
+        std::test::assert(jr.append(jr.revision(), "graph.edge", dev.id(), dev.body()).ok, "api/dev reviews DIRECTION.md, by hand");
+        let uses = ops::GraphEdge { kind: "meets" };
+        uses.member("contract", "contract:spec/node.yaml");
+        uses.member("consumer", "seed:spec/validate");
+        std::test::assert(jr.append(jr.revision(), "graph.edge", uses.id(), uses.body()).ok, "spec/validate consumes node.yaml, by hand");
         self.project();
         let direction = self.dna("route\n--json\nDIRECTION.md");
-        std::test::assert(std::str::contains(direction.stdout, "\"signers\": []") && std::str::contains(direction.stdout, "\"path\": \"DIRECTION.md\""), "a dev signs nothing, so the fallback has it: " + direction.stdout);
+        std::test::assert_eq_str(field_of(std::json::find_field_raw(direction.stdout, "signers"), "position"), "position:api/dev\n", "the dev the edge names signs: " + direction.stdout);
+        let node_api = self.dna("route\n--json\nspec/node.yaml");
+        std::test::assert(std::str::contains(node_api.stdout, "\"node\": \"seed:spec/validate\"") && std::str::contains(node_api.stdout, "consumes node.yaml; no position reviews it"), "spec/validate consumes it and nothing under it reviews node.yaml: said, not dropped: " + node_api.stdout);
 
-        // ---- no dev ever signs
-        std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "a process's dev never signs for it");
+        // ---- the derived holes give a dev no reviews edge
+        std::test::assert(!std::str::contains(api.stdout + code.stdout + store.stdout + diff.stdout, "/dev"), "no derived edge routes to a dev");
 
         // ---- what a Review of a change requires (GH #1089): every position
         // the route names, each with who holds it, and the gates; a route
@@ -197,7 +205,7 @@ locus App {
         let data = q.graph_perspective("routing");
         let law_now = dna::route_law(dna::route_bound(data), dna::GitReceipts { repo: self.repo });
         let need = dna::route_requirement(data, dna::graph_route(data, "spec/openapi.yaml\n", law_now));
-        std::test::assert_eq_str(need.signers, "position:api/reviewer=grace position:node/reviewer=", "api's reviewer, held by grace, and node's, held by nobody and required all the same: " + need.signers);
+        std::test::assert_eq_str(need.signers, "position:api/reviewer=grace position:node/reviewer= position:ui/reviewer=", "api's reviewer, held by grace, and node's and ui's, held by nobody and required all the same: " + need.signers);
         std::test::assert_eq_str(need.gates, "gate:ci/api gate:ci/contracts", "against ci/api and ci/contracts: " + need.gates);
         let unheld = dna::route_requirement(data, dna::graph_route(data, "node/main.hl\n", law_now));
         std::test::assert_eq_str(unheld.signers + unheld.gates, "", "a route whose positions nobody holds is the fallback");

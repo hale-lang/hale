@@ -59,7 +59,17 @@ fn show_org(json: String) -> String {
                 let name = std::json::find_string_field(p.element, "name");
                 let prefix = (if len(under) > 0 { under[(std::str::index_of(under, ":") + 1)..len(under)] } else { "" }) + "/";
                 let mut role = if std::str::starts_with(name, prefix) { name[len(prefix)..len(name)] } else { name };
-                let reviews = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "reviews")), true);
+                // what it signs, shown by its contracts and documents: a
+                // reviewer's seed and an operator's deployment are its place
+                let mut signed = "";
+                let mut subjects = dna::show_strings(std::json::find_field_raw(p.element, "reviews"));
+                while len(subjects) > 0 {
+                    let n2 = std::str::index_of(subjects, "\n");
+                    let sub = subjects[0..n2];
+                    subjects = subjects[(n2 + 1)..len(subjects)];
+                    if graph_id_kind(sub) == "contract" || graph_id_kind(sub) == "document" { signed = signed + sub + "\n"; }
+                }
+                let reviews = dna::show_list(signed, true);
                 if len(reviews) > 0 { role = role + "(" + reviews + ")"; }
                 let holders = dna::show_list(dna::show_strings(std::json::find_field_raw(p.element, "holders")), false);
                 if len(holders) > 0 { role = role + " [" + holders + "]"; }

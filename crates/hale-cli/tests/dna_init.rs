@@ -69,6 +69,7 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
         "dna/org/law.hl",
         "dna/org/purpose.hl",
         "dna/org/workflows.hl",
+        "dna/org/structure.hl",
         ".hale/dna/baseline.topology",
         "hale.lock",
     ] {
@@ -193,6 +194,10 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     // `upgrade` re-materializes it
     let prov = app.join(".hale/dna/embedded.digest");
     std::fs::write(&prov, "hale 0.0.1\nembedded dna: 0000000000000000000000000000000000000000000000000000000000000000\n").unwrap();
+    // GH #1091: the structure policy is regenerated, the roles the project
+    // opted into carried over
+    let structure = app.join("dna/org/structure.hl");
+    std::fs::write(&structure, "fn operational_roles() -> String { return \"support  on-call\"; }\n").unwrap();
     let (ok, out) = hale(&["dna", "upgrade", "."], &app);
     assert!(ok, "{out}");
     assert!(out.contains("use self.core.request_tick with the same millisecond clock"), "upgrade explains how to queue an older scaffold's cadence: {out}");
@@ -202,6 +207,9 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     assert!(std::fs::read_to_string(&vendored).unwrap().contains("topic ReviewVerdict"), "vendor restored");
     assert!(app.join("vendor/dna/review.hl").exists());
     assert_eq!(std::fs::read_to_string(&assembly).unwrap(), owned, "dna/ is the project's");
+    let policy = std::fs::read_to_string(&structure).unwrap();
+    assert!(out.contains("rewrote") && out.contains("structure.hl"), "the structure policy is rewritten: {out}");
+    assert!(policy.starts_with("// dna/org/structure.hl") && policy.contains("    return \"support on-call\";\n"), "to the current shape, keeping the roles: {policy}");
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 

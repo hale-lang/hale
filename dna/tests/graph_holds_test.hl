@@ -2,11 +2,11 @@
 // `hale dna fill`, the Board's verdicts on it, and the trust it is judged
 // under.
 //
-// On hale-lang/voice at 6ad244d2 (dna/tests/onboarding/voice), on a record
+// On hale-lang/voice at a32b295f (dna/tests/onboarding/voice), on a record
 // of its own: graph_holes_test holds the proposals and the Board's round
-// over all 35; here the Board ratifies the four holes the holds need,
+// over all 25; here the Board ratifies the four holes the holds need,
 // each by its own Review (the board, api's dev and reviewer, and compose's
-// support, which is retired once stated), so the
+// operator, which is retired once stated), so the
 // two halves each lead a slice of the native suite. `hale dna fill` asks
 // the organization to propose a holder: a person the record knows, for a
 // position it states; the proposer may not ratify it; a process's dev and
@@ -231,7 +231,7 @@ locus App {
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
         let init = self.dna("init\n.");
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "; 35 proposal(s)"), "and proposes its holes: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "; 25 proposal(s)"), "and proposes its holes: " + init.stdout);
 
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
         let nats = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
@@ -271,7 +271,7 @@ locus App {
         std::test::assert(ledger.ensure_open(), "the record's ledger opens for the fixture: " + ledger.failure);
 
         // ---- the Board ratifies the holes the holds need, each by its own Review
-        let seats = "board\napi/dev\napi/reviewer\ncompose/support\n";
+        let seats = "board\napi/dev\napi/reviewer\ncompose/operator\n";
         let mut rest = seats;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
@@ -301,8 +301,8 @@ locus App {
         while gi < git.revision() { if git.read(gi).kind == "workflow.admitted" { as_commits = as_commits + 1; } gi = gi + 1; }
         std::test::assert_eq_int(as_commits, 0, "and none of them is a commit on the record");
         // (the chart pads its names to the widest it shows: compose's)
-        let seated = self.show_until(head, "  compose  support\n", 240);
-        std::test::assert(std::str::contains(seated, "  board\n") && std::str::contains(seated, "  api      dev, reviewer(openapi.yaml)\n") && std::str::contains(seated, "  compose  support\n"), "the four holes are the org chart's: " + seated);
+        let seated = self.show_until(head, "  compose  operator\n", 240);
+        std::test::assert(std::str::contains(seated, "  board\n") && std::str::contains(seated, "  api      dev, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md)\n") && std::str::contains(seated, "  compose  operator\n"), "the four holes are the org chart's: " + seated);
 
         // ---- fill: a holder asked of the organization
         let dev = self.fill("api/dev\nada\n--as\ngrace", 900);
@@ -314,8 +314,8 @@ locus App {
         let nowhere = self.dna("fill\nnowhere/dev\nada\n--as\ngrace");
         std::test::assert(nowhere.code != 0 && std::str::contains(nowhere.stderr, "is no position the record states or proposes"), "for a position it states: " + nowhere.stderr);
         let rj = dna::GitJournal { repo: self.repo };
-        std::test::assert(rj.append(rj.revision(), "graph.retired", "position:compose/support", "{}").ok, "a position retired");
-        let gone = self.dna("fill\ncompose/support\nada\n--as\ngrace");
+        std::test::assert(rj.append(rj.revision(), "graph.retired", "position:compose/operator", "{}").ok, "a position retired");
+        let gone = self.dna("fill\ncompose/operator\nada\n--as\ngrace");
         std::test::assert(gone.code != 0 && std::str::contains(gone.stderr, "is no position the record states or proposes"), "a retired position holds no one: " + gone.stderr);
         let own = self.fill("board\nada\n--as\nada", 900);
         std::test::assert(std::str::starts_with(own.answer, "proposed: "), "ada proposes herself for the board: " + own.answer + own.stderr);
@@ -328,9 +328,9 @@ locus App {
         std::test::assert(std::str::starts_with(approve_dev, "settled: approve"), "grace's proposal ratified: " + approve_dev);
         let approve_rev = self.decide(self.review_of("ada holding the position `api/reviewer`, as grace proposes"), "approve\n--as\nada\n--authority\nboard", 900);
         std::test::assert(std::str::starts_with(approve_rev, "settled: approve"), "and the same holder's: " + approve_rev);
-        // (compose/support retired, the chart pads to api's name again)
-        let held = self.show_until(head, "  api  dev [ada], reviewer(openapi.yaml) [ada]\n", 240);
-        std::test::assert(std::str::contains(held, "  api  dev [ada], reviewer(openapi.yaml) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
+        // (compose/operator retired, the chart pads to api's name again)
+        let held = self.show_until(head, "  api  dev [ada], reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada]\n", 240);
+        std::test::assert(std::str::contains(held, "  api  dev [ada], reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md) [ada]\n") && std::str::contains(held, "  board\n"), "ada holds both api seats (a warning under local trust), and not the board she proposed herself for: " + held);
         std::test::assert(self.logged("warning: ada holds position:api/dev; a process's reviewer is never the same holder as its dev", 240), "memory says so where it projects it: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
 
         // ---- once the Board has a holder, a proposal's Review requires it

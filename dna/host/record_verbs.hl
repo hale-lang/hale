@@ -147,12 +147,30 @@ fn seed_rows(root: String, text: String, who: String, memory: dna::Memory) -> An
 // `seed_rows`, each checked before any lands — a repository ingest refuses
 // leaves no record, and init can be run again. Says how many nodes and
 // edges, and the nodes by kind.
+// The operational roles dna/org/structure.hl opts into (GH #1091, B): the
+// string `operational_roles` returns, space-separated; "" when there is no
+// policy or it opts into none. A generated file, read by its one shape.
+@unbounded
+fn structure_roles(root: String) -> String {
+    let text = std::io::fs::read_file(root + "/dna/org/structure.hl") or "";
+    let at = std::str::index_of(text, "fn operational_roles");
+    if at < 0 { return ""; }
+    let rest = text[at..len(text)];
+    let q = std::str::index_of(rest, "return \"");
+    if q < 0 { return ""; }
+    let lit = rest[(q + 8)..len(rest)];
+    let end = std::str::index_of(lit, "\"");
+    if end < 0 { return ""; }
+    return dna::trim_nl(std::str::trim(lit[0..end]));
+}
+
 fn graph_ingest_verb(root: String, first: String, memory: dna::Memory) -> Answer {
     let g = ops::GraphIngest { root: root };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("graph-ingest: " + r.error); }
-    // GH #1091: the holes, proposed in the same seed as the graph
-    let holes = ops::graph_holes(g);
+    // GH #1091: the holes, proposed in the same seed as the graph, with the
+    // operational roles the project's structure policy opts into
+    let holes = ops::graph_holes(g, structure_roles(root));
     if len(holes.error) > 0 { return fail("graph-ingest: " + holes.error); }
     let mut proposals = "";
     let mut rest = holes.proposals;

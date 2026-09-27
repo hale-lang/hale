@@ -308,7 +308,15 @@ locus App {
         let code = ops::GraphEdge { kind: "reviews" };
         code.member("position", "position:api/reviewer");
         code.member("subject", "seed:api");
-        std::test::assert(std::str::contains(ops::graph_edge_row(code.id(), code.body()).why, "is not a contract or document node id"), "what a position reviews is a contract or a document");
+        std::test::assert(ops::graph_edge_row(code.id(), code.body()).ok, "a part's code is reviewed, its seed");
+        let ops_edge = ops::GraphEdge { kind: "reviews" };
+        ops_edge.member("position", "position:compose/operator");
+        ops_edge.member("subject", "deployment:compose");
+        std::test::assert(ops::graph_edge_row(ops_edge.id(), ops_edge.body()).ok, "and a deployment, by its operator");
+        let proc = ops::GraphEdge { kind: "reviews" };
+        proc.member("position", "position:api/reviewer");
+        proc.member("subject", "process:api");
+        std::test::assert(std::str::contains(ops::graph_edge_row(proc.id(), proc.body()).why, "is not a contract or document or seed or deployment node id"), "what a position reviews is a contract, a document, a seed or a deployment: " + ops::graph_edge_row(proc.id(), proc.body()).why);
         let twice = ops::GraphEdge { kind: "runs" };
         twice.member("deployment", "deployment:compose");
         twice.member("process", "process:api");

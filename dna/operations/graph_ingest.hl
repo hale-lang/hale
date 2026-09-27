@@ -282,11 +282,13 @@ locus GraphIngest {
         seeds: String = "\n";
         contracts: String = "\n";
         documents: String = "\n";
-        // what the holes are proposed from (GH #1091): `<process>\t<contract>`
-        // per contract a process serves, `<node>\t<gate>` for the first gate
-        // guarding a node, the deployments in order, and each practice a
-        // document marks, as its receipt document, one per line
+        // what the holes are proposed from (GH #1091): `<part>\t<contract>`
+        // per contract a process or seed serves, and per one it consumes,
+        // `<node>\t<gate>` for the first gate guarding a node, the
+        // deployments in order, and each practice a document marks, as its
+        // receipt document, one per line
         served: String = "";
+        consumed: String = "";
         guards: String = "";
         unfolds: String = ""; // `<process>\t<seed>` per unfold the ingest wrote
         deployments: String = "";
@@ -787,14 +789,16 @@ locus GraphIngest {
             if std::str::contains(self.processes, "\n" + std::str::lower(via) + "\n") { self.add(e, "carrier", "process:" + std::str::lower(via)); }
         }
         self.edge(e);
-        // which process serves which contract: its reviewer signs it
+        // which part serves which contract, and which consumes it: each
+        // one's reviewer signs it (a part is a process or a seed)
         let spec = e.members[(std::str::index_of(e.members, "\t") + 1)..std::str::index_of(e.members, "\n")];
         let mut ms = e.members;
         while len(ms) > 0 {
             let nl = std::str::index_of(ms, "\n");
             let m = ms[0..nl];
             ms = ms[(nl + 1)..len(ms)];
-            if std::str::starts_with(m, "server\tprocess:") { self.served = self.served + m[7..len(m)] + "\t" + spec + "\n"; }
+            if std::str::starts_with(m, "server\tprocess:") || std::str::starts_with(m, "server\tseed:") { self.served = self.served + m[7..len(m)] + "\t" + spec + "\n"; }
+            if std::str::starts_with(m, "consumer\tprocess:") || std::str::starts_with(m, "consumer\tseed:") { self.consumed = self.consumed + m[9..len(m)] + "\t" + spec + "\n"; }
         }
     }
     // The nodes a cell names in `role`, and when `parties`, the parties

@@ -179,21 +179,28 @@ them. The organization's generated `dna/org` files and the owners map are
 renderings of it, never where a position is decided (deriving them is
 [#1123](https://github.com/hale-lang/hale/issues/1123)).
 
-Nobody writes the positions by hand. `init` proposes them, each with a
-Board Review of its own: a board, a dev and a reviewer for every process
-(the reviewer signing the contracts its process serves), an operator and
-the operational roles — support, accounts, billing, on-call — under every
-deployment, one work item per process done when its gate passes, and the
-practices your documents mark. `hale dna review` lists them in their
-groups, and `hale dna review holes approve --as <you> --authority board`
-decides them in turn; ratify them and they are the org chart, in the order
-they were proposed.
+Nobody writes the positions by hand, and nobody lists them either: `init`
+derives them from the graph's edges and proposes each with a Board Review
+of its own. A board; a reviewer for every process or seed that serves or
+consumes a contract, reviewing its code and those contracts; a dev and a
+work item wherever a gate guards something to deliver — a seed, or a
+contract a gate validates (`ci/store` guarding `store.md` makes it a
+deliverable) — done when that gate passes, wording the Board may amend;
+an operator under every deployment; and the practices your documents
+mark. The one choice that is yours is `dna/org/structure.hl`:
+`operational_roles()` names the roles no artifact implies — support,
+accounts, billing, on-call — that each deployment should also get, and
+returns `""`, none, until you opt in (`hale dna upgrade` keeps what you
+named). `hale dna review` lists the proposals in their groups, and
+`hale dna review holes approve --as <you> --authority board` decides them
+in turn; ratify them and they are the org chart, in the order they were
+proposed.
 
 With the organization running (`hale dna dev` works on a repository too:
 it runs the organization alone), ask it for a holder with
 `hale dna fill <position> <holder>`. The holder must be someone the record
 knows; the proposal is in your name, so someone else ratifies it. One
-person as both dev and reviewer of the same process is a warning while
+person as both dev and reviewer of the same part is a warning while
 you work alone (`dna.trust = local`), and refused once the record is
 shared — by the CLI, and again where memory takes the ratified hold.
 Memory also refuses a holder the record never knew or who retired, and
@@ -201,16 +208,18 @@ says so as a `hold.refused` row; someone who retires later gives their
 seats back.
 
 The graph also says who must sign a change.
-`hale dna route spec/openapi.yaml` names the reviewer of the process that
-serves the contract and the reviewer of every process that consumes it,
-and the gates whose runs the verdict is given against (or says no gate
-guards it); `hale dna route --diff main..HEAD` does the same for a
-branch, a renamed file counted by both its names. A change to
-`compose.yaml` goes to the deployment's operator, against `ci/image`. The
-board signs where a practice the Board ratified *as law* binds the
-contract; advice binds nothing it must sign. A process's dev never signs
-for it, and a path the graph does not hold is left to the Review's own
-authority, which the route names.
+Routing follows the same edges: a position signs what it `reviews`, whatever
+it is called. `hale dna route spec/openapi.yaml` names the reviewer of
+every part that serves or consumes the contract, and the gates whose runs
+the verdict is given against (or says no gate guards it);
+`hale dna route --diff main..HEAD` does the same for a branch, a renamed
+file counted by both its names. A change to `compose.yaml` goes to the
+deployment's operator, against `ci/image`. The board signs where a
+practice the Board ratified *as law* binds the contract; advice binds
+nothing it must sign. A dev reviews nothing and so signs nothing; a
+consumer nobody reviews for is said, not dropped; and a path the graph
+does not hold is left to the Review's own authority, which the route
+names.
 
 A Review takes its signers from the same route. When the organization
 opens a Review for a change, it records the positions the route names,

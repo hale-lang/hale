@@ -121,6 +121,34 @@ jobs:
           npx -y @redocly/cli@1 bundle spec/openapi.yaml --dereferenced -o build/openapi.bundled.json
           cd spec/validate && npm ci && npm run canned
 
+  store:
+    name: store
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: voice
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: The schema in spec/store.md applies to Postgres
+        # every sql block of the contract that names no transaction
+        # parameter: the tables, their keys and their checks; the store
+        # seed's migrations must match it
+        env:
+          PGPASSWORD: voice
+        run: |
+          awk '/^```sql/{b="";f=1;next} /^```/{if(f && b !~ /\$/) printf "%s", b; f=0; next} f{b=b $0 "\n"}' spec/store.md > store.sql
+          test -s store.sql
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U postgres -f store.sql
+
   image:
     name: image
     runs-on: ubuntu-24.04

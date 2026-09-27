@@ -37,8 +37,11 @@ const GRAPH_EDGE_SHAPES: String = "unfold:parent:child: meets:contract::server,c
 
 // The node kinds a role requires, where it requires any (`<edge>.<role>:
 // <kind>[,<kind>]`). A `holder` is a person, never a node. What a position
-// reviews is a contract or a document: a design document is signed too.
-const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position reviews.position:position reviews.subject:contract,document";
+// reviews — and so signs a change to — is a contract, a document (a design
+// document is signed too), a seed (a part's reviewer, its code) or a
+// deployment (its operator, the file it was read from): routing reads
+// these edges and nothing else (GH #1091, B).
+const GRAPH_ROLE_KINDS: String = "meets.contract:contract names.contract:contract names.noun:noun refers.from:noun refers.to:noun constrains.axiom:axiom runs.deployment:deployment runs.process:process gates.gate:gate witnesses.witness:witness holds.position:position reviews.position:position reviews.subject:contract,document,seed,deployment";
 
 const GRAPH_NAME_MAX: Int = 512;
 const GRAPH_MEMBERS_MAX: Int = 256;

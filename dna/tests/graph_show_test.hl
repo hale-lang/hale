@@ -2,7 +2,7 @@
 // are queries over memory, and on voice they are GRAPH.md's two renderings
 // (GH #1086).
 //
-// The fixture is hale-lang/voice at 6ad244d2 (hale-lang/voice#4), vendored
+// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#5), vendored
 // under dna/tests/onboarding/voice. `hale dna init` reads it into the
 // record; the holes GRAPH.md fills for its org chart (a board, a dev and a
 // reviewer under every process, an operator under every deployment, what
@@ -27,7 +27,7 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// GRAPH.md at 6ad244d2, "The two perspectives, as queries".
+// GRAPH.md at a32b295f, "The two perspectives, as queries".
 const ORG: String = "purpose
   board
   postgres    dev, reviewer(store.md)
