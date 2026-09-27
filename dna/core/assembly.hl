@@ -5018,11 +5018,7 @@ locus Dna {
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
         if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
         let wt = opened.value;
-        // through a file in the worktree (git reads it relative to it), gone
-        // before anything is staged
-        std::io::fs::write_file(wt + "/.hale-leg.patch", text) or discard;
-        let applied = run_tool("git\n-C\n" + wt + "\napply\n--index\n.hale-leg.patch");
-        let gone = run_tool("rm\n-f\n" + wt + "/.hale-leg.patch");
+        let applied = apply_patch_in(wt, text);
         if applied.code != 0 {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
             return self.mutation_failed(id, "the leg's patch does not apply at " + base + ": " + trim_nl(applied.stderr));
@@ -5030,7 +5026,7 @@ locus Dna {
         // the grant: the seed the class edits, nothing beside it — every path
         // the patch touches, a rename's source too — and never the
         // organization's own seed unless the change is the organization's
-        let touched = run_tool("git\n-C\n" + wt + "\n-c\ncore.quotePath=false\ndiff\n--cached\n--name-only\n--no-renames");
+        let touched = staged_paths(wt);
         let fenced = if class == "organization" { "" } else { self.org_seed };
         let outside = if touched.code != 0 { "(its paths are unknown: " + trim_nl(touched.stderr) + ")" } else { paths_outside(touched.stdout, seed, fenced) };
         if len(outside) > 0 {
