@@ -52,8 +52,18 @@ pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) ->
         .open(&lock_path)
         .map_err(|e| format!("hale iris: cannot open {}: {e}", lock_path.display()))?;
     let _guard = BuildLock::acquire(&lock);
-    if bin_path.is_file() {
-        return Ok(bin_path);
+    // The DNA toolchain cache is restored from a GitHub Actions cache
+    // entry before this runs; a truncated or zero-byte file from an
+    // incomplete save (or an interrupted earlier build) is still
+    // `is_file()`, and handing its path to a caller that execs it is
+    // worse than a slow rebuild. A present, non-empty file is trusted;
+    // anything else is removed and treated as absent.
+    match std::fs::metadata(&bin_path) {
+        Ok(m) if m.is_file() && m.len() > 0 => return Ok(bin_path),
+        Ok(_) => {
+            let _ = std::fs::remove_file(&bin_path);
+        }
+        Err(_) => {}
     }
     let me = std::env::current_exe().map_err(|e| format!("hale iris: cannot locate the hale binary: {e}"))?;
     eprintln!("hale iris: building {what} ({} @ {})", seed, root.display());

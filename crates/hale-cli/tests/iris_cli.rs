@@ -137,6 +137,37 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
     assert!(body.contains("\"processes\""), "fuse-hl served a snapshot: {body:?}");
 }
 
+/// The DNA toolchain cache is restored from a GitHub Actions cache
+/// entry before a warm step runs; a truncated or zero-byte binary
+/// from an incomplete save must not be trusted as already built —
+/// `ensure_built_in`'s existence check now verifies the file is
+/// non-empty, not just present, and rebuilds if not.
+#[test]
+fn a_truncated_cached_binary_is_rebuilt_not_trusted() {
+    let cache = std::env::temp_dir().join(format!("hale-tests-iris-truncated-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&cache).unwrap();
+
+    let (ok, out, err) = hale(&cache, &["iris", "--build-only"]);
+    assert!(ok, "--build-only: {err}");
+    let bin = PathBuf::from(out.trim());
+    let real_len = std::fs::metadata(&bin).unwrap().len();
+    assert!(real_len > 0, "a real build produced a non-empty binary");
+
+    // Simulate a partial cache restore: the file is present, but empty.
+    std::fs::write(&bin, []).unwrap();
+    assert_eq!(std::fs::metadata(&bin).unwrap().len(), 0);
+
+    let (ok, out2, err) = hale(&cache, &["iris", "--build-only"]);
+    assert!(ok, "--build-only after truncation: {err}");
+    assert!(err.contains("building the observer"), "the empty stub must be rebuilt, not trusted: {err}");
+    let bin2 = PathBuf::from(out2.trim());
+    let rebuilt_len = std::fs::metadata(&bin2).unwrap().len();
+    assert_eq!(rebuilt_len, real_len, "the rebuild produces the same binary");
+
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
 #[test]
 fn iris_inspect_builds_and_reports_a_missing_artifact() {
     let cache = cache_root();
