@@ -3,28 +3,27 @@
 //
 // Routing is read from the graph, never guessed: the paths a change
 // touches name nodes — a seed (the longest one holding the path), a
-// contract (its file, or a file of its directory), a document — and the
-// edges say who signs:
+// contract (its file, or a file of its directory), a document, a
+// deployment's file — and the `reviews` edges say who signs, whatever a
+// position is called (GH #1091, B):
 //
-//   a seed        — the reviewer of every process that unfolds into it;
-//   a contract    — every position that `reviews` it (its servers'
-//                   reviewers), and the reviewer of every consumer: a
-//                   consuming process, the processes a consuming seed
-//                   belongs to, the positions reviewing a consuming
-//                   contract; and the `board` where the contract is law
+//   any node      — every position that `reviews` it: a part's reviewer
+//                   reviews the part's seed and every contract the part
+//                   serves or consumes, a deployment's operator reviews
+//                   the deployment;
+//   a contract    — beside those, the positions reviewing a consumer that
+//                   is no part (a contract, a document, a deployment that
+//                   consumes it), and the `board` where the contract is law
 //                   (a practice ratified as law — its receipt says
-//                   `law: true` — is bound to it; advice is not law);
-//   a document    — every position that `reviews` it;
-//   a deployment  — its file (the file the deployment was read from),
-//                   signed by the `operator` it unfolds into, against the
-//                   gates guarding it.
+//                   `law: true` — is bound to it; advice is not law).
 //
-// A process's `dev` never signs for it: a `/dev` position is never a
-// signer. The evidence a verdict is given against is the run of every gate
-// guarding a node the change touches. A consumer no position reviews is
-// said, not dropped; a path that names no node, or whose nodes no
-// position signs, is left to the fallback — the Review's own authority
-// (review.hl), the task routers of GH #697 when they exist.
+// A position that reviews nothing — a dev, an operational role — signs
+// nothing. The evidence a verdict is given against is the run of every
+// gate guarding a node the change touches. A consuming process or seed
+// with no position reviewing the contract under it is said, not dropped;
+// a path that names no node, or whose nodes no position signs, is left to
+// the fallback — the Review's own authority (review.hl), the task routers
+// of GH #697 when they exist.
 
 type Route {
     signers: String = ""; // `<position>\t<because>` per line, first reason kept
@@ -122,32 +121,33 @@ locus Router {
         }
         return out;
     }
-    // A process's reviewer: the `reviewer` positions it unfolds into.
+    // The positions unfolded under `part` — a process or a seed — and,
+    // for a seed, under the processes that unfold into it.
     @unbounded
-    fn reviewers_of(process: String) -> String {
+    fn positions_under(part: String) -> String {
         let mut out = "";
-        let mut rest = self.related(self.unfold, process, false);
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let p = rest[0..nl];
-            rest = rest[(nl + 1)..len(rest)];
-            if std::str::starts_with(p, "position:") && std::str::ends_with(p, "/reviewer") { out = out + p + "\n"; }
+        let mut parents = part + "\n" + (if std::str::starts_with(part, "seed:") { self.related(self.unfold, part, true) } else { "" });
+        while len(parents) > 0 {
+            let nl = std::str::index_of(parents, "\n");
+            let parent = parents[0..nl];
+            parents = parents[(nl + 1)..len(parents)];
+            let mut kids = self.related(self.unfold, parent, false);
+            while len(kids) > 0 {
+                let n2 = std::str::index_of(kids, "\n");
+                if std::str::starts_with(kids[0..n2], "position:") { out = out + kids[0..n2] + "\n"; }
+                kids = kids[(n2 + 1)..len(kids)];
+            }
         }
         return out;
     }
-    // A signer, once, with the first reason it signs; never a dev. Whether
-    // the position signs: a dev is refused, and one already signing for
-    // another path signs this one too.
+    // A signer, once, with the first reason it signs.
     @unbounded
     fn sign(position: String, because: String) -> Bool {
-        if std::str::ends_with(position, "/dev") { return false; }
         if std::str::contains("\n" + self.route.signers, "\n" + position + "\t") { return true; }
         self.route.signers = self.route.signers + position + "\t" + because + "\n";
         return true;
     }
-    // How many of `positions` sign: only those `sign` accepts count, so a
-    // reviews row naming a dev leaves its node to the fallback, never to
-    // nobody.
+    // How many of `positions` sign.
     fn sign_all(positions: String, because: String) -> Int {
         let mut n = 0;
         let mut rest = positions;
@@ -158,22 +158,26 @@ locus Router {
         }
         return n;
     }
-    // Who signs for a consumer of `contract`: a process's reviewer, the
-    // reviewers of the processes a seed belongs to, the positions
-    // reviewing a contract; said when there is none.
+    // A consumer of `spec`: a consuming process or seed signs through its
+    // reviewer, which reviews what the part consumes; any other consumer (a
+    // contract, a document, a deployment) through the positions reviewing
+    // it — said, either way, when no position does.
     @unbounded
     fn consumer(node: String, spec: String) -> Int {
         let because = "consumes " + show_name(spec);
+        if !std::str::starts_with(node, "process:") && !std::str::starts_with(node, "seed:") {
+            let n = self.sign_all(self.related(self.reviews, node, true), because);
+            if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
+            return n;
+        }
         let mut n = 0;
-        if std::str::starts_with(node, "process:") { n = self.sign_all(self.reviewers_of(node), because); }
-        else if std::str::starts_with(node, "seed:") {
-            let mut ps = self.related(self.unfold, node, true);
-            while len(ps) > 0 {
-                let nl = std::str::index_of(ps, "\n");
-                n = n + self.sign_all(self.reviewers_of(ps[0..nl]), because + " (through " + show_name(node) + ")");
-                ps = ps[(nl + 1)..len(ps)];
-            }
-        } else { n = self.sign_all(self.related(self.reviews, node, true), because); }
+        let reviewing = self.related(self.reviews, spec, true);
+        let mut under = self.positions_under(node);
+        while len(under) > 0 {
+            let nl = std::str::index_of(under, "\n");
+            if route_has(reviewing, under[0..nl]) { n = n + 1; }
+            under = under[(nl + 1)..len(under)];
+        }
         if n == 0 && !route_has(self.route.unsigned, node + "\t" + because + "; no position reviews it") { self.route.unsigned = self.route.unsigned + node + "\t" + because + "; no position reviews it\n"; }
         return n;
     }
@@ -183,26 +187,9 @@ locus Router {
     fn path(p: String) {
         let node = self.node_of(p);
         if len(node) == 0 { self.route.fallback = self.route.fallback + p + "\tnames no seed, contract, document or deployment file the graph holds\n"; return; }
-        let mut signed = 0;
-        if std::str::starts_with(node, "seed:") {
-            let mut ps = self.related(self.unfold, node, true);
-            while len(ps) > 0 {
-                let nl = std::str::index_of(ps, "\n");
-                signed = signed + self.sign_all(self.reviewers_of(ps[0..nl]), "reviews " + show_name(ps[0..nl]) + ", whose seed " + show_name(node) + " it changes");
-                ps = ps[(nl + 1)..len(ps)];
-            }
-        } else if std::str::starts_with(node, "deployment:") {
-            // a deployment's file: the operator it unfolds into signs it
-            let mut under = self.related(self.unfold, node, false);
-            while len(under) > 0 {
-                let cut = std::str::index_of(under, "\n");
-                let operator = under[0..cut];
-                under = under[(cut + 1)..len(under)];
-                if std::str::starts_with(operator, "position:") && std::str::ends_with(operator, "/operator") && self.sign(operator, "operates " + show_name(node)) { signed = signed + 1; }
-            }
-        } else {
-            signed = signed + self.sign_all(self.related(self.reviews, node, true), "signs " + show_name(node));
-        }
+        // every position that reviews the node signs it
+        let verb = if std::str::starts_with(node, "deployment:") { "operates " } else if std::str::starts_with(node, "seed:") { "reviews " } else { "signs " };
+        let mut signed = self.sign_all(self.related(self.reviews, node, true), verb + show_name(node));
         if std::str::starts_with(node, "contract:") {
             let mut it = std::json::array_first(self.meets);
             while !it.done {
@@ -210,7 +197,8 @@ locus Router {
                     let mut cs = show_strings(std::json::find_field_raw(it.element, "consumers"));
                     while len(cs) > 0 {
                         let nl = std::str::index_of(cs, "\n");
-                        signed = signed + self.consumer(cs[0..nl], node);
+                        let n = self.consumer(cs[0..nl], node);
+                        if std::str::starts_with(cs[0..nl], "contract:") { signed = signed + n; }
                         cs = cs[(nl + 1)..len(cs)];
                     }
                 }

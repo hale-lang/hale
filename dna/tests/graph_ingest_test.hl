@@ -1,8 +1,8 @@
 // dna/tests/graph_ingest_test.hl — `hale dna init` reads a repository into
 // the graph (GH #1090).
 //
-// The fixture is hale-lang/voice at 6ad244d28e4bf1089ade20aa66904a75da487d1f
-// (hale-lang/voice#4), vendored whole under dna/tests/onboarding/voice and
+// The fixture is hale-lang/voice at a32b295faf5b96e6c965fc5bff2f66324fbbda10
+// (hale-lang/voice#5), vendored whole under dna/tests/onboarding/voice and
 // never fetched. Its GRAPH.md says what init should yield; this runs the
 // real `hale dna init` on a copy (a repository with no application at its
 // root, a seed per process) and reads the record back: the counts under
@@ -51,6 +51,7 @@ gates|gate=gate:ci/brain|guarded=seed:brain
 gates|gate=gate:ci/node|guarded=seed:node|guarded=contract:spec/node.yaml|guarded=seed:spec/validate
 gates|gate=gate:ci/ui|guarded=seed:ui
 gates|gate=gate:ci/contracts|guarded=contract:spec/openapi.yaml|guarded=contract:spec/node.yaml|guarded=contract:spec/protocol.yaml|guarded=contract:spec/internal.yaml|guarded=seed:spec/validate
+gates|gate=gate:ci/store|guarded=contract:spec/store.md
 gates|gate=gate:ci/image|guarded=deployment:compose
 witnesses|witness=witness:A stateful handler literal given to Router.add in a builder fn dangles|about=seed:api
 witnesses|witness=witness:hale-lang/hale#1048|about=seed:api
@@ -102,8 +103,8 @@ locus App {
         // ---- init on the repository: no application at its root
         let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
-        std::test::assert(std::str::contains(init.stdout, "graph   150 node(s)"), "and says what it read: " + init.stdout);
-        std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 5 process, 5 seed, 6 contract, 96 noun, 3 deployment, 6 gate, 7 document, 4 witness, 0 position, 0 work"), "by kind: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "graph   151 node(s)"), "and says what it read: " + init.stdout);
+        std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 5 process, 5 seed, 6 contract, 96 noun, 3 deployment, 7 gate, 7 document, 4 witness, 0 position, 0 work"), "by kind: " + init.stdout);
 
         // ---- the record, read back
         let journal = dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl");
@@ -132,7 +133,7 @@ locus App {
 
         // GRAPH.md, "Checkable"
         let kinds = "purpose axiom process seed contract deployment gate document witness position work";
-        let want = "1 17 5 5 6 3 6 7 4 0 0";
+        let want = "1 17 5 5 6 3 7 7 4 0 0";
         let mut k = 0;
         while len(dna::nth_word(kinds, k)) > 0 {
             let kind = dna::nth_word(kinds, k);
@@ -151,7 +152,7 @@ locus App {
             edges = edges[(nl + 1)..len(edges)];
             std::test::assert(std::str::contains(self.edges, "\n" + e + "\n"), "GRAPH.md's edge: " + e);
         }
-        let counted = "meets 6 constrains 13 runs 3 gates 6 witnesses 3";
+        let counted = "meets 6 constrains 13 runs 3 gates 7 witnesses 3";
         k = 0;
         while len(dna::nth_word(counted, k)) > 0 {
             let kind = dna::nth_word(counted, k);
@@ -164,6 +165,20 @@ locus App {
         let again = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + repo + "\n" + toolchain());
         std::test::assert_eq_int(again.code, 0, "init again: " + again.stderr);
         std::test::assert(std::str::contains(again.stdout, "a record exists; not reseeded") && !std::str::contains(again.stdout, "graph   "), "the record is not reseeded: " + again.stdout);
+
+        // ---- the structure policy, written before init (GH #1091): the
+        // operational roles it names, each once, under every deployment;
+        // a word that is no role refuses the seed, and no record is born
+        let opted = scratch + "/opted";
+        let odd = scratch + "/odd";
+        let copies = dna::run_tool("sh\n-c\nfor d in \"$1\" \"$2\"; do mkdir -p \"$d\" && cp -r \"$3/dna/tests/onboarding/voice/.\" \"$d/\" && (cd \"$d\" && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m voice && mkdir -p dna/org) || exit 1; done && printf 'fn operational_roles() -> String {\\n    return \"support on-call support\";\\n}\\n' > \"$1/dna/org/structure.hl\" && printf 'fn operational_roles() -> String {\\n    return \"oncall\";\\n}\\n' > \"$2/dna/org/structure.hl\"\nsh\n" + opted + "\n" + odd + "\n" + source());
+        std::test::assert_eq_int(copies.code, 0, "two copies with a structure policy each: " + copies.stderr);
+        let with_roles = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + opted + "\n" + toolchain());
+        std::test::assert_eq_int(with_roles.code, 0, "init with roles: " + with_roles.stdout + with_roles.stderr);
+        std::test::assert(std::str::contains(with_roles.stdout, "structure.hl (already exists)") && std::str::contains(with_roles.stdout, "; 31 proposal(s)"), "the policy is kept, and two roles under each of three deployments: " + with_roles.stdout);
+        let refused = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + odd + "\n" + toolchain());
+        std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "dna/org/structure.hl names `oncall`, which is not an operational role"), "a word that is no role is refused: " + refused.stdout + refused.stderr);
+        std::test::assert_eq_str(dna::trim_nl(dna::run_tool("git\n-C\n" + odd + "\nfor-each-ref\nrefs/dna").stdout), "", "and no record is born");
 
         dna::scratch_done(scratch);
     }

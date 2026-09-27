@@ -1,5 +1,5 @@
 // dna/operations/graph_holes.hl — the holes, proposed at record birth (GH
-// #1091).
+// #1091), derived from the graph's edges and nothing else.
 //
 // The graph an ingest reads lacks exactly what a delivery needs and the
 // repository cannot imply: who works where, who signs what, what is to be
@@ -11,23 +11,30 @@
 // writes its rows into the graph (memory_tail.hl). The graph is the one
 // org chart: what the Board ratifies here is the org chart.
 //
-//   positions  — a `dev` and a `reviewer` under each process, the reviewer
-//                carrying a `reviews` edge to every contract the process
-//                serves; a `board` under the purpose; under each
-//                deployment an `operator` and the operational roles no
-//                artifact implies (`support`, `accounts`, `billing`,
-//                `on-call`), proposed empty;
-//   work       — one item per process, an `unfold` of it, done when the
-//                gate guarding its seed passes, or, with no gate, when one
-//                is defined;
+// A *part* is one of the repository's processes, or a seed no process
+// unfolds into (a UI, a validator). The holes follow the edges:
+//
+//   board      — a `board` under the purpose;
+//   reviewer   — one per part that serves or consumes a contract (`meets`):
+//                it `reviews` the part's seed and every contract the part
+//                serves or consumes, and so signs a change to any of them;
+//   dev, work  — one each per part whose seed a gate guards, or that
+//                serves a contract a gate validates (`gates`); and one per
+//                validated contract no part of the repository serves. The
+//                work is done when the first gate guarding it passes — the
+//                wording DNA proposes and the Board amends at ratification;
+//   operator   — one per deployment: it `reviews` the deployment, and so
+//                signs a change to the file it was read from;
+//   roles      — the operational roles the project opts into (the one
+//                policy: dna/org/structure.hl, `operational_roles`, none by
+//                default), under each deployment, proposed empty, signing
+//                nothing;
 //   practices  — each item a document marks `derived`, `practice` or `law`,
 //                proposed as advice (graph_ingest.hl builds their receipts).
 //
-// Never the same holder as `dev` for a process's `reviewer`: the positions
+// Never the same holder as `dev` for a part's `reviewer`: the positions
 // are proposed empty, and the check is where a holder is proposed
 // (`hale dna fill`, dna/host/holes.hl) and where memory projects it.
-
-const HOLE_OPERATIONAL: String = "support accounts billing on-call";
 
 // A work item's node: its name, what it is, and what it is done when.
 fn graph_work_body(name: String, text: String, gate: String) -> String {
@@ -135,13 +142,67 @@ fn hole_seconds(pairs: String, key: String) -> String {
     return out;
 }
 
-// Every hole of the graph an ingest read, as proposals in the order the
-// org chart lists them: the board, each process's positions, each
-// deployment's, then the work, then the practices.
+// The first line of `lines`, "" when none.
+fn hole_first(lines: String) -> String {
+    let nl = std::str::index_of(lines, "\n");
+    return if nl < 0 { lines } else { lines[0..nl] };
+}
+
+// Whether some `<a>\t<b>` line of `pairs` has `<b>` equal to `second`.
+fn hole_has_second(pairs: String, second: String) -> Bool { return std::str::contains(pairs, "\t" + second + "\n"); }
+
+// How a question names a part's kind: a process, or a seed.
+// The operational roles a project may opt into (dna/org/structure.hl).
+const HOLE_ROLES: String = "support accounts billing on-call";
+
+// `pairs` (`<node>\t<other>` per line) with a seed a process unfolds into
+// read as that process: a cell naming the seed (a link, a path inside it)
+// names the part it belongs to.
 @unbounded
-fn graph_holes(g: GraphIngest) -> HolesAnswer {
+fn hole_by_part(pairs: String, unfolds: String) -> String {
+    let mut out = "";
+    let mut rest = pairs;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let t = std::str::index_of(line, "\t");
+        let node = line[0..t];
+        let mut owner = node;
+        let mut ups = if std::str::starts_with(node, "seed:") { unfolds } else { "" };
+        while len(ups) > 0 {
+            let n2 = std::str::index_of(ups, "\n");
+            let up = ups[0..n2];
+            ups = ups[(n2 + 1)..len(ups)];
+            if std::str::ends_with(up, "\t" + node) { owner = up[0..std::str::index_of(up, "\t")]; ups = ""; }
+        }
+        out = out + owner + line[t..len(line)] + "\n";
+    }
+    return out;
+}
+
+fn hole_kind(part: String) -> String { return if std::str::starts_with(part, "seed:") { "seed" } else { "process" }; }
+
+// Every hole of the graph an ingest read, as proposals in the order the
+// org chart lists them: the board, each part's positions, each
+// deployment's, then the work, then the practices. `roles` is the project's
+// opt-in operational roles, space-separated ("" for none).
+@unbounded
+fn graph_holes(g: GraphIngest, roles: String) -> HolesAnswer {
     let mut out = HolesAnswer { };
     let mut docs = "";
+    // the roles the project names: known ones, each once
+    let mut opted = "";
+    let spaced = std::str::replace(std::str::replace(std::str::replace(roles, "\t", " "), "\r", " "), "\n", " ");
+    let mut r = 0;
+    while len(dna::nth_word(spaced, r)) > 0 {
+        let role = dna::nth_word(spaced, r);
+        r = r + 1;
+        if !dna::word_in(role, HOLE_ROLES) { return HolesAnswer { error: "dna/org/structure.hl names `" + role + "`, which is not an operational role (" + HOLE_ROLES + ")" }; }
+        if !dna::word_in(role, opted) { opted = opted + (if len(opted) > 0 { " " } else { "" }) + role; }
+    }
+    let served = hole_by_part(g.served, g.unfolds);
+    let consumed = hole_by_part(g.consumed, g.unfolds);
     if len(g.purpose) > 0 {
         let d = HoleDoc { name: "board", target: g.purpose, text: "The Board: whoever holds this organization's authority, and ratifies what it becomes." };
         d.question = "ratify the position `board` under the purpose: it ratifies what this organization becomes";
@@ -150,87 +211,162 @@ fn graph_holes(g: GraphIngest) -> HolesAnswer {
         docs = docs + hole_line(d.document(), d.question, "holes", "graph", d.name, d.target);
         out.count = out.count + 1;
     }
-    // a dev and a reviewer under each process, the reviewer signing every
-    // contract the process serves
+    // the parts: the processes in order, then the seeds no process unfolds into
+    let mut parts = "";
     let mut procs = g.processes;
     while len(procs) > 1 {
         procs = procs[1..len(procs)];
         let nl = std::str::index_of(procs, "\n");
-        let p = procs[0..nl];
+        parts = parts + "process:" + procs[0..nl] + "\n";
         procs = procs[nl..len(procs)];
-        let process = "process:" + p;
-        let dev = HoleDoc { name: p + "/dev", target: process, text: "Writes " + p + ", bound by its practices." };
-        dev.question = "ratify the position `" + p + "/dev` under process " + p + ": it writes " + p;
-        dev.unfold(process, dev.node("position", p + "/dev", dev.text));
+    }
+    let mut seeds = g.seeds;
+    while len(seeds) > 1 {
+        seeds = seeds[1..len(seeds)];
+        let nl = std::str::index_of(seeds, "\n");
+        let seed = "seed:" + seeds[0..nl];
+        seeds = seeds[nl..len(seeds)];
+        if !hole_has_second(g.unfolds, seed) { parts = parts + seed + "\n"; }
+    }
+    // a reviewer, and a dev, per part as its edges say
+    let mut work = ""; // `<target>\t<name>\t<gate>` per work item, in order
+    let mut named = "\n"; // every part's name, then every work item's
+    let mut ps = parts;
+    while len(ps) > 0 {
+        let nl = std::str::index_of(ps, "\n");
+        named = named + ps[(std::str::index_of(ps, ":") + 1)..nl] + "\n";
+        ps = ps[(nl + 1)..len(ps)];
+    }
+    let mut rest = parts;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let part = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let p = part[(std::str::index_of(part, ":") + 1)..len(part)];
+        let seed = if std::str::starts_with(part, "seed:") { part } else { hole_first(hole_seconds(g.unfolds, part)) };
+        let serves = hole_seconds(served, part);
+        let consumes = hole_seconds(consumed, part);
+        // the gate that is its done-when: its seed's, else a served contract's
+        // and what the work is called: the part, or the contract it delivers
+        let mut gate = if len(seed) > 0 { hole_first(hole_seconds(g.guards, seed)) } else { "" };
+        let mut deliverable = p;
+        let mut s2 = serves;
+        while len(gate) == 0 && len(s2) > 0 {
+            let n2 = std::str::index_of(s2, "\n");
+            gate = hole_first(hole_seconds(g.guards, s2[0..n2]));
+            if len(gate) > 0 { deliverable = dna::show_name(s2[0..n2]); }
+            s2 = s2[(n2 + 1)..len(s2)];
+        }
+        if len(gate) > 0 {
+            let dev = HoleDoc { name: p + "/dev", target: part, text: "Writes " + p + ", bound by its practices." };
+            dev.question = "ratify the position `" + p + "/dev` under " + hole_kind(part) + " " + p + ": it writes " + p;
+            dev.unfold(part, dev.node("position", p + "/dev", dev.text));
+            if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
+            docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
+            out.count = out.count + 1;
+            // two parts delivering one contract: one work item, the first's
+            if deliverable == p || !std::str::contains(named, "\n" + deliverable + "\n") {
+                work = work + part + "\t" + deliverable + "\t" + gate + "\n";
+                if deliverable != p { named = named + deliverable + "\n"; }
+            }
+        }
+        if len(serves) > 0 || len(consumes) > 0 {
+            let rev = HoleDoc { name: p + "/reviewer", target: part, text: "Signs changes to " + p + " and to what it serves and consumes; never the same holder as " + p + "/dev." };
+            let reviewer = rev.node("position", p + "/reviewer", rev.text);
+            rev.unfold(part, reviewer);
+            let subjects = (if len(seed) > 0 { seed + "\n" } else { "" }) + serves + consumes;
+            let mut signs = "";
+            let mut shown = "";
+            let mut sub = subjects;
+            while len(sub) > 0 {
+                let n2 = std::str::index_of(sub, "\n");
+                let c = sub[0..n2];
+                sub = sub[(n2 + 1)..len(sub)];
+                if std::str::contains("\n" + signs, "\n" + c + "\n") { continue; }
+                signs = signs + c + "\n";
+                let e = GraphEdge { kind: "reviews" };
+                e.member("position", reviewer);
+                e.member("subject", c);
+                rev.row("graph.edge", e.id(), e.body());
+                if std::str::starts_with(c, "contract:") { shown = shown + (if len(shown) > 0 { ", " } else { "" }) + dna::show_name(c); }
+            }
+            rev.question = "ratify the position `" + p + "/reviewer` under " + hole_kind(part) + " " + p + ", signing " + (if len(seed) > 0 { "its code" + (if len(shown) > 0 { " and " } else { "" }) } else { "" }) + shown;
+            if len(rev.error) > 0 { return HolesAnswer { error: rev.error }; }
+            docs = docs + hole_line(rev.document(), rev.question, "holes", "graph", rev.name, rev.target);
+            out.count = out.count + 1;
+        }
+    }
+    // a validated contract no part of the repository serves: its own dev and work
+    let mut guarded = g.guards;
+    while len(guarded) > 0 {
+        let nl = std::str::index_of(guarded, "\n");
+        let line = guarded[0..nl];
+        guarded = guarded[(nl + 1)..len(guarded)];
+        let t = std::str::index_of(line, "\t");
+        let node = line[0..t];
+        if !std::str::starts_with(node, "contract:") || hole_has_second(served, node) { continue; }
+        // named for its file, or its whole path where a part or a work item
+        // already has that name
+        let short = dna::show_name(node);
+        let c = if std::str::contains(named, "\n" + short + "\n") { node[9..len(node)] } else { short };
+        named = named + c + "\n";
+        let dev = HoleDoc { name: c + "/dev", target: node, text: "Writes " + c + ", bound by its practices." };
+        dev.question = "ratify the position `" + c + "/dev` under contract " + c + ": it writes " + c;
+        dev.unfold(node, dev.node("position", c + "/dev", dev.text));
         if len(dev.error) > 0 { return HolesAnswer { error: dev.error }; }
         docs = docs + hole_line(dev.document(), dev.question, "holes", "graph", dev.name, dev.target);
-        let signs = hole_seconds(g.served, process);
-        let rev = HoleDoc { name: p + "/reviewer", target: process, text: "Signs changes to what " + p + " serves; never the same holder as " + p + "/dev." };
-        let reviewer = rev.node("position", p + "/reviewer", rev.text);
-        rev.unfold(process, reviewer);
-        let mut shown = "";
-        let mut rest = signs;
-        while len(rest) > 0 {
-            let n2 = std::str::index_of(rest, "\n");
-            let c = rest[0..n2];
-            rest = rest[(n2 + 1)..len(rest)];
-            let e = GraphEdge { kind: "reviews" };
-            e.member("position", reviewer);
-            e.member("subject", c);
-            rev.row("graph.edge", e.id(), e.body());
-            shown = shown + (if len(shown) > 0 { ", " } else { "" }) + dna::show_name(c);
-        }
-        rev.question = "ratify the position `" + p + "/reviewer` under process " + p + (if len(shown) > 0 { ", signing " + shown } else { ", which serves no contract yet" });
-        if len(rev.error) > 0 { return HolesAnswer { error: rev.error }; }
-        docs = docs + hole_line(rev.document(), rev.question, "holes", "graph", rev.name, rev.target);
-        out.count = out.count + 2;
+        out.count = out.count + 1;
+        work = work + node + "\t" + c + "\t" + line[(t + 1)..len(line)] + "\n";
     }
-    // an operator and the operational roles under each deployment, empty
+    // an operator under each deployment, signing it; and the roles the project opts into, empty
     let mut deps = g.deployments;
     while len(deps) > 0 {
         let nl = std::str::index_of(deps, "\n");
         let deployment = deps[0..nl];
         deps = deps[(nl + 1)..len(deps)];
         let d = dna::show_name(deployment);
-        let mut k = -1;
-        while k < 0 || len(dna::nth_word(HOLE_OPERATIONAL, k)) > 0 {
-            let role = if k < 0 { "operator" } else { dna::nth_word(HOLE_OPERATIONAL, k) };
-            let h = HoleDoc { name: d + "/" + role, target: deployment };
-            h.text = if k < 0 { "Runs " + d + "." } else { "The " + role + " of " + d + "; no artifact implies it, and the Board names who holds it." };
-            h.question = "ratify the position `" + h.name + "` under deployment " + d + (if k < 0 { ": it runs " + d } else { ", proposed empty: the Board names who holds it" });
+        let op = HoleDoc { name: d + "/operator", target: deployment, text: "Runs " + d + "." };
+        op.question = "ratify the position `" + op.name + "` under deployment " + d + ": it runs " + d;
+        let operator = op.node("position", op.name, op.text);
+        op.unfold(deployment, operator);
+        let e = GraphEdge { kind: "reviews" };
+        e.member("position", operator);
+        e.member("subject", deployment);
+        op.row("graph.edge", e.id(), e.body());
+        if len(op.error) > 0 { return HolesAnswer { error: op.error }; }
+        docs = docs + hole_line(op.document(), op.question, "holes", "graph", op.name, op.target);
+        out.count = out.count + 1;
+        let mut k = 0;
+        while len(dna::nth_word(opted, k)) > 0 {
+            let role = dna::nth_word(opted, k);
+            k = k + 1;
+            let h = HoleDoc { name: d + "/" + role, target: deployment, text: "The " + role + " of " + d + "; no artifact implies it, and the Board names who holds it." };
+            h.question = "ratify the position `" + h.name + "` under deployment " + d + ", proposed empty: the Board names who holds it";
             h.unfold(deployment, h.node("position", h.name, h.text));
             if len(h.error) > 0 { return HolesAnswer { error: h.error }; }
             docs = docs + hole_line(h.document(), h.question, "holes", "graph", h.name, h.target);
             out.count = out.count + 1;
-            k = k + 1;
         }
     }
-    // one work item per process, done when the gate guarding its seed passes
-    procs = g.processes;
-    while len(procs) > 1 {
-        procs = procs[1..len(procs)];
-        let nl = std::str::index_of(procs, "\n");
-        let p = procs[0..nl];
-        procs = procs[nl..len(procs)];
-        let process = "process:" + p;
-        // the gate guarding a seed the process unfolds into (its `unfold`
-        // edge, not its name), the first one found
-        let mut first = "";
-        let mut seeds = hole_seconds(g.unfolds, process);
-        while len(seeds) > 0 && len(first) == 0 {
-            let n2 = std::str::index_of(seeds, "\n");
-            let gate = hole_seconds(g.guards, seeds[0..n2]);
-            seeds = seeds[(n2 + 1)..len(seeds)];
-            if len(gate) > 0 { first = gate[0..std::str::index_of(gate, "\n")]; }
-        }
+    // the work, done when the gate guarding it passes
+    let mut ws = work;
+    while len(ws) > 0 {
+        let nl = std::str::index_of(ws, "\n");
+        let line = ws[0..nl];
+        ws = ws[(nl + 1)..len(ws)];
+        let t1 = std::str::index_of(line, "\t");
+        let target = line[0..t1];
+        let after = line[(t1 + 1)..len(line)];
+        let t2 = std::str::index_of(after, "\t");
+        let name = after[0..t2];
+        let gate = after[(t2 + 1)..len(after)];
         // a gate is shown by its whole name (`ci/api`), not its last segment
-        let shown = if len(first) > 5 { first[5..len(first)] } else { first };
-        let w = HoleDoc { name: p, target: process };
-        w.text = if len(first) > 0 { "Deliver " + p + "; done when " + shown + " passes." } else { "Deliver " + p + "; done when a gate is defined for it." };
-        w.question = "ratify the work `" + p + "`: " + (if len(first) > 0 { "done when " + shown + " passes" } else { p + " has no gate, so its done-when is to define one" });
-        let id = graph_node_id("work", p);
-        w.row("graph.node", id, graph_work_body(p, w.text, if len(first) > 0 { first } else { "" }));
-        w.unfold(process, id);
+        let shown = if std::str::starts_with(gate, "gate:") { gate[5..len(gate)] } else { gate };
+        let w = HoleDoc { name: name, target: target, text: "Deliver " + name + "; done when " + shown + " passes." };
+        w.question = "ratify the work `" + name + "`: done when " + shown + " passes";
+        let id = graph_node_id("work", name);
+        w.row("graph.node", id, graph_work_body(name, w.text, gate));
+        w.unfold(target, id);
         if len(w.error) > 0 { return HolesAnswer { error: w.error }; }
         docs = docs + hole_line(w.document(), w.question, "holes", "graph", w.name, w.target);
         out.count = out.count + 1;

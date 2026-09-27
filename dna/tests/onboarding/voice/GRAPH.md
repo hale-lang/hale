@@ -123,7 +123,7 @@ toolchain version is pinned in the action and the Dockerfile together;
 keep a `FRICTION.md`.
 
 **gate**: `ci/api`, `ci/brain`, `ci/node`, `ci/ui`, `ci/contracts`,
-`ci/image`.
+`ci/store`, `ci/image`.
 
 **document**: `README.md`, `DIRECTION.md`, `FRICTION.md`, `GRAPH.md`,
 `ui/README.md`, `ui/DESIGN.md`, `spec/store.md`.
@@ -193,6 +193,7 @@ process model):
 - `ci/contracts` to `openapi.yaml`, `node.yaml`, `protocol.yaml`,
   `internal.yaml`, seed `spec/validate` (the canned bodies against
   `openapi.yaml`).
+- `ci/store` to `store.md` (its schema, applied to Postgres).
 - `ci/image` to `compose`.
 
 `binds`: none until a practice is ratified; each then binds the seeds or
@@ -211,60 +212,63 @@ new migration" to `store.md`.
 ## The holes: what `init` should propose
 
 The graph lacks exactly what a delivery needs and the repository cannot
-imply. `init` proposes each of these on its own, one Board Review each,
-and the Board ratifies:
+imply: who works where, who signs what, what is to be delivered. `init`
+derives each of these from the edges above, proposes each on its own, one
+Board Review each, and the Board ratifies. A *part* is a process of the
+repository, or a seed no process unfolds into (`ui`, `spec/validate`).
 
-- **Positions** under each process: `dev` (bound by the process's
-  practices, writes) and `reviewer` (holds the contracts the process
-  serves, signs; never the same holder as `dev` for that process — a
-  warning where one person holds every role, `dna.trust = local`, and
-  refused elsewhere). A `board` under `purpose`. An `operator` under each
-  deployment. Deeper substructure (core, library, integration) when a
-  process grows.
-- **`reviews` edges** from each `meets`: the reviewer of a process signs
-  every contract the process serves, and they come with that reviewer's
-  proposal. A change to a contract also fans out to the reviewers of
-  every consumer (routing, not an edge); `board` signs where the contract
-  is law (none is yet).
-- **Operational roles** under each deployment that no artifact implies,
-  proposed empty: `support` (for a deployment's projects), `accounts`
-  (account and quota management), `billing`, `on-call`. They are
-  positions like any other, shown in the org chart unfilled until the
-  Board names who holds them.
-- **Work**: one item per process, an `unfold` of it, done when its gate
-  passes: `api` (`ci/api`), `brain` (`ci/brain`), `node` (`ci/node`).
-  `postgres` and `nats` have no gate, so their work's done-when is to
-  define one.
+- **A `board`** under `purpose`.
+- **A reviewer per part that serves or consumes a contract** (`meets`):
+  `postgres`, `api`, `brain`, `node` and `ui`. Its proposal carries its
+  `reviews` edges: the part's seed and every contract the part serves or
+  consumes, so it signs a change to any of them. `nats` only carries, and
+  has none.
+- **A dev and a work item per part a gate guards**, by its seed or by a
+  contract it serves that a gate validates: `api`, `brain`, `node`, `ui`,
+  `spec/validate`, and `postgres`, whose `store.md` `ci/store` validates.
+  The work is done when the first gate guarding it passes (`api` when
+  `ci/api` passes; the store's work is named `store.md`); that is the
+  wording DNA proposes, and the Board amends it when it ratifies. A dev
+  never holds the same seat as its part's reviewer: a warning where one
+  person holds every role (`dna.trust = local`), refused elsewhere.
+- **An operator per deployment** (`compose`, `personal`, `scaled-out`),
+  which `reviews` the deployment and so signs a change to its file.
+- **Operational roles** no artifact implies (`support`, `accounts`,
+  `billing`, `on-call`) only where the project opts into them, in
+  `dna/org/structure.hl`; none by default.
 - **Practices**: the four items `DIRECTION.md` marks `derived`, proposed
   as advice, and ratified as law where the Board chooses; the rest stay
   advice.
 
-That is 35 proposals: 26 positions (the board, a dev and a reviewer under
-each of the five processes, and five under each of the three
-deployments), 5 work items and 4 practices.
+That is 25 proposals: 15 positions (the board, 6 devs, 5 reviewers, 3
+operators), 6 work items and 4 practices.
 
 ## The two perspectives, as queries
 
 **The org chart**: nodes are `position`s and their holders; edges are
-`unfold` (which process or deployment a position is under) and `reviews`
+`unfold` (which part or deployment a position is under) and `reviews`
 (who signs what). Rendered for voice once the proposals are ratified,
-each reviewer with the contracts its process serves:
+each reviewer with the contracts its part serves and consumes:
 
 ```
 purpose
   board
   postgres    dev, reviewer(store.md)
-  nats        dev, reviewer
-  api         dev, reviewer(openapi.yaml)
-  brain       dev, reviewer(internal.yaml)
-  node        dev, reviewer(node.yaml, protocol.yaml)
-  compose     operator, support, accounts, billing, on-call
-  personal    operator, support, accounts, billing, on-call
-  scaled-out  operator, support, accounts, billing, on-call
+  api         dev, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md)
+  brain       dev, reviewer(internal.yaml, store.md)
+  node        dev, reviewer(node.yaml, openapi.yaml, protocol.yaml)
+  compose     operator
+  validate    dev
+  ui          dev, reviewer(openapi.yaml)
+  personal    operator
+  scaled-out  operator
 ```
 
 Every position here is unfilled; a holder shows in brackets once the
-Board names one (`dev [ada]`).
+Board names one (`dev [ada]`). Parts are listed in the order their
+positions were ratified, a seed by its last segment (`validate` is
+`spec/validate`), and a reviewer by the contracts it signs, its seed
+aside.
 
 **The process model**: nodes are `process`es; edges are `meets` (which
 contract, over which transport) and `runs` (which deployment). Every arrow
@@ -291,7 +295,7 @@ moves through `constrains` and may reshape either.
 
 `hale dna init` on this repository, at this commit, should yield: 1
 purpose, 17 axioms, 5 processes, 5 seeds, 6 contracts, 3 deployments (1
-built), 6 gates, 7 documents, 4 witnesses, 0 positions, 0 work; the edges
-above; and the 35 proposals for the holes listed. A later commit that adds a
+built), 7 gates, 7 documents, 4 witnesses, 0 positions, 0 work; the edges
+above; and the 25 proposals for the holes listed. A later commit that adds a
 contract, a seed or a decision changes those counts, and the diff between
 two ingests is the review.

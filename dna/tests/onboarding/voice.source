@@ -1,10 +1,8 @@
-hale-lang/voice 6ad244d28e4bf1089ade20aa66904a75da487d1f (hale-lang/voice#4,
-stacked on hale-lang/voice#3; both merged with merge commits so the sha
-survives)
+hale-lang/voice a32b295faf5b96e6c965fc5bff2f66324fbbda10 (hale-lang/voice#5,
+on voice main after #4; merged with a merge commit so the sha survives)
 
 The tree beside this file is that commit, whole (`git archive`), vendored
 for dna/tests/graph_ingest_test.hl, graph_show_test.hl,
-graph_holes_test.hl and graph_holds_test.hl (GH #1090, #1086, #1091) and
-never fetched at test
-time. Its GRAPH.md is what `hale dna init` on it must yield. Moving the pin
+graph_holes_test.hl, graph_holds_test.hl and graph_route_test.hl (GH
+#1090, #1086, #1091, #1087) and never fetched at test time. Its GRAPH.md is what `hale dna init` on it must yield. Moving the pin
 is re-vendoring the tree at the new commit and naming it here.

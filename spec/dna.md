@@ -3602,8 +3602,9 @@ The live half is memory's, projected from the record by the spine
   `constrains(axiom; shaped…)`, `runs(deployment; process…)`,
   `gates(gate; guarded…)`,
   `binds`, `witnesses(witness; about…)`, `holds(position, holder)`,
-  `reviews(position, subject)` — the subject a contract or a document, a
-  design document being signed too. A pair kind (`unfold`, `refers`,
+  `reviews(position, subject)` — the subject a contract, a document, a
+  seed or a deployment: what the position signs a change to, a design
+  document being signed too. A pair kind (`unfold`, `refers`,
   `holds`, `reviews`) is exactly its two members and is keyed by both,
   so an unfold is one edge per child; any other kind is keyed by its
   anchor, so there is one `meets` per contract and the latest row says
@@ -3640,7 +3641,7 @@ The live half is memory's, projected from the record by the spine
   **Perspectives are queries over memory**:
   `KnowledgeStore.graph_perspective("org")` is the positions in the
   record's order, each with the node it unfolds from (`under`), its
-  `holders` and the contracts it `reviews`;
+  `holders` and the contracts and documents it `reviews`;
   `graph_perspective("processes")` is the processes, every `meets` (`contract`, `via`,
   `servers`, `consumers`, `carriers`, `outside`) and every `runs`
   (`deployment`, `processes`), each as JSON the server builds.
@@ -3720,16 +3721,36 @@ The live half is memory's, projected from the record by the spine
 - **Holes as proposals (GH #1091).** What a repository cannot imply
   and a delivery needs, `init` proposes at record birth, each on its own
   with one Board Review, in the same checked seed as the graph (so a
-  repository whose holes cannot be proposed leaves no record either): a
-  `board` under the purpose; a `dev` and a `reviewer` under each process,
-  the reviewer's proposal carrying a `reviews` edge to every contract the
-  process serves (a `meets` server); under each deployment an `operator`
-  and the operational roles no artifact implies — `support`, `accounts`,
-  `billing`, `on-call` — proposed empty; one `work` item per process, an
-  `unfold` of it, its node's `done_when` the gate that guards the
-  process's seed, or none, and its text says to define one; and each item
-  a document marks `derived`, `practice` or `law`, proposed as advice (a
-  `law` item's question asks for law). A hole is a knowledge proposal:
+  repository whose holes cannot be proposed leaves no record either).
+  The holes are **derived from the graph's edges**, never enumerated; a
+  *part* is a process, or a seed no process unfolds into (a UI, a
+  validator); a cell naming a seed a process unfolds into (a link, a path
+  inside it) names that process. `init` proposes: a `board` under the purpose; under each
+  part that serves or consumes a contract (`meets`), a `reviewer` whose
+  proposal carries a `reviews` edge to the part's seed and to every
+  contract it serves or consumes; under each part whose seed a gate
+  guards, or that serves a contract a gate validates (`gates`), a `dev`
+  and a `work` item; a `dev` and a `work` item for each validated
+  contract no part of the repository serves; under each deployment an
+  `operator` with a `reviews` edge to the deployment; and each item a document
+  marks `derived`, `practice` or `law`, proposed as advice (a `law`
+  item's question asks for law). The one structure policy is the
+  project's: **`dna/org/structure.hl`**, which `init` writes for a
+  repository unless one is there already, and whose
+  `fn operational_roles() -> String` names, space-separated, the
+  operational roles each deployment also gets (`support`, `accounts`,
+  `billing`, `on-call`), proposed empty and signing nothing — `""`, none,
+  by default. It is read once, when `init` seeds the record, so a project
+  opts in by writing the file before `init`; a word that is no
+  operational role refuses the seed, and a role named twice is proposed
+  once. `upgrade` rewrites an existing file to the current shape, keeps
+  the roles it names, and notes every other line the rewrite dropped. A work item is an
+  `unfold` of its part (or its contract), named for the part — or for the
+  contract's file when the gate guards a contract (`store.md`), its whole
+  path where a part already has that name; two parts delivering one
+  contract give one work item, the first's — its node's `done_when` the first gate guarding
+  it: the question proposes "done when `<gate>` passes", and the Board
+  amends that wording at ratification. A hole is a knowledge proposal:
   its receipt (`kind: graph`, `rows`) carries the graph rows it would add,
   each checked by the vocabulary before it is proposed; `knowledge.proposed`
   and `review.requested` (`required_authority: board`, `group: holes` or
@@ -3760,7 +3781,7 @@ The live half is memory's, projected from the record by the spine
   gate**: a hold is checked again where memory projects it, however it
   reached the record — a holder the record never knew before the row (no
   row in their name, and no owner's member) is not projected, nor is a
-  retired one, and a process's `reviewer` held by its `dev`'s holder is a
+  retired one, and a part's `reviewer` held by its `dev`'s holder is a
   warning on stderr under `dna.trust = local` (one person holds every
   role) and not projected under any other trust. A hold the store refuses
   is a row, once: `hold.refused <hold id>` (`why`, `row`, `by: memory`).
@@ -3783,21 +3804,22 @@ The live half is memory's, projected from the record by the spine
   `hale.toml` is not it). A path names a node — a contract (its file, or
   a file under its directory), else a document, else a deployment (the
   file it was read from, when that is no document: `compose.yaml`), else
-  the longest seed holding it — and the edges say who signs. **A seed**: the reviewer
-  (the `/reviewer` position a process unfolds into) of every process that
-  unfolds into it. **A contract**: every position that `reviews` it, and
-  the reviewer of every consumer — a consuming process; the processes a
-  consuming seed belongs to; the positions reviewing a consuming contract
-  — and the `board` where the contract is law: a practice the Board
-  ratified as law is bound to it (its receipt says `law: true`); one
-  ratified as advice is not law, and the board does not sign for it.
-  **A document**: every position that `reviews` it. **A deployment's
-  file**: the `operator` position the deployment unfolds into, against the
-  gates guarding the deployment (`ci/image` gates `compose`). A
-  `/dev` position never signs: a process's dev never signs for that
-  process. **The evidence** a verdict is given against is the run of every
+  the longest seed holding it — and the `reviews` edges say who signs,
+  whatever a position is called.
+  **Any node**: every position that `reviews` it — a part's reviewer
+  reviews its seed and the contracts it serves or consumes, a
+  deployment's operator the deployment (`compose.yaml` goes to
+  `compose/operator`, against the gates guarding `compose`). **A
+  contract**, beside those: the positions reviewing a consumer that is no
+  part (a contract, a document, a deployment), and the `board` where the contract is law: a practice the
+  Board ratified as law is bound to it (its receipt says `law: true`);
+  one ratified as advice is not law, and the board does not sign for it.
+  A position that reviews nothing — a derived `dev`, an operational role
+  — signs nothing; one a `reviews` edge names signs, whatever its name.
+  **The evidence** a verdict is given against is the run of every
   gate guarding a node the change touches. A consumer no position reviews
-  is listed as such (`unsigned`), never dropped; a path that names no
+  is listed as such (`unsigned`), never dropped: a consuming process or
+  seed with no position under it reviewing the contract; a path that names no
   node, or whose node no position signs (or operates), is left to the
   fallback — the Review's own required authority, the task routers of GH
   #697 when they exist, which the route names. Text lists `signed by`,
@@ -3829,7 +3851,7 @@ The live half is memory's, projected from the record by the spine
   (`board`), and any other node is its name, padded in code points to the
   widest, then its positions' roles. A role is the position's name less
   its node's (`api/reviewer` under `api` is `reviewer`), followed by
-  `(<what it reviews>)` and, when it has holders, `[<holders>]`; a
+  `(<the contracts and documents it reviews>)` and, when it has holders, `[<holders>]`; a
   position under no node is under `(unplaced)`, after the rest. **The
   process model** is a line per `meets` — its outside parties and
   consumers, the arrow `--<via>: <contract>-->`, its servers or

@@ -2,11 +2,13 @@
 // are queries over memory, and on voice they are GRAPH.md's two renderings
 // (GH #1086).
 //
-// The fixture is hale-lang/voice at 6ad244d2 (hale-lang/voice#4), vendored
+// The fixture is hale-lang/voice at a32b295f (hale-lang/voice#5), vendored
 // under dna/tests/onboarding/voice. `hale dna init` reads it into the
-// record; the holes GRAPH.md fills for its org chart (a board, a dev and a
-// reviewer under every process, an operator under every deployment, what
-// each reviewer signs) are written as rows the way a ratification would;
+// record; the holes GRAPH.md fills for its org chart (the ones init
+// derives from the edges: a board, a dev where a gate guards a part, a
+// reviewer where a part serves or consumes a contract, an operator under
+// every deployment, what each reviewer signs) are written as rows the way
+// a ratification would;
 // the record is projected into memory as the spine projects it; and the
 // real `hale dna show`, reading as the head, prints GRAPH.md's text,
 // byte for byte. `--json` is the query's answer with how far memory has
@@ -27,17 +29,18 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// GRAPH.md at 6ad244d2, "The two perspectives, as queries".
+// GRAPH.md at a32b295f, "The two perspectives, as queries".
 const ORG: String = "purpose
   board
   postgres    dev, reviewer(store.md)
-  nats        dev, reviewer
-  api         dev, reviewer(openapi.yaml)
-  brain       dev, reviewer(internal.yaml)
-  node        dev, reviewer(node.yaml, protocol.yaml)
-  compose     operator, support, accounts, billing, on-call
-  personal    operator, support, accounts, billing, on-call
-  scaled-out  operator, support, accounts, billing, on-call
+  api         dev, reviewer(internal.yaml, openapi.yaml, protocol.yaml, store.md)
+  brain       dev, reviewer(internal.yaml, store.md)
+  node        dev, reviewer(node.yaml, openapi.yaml, protocol.yaml)
+  compose     operator
+  validate    dev
+  ui          dev, reviewer(openapi.yaml)
+  personal    operator
+  scaled-out  operator
 ";
 
 const PROCESSES: String = "callers, ui, node  --HTTP: openapi.yaml-->  api
@@ -134,7 +137,7 @@ locus App {
         // ---- the holes, filled as GRAPH.md renders its org chart
         let j = dna::GitJournal { repo: self.repo };
         self.position(j, "purpose:voice", "board");
-        let procs = "postgres nats api brain node";
+        let procs = "postgres api brain node";
         let mut k = 0;
         while len(dna::nth_word(procs, k)) > 0 {
             let p = dna::nth_word(procs, k);
@@ -142,23 +145,23 @@ locus App {
             self.position(j, "process:" + p, p + "/reviewer");
             k = k + 1;
         }
+        self.position(j, "seed:spec/validate", "spec/validate/dev");
+        self.position(j, "seed:ui", "ui/dev");
+        self.position(j, "seed:ui", "ui/reviewer");
         let deployments = "compose personal scaled-out";
-        let roles = "operator support accounts billing on-call";
         k = 0;
         while len(dna::nth_word(deployments, k)) > 0 {
             let d = dna::nth_word(deployments, k);
-            let mut r = 0;
-            while len(dna::nth_word(roles, r)) > 0 {
-                self.position(j, "deployment:" + d, d + "/" + dna::nth_word(roles, r));
-                r = r + 1;
-            }
+            self.position(j, "deployment:" + d, d + "/operator");
             k = k + 1;
         }
-        self.reviews(j, "postgres/reviewer", "contract:spec/store.md");
-        self.reviews(j, "api/reviewer", "contract:spec/openapi.yaml");
-        self.reviews(j, "brain/reviewer", "contract:spec/internal.yaml");
-        self.reviews(j, "node/reviewer", "contract:spec/node.yaml");
-        self.reviews(j, "node/reviewer", "contract:spec/protocol.yaml");
+        let signs = "postgres/reviewer store.md\napi/reviewer internal.yaml\napi/reviewer openapi.yaml\napi/reviewer protocol.yaml\napi/reviewer store.md\nbrain/reviewer internal.yaml\nbrain/reviewer store.md\nnode/reviewer node.yaml\nnode/reviewer openapi.yaml\nnode/reviewer protocol.yaml\nui/reviewer openapi.yaml\n";
+        let mut rest = signs;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            self.reviews(j, dna::nth_word(rest[0..nl], 0), "contract:spec/" + dna::nth_word(rest[0..nl], 1));
+            rest = rest[(nl + 1)..len(rest)];
+        }
         self.project(owner, identity);
 
         // ---- GRAPH.md's two renderings, byte for byte
