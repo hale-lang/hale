@@ -39,7 +39,8 @@ fn run_dna(args: String) -> String {
 }
 
 fn git_config(key: String, all: Bool) -> String {
-    let out = std::process::run("git\nconfig\n" + (if all { "--get-all\n" } else { "" }) + key) or run_failed(err);
+    // every value of a key — a mapping — is the record's own local config
+    let out = std::process::run("git\nconfig\n" + (if all { "--local\n--get-all\n" } else { "" }) + key) or run_failed(err);
     return if out.code == 0 { std::str::trim(out.stdout) } else { "" };
 }
 
@@ -89,6 +90,7 @@ type Session {
     name: String = "";
     subject: String = "";
     expires: Int = 0;
+    id_token: String = ""; // GH #989: the verified ID token it signed in with, which a head forwards as the bearer
 }
 
 @form(vec)
@@ -128,14 +130,20 @@ locus Ui {
         board: String = ""; // member names acting with board authority, comma-separated
         authorize_url: String = "";
         token_url: String = "";
+        jwks: String = ""; // GH #989: the issuer's signing keys (`dna::jwks_keys`), read with discovery
+        jwks_uri: String = "";
+        jwks_at: Int = 0; // when the keys were last read (unix seconds)
+        pinned: String = ""; // the issuer's key the record names (`dna.oidc.key`, a SubjectPublicKeyInfo); required of a loopback issuer
         discovery_refused: String = ""; // why the discovery document's endpoints were not used
+        bearer_refused: String = ""; // why the last bearer token was refused
         exchange: CodeExchange = CodeExchange { };
         pending: PendingSignIns = PendingSignIns { };
         sessions: Sessions = Sessions { };
     }
-    // The issuer's endpoints, from its discovery document, once.
+    // The issuer's endpoints and signing keys, from its discovery document
+    // and its JWKS, once: a head reads them at start (GH #989).
     fn discovered() -> Bool {
-        if len(self.token_url) > 0 { return true; }
+        if len(self.token_url) > 0 && len(self.jwks) > 0 { return true; }
         let resp = std::http::get(self.issuer + "/.well-known/openid-configuration") or token_failed(err);
         if resp.status != 200 { return false; }
         let doc = std::str::from_bytes(resp.body);
@@ -145,9 +153,81 @@ locus Ui {
         // the ID token it returns
         self.discovery_refused = dna::discovery_refusal(self.issuer, authorize, token);
         if len(self.discovery_refused) > 0 { return false; }
+        // every ID token is verified: ES256, under a key the issuer publishes
+        // — and, for an issuer on this machine, which anyone on it can
+        // answer as, only under the key the record pins
+        if dna::issuer_loopback(self.issuer) && len(self.pinned) == 0 { self.discovery_refused = "a loopback issuer is anyone's on this machine: the record pins its key (`git config dna.oidc.key <SubjectPublicKeyInfo, base64>`)"; return false; }
+        let jwks_uri = std::json::find_string_field(doc, "jwks_uri");
+        if !dna::endpoint_allowed(jwks_uri) { self.discovery_refused = "jwks_uri: `" + jwks_uri + "` is not https (or plain http on this machine)"; return false; }
+        self.jwks_uri = jwks_uri;
+        if !self.read_keys() { return false; }
         self.authorize_url = authorize;
         self.token_url = token;
         return true;
+    }
+    // The issuer's signing keys, read now: those its JWKS publishes, or
+    // the one the record pins. False (and why) when there are none.
+    fn read_keys() -> Bool {
+        let keys = std::http::get(self.jwks_uri) or token_failed(err);
+        if keys.status != 200 { self.discovery_refused = "jwks_uri: the issuer's JWKS did not answer"; return false; }
+        let read = dna::jwks_keys(std::str::from_bytes(keys.body), self.pinned);
+        if len(read) == 0 { self.discovery_refused = if len(self.pinned) > 0 { "jwks_uri: the issuer does not publish the key the record pins (dna.oidc.key)" } else { "jwks_uri: the issuer publishes no ES256 signing key (RS256 is not verified)" }; return false; }
+        self.jwks = read;
+        self.jwks_at = std::time::now();
+        return true;
+    }
+    // Why a token's signature is refused ("" when it verifies): a key the
+    // issuer rotated in since the keys were read is read once more, at
+    // most once a minute; a pinned key is never re-read.
+    fn verify(token: String) -> String {
+        let why = dna::es256_refusal(token, self.jwks);
+        if !std::str::starts_with(why, "key:") || len(self.pinned) > 0 || std::time::now() - self.jwks_at < 60 { return why; }
+        if !self.read_keys() { return why; }
+        return dna::es256_refusal(token, self.jwks);
+    }
+    // GH #989: the subject a request's bearer ID token names, verified —
+    // its signature under the issuer's keys, the issuer, this client
+    // among its audience, unexpired — "" when there is none or it is
+    // refused (`bearer_refused` says why).
+    fn bearer_subject(req: std::http::Request) -> String {
+        self.bearer_refused = "";
+        let token = dna::bearer_token(std::http::header(req, "Authorization"));
+        if len(token) == 0 { return ""; }
+        if !self.discovered() { self.bearer_refused = "the issuer's keys are not read: " + self.discovery_refused; return ""; }
+        let sig = self.verify(token);
+        if len(sig) > 0 { self.bearer_refused = sig; return ""; }
+        let c = dna::id_token_claims(token);
+        let why = dna::bearer_refusal(c, self.issuer, self.client, std::time::now());
+        if len(why) > 0 { self.bearer_refused = why; return ""; }
+        return c.sub;
+    }
+    // The ID token a request's session signed in with ("" when none is live).
+    @unbounded
+    fn session_token(req: std::http::Request) -> String {
+        let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
+        if len(id) == 0 { return ""; }
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if s.id == id && s.expires > now { return s.id_token; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The subject a request's session signed in as ("" when none is live).
+    @unbounded
+    fn session_subject(req: std::http::Request) -> String {
+        let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
+        if len(id) == 0 { return ""; }
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if s.id == id && s.expires > now { return s.subject; }
+            i = i + 1;
+        }
+        return "";
     }
     fn begin_sign_in() -> std::http::Response {
         if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
@@ -192,6 +272,8 @@ locus Ui {
         if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
         let token = self.exchange.id_token(self.token_url, code, self.redirect_uri, self.client);
         if len(token) == 0 { return page(502, "the issuer did not exchange the code"); }
+        let signed = self.verify(token);
+        if len(signed) > 0 { return page(403, "the issuer's answer is refused: " + signed); }
         let c = dna::id_token_claims(token);
         let why = dna::claims_refusal(c, self.issuer, self.client, nonce, std::time::now());
         if len(why) > 0 { return page(403, "the issuer's answer is refused: " + why); }
@@ -199,7 +281,7 @@ locus Ui {
         if len(name) == 0 { return page(403, "not a member: subject `" + c.sub + "` of " + c.iss + " maps to no one (`git config --add dna.oidc.member \"" + c.sub + "=<name>\"`)"); }
         let id = dna::hex(std::os::getrandom(32) or b"");
         if len(id) < 64 { return page(503, "no randomness for a session"); }
-        self.sessions.push(Session { id: id, name: name, subject: c.sub, expires: std::time::now() + 28800 });
+        self.sessions.push(Session { id: id, name: name, subject: c.sub, expires: if c.exp < std::time::now() + 28800 { c.exp } else { std::time::now() + 28800 }, id_token: token });
         let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
         return redirect("/", "dna_session=" + id + "; HttpOnly; SameSite=Lax; Path=/" + secure);
     }
@@ -293,9 +375,19 @@ fn main() {
             eprintln("hale dna ui: the issuer must be https (plain http only on this machine): ", issuer);
             std::process::exit(2);
         }
+        let ui = Ui { html: html, principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: git_config("dna.oidc.member", true), board: git_config("dna.oidc.board", false), pinned: git_config("dna.oidc.key", false) };
+        // GH #989: the issuer's discovery document and signing keys, once, now
+        if !ui.discovered() {
+            eprintln("hale dna ui: the issuer ", issuer, " is not usable: ", if len(ui.discovery_refused) > 0 { ui.discovery_refused } else { "its discovery document did not answer" });
+            std::process::exit(2);
+        }
         println("hale dna ui: http://127.0.0.1:", port, "/ — sign-in through ", issuer, " (dna.principal = oidc); put TLS in front of this server");
-        std::http::Server { port: port, handler: Ui { html: html, principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: git_config("dna.oidc.member", true), board: git_config("dna.oidc.board", false) } };
+        std::http::Server { port: port, handler: ui };
         return;
+    }
+    if !dna::trusted_local_fixture() {
+        eprintln("hale dna ui: ", dna::TRUSTED_LOCAL_REFUSED);
+        std::process::exit(2);
     }
     println("hale dna ui: http://127.0.0.1:", port, "/ (from the record; ctrl-c stops)");
     std::http::Server { port: port, handler: Ui { html: html } };

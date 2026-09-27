@@ -61,7 +61,7 @@ export function commandReceipt(fields = {}) {
   const { organization = {}, task = {}, person = {}, task_create = {}, attempt = {}, ...flat } = fields;
   return {
     command_id: '', request_id: '', application_id: '', operation: 'dna.practice.propose', operation_version: '1',
-    principal_mode: '', principal_name: '', position_id: 'org', target_kind: 'dna.practice', target_id: '',
+    principal_mode: '', principal_name: '', principal_positions: '', position_id: 'org', target_kind: 'dna.practice', target_id: '',
     subject_digest: '', fingerprint: '', state: '', reason: '', proposal_state: 'pending', verdict_value: '',
     verdict_state: '', candidate_digest: '', review_id: '', review_state: 'unavailable', review_outcome: '',
     review_subject_digest: '', activation_state: 'unknown', activation_reason: '', ...flat,

@@ -690,7 +690,7 @@
       return null;
     }
   }
-  const RECEIPT_TEXT = ["command_id", "request_id", "application_id", "operation", "operation_version", "principal_mode", "principal_name", "position_id", "target_kind", "target_id", "subject_digest", "fingerprint", "state", "reason", "proposal_state", "verdict_value", "verdict_state", "candidate_digest", "review_id", "review_state", "review_outcome", "review_subject_digest", "activation_state", "activation_reason"];
+  const RECEIPT_TEXT = ["command_id", "request_id", "application_id", "operation", "operation_version", "principal_mode", "principal_name", "principal_positions", "position_id", "target_kind", "target_id", "subject_digest", "fingerprint", "state", "reason", "proposal_state", "verdict_value", "verdict_state", "candidate_digest", "review_id", "review_state", "review_outcome", "review_subject_digest", "activation_state", "activation_reason"];
   // Every branch of the typed receipt is present; only the operation's own
   // carries values.
   const RECEIPT_BRANCHES = {

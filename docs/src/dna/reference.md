@@ -46,8 +46,10 @@ hale dna run [project] [--port N] [--no-iris] [--observe <secs>]
                              (an owner's or head's DSN is taken out of the host's environment)
 hale dna ui [project] [--port N]
                              (under `git config dna.principal oidc`: a hosted head behind sign-in at
-                             dna.oidc.issuer; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
-                             "<subject>=<name>", dna.oidc.board, HALE_DNA_OIDC_SECRET;
+                             dna.oidc.issuer, every ID token verified ES256 against its JWKS, read at
+                             start; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
+                             "<subject>=<name>", dna.oidc.board, HALE_DNA_OIDC_SECRET; without it,
+                             a fixture's trusted-local session only (HALE_DNA_TRUSTED_LOCAL=1);
                              the head's socket knows a peer by uid: --local dna.unix.member "uid:<n>=<name>";
                              the record's own commands are gated topics on that same socket, listed by
                              `hale describe <socket>`)

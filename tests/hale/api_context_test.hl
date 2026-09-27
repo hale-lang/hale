@@ -16,6 +16,24 @@ fn app_source(sock: String, entry: Bool) -> String {
     } else {
         ""
     };
+    // The program's own transport (as a head's HTTP forwarder is): it
+    // hands a line to its own socket with a `via` mark.
+    let forward = if entry {
+        ""
+            + "        // a transport of the program's own forwards a line, marked\n"
+            + "        std::time::sleep(300ms);\n"
+            + "        let fd = std::io::unix::connect(\"" + sock + "\") or - 1;\n"
+            + "        if fd >= 0 {\n"
+            + "            let s = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };\n"
+            + "            s.send(\"{\\\"id\\\":21,\\\"call\\\":\\\"Claims\\\",\\\"payload\\\":{\\\"task\\\":3,\\\"who\\\":\\\"browser\\\"},\\\"via\\\":\\\"http-session\\\"}\\n\") or discard;\n"
+            + "            let mut got = \"\";\n"
+            + "            let mut tries = 0;\n"
+            + "            while !std::str::contains(got, \"\\n\") && tries < 100 { got = got + (s.recv(65536) or \"\"); tries = tries + 1; }\n"
+            + "            println(\"forwarded \" + got);\n"
+            + "        }\n"
+    } else {
+        ""
+    };
     return "type Claim { task: Int; who: String; }\n"
         + "type Echo { note: String; }\n"
         + "type Seen { count: Int; last_local: String; }\n"
@@ -43,6 +61,7 @@ fn app_source(sock: String, entry: Bool) -> String {
         + bindings
         + "    run() {\n"
         + "        Claims <- Claim { task: 1, who: \"inside\" };\n"
+        + forward
         + "        std::time::sleep(8s);\n"
         + "    }\n"
         + "}\n"
@@ -178,14 +197,14 @@ fn main() {
     std::test::assert(std::str::contains(note, "|" + my_pid + "|api|1|outside\""), "the handler saw the caller's pid, the binding and the request id: " + note);
     std::test::assert(std::str::contains(r1, "\"caller\":{\"mode\":\"unix\",\"name\":\"uid:" + me + "\",\"uid\":" + me + ","), "the receipt carries the principal: " + r1);
 
-    // A forwarding transport of the program's own marks how the request
-    // arrived: `via` is honoured from the program's uid — this test's,
-    // since it spawned the app — carried on the receipt's caller and in
-    // ctx.via; the principal stays the peer's own.
+    // A forwarding transport marks how the request arrived, and only the
+    // program's own does: `via` is honoured from the program's own process
+    // (its uid AND its pid, GH #989), so this test — another process of the
+    // same account — is refused, never silently dropped. The program's own
+    // forward (in its run()) is carried on the receipt's caller and in
+    // ctx.via, the principal the program's own (read at stop, below).
     let r1b = api.ask("{\"id\":11,\"call\":\"Claims\",\"payload\":{\"task\":3,\"who\":\"browser\"},\"via\":\"http-session\"}");
-    std::test::assert(std::str::contains(r1b, "\"ok\":true") && std::str::contains(r1b, "\"via\":\"http-session\"}"), "the receipt's caller carries the mark: " + r1b);
-    let marked = std::json::find_field_raw(std::json::find_field_raw(r1b, "value"), "note");
-    std::test::assert(std::str::starts_with(marked, expect_head) && std::str::contains(marked, "|http-session|2|browser\""), "the handler's ctx.via is the mark, the principal the peer's: " + marked);
+    std::test::assert(std::str::contains(r1b, "\"kind\":\"malformed\"") && std::str::contains(r1b, "own transports only"), "a mark from another process of the account is refused: " + r1b);
     let r1c = api.ask("{\"id\":12,\"call\":\"Claims\",\"payload\":{\"task\":4,\"who\":\"x\"},\"via\":\"\"}");
     std::test::assert(std::str::contains(r1c, "\"kind\":\"malformed\""), "an empty mark is refused: " + r1c);
     let r1d = api.ask("{\"id\":13,\"call\":\"Claims\",\"payload\":{\"task\":5,\"who\":\"y\"},\"via\":5}");
@@ -198,13 +217,19 @@ fn main() {
     // The one-parameter subscriber of the same topic heard both messages;
     // the two-parameter one counted both as well, and the in-process
     // one carried the local principal and `via: local`.
-    let r3 = api.ask("{\"id\":3,\"read\":\"head.seen\"}");
+    // (the program's own forward lands by its run()'s first second)
+    let mut r3 = api.ask("{\"id\":3,\"read\":\"head.seen\"}");
+    let mut waited = 0;
+    while !std::str::contains(r3, "\"count\":3") && waited < 40 { std::time::sleep(100ms); r3 = api.ask("{\"id\":" + to_string(30 + waited) + ",\"read\":\"head.seen\"}"); waited = waited + 1; }
     std::test::assert(std::str::contains(r3, "\"count\":3"), "every message reached the context handler: " + r3);
     std::test::assert(std::str::contains(r3, "\"last_local\":\"local|local|-1|-1|-1|local|0|inside\""), "the in-process message carried the local context: " + r3);
 
     p.stop();
     std::io::fs::unlink(sock) or discard;
     std::test::assert(std::str::contains(p.out, "tally 3"), "the one-parameter handler heard every message: " + p.out);
+    let app_pid = to_string(p.child.pid);
+    std::test::assert(std::str::contains(p.out, "forwarded ") && std::str::contains(p.out, "\"ok\":true") && std::str::contains(p.out, "\"via\":\"http-session\"}"), "the program's own forward is honoured, the receipt's caller carrying the mark: " + p.out);
+    std::test::assert(std::str::contains(p.out, "|" + app_pid + "|http-session|") && std::str::contains(p.out, "\"pid\":" + app_pid + ",\"via\":\"http-session\"}"), "the handler's ctx.via is the mark, the principal the program's own: " + p.out);
     std::io::fs::unlink(src) or discard;
     std::io::fs::unlink(bin) or discard;
 

@@ -9,12 +9,13 @@
 // (`hale dna ui` under `oidc`) resolves the principal and passes it on;
 // it never acts in its own name.
 //
-// The flow is OpenID Connect's authorization code. The head exchanges the
-// code at the issuer's token endpoint itself, over TLS, so the ID token it
-// receives is authenticated by that server's identity (OpenID Connect Core
-// 1.0, §3.1.3.7, rule 6) rather than by a signature — the standard library
-// verifies ES256 but not RS256, which most issuers use. Issuer, audience,
-// expiry and nonce are checked here.
+// The flow is OpenID Connect's authorization code, and a caller that is
+// not a browser presents its ID token as a bearer (GH #989). Either way the
+// token is verified here: its ES256 signature against a key of the
+// issuer's JWKS, which the head reads with the discovery document once, at
+// start (`jwks_keys`, `es256_refusal`) — an RS256 token is refused, since
+// the standard library verifies ES256 only — then the issuer, the audience,
+// the expiry, and for a sign-in its nonce.
 
 type IdClaims {
     present: Bool = false;
@@ -24,13 +25,126 @@ type IdClaims {
     email: String = "";
     nonce: String = "";
     exp: Int = 0;
+    nbf: Int = 0; // 0 when the token names none
 }
+
+// GH #989: a head's principal path is the only way in. Trusted-local —
+// a session under the head's own identity (the launch token, `hale dna
+// ui`'s operator) — is a fixture's mode alone: served only where
+// HALE_DNA_TRUSTED_LOCAL=1, which a fixture sets; a project serves its
+// heads under OIDC.
+fn trusted_local_fixture() -> Bool { return std::env::var("HALE_DNA_TRUSTED_LOCAL") == "1"; }
+const TRUSTED_LOCAL_REFUSED: String = "trusted-local is a fixture's mode (HALE_DNA_TRUSTED_LOCAL=1); a project serves its head under OIDC: `git config dna.principal oidc` with dna.oidc.issuer, dna.oidc.client and dna.oidc.member (dna/face/start.sh sets them up with the stub provider, dna/oidc)";
 
 // A base64url part of a JWT (no padding, `-` and `_` for `+` and `/`) as text.
 fn b64url_text(s: String) -> String {
     let mut t = std::str::replace(std::str::replace(s, "-", "+"), "_", "/");
     while len(t) % 4 != 0 { t = t + "="; }
     return std::str::from_bytes(std::text::base64::decode(t));
+}
+
+// A base64url part as bytes.
+fn b64url_bytes(s: String) -> Bytes {
+    let mut t = std::str::replace(std::str::replace(s, "-", "+"), "_", "/");
+    while len(t) % 4 != 0 { t = t + "="; }
+    return std::text::base64::decode(t);
+}
+
+// The DER of a P-256 public key up to its point: SubjectPublicKeyInfo,
+// id-ecPublicKey, prime256v1, and the uncompressed point's 0x04.
+const P256_SPKI_PREFIX: String = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE";
+
+// A P-256 public key's SubjectPublicKeyInfo (base64) from its JWK
+// coordinates (base64url), "" unless each is 32 bytes.
+fn p256_spki(x_b64url: String, y_b64url: String) -> String {
+    let x = b64url_bytes(x_b64url);
+    let y = b64url_bytes(y_b64url);
+    if len(x) != 32 || len(y) != 32 { return ""; }
+    return std::text::base64::encode(std::bytes::concat(std::text::base64::decode(P256_SPKI_PREFIX), std::bytes::concat(x, y)));
+}
+
+// The signing keys of a JWKS document, `kid\t<SubjectPublicKeyInfo,
+// base64>` per line: the P-256 keys (`kty` EC, `crv` P-256) meant for
+// signatures (no `use`, or `sig`), whose coordinates are 32 bytes each
+// and whose `kid` breaks no line. `pinned` (a SubjectPublicKeyInfo,
+// "" for none) keeps that key alone: a loopback issuer is anyone's on
+// the machine, so its key is the record's to name (`dna.oidc.key`).
+@unbounded
+fn jwks_keys(doc: String, pinned: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(doc, "keys"));
+    while !it.done {
+        let k = it.element;
+        let usage = std::json::find_string_field(k, "use");
+        let kid = std::json::find_string_field(k, "kid");
+        if std::json::find_string_field(k, "kty") == "EC" && std::json::find_string_field(k, "crv") == "P-256" && (len(usage) == 0 || usage == "sig") && !std::str::contains(kid, "\t") && !std::str::contains(kid, "\n") {
+            let spki = p256_spki(std::json::find_string_field(k, "x"), std::json::find_string_field(k, "y"));
+            if len(spki) > 0 && (len(pinned) == 0 || spki == pinned) { out = out + kid + "\t" + spki + "\n"; }
+        }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+// Whether `url` is an issuer on this machine (plain http to the loopback),
+// whose key a record must pin.
+fn issuer_loopback(url: String) -> Bool {
+    return std::str::starts_with(url, "http://127.0.0.1:") || std::str::starts_with(url, "http://127.0.0.1/") || std::str::starts_with(url, "http://localhost:") || std::str::starts_with(url, "http://localhost/");
+}
+
+// A SubjectPublicKeyInfo (base64) as the PEM the verifier reads.
+@unbounded
+fn spki_pem(b64: String) -> Bytes {
+    let mut body = "";
+    let mut i = 0;
+    while i < len(b64) {
+        let end = if i + 64 < len(b64) { i + 64 } else { len(b64) };
+        body = body + b64[i..end] + "\n";
+        i = end;
+    }
+    return std::bytes::from_string("-----BEGIN PUBLIC KEY-----\n" + body + "-----END PUBLIC KEY-----\n");
+}
+
+// Why a JWT's signature is refused ("" when it verifies): ES256 alone,
+// under the key its header names (`kid`) among `keys` (`jwks_keys`), or
+// the one key when the header names none and there is one.
+@unbounded
+fn es256_refusal(jwt: String, keys: String) -> String {
+    let a = std::str::index_of(jwt, ".");
+    if a < 0 { return "token: not a JWT"; }
+    let second = std::str::index_of(jwt[(a + 1)..len(jwt)], ".");
+    if second < 0 { return "token: not a JWT"; }
+    let b = a + 1 + second;
+    let header = b64url_text(jwt[0..a]);
+    let alg = std::json::find_string_field(header, "alg");
+    if alg != "ES256" { return "algorithm: `" + alg + "` is not ES256"; }
+    let kid = std::json::find_string_field(header, "kid");
+    let mut spki = "";
+    let mut count = 0;
+    let mut rest = keys;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let tab = std::str::index_of(line, "\t");
+        if tab < 0 { continue; }
+        count = count + 1;
+        if line[0..tab] == kid { spki = line[(tab + 1)..len(line)]; }
+        if len(kid) == 0 && count == 1 { spki = line[(tab + 1)..len(line)]; }
+    }
+    if len(kid) == 0 && count != 1 { return "key: the token names no key, and the issuer has " + to_string(count); }
+    if len(spki) == 0 { return "key: the issuer's JWKS has no signing key `" + kid + "`"; }
+    let sig = b64url_bytes(jwt[(b + 1)..len(jwt)]);
+    if len(sig) != 64 { return "signature: not an ES256 signature"; }
+    if !std::crypto::ecdsa_p256_verify(spki_pem(spki), std::bytes::from_string(jwt[0..b]), sig) { return "signature: does not verify under the issuer's key `" + kid + "`"; }
+    return "";
+}
+
+// The token of an `Authorization: Bearer <token>` header ("" when none).
+fn bearer_token(header: String) -> String {
+    let h = std::str::trim(header);
+    if !std::str::starts_with(h, "Bearer ") { return ""; }
+    return std::str::trim(h[7..len(h)]);
 }
 
 // The claims of an ID token (`header.payload.signature`), from its payload.
@@ -50,7 +164,8 @@ fn id_token_claims(jwt: String) -> IdClaims {
         sub: std::json::find_string_field(payload, "sub"),
         email: std::json::find_string_field(payload, "email"),
         nonce: std::json::find_string_field(payload, "nonce"),
-        exp: std::json::find_int_field(payload, "exp")
+        exp: std::json::find_int_field(payload, "exp"),
+        nbf: std::json::find_int_field(payload, "nbf")
     };
 }
 
@@ -58,14 +173,36 @@ fn id_token_claims(jwt: String) -> IdClaims {
 // deployment names, this client among the audience, not expired, the
 // nonce of the sign-in that asked for it, a subject.
 fn claims_refusal(c: IdClaims, issuer: String, client: String, nonce: String, now: Int) -> String {
+    let why = bearer_refusal(c, issuer, client, now);
+    if len(why) > 0 { return why; }
+    if len(nonce) == 0 || c.nonce != nonce { return "nonce: the token does not answer this sign-in"; }
+    return "";
+}
+
+// Why a bearer's claims are refused ("" when accepted): as a sign-in's,
+// without the nonce a caller that did not sign in here has none of.
+fn bearer_refusal(c: IdClaims, issuer: String, client: String, now: Int) -> String {
     if !c.present { return "token: not an ID token"; }
     if c.iss != issuer { return "issuer: `" + c.iss + "` is not `" + issuer + "`"; }
-    let aud_ok = if std::str::starts_with(c.aud, "[") { std::str::contains(c.aud, "\"" + client + "\"") } else { c.aud == client };
-    if !aud_ok { return "audience: the token is not for client `" + client + "`"; }
+    if !audience_names(c.aud, client) { return "audience: the token is not for client `" + client + "`"; }
     if c.exp <= now { return "expired: the token expired at " + to_string(c.exp); }
-    if len(nonce) == 0 || c.nonce != nonce { return "nonce: the token does not answer this sign-in"; }
+    if c.nbf > now + 60 { return "not yet valid: the token is valid from " + to_string(c.nbf); }
     if len(c.sub) == 0 { return "subject: none"; }
     return "";
+}
+
+// Whether an `aud` (a string, or a JSON array of strings) names `client`
+// exactly.
+@unbounded
+fn audience_names(aud: String, client: String) -> Bool {
+    if !std::str::starts_with(aud, "[") { return aud == client; }
+    let mut it = std::json::array_first(aud);
+    while !it.done {
+        let one = std::json::string_field("{\"a\":" + it.element + "}", "a");
+        if one.kind == "string" && one.text == client { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
 }
 
 // The member a subject maps to, from `subject=name` lines ("" when none).

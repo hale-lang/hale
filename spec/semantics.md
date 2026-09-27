@@ -1831,12 +1831,14 @@ carries the principal it established:
 ```
 
 **A forwarding transport (`via`).** A request line may carry `"via":
-"<mark>"` (1..64 bytes). The binding honours it only from a peer whose
-uid is the program's own (`std::process::uid()`), and refuses the line
-as `malformed` from anyone else: the mark says how a transport of the
-program's own — an HTTP handler forwarding a browser's line to its
-own socket, say — received the request, and nobody else may claim
-one. The mark rides on the principal (`Principal.via`), on every
+"<mark>"` (1..64 bytes). The binding honours it only from the
+program's own process — a peer whose uid is the program's own
+(`std::process::uid()`) and whose pid is too (`std::process::pid()`)
+— and refuses the line as `malformed` from anyone else, another
+process of the same account included: the mark says how a transport of
+the program's own — an HTTP handler forwarding a browser's line to its
+own socket, say — received the request, and, for a head, whom it
+verified (GH #989), so nobody else may claim one. The mark rides on the principal (`Principal.via`), on every
 receipt for that line (`"caller": {..., "via": "http-session"}`), and
 reaches a `Context` handler as `ctx.via` in place of `api`. The
 principal stays the forwarding peer's own (the process's uid), never

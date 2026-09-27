@@ -145,7 +145,10 @@ mutations:  0 (none applies before a human's verdict on the exact candidate)
 
 `hale dna ui` serves the same thing as a page — the Board's queue,
 the Reviews with their three views, the fleet, the history, and the
-forms — from the record alone, with or without the host up.
+forms — from the record alone, with or without the host up, behind a
+sign-in through the record's identity provider (`dna.principal = oidc`;
+[Running it](./run.md) sets one up). For your own machine, the face
+(`dna/face/start.sh`) brings its own provider and signs you in.
 
 ## The first review
 

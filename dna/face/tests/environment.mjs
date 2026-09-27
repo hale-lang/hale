@@ -18,6 +18,9 @@ export function isolatedEnvironment() {
     'HALE_DNA_OWNER', 'HALE_DNA_LEASE', 'HALE_DNA_LEASE_TOKEN', 'HALE_DNA_TAPE', 'HALE_DNA_ONESHOT',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LOTUS_OBS', 'HALE_DNA_ORG_DRAFTS',
   ]) delete env[key];
+  // GH #989: a fixture's heads run the trusted-local session, which is a
+  // fixture's mode alone; a project's run under OIDC
+  env.HALE_DNA_TRUSTED_LOCAL = '1';
   return Object.assign(env, {
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
     GIT_TERMINAL_PROMPT: '0', HALE_DNA_DISCOVER: 'off',

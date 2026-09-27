@@ -88,6 +88,8 @@ fn the_surface_serves_the_record_and_takes_no_command() {
         .args(["dna", "ui", ".", "--port", &port.to_string()])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        // GH #989: trusted-local is a fixture's mode alone
+        .env("HALE_DNA_TRUSTED_LOCAL", "1")
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", &cache)
         .stdout(Stdio::null())

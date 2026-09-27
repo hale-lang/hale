@@ -1,0 +1,47 @@
+// dna/tests/oidc_verify_test.hl — the stub provider's ID tokens verify
+// under its own JWKS, and nothing else does (GH #989).
+
+import "../core" as dna;
+import "../oidc" as oidc;
+
+fn main() {
+    let jwks = "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"use\":\"sig\",\"alg\":\"ES256\",\"kid\":\"" + oidc::STUB_KID + "\",\"x\":\"" + oidc::STUB_X + "\",\"y\":\"" + oidc::STUB_Y + "\"}]}";
+    let keys = dna::jwks_keys(jwks, "");
+    std::test::assert(std::str::starts_with(keys, oidc::STUB_KID + "\t"), "one signing key, by its kid: " + keys);
+    let token = oidc::stub_id_token("http://127.0.0.1:9", "dna-local", "alice-sub", "", 600);
+    std::test::assert_eq_str(dna::es256_refusal(token, keys), "", "the stub's token verifies under its JWKS");
+    let c = dna::id_token_claims(token);
+    std::test::assert_eq_str(dna::bearer_refusal(c, "http://127.0.0.1:9", "dna-local", std::time::now()), "", "and its claims are the bearer's");
+    std::test::assert_eq_str(c.sub, "alice-sub", "for the subject asked");
+    // tampered: the payload changed under the same signature
+    let a = std::str::index_of(token, ".");
+    let rest = token[(a + 1)..len(token)];
+    let b = std::str::index_of(rest, ".");
+    let forged = token[0..(a + 1)] + oidc::b64("{\"iss\":\"http://127.0.0.1:9\",\"aud\":\"dna-local\",\"sub\":\"mallory\",\"exp\":9999999999}") + rest[b..len(rest)];
+    std::test::assert(std::str::starts_with(dna::es256_refusal(forged, keys), "signature:"), "a changed payload does not verify: " + dna::es256_refusal(forged, keys));
+    // an unsigned or RS256 token is refused before any key is read
+    let rs = oidc::b64("{\"alg\":\"RS256\"}") + "." + rest[0..b] + ".fixture";
+    std::test::assert_eq_str(dna::es256_refusal(rs, keys), "algorithm: `RS256` is not ES256", "RS256 is refused");
+    // another issuer's key: nothing verifies
+    std::test::assert(std::str::starts_with(dna::es256_refusal(token, dna::jwks_keys("{\"keys\":[]}", "")), "key:"), "no key, no token");
+    std::test::assert_eq_str(dna::bearer_token("Bearer " + token), token, "the bearer header's token");
+    std::test::assert_eq_str(dna::bearer_token("Basic abc"), "", "and no other scheme");
+    // a pinned key is the only one kept, and a key the pin does not name is none
+    std::test::assert_eq_str(dna::p256_spki(oidc::STUB_X, oidc::STUB_Y), oidc::STUB_SPKI, "the stub's coordinates are its published key");
+    std::test::assert(std::str::starts_with(dna::jwks_keys(jwks, oidc::STUB_SPKI), oidc::STUB_KID + "\t"), "the pinned key is kept");
+    std::test::assert_eq_str(dna::jwks_keys(jwks, "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEother"), "", "a JWKS that does not publish the pinned key has none");
+    // two keys and a token naming none: refused, never guessed
+    let two = "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"a\",\"x\":\"" + oidc::STUB_X + "\",\"y\":\"" + oidc::STUB_Y + "\"},{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"b\",\"x\":\"" + oidc::STUB_X + "\",\"y\":\"" + oidc::STUB_Y + "\"}]}";
+    let unnamed = oidc::b64("{\"alg\":\"ES256\"}") + token[std::str::index_of(token, ".")..len(token)];
+    std::test::assert(std::str::starts_with(dna::es256_refusal(unnamed, dna::jwks_keys(two, "")), "key: the token names no key"), "a token naming no key among two is refused");
+    // a kid that would break a line is no key
+    let tabbed = "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"kid\":\"a\\tb\",\"x\":\"" + oidc::STUB_X + "\",\"y\":\"" + oidc::STUB_Y + "\"}]}";
+    std::test::assert_eq_str(dna::jwks_keys(tabbed, ""), "", "a kid with a tab is dropped");
+    // the audience is matched exactly, in a list too
+    std::test::assert(dna::audience_names("[\"other\",\"dna-local\"]", "dna-local"), "an audience list naming the client");
+    std::test::assert(!dna::audience_names("[\"x\\\"dna-local\"]", "dna-local"), "a lookalike in a list is not the client");
+    std::test::assert(!dna::audience_names("dna-local-2", "dna-local"), "nor a longer name");
+    // a token valid only later is refused until then
+    let later = dna::IdClaims { present: true, iss: "i", aud: "dna-local", sub: "s", exp: std::time::now() + 600, nbf: std::time::now() + 300 };
+    std::test::assert(std::str::starts_with(dna::bearer_refusal(later, "i", "dna-local", std::time::now()), "not yet valid"), "nbf is honoured");
+}

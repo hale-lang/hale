@@ -11,6 +11,7 @@
 // Build: hale build dna/api/project_service
 // Run:   HALE_BIN=/abs/hale ./dna/api/project_service/project_service 8792 dna/face/web dna/api/practice_review/practice_review
 import ".." as api;
+import "../../ui" as ui;
 import "../../core" as dna;
 import "../../operations" as ops;
 
@@ -53,7 +54,7 @@ fn other_head(state_dir: String) -> Int {
 
 // An attach the head submits to itself: the browser's own request
 // shape, under the head's principal.
-fn attach_request(request_id: String, principal_name: String, root: String) -> String {
+fn attach_request(request_id: String, principal_mode: String, principal_name: String, root: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("request_id", request_id);
@@ -61,7 +62,7 @@ fn attach_request(request_id: String, principal_name: String, root: String) -> S
     b.string_field("operation_version", "1");
     b.begin_object_field("context"); b.string_field("head", "local"); b.string_field("application_id", ""); b.end_object();
     b.begin_object_field("target"); b.string_field("kind", "dna.head"); b.string_field("id", "local"); b.end_object();
-    b.begin_object_field("preconditions"); b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", principal_name); b.end_object(); b.end_object();
+    b.begin_object_field("preconditions"); b.begin_object_field("principal"); b.string_field("mode", principal_mode); b.string_field("name", principal_name); b.end_object(); b.end_object();
     b.begin_object_field("arguments"); b.string_field("root", root); b.end_object();
     b.end_object();
     return b.result();
@@ -80,7 +81,7 @@ locus Startup {
     // browser's attach is. "" when attached, else the reason.
     fn attach(request_id: String, root: String) -> String {
         let j = HeadJournal { state_dir: self.cfg.state_dir };
-        let s = j.submit(self.cfg.principal_mode, self.cfg.principal_name, attach_request(request_id, self.cfg.principal_name, root), own_arguments("dna.project.attach"), "");
+        let s = j.submit(self.cfg.principal_mode, self.cfg.principal_name, attach_request(request_id, self.cfg.principal_mode, self.cfg.principal_name, root), own_arguments("dna.project.attach"), "");
         if len(s.code) > 0 { return s.code; }
         if s.replayed { return if s.receipt.state == "succeeded" { "" } else { s.receipt.reason_code + " " + s.receipt.reason }; }
         let id = s.receipt.command_id;
@@ -135,7 +136,9 @@ locus Startup {
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
             projects = projects + 1;
         }
-        return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (trusted local; " + to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" }) + "; the token is in " + self.cfg.state_dir + "/head.token)";
+        let summary = to_string(projects) + " project(s), active: " + (if active.ok { active.name } else { "none" });
+        if self.cfg.principal_mode == "oidc" { return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (sign in through " + self.cfg.issuer + " as " + self.cfg.principal_name + "; " + summary + "; the token is in " + self.cfg.state_dir + "/head.token)"; }
+        return "hale dna head: " + head_origin(self.cfg) + "/?token=" + self.cfg.token + " (a fixture's trusted-local session; " + summary + "; the token is in " + self.cfg.state_dir + "/head.token)";
     }
 }
 
@@ -161,11 +164,11 @@ main locus HeadMain {
 // The F.3 rule: the loaded assets reach the server literal through a
 // parameter, never from a `let` in the same scope. The banner is the
 // server's ready signal, printed once the listener is bound.
-fn serve(cfg: HeadConfig, web: api::WebAssets, banner: String) {
+fn serve(cfg: HeadConfig, web: api::WebAssets, banner: String, auth: ui::Ui) {
     let slots = PushSlots { };
     HeadMain {
         slots: slots,
-        srv: std::http::Server { host: "127.0.0.1", port: cfg.port, ready_signal: banner, handler: Head { cfg: cfg, web: web, slots: slots } },
+        srv: std::http::Server { host: "127.0.0.1", port: cfg.port, ready_signal: banner, handler: Head { cfg: cfg, web: web, slots: slots, auth: auth } },
         watch: NervesWatch { cfg: cfg, slots: slots }
     };
 }
@@ -199,12 +202,39 @@ fn main() {
         eprintln("hale dna head: already running at " + dna::trim_nl(std::io::fs::read_file(state_dir + "/head.url") or "") + " (pid " + to_string(holder) + ")");
         std::process::exit(2);
     }
-    let user = std::env::var("USER");
-    // the local session's trust until OIDC (GH #989): a launch token in
-    // the state directory, printed in the head's URL
-    let token = api::launch_token(state_dir);
-    let cfg = HeadConfig { port: port, api_port: api_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of(),
-        principal_mode: "local", principal_name: if len(user) > 0 { user } else { "local" }, token: token };
+    // GH #989: the person who runs the head signs in through the issuer
+    // `dna/face/start.sh` names (HALE_DNA_OIDC_ISSUER, _CLIENT, _SECRET, and
+    // _MEMBER, their `<subject>=<person>`); the discovery document and the
+    // issuer's keys are read now, once. A fixture's trusted-local session
+    // (HALE_DNA_TRUSTED_LOCAL=1) is a launch token in the state directory,
+    // printed in the head's URL.
+    let mut cfg = HeadConfig { port: port, api_port: api_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of() };
+    let mut auth = ui::Ui { };
+    if dna::trusted_local_fixture() {
+        let user = std::env::var("USER");
+        cfg.principal_mode = "local";
+        cfg.principal_name = if len(user) > 0 { user } else { "local" };
+        cfg.token = api::launch_token(state_dir);
+    } else {
+        cfg.issuer = std::env::var("HALE_DNA_OIDC_ISSUER");
+        cfg.client = std::env::var("HALE_DNA_OIDC_CLIENT");
+        cfg.member = std::env::var("HALE_DNA_OIDC_MEMBER");
+        cfg.pin = std::env::var("HALE_DNA_OIDC_KEY");
+        let eq = std::str::index_of(cfg.member, "=");
+        if len(cfg.issuer) == 0 || len(cfg.client) == 0 || eq < 1 || eq == len(cfg.member) - 1 || !dna::issuer_allowed(cfg.issuer) {
+            eprintln("hale dna head: the head serves under OIDC: HALE_DNA_OIDC_ISSUER, HALE_DNA_OIDC_CLIENT and HALE_DNA_OIDC_MEMBER (`<subject>=<person>`) name the issuer and who signs in (dna/face/start.sh starts the stub provider and sets them); ", dna::TRUSTED_LOCAL_REFUSED);
+            std::process::exit(2);
+        }
+        cfg.principal_mode = "oidc";
+        cfg.principal_name = cfg.member[(eq + 1)..len(cfg.member)];
+        // who may sign in: the person holding the URL the head prints
+        cfg.token = api::launch_token(state_dir);
+        auth = ui::Ui { principal: "oidc", issuer: cfg.issuer, client: cfg.client, redirect_uri: head_origin(cfg) + "/auth/callback", members: cfg.member, pinned: cfg.pin };
+        if !auth.discovered() {
+            eprintln("hale dna head: the issuer ", cfg.issuer, " is not usable: ", if len(auth.discovery_refused) > 0 { auth.discovery_refused } else { "its discovery document did not answer" }, "; refusing to start");
+            std::process::exit(2);
+        }
+    }
     std::io::fs::write_file(state_dir + "/head.pid", to_string(std::process::pid()) + "\n") or discard;
     let boot = Startup { cfg: cfg };
     let fatal = boot.prepare(if count > 5 { project_root } else { "" });
@@ -212,5 +242,5 @@ fn main() {
         eprintln(fatal);
         std::process::exit(2);
     }
-    serve(cfg, web, boot.banner());
+    serve(cfg, web, boot.banner(), auth);
 }

@@ -1,0 +1,191 @@
+// dna/oidc/stub.hl — a stub OpenID provider (GH #989), for fixtures and
+// for local mode: a person on this machine signs in as themselves, and a
+// caller that is not a browser asks for its ID token directly. It serves
+// the discovery document, its JWKS, an authorization endpoint that signs
+// in whoever the `login_hint` names (else `STUB_SUBJECT`), and a token
+// endpoint that exchanges a code, or mints for a subject
+// (`grant_type=urn:hale:dna:stub`, `sub=`), under this client's secret.
+// Every ID token is ES256 under the issuer's key: STUB_KEY, published
+// here, for a fixture; a key made for the launch, never on disk beyond a
+// 0600 file, where `dna/face/start.sh` runs it. A record pins the key of
+// an issuer on the loopback (`dna.oidc.key`), since anyone on the machine
+// can answer there; a deployment names a real issuer.
+
+const STUB_KID: String = "stub-1";
+const STUB_SUBJECT: String = "local-sub";
+// The test key: its private half signs, its public half is the JWKS.
+const STUB_KEY: String = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIPvGLtl3rm7FQyVTtQWo/a75HkynuigoKy9S8iGefjtOoAoGCCqGSM49\nAwEHoUQDQgAEghlE0g1vpW8pqXmtkYSCY4YfmvSthUqwnYXfv1qMswmdikBPT3u1\n/i+ZxlRgaZHVD0+Aons4tBkx06FbDTXIBg==\n-----END EC PRIVATE KEY-----\n";
+const STUB_X: String = "ghlE0g1vpW8pqXmtkYSCY4YfmvSthUqwnYXfv1qMswk";
+const STUB_Y: String = "nYpAT097tf4vmcZUYGmR1Q9PgKJ7OLQZMdOhWw01yAY";
+// Its SubjectPublicKeyInfo (base64): what a record pins (`dna.oidc.key`)
+// to trust a fixture's stub on the loopback.
+const STUB_SPKI: String = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEghlE0g1vpW8pqXmtkYSCY4YfmvSthUqwnYXfv1qMswmdikBPT3u1/i+ZxlRgaZHVD0+Aons4tBkx06FbDTXIBg==";
+
+type IssuedCode {
+    code: String = "";
+    nonce: String = "";
+    subject: String = "";
+}
+
+@form(vec)
+locus IssuedCodes { capacity { heap rows of IssuedCode; } }
+
+fn hex_digit(c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    return -1;
+}
+
+// Decode the fixture's URL/form values once. The native HTTP query helpers
+// return raw encoded values; importing the knowledge service only to decode
+// them would add unrelated database/FFI dependencies to this issuer.
+fn decode(raw: String) -> String {
+    let bytes = std::bytes::BytesBuilder { };
+    let mut i = 0;
+    while i < len(raw) {
+        let c = std::str::byte_at_unchecked(raw, i);
+        if c == 37 {
+            if i + 2 >= len(raw) { return ""; }
+            let a = hex_digit(std::str::byte_at_unchecked(raw, i + 1));
+            let b = hex_digit(std::str::byte_at_unchecked(raw, i + 2));
+            if a < 0 || b < 0 { return ""; }
+            let value = a * 16 + b;
+            if value < 32 || value == 127 { return ""; }
+            bytes.append_u8(value);
+            i = i + 3;
+        } else {
+            if c < 32 || c == 127 { return ""; }
+            bytes.append_u8(if c == 43 { 32 } else { c });
+            i = i + 1;
+        }
+    }
+    return std::str::from_bytes(bytes.snapshot());
+}
+
+fn form_field(body: String, name: String) -> String {
+    let mut rest = body + "&";
+    while len(rest) > 0 {
+        let amp = std::str::index_of(rest, "&");
+        let part = rest[0..amp];
+        rest = rest[(amp + 1)..len(rest)];
+        if std::str::starts_with(part, name + "=") { return decode(part[(len(name) + 1)..len(part)]); }
+    }
+    return "";
+}
+
+fn b64(text: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(text)); }
+
+// An ID token for `subject`, ES256 under the stub's published test key.
+fn stub_id_token(issuer: String, client: String, subject: String, nonce: String, ttl: Int) -> String {
+    return signed_id_token(STUB_KEY, STUB_KID, issuer, client, subject, nonce, ttl);
+}
+
+// An ID token for `subject`, ES256 under `key` (a PEM private key).
+fn signed_id_token(key: String, kid: String, issuer: String, client: String, subject: String, nonce: String, ttl: Int) -> String {
+    let claims = std::json::Builder { };
+    claims.begin_object();
+    claims.string_field("iss", issuer);
+    claims.string_field("aud", client);
+    claims.string_field("sub", subject);
+    if len(nonce) > 0 { claims.string_field("nonce", nonce); }
+    claims.int_field("iat", std::time::now());
+    claims.int_field("exp", std::time::now() + ttl);
+    claims.end_object();
+    let signed = b64("{\"alg\":\"ES256\",\"kid\":\"" + kid + "\",\"typ\":\"JWT\"}") + "." + b64(claims.result());
+    let sig = std::crypto::ecdsa_p256_sign(std::bytes::from_string(key), std::bytes::from_string(signed));
+    return signed + "." + std::text::base64::url_encode(sig);
+}
+
+locus StubIssuer {
+    params {
+        base: String = "";
+        client: String = "dna-local";
+        secret: String = "dna-local-secret";
+        subject: String = ""; // who /authorize signs in without a login_hint ("" = STUB_SUBJECT)
+        // the signing key and its public coordinates (base64url): the
+        // published test key unless a launch made its own
+        key: String = STUB_KEY;
+        kid: String = STUB_KID;
+        x: String = STUB_X;
+        y: String = STUB_Y;
+        ttl: Int = 28800; // a face session's eight hours: the head forwards the ID token it signed in with
+        codes: IssuedCodes = IssuedCodes { };
+        exchanges: Int = 0;
+        refused_secrets: Int = 0;
+    }
+    fn json(b: std::json::Builder) -> std::http::Response { return std::http::Response { status: 200, content_type: "application/json", body: b.result() }; }
+    fn token_answer(token: String) -> std::http::Response {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("id_token", token);
+        b.string_field("token_type", "Bearer");
+        b.int_field("expires_in", self.ttl);
+        b.end_object();
+        return self.json(b);
+    }
+    @unbounded
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        let b = std::json::Builder { };
+        if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
+            b.begin_object();
+            b.string_field("issuer", self.base);
+            b.string_field("authorization_endpoint", self.base + "/authorize");
+            b.string_field("token_endpoint", self.base + "/token");
+            b.string_field("jwks_uri", self.base + "/jwks");
+            b.end_object();
+            return self.json(b);
+        }
+        if std::http::is_route(ctx, "GET", "/jwks") {
+            return std::http::Response { status: 200, content_type: "application/json", body: "{\"keys\":[{\"kty\":\"EC\",\"crv\":\"P-256\",\"use\":\"sig\",\"alg\":\"ES256\",\"kid\":\"" + self.kid + "\",\"x\":\"" + self.x + "\",\"y\":\"" + self.y + "\"}]}" };
+        }
+        if std::http::is_route(ctx, "GET", "/test/exchanges") {
+            b.begin_object();
+            b.int_field("exchanges", self.exchanges);
+            b.end_object();
+            return self.json(b);
+        }
+        if std::http::is_route(ctx, "GET", "/authorize") {
+            let redirect = decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let nonce = decode(std::http::query_param(ctx.params, "nonce"));
+            let hint = decode(std::http::query_param(ctx.params, "login_hint"));
+            let state = std::http::query_param(ctx.params, "state");
+            if len(redirect) == 0 || len(nonce) == 0 || len(state) == 0 {
+                return std::http::Response { status: 400, body: "incomplete authorization request" };
+            }
+            // a code goes back to a head on this machine only
+            if !std::str::starts_with(redirect, "http://127.0.0.1:") && !std::str::starts_with(redirect, "http://localhost:") {
+                return std::http::Response { status: 400, body: "redirect_uri: a head on this machine only" };
+            }
+            let code = "code-" + to_string(self.codes.len() + 1);
+            self.codes.push(IssuedCode { code: code, nonce: nonce, subject: if len(hint) > 0 { hint } else if len(self.subject) > 0 { self.subject } else { STUB_SUBJECT } });
+            return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + redirect + "?code=" + code + "&state=" + state, body: "" };
+        }
+        if std::http::is_route(ctx, "POST", "/token") {
+            if form_field(req.body, "client_secret") != self.secret || form_field(req.body, "client_id") != self.client {
+                self.refused_secrets = self.refused_secrets + 1;
+                return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
+            }
+            // a caller that is not a browser: an ID token for the subject it names
+            if form_field(req.body, "grant_type") == "urn:hale:dna:stub" {
+                let subject = form_field(req.body, "sub");
+                if len(subject) == 0 { return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_request\"}" }; }
+                return self.token_answer(signed_id_token(self.key, self.kid, self.base, self.client, subject, "", self.ttl));
+            }
+            let code = form_field(req.body, "code");
+            let mut i = 0;
+            while i < self.codes.len() {
+                let issued = self.codes.get(i) or IssuedCode { };
+                if issued.code == code && len(code) > 0 {
+                    self.codes.set(i, IssuedCode { }) or discard;
+                    self.exchanges = self.exchanges + 1;
+                    return self.token_answer(signed_id_token(self.key, self.kid, self.base, self.client, issued.subject, issued.nonce, self.ttl));
+                }
+                i = i + 1;
+            }
+            return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_grant\"}" };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}

@@ -35,7 +35,10 @@ hale dna work loop --drain
 ```
 
 `--api` names the head (default `HALE_DNA_API`, else
-`http://127.0.0.1:8793`, the API child of `dna/face/start.sh`). The
+`http://127.0.0.1:8793`, the API child of `dna/face/start.sh`). A head
+reads nothing over HTTP to a caller with no token (GH #989): the leg
+presents its person's ID token from `HALE_DNA_ID_TOKEN` as the bearer
+on its reads, while its commands go over the socket as the peer. The
 verbs land on the head's gated topics: `next` is `AttemptClaim`,
 `renew` is `AttemptRenew`, `submit` is `AttemptOutcome`, `settle`
 reads that call back, `release` is `AttemptRelease`, and `friction` is
@@ -544,16 +547,34 @@ hole `init` proposed is a position once the Board ratifies it, when its
 own rows state one.
 
 The head runs from the toolchain's source, with a policy naming who
-may recover a lease, and without the spine's role:
+may recover a lease, and without the spine's role. It serves under
+OIDC (GH #989), so the stub provider comes up first, the project names
+it, and the leg reads the head with an ID token the stub mints for
+riley's subject (its commands go over the socket, as the peer):
 
 ```sh
-cd "$HALE_SRC" && hale build dna/api/practice_review
+cd "$HALE_SRC" && hale build dna/api/practice_review && hale build dna/oidc/serve
+# the provider's key and secret, made for this run and yours alone
+(umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out ~/voice/.hale/oidc.key)
+pub() { openssl ec -in ~/voice/.hale/oidc.key -pubout -outform DER 2>/dev/null; }
+b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+secret=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_KEY_FILE=~/voice/.hale/oidc.key \
+    HALE_DNA_OIDC_KEY_X=$(pub | tail -c 64 | head -c 32 | b64url) HALE_DNA_OIDC_KEY_Y=$(pub | tail -c 32 | b64url) \
+    dna/oidc/serve/serve 8794 dna-local &
+git -C ~/voice config --local dna.principal oidc
+git -C ~/voice config --local dna.oidc.issuer http://127.0.0.1:8794
+git -C ~/voice config --local dna.oidc.client dna-local
+git -C ~/voice config --local dna.oidc.key "$(pub | base64 -w0)"   # the loopback issuer's key, pinned
+git -C ~/voice config --local --add dna.oidc.member riley-sub=riley
 mkdir -p ~/voice/.hale/dna
-printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grants":[{"mode":"local","name":"riley","authority":"board","practice_propose":false,"review_verdict":false,"recover":true}]}' \
+printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grants":[{"mode":"oidc","name":"riley","authority":"board","practice_propose":false,"review_verdict":false,"recover":true}]}' \
     "$(git -C ~/voice rev-list --max-parents=0 refs/dna/journal)" > ~/voice/.hale/dna/authority.json
 env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
     HALE_DNA_COMMAND_POLICY=~/voice/.hale/dna/authority.json \
     "$HALE_SRC/dna/api/practice_review/practice_review" ~/voice 8793 &
+export HALE_DNA_ID_TOKEN=$(curl -s -d "grant_type=urn:hale:dna:stub&sub=riley-sub&client_id=dna-local&client_secret=$secret" \
+    http://127.0.0.1:8794/token | sed 's/.*"id_token": *"\([^"]*\)".*/\1/')
 cd ~/voice && HALE_DNA_API=http://127.0.0.1:8793 \
     hale dna work run --as position:api/dev --kind software --worker 1 --wait 0
 ```
@@ -563,10 +584,11 @@ work to legs and a Work of that kind is asked: the organization `init`
 generates does neither, so the fixture's own owner (`start_owner` in
 `dna/tests/dogfood_voice_test.hl`: the wiring above, and a `note`
 workflow whose one Work it asks) is the reference until a project wires
-its `dna/org/main.hl` so. The head's HTTP commands take the launch token
-the head prints, which a leg never holds: a leg's commands go over the
-socket, and a command posted to the forwarder without the token is
-refused.
+its `dna/org/main.hl` so. A leg's commands go over the socket; the
+head's HTTP forwarder takes a command only with a verified ID token
+(the fixture runs its head in a fixture's trusted-local session, where
+the forwarder takes the launch token the head prints, which a leg never
+holds).
 
 The performer (`dna/tests/dogfood/work.hl.txt`, installed as the
 project's `dna/org/work.hl`) takes the software kind, makes its change

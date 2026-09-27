@@ -3,7 +3,7 @@
 import "../../core" as dna;
 import ".." as api;
 import "./fixture" as fixture;
-import "./issuer" as issuer;
+import "../../oidc" as oidc;
 
 // The shell's URL as the head printed it: `/?token=<launch token>`.
 fn shell_url(f: fixture::Fixture) -> String {
@@ -546,7 +546,7 @@ main locus App {
     params {
         root: String = "";
         issuer_url: String = "";
-        server: std::http::Server = std::http::Server { port: 1, handler: issuer::FakeIssuer { } };
+        server: std::http::Server = std::http::Server { port: 1, handler: oidc::StubIssuer { } };
     }
     placement { server: cooperative(pool = io); }
     run() {
@@ -584,5 +584,5 @@ fn main() {
     fixture::reap_and_remove_on_exit(root);
     let port = fixture::free_port(997);
     let url = "http://127.0.0.1:" + to_string(port);
-    App { root: root, issuer_url: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: issuer::FakeIssuer { base: url } } };
+    App { root: root, issuer_url: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url, client: "dna-api-tests", secret: "fake-secret", subject: "alice-sub" } } };
 }

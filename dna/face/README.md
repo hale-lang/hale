@@ -79,8 +79,9 @@ webroot argument preserves the API-only service. The webroot is this static asse
 directory, not the DNA project or its Record. Only the ten named assets are
 served; the service is not a general file server.
 
-The project chooses trusted local access or its existing OIDC configuration;
-see [API identity and content](../../dna/api/README.md#identity-and-content).
+The head signs you in through the stub OpenID provider `start.sh` starts, and
+the project is served under that issuer (GH #989; a fixture's trusted-local
+session is `HALE_DNA_TRUSTED_LOCAL=1`); see [API identity and content](../../dna/api/README.md#identity-and-content).
 The shell and assets contain no Record data and can load before sign-in. Every
 data request still passes through the API's authentication boundary. The OIDC
 callback must point to this service's `/auth/callback` on the same origin.

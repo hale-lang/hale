@@ -14,6 +14,7 @@
 // directory sees exactly what the last one did.
 
 import ".." as api;
+import "../../ui" as ui;
 import "../../core" as dna;
 import "../../operations" as ops;
 
@@ -38,7 +39,13 @@ type HeadConfig {
     sources_dir: String = "";
     principal_mode: String = "local";
     principal_name: String = "local";
-    token: String = ""; // the local session's launch token (`<state_dir>/head.token`, 0600), in the URL the head prints
+    token: String = ""; // a fixture's trusted-local session: the launch token (`<state_dir>/head.token`, 0600), in the URL the head prints
+    // GH #989: under OIDC, the issuer and this head's client id, and the
+    // `<subject>=<person>` line the person who runs it signs in under
+    issuer: String = "";
+    client: String = "";
+    member: String = "";
+    pin: String = ""; // the issuer's key (a SubjectPublicKeyInfo, base64) the head and its projects pin
 }
 
 // How an attach ended: refused (a reason_code), failed (`ok` false
@@ -84,9 +91,14 @@ fn context_of(cfg: HeadConfig) -> HeadContext {
 // options come first, where `env` reads them.
 fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
     let p = cfg.principal_name;
-    let mut out = "-u\nLOTUS_OBS\n";
+    // GH #989: a fixture's head runs the trusted-local session, and so do
+    // the children it starts; under OIDC a child verifies the forwarded
+    // token, and never inherits the fixture's mode (`env` takes `-u` only
+    // before its assignments)
+    let mut out = "-u\nLOTUS_OBS\n" + (if cfg.principal_mode == "local" { "" } else { "-u\nHALE_DNA_TRUSTED_LOCAL\n" });
     if kind != "body" { out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n"; }
     out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
+    if cfg.principal_mode == "local" { out = out + "HALE_DNA_TRUSTED_LOCAL=1\n"; }
     return out + policy_env(root);
 }
 
@@ -152,6 +164,14 @@ fn readopt_children(cfg: HeadConfig) -> String {
 
 // ---- the API child ---------------------------------------------------------
 
+// GH #989: under OIDC, the proof the head gave its API child (a 0600 file
+// beside the child's pid, so a head that re-adopts the child knows it);
+// "" in a fixture's trusted-local session.
+fn child_proof(cfg: HeadConfig) -> String {
+    if cfg.principal_mode != "oidc" { return ""; }
+    return dna::trim_nl(std::io::fs::read_file(children_dir(cfg) + "/api.proof") or "");
+}
+
 // Starts `<api-binary> <root> <api-port>` as `children/api` and waits
 // for its readiness (§2.1): 200 on `/applications` naming `identity`,
 // within 15 s; the child exiting first is a failure with its log tail.
@@ -161,11 +181,17 @@ fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
     std::io::fs::mkdir(dir) or discard;
     let argv = cfg.api_binary + "\n" + root + "\n" + to_string(cfg.api_port);
     write_cmd(dir, "api", argv);
-    let p = start(dir, "api", root, common_env(cfg, root, "api"), argv);
+    let mut envs = common_env(cfg, root, "api");
+    if cfg.principal_mode == "oidc" {
+        let proof = dna::hex(std::os::getrandom(16) or b"");
+        if len(proof) < 32 || !write_private(dir + "/api.proof", proof + "\n") { return AttachResult { reason: "no proof for the API child" }; }
+        envs = envs + "HALE_DNA_CHILD_PROOF=" + proof + "\n";
+    }
+    let p = start(dir, "api", root, envs, argv);
     if p.pid <= 0 { return AttachResult { reason: "the API child could not be started" }; }
     let mut step = 0;
     while step < API_READY_STEPS {
-        if api_ready(cfg.api_port, identity) { return AttachResult { ok: true }; }
+        if api_ready(cfg.api_port, identity, child_proof(cfg)) { return AttachResult { ok: true }; }
         if !alive(p) {
             let tail = log_tail(dir + "/api.log");
             std::io::fs::unlink(pid_file(cfg, "api")) or discard;
@@ -198,7 +224,22 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     if !record.git_ok("rev-parse\n--verify\nrefs/dna/journal^{commit}") { return AttachResult { refused: "no_record", reason: "the project has no DNA Record; create or initialize it first" }; }
     if dna::run_tool("test\n-d\n" + root + "/dna").code != 0 { return AttachResult { refused: "no_seed", reason: "the project has no dna/ seed" }; }
     let principal = record.setting("principal");
-    if len(principal) > 0 && principal != "local" { return AttachResult { refused: "principal_unsupported", reason: "the head is trusted-local; dna.principal is " + principal }; }
+    if cfg.principal_mode == "local" && len(principal) > 0 && principal != "local" { return AttachResult { refused: "principal_unsupported", reason: "this head runs a fixture's trusted-local session; dna.principal is " + principal }; }
+    // GH #989: under OIDC a project is served under this head's issuer,
+    // client and key (pinned: the issuer is on the loopback), and the
+    // person who runs the head is its member by their subject; a project
+    // another issuer serves is not attached here. A child that pinned
+    // another launch's key is started again.
+    let mut repinned = false;
+    if cfg.principal_mode == "oidc" {
+        let named = record.setting("oidc.issuer");
+        if (len(principal) > 0 && principal != "oidc") || (len(named) > 0 && named != cfg.issuer) { return AttachResult { refused: "principal_unsupported", reason: "the project is served under another principal source (dna.principal " + principal + ", issuer " + named + ")" }; }
+        repinned = record.setting("oidc.key") != cfg.pin;
+        let wrote = record.git("config\n--local\ndna.principal\noidc").code == 0 && record.git("config\n--local\ndna.oidc.issuer\n" + cfg.issuer).code == 0 && record.git("config\n--local\ndna.oidc.client\n" + cfg.client).code == 0 && record.git("config\n--local\ndna.oidc.key\n" + cfg.pin).code == 0;
+        let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
+        let seated = wrote && (std::str::contains("\n" + members.stdout, "\n" + cfg.member + "\n") || record.git("config\n--local\n--add\ndna.oidc.member\n" + cfg.member).code == 0);
+        if !seated { return AttachResult { refused: "principal_unsupported", reason: "the project's OIDC configuration could not be written" }; }
+    }
     let trust = record.setting("trust");
     if len(trust) > 0 && trust != "local" { return AttachResult { refused: "trust_unsupported", reason: "the head manages no signing key; dna.trust is " + trust }; }
     let identity = record.identity();
@@ -207,10 +248,10 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     let current = reg.active();
     let same = current.ok && current.application_id == identity;
     if current.ok && !same && body_alive(cfg) { return AttachResult { refused: "body_running", reason: "stop the active project's body before attaching another" }; }
-    let authority_written = write_policies(root, identity, cfg.principal_name);
+    let authority_written = write_policies(root, identity, cfg.principal_mode, cfg.principal_name);
     let api = child_view(cfg, "api");
     let mut attached = AttachResult { ok: true };
-    if !(same && api.alive && api_ready(cfg.api_port, identity)) {
+    if repinned || !(same && api.alive && api_ready(cfg.api_port, identity, child_proof(cfg))) {
         stop_child(cfg, "api");
         attached = start_api(cfg, root, identity);
         if !attached.ok { return attached; }
@@ -445,6 +486,7 @@ locus Head {
         cfg: HeadConfig = HeadConfig { };
         web: api::WebAssets = api::WebAssets { };
         slots: PushSlots; // the face's open event streams (push.hl, GH #986)
+        auth: ui::Ui = ui::Ui { }; // GH #989: the sign-in and its sessions, under OIDC
         // the API child pid the head last saw answer, and the one it last saw refuse a connection
         api_ready_pid: Int = -1;
         api_failed_pid: Int = -1;
@@ -499,7 +541,7 @@ locus Head {
         if pid <= 0 { return "down"; }
         if pid == self.api_ready_pid { return "ready"; }
         if pid == self.api_failed_pid { return "down"; }
-        if api_ready(self.cfg.api_port, identity) { self.api_ready_pid = pid; return "ready"; }
+        if api_ready(self.cfg.api_port, identity, child_proof(self.cfg)) { self.api_ready_pid = pid; return "ready"; }
         return "starting";
     }
 
@@ -749,8 +791,11 @@ locus Head {
         }
         // the child's own launch token rides on a proxied POST: the head
         // started the child and can read its file, the browser cannot
-        let child_token = if req.method == "POST" { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") } else { "" };
-        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token);
+        // GH #989: under OIDC the child verifies the session's own ID token,
+        // forwarded as the bearer on every request
+        let child_token = if self.cfg.principal_mode == "local" && req.method == "POST" { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") } else { "" };
+        let bearer = if self.cfg.principal_mode == "oidc" { self.auth.session_token(req) } else { "" };
+        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
         return proxied_response(up);
@@ -761,10 +806,51 @@ locus Head {
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
         if req.method != "GET" && req.method != "POST" { return self.error(405, "method_not_allowed", "the head answers GET and POST only", false); }
-        // The local session's trust until OIDC (GH #989): the shell at `/`
-        // and every POST carry the launch token — the URL once, then the
-        // cookie it set, or X-Hale-Token from a tool that read the file.
-        if len(self.cfg.token) > 0 {
+        // GH #989: under OIDC, a session a sign-in through the issuer set,
+        // or nothing — the shell at `/` sends a browser to sign in, and
+        // every read and command of the head's and the project's asks for it
+        if self.cfg.principal_mode == "oidc" {
+            // the loopback by name only: a page on another name (DNS
+            // rebinding) reaches nothing
+            let host = std::http::header(req, "Host");
+            let port = to_string(self.cfg.port);
+            if host != "127.0.0.1:" + port && host != "localhost:" + port { return self.error(421, "misdirected_request", "this head answers as 127.0.0.1:" + port + " or localhost:" + port + " only", false); }
+            // Signing in is for the person who started the head: the URL it
+            // printed carries a launch token (0600 in its state directory),
+            // which opens `/` once and sets the dna_local cookie; only a
+            // browser carrying it may start or finish a sign-in, so another
+            // account on this machine cannot sign in through the loopback
+            // provider as the person it signs in
+            let given = api::query_token(raw_query);
+            if path == "/" && len(given) > 0 {
+                if !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }
+                return ui::redirect("/auth/login", "dna_local=" + self.cfg.token + "; HttpOnly; SameSite=Lax; Path=/");
+            }
+            let launched = api::token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.cfg.token);
+            if (path == "/auth/login" || path == "/auth/callback") && !launched { return self.error(401, "unauthenticated", "open the URL the head printed (its launch token is in the head's state directory) to sign in", false); }
+            if path == "/auth/login" { return self.auth.begin_sign_in(); }
+            if path == "/auth/callback" {
+                let http = api::Http { };
+                let q = std::http::build_context(req);
+                let code = http.decode(std::http::query_param(q.params, "code"));
+                let state = http.decode(std::http::query_param(q.params, "state"));
+                if !code.ok || !state.ok { return self.error(400, "invalid_query", "invalid authentication query encoding", false); }
+                return self.auth.finish_sign_in(code.text, state.text, dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
+            }
+            if path == "/auth/logout" {
+                self.auth.end_session(req);
+                return ui::redirect("/auth/login", "dna_session=; Max-Age=0; Path=/");
+            }
+            let person = self.auth.session_name(req);
+            if len(person) == 0 {
+                if path == "/" { return ui::redirect("/auth/login", ""); }
+                if !(req.method == "GET" && self.web.serves(path)) { return self.error(401, "unauthenticated", "sign in at /auth/login", false); }
+            }
+        }
+        // A fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1): the
+        // shell at `/` and every POST carry the launch token — the URL once,
+        // then the cookie it set, or X-Hale-Token from a tool that read the file.
+        if self.cfg.principal_mode == "local" && len(self.cfg.token) > 0 {
             if path == "/" {
                 let given = api::query_token(raw_query);
                 if len(given) > 0 && !api::token_matches(given, self.cfg.token) { return self.error(401, "unauthenticated", "the token is not this head's; open the URL the head printed", false); }

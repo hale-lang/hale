@@ -1208,13 +1208,15 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             self.refuse_here(self.caller, client_id, "unauthenticated", "the kernel would not say who the peer is");
             return;
         }
-        // `via`: a transport of the program's own (the process's uid)
-        // forwarding a line says how it arrived; from anyone else the
-        // mark is refused, never silently dropped.
+        // `via`: a transport of the program's own — this very process,
+        // not merely its uid — forwarding a line says how it arrived and,
+        // for a head, who it verified; from anyone else, another process
+        // of the same account included, the mark is refused, never
+        // silently dropped.
         let mut who = self.caller;
         let via = std::json::string_field(t, "via");
         if len(std::json::find_field_raw(t, "via")) > 0 {
-            if via.kind != "string" || self.caller.uid != std::process::uid() || len(via.text) == 0 || len(via.text) > 64 {
+            if via.kind != "string" || self.caller.uid != std::process::uid() || self.caller.pid != std::process::pid() || len(via.text) == 0 || len(via.text) > 64 {
                 self.refuse_here(self.caller, client_id, "malformed", "\"via\" is set by the program's own transports only");
                 return;
             }

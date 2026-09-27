@@ -916,13 +916,24 @@ repository:
   the core; an organization's existing `dna/org/law.hl` is
   project-owned and gains the clause by hand. The money budget is
   distinct from the model budget.
-- **The principal source (GH #612).** Who acts where a verdict, an
-  intent or a task completion enters comes from one of two sources,
-  `git config dna.principal`: `local` (the default) — the operator of
-  the clone, as `--as` and the git identity say — or `oidc` — an
-  identity provider. Under `oidc`, `hale dna ui` is a hosted head: it
-  serves nothing without a session (`/api/*` answers 401, `/`
-  redirects to `/auth/login`). A session comes from OpenID Connect's
+- **The principal source (GH #612, #989).** Who acts where a verdict,
+  an intent or a task completion enters comes from `git config
+  dna.principal`. A CLI verb on a clone is its operator's, as `--as`
+  and the git identity say. **A head's principal path is the only way
+  in**: a peer on the head's socket is the local account the kernel
+  vouches for, mapped by `dna.unix.member`; every HTTP caller is an
+  identity provider's subject under `oidc`. Trusted-local — a head's
+  session under its own identity (the launch token, `hale dna ui` with
+  no principal source) — is a fixture's mode alone: a head serves it
+  only under `HALE_DNA_TRUSTED_LOCAL=1`, and refuses to start without
+  either it or `dna.principal = oidc`. Local mode is OIDC too:
+  `dna/face/start.sh` starts the **stub provider** (`dna/oidc`: the
+  discovery document, a JWKS, an authorization endpoint that signs in
+  `local-sub`, and a token endpoint that exchanges a code or mints for a
+  subject, every ID token ES256 under its published test key) and signs
+  the person running it in as `local-sub`, mapped to `$USER`. Under
+  `oidc` a head serves nothing without a verified token: `/api/*`
+  answers 401, `/` redirects to `/auth/login`. A session comes from OpenID Connect's
   authorization-code flow against `dna.oidc.issuer` (https, or plain
   http to `127.0.0.1` or `localhost` exactly — the URL's host is parsed,
   userinfo refused, never matched by prefix): the head discovers the
@@ -933,11 +944,41 @@ repository:
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
   (`dna.oidc.client`, `HALE_DNA_OIDC_SECRET` read into a sealed locus,
-  `dna.oidc.redirect` as the callback). That ID token came over TLS from
-  the issuer's own endpoint, which authenticates it (OpenID Connect Core
-  §3.1.3.7, rule 6) in place of an RS256 signature the standard library
-  cannot verify; `claims_refusal` checks the issuer, the client among the
-  audience, the expiry and the nonce. The subject — never an email alone
+  `dna.oidc.redirect` as the callback, else the head's own
+  `/auth/callback`). **Every ID token is verified**: its ES256
+  signature under a key of the issuer's JWKS — the head reads the
+  discovery document and its `jwks_uri` once, at start, and does not
+  start without them; an RS256 token is refused, the standard library
+  verifying ES256 only (`es256_refusal`) — then `claims_refusal` checks
+  the issuer, the client among the audience, the expiry and the nonce.
+  A caller that is not a browser presents its ID token as
+  `Authorization: Bearer`, checked the same way without a nonce
+  (`bearer_refusal`). The head forwards a verified caller's command to
+  its own socket marked `via: oidc:<subject>` (a mark the binding takes
+  from the program's own process only — its uid and pid — and a body of
+  more than one line is refused, so no line arrives under the head's
+  mark but its own); the socket's roles map the subject
+  to its person by `dna.oidc.member` as they map a peer by
+  `dna.unix.member`, the gates are the same, and the receipt says
+  `principal_mode: oidc`, the person, and the positions they hold
+  (`principal_positions`). The face (`dna/api/project_service`) is
+  itself a client of the issuer under `HALE_DNA_OIDC_ISSUER`,
+  `_CLIENT`, `_SECRET` and `_MEMBER` (the `<subject>=<person>` who
+  signs in there), configures a project it attaches for that issuer,
+  and forwards the session's ID token to the project's API child as
+  the bearer, which the child verifies itself; an OIDC child is ready
+  when it refuses an unauthenticated read carrying the digest of the
+  proof the face gave it (`X-Hale-Child`), so a process squatting on the
+  child's port is never handed a token. **An issuer on the loopback is
+  anyone's who can bind its port**, so its key is pinned: a head under
+  a loopback issuer does not start without `dna.oidc.key` (the issuer's
+  SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
+  signs under a key made for the launch, its client secret goes by the
+  environment, never argv, the face pins the key into a project it
+  attaches (restarting a child that pinned another), only the browser
+  that opened the URL the face prints (its 0600 launch token) may start
+  or finish a sign-in, and the face answers only as `127.0.0.1` or
+  `localhost` on its port. The subject — never an email alone
   — maps to a member through a reviewed mapping, `git config --add
   dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no
   session. A sign-in's state is used once, expires in ten minutes, and is bound to
