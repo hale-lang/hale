@@ -11,7 +11,13 @@ still admits and settles.
 prints one JSON object and holds nothing afterwards; a verb run twice
 under the same lease is one act, and the second run reads the first's
 receipt. The position a leg works as is the graph's `position:<name>`
-id, never a free string.
+id, never a free string, and one the person the peer maps to holds:
+the graph's `holds` edges say who holds what — a holder `hale dna fill`
+proposed holds once the Board ratifies it — or, under a record that
+declares `dna.trust = local` (what `hale dna new` and `init` declare),
+the one person holds every position. A claim as a position the person
+does not hold is refused, naming both; so is renewing a lease once its
+seat is gone, and filing friction as someone else's position.
 
 ```text
 hale dna work next --as position:agent [--worker n] [--effect <class>]   claim the next attempt for a position
@@ -583,9 +589,7 @@ next token and finishes it.
 
 What does not exist yet is not stood in: a
 non-signer's verdict refused, and a change nobody signs refused rather
-than left to the Review's own authority (GH #1157); and the lease's
-position bound to a position the peer's person holds (GH #1162) — the
-gate today is "holds any live position".
+than left to the Review's own authority (GH #1157).
 
 ## Through `hale mcp`
 

@@ -29,8 +29,6 @@
 // authority (GH #1157). The route is
 // read as a person reads it today, `hale dna route`, and the fallback is
 // asserted as today's word so the change that replaces it shows here.
-// Nor is the lease's position bound to a position the peer's person
-// holds (GH #1162): the gate is "holds a live position".
 //
 // Without memory (HALE_DNA_MEMORY_DSN_OWNER) the route is not read; the
 // rest runs on the record either way.
