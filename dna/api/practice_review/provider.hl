@@ -60,7 +60,7 @@ locus PracticeReviewCommands {
         // Use the service's captured evidence; a fresh read here could attach an
         // unrelated later Record head to this command's outcome.
         let source = api::Source { ok: value.ok, identity: value.application_id, head: value.head, revision: value.revision, name: context.source.name, code: if value.ok { "" } else { value.code }, error: "" };
-        return api::CommandResult { ok: value.ok, code: value.code, why: value.why, source: source, receipt: self.receipt(value.receipt) };
+        return api::CommandResult { ok: value.ok, code: value.code, source: source, receipt: self.receipt(value.receipt) };
     }
     fn submit(context: api::CommandContext, command: api::CommandRequest) -> api::CommandResult {
         if !self.bound(context) || command.expected_principal_mode != context.principal_mode || command.expected_principal_name != context.principal_name { return api::CommandResult { code: "command_context_changed" }; }

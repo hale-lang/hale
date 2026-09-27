@@ -2681,8 +2681,8 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   command applies the same standing, over the latest `review.routed`
   row, in every Review profile (a practice, a binding, an edge, a
   prepared source), naming its reviewer by the principal; its refusal is
-  `forbidden` with a `why` that names what the Review requires, as the
-  Review's own refusal does, and the CLI prints both; the plain path
+  `forbidden` on the wire, and the admission's result carries a `why`
+  naming what the Review requires, as the Review's own refusal does; the plain path
   (`hale dna review <id> approve --as <who>`) names its reviewer as the
   row's writer says, so under `dna.trust = signed` the position check is
   as strong as the writer's signature.

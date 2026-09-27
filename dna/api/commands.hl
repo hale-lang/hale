@@ -129,7 +129,6 @@ type CommandReceipt {
 type CommandResult {
     ok: Bool = false;
     code: String = "commands_unavailable";
-    why: String = ""; // what a refusal names, beside its code (GH #1089)
     source: Source = Source { };
     receipt: CommandReceipt = CommandReceipt { };
 }
@@ -328,7 +327,6 @@ type Lookup { request_id: String = ""; }
 type CommandReply {
     ok: Bool = false;
     code: String = "";
-    why: String = "";
     application_id: String = "";
     head: String = "";
     revision: Int = 0;
@@ -401,7 +399,7 @@ locus CommandAdmission {
     }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }
     fn reply(result: CommandResult) -> CommandReply {
-        return CommandReply { ok: result.ok, code: result.code, why: result.why, application_id: result.source.identity, head: result.source.head, revision: result.source.revision, receipt: result.receipt };
+        return CommandReply { ok: result.ok, code: result.code, application_id: result.source.identity, head: result.source.head, revision: result.source.revision, receipt: result.receipt };
     }
     // The operations' own rule for this operation, as GovernanceCommands
     // restates it before admission.

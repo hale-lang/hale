@@ -121,8 +121,7 @@ fn socket_reply(path: String, line: String) -> Reply {
     let value = std::json::find_field_raw(line, "value");
     let receipt = std::json::find_field_raw(value, "receipt");
     if !std::json::find_bool_field(value, "ok") && len(std::json::find_string_field(receipt, "state")) == 0 {
-        let why = std::json::find_string_field(value, "why");
-        return Reply { status: 400, body: line, error: std::json::find_string_field(value, "code") + (if len(why) > 0 { ": " + why } else { "" }) };
+        return Reply { status: 400, body: line, error: std::json::find_string_field(value, "code") };
     }
     let b = std::json::Builder { };
     b.begin_object();
