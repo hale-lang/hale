@@ -10,9 +10,12 @@
 //! imported seed, still names its type.
 //!
 //! `hale check --flows` answers "why is this a flow" by naming every
-//! clause responsible. It reads the same declarations codegen classifies
-//! by (a release hook's first parameter, by its type's last segment), so
-//! the report cannot disagree with what the binary does.
+//! clause responsible. It reads the declarations codegen classifies by —
+//! a release hook's first parameter — and keys the type as codegen does
+//! after the bundle's import renaming: a one-segment path by its name (an
+//! imported type is one mangled segment by then), a longer one (a stdlib
+//! path, `std::io::tcp::Stream`) by the whole path, never by its last
+//! segment, which would name a local `Stream` that is no flow.
 
 use std::collections::BTreeMap;
 
@@ -44,8 +47,11 @@ fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Vec<FlowClause>>) {
                     }
                     let Some(p) = lc.params.first() else { continue };
                     let TypeExpr::Named { path, .. } = &p.ty else { continue };
-                    let Some(child) = path.segments.last() else { continue };
-                    out.entry(child.name.clone()).or_default().push(FlowClause {
+                    if path.segments.is_empty() {
+                        continue;
+                    }
+                    let child = path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                    out.entry(child).or_default().push(FlowClause {
                         owner: l.name.name.clone(),
                         param: p.name.name.clone(),
                         span: lc.span,

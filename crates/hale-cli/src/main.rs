@@ -4227,13 +4227,16 @@ fn render_flows(
 ) -> String {
     let spell = |s: &str| hale_types::stdlib_bodies::demangle_str(s, import_renames);
     if flows.is_empty() {
-        return "flows: none — every accept'd child is a resident, reclaimed when its owner dissolves\n".to_string();
+        return "flows: none — every accept'd child is a resident: it ends by its own `terminate;` or in its owner's dissolve cascade\n".to_string();
     }
     let mut out = format!(
         "flows: {} locus type(s) reclaimed when their run() completes — a `release(c: T)` anywhere in the program, imported seeds included, makes every T a flow, whether or not its declaring locus is instantiated:\n",
         flows.len()
     );
-    for f in flows {
+    // sorted as printed, not by the mangled key
+    let mut shown: Vec<&hale_types::flows::Flow> = flows.iter().collect();
+    shown.sort_by_key(|f| spell(&f.child));
+    for f in shown {
         out.push_str(&format!("\n  {} — a flow, by:\n", spell(&f.child)));
         for c in &f.clauses {
             let at = locate_span(c.span, file_bases, sources)

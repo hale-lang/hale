@@ -50,7 +50,7 @@ fn a_release_in_an_imported_seed_is_named_with_its_file_and_line() {
 }
 
 #[test]
-fn every_clause_is_listed_by_type_and_the_program_s_own_beside_the_imported() {
+fn each_flow_type_is_listed_the_program_s_own_beside_the_imported() {
     let (ok, out) = check(&[("main.hl", MAIN_OWN), ("lib/waiter.hl", LIB)], &["--flows"], "both");
     assert!(ok, "{out}");
     assert!(out.contains("flows: 2 locus type(s)"), "{out}");
@@ -58,11 +58,36 @@ fn every_clause_is_listed_by_type_and_the_program_s_own_beside_the_imported() {
     assert!(out.contains("release(w: lib::Waiter) in lib::Keeper"), "and the imported: {out}");
 }
 
+// A second owner of the imported type, in the program itself.
+const MAIN_TWO_OWNERS: &str = "import \"./lib\" as lib;\n\nlocus Pool {\n    accept(w: lib::Waiter) { }\n    release(w: lib::Waiter) { }\n}\n\nfn main() { println(\"checked\"); }\n";
+
+// A release of a qualified type beside a local type of the same last name.
+const MAIN_QUALIFIED: &str = "locus Stream {\n    run() { }\n}\n\nlocus Keeper {\n    accept(s: std::io::tcp::Stream) { }\n    release(s: std::io::tcp::Stream) { }\n}\n\nfn main() { println(\"checked\"); }\n";
+
+#[test]
+fn one_type_released_in_two_seeds_lists_both_clauses_under_it() {
+    let (ok, out) = check(&[("main.hl", MAIN_TWO_OWNERS), ("lib/waiter.hl", LIB)], &["--flows"], "two_owners");
+    assert!(ok, "{out}");
+    assert!(out.contains("flows: 1 locus type(s)"), "one type: {out}");
+    let at = out.find("lib::Waiter — a flow, by:").expect("the type");
+    let block = &out[at..];
+    assert!(block.contains("release(w: lib::Waiter) in Pool") && block.contains("main.hl:5:"), "the program's own clause: {out}");
+    assert!(block.contains("release(w: lib::Waiter) in lib::Keeper") && block.contains("lib/waiter.hl:7:"), "and the imported seed's, under the same type: {out}");
+}
+
+#[test]
+fn a_qualified_type_is_never_mistaken_for_a_local_one_of_the_same_last_name() {
+    let (ok, out) = check(&[("main.hl", MAIN_QUALIFIED)], &["--flows"], "qualified");
+    assert!(ok, "{out}");
+    assert!(out.contains("std::io::tcp::Stream — a flow, by:") && out.contains("release(s: std::io::tcp::Stream) in Keeper"), "the qualified type, whole: {out}");
+    assert!(!out.contains("\n  Stream — a flow"), "the local Stream is a resident, as the binary treats it: {out}");
+}
+
 #[test]
 fn without_a_release_every_child_is_a_resident_and_no_flag_no_report() {
     let (ok, out) = check(&[("main.hl", NONE)], &["--flows"], "none");
     assert!(ok, "{out}");
-    assert!(out.contains("flows: none — every accept'd child is a resident, reclaimed when its owner dissolves"), "{out}");
+    assert!(out.contains("flows: none — every accept'd child is a resident: it ends by its own `terminate;` or in its owner's dissolve cascade"), "{out}");
     // the report is asked for: a release declaration alone says nothing
     let (ok, out) = check(&[("main.hl", MAIN_IMPORTS), ("lib/waiter.hl", LIB)], &[], "quiet");
     assert!(ok && !out.contains("flows:") && !out.contains("warning"), "no blanket notice on a legitimate release: {out}");

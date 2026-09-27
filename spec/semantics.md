@@ -708,7 +708,9 @@ Whether `T` is a flow is decided over the whole program, imported
 seeds included, and a clause on a locus that is never instantiated
 counts all the same. `hale check --flows` reports every flow type with
 each `release(c: T)` clause that makes it one, by its declaring locus,
-file and line, in the spelling the author wrote (GH #736); it is an
+file and line, as the declaring seed spells it, never a mangled symbol
+(GH #736); a qualified type is the whole path, so a local `Stream` is
+never mistaken for `std::io::tcp::Stream`. It is an
 opt-in report, never a diagnostic, since a release declaration is
 legitimate.
 
@@ -719,7 +721,8 @@ owner's `release` firing between its drain and its dissolve. A
 "ready" — and ends one of two other ways: by its own `terminate;`,
 typically from a bus handler (the handler returns, then it drains and
 dissolves; no `release` fires, for none names its type), or in its
-owner's dissolve cascade, children first. A resident that disappears
+owner's dissolve cascade, which tears it down before the owner's slots
+and arena are freed. A resident that disappears
 when its `run()` returns is a flow by some clause elsewhere; the report
 above names it.
 
