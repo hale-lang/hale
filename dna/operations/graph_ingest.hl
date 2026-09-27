@@ -30,26 +30,14 @@ const INGEST_COMPOSE: String = "compose.yaml compose.yml docker-compose.yaml doc
 
 // ---- paths and lines ------------------------------------------------------
 
-// The last segment of a path.
-@unbounded
-fn ingest_base(path: String) -> String {
-    let mut rest = path;
-    let mut slash = std::str::index_of(rest, "/");
-    while slash >= 0 {
-        rest = rest[(slash + 1)..len(rest)];
-        slash = std::str::index_of(rest, "/");
-    }
-    return rest;
-}
-
 // The directory of a path, "" at the root.
 fn ingest_dir(path: String) -> String {
-    let base = ingest_base(path);
+    let base = dna::ingest_base(path);
     return if len(base) == len(path) { "" } else { path[0..(len(path) - len(base) - 1)] };
 }
 
 fn ingest_ext(path: String, exts: String) -> Bool {
-    let base = ingest_base(path);
+    let base = dna::ingest_base(path);
     let dot = std::str::index_of(base, ".");
     if dot < 0 { return false; }
     let mut rest = base;
@@ -388,7 +376,7 @@ locus GraphIngest {
         let text = self.read("README.md");
         let it = std::iter::Lines { };
         let mut from = 0;
-        let mut name = ingest_base(self.root);
+        let mut name = dna::ingest_base(self.root);
         let mut para = "";
         let mut titled = false;
         while from >= 0 && from < len(text) {
@@ -462,7 +450,7 @@ locus GraphIngest {
             let f = rest[0..nl];
             rest = rest[nl..len(rest)];
             let d = ingest_dir(f);
-            if len(d) > 0 && dna::word_in(ingest_base(f), INGEST_MANIFESTS) && !std::str::contains(dirs, "\n" + d + "\n") { dirs = dirs + d + "\n"; }
+            if len(d) > 0 && dna::word_in(dna::ingest_base(f), INGEST_MANIFESTS) && !std::str::contains(dirs, "\n" + d + "\n") { dirs = dirs + d + "\n"; }
         }
         rest = dirs;
         while len(rest) > 1 {
@@ -891,7 +879,7 @@ locus GraphIngest {
     }
     @unbounded
     fn workflow(path: String, text: String) {
-        let base = ingest_base(path);
+        let base = dna::ingest_base(path);
         let mut workflow = base[0..std::str::index_of(base, ".")];
         let it = std::iter::Lines { };
         let mut from = 0;
@@ -968,7 +956,7 @@ locus GraphIngest {
             let nl = std::str::index_of(rest, "\n");
             let f = rest[0..nl];
             rest = rest[nl..len(rest)];
-            if ingest_base(f) != "FRICTION.md" { continue; }
+            if dna::ingest_base(f) != "FRICTION.md" { continue; }
             let text = self.read(f);
             let it = std::iter::Lines { };
             let mut from = 0;

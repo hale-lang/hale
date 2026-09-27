@@ -58,7 +58,7 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
 // ---- hale dna route [--json] (<path>… | --diff <range>) (GH #1087) ----------
 //
 // The positions a change set must be signed by, read from the graph as the
-// head reads it (graph_route.hl): who signs each path, the gates whose run
+// head reads it (dna/core/route.hl): who signs each path, the gates whose run
 // is the evidence a verdict is given against, the consumers no position
 // reviews, and the paths left to the fallback. `--diff <range>` takes the
 // paths `git diff --name-only --no-renames <range>` names: a rename is its
@@ -104,30 +104,10 @@ fn route_text(lines: String, shown: Bool) -> String {
     return out;
 }
 
-// What a path no position signs falls back to (GH #1087): the Review's own
-// authority, until the task routers of GH #697 route it.
+// What a Review whose route names no held position falls back to (GH #1087,
+// GH #1089): the Review's own authority, until the task routers of GH #697
+// route it.
 const ROUTE_FALLBACK: String = "the Review's own authority (the task routers of GH #697 when they exist)";
-
-// The targets of the bound practices the Board ratified as law, one per
-// line: each practice's receipt says whether it was ratified as law
-// (`law: true`) or as advice, which memory's binding does not (GH #1087
-// review, G3).
-@unbounded
-fn law_targets(root: String, bound: String) -> String {
-    let mut out = "";
-    let mut rest = bound;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = rest[0..nl];
-        rest = rest[(nl + 1)..len(rest)];
-        let tab = std::str::index_of(line, "\t");
-        let idea = line[0..tab];
-        let target = line[(tab + 1)..len(line)];
-        let raw = if std::str::starts_with(idea, "sha256:") { idea[7..len(idea)] } else { idea };
-        if std::json::find_bool_field(rec(root).body(raw).text, "law") && !std::str::contains("\n" + out, "\n" + target + "\n") { out = out + target + "\n"; }
-    }
-    return out;
-}
 
 @unbounded
 fn route_verb(root: String, args: Args) -> Answer {
@@ -152,7 +132,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     if len(data) == 0 { return fail("route: memory did not answer: " + store.last_error()); }
     let rows = dna::GitJournal { repo: root }.revision();
     if basis.ok && basis.watermark < rows { eprintln("hale dna route: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the route as of row ", to_string(basis.watermark)); }
-    let r = ops::graph_route(data, paths, law_targets(root, ops::route_bound(data)));
+    let r = dna::graph_route(data, paths, dna::route_law(dna::route_bound(data), dna::GitReceipts { repo: root }));
     // each signer with who holds it
     let mut signers = "";
     let mut rest = r.signers;
@@ -161,7 +141,7 @@ fn route_verb(root: String, args: Args) -> Answer {
         let line = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
         let tab = std::str::index_of(line, "\t");
-        let held = ops::route_holders(data, line[0..tab]);
+        let held = dna::route_holders(data, line[0..tab]);
         signers = signers + line[0..tab] + "\t" + (if len(held) > 0 { "[" + held + "] " } else { "" }) + line[(tab + 1)..len(line)] + "\n";
     }
     if json {

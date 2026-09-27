@@ -314,9 +314,28 @@ export async function startService(options = {}) {
     if (seated.has(actor)) mapPeer(root, env, actor);
     else { seatRecord(root, env, actor, ['board', 'reviewer']); seated.add(actor); }
   }
+  // A Review requires the positions its route names, with their holders
+  // (GH #1089): a seat taken after a Review opened counts once the
+  // organization routes it again. Every open routed Review names `actor`
+  // among a signer's holders, or there is none.
+  function routesName(actor) {
+    const latest = new Map(); const settled = new Set();
+    for (const row of journal().rows) {
+      if (row.kind === 'review.routed') latest.set(row.entity, row.data?.signers || '');
+      if (row.kind === 'review.settled') settled.add(row.entity);
+    }
+    for (const [id, signers] of latest) {
+      if (settled.has(id) || !signers) continue;
+      if (!signers.split(' ').some(signer => signer.slice(signer.indexOf('=') + 1).split(',').includes(actor))) return false;
+    }
+    return true;
+  }
   async function startAPI(actor = currentActor) {
     assert(!alive(api), 'Stop the current API before starting another');
     currentActor = actor; actAs(actor);
+    // only a running organization routes again; a paused one is waited on
+    // by the case that paused it
+    if (host && alive(host) && !host.paused) await wait(`routes naming ${actor}`, () => routesName(actor), Boolean, 30_000);
     api = launch(`api-${actor}`, apiBinary, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMAND_POLICY: policy });
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }

@@ -120,6 +120,15 @@ fn resolve_toolchain(given: String) -> String {
     return "hale";
 }
 
+// The paths a candidate changes against its base, one per line in
+// `stdout`, a rename as both its names, as routing reads them (GH #1089).
+// No base, or a diff that fails, is a failure (`code` not 0): a change
+// whose paths are unknown is never routed as one that touches nothing.
+fn changed_paths(worktree: String, base: String, candidate: String) -> RunResult {
+    if len(base) == 0 { return RunResult { code: 1, stderr: "the candidate names no base commit" }; }
+    return run_tool("git\n-C\n" + worktree + "\n-c\ncore.quotePath=false\ndiff\n--name-only\n--no-renames\n" + base + "\n" + candidate);
+}
+
 // Does a `git diff --name-only` name the fleet's shape — a plan
 // (`*.plan.json`) or the manifest (`hale.toml`)? Such a change is a
 // `topology` mutation whatever it was asked as (GH #566 F5).

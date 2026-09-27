@@ -396,6 +396,9 @@ type ReviewRequest {
     question: String = "";
     subject_digest: String = ""; // exact candidate under review (TOCTOU pin)
     required_authority: String = "";
+    // GH #1089: the positions its route requires, `<position>=<holder>,…`;
+    // set, no one outside them decides it
+    signers: String = "";
     // GH #566 F2: what a position deciding it needs — the mutation, its
     // class and disposition under the grant, the base to diff from, the
     // receipts (by digest) and the evidence line
@@ -418,6 +421,8 @@ type Verdict {
     reviewer: String = "";
     authority: String = ""; // the authority the reviewer claims
     comment: String = "";
+    // GH #1089: the gate runs it cites, receipt digests space-separated
+    evidence: String = "";
 }
 topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
 
@@ -436,8 +441,21 @@ type ReviewSettlement {
     // candidate that never applied can be applied. Never set for any
     // other verdict at a settled Review: those are refused.
     reapproval: Bool = false;
+    // GH #1089: an approval the Review admitted that did not settle it —
+    // a required position signed, and what it still awaits
+    signed: Bool = false;
+    awaiting: String = "";
 }
 topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; }
+
+// GH #1089: a routed Review's signers as who holds its positions now —
+// the organization re-routes an open Review when its holders change, and
+// the owning Review takes the new holders.
+type ReviewRouting {
+    review_id: String = "";
+    signers: String = "";
+}
+topic ReviewRouted { payload: ReviewRouting; subject: "dna.review.routed"; keyed_by review_id; }
 
 // GH #596 L: an ask, before it becomes work — the leader says what it
 // is. The assembly asks; the leader answers with a plan that only

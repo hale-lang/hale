@@ -863,7 +863,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
     eprintln!("       hale dna review              the pending Reviews");
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
-    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
+    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--evidence <receipt>…] [--no-wait]");
     eprintln!("                                    write a verdict into the record, which a node relays; the Review decides");
     if code == 0 {
         ExitCode::SUCCESS

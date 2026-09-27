@@ -167,13 +167,24 @@ main locus App {
         std::test::assert(std::str::contains(rb, "rollback " + cand1) && std::str::contains(rb, "after review reject"), rb);
 
         // ---- 3. widening effects crosses a hard boundary; the child cannot self-authorize
+        // (a candidate the repository holds: a change whose paths git cannot
+        // name opens no Review at all, GH #1089)
         let widened = self.dna.review_mutation(
-            dna::Mutation { id: "m9", task_id: "t9", base_commit: cand1, candidate_commit: "9999999999999999999999999999999999999999", change_class: "refactor", rationale: "reach outbound mail" },
-            dna::VerificationReport { candidate: "9999999999999999999999999999999999999999", evidence: dna::Evidence { check_clean: true, verify_clean: true, rollback_rehearsed: true }, magnitude: dna::Magnitude { loci: 1, effects_widened: true, external_blast: 2, novelty: 1 } },
+            dna::Mutation { id: "m9", task_id: "t9", worktree: self.repo, base_commit: cand1, candidate_commit: cand4, change_class: "refactor", rationale: "reach outbound mail" },
+            dna::VerificationReport { candidate: cand4, evidence: dna::Evidence { check_clean: true, verify_clean: true, rollback_rehearsed: true }, magnitude: dna::Magnitude { loci: 1, effects_widened: true, external_blast: 2, novelty: 1 } },
             "editor");
         std::test::assert_eq_str(widened, "review", "a hard boundary blocks even under the post grant");
         std::test::assert(std::str::contains(self.last("mutation.review", "m9"), "refactor"), "journaled as review, never release: " + self.last("mutation.review", "m9"));
         std::test::assert_eq_str(self.last("mutation.applied", "m9"), "", "nothing applied");
+        // with no memory the route is the fallback, recorded with why
+        std::test::assert(std::str::contains(self.last("review.routed", "m9"), "\"why\": \"no memory is named\""), "the Review's fallback is a row: " + self.last("review.routed", "m9"));
+        // a candidate git cannot diff opens no Review
+        let unknown = self.dna.review_mutation(
+            dna::Mutation { id: "m10", task_id: "t10", worktree: self.repo, base_commit: cand1, candidate_commit: "9999999999999999999999999999999999999999", change_class: "refactor", rationale: "a candidate nobody committed" },
+            dna::VerificationReport { candidate: "9999999999999999999999999999999999999999", evidence: dna::Evidence { check_clean: true, verify_clean: true, rollback_rehearsed: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } },
+            "editor");
+        std::test::assert(std::str::starts_with(unknown, "failed: the candidate's changed paths are unknown"), "its paths unknown, it is not routed as touching nothing: " + unknown);
+        std::test::assert_eq_str(self.last("review.requested", "review:m10") + self.last("review.routed", "m10") + self.last("mutation.applied", "m10"), "", "no Review, no route, nothing applied");
         std::test::assert(!self.dna.boundary.expand("app", "app", 50, "deploy"), "the child cannot expand its own grant");
         std::test::assert_eq_int(self.dna.boundary.expansions_refused, 1, "refused and audited");
         std::test::assert(!self.dna.boundary.current_grant().may_expand_self, "may_expand_self stays false");
