@@ -126,7 +126,7 @@ type GovernanceReceipt {
     attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
 }
 type GovernanceResult {
-    ok: Bool = false; code: String = "commands_unavailable";
+    ok: Bool = false; code: String = "commands_unavailable"; why: String = "";
     application_id: String = ""; head: String = ""; revision: Int = 0;
     receipt: GovernanceReceipt = GovernanceReceipt { };
 }
@@ -883,7 +883,13 @@ locus GovernanceCommands {
                 continue;
             }
             let eligible = self.eligibility(j, command, context, grant);
-            if len(eligible) > 0 { if !self.unchanged(s) { continue; } return GovernanceResult { code: eligible }; }
+            if len(eligible) > 0 {
+                if !self.unchanged(s) { continue; }
+                // a refusal may say why after its code (`forbidden: <why>`)
+                let colon = std::str::index_of(eligible, ": ");
+                if colon < 0 { return GovernanceResult { code: eligible }; }
+                return GovernanceResult { code: eligible[0..colon], why: eligible[(colon + 2)..len(eligible)] };
+            }
             let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
             let name = if command.operation == "dna.practice.propose" { queries.practice_metadata(command.subject_digest).name } else { "" };
             let fact = if profile == source_review.profile() { source_review.fact(context, command, grant, s.head) } else { self.fact(context, command, name, grant, s.head) };
@@ -946,7 +952,8 @@ locus GovernanceCommands {
 // holder of a required position, a member of an affected owner, or — where
 // the route left a path to it — the grant's authority; with none, the
 // grant's authority, and membership for an owners change. "" when it
-// does, else `forbidden`.
+// does, else `forbidden: <why>`, the refusal naming what the Review
+// requires as the Review's own does.
 @unbounded
 fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, authority: String, required: String, approvers: String) -> String {
     let mut routed = "";
@@ -960,9 +967,11 @@ fn verdict_standing(j: GovernanceJournal, review_id: String, principal: String, 
     let as_authority = dna::authority_satisfies(authority, required);
     let as_owner = approvers != "" && dna::approver_owner(approvers, principal) != "";
     if len(signers) == 0 {
-        if !as_authority || (approvers != "" && !as_owner) { return "forbidden"; }
+        if !as_authority { return "forbidden: authority " + authority + " does not satisfy " + required; }
+        if approvers != "" && !as_owner { return "forbidden: reviewer " + principal + " is a member of no owner this change affects (" + dna::approver_owners(approvers) + ")"; }
         return "";
     }
-    if len(dna::signer_positions(signers, principal)) > 0 || as_owner || (std::json::find_bool_field(routed, "fallback") && as_authority) { return ""; }
-    return "forbidden";
+    let fallback = std::json::find_bool_field(routed, "fallback");
+    if len(dna::signer_positions(signers, principal)) > 0 || as_owner || (fallback && as_authority) { return ""; }
+    return "forbidden: reviewer " + principal + " holds no position this Review requires (" + dna::approver_owners(signers) + ")" + (if fallback { " and authority " + authority + " does not satisfy " + required } else { "" });
 }

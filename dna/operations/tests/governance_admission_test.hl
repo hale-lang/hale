@@ -119,6 +119,17 @@ fn test_verdict(repo: String) {
     std::test::assert_eq_str(denied.submit(context, unauthorised).code, "forbidden", "admission checks authority independently of capabilities");
     std::test::assert(denied.lookup(context, command.request_id).ok, "receipt grant may survive loss of write grant");
 }
+// GH #1089: a routed Review's typed verdict from someone who holds none of
+// its positions is refused, and the refusal names the positions
+fn test_routed_verdict(repo: String) {
+    let digest = subject(repo, false); let context = who(repo); let review = dna::knowledge_review_id(digest);
+    append(dna::GitJournal { repo: repo }, "review.routed", review, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}");
+    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let command = ops::GovernanceCommand { request_id: "routed-1", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: review, subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
+    let refused = provider.submit(context, command);
+    std::test::assert_eq_str(refused.code, "forbidden", "alice holds the board's authority and not its position");
+    std::test::assert_eq_str(refused.why, "reviewer alice holds no position this Review requires (position:board)", "the refusal names what the Review requires");
+}
 fn test_exact_head(repo: String) {
     let digest = subject(repo, true); let r = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo };
     let head = r.head("journal").id; let parent = dna::line_at(r.ids("journal"), 1);
@@ -144,6 +155,7 @@ fn main() {
     std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
     std::io::fs::mkdir(base + "/races") or discard; test_races(base + "/races");
     std::io::fs::mkdir(base + "/verdict") or discard; test_verdict(base + "/verdict");
+    std::io::fs::mkdir(base + "/routed") or discard; test_routed_verdict(base + "/routed");
     std::io::fs::mkdir(base + "/head") or discard; test_exact_head(base + "/head");
     std::io::fs::mkdir(base + "/maximum") or discard; test_payload_bound(base + "/maximum", 120);
     std::io::fs::mkdir(base + "/escaped-maximum") or discard; test_payload_bound(base + "/escaped-maximum", 1);

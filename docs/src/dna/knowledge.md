@@ -243,7 +243,14 @@ sign, and someone who left it no longer can.
 
 A proposal's Review requires the `board` position once someone holds it.
 Until someone holds a signing position, the Review keeps its own
-authority. That is how the Board's first holder is ratified.
+authority. That is how the Board's first holder is ratified. That
+fallback is recorded as well, with its reason (no memory is named, or no
+position the route names is held), and `hale dna review <id>` shows it.
+
+A Review never opens on its claimed authority because something failed.
+If memory is configured but does not answer, or git cannot say which
+paths a change touches, the Review is not opened, and the organization
+asks again on its next reconciliation.
 
 Practices are not repeated there: a practice in the graph is the
 knowledge idea it already is — advice, unless the Board ratifies it as

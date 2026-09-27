@@ -792,23 +792,42 @@ locus Dna {
     // definition names — change-deliver the route of the paths its
     // candidate changes, practice-ratify the Board — and writes
     // `review.routed`; afterwards, a restart included, the row is what the
-    // Review requires. With no memory, or before a held position signs,
-    // the requirement is empty, nothing is written, and the Review falls
-    // back to its own required authority until a restart finds a route.
+    // Review requires. The fallback is a row too — no signers, and `why`:
+    // no memory is named, or no position the route names is held — and a
+    // knowledge Review on it routes again while it is open, so a Board
+    // seated later signs it; a change's never does. Memory that is named
+    // and does not answer routes nothing: the Review is not opened
+    // (`recorded: false`) and reconcile asks again, so it never opens on
+    // its claimed authority alone.
     @unbounded
     fn review_routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool) -> RouteRequirement {
         let row = self.routed_row(review_id);
-        if len(row) > 0 { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
-        if !open || !self.knowledge_client.ready() { return RouteRequirement { }; }
+        let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
+        if len(row) > 0 && !again { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
+        if !open { return RouteRequirement { }; }
+        if !self.knowledge_client.ready() { return self.route_fallback(review_id, definition, row, "no memory is named"); }
         let data = self.knowledge_client.routing();
-        if len(data) == 0 { return RouteRequirement { }; }
+        if len(data) == 0 { return RouteRequirement { recorded: false }; }
         let mut need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), self.verification.receipts))) };
-        if len(need.signers) == 0 { return need; }
+        if len(need.signers) == 0 { return self.route_fallback(review_id, definition, row, "no position the route names is held"); }
         // a prepared source's verdict is a typed command that cites no run:
         // its Review takes the route's positions, and no gate
         if !gated { need.gates = ""; }
-        if !self.governance_once("review.routed", review_id, routed_body(definition, need)) { return RouteRequirement { recorded: false }; }
+        if len(row) > 0 {
+            let x = self.journal.append(self.journal.revision(), "review.routed", review_id, routed_body(definition, need, ""));
+            if !x.ok { return RouteRequirement { recorded: false }; }
+            return need;
+        }
+        if !self.governance_once("review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
         return need;
+    }
+    // The fallback, recorded once with why: a Review on it is decided by
+    // its own required authority.
+    @unbounded
+    fn route_fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
+        if len(row) > 0 { return RouteRequirement { }; }
+        if !self.governance_once("review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
+        return RouteRequirement { };
     }
     // The body of the latest `review.routed` row for `review_id`, "" when
     // none: a re-routing supersedes the one before it.
@@ -861,7 +880,7 @@ locus Dna {
             let now_held = signers_held_now(data, signers);
             if now_held == signers { continue; }
             let need = RouteRequirement { signers: now_held, gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") };
-            let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need));
+            let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need, ""));
             if x.ok { ReviewRouted <- ReviewRouting { review_id: id, signers: now_held }; }
         }
     }
@@ -4906,6 +4925,14 @@ locus Dna {
         // not block this class — the candidate is applied NOW and the
         // Review follows; a rejection then rolls it back. Every step is
         // the same gate, the same fences, the same Journal.
+        // GH #1089: the positions the candidate's route requires, and the
+        // gates whose runs are its evidence, recorded before the Review
+        // opens and before anything is applied; paths git cannot name, or
+        // memory that does not answer, open nothing and are asked again
+        let changed = changed_paths(m.worktree, m.base_commit, m.candidate_commit);
+        if changed.code != 0 { return (if prepared { "pending" } else { "failed" }) + ": the candidate's changed paths are unknown: " + trim_nl(changed.stderr); }
+        let need = self.review_routing(m.id, "change-deliver", changed.stdout, true, !prepared);
+        if !need.recorded { return (if prepared { "pending" } else { "failed" }) + ": the Review's routing is not recorded (memory did not answer, or the record did not take it)"; }
         let post = name == "release" && !self.review_policy.blocking(m.change_class);
         if post {
             let applied = self.apply_candidate(m.id, m.candidate_commit, std::time::now());
@@ -4921,11 +4948,6 @@ locus Dna {
             if !exact.ok { return "pending: exact ownership quorum unavailable"; }
             approvers = exact.approvers;
         }
-        // GH #1089: the positions the candidate's route requires, and the
-        // gates whose runs are its evidence, recorded before the Review opens
-        let changed = changed_paths(m.worktree, m.base_commit, m.candidate_commit);
-        let need = self.review_routing(m.id, "change-deliver", changed, true, !prepared);
-        if !need.recorded { return "failed: the record did not take the Review's routing"; }
         if !prepared {
             Review {
                 journal: self.review_journal, receipts: self.review_receipts,
@@ -5513,13 +5535,14 @@ fn schedule_json(s: Schedule) -> String {
 
 // A `review.routed` body: the definition, the signers with their holders,
 // the gates, and whether a path was left to the Review's own authority.
-fn routed_body(definition: String, need: RouteRequirement) -> String {
+fn routed_body(definition: String, need: RouteRequirement, why: String) -> String {
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("definition", definition);
     b.string_field("signers", need.signers);
     b.string_field("gates", need.gates);
     b.bool_field("fallback", need.fallback);
+    if len(why) > 0 { b.string_field("why", why); }
     b.end_object();
     return b.result();
 }

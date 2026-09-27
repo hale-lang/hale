@@ -2628,11 +2628,21 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the route names with the holders it has then,
   `<position>=<holder>,<holder> …`; `gates` is the gates guarding the
   change, and `fallback` whether the route left some path to the
-  fallback. A route that names no held position defines no signers, and
-  nothing is written: with no memory, or before anyone holds a signing
-  position (the Board's own first holder is ratified this way), the
-  Review keeps its required authority. The Review is not opened when the
-  record does not take its routing. With signers, **a verdict is
+  fallback. A route that names no held position defines no signers:
+  with no memory named, or before anyone holds a signing position (the
+  Board's own first holder is ratified this way), the Review keeps its
+  required authority, and that fallback is recorded too — `review.routed`
+  with no signers and `why` (`no memory is named`, `no position the route
+  names is held`), which `hale dna review <id>` shows. A practice-ratify
+  Review on its fallback is routed again while it is open, after a
+  restart, so a Board seated since signs it; a change-deliver Review's
+  row is final. **The Review is not opened** — and reconciliation asks
+  again — when memory is named and does not answer, when git cannot name
+  the paths the candidate changes (no base, or a failed diff), or when
+  the record does not take its routing; so no Review opens on its
+  claimed authority alone because memory blinked, and no change routes as
+  one that touches nothing. The route is recorded before a post-review
+  candidate is applied. With signers, **a verdict is
   admitted only from a holder of a required position**, whatever
   authority it claims (`reviewer <who> holds no position this Review
   requires (<positions>)`) — or from a member of an affected owner for an
@@ -2669,7 +2679,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the decision it made and writes nothing. The typed `dna.review.verdict`
   command applies the same standing, over the latest `review.routed`
   row, in every Review profile (a practice, a binding, an edge, a
-  prepared source), naming its reviewer by the principal; the plain path
+  prepared source), naming its reviewer by the principal; its refusal is
+  `forbidden` with a `why` that names what the Review requires, as the
+  Review's own refusal does, and the CLI prints both; the plain path
   (`hale dna review <id> approve --as <who>`) names its reviewer as the
   row's writer says, so under `dna.trust = signed` the position check is
   as strong as the writer's signature.
