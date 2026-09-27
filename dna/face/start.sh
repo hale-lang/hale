@@ -187,9 +187,19 @@ absolute_executable() {
 }
 # A binary handed in is checked before anything is built, so a wrong path
 # fails at once rather than after the builds.
+# GH #989: under OIDC the stub provider is a seed too, built beside the
+# others; a fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1)
+# starts none.
+oidc_local=0
+[[ "${HALE_DNA_TRUSTED_LOCAL:-}" == 1 ]] || oidc_local=1
+if ((oidc_local)); then
+  command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
+  command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
+fi
 seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
+if ((oidc_local)); then seeds+=(dna/oidc/serve); fi
 if ((${#seeds[@]})); then
   build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
   build_seeds
@@ -197,15 +207,12 @@ if ((${#seeds[@]})); then
   [[ -n "$head" ]] || head=$build_dir/src/dna/api/project_service/project_service
 fi
 
-# GH #989: the head's principal path is OIDC. A fixture's trusted-local
-# session (HALE_DNA_TRUSTED_LOCAL=1) starts no provider; otherwise the stub
-# provider serves on the loopback under a secret made for this launch, and
-# the person running this signs in through it as local-sub.
-if [[ "${HALE_DNA_TRUSTED_LOCAL:-}" != 1 ]]; then
-  command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
-  command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
-  if [[ -z "$build_dir" ]]; then build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX"); fi
-  oidc=$(build_seed dna/oidc/serve serve)
+# GH #989: the head's principal path is OIDC. Once every seed is built,
+# the stub provider serves on the loopback under a key and a secret made
+# for this launch, and the person running this signs in through it as
+# local-sub; it goes with the launcher (cleanup stops it on any exit).
+if ((oidc_local)); then
+  oidc=$build_dir/src/dna/oidc/serve/serve
   # the provider's key, made for this launch and readable by you alone; the
   # head pins its public half, since anyone on this machine could answer
   # on the loopback port
