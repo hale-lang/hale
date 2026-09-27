@@ -27,7 +27,14 @@ export async function startEdgeReviewService(options = {}) {
   async function decide(candidate, reviewId, verdict = 'approve') {
     await service.quiesce(); await asActor('bob');
     const command = { request_id: randomUUID(), operation: 'dna.review.verdict', operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: 'dna.review', id: reviewId }, preconditions: { subject_digest: candidate, principal: { mode: 'local', name: 'bob' }, review_state: 'pending' }, arguments: { verdict, comment: 'Decide independently on the exact directed candidate.' } };
-    const result = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+    // a verdict the head refuses command_busy or snapshot_changed was not
+    // admitted; on the real host the record moved under it: send it again
+    let result;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      result = await service.request(service.apiPath + '/commands', { method: 'POST', headers: { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' }, body: JSON.stringify(wireLine(command)) });
+      if (result.body.value?.ok === true || !['command_busy', 'snapshot_changed'].includes(result.body.value?.code)) break;
+      await service.quiesce();
+    }
     assert.equal(result.status, 200, JSON.stringify(result)); assert.equal(result.body.value?.ok, true, JSON.stringify(result)); await service.waitCommand(command.request_id, receipt => receipt.verdict.state === 'accepted'); await asActor('alice');
   }
   async function createItem() {
@@ -37,6 +44,7 @@ export async function startEdgeReviewService(options = {}) {
     await service.waitNode(command.request_id, r => r.node.activation_state === 'adopted'); await service.quiesce(); return created.node.candidate_digest;
   }
   async function edges(idea = service.practice) {
+    await service.quiesce();
     const rows = []; let cursor = '', snapshot = '';
     do {
       const query = new URLSearchParams({ id: idea, limit: '25' }); if (cursor) query.set('cursor', cursor); if (snapshot) query.set('snapshot', snapshot);

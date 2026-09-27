@@ -54,9 +54,23 @@ try {
   await writeFile(entry, source);
   await run(hale, ['check', entry]);
   await run(hale, ['build', entry]);
+  // GH #1029: the native command lanes' record lives in memory while they
+  // run; this fixture drops it when they stop.
+  const memorySource = (await readFile(path.join(face, 'tests/memory/main.hl'), 'utf8'))
+    .replace('"../../../../dna/core"', JSON.stringify(path.join(repo, 'dna/core')));
+  const memoryEntry = path.join(scratch, 'memory.hl');
+  await writeFile(memoryEntry, memorySource);
+  await run(hale, ['check', memoryEntry]);
+  await run(hale, ['build', memoryEntry]);
   await run(process.execPath, [path.join(face, 'node_modules/@playwright/test/cli.js'),
     'test', '--config', 'tests/playwright.config.mjs', ...process.argv.slice(2)], {
     HALE_BIN: hale, HALE_API_BIN: api, HALE_FACE_RECORD_BIN: path.join(scratch, 'record'),
+    HALE_FACE_MEMORY_BIN: path.join(scratch, 'memory'),
+    // GH #1029: the native command lanes start `hale dna dev`; the owner's
+    // NATS URL reaches that host alone, as memory's owner DSN reaches only
+    // the fixtures that migrate a record.
+    ...(process.env.HALE_DNA_NATS_URL_OWNER ? { HALE_DNA_NATS_URL_OWNER: process.env.HALE_DNA_NATS_URL_OWNER } : {}),
+    ...(process.env.HALE_NATIVE_COMMAND_API ? { HALE_NATIVE_COMMAND_API: process.env.HALE_NATIVE_COMMAND_API } : {}),
     ...(catalog ? { HALE_FACE_CATALOG_BIN: catalog } : {}),
     ...(knowledge ? { HALE_FACE_KNOWLEDGE_BIN: knowledge } : {}),
     // Only the harness reads it, and hands it to the Knowledge fixture alone.

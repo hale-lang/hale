@@ -1,14 +1,11 @@
-// Real Body/relay + Review API on one Git Record, with Knowledge in
-// memory. Every proposal, Review and activation is native.
+// The real host, organization and Review API on one Git Record, with
+// Knowledge in memory. Every proposal, Review and activation is native.
 //
 // There is no Knowledge service (GH #985). The API admits Knowledge commands
 // in-process under HALE_DNA_KNOWLEDGE_COMMAND_POLICY and reads the graph from
-// memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD) alone; the spine
-// projects the Record into memory on its tick. This composition cannot supply
-// that yet: the acceptance Body (dna/api/practice_review/tests/body) does not
-// project memory on its tick, and nothing here can migrate the Record it
-// creates and drop it again. Until the Body is a spine, startup refuses rather
-// than serve graph reads that could never catch up.
+// memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD) alone; the host
+// (`hale dna dev`, the spine here) projects the Record into memory on its
+// tick and hands the harness the head's DSN (GH #1029).
 //
 // Knowledge changes are the head's gated topics (GH #1129): each is one
 // line of the api wire POSTed to …/commands under the launch token, and
@@ -24,12 +21,6 @@ import { wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.m
 
 export const nodeEnvironmentPresent = () => nativeCommandEnvironmentPresent() && Boolean(memoryOwner());
 
-// The Body's Record, migrated into memory and projected on the Body's tick:
-// the head's DSN for the API. Not available in this composition (above).
-async function memoryFor() {
-  throw new Error('Knowledge node composition is not ported to memory (GH #985): the acceptance Body must project the Record into memory on its tick (a spine, with HALE_DNA_MEMORY_DSN_SPINE), and the harness needs a way to migrate and drop the Record the Body creates.');
-}
-
 export async function startNodeService(options = {}) {
   assert(memoryOwner(), 'Knowledge reads memory: set HALE_DNA_MEMORY_DSN_OWNER.');
   let policyPath, policy;
@@ -40,15 +31,20 @@ export async function startNodeService(options = {}) {
       const grant = { mode: 'local', name: context.principal, authority: 'board', edge_link: 'direct', edge_unlink: 'direct', node_propose: 'review', node_revise: 'review', node_retire: 'review', node_scopes: [{ author: 'org', target: 'org' }], recover: true };
       policy = { format: 'dna.knowledge-authority/1', application_id: context.application, grants: options.grants || [grant] };
       await writeFile(policyPath, JSON.stringify(policy));
-      const head = await memoryFor(context);
-      return { apiEnv: { HALE_DNA_MEMORY_DSN_HEAD: head, HALE_DNA_KNOWLEDGE_COMMAND_POLICY: policyPath } };
+      // The head's DSN is the host's to give: `startService` sets it on the API.
+      return { apiEnv: { HALE_DNA_KNOWLEDGE_COMMAND_POLICY: policyPath } };
     },
   });
   const commandPath = service.apiPath + '/commands';
   const commandHeaders = { Origin: service.origin, 'Content-Type': 'application/json', 'X-Hale-Command': '1' };
   // A mutation carries this launch's token, as a tool that read its file does.
+  // One connection per request: the API is restarted on the same port
+  // whenever the actor or the grants change, and a pooled keep-alive
+  // socket to the old process would fail the next fetch. No retry: a read
+  // that needs the projection at the Record head follows `quiesce()`, and a
+  // dead head surfaces as its own connection error at once.
   async function request(path, init = {}) {
-    const headers = { ...(init.method && init.method !== 'GET' ? { 'X-Hale-Token': service.token() } : {}), ...(init.headers || {}) };
+    const headers = { Connection: 'close', ...(init.method && init.method !== 'GET' ? { 'X-Hale-Token': service.token() } : {}), ...(init.headers || {}) };
     const response = await fetch(service.origin + path, { signal: AbortSignal.timeout(15_000), ...init, headers });
     return { status: response.status, body: await response.json() };
   }
@@ -64,14 +60,29 @@ export async function startNodeService(options = {}) {
     async slice() {
       const described = await request(commandPath, { method: 'POST', headers: commandHeaders, body: '{"describe":true}' });
       assert.equal(described.status, 200, JSON.stringify(described)); assert.equal(described.body.ok, true, JSON.stringify(described));
-      return described.body.value.commands.map(entry => entry.name);
+      // as the face reads it: a name another seed declared, by its tail
+      return described.body.value.commands.map(entry => { const at = entry.name.lastIndexOf('::'); return at < 0 ? entry.name : entry.name.slice(at + 2); });
     },
     lookup: requestId => forward(knowledgeLookupLine(requestId)),
     async command(operation, arguments_, target, requestId = randomUUID()) {
       const source = await service.read(service.apiPath + '/capabilities');
       return { request_id: requestId, operation: 'dna.knowledge.' + operation, operation_version: '1', context: { application_id: service.application, position_id: 'org' }, target: { application_id: service.application, kind: operation === 'node.propose' ? 'dna.knowledge.collection' : 'dna.knowledge.node', id: target }, preconditions: { principal: service.principal, record_head: source.json.source.record_head }, arguments: arguments_ };
     },
-    post: command => forward(wireLine(command)),
+    // A POST the head refuses command_busy or snapshot_changed was not
+    // admitted (nothing was appended): on the real host the record moved
+    // under the command's head. Quiesce, take the head again, send again,
+    // bounded.
+    async post(command) {
+      let sent;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        sent = await forward(wireLine(command));
+        if (!['command_busy', 'snapshot_changed'].includes(sent.code)) return sent;
+        await service.quiesce();
+        const source = await service.read(service.apiPath + '/capabilities');
+        if (command.preconditions?.record_head) command.preconditions.record_head = source.json.source.record_head;
+      }
+      return sent;
+    },
     async waitNode(requestId, predicate) {
       const deadline = Date.now() + 20_000; let last;
       while (Date.now() < deadline) {
