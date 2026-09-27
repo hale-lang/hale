@@ -693,9 +693,13 @@ On **Work / Handed Tasks**, a native command head shows the **New tasks
 enabled** badge and a **New task** form: an outcome (**What should happen**,
 1..8192 bytes) and a locus (**For locus**), with the whole organization
 (`org`) offered first and the working context's declared loci after it, as
-`hale dna ask` without `--to` addresses the organization. **Review new task**
-shows the exact ask in the signed-in principal's name; **Confirm new task**
-submits it once. There is no separate grant: the authority is the
+`hale dna ask` without `--to` addresses the organization, and what is
+**Asked for**: **A change** (the default, which the leader plans) or **An
+assessment (a judgment)**, which a leg performs, as `hale dna task create
+--judgment` asks (GH #1144; the payload carries `kind: judgment` only then).
+**Review new task** shows the exact ask in the signed-in principal's name
+(**Ask for this assessment** for a judgment); **Confirm new task** submits
+it once, and the receipt must echo the kind asked. There is no separate grant: the authority is the
 authenticated principal, as with the CLI.
 
 The receipt records the ask, not its answer. The service appends the same
@@ -706,7 +710,7 @@ organism's judgment, recorded separately; **Check request status** re-reads it
 through GET only and shows the intent as `requested`, `offered`, `refused` or
 `born`, naming the Task once it is born. A born Task joins the handed Tasks
 only after the leader hands it to a person, so the request panel is where a
-raised ask is followed until then.
+raised ask is followed until then; a judgment's Task is a leg's to claim.
 
 Recovery metadata uses version 7 in the existing shared request slot, holding
 the request identity and the prepared Record head; no outcome text is

@@ -73,6 +73,9 @@ locus CreateCases {
         let cli = self.cli_row(outcome, "riley", "org");
         std::test::assert(std::str::starts_with(e.body, cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\", \"command_id\": "), "the row begins with the bytes hale dna ask writes for the same outcome/from/to");
         std::test::assert(!std::str::contains(e.body, "\"via\"") && !std::str::contains(e.body, "\"intent_id\"") && std::str::ends_with(e.body, "}"), "no via and no intent_id: the relay adds the id before the last brace");
+        // one request identity, one content: the same key asked as a judgment conflicts (GH #1144)
+        let mut judged = self.command(context, "shared-key", head, outcome, "org"); judged.ask_kind = "judgment";
+        std::test::assert_eq_str(provider.submit(context, judged).code, "request_conflict", "a change and a judgment under one key conflict");
         std::test::assert(std::json::find_string_field(e.body, "command_id") == r.command_id && std::json::find_string_field(e.body, "command_record_head") == head && std::json::find_string_field(e.body, "command_authority") == "riley", "one command id, the captured head, the principal as authority");
         std::test::assert_eq_str(self.author_of(record, e.seq), "riley", "the acting principal is the row's author");
         let fact = codec.decode_fact(e); std::test::assert(fact.valid && fact.intent_id == r.task_create.intent_id && fact.command.outcome == outcome && fact.command.to == "org", "the row re-verifies as this exact command");
@@ -140,6 +143,34 @@ locus CreateCases {
         std::test::assert(!common.valid(context, old), "old variant rejects stray create fields");
         let task = ops::TaskCommandCodec { }; let reassign = ops::GovernanceCommand { request_id: "key", operation: "dna.task.reassign", application_id: "app", target_kind: "dna.task", target_id: "task", subject_digest: dna::digest_of("basis"), expected_assignee: "alice", new_assignee: "bob", to: "org" };
         std::test::assert(!task.valid(context, reassign), "Task variant rejects stray create fields");
+        // GH #1144: the kind rides on raising work alone
+        let mut old_kind = old; old_kind.outcome = ""; old_kind.ask_kind = "judgment";
+        std::test::assert(!common.valid(context, old_kind), "old variant rejects a stray kind");
+        let mut reassign_kind = reassign; reassign_kind.outcome = ""; reassign_kind.to = ""; reassign_kind.ask_kind = "judgment";
+        std::test::assert(!task.valid(context, reassign_kind), "Task variant rejects a stray kind");
+        // a judgment: named in its canonical and its row; a change's bytes are as they were
+        std::test::assert(!std::str::contains(canonical, ",\"kind\":"), "a change's canonical names no kind: " + canonical);
+        let mut judged = self.sample(context); judged.ask_kind = "judgment";
+        let judged_canonical = codec.canonical(context, judged);
+        std::test::assert(codec.valid(context, judged) && std::str::ends_with(judged_canonical, ",\"kind\":\"judgment\"}") && codec.decode(context, judged_canonical).ask_kind == "judgment" && codec.canonical(context, codec.decode(context, judged_canonical)) == judged_canonical, "a judgment's canonical roundtrips: " + judged_canonical);
+        std::test::assert(codec.fingerprint(context, judged) != codec.fingerprint(context, c), "a judgment and a change are different commands");
+        bad = self.sample(context); bad.ask_kind = "change"; std::test::assert(!codec.valid(context, bad), "a kind is a judgment or nothing");
+        let empty_kind = std::str::replace(canonical, "\"to\":\"org/support\"}", "\"to\":\"org/support\",\"kind\":\"\"}");
+        std::test::assert(empty_kind != canonical && codec.decode(context, empty_kind).request_id == "", "an empty kind written out is no canonical");
+        let g = codec.grant(context);
+        let judged_fact = codec.fact(context, judged, g, HEAD);
+        let change_fact = codec.fact(context, c, g, HEAD);
+        std::test::assert_eq_str(std::json::find_string_field(judged_fact, "kind"), "judgment", "the relay reads a judgment's kind off the row");
+        std::test::assert_eq_str(std::json::find_string_field(change_fact, "kind"), "", "and none off a change's");
+        let mut quoting = self.sample(context); quoting.outcome = "say \"kind\": \"judgment\" in prose";
+        std::test::assert_eq_str(std::json::find_string_field(codec.fact(context, quoting, g, HEAD), "kind"), "", "a change whose outcome quotes a kind is still a change");
+        let as_row = dna::Event { kind: "intent.requested", entity: "i1f4", body: judged_fact, prev: HEAD };
+        let read = codec.decode_fact(as_row);
+        std::test::assert(read.valid && read.command.ask_kind == "judgment", "a judgment's row decodes as one");
+        let dropped = dna::Event { kind: "intent.requested", entity: "i1f4", body: std::str::replace(judged_fact, ", \"kind\": \"judgment\"", ""), prev: HEAD };
+        std::test::assert(dropped.body != judged_fact && !codec.decode_fact(dropped).valid, "a row that drops its kind is not its command's row");
+        let added = dna::Event { kind: "intent.requested", entity: "i1f4", body: std::str::replace(change_fact, "\"to\": \"org/support\",", "\"to\": \"org/support\", \"kind\": \"judgment\","), prev: HEAD };
+        std::test::assert(added.body != change_fact && !codec.decode_fact(added).valid, "a change's row given a kind is not its command's row");
         std::test::assert_eq_str(codec.hex(255), "ff", "lower-case hex"); std::test::assert_eq_str(codec.hex(0), "0", "zero");
         std::test::assert(codec.intent_id_valid("i1f4") && codec.intent_id_valid("i0") && !codec.intent_id_valid("i") && !codec.intent_id_valid("x1f") && !codec.intent_id_valid("i1F") && !codec.intent_id_valid("command-1"), "intent id shape");
         let q = dna::MemJournal { }; std::test::assert(q.append(0, "intent.requested", "i1f4", "{}").ok && q.append(1, "intent.requested", "i1f5", "{}").ok, "held ids");

@@ -50,7 +50,7 @@ locus PracticeReviewCommands {
                 application_reason_code: value.organization.application_reason_code, restart_handoff_state: value.organization.restart_handoff_state },
             task: api::TaskCommandOutcome { state: value.task.state, from: value.task.from, to: value.task.to, event_id: value.task.event_id },
             person: api::PersonRetirementOutcome { state: value.person.state, from: value.person.from, to: value.person.to, event_id: value.person.event_id, transferred: value.person.transferred },
-            task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id },
+            task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id, kind: value.task_create.kind },
             attempt: api::AttemptCommandOutcome { state: value.attempt.state, attempt_id: value.attempt.attempt_id, work_id: value.attempt.work_id, task_id: value.attempt.task_id, performer_kind: value.attempt.performer_kind,
                 holder: value.attempt.holder, token: value.attempt.token, until: value.attempt.until, disposition: value.attempt.disposition, reason: value.attempt.reason, event_id: value.attempt.event_id }
         };

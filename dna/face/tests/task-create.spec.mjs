@@ -8,6 +8,7 @@ const positions = () => [{ position: 'org/support', owner: 'partner' }, { positi
 const region = page => page.getByRole('region', { name: 'New task', exact: true });
 const outcome = page => region(page).getByRole('textbox', { name: 'What should happen', exact: true });
 const locus = page => region(page).getByRole('combobox', { name: 'For locus', exact: true });
+const asked = page => region(page).getByRole('combobox', { name: 'Asked for', exact: true });
 const review = page => region(page).getByRole('button', { name: 'Review new task', exact: true });
 const test = base.extend({
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', error => errors.push(error.message)); await use(page); expect(errors).toEqual([]); },
@@ -36,13 +37,19 @@ test('Task creation: exact asks validate and anything beyond an outcome for a lo
     const ok = window.FaceTaskCreate.validate({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
     const rejected = [
       { outcome: '', to: 'org' }, { outcome: 'x', to: '' }, { outcome: 'x', to: 'a\nb' }, { outcome: 'x', to: 'x'.repeat(257) }, { outcome: 'é'.repeat(4097), to: 'org' },
-      { outcome: 'x\u0000y', to: 'org' }, { outcome: 'x', to: 'org', from: 'riley' }, { outcome: 'x', to: 'org', intent_id: 'i1' }, { outcome: 'x' }, { to: 'org' }, null, 'ask', { outcome: 7, to: 'org' }
+      { outcome: 'x\u0000y', to: 'org' }, { outcome: 'x', to: 'org', from: 'riley' }, { outcome: 'x', to: 'org', intent_id: 'i1' }, { outcome: 'x' }, { to: 'org' }, null, 'ask', { outcome: 7, to: 'org' },
+      { outcome: 'x', to: 'org', kind: 'change' }, { outcome: 'x', to: 'org', kind: 7 }, { outcome: 'x', to: 'org', kind: 'judgment', from: 'riley' }
     ].map(value => { try { window.FaceTaskCreate.validate(value); return false; } catch { return true; } });
     const exact = window.FaceTaskCreate.validate({ outcome: 'é'.repeat(4096), to: 'x'.repeat(256) });
-    return { ok, rejected, exactBytes: new TextEncoder().encode(exact.outcome).length, exactTo: exact.to.length };
+    // a judgment says so; an empty kind is a change, as though it were not given
+    const judged = window.FaceTaskCreate.validate({ outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' });
+    const plain = window.FaceTaskCreate.validate({ outcome: 'x', to: 'org', kind: '' });
+    return { ok, rejected, exactBytes: new TextEncoder().encode(exact.outcome).length, exactTo: exact.to.length, judged, plain };
   });
   expect(result.ok).toEqual({ outcome: 'Confirm the supplier handover — équipe\r\nKeep the signed schedule.', to: 'org/support' });
-  expect(result.rejected).toHaveLength(13); expect(result.rejected.every(Boolean)).toBe(true);
+  expect(result.judged).toEqual({ outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' });
+  expect(result.plain).toEqual({ outcome: 'x', to: 'org' });
+  expect(result.rejected).toHaveLength(16); expect(result.rejected.every(Boolean)).toBe(true);
   expect(result.exactBytes).toBe(8192); expect(result.exactTo).toBe(256);
 });
 
@@ -59,13 +66,24 @@ test('Task creation: the whole organization comes first, declared loci follow, a
   await review(page).click();
   expect(await page.evaluate(() => window.calls)).toEqual([{ outcome: 'Confirm the supplier handover\nKeep the signed schedule.', to: 'org/support' }]);
   await expect(region(page)).toContainText('Nothing has been recorded yet');
-  await expect(review(page)).toBeDisabled(); await expect(outcome(page)).toBeDisabled(); await expect(locus(page)).toBeDisabled();
+  await expect(review(page)).toBeDisabled(); await expect(outcome(page)).toBeDisabled(); await expect(locus(page)).toBeDisabled(); await expect(asked(page)).toBeDisabled();
   expect(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length }))).toEqual({ local: 0, session: 0 });
   expect(host.requests.every(request => request.method === 'GET' && !request.path.startsWith('/api/'))).toBe(true);
   await region(page).screenshot({ path: info.outputPath('task-create-desktop.png') });
   await page.setViewportSize({ width: 390, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await region(page).screenshot({ path: info.outputPath('task-create-mobile.png') });
+});
+
+test('Task creation: a change is asked by default and an assessment says so (GH #1144)', async ({ page, host }) => {
+  await mount(page, host);
+  expect(await asked(page).locator('option').allTextContents()).toEqual(['A change', 'An assessment (a judgment)']);
+  await expect(asked(page)).toHaveValue('');
+  await outcome(page).fill('Is the queue bounded?');
+  await asked(page).selectOption('judgment');
+  await review(page).click();
+  expect(await page.evaluate(() => window.calls)).toEqual([{ outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' }]);
+  await expect(asked(page)).toBeDisabled();
 });
 
 test('Task creation: an over-long, empty or literal-markup outcome never prepares an ask, and markup stays text', async ({ page, host }) => {
@@ -85,7 +103,7 @@ test('Task creation: an over-long, empty or literal-markup outcome never prepare
 test('Task creation: denied sessions, absent callbacks and malformed loci cannot prepare an ask', async ({ page, host }) => {
   for (const options of [{ canCreate: false, reason: 'Raising work is unavailable for this connection.' }, { onPrepare: null }, { canCreate: 'true' }]) {
     await mount(page, host, options);
-    await expect(outcome(page)).toBeDisabled(); await expect(locus(page)).toBeDisabled(); await expect(review(page)).toBeDisabled();
+    await expect(outcome(page)).toBeDisabled(); await expect(locus(page)).toBeDisabled(); await expect(asked(page)).toBeDisabled(); await expect(review(page)).toBeDisabled();
     await expect(region(page)).toHaveAttribute('data-state', 'unavailable');
     await page.evaluate(() => document.querySelector('.task-create-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(await page.evaluate(() => window.calls)).toEqual([]);

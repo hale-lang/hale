@@ -45,7 +45,7 @@ test('native ask lands as the CLI row: one POST, a real receipt, one intent.requ
   const response = await reply; expect(response.status()).toBe(200); const line = await response.json(); expect(line.value.ok).toBe(true); const receipt = line.value.receipt;
   fs.writeFileSync(service.evidence + '/task-create-response.json', JSON.stringify(receipt, null, 2));
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'requested');
-  expect(receipt.operation).toBe('dna.task.create'); expect(receipt.task_create.intent_state).toBe('requested'); expect(receipt.task_create.task_id).toBe('');
+  expect(receipt.operation).toBe('dna.task.create'); expect(receipt.task_create.intent_state).toBe('requested'); expect(receipt.task_create.task_id).toBe(''); expect(receipt.task_create.kind).toBe('');
   expect(receipt.task_create.intent_id).toMatch(/^i[0-9a-f]{1,16}$/); expect(receipt.subject_digest).toBe(before);
   expect(posts).toHaveLength(1); expect(posts[0]).toEqual({ call: 'TaskCreate', payload: { request_id: expect.any(String), record_head: before, outcome: OUTCOME, to: 'org' } });
   const rows = asks(service); expect(rows).toHaveLength(1); const row = rows[0];
@@ -61,6 +61,26 @@ test('native ask lands as the CLI row: one POST, a real receipt, one intent.requ
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   await expect(recovery(page)).toHaveAttribute('data-intent-state', 'requested'); expect(posts).toHaveLength(1); expect(asks(service)).toHaveLength(1);
   await page.screenshot({ path: info.outputPath('actual-native-task-create.png') });
+});
+
+test('native judgment ask carries its kind onto the CLI row (GH #1144)', async ({ page, service }) => {
+  const posts = []; page.on('request', request => { if (isWrite(request)) posts.push(request.postDataJSON()); });
+  const before = service.journal().head;
+  await page.goto(service.origin + '/#/tasks?' + new URLSearchParams({ app: service.application }));
+  await expect(region(page)).toBeVisible();
+  await region(page).getByRole('textbox', { name: 'What should happen', exact: true }).fill('Is the queue bounded?');
+  await region(page).getByRole('combobox', { name: 'Asked for', exact: true }).selectOption('judgment');
+  await region(page).getByRole('button', { name: 'Review new task', exact: true }).click();
+  await expect(confirmation(page)).toContainText('Ask for this assessment');
+  const reply = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
+  await confirmation(page).getByRole('button', { name: 'Confirm new task', exact: true }).click();
+  const line = await (await reply).json(); expect(line.value.ok).toBe(true); expect(line.value.receipt.task_create.kind).toBe('judgment');
+  expect(posts).toHaveLength(1); expect(posts[0]).toEqual({ call: 'TaskCreate', payload: { request_id: expect.any(String), record_head: before, outcome: 'Is the queue bounded?', to: 'org', kind: 'judgment' } });
+  const rows = asks(service); expect(rows).toHaveLength(1);
+  const body = JSON.parse(rows[0].body);
+  // `kind` right after the ask's three keys, where `hale dna task create --judgment` writes it
+  expect(Object.keys(body).slice(0, 4)).toEqual(['outcome', 'from', 'to', 'kind']);
+  expect(body.kind).toBe('judgment');
 });
 
 test('lost native POST reply survives API restart and reload with GET-only exact-key recovery', async ({ page, service }) => {

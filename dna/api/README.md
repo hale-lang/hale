@@ -322,7 +322,7 @@ contract for the HTTP reads).
 | `PracticePropose` | `dna.commands.practice.propose` | `PracticeProposal { request_id, subject_digest, text, rationale }` | `position` |
 | `ReviewVerdict` | `dna.commands.review.verdict` | `ReviewDecision { request_id, review_id, subject_digest, verdict, comment }` | `reviewer` |
 | `OrganizationPropose` | `dna.commands.organization.propose` | `OrganizationProposal { request_id, source_head, module_digest, dependency_source, dependency_digest, record_head, source_text, rationale }` | `owner` |
-| `TaskCreate` | `dna.commands.task.create` | `TaskCreation { request_id, record_head, outcome, to }` | any authenticated peer |
+| `TaskCreate` | `dna.commands.task.create` | `TaskCreation { request_id, record_head, outcome, to, kind }` | any authenticated peer |
 | `TaskReassign` | `dna.commands.task.reassign` | `TaskReassignment { request_id, task_id, assignment_digest, assignee, to }` | `owner` |
 | `PersonRetire` | `dna.commands.person.retire` | `PersonRetirement { request_id, person, subject_digest, to }` | `owner` |
 | `AttemptClaim` | `dna.commands.attempt.claim` | `Claim { request_id, record_head, performer_kind, performer, capabilities, data_classes, organizations, ttl: Int }` (the three lists are space-separated words) | `position` |
@@ -646,7 +646,12 @@ and whether `to` is this organization's to admit is the organism's judgment,
 recorded as an `intent.refused` row. `TaskCreate` ([Commands](#commands))
 is open to any authenticated peer; `/capabilities` carries no profile for
 it, and it contributes nothing to `read_only`. Its payload is
-`TaskCreation { request_id, record_head, outcome, to }`.
+`TaskCreation { request_id, record_head, outcome, to, kind }`: `kind` is
+empty for a change, which the leader plans, or `judgment` for an
+assessment a leg performs, as `hale dna task create --judgment` asks
+(GH #1144). A judgment's row carries `kind` right after the ask's
+`outcome`, `from` and `to`, where the CLI writes it, and its canonical
+command names it; a change's row and command are as they always were.
 
 The target is the Record itself: the Task is minted by the organism after the
 ask is admitted, so the request can name only the application. `record_head`

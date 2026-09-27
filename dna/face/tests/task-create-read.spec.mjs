@@ -36,7 +36,7 @@ async function fixture(page, options = {}) {
   const receipt = ({ payload: command }) => {
     const born = script.answer === 'born';
     // The head names the Record as the target of a raised task.
-    const data = { command_id: 'ui-create/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.create', operation_version: '1', principal_mode: PRINCIPAL.mode, principal_name: PRINCIPAL.name, target_kind: 'dna.record', target_id: APP, subject_digest: command.record_head, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', proposal_state: '', task_create: { intent_id: INTENT, intent_state: script.answer, task_id: born ? 'org:t9' : '', event_id: EVENT } };
+    const data = { command_id: 'ui-create/' + command.request_id, request_id: command.request_id, application_id: APP, operation: 'dna.task.create', operation_version: '1', principal_mode: PRINCIPAL.mode, principal_name: PRINCIPAL.name, target_kind: 'dna.record', target_id: APP, subject_digest: command.record_head, fingerprint: 'sha256:' + 'f'.repeat(64), state: 'succeeded', proposal_state: '', task_create: { intent_id: INTENT, intent_state: script.answer, task_id: born ? 'org:t9' : '', event_id: EVENT, kind: command.kind || '' } };
     if (script.badReceipt === 'task') data.task_create.task_id = 'org:t9';
     if (script.badReceipt === 'target') data.target_id = 'different-record';
     if (script.badReceipt === 'activation') data.activation_state = 'adopted';

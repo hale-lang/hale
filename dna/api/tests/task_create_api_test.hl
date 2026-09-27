@@ -66,6 +66,17 @@ locus CreateApiCases {
         std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "never-sent" }, self.caller()).code, "command_not_found", "no command under an unknown request identity");
         std::test::assert_eq_str(commands.lookup(api::Lookup { request_id: "" }, self.caller()).code, "invalid_query", "lookup needs a request identity");
         std::test::assert_eq_str(commands.create_task(self.ask("create-4", now, "", "org"), self.caller()).code, "invalid_command", "an empty outcome is refused by the codec");
+        // a judgment (GH #1144): the row carries `kind` where `hale dna task
+        // create --judgment` writes it, and it reads back like any ask
+        let mut judged = self.ask("create-5", record.head("journal").id, "Is the queue bounded?", "org"); judged.kind = "judgment";
+        let assessed = commands.create_task(judged, self.caller());
+        std::test::assert(assessed.ok && assessed.receipt.task_create.intent_state == "requested", "a judgment is asked: " + assessed.code);
+        let judged_row = self.last(journal, "intent.requested");
+        let cli_judged = self.cli_row("Is the queue bounded?", "riley", "org");
+        std::test::assert(std::str::starts_with(judged_row.body, cli_judged[0..(len(cli_judged) - 1)] + ", \"kind\": \"judgment\", \"command_format\""), "kind right after the ask's three keys: " + judged_row.body);
+        std::test::assert(commands.lookup(api::Lookup { request_id: "create-5" }, self.caller()).receipt.task_create.intent_id == assessed.receipt.task_create.intent_id, "and it is recovered by lookup");
+        let mut odd = self.ask("create-6", record.head("journal").id, "x", "org"); odd.kind = "change";
+        std::test::assert_eq_str(commands.create_task(odd, self.caller()).code, "invalid_command", "a kind is a judgment or nothing");
         // recovery is under the provider's own grant: bob, mapped but ungranted, reads nothing
         let switched = api::CommandAdmission { root: self.root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=bob\n" }, provider: provider };
         let foreign = switched.lookup(api::Lookup { request_id: "create-1" }, self.caller());

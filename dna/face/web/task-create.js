@@ -8,14 +8,19 @@
   const text = value => typeof value === "string" && !value.includes("\u0000") && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
   const bytes = value => encoder.encode(value).length;
   const position = value => text(value) && value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value) && bytes(value) <= MAX_POSITION_BYTES;
-  // The ask as the service admits it: an outcome for a position. Nothing
-  // else is caller-supplied; the intent id, the asker and the Task are the
-  // service's and the organism's.
+  // What is asked: a change (the default, planned by the leader) or an
+  // assessment, a judgment a leg performs (GH #1144, `hale dna task create
+  // --judgment`).
+  const KINDS = ["", "judgment"];
+  // The ask as the service admits it: an outcome for a position, and its
+  // kind when it is a judgment. Nothing else is caller-supplied; the intent
+  // id, the asker and the Task are the service's and the organism's.
   function validate(input) {
     const check = condition => { if (!condition) throw new Error("The new task could not be verified: say what should happen, for one declared locus."); };
-    check(input && typeof input === "object" && !Array.isArray(input) && Object.keys(input).length === 2 && Object.hasOwn(input, "outcome") && Object.hasOwn(input, "to"));
-    check(text(input.outcome) && bytes(input.outcome) > 0 && bytes(input.outcome) <= MAX_OUTCOME_BYTES && position(input.to));
-    return { outcome: input.outcome, to: input.to };
+    const keys = input && typeof input === "object" && !Array.isArray(input) ? Object.keys(input) : [];
+    check(keys.length >= 2 && keys.length <= 3 && Object.hasOwn(input, "outcome") && Object.hasOwn(input, "to") && (keys.length === 2 || typeof input.kind === "string"));
+    check(text(input.outcome) && bytes(input.outcome) > 0 && bytes(input.outcome) <= MAX_OUTCOME_BYTES && position(input.to) && (input.kind === undefined || KINDS.includes(input.kind)));
+    return input.kind ? { outcome: input.outcome, to: input.to, kind: input.kind } : { outcome: input.outcome, to: input.to };
   }
   const el = (tag, className = "", value) => { const node = document.createElement(tag); node.className = className; if (value !== undefined) node.textContent = value; return node; };
   const append = (node, ...children) => { node.append(...children); return node; };
@@ -38,10 +43,14 @@
     for (const row of loci) { const option = el("option", "", row.position + (row.owner ? " · " + row.owner : "")); option.value = row.position; select.append(option); }
     if (position(defaultTo) && choices.includes(defaultTo)) select.value = defaultTo;
     const toField = append(el("label", "task-create-field"), el("span", "", "For locus"), select);
+    const kind = el("select"); kind.setAttribute("aria-label", "Asked for");
+    const change = el("option", "", "A change"); change.value = ""; const judgment = el("option", "", "An assessment (a judgment)"); judgment.value = "judgment";
+    kind.append(change, judgment);
+    const kindField = append(el("label", "task-create-field"), el("span", "", "Asked for"), kind);
     const submit = el("button", "button primary", "Review new task"); submit.type = "submit"; submit.disabled = true;
     const status = el("p", "task-create-status"); status.setAttribute("role", "status");
     if (!allowed) status.textContent = reason || "Raising work is not available to this session.";
-    outcome.disabled = !allowed; select.disabled = !allowed;
+    outcome.disabled = !allowed; select.disabled = !allowed; kind.disabled = !allowed;
     let pending = false, prepared = false;
     function refresh() {
       const size = bytes(outcome.value);
@@ -52,23 +61,24 @@
     }
     outcome.addEventListener("input", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
     select.addEventListener("change", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
+    kind.addEventListener("change", () => { if (!pending && !prepared && allowed) { status.textContent = ""; refresh(); } });
     form.addEventListener("submit", async event => {
       event.preventDefault();
       if (!allowed || pending || prepared) return;
       let ask;
-      try { ask = validate({ outcome: outcome.value, to: select.value }); } catch (error) { status.textContent = error.message; return; }
+      try { ask = validate(kind.value ? { outcome: outcome.value, to: select.value, kind: kind.value } : { outcome: outcome.value, to: select.value }); } catch (error) { status.textContent = error.message; return; }
       if (!choices.includes(ask.to)) { status.textContent = "Choose a declared locus."; return; }
-      pending = true; refresh(); outcome.disabled = true; select.disabled = true; status.textContent = "Preparing the exact ask for confirmation…";
+      pending = true; refresh(); outcome.disabled = true; select.disabled = true; kind.disabled = true; status.textContent = "Preparing the exact ask for confirmation…";
       try {
         const result = await onPrepare(ask);
         if (result?.error) throw new Error(typeof result.error === "string" ? result.error : "The new task could not be prepared.");
         prepared = true; status.textContent = "New task prepared for confirmation. Nothing has been recorded yet.";
       } catch (error) {
         status.textContent = typeof error?.message === "string" ? error.message : "The new task could not be prepared. Nothing was submitted by this form.";
-      } finally { pending = false; outcome.disabled = !allowed || prepared; select.disabled = !allowed || prepared; refresh(); }
+      } finally { pending = false; outcome.disabled = !allowed || prepared; select.disabled = !allowed || prepared; kind.disabled = !allowed || prepared; refresh(); }
     });
     refresh();
-    form.append(outcomeField, counter, toField, submit, status); root.append(form);
+    form.append(outcomeField, counter, toField, kindField, submit, status); root.append(form);
     root.append(el("p", "detail-note", "The service checks your signed-in identity and the current Record head when you confirm. Whether the locus is this organization's to admit is the organism's answer, recorded separately."));
     return root;
   }

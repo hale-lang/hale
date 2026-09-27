@@ -50,6 +50,7 @@ type CommandRequest {
     // Raising work: the intent's outcome and the position it is for.
     outcome: String = "";
     to: String = "";
+    ask_kind: String = ""; // "" a change, "judgment" an assessment (GH #1144)
     // A leg's claim and outcome (GH #946): typed copies of the wire.
     performer_kind: String = "";
     performer: String = "";
@@ -77,7 +78,7 @@ type CommandRequest {
 type TaskCommandOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; }
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
 // The admitted ask and, re-derived on every read, the organism's answer to it.
-type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; }
+type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task_id: String = ""; event_id: String = ""; kind: String = ""; }
 // A leg's claim or outcome as it reads back (GH #946): the attempt and its lease, or the refusal.
 type AttemptCommandOutcome {
     state: String = ""; attempt_id: String = ""; work_id: String = ""; task_id: String = ""; performer_kind: String = "";
@@ -301,7 +302,8 @@ type OrganizationProposal {
     request_id: String = ""; source_head: String = ""; module_digest: String = ""; dependency_source: String = ""; dependency_digest: String = "";
     record_head: String = ""; source_text: String = ""; rationale: String = "";
 }
-type TaskCreation { request_id: String = ""; record_head: String = ""; outcome: String = ""; to: String = ""; }
+// `kind`: "" asks for a change, "judgment" for an assessment a leg performs (GH #1144)
+type TaskCreation { request_id: String = ""; record_head: String = ""; outcome: String = ""; to: String = ""; kind: String = ""; }
 type TaskReassignment { request_id: String = ""; task_id: String = ""; assignment_digest: String = ""; assignee: String = ""; to: String = ""; }
 type PersonRetirement { request_id: String = ""; person: String = ""; subject_digest: String = ""; to: String = ""; }
 // A leg's claim (GH #946): the three lists are space-separated words.
@@ -355,7 +357,7 @@ fn native_of(command: CommandRequest) -> ops::GovernanceCommand {
         source_head: command.source_head, dependency_source: command.dependency_source, dependency_digest: command.dependency_digest,
         record_head: command.record_head, source_text: command.source_text,
         expected_assignee: command.expected_assignee, new_assignee: command.new_assignee,
-        outcome: command.outcome, to: command.to,
+        outcome: command.outcome, to: command.to, ask_kind: command.ask_kind,
         performer_kind: command.performer_kind, performer: command.performer, effect_class: command.effect_class, capabilities: command.capabilities, data_classes: command.data_classes,
         organizations: command.organizations, ttl: command.ttl, attempt_id: command.attempt_id, holder: command.holder, token: command.token,
         disposition: command.disposition, result: command.result, result_ref: command.result_ref, narrative: command.narrative,
@@ -437,7 +439,7 @@ locus CommandAdmission {
             source_head: o.source_head, dependency_source: o.dependency_source, dependency_digest: o.dependency_digest, record_head: o.record_head, source_text: o.source_text, rationale: o.rationale });
     }
     fn create_task(t: TaskCreation, ctx: std::api::Context) -> CommandReply {
-        return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.create", target_kind: "dna.record", subject_digest: t.record_head, record_head: t.record_head, outcome: t.outcome, to: t.to });
+        return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.create", target_kind: "dna.record", subject_digest: t.record_head, record_head: t.record_head, outcome: t.outcome, to: t.to, ask_kind: t.kind });
     }
     fn reassign_task(t: TaskReassignment, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: t.request_id, operation: "dna.task.reassign", target_kind: "dna.task", target_id: t.task_id, subject_digest: t.assignment_digest, expected_assignee: t.assignee, new_assignee: t.to });

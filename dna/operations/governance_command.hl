@@ -32,11 +32,12 @@ type GovernanceCommand {
     dependency_digest: String = "";
     record_head: String = "";
     source_text: String = "";
-    // Raising work (dna.task.create) carries the intent's outcome and the
-    // position it is for, beside a `record_head` precondition. Every other
-    // variant requires both empty.
+    // Raising work (dna.task.create) carries the intent's outcome, the
+    // position it is for and its kind, beside a `record_head`
+    // precondition. Every other variant requires all three empty.
     outcome: String = "";
     to: String = "";
+    ask_kind: String = ""; // raising work: "" a change, "judgment" an assessment a leg performs (GH #1144)
     // A leg's claim (dna.attempt.claim, GH #946): what it performs and
     // may see, and for how long the lease is asked. A leg's outcome
     // (dna.attempt.outcome): the attempt, the lease it settles under, the
@@ -113,7 +114,7 @@ locus GovernanceCommandCodec {
         if !self.context_valid(context) || command.application_id != context.application_id || command.position_id != "org" || !self.known(command.operation, command.operation_version) { return false; }
         if command.expected_assignee != "" || command.new_assignee != "" { return false; }
         if command.source_head != "" || command.dependency_source != "" || command.dependency_digest != "" || command.record_head != "" || command.source_text != "" { return false; }
-        if command.outcome != "" || command.to != "" { return false; }
+        if command.outcome != "" || command.to != "" || command.ask_kind != "" { return false; }
         if !self.bounded(command.request_id, 128, true, false) || !self.bounded(command.target_id, 256, true, false) || !self.bounded(command.subject_digest, 256, true, false) { return false; }
         if command.operation == "dna.practice.propose" {
             return command.target_kind == "dna.practice" && command.target_id == command.subject_digest
