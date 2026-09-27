@@ -40,7 +40,18 @@ on:
       - 'LICENSE'
   pull_request:
     branches: [main]
-    paths-ignore: *prose
+    # A PR runs the macOS validator only when what it validates can
+    # change: the crates (compiler, runtime, CLI), the language tests
+    # and this workflow. DNA, docs and spec changes are checked on
+    # Linux and by main's own macOS run after they merge; the plan
+    # runs two macOS jobs at a time, and every PR run was queueing
+    # behind the others for an hour on 2026-09-26.
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tests/hale/**'
+      - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 concurrency:
