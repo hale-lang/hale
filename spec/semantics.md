@@ -1835,6 +1835,11 @@ seeds, may write the unqualified tail (`Claim`): the binding accepts
 it when exactly one item of the surface bears that tail and no item is
 spelled bare by it, and answers `unknown` otherwise, as for any name it
 does not serve. The description keeps the qualified spelling.
+A client that reads the description to learn its slice reads a
+qualified name by that same tail when exactly one item of the
+description bears it, and keeps the qualified spelling where two do —
+so a head composed of several seeds offers a caller the commands it
+may write bare.
 
 **The gate (GH #1109).** A role is declared vocabulary
 (`spec/types.md` § "Roles and `@gated`"); `@gated(role: R)` on a

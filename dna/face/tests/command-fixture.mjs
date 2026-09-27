@@ -17,6 +17,9 @@ export async function scriptedCommands(page, service, options = {}) {
     source: null, posts: [], gets: [], describes: 0, savedBeforeSend: [], candidateReads: [],
     postMode: 'receipt', getMode: 'receipt', stage: 'recorded',
     verdictStage: 'recorded', corrupt: false, wrongChoice: false,
+    // how the describe line spells the slice: a composed head spells an
+    // item another seed declared qualified (`api::PracticePropose`)
+    described: names => names,
     ...options,
   };
   // The head's slice for the forwarded session: the ungated two, and a
@@ -101,7 +104,7 @@ export async function scriptedCommands(page, service, options = {}) {
     if (!url.pathname.endsWith('/commands')) return route.continue();
     if (request.method() === 'POST') {
       const body = request.postDataJSON();
-      if (body.describe === true) { script.describes += 1; return fulfill(200, describeLine(slice())); }
+      if (body.describe === true) { script.describes += 1; return fulfill(200, describeLine(script.described(slice()))); }
       const principal = structuredClone(script.principal);
       // what the page saved before it sent, read from the page; only then
       // is the POST counted, so a test that waits on `posts` and then

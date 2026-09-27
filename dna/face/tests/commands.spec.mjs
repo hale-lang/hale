@@ -45,6 +45,24 @@ test('command browser contract: a head that forwards no commands leaves submissi
   expect(script.describes).toBe(0);
 });
 
+test('command browser contract: a name another seed declared is read by its tail; a tail two items share is not offered', async ({ page, service }) => {
+  // A composed head spells the api seed's commands qualified; the face reads
+  // a described name by its tail (spec/semantics.md, "Names on the wire")
+  // and writes the tail, as the wire accepts it when one item bears it.
+  const qualified = await scriptedCommands(page, service, { described: names => names.map(name => name === 'PracticePropose' ? 'api::PracticePropose' : name) });
+  await page.goto(service.url('practices', { id: service.practice }));
+  await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Propose revision', exact: true })).toBeEnabled();
+  expect(qualified.describes).toBe(1);
+  // Two items bearing one tail keep their qualified spelling, which names
+  // no call the face knows: the command is not offered.
+  const shared = await scriptedCommands(page, service, { described: names => [...names.map(name => name === 'PracticePropose' ? 'api::PracticePropose' : name), 'other::PracticePropose'] });
+  await page.reload();
+  await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Propose revision', exact: true })).toBeDisabled();
+  expect(shared.describes).toBe(1);
+});
+
 test('command browser contract: exact comparison, durable-before-send identity and literal content', async ({ page, service }, testInfo) => {
   const script = await scriptedCommands(page, service);
   const before = await service.refs();
