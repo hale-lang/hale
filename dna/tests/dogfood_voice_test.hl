@@ -219,7 +219,7 @@ locus App {
         std::test::assert(len(t) > 0, "admitted: " + t);
         let attempt = dna::attempt_id_of(t + "/wf1/s0/n", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
-        self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and asks the leg relay for it");
         return attempt;
     }
     // Hand the outcome to the owner and wait for it to settle.

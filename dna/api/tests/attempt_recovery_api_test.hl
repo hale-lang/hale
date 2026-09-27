@@ -48,8 +48,10 @@ locus RecoveryCases {
         self.f.append("step.registered", STEP, dna::encode_members(dna::RegisteredMembers { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, members: "judge:leaf:" + WORK }));
         self.f.append("step.activated", STEP, dna::encode_activation(dna::ActivatedStep { step_id: STEP, task_id: ROOT, workflow_id: ROOT + "/wf1", step_index: 0, dispatched: "judge" }));
         self.f.append("attempt.admitted", attempt, dna::encode_attempt(dna::AdmittedAttempt { attempt_id: attempt, work_id: WORK, step_id: STEP, task_id: ROOT, attempt_no: 0, performer_kind: "agent", request: request }));
-        // the owner asked a leg relay for it: outstanding, no outcome
+        // the owner asked a leg relay for it: outstanding, no outcome, and
+        // recorded as a leg's (GH #1158)
         self.f.append("effect.requested", "attempt:" + attempt, "{\"performer\": \"legs\"}");
+        self.f.append("effect.relayed", "attempt:" + attempt, "attempt " + attempt + " relayed to legs by legs");
     }
     fn run_cases() {
         self.seed();

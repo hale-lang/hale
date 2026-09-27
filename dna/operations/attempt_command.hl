@@ -61,6 +61,7 @@ fn attempt_words_ok(s: String, max: Int) -> Bool {
 type AttemptCandidates {
     names: String = ""; // one attempt id per line
     of_kind: Int = 0; // outstanding attempts of the leg's kind
+    in_process: Int = 0; // ... the organism performs itself, never relayed to a leg (GH #1158)
     awaiting: Int = 0; // ... whose outcome is handed back and awaits the owner
     lacking: Int = 0; // ... whose `requires` the leg's capabilities do not cover
     effected: Int = 0; // ... that do not admit the leg's effect class
@@ -374,14 +375,17 @@ locus AttemptCommandCodec {
     }
     // Why an admitted attempt does not await this leg, "" when it does:
     // not of the leg's kind, not outstanding (the owner asked for it to run
-    // and holds no outcome), needing what the leg lacks, of a data class
-    // the leg did not say it may see — no class named is no class, fail
+    // and holds no outcome), not relayed to legs (the owner records the
+    // attempts its leg relay answered, `effect.relayed`; one its editor or
+    // a person holds is theirs, GH #1158), needing what the leg lacks, of
+    // a data class the leg did not say it may see — no class named is no class, fail
     // closed (GH #946 hardening) — or under an owner the leg does not work
     // for (no owner named is any). Whether another leg holds it is the
     // claim's question (`held_by_another`).
     fn excluded_by(j: dna::Journal, a: dna::AdmittedAttempt, c: GovernanceCommand) -> String {
         if a.performer_kind != c.performer_kind { return "kind"; }
         if !self.has_row(j, "effect.requested", "attempt:" + a.attempt_id) || self.has_row(j, "attempt.outcome", a.attempt_id) { return "settled"; }
+        if !self.has_row(j, "effect.relayed", "attempt:" + a.attempt_id) { return "in_process"; }
         if self.outcome_awaiting(j, a.attempt_id) { return "awaiting"; }
         if self.unresolved(j, a.attempt_id) { return "unresolved"; }
         if !attempt_words_within(a.request.requires, c.capabilities) { return "capabilities"; }
@@ -448,6 +452,7 @@ locus AttemptCommandCodec {
                     let why = self.excluded_by(j, d.value, c);
                     if len(why) == 0 { out.names = out.names + e.entity + "\n"; }
                     if why != "kind" && why != "settled" { out.of_kind = out.of_kind + 1; }
+                    if why == "in_process" { out.in_process = out.in_process + 1; }
                     if why == "awaiting" { out.awaiting = out.awaiting + 1; }
                     if why == "capabilities" { out.lacking = out.lacking + 1; }
                     if why == "effect" { out.effected = out.effected + 1; }
@@ -465,6 +470,7 @@ locus AttemptCommandCodec {
         let mut why = "no admitted attempt awaits a " + c.performer_kind + " leg with capabilities `" + c.capabilities + "`";
         if found.of_kind == 0 { return why + ": none of that kind is outstanding"; }
         why = why + ": " + to_string(found.of_kind) + " of that kind outstanding";
+        if found.in_process > 0 { why = why + ", " + to_string(found.in_process) + " performed in the organism, not relayed to a leg (an edit its editor holds, a case a person does)"; }
         if found.awaiting > 0 { why = why + ", " + to_string(found.awaiting) + " with an outcome handed back that awaits the owner"; }
         if found.lacking > 0 { why = why + ", " + to_string(found.lacking) + " needing a capability the leg lacks"; }
         if found.effected > 0 { why = why + ", " + to_string(found.effected) + " not admitting a performer of effect class `" + c.effect_class + "`"; }

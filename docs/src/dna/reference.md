@@ -219,6 +219,7 @@ sequence either way — see [The record](./record.md).
 | `case.admitted` | ledger | `<task>.s<i>.<key>` | a person's leaf as its own handed Task: the parent, the attempt, the terms of the acceptance practice at admission |
 | `mutation.requested` | record | `m<n>` | which unit of work and attempt asked for the Mutation, written before `mutation.proposed` |
 | `effect.redelivered` | ledger | `attempt:<id>` | a claimed attempt delivered again by the incarnation that restored it |
+| `effect.relayed` | ledger | `attempt:<id>` | an attempt a leg relay answered pending: the only attempts the head hands a leg that claims (an edit the editor holds, a person's case, is never a leg's) |
 | `lease.taken` | record | the lease key | the runtime's lease on the record: holder, token, expiry |
 | `mutation.proposed` | record | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
 | `mutation.worktree` | record | `m<n>` | `opened <path> at <base> …` / `removed` |

@@ -185,7 +185,7 @@ locus App {
         let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "judge", revision: 1, from: "test" });
         let attempt = dna::attempt_id_of(t + "/wf1/s0/j", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
-        self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and asks the leg relay for it");
         return attempt;
     }
     // A chore asked of the organization: its Work admits every effect class.
@@ -194,7 +194,7 @@ locus App {
         let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "chore", revision: 1, from: "test" });
         let attempt = dna::attempt_id_of(t + "/wf1/s0/c", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the chore's attempt");
-        self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and asks the leg relay for it");
         return attempt;
     }
     // ---- the leg: `hale dna work …` in the project, against the head; its exit code checked
@@ -555,7 +555,7 @@ locus App {
     fn close_retry(attempt: String, holder: String) {
         let retry = attempt[0..(len(attempt) - 2)] + "a1";
         self.wait_row("attempt.admitted", retry, "the engine tries again");
-        self.wait_row("effect.requested", "attempt:" + retry, "and asks a leg for it");
+        self.wait_row("effect.relayed", "attempt:" + retry, "and asks a leg for it");
         std::io::fs::write_file(self.app + "/dna/org/work.hl", FIXED_WORK) or discard;
         let position = holder[0..std::str::index_of(holder, "#")];
         let closed = self.work("run\n--as\n" + position + "\n--worker\n" + holder[(std::str::index_of(holder, "#") + 1)..len(holder)] + "\n--wait\n0");

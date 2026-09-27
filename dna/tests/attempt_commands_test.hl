@@ -80,6 +80,9 @@ locus App {
         };
         std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
         std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
+        // a person's job: the organism's own human relay holds it (GH #1158)
+        std::test::assert_eq_str(self.core.catalog.define("person", 1, "record", "a person's job"), "", "person");
+        std::test::assert_eq_str(self.core.catalog.leaf("person", 1, 0, "p", dna::WorkRequest { objective: "sign the lease", requires: "human" }, 1), "", "p");
     }
     @unbounded
     fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
@@ -121,7 +124,21 @@ locus App {
         let attempt = dna::attempt_id_of(t + "/wf1/s0/j", 0);
         self.wait_row("attempt.admitted", attempt, "the engine admits the attempt");
         self.wait_row("effect.requested", "attempt:" + attempt, "and asks the leg relay for it");
+        // the relay answered pending as a leg relay, and the owner recorded
+        // the attempt as a leg's: only such attempts are handed to a leg
+        self.wait_row("effect.relayed", "attempt:" + attempt, "and records it relayed to legs");
         std::test::assert(!self.has_row("attempt.outcome", attempt), "the relay answered pending: nothing settled");
+        return attempt;
+    }
+    // One person's job admitted and handed to the organism's human relay:
+    // its attempt id. Outstanding like a leg's, and never relayed to one.
+    fn ask_person() -> String {
+        self.asks = self.asks + 1;
+        let t = self.core.run_workflow(dna::WorkflowAsk { id: "i" + to_string(self.asks), definition: "person", revision: 1, from: "test" });
+        std::test::assert(len(t) > 0, "admitted");
+        let attempt = dna::attempt_id_of(t + "/wf1/s0/p", 0);
+        self.wait_row("effect.requested", "attempt:" + attempt, "the engine asks the human relay for the person's job");
+        std::test::assert(!self.has_row("effect.relayed", "attempt:" + attempt) && !self.has_row("attempt.outcome", attempt), "the organism holds it: not relayed, not settled");
         return attempt;
     }
     fn renewal_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
@@ -202,6 +219,9 @@ locus App {
             let as_seat = commands.submit(alice, self.claim_of(label + "cs", identity, head_h, "agent", "position:api/dev#1", "internal public"));
             std::test::assert(as_seat.ok && !std::str::contains(as_seat.receipt.reason, "is not a position the record knows"), l + "a ratified position hole is a position: " + as_seat.receipt.reason);
         }
+        // an attempt the organism performs itself (GH #1158): a person's case,
+        // outstanding as a leg's is, which no human leg is handed below
+        let ap = self.ask_person();
         // ---- t0: the effect classes, on a judgment of their own
         let head_c = record.head("journal").id;
         // the classes a Work admits: an edit, which changes source, admits no
@@ -286,8 +306,18 @@ locus App {
         std::test::assert(r2.ok && r2.receipt.state == "refused", l + "a second leg is refused, not turned away: " + r2.code + " " + r2.receipt.state);
         std::test::assert(std::str::contains(r2.receipt.reason, "held by another leg"), l + "with the reason: " + r2.receipt.reason);
         std::test::assert_eq_int(self.count_rows("attempt.claimed", a1), rows_before, l + "and writes no row");
-        let r3 = commands.submit(alice, self.claim_of(label + "c3", identity, head0, "human", "position:human#" + pass, "internal"));
-        std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "none of that kind is outstanding"), l + "nothing awaits a human leg: " + r3.receipt.reason);
+        // (a leg with the capability the case requires: nothing else stands in its way)
+        let mut c3 = self.claim_of(label + "c3", identity, head0, "human", "position:human#" + pass, "internal"); c3.capabilities = "human";
+        let r3 = commands.submit(alice, c3);
+        // the person's case is outstanding, and the organism's: the owner asked
+        // for it to run and holds no outcome, as for a leg's, but its relay is
+        // the organism's own, so it is never a leg's (GH #1158)
+        std::test::assert(r3.ok && r3.receipt.state == "refused" && std::str::contains(r3.receipt.reason, "performed in the organism, not relayed to a leg"), l + "nothing awaits a human leg: " + r3.receipt.reason);
+        std::test::assert_eq_int(self.count_rows("attempt.claimed", ap), 0, l + "and no claim lands on the person's case");
+        // and an outcome handed back for it anyway settles nothing: the owner
+        // refuses a leg's word on an attempt never relayed to one
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: ap, holder: "position:human#" + pass, token: 1, disposition: "done", result: "signed", request: label + "sp" });
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", ap), "was never relayed to a leg") && !self.has_row("attempt.outcome", ap), l + "the owner refuses a leg's outcome on the person's case: " + self.row_body("attempt.outcome_refused", ap));
         // the hat the leg wears, and the outcome under the lease
         let hat = self.hat_of(a1);
         let r4 = commands.submit(alice, self.outcome_of(label + "o0", identity, a1, alice_leg, token + 1, hat));

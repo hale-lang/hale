@@ -121,6 +121,8 @@ locus OrganizationImpact {
             if at >= 0 { let have = rows.get(at) or OrganizationImpactEntry { }; return if have.body == e.body { "" } else { "impact_source_invalid" }; }
             rows.push(OrganizationImpactEntry { family: "effect", id: e.entity, state: "pending", body: e.body, seq: e.seq }); return "";
         }
+        // an attempt handed to a leg (GH #1158) is still pending
+        if e.kind == "effect.relayed" { return if at >= 0 { "" } else { "impact_source_invalid" }; }
         if e.kind != "effect.result" { return "impact_unsupported_history"; }
         if at < 0 { return "impact_source_invalid"; }
         let mut have = rows.get(at) or OrganizationImpactEntry { };
