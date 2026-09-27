@@ -1,5 +1,6 @@
 // GH #1129 (the macOS red of head_roles_test): replies that overfill
-// the socket's send buffer reach the client whole.
+// the socket's send buffer reach the client whole; and GH #1155: a
+// reply past the bus's wire buffer crosses the bus whole.
 //
 // The binding's peer shares one socket between two coroutines of its
 // async_io pool: run() sits parked on the fd for the next request line
@@ -140,6 +141,15 @@ fn main() {
         std::test::assert(std::str::ends_with(reply, "}"), "the line is closed");
         k = k + 1;
     }
+
+    // GH #1155: a reply past the bus's 64 KB wire buffer — sixteen
+    // doublings, a 1 MiB value — used to die in the reply cell's
+    // serializer; it crosses the bus whole now.
+    api.send("{\"id\":5,\"call\":\"Asks\",\"payload\":{\"doublings\":16}}");
+    let big = api.next_line();
+    std::test::assert(std::str::starts_with(big, "{\"request_id\":5,\"id\":5,"), "the 1 MiB reply arrived: " + big[0..80]);
+    std::test::assert_eq_int(len(std::json::find_field_raw(big, "value")), 1048576 + len("{\"text\":\"\"}"), "the whole 1 MiB value arrived");
+    std::test::assert(std::str::ends_with(big, "}"), "the line is closed");
 
     p.stop();
     std::io::fs::unlink(src) or discard;

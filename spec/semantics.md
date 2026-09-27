@@ -3502,6 +3502,22 @@ each nested struct in the lazy global payload arena and recurses.
 Arrays, tuples, and enums as bus payload *fields* are post-v1
 polish.
 
+**Size.** A delivery is as large as its fields make it, and local
+delivery is bounded only by the payload arena (`spec/memory.md`):
+the synthesized serializer honours the cap it is handed — it writes
+nothing past it and answers the size the payload needs — and the
+runtime serializes a payload past its 64 KiB wire buffer again into
+a buffer of that size (GH #1155). A remote transport's frame is
+64 KiB (`LOTUS_PAYLOAD_MAX`): a payload past it reaches every local
+subscriber and **is dropped, uncorrected, for every remote one** —
+there is no fallible-publish path or counter a program can observe
+this through yet; the runtime says so on stderr once per subject,
+for an operator reading logs, not for the program. A publisher that
+must reach a remote peer keeps every payload on that subject under
+64 KiB on the wire until this gets a program-visible signal.
+Before this fix the serializer overran the buffer, and a reply
+carrying a `String` past 64 KiB died in it.
+
 ## Closure-test evaluation
 
 For each `closure NAME { LEFT ~~ RIGHT within TOL; epoch

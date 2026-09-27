@@ -141,6 +141,16 @@ than run with a broker that would quietly drop your messages.
 The error channel isn't missing from `<-`; it's relocated to the
 one place it can be acted on — the structural failure path.
 
+A payload is as large as its fields make it. In-process delivery is
+bounded only by the payload arena: a record carrying a 1 MiB
+`String` crosses the bus whole. A [bound topic](./multi-binary.md)
+travels in 64 KiB frames, so a payload past that reaches every
+in-process subscriber and is **lost** for every remote one — there
+is no fallible-publish path or counter your program can see this
+through yet, only a stderr line once per subject for whoever is
+watching logs. Keep a subject a remote peer needs under 64 KiB on
+the wire.
+
 ## One ordering rule
 
 A subscriber must be *born before* a publisher sends, or the

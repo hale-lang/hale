@@ -1637,6 +1637,7 @@ pub fn build_executable_with_options(
         current_user_fn_fallible: None,
         accumulator_ctx: None,
         serializers: BTreeMap::new(),
+        ser_bound: None,
         codec_thunks: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
@@ -4897,6 +4898,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// deserializer's job is to reconstruct that struct from
     /// whatever bytes the wire delivered.
     pub(crate) serializers: BTreeMap<String, SerializerPair<'ctx>>,
+    /// GH #1155: while a `__serialize_T` body is emitted, the buffer it
+    /// writes into and the cap it was handed; every write into the wire
+    /// goes through `emit_ser_memcpy`, which skips a write past the cap
+    /// and lets the cursor run on, so the function returns the size the
+    /// payload needs and the caller can hand it a buffer that big.
+    pub(crate) ser_bound: Option<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>)>,
     /// F.36 Slice 3b: per-subject codec thunk pair. Populated by
     /// `emit_codec_binding_register` when a binding entry carries
     /// `codec(L { ... })`. Each thunk matches the m70 serializer
@@ -13043,7 +13050,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///    `emit_set_caller_arena` call — TLS-inherited caller arena
     ///    is what we want for per-subscriber arena routing).
     /// 4. Branches on the i1 path:
-    ///    - encode ok: memcpy Bytes body into `dst`, return len
+    ///    - encode ok, fits cap: memcpy Bytes body into `dst`,
+    ///      return len
+    ///    - encode ok, over cap: no copy, return len anyway (GH
+    ///      #1174 — matches lotus_serialize_fn's contract, so the
+    ///      caller's cap-aware retry applies here too)
     ///    - decode ok: memcpy T struct into `dst`, return sizeof(T)
     ///    - fail (either): return -1
     fn synthesize_codec_thunks(
@@ -13153,8 +13164,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_return(Some(&bytes_len))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+        // GH #1174: this thunk matches lotus_serialize_fn's ABI, so
+        // it keeps that contract too — write nothing past cap,
+        // answer the size the payload needs. Returning -1 here used
+        // to make lotus_bus_dispatch* drop the publish OUTRIGHT (the
+        // <= 0 check), including to every LOCAL subscriber, for any
+        // codec-bound subject whose encoded Bytes crossed 64 KiB —
+        // exactly the local delivery the spec says is bounded only
+        // by the payload arena. The caller (lotus_bus_wire_encode)
+        // already re-invokes with a bigger cap when the size comes
+        // back over what it passed in.
         self.builder.position_at_end(enc_overflow);
-        self.builder.build_return(Some(&neg_one))
+        self.builder.build_return(Some(&bytes_len))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(enc_fail);
