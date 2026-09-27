@@ -1052,16 +1052,23 @@ jobs:
             head_pid=$!
             export HALE_NATIVE_HEAD_BUILD_STATUS=$head_build.status
           fi
+          # The Knowledge fixture is the rest shard's: the startup shard does
+          # not build it, and tests/run.mjs refuses a named binary that is not there.
+          knowledge=()
+          if [ "$SHARD" = rest ]; then
+            knowledge=(
+              HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+              HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api"
+              HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+            )
+          fi
           npm ci
           npx playwright install --with-deps chromium --only-shell
           HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
             HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
             HALE_NATIVE_COMMAND_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
-            HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
-            HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
-            HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge" \
-            npm test -- "${select[@]}" || result=$?
+            env "${knowledge[@]}" npm test -- "${select[@]}" || result=$?
           if [ -n "$head_build" ]; then
             wait "$head_pid" || true
             status=$(cat "$head_build.status" 2>/dev/null || echo missing)
