@@ -65,6 +65,10 @@ shared-fixture-dir = { max-threads = 1 }
 dna-fixtures = { max-threads = 4 }
 # The same slices on the 8-core L1 runner (tests.yml `dna`, profile `large`).
 dna-fixtures-large = { max-threads = 8 }
+# The same slices on the free 4-core runner (tests.yml `dna`, profile `small`):
+# two at a time, so the graph fixtures' ledger organism answers a proposal
+# inside the host's bound.
+dna-fixtures-small = { max-threads = 2 }
 serial-udp = { max-threads = 1 }
 
 # `--profile large`: the dna job on the 8-core runner. Everything as the
@@ -76,3 +80,12 @@ inherits = "default"
 [[profile.large.overrides]]
 filter = 'binary(dna_native_suite)'
 test-group = 'dna-fixtures-large'
+
+# `--profile small`: the dna job on the free 4-core runner. Everything as the
+# default profile, with the DNA slices two at a time.
+[profile.small]
+inherits = "default"
+
+[[profile.small.overrides]]
+filter = 'binary(dna_native_suite)'
+test-group = 'dna-fixtures-small'

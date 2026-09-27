@@ -671,7 +671,7 @@ jobs:
         run: |
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
-            --profile default \
+            --profile small \
             --partition hash:${{ matrix.part }}/2
 
       - name: sccache stats
