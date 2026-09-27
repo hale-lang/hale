@@ -173,7 +173,6 @@ locus App {
     @unbounded
     fn count_rows(kind: String) -> Int {
         let j = journal_of(self.repo);
-        let moved = j.refresh();
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
@@ -184,7 +183,6 @@ locus App {
     @unbounded
     fn ratification_rows(what: String) -> Int {
         let j = journal_of(self.repo);
-        let moved = j.refresh();
         let mut tasks = "\n";
         let mut n = 0;
         let mut i = 0;
@@ -275,8 +273,10 @@ locus App {
         // for, carried out on the organization's tick, then the organization
         // started again so it carries the lease the host hands a body on a
         // ledger (an organization running when the ledger is adopted keeps
-        // appending unfenced until it restarts); each decision's execution
-        // rows then land in the ledger, fenced, not as commits
+        // appending unfenced until it restarts, and the host does not yet
+        // restart it or hand it the lease on adoption: deferred, #1150);
+        // each decision's execution rows then land in the ledger, fenced,
+        // not as commits
         let adopted = self.dna("ledger\nadopt\n--as\nada");
         std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
         let adopt_by = std::time::now() + 300;
