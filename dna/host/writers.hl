@@ -1022,7 +1022,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     // the organism answers after the steps it is running, and on a
     // git-backed record each of their rows is a commit (GH #995): a local
     // organism is given the time a remote one is
-    let deadline = std::time::now() + 60;
+    let deadline = std::time::now() + dna::wait_secs(60);
     while true {
         if !local { let s = sync_record(root, memory); }
         let q = open_projection(root, seed, "", memory);
@@ -1123,7 +1123,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             let before = open_projection(root, seed, "", memory).rows();
             if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
             // the organization answers from its bus; give a busy one a minute
-            let deadline = std::time::now() + 60;
+            let deadline = std::time::now() + dna::wait_secs(60);
             while std::time::now() <= deadline {
                 let q = open_projection(root, seed, "", memory);
                 let r = find_after(q, before, " practice.proposed practice.refused ", request_id);
