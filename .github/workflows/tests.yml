@@ -242,11 +242,8 @@ jobs:
     name: cli ${{ matrix.part }}/3
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    # The paid 8-core runner (org group Large, label L1) only for this
-    # repo's own pushes and PRs; a fork's PR runs the same job on the
-    # free runner, so nobody else's build spends the org's minutes.
-    # L1 stopped taking jobs on 2026-09-27 (queued from 06:54Z, no runner assigned); back on the
-    # free runner until the org's runner or its spending limit is looked at, then restore the L1 expression.
+    # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
+    # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-latest
     strategy:
       # Don't short-circuit other partitions on first failure —
@@ -576,11 +573,8 @@ jobs:
     name: dna ${{ matrix.part }}/2
     needs: scope
     if: needs.scope.outputs.code == 'true'
-    # The paid 8-core runner (org group Large, label L1) only for this
-    # repo's own pushes and PRs; a fork's PR runs the same job on the
-    # free runner, so nobody else's build spends the org's minutes.
-    # L1 stopped taking jobs on 2026-09-27 (queued from 06:54Z, no runner assigned); back on the
-    # free runner until the org's runner or its spending limit is looked at, then restore the L1 expression.
+    # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
+    # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
