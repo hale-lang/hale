@@ -87,6 +87,10 @@ type WorkResult {
     hat_watermark: Int = -1;
     prompt_digest: String = "";
     renderer: String = "";
+    // GH #1158: answered pending by a leg relay — the attempt is a leg's
+    // to claim, and the owner records so (`effect.relayed`); every other
+    // pending answer (the editor, a person, the organism) is not
+    leg_relayed: Bool = false;
 }
 
 // Autonomy is a property of the parent -> child relationship. The

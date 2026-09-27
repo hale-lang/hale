@@ -2197,7 +2197,10 @@ locus Dna {
         // handed back while it was live
         let now = if s.at > 0 { s.at } else { std::time::now() };
         let mut why = "";
-        if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
+        // only an attempt the leg relay answered is a leg's (GH #1158): one
+        // the editor or a person holds settles on their word, never a leg's
+        if !self.has_row("effect.relayed", execution_key(s.attempt_id)) { why = "attempt " + s.attempt_id + " was never relayed to a leg; the organism performs it (" + self.work.identity_of(adm.value.performer_kind) + ")"; }
+        else if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != s.holder || claim.token != s.token { why = "the lease on attempt " + s.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + s.holder + "'s at token " + to_string(s.token) + ": stale"; }
         else if claim.expires <= now { why = "the lease on attempt " + s.attempt_id + " expired at " + to_string(claim.expires) + "; " + s.holder + " settles nothing on it"; }
         else if self.claims.ready() {

@@ -153,14 +153,17 @@ locus AgentPerformer {
 // leg's reply is recorded under (card 08); the leg itself is named by
 // the claim. Stage 1 of the legs (GH #946): a program wires it for the
 // kinds its legs perform; the in-process performers go as each stage
-// lands.
+// lands. Its pending answer says it was relayed (`leg_relayed`), and the
+// owner records the attempt as a leg's (`effect.relayed`): the only
+// attempts the head hands a leg that claims (GH #1158) — an edit the
+// assembly's editor holds, or a case a person does, is never a leg's.
 locus LegRelay {
     params { name: String = "legs"; performer_kind: String = "agent"; relayed: Int = 0; }
     fn kind() -> String { return self.performer_kind; }
     fn identity() -> String { return self.name; }
     fn perform(req: WorkRequest) -> WorkResult {
         self.relayed = self.relayed + 1;
-        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt_id_of(req.work_id, req.attempt_no) };
+        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt_id_of(req.work_id, req.attempt_no), leg_relayed: true };
     }
 }
 

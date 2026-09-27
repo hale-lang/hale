@@ -227,7 +227,10 @@ vendored seed); a change builds it again, two legs at once build apart.
 ## The cycle
 
 **`next`** claims the next admitted, outstanding attempt of the
-position's kind that fits what the leg has (`--capabilities`, by
+position's kind that the organism relayed to legs — the ones its leg
+relay answered, which the owner records as `effect.relayed`; an edit
+the organism's own editor holds, or a person's case, is outstanding
+too and is never a leg's — that fits what the leg has (`--capabilities`, by
 default what the kind requires), may see (`--classes`, by default
 `public internal`; naming none is naming no class) and works for
 (`--orgs`), for `--ttl` seconds (600). The answer is the lease as a

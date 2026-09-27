@@ -1178,6 +1178,7 @@ record's.
 | `mutation.rolled_back` / `mutation.rejected` / `mutation.revise` | record | the genome back at the base, refused after review, or sent back for another pass |
 | `mutation.refused` / `mutation.failed` | record | not applied (the candidate moved, the gate said no), or the change did not survive its own verification |
 | `effect.requested` / `effect.result` | ledger | the exclusive claim on an effect key, and its outcome |
+| `effect.relayed` | ledger | an attempt a leg relay answered pending: a leg's to claim at the head, once per attempt |
 | `evidence.<step>` | record | a verification step's output, kept by the digest the row names |
 | `evidence.magnitude` | record | the measured magnitude of the change |
 | `review.requested` | record | the Review: question, authority, candidate, disposition, evidence, diffs |
@@ -1700,7 +1701,11 @@ memory is named to it.
   kind and identity, the capabilities the leg has, the data classes it
   may see, the owners it works for and a TTL. The head picks the first
   admitted attempt of that kind that is outstanding — asked to run
-  (`effect.requested attempt:<id>`), no outcome — fits the filter, and
+  (`effect.requested attempt:<id>`), no outcome — was relayed to legs
+  (`effect.relayed attempt:<id>`: the owner records it when a leg relay
+  answered the attempt pending, and only then — an edit the organism's
+  editor holds, or a case a person does, is outstanding the same way and
+  is never a leg's, GH #1158), fits the filter, and
   is not held by another leg under a live lease; takes memory's claim
   `attempt:<id>` for the performer with the TTL under the head's role
   (GH #1026: the store decides between two legs racing; without memory
