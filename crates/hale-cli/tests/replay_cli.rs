@@ -738,7 +738,7 @@ fn probe_free_run_replaces_the_artifact_at_the_path() {
     );
     // It must parse as a CLEAN current recording with zero
     // semantic events and a real execution identity.
-    let r = crate::parse_rec(&rec);
+    let r = parse_rec(&rec);
     assert!(r.0, "probe-free recording is not clean");
     assert_eq!(r.1, 0, "a probe-free run recorded semantic events");
     assert!(r.2, "probe-free recording carries no exec identity");

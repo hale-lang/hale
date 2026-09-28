@@ -14,7 +14,7 @@
 //! evidence names the package.
 //!
 //! Re-record (a key in the environment, the tape rewritten):
-//!   HALE_DNA_TAPE=record cargo test --release -p hale-cli --test dna_recorded_fixture
+//!   HALE_DNA_TAPE=record cargo test --release -p hale-cli --test dna_records dna_recorded_fixture::
 
 #[path = "support/trace.rs"]
 mod trace;
