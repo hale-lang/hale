@@ -58,17 +58,30 @@ const SLICES: usize = 20;
 /// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.
+///
+/// The ORDER of this list is the deal. Slice `i` is the test
+/// `dna_fixtures_slice_<ii>` (zero-padded, so nextest's alphabetical
+/// listing is slice order), and CI's `--partition count:N/4` deals that
+/// listing round-robin over four jobs, each of which starts its slices
+/// in listing order, two at a time. So a heavy fixture's position picks
+/// its job and how early it starts there. They are placed so the four
+/// jobs' slice minutes come out level (700-775 s each, from the slice
+/// times of CI's runs), each job starts its longest slice first (a job
+/// used to start `legs_test`, its longest, last and leave its other
+/// worker idle behind that tail), and the two graph fixtures, which
+/// need the host's bound to themselves, sit in different jobs. Move one
+/// only with a look at those runs' per-slice times.
 const HEAVY: [&str; 10] = [
     "graph_holes_test.hl",
+    "dogfood_voice_test.hl",
+    "legs_test.hl",
+    "books_slice_test.hl",
+    "body_lease_start_test.hl",
     "graph_holds_test.hl",
     "body_claim_expired_test.hl",
     "body_lease_blocked_test.hl",
-    "books_slice_test.hl",
-    "body_lease_start_test.hl",
-    "legs_test.hl",
-    "receipt_retention_test.hl",
-    "dogfood_voice_test.hl",
     "senses_reflex_test.hl",
+    "receipt_retention_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -643,9 +656,9 @@ macro_rules! fixture_slices {
     ($($name:ident => $i:expr),* $(,)?) => { $( #[test] fn $name() { run_fixture_slice($i); } )* };
 }
 fixture_slices! {
-    dna_fixtures_slice_0 => 0, dna_fixtures_slice_1 => 1, dna_fixtures_slice_2 => 2, dna_fixtures_slice_3 => 3,
-    dna_fixtures_slice_4 => 4, dna_fixtures_slice_5 => 5, dna_fixtures_slice_6 => 6, dna_fixtures_slice_7 => 7,
-    dna_fixtures_slice_8 => 8, dna_fixtures_slice_9 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
+    dna_fixtures_slice_00 => 0, dna_fixtures_slice_01 => 1, dna_fixtures_slice_02 => 2, dna_fixtures_slice_03 => 3,
+    dna_fixtures_slice_04 => 4, dna_fixtures_slice_05 => 5, dna_fixtures_slice_06 => 6, dna_fixtures_slice_07 => 7,
+    dna_fixtures_slice_08 => 8, dna_fixtures_slice_09 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
     dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
     dna_fixtures_slice_16 => 16, dna_fixtures_slice_17 => 17, dna_fixtures_slice_18 => 18, dna_fixtures_slice_19 => 19,
 }

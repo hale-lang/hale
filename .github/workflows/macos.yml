@@ -300,13 +300,15 @@ jobs:
         run: |
           # Every fourth fixture slice belongs to this part; every other
           # test in the binary (coverage, guards, the spelling checks) rides
-          # with part 4, the lightest. Names are exact so slice_1 does not also select
-          # slice_10: the list comes from the binary itself.
+          # with part 4, whose slices total within a few percent of the
+          # others'. The list comes from the binary itself; the slice number
+          # is zero-padded (`slice_08`), so it is read as base 10, never as
+          # the octal bash takes a leading 0 for.
           all=$(cargo test --release -p hale-cli --test dna_native_suite -- --list --format terse 2>/dev/null | sed -n 's/: test$//p')
           names=()
           for t in $all; do
             case "$t" in
-              dna_fixtures_slice_*) i=${t#dna_fixtures_slice_}; [ $(( i % 4 )) -eq $(( ${{ matrix.part }} - 1 )) ] && names+=("$t") ;;
+              dna_fixtures_slice_*) i=$(( 10#${t#dna_fixtures_slice_} )); [ $(( i % 4 )) -eq $(( ${{ matrix.part }} - 1 )) ] && names+=("$t") ;;
               *) [ ${{ matrix.part }} -eq 4 ] && names+=("$t") ;;
             esac
           done
