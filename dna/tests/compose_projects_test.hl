@@ -9,7 +9,8 @@
 // The database's superuser password is drawn by the bootstrap into the
 // vault (`postgres-owner-<seed>`) and into dna/postgres.secrets, which
 // compose mounts for the server and git never tracks; no committed file
-// holds it. Nothing here starts a container: `docker compose config`
+// holds it. A clone elsewhere is the same seed, whatever its directory
+// is called. Nothing here starts a container: `docker compose config`
 // shows the project compose resolves, when docker compose is on PATH.
 
 import "../core" as dna;
@@ -64,6 +65,16 @@ fn main() {
     std::test::assert(std::str::contains(listed.stdout, "present  postgres-owner-" + a + "  ") && !std::str::contains(listed.stdout, pw_a), "`hale dna secrets` names the entry, never its value: " + listed.stdout + listed.stderr);
     let held = in_dir(root_a, vault, "sh\n-c\ncmp -s \"$HALE_VAULT_DIR/postgres-owner-$1\" dna/postgres.secrets\nsh\n" + a);
     std::test::assert_eq_int(held.code, 0, "the vault's entry and the server's file are one draw");
+
+    // ---- a clone elsewhere, under another directory name, is the same
+    // seed: upgrade leaves its compose file as it is, and writes its
+    // server's password file from the vault's entry, not a new draw
+    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m seed && git clone -q . ../elsewhere && git -C ../elsewhere fetch -q origin 'refs/dna/*:refs/dna/*'");
+    std::test::assert_eq_int(committed.code, 0, "the seed committed and cloned: " + committed.stderr);
+    let cloned = in_dir(scratch + "/elsewhere", vault, toolchain() + "\ndna\nupgrade\n.");
+    let drift = in_dir(scratch + "/elsewhere", vault, "git\nstatus\n--porcelain\ndna/compose.yaml");
+    std::test::assert(cloned.code == 0 && len(dna::trim_nl(drift.stdout)) == 0 && text_of(scratch + "/elsewhere/dna/compose.yaml") == compose_a, "the clone's compose is the seed's, unchanged: " + cloned.stdout + cloned.stderr + drift.stdout);
+    std::test::assert_eq_str(text_of(scratch + "/elsewhere/dna/postgres.secrets"), pw_a, "and its password file is the vault's entry, not a new draw");
 
     // ---- an older compose file, rewritten by upgrade (a hard cut)
     let old = std::str::replace(std::str::replace(compose_b, "name: hale-dna-" + b + "\n", ""), "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner", "POSTGRES_PASSWORD: dna");

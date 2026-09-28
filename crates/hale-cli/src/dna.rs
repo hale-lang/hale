@@ -1518,10 +1518,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             fs::write(&gi, gtext).map_err(|e| e.to_string())?;
             out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
         }
-        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
+        // the seed's name is the one its compose file carries, so a clone in
+        // a directory of another name regenerates the same file
         let compose = root.join("dna/compose.yaml");
-        let want = compose_yaml(&project);
         let had = fs::read_to_string(&compose).unwrap_or_default();
+        let project = compose_seed_of(&had).unwrap_or_else(|| locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string()));
+        let want = compose_yaml(&project);
         if had != want {
             fs::write(&compose, &want).map_err(|e| format!("write {}: {e}", compose.display()))?;
             out.push(format!("{} {} (its own compose project, hale-dna-{}; the servers' passwords from the vault)", if had.is_empty() { "created" } else { "rewrote" }, compose.display(), compose_name(&project)));
@@ -1720,6 +1722,17 @@ scrape_configs:
 fn compose_senses_port(project: &str) -> u16 {
     let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
     9300 + (h % 100) as u16
+}
+
+/// The seed's name a compose file carries: its project (`name:
+/// hale-dna-<seed>`) or, in a file from before each seed had one, its
+/// memory volume's (`name: hale-dna-<seed>-knowledge`).
+fn compose_seed_of(text: &str) -> Option<String> {
+    let names: Vec<&str> = text.lines().filter_map(|l| l.trim().strip_prefix("name: hale-dna-")).collect();
+    if let Some(top) = text.lines().find_map(|l| l.strip_prefix("name: hale-dna-")) {
+        return Some(top.trim().to_string());
+    }
+    names.iter().find_map(|n| n.trim().strip_suffix("-knowledge")).map(|n| n.to_string())
 }
 
 /// The project's name as compose's volumes carry it.

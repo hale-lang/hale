@@ -908,7 +908,10 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
     s = s + "\"$HOME/.hale/bin/hale\" --version | head -1 | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
     s = s + "export PATH=\"$HOME/.hale/bin:$PATH\"\n";
     s = s + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
-    s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true)\n";
+    // GH #989: upgrade again once the record is here: a fresh clone has no
+    // record identity until it syncs, and the organism's secrets are
+    // provisioned under the identity's names
+    s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true) && hale dna upgrade . >/dev/null\n";
     // GH #647: the database's and the supervisor's parts are theirs to
     // write; a body with another supervisor or another database gets
     // another implementation's, not another `if`
