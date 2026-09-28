@@ -109,7 +109,9 @@ impl Drop for BuildLock<'_> {
     }
 }
 
-fn exec(bin: &Path, args: &[String]) -> ExitCode {
+/// `observer`: `bin` is fuse-hl, whose nonzero status is a failure worth a
+/// line; `inspect`'s exit status is its verdict and speaks for itself.
+fn exec(bin: &Path, args: &[String], observer: bool) -> ExitCode {
     let mut cmd = Command::new(bin);
     cmd.args(args);
     // fuse-hl is our child, not a peer: `hale iris` is a supervisor
@@ -118,15 +120,52 @@ fn exec(bin: &Path, args: &[String]) -> ExitCode {
     // a parent-death signal does when it is killed) left fuse-hl
     // running and holding every descriptor it inherited — GH #905.
     crate::dies_with_us(&mut cmd);
+    let name = bin.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match cmd.status() {
+        // Every way out says why (GH #578): a child killed by a signal
+        // has no exit code, and this used to return 1 without a word —
+        // the "exits 1 silently" a loaded CI shard kept seeing. It exits
+        // as a shell would, 128 + the signal.
         Ok(st) => match st.code() {
-            Some(c) => ExitCode::from(c.clamp(0, 255) as u8),
-            None => ExitCode::from(1),
+            Some(0) => ExitCode::SUCCESS,
+            Some(c) => {
+                if observer {
+                    eprintln!("hale iris: {name} exited with status {c}");
+                }
+                ExitCode::from(c.clamp(0, 255) as u8)
+            }
+            None => {
+                use std::os::unix::process::ExitStatusExt;
+                let sig = st.signal().unwrap_or(0);
+                eprintln!(
+                    "hale iris: {name} was killed by signal {sig} ({}){}",
+                    signal_name(sig),
+                    if st.core_dumped() { ", core dumped" } else { "" }
+                );
+                ExitCode::from((128 + sig).clamp(0, 255) as u8)
+            }
         },
         Err(e) => {
             eprintln!("hale iris: cannot exec {}: {e}", bin.display());
             ExitCode::from(1)
         }
+    }
+}
+
+/// The name of a signal a child can die from, for the line that says so.
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGKILL => "SIGKILL, often the kernel's out-of-memory killer",
+        libc::SIGTERM => "SIGTERM",
+        libc::SIGINT => "SIGINT",
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGILL => "SIGILL",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGPIPE => "SIGPIPE",
+        _ => "another signal",
     }
 }
 
@@ -167,7 +206,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            exec(&bin, &args[1..])
+            exec(&bin, &args[1..], false)
         }
         _ => {
             // GH #527 B5: `--diff a b` diffs the pair HERE (one
@@ -227,7 +266,7 @@ pub fn run(args: &[String]) -> ExitCode {
             } else if let Some(artifact) = artifact {
                 fargs.push(artifact);
             }
-            exec(&bin, &fargs)
+            exec(&bin, &fargs, true)
         }
     }
 }

@@ -46,6 +46,17 @@ see (the registration files under `$XDG_RUNTIME_DIR/hale/` or
 - `/snapshot` — the fused graph as JSON, one document.
 - `/events` — the same as a server-sent-event stream.
 
+Iris's memory is bounded. Its live-locus table holds at most 8192
+loci across the processes it watches: past that, a birth is not
+tracked, and `/snapshot` counts those in `loci_untracked`. The rows
+kept are the ones born first — a program's main, its servers, its
+workers — so their traffic stays attributed; a process that births
+loci and never dissolves them (or births them faster than a view can
+show) fills the table, and its later loci go unseen until rows free
+up. If the observer dies, `hale iris`
+says how — a signal is named, and the exit status is 128 plus its
+number.
+
 Pass a `--dump-topology` artifact as the second argument and
 iris overlays what the compiler *declared* on what the runtime
 *does*: declared-but-silent topics, undeclared traffic, drift.

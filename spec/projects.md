@@ -630,6 +630,10 @@ was left to close it — the program ending was enough to hang the
 caller, and a `hale` killed before it could reap anything left the
 whole session behind.
 
+`hale iris` names the way its fuse-hl ended (GH #578): a nonzero
+status is printed, and a fuse-hl killed by a signal is named and
+exits 128 plus the signal, where it used to exit 1 without a word.
+
 ## Git-based dependency fetching (`hale fetch`)
 
 A project may declare git dependencies in an `hale.toml`
