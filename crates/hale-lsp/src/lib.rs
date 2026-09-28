@@ -17,12 +17,21 @@
 //! Everything else is politely ignored (requests get a null
 //! result so clients don't hang).
 //!
+//! Panic containment: a parser or checker panic on a half-typed
+//! file must not take the server down with the editor's session. Every
+//! message is dispatched under `catch_unwind` (see `contained`); a
+//! document event whose handler panics publishes one diagnostic on that
+//! file ("the compiler hit an internal error on this file: ..."), a
+//! request answers with a JSON-RPC internal error, and the loop goes on
+//! to the next message.
+//!
 //! Diagnostics carried: the full `hale check` set — parse errors,
 //! type errors, and the advisory warnings (unbounded-alloc survey,
 //! hot-path lint, accept/release, blocking-placement...) — each
 //! mapped to LSP severity (error → 1, warning → 2) with UTF-16
 //! column positions per the LSP default encoding.
 
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -34,23 +43,166 @@ use hale_syntax::ast::Program;
 
 pub fn run_lsp() -> ExitCode {
     let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
     let stdout = std::io::stdout();
-    let mut writer = stdout.lock();
+    serve(&mut stdin.lock(), &mut stdout.lock())
+}
 
-    // uri-decoded path → live buffer text (the editor's truth;
-    // wins over the disk copy for that file).
-    let mut overlays: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut shutdown_requested = false;
+/// The editor's live state: uri-decoded path → buffer text (wins over
+/// the disk copy for that file), and whether `shutdown` was asked.
+#[derive(Default)]
+struct State {
+    overlays: BTreeMap<PathBuf, String>,
+    shutdown_requested: bool,
+}
 
-    loop {
-        let msg = match read_message(&mut reader) {
-            Some(m) => m,
-            None => break, // EOF — client went away
-        };
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-        let id = msg.get("id").cloned();
+/// The message loop, over any pair of streams so a test can drive it.
+fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> ExitCode {
+    install_panic_capture();
+    let mut state = State::default();
+    while let Some(msg) = read_message(reader) {
+        match contained(|| dispatch(&msg, &mut state, writer)) {
+            Ok(Some(code)) => return code,
+            Ok(None) => {}
+            Err(why) => report_internal_error(writer, &msg, &why),
+        }
+    }
+    ExitCode::SUCCESS // EOF — client went away
+}
 
+// ---- panic containment ------------------------------------------------
+
+thread_local! {
+    /// True only while `contained` runs a handler on this thread, so
+    /// the hook below takes a panic for its own only then.
+    static CAPTURING: Cell<bool> = const { Cell::new(false) };
+    /// What the hook saw of the panic being contained: message and place.
+    static CAPTURED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Install, once per process, a panic hook that records the message and
+/// location of a panic raised inside `contained` and lets every other
+/// panic (another thread, a test, anything outside a handler) reach the
+/// hook that was there before. The scope is the thread-local flag, not
+/// the installation, so nothing has to be swapped back per message.
+fn install_panic_capture() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !CAPTURING.with(Cell::get) {
+                previous(info);
+                return;
+            }
+            let payload = info.payload();
+            let msg = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic with no message".to_string());
+            let at = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "an unknown place".to_string());
+            let text = format!("{msg} (at {at})");
+            eprintln!("hale-lsp: internal error, contained: {text}");
+            CAPTURED.with(|c| *c.borrow_mut() = Some(text));
+        }));
+    });
+}
+
+/// Run one handler; a panic inside it comes back as its text and the
+/// server carries on.
+fn contained<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            CAPTURING.with(|c| c.set(false));
+        }
+    }
+    CAPTURED.with(|c| *c.borrow_mut() = None);
+    CAPTURING.with(|c| c.set(true));
+    let _scope = Scope;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
+        CAPTURED
+            .with(|c| c.borrow_mut().take())
+            .unwrap_or_else(|| "a panic with no message".to_string())
+    })
+}
+
+/// The text the editor shows for a contained panic.
+fn internal_error_message(why: &str) -> String {
+    format!(
+        "the compiler hit an internal error on this file: {why}; please report it with the file"
+    )
+}
+
+/// Tell the client about a contained panic without ending the session.
+/// A document event (open, change, save, close) publishes one
+/// diagnostic on that file, the place the editor was already looking; a
+/// request answers with a JSON-RPC internal error, so the client is not
+/// left waiting. A publish would replace the file's diagnostics, which
+/// is the right trade for the check that just failed and the wrong one
+/// for a hover.
+fn report_internal_error(writer: &mut impl Write, msg: &Value, why: &str) {
+    let message = internal_error_message(why);
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let document_event = matches!(
+        method,
+        "textDocument/didOpen"
+            | "textDocument/didChange"
+            | "textDocument/didSave"
+            | "textDocument/didClose"
+    );
+    if document_event {
+        if let Some(path) = text_document_path(msg) {
+            notify(
+                writer,
+                "textDocument/publishDiagnostics",
+                json!({
+                    "uri": path_to_uri(&path),
+                    "diagnostics": [{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": 0, "character": 1 }
+                        },
+                        "severity": 1,
+                        "source": "hale",
+                        "message": message
+                    }]
+                }),
+            );
+        }
+        return;
+    }
+    if let Some(id) = msg.get("id").cloned() {
+        send(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": -32603, "message": message }
+            }),
+        );
+    }
+}
+
+/// Handle one message. `Some` ends the session with that exit code.
+fn dispatch(
+    msg: &Value,
+    state: &mut State,
+    mut writer: &mut impl Write,
+) -> Option<ExitCode> {
+    let overlays = &mut state.overlays;
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    let id = msg.get("id").cloned();
+
+    // Test-only: a handler that panics, for the containment test.
+    #[cfg(test)]
+    if method == "hale/testPanic" {
+        panic!("injected handler panic");
+    }
+
+    {
         match method {
             "initialize" => {
                 let result = json!({
@@ -79,15 +231,15 @@ pub fn run_lsp() -> ExitCode {
             }
             "initialized" => {}
             "shutdown" => {
-                shutdown_requested = true;
+                state.shutdown_requested = true;
                 respond(&mut writer, id, Value::Null);
             }
             "exit" => {
-                return if shutdown_requested {
+                return Some(if state.shutdown_requested {
                     ExitCode::SUCCESS
                 } else {
                     ExitCode::from(1)
-                };
+                });
             }
             "textDocument/didOpen" => {
                 if let Some((path, text)) = did_open_params(&msg) {
@@ -97,6 +249,10 @@ pub fn run_lsp() -> ExitCode {
             }
             "textDocument/didChange" => {
                 if let Some((path, text)) = did_change_params(&msg) {
+                    #[cfg(test)]
+                    if text.contains("hale-lsp-test-panic") {
+                        panic!("injected checker panic");
+                    }
                     overlays.insert(path.clone(), text);
                     check_and_publish(&mut writer, &path, &overlays);
                 }
@@ -196,7 +352,7 @@ pub fn run_lsp() -> ExitCode {
             }
         }
     }
-    ExitCode::SUCCESS
+    None
 }
 
 // ---- transport -------------------------------------------------------
@@ -2462,5 +2618,116 @@ mod tests {
             "and the note names the stdlib file the offset is in: {}",
             v
         );
+    }
+    // ---- panic containment --------------------------------------------
+
+    fn frame(v: Value) -> Vec<u8> {
+        let body = v.to_string();
+        format!("Content-Length: {}\r\n\r\n{}", body.len(), body).into_bytes()
+    }
+
+    /// Drive `serve` with these messages; return what it wrote and how
+    /// it ended.
+    fn run_session(messages: Vec<Value>) -> (Vec<Value>, String) {
+        let input: Vec<u8> = messages.into_iter().flat_map(frame).collect();
+        let mut reader = std::io::Cursor::new(input);
+        let mut out: Vec<u8> = Vec::new();
+        let code = serve(&mut reader, &mut out);
+        let text = String::from_utf8(out).expect("utf-8 output");
+        let mut replies = Vec::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("Content-Length: ") {
+            rest = &rest[at + "Content-Length: ".len()..];
+            let (n, after) = rest.split_once("\r\n\r\n").expect("frame header");
+            let n: usize = n.trim().parse().expect("length");
+            replies.push(serde_json::from_str(&after[..n]).expect("json body"));
+            rest = &after[n..];
+        }
+        (replies, format!("{code:?}"))
+    }
+
+    fn request(id: u64, method: &str) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": {} })
+    }
+
+    fn reply_to(replies: &[Value], id: u64) -> &Value {
+        replies
+            .iter()
+            .find(|r| r.get("id") == Some(&json!(id)))
+            .unwrap_or_else(|| panic!("no reply to request {id}: {replies:?}"))
+    }
+
+    /// A request whose handler panics is answered with a JSON-RPC
+    /// internal error carrying the report text, and the server goes on:
+    /// the next request is answered and the session ends cleanly.
+    #[test]
+    fn a_request_handler_that_panics_is_answered_and_the_server_lives() {
+        let (replies, code) = run_session(vec![
+            request(1, "initialize"),
+            request(2, "hale/testPanic"),
+            request(3, "initialize"),
+            request(4, "shutdown"),
+            json!({ "jsonrpc": "2.0", "method": "exit" }),
+        ]);
+        let err = &reply_to(&replies, 2)["error"];
+        assert_eq!(err["code"], -32603, "{err}");
+        let message = err["message"].as_str().expect("message");
+        assert!(
+            message.starts_with("the compiler hit an internal error on this file: injected handler panic"),
+            "{message}"
+        );
+        assert!(message.ends_with("; please report it with the file"), "{message}");
+        assert!(
+            reply_to(&replies, 3)["result"]["capabilities"].is_object(),
+            "the request after the panic is answered: {replies:?}"
+        );
+        assert_eq!(reply_to(&replies, 4)["result"], Value::Null);
+        assert_eq!(code, format!("{:?}", ExitCode::SUCCESS), "the session ends by its own exit");
+    }
+
+    /// A document event whose check panics publishes ONE diagnostic on
+    /// that file, and the next event is checked normally.
+    #[test]
+    fn a_check_that_panics_publishes_one_diagnostic_and_the_server_lives() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_panic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.hl");
+        let uri = path_to_uri(&file);
+        let change = |text: &str| json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": { "textDocument": { "uri": uri }, "contentChanges": [{ "text": text }] }
+        });
+        let (replies, code) = run_session(vec![
+            change("fn main() { // hale-lsp-test-panic\n"),
+            change("fn main() {\n    let x = 1;\n}\n"),
+            request(9, "shutdown"),
+            json!({ "jsonrpc": "2.0", "method": "exit" }),
+        ]);
+        let publishes: Vec<&Value> = replies
+            .iter()
+            .filter(|r| r["method"] == "textDocument/publishDiagnostics")
+            .collect();
+        assert!(publishes.len() >= 2, "the panic's publish and the next check's: {replies:?}");
+        let first = &publishes[0]["params"];
+        assert_eq!(first["uri"], json!(uri));
+        let diags = first["diagnostics"].as_array().expect("diagnostics");
+        assert_eq!(diags.len(), 1, "one diagnostic: {diags:?}");
+        assert_eq!(diags[0]["severity"], 1);
+        assert_eq!(diags[0]["source"], "hale");
+        let message = diags[0]["message"].as_str().expect("message");
+        assert!(
+            message.starts_with("the compiler hit an internal error on this file: injected checker panic (at "),
+            "{message}"
+        );
+        assert!(message.ends_with("; please report it with the file"), "{message}");
+        let next = &publishes[1]["params"];
+        assert_eq!(next["uri"], json!(uri));
+        assert!(
+            !next["diagnostics"].to_string().contains("internal error"),
+            "the next check ran normally: {next}"
+        );
+        assert_eq!(reply_to(&replies, 9)["result"], Value::Null, "the server still answers");
+        assert_eq!(code, format!("{:?}", ExitCode::SUCCESS));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
