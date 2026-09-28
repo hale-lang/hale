@@ -2,7 +2,7 @@
 //! `bindings { }` inert. Found by the DNA's own verification: `hale
 //! test <worktree>` on a governed application built a test binary that
 //! imported the application's main — and bound (unlinking) the
-//! organism's live facts sockets from under it.
+//! organism's live sockets of the old socket transport from under it.
 
 use std::path::PathBuf;
 use std::process::Command;

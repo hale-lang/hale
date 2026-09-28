@@ -459,7 +459,7 @@ locus Dna {
                 if std::env::var_exists("HALE_DNA_EXPRESSION") { std::env::var("HALE_DNA_EXPRESSION") } else { "" });
         }
     }
-    // GH #527 B6: intent crossing the Board on the typed channel
+    // GH #527 B6: intent arriving on the nerves' typed channel
     // (`hale dna task create`, Iris) enters through the SAME gate as a local
     // `ask` — the Board decides, the Metabolism births the Task,
     // the Journal records both. The organism's main binds this topic
@@ -2963,7 +2963,7 @@ locus Dna {
             let x = self.governance_once("practice.refused", r.request_id, "a practice has a name and a text");
             return;
         }
-        // The Body has actually received this request through its Board.
+        // The Body has actually received this request over the nerves.
         // Resume from this fact, never from an unverified incoming Record row:
         // the host owns signature checks before delivering those rows.
         if len(r.request_id) > 0 {

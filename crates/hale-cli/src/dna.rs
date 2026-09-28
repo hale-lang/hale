@@ -1465,7 +1465,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             fs::write(&main_path, &next).map_err(|e| format!("write {}: {e}", main_path.display()))?;
             out.push(format!("rewrote {} (the Board's field is `board`, no longer `membrane`)", main_path.display()));
         }
-        if next.contains("membrane:") {
+        if next.lines().any(|l| { let t = l.trim_start(); !t.starts_with("//") && t.starts_with("membrane:") }) {
             out.push(format!("note    {}: `membrane:` no longer builds; the Board's field on `dna::Dna` is `board:`", main_path.display()));
         }
     }

@@ -181,7 +181,7 @@ locus Review {
         expose refused: Int;
         expose last_refusal: String;
     }
-    // GH #527 B6: a verdict crossing the Board (a human at
+    // GH #527 B6: a verdict from a person (a human at
     // `hale dna review` or the page) arrives on the typed channel, keyed to THIS
     // review, and goes through the same admission as a local one.
     // Nothing about authority or the TOCTOU pin is relaxed for a
@@ -468,7 +468,7 @@ locus Review {
         return "";
     }
     // Whether a verdict at a settled Review is the same approval again.
-    // Reached per verdict from the Board's handler, like `consider`:
+    // Reached per verdict from Review's verdict handler, like `consider`:
     // bounded by the reviewers of one candidate.
     @unbounded
     fn readmit(v: Verdict) -> Bool {
@@ -485,7 +485,7 @@ locus Review {
     }
     // A verdict is admitted only if it names THIS candidate, carries the
     // required authority, and is independent of the author. Reached
-    // per verdict from the Board's handler: bounded by the reviewers
+    // per verdict from Review's verdict handler: bounded by the reviewers
     // of one candidate.
     @unbounded
     fn consider(v: Verdict) -> Bool {
