@@ -71,6 +71,7 @@ fn js_consumer_create(c: NatsClient, stream: String, spec: ConsumerSpec) fallibl
     if deliver == "by_start_time" { b.string_field("opt_start_time", spec.start_time); }
     if len(spec.filter) > 0 { b.string_field("filter_subject", spec.filter); }
     if spec.ack_wait_ms > 0 { b.int_field("ack_wait", spec.ack_wait_ms * 1000000); }
+    if spec.max_ack_pending > 0 { b.int_field("max_ack_pending", spec.max_ack_pending); }
     b.end_object();
     b.end_object();
     let r = js_call(c, "$JS.API.CONSUMER.CREATE." + stream + "." + spec.durable, b.result()) or raise;

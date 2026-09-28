@@ -1,0 +1,128 @@
+// The heart's pulse (GH #987).
+//
+// An application's one hookup to DNA is its events, which it declares as
+// its own topics and publishes on its own subjects, `<org>.app.<app>.
+// <event>`, through the bus's NATS adapter. The host reads them through
+// the organization's durable `heart` (dna/core/nerves.hl) and lands each
+// as a `reading.recorded` row before anything acts on it. A reading is a
+// signal, never a fact: nothing acts on one yet, and what the organism
+// does to the application goes the other way, through its API.
+//
+// The row comes first in delivery too: the durable's message is
+// acknowledged only once its row has landed or it has been refused for
+// good (a duplicate, or not a reading). Anything else leaves it
+// unacknowledged, and the stream delivers it again.
+//
+// An event names itself: its body is a JSON object whose string `id` the
+// application chose, and the row's entity is `<app>/<event>/<id>`. A
+// second arrival of an entity already recorded — a redelivery, a replay —
+// is refused. Whether it is there is decided at the revision the row is
+// appended at, so two hosts pulling the same durable land it once. Over a
+// shared record that holds its rows in git (routing 0), each owner's clone
+// appends on its own, so only the ledger can decide an id across owners:
+// there a reading waits in the stream until the ledger is adopted.
+
+const READING_KIND: String = "reading.recorded";
+// The largest event body a reading keeps; a larger one is refused.
+const READING_MAX_BYTES: Int = 65536;
+
+// What an inbound message on the heart's subjects says, or why it is not
+// a reading.
+type Reading {
+    app: String = "";
+    event: String = "";
+    id: String = "";
+    payload: String = "";
+    why: String = "";
+}
+
+// What landing a reading came to: `landed`; `duplicate` (its entity is
+// recorded already); `waiting` (it cannot be decided here yet: leave it in
+// the stream); `failed` (the write did not happen: it comes again).
+type Landing {
+    outcome: String = "";
+    why: String = "";
+}
+
+// An id or a name as a row's entity carries it: letters, digits and
+// `-_.:`, at most 128 bytes.
+@unbounded
+fn reading_token(s: String) -> Bool {
+    if len(s) == 0 || len(s) > 128 { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == ":";
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The reading `subject` and `body` make, under the heart's `prefix`
+// (`<org>.app.`): the application and the event from the subject, the id
+// from the body, which is one well-formed JSON object in UTF-8.
+fn reading_of(subject: String, prefix: String, body: String) -> Reading {
+    if len(prefix) == 0 || !std::str::starts_with(subject, prefix) { return Reading { why: "not under " + prefix }; }
+    let rest = subject[len(prefix)..len(subject)];
+    let dot = std::str::index_of(rest, ".");
+    if dot <= 0 || dot + 1 >= len(rest) { return Reading { why: "names no application and event" }; }
+    let app = rest[0..dot];
+    let event = rest[(dot + 1)..len(rest)];
+    if !reading_token(app) || !reading_token(event) { return Reading { why: "the application's or the event's name is not a token (letters, digits and -_.:, at most 128)" }; }
+    if len(body) > READING_MAX_BYTES { return Reading { app: app, event: event, why: "the body is over " + to_string(READING_MAX_BYTES) + " bytes" }; }
+    if std::str::cp_count(body) < 0 { return Reading { app: app, event: event, why: "the body is not UTF-8" }; }
+    if !std::json::valid_object(body) { return Reading { app: app, event: event, why: "the body is not a JSON object" }; }
+    let id = std::json::string_field(body, "id");
+    if id.kind != "string" || !reading_token(id.text) { return Reading { app: app, event: event, why: "the body names no string `id` (letters, digits and -_.:, at most 128)" }; }
+    return Reading { app: app, event: event, id: id.text, payload: body };
+}
+
+fn reading_entity(r: Reading) -> String { return r.app + "/" + r.event + "/" + r.id; }
+
+// Whether `entity`'s reading is in the organism's memory.
+@unbounded
+fn reading_landed(p: Projection, entity: String) -> Bool {
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == READING_KIND && e.entity == entity { return true; }
+        i = i - 1;
+    }
+    return false;
+}
+
+// Land `r` as its row, where the routing table puts the kind, at the
+// revisions its absence was read at; when a memory moved under it, it is
+// read and decided again.
+@unbounded
+fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory) -> Landing {
+    if shared_here(root) && dna::route(routing_here(root), READING_KIND) == "record" {
+        return Landing { outcome: "waiting", why: "this record is shared and keeps its rows in git, where each owner's clone appends on its own; only the ledger decides an id across owners (`hale dna ledger adopt`)" };
+    }
+    let entity = reading_entity(r);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("app", r.app);
+    b.string_field("event", r.event);
+    b.string_field("id", r.id);
+    b.string_field("subject", subject);
+    b.string_field("payload", r.payload);
+    b.end_object();
+    let body = b.result();
+    let mut tries = 0;
+    while tries < 50 {
+        tries = tries + 1;
+        let head = record_head(root);
+        if !head.ok { return Landing { outcome: "failed", why: "the record's head could not be read: " + head.why }; }
+        // the projection refreshes the ledger: its revision is read after,
+        // so it is the one the scan saw
+        let p = open_projection(root, ".", "", memory);
+        let at = ledger_revision(root, memory);
+        if reading_landed(p, entity) { return Landing { outcome: "duplicate" }; }
+        let why = append_as_at(root, head.id, at, READING_KIND, entity, body, "host", memory);
+        if len(why) == 0 { return Landing { outcome: "landed" }; }
+        if why != "stale_revision" { return Landing { outcome: "failed", why: why }; }
+    }
+    return Landing { outcome: "failed", why: "the organism's memory kept moving under it" };
+}

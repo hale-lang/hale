@@ -48,7 +48,9 @@ type PubAck {
 /// (from `start_seq`) or "by_start_time" (from `start_time`, RFC 3339
 /// such as "2026-09-24T00:00:00Z"). `filter` narrows it to one subject
 /// ("" for the whole stream). An unacknowledged message comes again
-/// after `ack_wait_ms` (0: the server's default, 30 s).
+/// after `ack_wait_ms` (0: the server's default, 30 s). With
+/// `max_ack_pending` > 0 the server hands out no more than that many
+/// unacknowledged messages at once.
 type ConsumerSpec {
     durable: String = "";
     filter: String = "";
@@ -56,13 +58,18 @@ type ConsumerSpec {
     start_seq: Int = 0;
     start_time: String = "";
     ack_wait_ms: Int = 0;
+    max_ack_pending: Int = 0;
 }
 
 /// One outbound publish on its way from a bus adapter's `send` to
 /// the connection that writes it (the internal queue topic below).
+/// `ack`: not a publish but the acknowledgement of a message handed
+/// over untyped (`Inbound.reply`): written once to that subject as it
+/// is, never kept or written again.
 type Outbound {
     subject: String = "";
     data: Bytes = b"";
+    ack: Bool = false;
 }
 
 // The adapter's outbound queue: `NatsAdapter.send` publishes here on
@@ -72,4 +79,31 @@ type Outbound {
 topic NatsOutbound {
     payload: Outbound;
     subject: "pond.nats.outbound";
+}
+
+/// One inbound message a `NatsConn` hands over undecoded (its subject
+/// is under the conn's `untyped` prefix): the subject as it arrived on
+/// the wire, prefix and all, and its bytes. `reply`, for a message
+/// pulled from a durable consumer: the conn has not acknowledged it;
+/// its subscriber does, once it is done with it, by `nats_ack(reply)`,
+/// and a message never acknowledged comes again after the consumer's
+/// ack wait.
+type Inbound {
+    subject: String = "";
+    data: Bytes = b"";
+    reply: String = "";
+}
+
+/// The acknowledgement of an untyped message, for the conn to write:
+/// `NatsOutbound <- nats_ack(m.reply)` from a locus that publishes
+/// `NatsOutbound`.
+fn nats_ack(reply: String) -> Outbound { return Outbound { subject: reply, data: b"+ACK", ack: true }; }
+
+// What a `NatsConn` receives under its `untyped` prefix, as it arrived,
+// for a subscriber that reads the bytes itself: a family of subjects the
+// program does not declare topic by topic. Local only, like the queue
+// above.
+topic NatsInbound {
+    payload: Inbound;
+    subject: "pond.nats.inbound";
 }

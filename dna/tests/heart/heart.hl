@@ -1,0 +1,89 @@
+// dna/tests/heart/heart.hl — an application's pulse, as the heart fixture
+// runs it (GH #987; dna/tests/heart_reading_test.hl).
+//
+// A stand-in for voice's api: it declares its usage event as its own
+// topic, under its own subject, and binds it to pond's NATS adapter with a
+// JSON codec. It imports nothing of DNA. It publishes one event — the id
+// it is given, `-` for none — waits for the stream to take it, and exits
+// (0 once the stream took it, 1 when it did not).
+//
+//   heart <nats url> <subject prefix> <id>
+//
+// The prefix is the organization's token and a dot; the event travels as
+// `<org>.app.voice.usage.recorded`.
+
+import "../../core/pond/realtime/nats" as nats;
+
+/// One request's usage, as voice's store keeps it (spec/store.md,
+/// `usage`), cut to what the pulse needs: the id names the event.
+type Usage {
+    id: String = "";
+    project: String = "";
+    model: String = "";
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    micros: Int = 0;
+}
+
+topic UsageRecorded { payload: Usage; subject: "app.voice.usage.recorded"; }
+
+type CodecError { kind: String = ""; }
+
+// A JSON string literal (a codec is pure: no builder locus).
+fn json_str(s: String) -> String {
+    return "\"" + std::str::replace(std::str::replace(s, "\\", "\\\\"), "\"", "\\\"") + "\"";
+}
+
+/// The event on the wire: one JSON object.
+locus UsageJson {
+    fn encode(u: Usage) -> Bytes fallible(CodecError) {
+        let id = if len(u.id) > 0 { "\"id\":" + json_str(u.id) + "," } else { "" };
+        return std::bytes::from_string("{" + id + "\"project\":" + json_str(u.project) + ",\"model\":" + json_str(u.model)
+                + ",\"input_tokens\":" + to_string(u.input_tokens) + ",\"output_tokens\":" + to_string(u.output_tokens) + ",\"micros\":" + to_string(u.micros) + "}");
+    }
+    fn decode(b: Bytes) -> Usage fallible(CodecError) {
+        let t = std::str::from_bytes(b);
+        return Usage {
+            id: std::json::find_string_field(t, "id"),
+            project: std::json::find_string_field(t, "project"),
+            model: std::json::find_string_field(t, "model"),
+            input_tokens: std::json::find_int_field(t, "input_tokens"),
+            output_tokens: std::json::find_int_field(t, "output_tokens"),
+            micros: std::json::find_int_field(t, "micros")
+        };
+    }
+}
+
+main locus Heart {
+    params {
+        id: String = "";
+        nerves: nats::NatsConn = nats::NatsConn { };
+    }
+    placement { nerves: pinned; }
+    bus { publish UsageRecorded; }
+    bindings { UsageRecorded: nats::NatsAdapter { } codec(UsageJson { }); }
+    on_failure(c: nats::NatsConn, err: ClosureViolation) {
+        eprintln("heart: the stream did not take the event: ", c.last_error);
+    }
+    run() {
+        UsageRecorded <- Usage { id: self.id, project: "demo", model: "small", input_tokens: 12, output_tokens: 34, micros: 56 };
+        let mut i = 0;
+        while self.nerves.acked == 0 && i < 1000 {
+            std::time::sleep(10ms);
+            i = i + 1;
+        }
+        // the pinned connection's loop runs until the process ends: end it
+        if self.nerves.acked > 0 {
+            println("heart: usage " + self.id + " published");
+            std::process::exit(0);
+        }
+        println("heart: usage " + self.id + " unacknowledged: " + self.nerves.last_error);
+        std::process::exit(1);
+    }
+}
+
+fn main() {
+    if std::env::args_count() < 4 { eprintln("usage: heart <nats url> <subject prefix> <id>"); return; }
+    let id = if std::env::arg(3) == "-" { "" } else { std::env::arg(3) };
+    Heart { id: id, nerves: nats::NatsConn { url: std::env::arg(1), name: "heart", subject_prefix: std::env::arg(2), jetstream: true } };
+}
