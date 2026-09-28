@@ -136,3 +136,16 @@ context digest was reproduced from the new context, kept as a run's
 receipt, with the line put back, and each new key was the one the miss
 named. No fresh model call was made; every answer, token and cost field
 is unchanged.
+
+GH #989 sealed the nerves' credentials, which changed one place in the
+generated organization's `main.hl`: its `nerves` connection gains four
+lines (a two-line comment, `user: "spine"`, and `credential:
+std::secret::Credential { vault: dna::nerves_role_vault("spine") }`).
+Two entries carry that file in their context. The organization-growth
+edit (`0f311e0493a1…`, was `aaff169d9019…`) is re-keyed, and its
+recorded output carries the same four lines and nothing else; the
+growth assessment (`5e1da236ac7c…`, was `1ba00dde397f…`) is re-keyed
+for the changed context alone. Each old context digest was reproduced
+from the new context, kept as a run's receipt, with the four lines taken
+back out, and each new key was the one the miss named. No fresh model
+call was made; every answer, token and cost field is unchanged.
