@@ -11,14 +11,33 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// This test process's vault directory, `<tmp>/hale-test-vaults/<pid>`
-/// (mode 700). The first call sweeps the vaults of test processes that
-/// are gone, as `hale test` does for its own beside them: nextest runs
-/// each test as a process, and none outlives its test to remove one.
+/// The root every test vault sits under, this user's alone:
+/// `<tmp>/hale-test-vaults-<uid>`, made mode 700 and refused (loudly)
+/// when it is not a directory this user owns, so another user's root or
+/// a planted symlink never becomes where a test's secrets go.
+fn root() -> PathBuf {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let uid = unsafe { libc::getuid() };
+    let root = std::env::temp_dir().join(format!("hale-test-vaults-{uid}"));
+    let _ = std::fs::create_dir(&root);
+    let meta = std::fs::symlink_metadata(&root).unwrap_or_else(|e| panic!("test vault root {}: {e}", root.display()));
+    assert!(meta.is_dir() && meta.uid() == uid, "test vault root {} is not a directory of this user's", root.display());
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).expect("test vault root mode");
+    root
+}
+
+/// This test module's vault directory, `<root>/<pid>-<module>` (mode
+/// 700). Every test file includes this one, so an area binary holds one
+/// per file: keyed by the module too, no file's first call empties a
+/// vault another file's organism is running on when libtest runs them as
+/// threads of one process. The first call sweeps the vaults of test
+/// processes that are gone, as `hale test` does for its own beside them:
+/// nextest runs each test as a process, and none outlives its test to
+/// remove one.
 pub fn dir() -> PathBuf {
     static MADE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     MADE.get_or_init(|| {
-        let root = std::env::temp_dir().join("hale-test-vaults");
+        let root = root();
         if let Ok(entries) = std::fs::read_dir(&root) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
@@ -32,11 +51,12 @@ pub fn dir() -> PathBuf {
             }
         }
         // a gone process whose pid this one reuses left nothing behind
-        let dir = root.join(std::process::id().to_string());
+        let module = module_path!().replace("::", ".");
+        let dir = root.join(format!("{}-{module}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap_or_else(|e| panic!("test vault {}: {e}", dir.display()));
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("test vault mode");
         dir
     })
     .clone()

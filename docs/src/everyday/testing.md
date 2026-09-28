@@ -130,7 +130,8 @@ scratch directory instead.
 Each test file also gets a **vault of its own**: `hale test` points
 `std::secret` at a fresh private directory (`HALE_VAULT_DIR`) for the
 file's run and removes it afterwards, so a test that draws or stores a
-secret never touches yours, and never sees one you hold.
+secret never touches yours, and never sees one you hold. Run with
+`HALE_TEST_KEEP_VAULT=1` to keep each file's vault and see where it is.
 
 One property comes free with that binary: **a test whose loci all
 run on the main scheduler is deterministic.** No `placement`, no
