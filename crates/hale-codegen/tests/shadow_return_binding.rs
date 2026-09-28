@@ -17,12 +17,25 @@
 //! the outer value either. Both passes now resolve a returned name to
 //! the declaration in scope where the return spells it.
 //!
-//! Each case runs the program with the matrix's two oracles
-//! (`ownership_matrix.rs`): every `Box` prints a tag from its
-//! `dissolve()`, and each tag must be printed exactly as often as its
-//! literal was built, before the program's closing line; and
-//! `LOTUS_ARENA_RESIDENCY=1` must find no live arena at exit.
+//! The oracles are the matrix's (`ownership_matrix.rs`), plus order.
+//! Every `Box` prints a tag from its `dissolve()`. The tags are built
+//! on the heap (`s + "o"`), because a literal's static bytes would hide
+//! a use-after-free.
+//!
+//! - **Reclaimed:** each tag is printed exactly as often as its box was
+//!   built, before the program's closing line, and
+//!   `LOTUS_ARENA_RESIDENCY=1` finds no live arena at exit.
+//! - **Safe:** a box the caller received is never dissolved before the
+//!   caller read it, nor more often than it was received, and an ASan
+//!   build of the same program (chunk recycling off, GH #816) reports no
+//!   use-after-free or double free.
+//!
+//! The safety cases are the shapes resolving by binding must not break.
+//! In each, the value reaches the caller through a `return`, an `=` or
+//! a block tail inside an expression block. Resolving by name covered
+//! them by coincidence; the walk has to cover them by resolution.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 #[path = "support/harness.rs"]
@@ -64,7 +77,64 @@ fn run(name: &str, src: &str) -> Run {
         r.stdout,
         r.stderr
     );
+    assert!(
+        r.stdout.lines().any(|l| l.trim_end() == "end"),
+        "the program never reached its end:\n{}",
+        r.stdout
+    );
+    assert_safe(&r);
+    assert_no_sanitizer_report(name, &program);
     r
+}
+
+/// The same program under AddressSanitizer: no use-after-free, no
+/// double free. Leaks are the residency oracle's, so LeakSanitizer is
+/// off here.
+fn assert_no_sanitizer_report(name: &str, program: &hale_syntax::ast::Program) {
+    let bin = harness::unique_bin(&format!("{name}_asan"));
+    harness::build_asan(program, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run the asan build");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for marker in ["ERROR: AddressSanitizer", "heap-use-after-free", "double-free"] {
+        assert!(
+            !stderr.contains(marker),
+            "{name}: the sanitizer reported `{marker}`:\n{stderr}"
+        );
+    }
+    assert!(out.status.success(), "{name}: the asan build failed: {:?}\n{stderr}", out.status);
+}
+
+/// A box the caller received (`got <tag>`) is dissolved only after the
+/// caller read it, and at most once per time it was received.
+fn assert_safe(r: &Run) {
+    let received: Vec<&str> = r
+        .stdout
+        .lines()
+        .filter_map(|l| l.trim_end().strip_prefix("got "))
+        .collect();
+    let mut got: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut gone: BTreeMap<&str, usize> = BTreeMap::new();
+    for line in r.stdout.lines().map(str::trim_end) {
+        if let Some(tag) = line.strip_prefix("got ") {
+            *got.entry(tag).or_default() += 1;
+        } else if let Some(tag) = line.strip_prefix("D:") {
+            if !received.contains(&tag) {
+                continue;
+            }
+            let n = gone.entry(tag).or_default();
+            *n += 1;
+            assert!(
+                *n <= got.get(tag).copied().unwrap_or(0),
+                "`{tag}` was dissolved before its caller read it, or twice:\n{}",
+                r.stdout
+            );
+        }
+    }
 }
 
 /// Tag lines printed before `end`, as whole lines.
@@ -86,21 +156,16 @@ fn live_arenas(stderr: &str) -> Option<usize> {
 }
 
 fn assert_reclaimed(r: &Run, outer: usize, inner: usize) {
-    assert!(
-        r.stdout.lines().any(|l| l.trim_end() == "end"),
-        "the program never reached its end:\n{}",
-        r.stdout
-    );
     assert_eq!(
-        tags_before_end(&r.stdout, "D:o"),
+        tags_before_end(&r.stdout, "D:xo"),
         outer,
         "each returned box is reclaimed once, by its caller:\n{}",
         r.stdout
     );
     assert_eq!(
-        tags_before_end(&r.stdout, "D:i"),
+        tags_before_end(&r.stdout, "D:xi"),
         inner,
-        "each inner shadow is reclaimed once, by its block:\n{}",
+        "each inner shadow is reclaimed once:\n{}",
         r.stdout
     );
     assert_eq!(
@@ -111,8 +176,8 @@ fn assert_reclaimed(r: &Run, outer: usize, inner: usize) {
     );
 }
 
-/// The box, its factory, and a caller that reads the returned value
-/// and lets it go at its own frame's end.
+/// The box and its factory. Callers pass `s` = "x", so every tag is
+/// built at run time.
 const BOX: &str = r#"
 locus Box {
     params { tag: String; }
@@ -124,34 +189,35 @@ fn make(tag: String) -> Box {
 }
 "#;
 
+/// A caller that reads the returned box and lets it go at its own
+/// frame's end, and a main that calls it with each argument.
+fn with_callers(body: &str, arg: &str, calls: &[&str]) -> String {
+    let calls: String = calls
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("    let c{i} = call({c});\n"))
+        .collect();
+    format!(
+        "{BOX}\n{body}\nfn call(t: {arg}) -> Int {{\n    let b = e(t, \"x\");\n    println(\"got \" + b.tag);\n    return 1;\n}}\n\nfn main() {{\n{calls}    println(\"end\");\n}}\n"
+    )
+}
+
 #[test]
 fn a_shadow_in_an_if_is_reclaimed_and_the_outer_binding_reaches_the_caller() {
-    let src = format!(
-        r#"{BOX}
-fn e(t: Bool) -> Box {{
-    let r = make("o");
-    if t {{
-        let r = make("i");
-    }}
+    let src = with_callers(
+        r#"fn e(t: Bool, s: String) -> Box {
+    let r = make(s + "o");
+    if t {
+        let r = make(s + "i");
+    }
     return r;
-}}
-
-fn call(t: Bool) -> Int {{
-    let b = e(t);
-    println("got " + b.tag);
-    return 1;
-}}
-
-fn main() {{
-    let a = call(true);
-    let c = call(false);
-    println("end");
-}}
-"#
+}"#,
+        "Bool",
+        &["true", "false"],
     );
     let r = run("shadow_return_if", &src);
     assert_eq!(
-        r.stdout.lines().filter(|l| *l == "got o").count(),
+        r.stdout.lines().filter(|l| *l == "got xo").count(),
         2,
         "the caller receives the outer box:\n{}",
         r.stdout
@@ -161,33 +227,22 @@ fn main() {{
 
 #[test]
 fn a_shadow_in_a_loop_is_reclaimed_every_iteration() {
-    let src = format!(
-        r#"{BOX}
-fn l(n: Int) -> Box {{
-    let r = make("o");
+    let src = with_callers(
+        r#"fn e(n: Int, s: String) -> Box {
+    let r = make(s + "o");
     let mut i = 0;
-    while i < n {{
-        let r = make("i");
+    while i < n {
+        let r = make(s + "i");
         i = i + 1;
-    }}
+    }
     return r;
-}}
-
-fn call(n: Int) -> Int {{
-    let b = l(n);
-    println("got " + b.tag);
-    return 1;
-}}
-
-fn main() {{
-    let a = call(3);
-    println("end");
-}}
-"#
+}"#,
+        "Int",
+        &["3"],
     );
     let r = run("shadow_return_loop", &src);
     assert!(
-        r.stdout.contains("got o"),
+        r.stdout.contains("got xo"),
         "the caller receives the outer box:\n{}",
         r.stdout
     );
@@ -196,38 +251,111 @@ fn main() {{
 
 #[test]
 fn a_shadow_in_a_match_arm_is_reclaimed() {
-    let src = format!(
-        r#"{BOX}
-fn m(k: Int) -> Box {{
-    let r = make("o");
-    match k {{
-        1 -> {{
-            let r = make("i");
-        }},
-        _ -> {{ }}
-    }}
+    let src = with_callers(
+        r#"fn e(k: Int, s: String) -> Box {
+    let r = make(s + "o");
+    match k {
+        1 -> {
+            let r = make(s + "i");
+        },
+        _ -> { }
+    }
     return r;
-}}
-
-fn call(k: Int) -> Int {{
-    let b = m(k);
-    println("got " + b.tag);
-    return 1;
-}}
-
-fn main() {{
-    let a = call(1);
-    let c = call(2);
-    println("end");
-}}
-"#
+}"#,
+        "Int",
+        &["1", "2"],
     );
     let r = run("shadow_return_match", &src);
     assert_eq!(
-        r.stdout.lines().filter(|l| *l == "got o").count(),
+        r.stdout.lines().filter(|l| *l == "got xo").count(),
         2,
         "the caller receives the outer box:\n{}",
         r.stdout
     );
     assert_reclaimed(&r, 2, 1);
+}
+
+// ---- the shapes resolution must cover (review of PR #1210) --------
+
+#[test]
+fn a_write_inside_an_expression_block_to_the_returned_binding_is_the_callers() {
+    let src = with_callers(
+        r#"fn e(t: Bool, s: String) -> Box {
+    let mut r = make(s + "o");
+    let n = if t { r = Box { tag: s + "i" }; 0 } else { 1 };
+    return r;
+}"#,
+        "Bool",
+        &["true", "false"],
+    );
+    let r = run("shadow_return_expr_write", &src);
+    assert!(
+        r.stdout.contains("got xi") && r.stdout.contains("got xo"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn a_shadow_returned_from_inside_an_expression_block_is_the_callers() {
+    let src = with_callers(
+        r#"fn e(t: Bool, s: String) -> Box {
+    let r = make(s + "o");
+    let n = if t { let r = make(s + "i"); return r; 0 } else { 1 };
+    return r;
+}"#,
+        "Bool",
+        &["true", "false"],
+    );
+    let r = run("shadow_return_expr_return", &src);
+    assert!(
+        r.stdout.contains("got xi") && r.stdout.contains("got xo"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn an_expression_block_tail_that_flows_into_the_returned_binding_is_the_callers() {
+    let src = with_callers(
+        r#"fn e(t: Bool, s: String) -> Box {
+    let r = make(s + "o");
+    let y = if t { let r = Box { tag: s + "i" }; r } else { make(s + "e") };
+    if t { return y; }
+    return r;
+}"#,
+        "Bool",
+        &["true", "false"],
+    );
+    let r = run("shadow_return_expr_tail", &src);
+    assert!(
+        r.stdout.contains("got xi") && r.stdout.contains("got xo"),
+        "{}",
+        r.stdout
+    );
+}
+
+#[test]
+fn an_outer_binding_and_a_shadow_both_returned_are_each_reclaimed_once() {
+    let src = with_callers(
+        r#"fn e(t: Int, s: String) -> Box {
+    let r = make(s + "o");
+    let n = if t == 1 { return r; 0 } else { 1 };
+    if t == 2 {
+        let r = make(s + "i");
+        return r;
+    }
+    return make(s + "z");
+}"#,
+        "Int",
+        &["1", "2", "3"],
+    );
+    let r = run("shadow_return_both", &src);
+    assert!(
+        r.stdout.contains("got xo")
+            && r.stdout.contains("got xi")
+            && r.stdout.contains("got xz"),
+        "{}",
+        r.stdout
+    );
 }
