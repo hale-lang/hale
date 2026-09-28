@@ -1193,6 +1193,16 @@ The handler may:
 Default on_failure: `bubble(err)`. The runtime root's default
 is process exit with stack trace.
 
+**Which handler runs.** A locus may declare one `on_failure` per
+child type — `on_failure(a: Alpha, err: ClosureViolation)` beside
+`on_failure(b: Beta, err: ClosureViolation)`, a stdlib locus such
+as `std::http::Server` included. Every handler takes the same
+error type, so the failing child's own locus type is what selects
+one: an `Alpha`'s failure runs the `Alpha` handler and only it,
+whatever order the handlers are declared in. A child whose type
+has no handler on its parent gets the default. If two handlers
+name the same child type, the first declared is the one that runs.
+
 **Which locus is the parent.** A child locus held in a param
 field is supervised by the locus that holds it, whichever way
 the literal is written: as the field's default in the parent's

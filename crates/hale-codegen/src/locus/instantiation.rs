@@ -2223,7 +2223,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the bracket: one holding a locus (a field whose value is not
         // a plain value) or computing a default, where a literal can
         // route to it. `Sup { n: 0 }` in a hot loop stays as it was.
-        let settles_failures = info.failure_handler.is_some()
+        let settles_failures = !info.failure_handlers.is_empty()
             && (info
                 .fields
                 .iter()

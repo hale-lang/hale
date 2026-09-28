@@ -161,17 +161,23 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             }
         }
 
-        // on_failure(child: ChildL, err: ClosureViolation) body.
+        // on_failure(child: ChildL, err: ClosureViolation) bodies.
         // LLVM sig: void(parent_self, child_self, violation_ptr).
         // Inside the body: bind the child param as a LocusRef
         // local (so c.field GEPs into child struct) and the err
         // param as a TypeRef("ClosureViolation") local (so
         // err.locus / err.closure GEP into the violation struct).
-        if let (Some(failure_decl), Some((child_locus_name, ff))) =
-            (l.members.iter().find_map(|m| match m {
-                LocusMember::Failure(fd) => Some(fd),
-                _ => None,
-            }), info.failure_handler.as_ref())
+        //
+        // A locus may declare one handler per child type. Pass A
+        // pushed one (child type, fn) per `on_failure` in
+        // declaration order, so each body lowers into its OWN fn —
+        // never the first body into the last-declared handler's fn.
+        let failure_decls = l.members.iter().filter_map(|m| match m {
+            LocusMember::Failure(fd) => Some(fd),
+            _ => None,
+        });
+        for (failure_decl, (child_locus_name, ff)) in
+            failure_decls.zip(info.failure_handlers.iter())
         {
             let child_locus_name = child_locus_name.clone();
             let ff = *ff;
