@@ -72,6 +72,7 @@ locus Flaky {
     params { refused: Bool = false; calls: Int = 0; }
     fn identity() -> String { return "flaky"; }
     fn adapter() -> String { return "flaky"; }
+    fn price_micros(req: dna::ModelRequest) -> Int { return -1; }
     fn model_name() -> String { return "flaky-1"; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return 100000; }

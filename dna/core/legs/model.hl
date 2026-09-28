@@ -27,10 +27,12 @@
 // leader's are. Before its first call the leg asks the spine under its
 // lease (`hands.lease.allowance`); refused, it makes no call and the
 // attempt is declined with the reason. Granted, it makes no call — a
-// retry included — once its calls have spent the allowance. A call's
-// cost is known only once it is answered (no adapter prices a request
-// before sending it), so the call that crosses the allowance is made
-// whole: a leg passes its grant by at most that one call. The evidence speaks
+// retry included — whose cost is known before it is sent (the backend's
+// `price_micros`: a price per call, a recorded answer) and past what is
+// left of the allowance, nor any once its calls have spent it; the
+// attempt is declined. A cost learned only from the answer (a price per
+// token) can cross the allowance: that call is made whole, and the owner
+// settles such an outcome failed, naming the overrun. The evidence speaks
 // the owner's vocabulary: a call's `adapter` is the adapter that
 // answered (the router's `last_adapter`), and a wait row's is `legs`,
 // with `waited_ms`.
@@ -119,6 +121,15 @@ locus ModelPerformer {
             refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed, waited_ms: ms
         });
     }
+    // Why the call `req` would make is not made, "" when it may be: its cost
+    // is known before it is sent and is past what is left of the allowance
+    // (-1: nothing bounds it).
+    fn priced_out(req: dna::ModelRequest, allowance: Int) -> String {
+        if allowance < 0 { return ""; }
+        let price = self.router.price_micros(req);
+        if price < 0 || self.spent_micros + price <= allowance { return ""; }
+        return "the call would cost " + to_string(price) + " micro-dollars, past what is left of the attempt's allowance (" + to_string(allowance - self.spent_micros) + " of " + to_string(allowance) + "): no call was made";
+    }
     // One call through the router, its answer as evidence: the split of
     // tokens as the backend reported it (what its own `ModelCalled` says).
     fn asked(brief: Brief, req: dna::ModelRequest) -> dna::ModelResult {
@@ -154,6 +165,8 @@ locus ModelPerformer {
             data_class: if len(class) > 0 { class } else { "internal" },
             cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0
         };
+        let before = self.priced_out(req, allowance);
+        if len(before) > 0 { return Performance { disposition: "declined", narrative: before, calls: "[]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION }; }
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
@@ -171,10 +184,12 @@ locus ModelPerformer {
             req.retry_of = brief.attempt_id;
             // a retry is a call too: none once the allowance is spent
             if allowance >= 0 && self.spent_micros >= allowance { break; }
+            if len(self.priced_out(req, allowance)) > 0 { break; }
             r = self.asked(brief, req);
         }
-        if !r.ok && allowance >= 0 && self.spent_micros >= allowance && rate_limited(r.refused) {
-            return Performance { disposition: "declined", narrative: "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent (" + to_string(self.spent_micros) + "); the budget gate admits no further call", calls: "[" + self.calls + "]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
+        if !r.ok && rate_limited(r.refused) && allowance >= 0 && (self.spent_micros >= allowance || len(self.priced_out(req, allowance)) > 0) {
+            let why = if self.spent_micros >= allowance { "the attempt's allowance of " + to_string(allowance) + " micro-dollars is spent (" + to_string(self.spent_micros) + "); the budget gate admits no further call" } else { self.priced_out(req, allowance) };
+            return Performance { disposition: "declined", narrative: why, calls: "[" + self.calls + "]", prompt_digest: req.prompt_digest, renderer: RENDERER_VERSION };
         }
         let calls = "[" + self.calls + "]";
         if !r.ok && self.effect == "uncertain" && r.made {

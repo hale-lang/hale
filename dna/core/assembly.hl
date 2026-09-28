@@ -2608,20 +2608,17 @@ locus Dna {
         }
         if len(why) > 0 { self.refuse_submission(s, why); return; }
         // GH #1131: what a leg's calls cost is within what the spine granted
-        // its lease — nothing, when it asked for nothing; past it, the
-        // outcome is refused, and the calls are journaled all the same:
-        // what was spent is spent
+        // its lease — nothing, when it asked for nothing. Past it, the attempt
+        // settles failed, naming the overrun, so the Work's allowance of
+        // attempts bounds the repeats; the calls are journaled all the same,
+        // for what was spent is spent
         let spent = spend_of(s.calls);
+        let mut overrun = "";
         if spent.calls > 0 {
             let g = self.granted_to(s.attempt_id, s.holder, s.token);
-            let past = if !g.ok && spent.cost_micros > 0 { "the calls cost " + to_string(spent.cost_micros) + " micro-dollars with no spend admitted for the lease (`hale dna work allowance` before the first call)" }
-            else if g.ok && g.allowance_micros >= 0 && spent.cost_micros > g.allowance_micros { "the calls cost " + to_string(spent.cost_micros) + " micro-dollars, past the allowance of " + to_string(g.allowance_micros) + " granted to the lease" }
+            overrun = if !g.ok && spent.cost_micros > 0 { "overrun: the calls cost " + to_string(spent.cost_micros) + " micro-dollars with no spend admitted for the lease (`hale dna work allowance` before the first call)" }
+            else if g.ok && g.allowance_micros >= 0 && spent.cost_micros > g.allowance_micros { "overrun: the calls cost " + to_string(spent.cost_micros) + " micro-dollars, past the allowance of " + to_string(g.allowance_micros) + " granted to the lease" }
             else { "" };
-            if len(past) > 0 {
-                self.journal_calls(s.attempt_id, s.calls);
-                self.refuse_submission(s, past);
-                return;
-            }
         }
         let mut r = WorkResult {
             disposition: s.disposition, result: s.result, result_ref: s.result_ref, narrative: s.narrative, evidence: s.evidence_ref,
@@ -2633,7 +2630,13 @@ locus Dna {
         // attempt in the gateway — committed, verified and put to its Review
         // as the editor's is — and the attempt settles on what that made:
         // done once the candidate is prepared, failed when it could not be
-        if adm.value.request.output_contract == "Patch" && s.disposition == "done" {
+        if len(overrun) > 0 {
+            r.disposition = "failed";
+            r.result = "";
+            r.result_ref = "";
+            r.narrative = overrun + " (the leg: " + s.narrative + ")";
+        }
+        if len(overrun) == 0 && adm.value.request.output_contract == "Patch" && s.disposition == "done" {
             let mut m = self.mutation_of_attempt(s.attempt_id);
             let mut interrupted = "interrupted before its candidate was prepared (the owner restarted)";
             if len(m) == 0 {

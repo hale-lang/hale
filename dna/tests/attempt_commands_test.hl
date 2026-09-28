@@ -19,8 +19,8 @@
 // claim expires. Before its first model call the leg asks the spine for
 // the attempt's spend (GH #1131): the ask lands under the lease, the relay
 // carries it, and the owner's one gate grants it as a row the lookup
-// reads; calls handed back with no grant, or past it, refuse the outcome
-// and are journaled all the same. With memory (HALE_DNA_MEMORY_DSN_OWNER) the same runs
+// reads; calls handed back with no grant, or past it, settle the attempt
+// failed, naming the overrun, and are journaled all the same. With memory (HALE_DNA_MEMORY_DSN_OWNER) the same runs
 // with the store deciding the race, the hat kept by its digest, and the
 // whole of it again on an organism that adopted the ledger.
 
@@ -563,25 +563,30 @@ locus App {
         let t = usage.under(task_of(a1));
         std::test::assert_eq_int(t.input_tokens, 1200, l + "tokens per task hold out of process");
         std::test::assert(std::str::contains(t.by_position, "position:agent 1 1200 340 55"), l + "under the position: " + t.by_position);
-        // ---- t5: the spend's refusals (GH #1131), on an attempt of their own:
-        // calls handed back with no grant for the lease refuse the outcome,
-        // calls past the grant refuse it too, and what was spent is journaled
-        // either way; within the grant it settles
+        // ---- t5: the overrun (GH #1131), on a Work of its own: calls that
+        // cost more than the lease was granted — anything, when nothing was
+        // asked — settle the attempt failed, naming the overrun, so the
+        // Work's allowance of attempts bounds the repeats; what was spent is
+        // journaled all the same
         let a5 = self.ask();
         let c5 = commands.submit(alice, self.claim_of(label + "c8", identity, record.head("journal").id, "agent", alice_leg, "internal"));
         std::test::assert(c5.ok && c5.receipt.attempt.state == "claimed" && c5.receipt.attempt.attempt_id == a5, l + "t5 claimed: " + c5.receipt.reason);
-        let token5 = c5.receipt.attempt.token;
-        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5, holder: alice_leg, token: token5, disposition: "done", result: "unasked", calls: CALLS, request: label + "ng", at: std::time::now() });
-        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", a5), "with no spend admitted for the lease") && !self.has_row("attempt.outcome", a5), l + "calls with no grant refuse the outcome: " + self.row_body("attempt.outcome_refused", a5));
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5, holder: alice_leg, token: c5.receipt.attempt.token, disposition: "done", result: "unasked", calls: CALLS, request: label + "ng", at: std::time::now() });
+        let o5 = self.row_body("attempt.outcome", a5);
+        std::test::assert(std::str::contains(o5, "\"disposition\": \"failed\"") && std::str::contains(o5, "overrun: the calls cost 55 micro-dollars with no spend admitted for the lease"), l + "calls with no grant settle the attempt failed, naming the overrun: " + o5);
         std::test::assert_eq_int(self.count_rows("model.called", a5), 1, l + "and what was spent is journaled");
-        let g5 = self.granted(commands, alice, label + "aw5", identity, a5, alice_leg, token5, l);
-        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5, holder: alice_leg, token: token5, disposition: "done", result: "overspent", calls: "[{\"adapter\": \"fake\", \"backend\": \"deep\", \"cost_micros\": " + to_string(g5 + 1) + "}]", request: label + "ov", at: std::time::now() });
-        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", a5), "past the allowance of " + to_string(g5) + " granted") && !self.has_row("attempt.outcome", a5), l + "calls past the grant refuse the outcome: " + self.row_body("attempt.outcome_refused", a5));
-        std::test::assert_eq_int(self.count_rows("model.called", a5), 2, l + "journaled too");
-        let o5 = commands.submit(alice, self.outcome_of(label + "o5", identity, a5, alice_leg, token5, self.hat_of(a5)));
-        std::test::assert(o5.ok && o5.receipt.attempt.state == "requested", l + "the outcome within the grant: " + o5.receipt.reason);
-        std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "relayed");
-        self.wait_row("attempt.outcome", a5, l + "and it settles");
+        // the Work asks again; the retry is granted its ceiling and overruns it
+        let a5r = a5[0..(len(a5) - 2)] + "a1";
+        self.wait_row("attempt.admitted", a5r, l + "the Work tries again");
+        self.wait_row("effect.relayed", "attempt:" + a5r, l + "and asks a leg for it");
+        let c5r = commands.submit(alice, self.claim_of(label + "c9", identity, record.head("journal").id, "agent", alice_leg, "internal"));
+        std::test::assert(c5r.ok && c5r.receipt.attempt.attempt_id == a5r, l + "the retry claimed: " + c5r.receipt.reason);
+        let g5 = self.granted(commands, alice, label + "aw5", identity, a5r, alice_leg, c5r.receipt.attempt.token, l);
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5r, holder: alice_leg, token: c5r.receipt.attempt.token, disposition: "done", result: "overspent", calls: "[{\"adapter\": \"fake\", \"backend\": \"deep\", \"cost_micros\": " + to_string(g5 + 1) + "}]", request: label + "ov", at: std::time::now() });
+        let o5r = self.row_body("attempt.outcome", a5r);
+        std::test::assert(std::str::contains(o5r, "\"disposition\": \"failed\"") && std::str::contains(o5r, "past the allowance of " + to_string(g5) + " granted to the lease"), l + "calls past the grant settle it failed: " + o5r);
+        std::test::assert_eq_int(self.count_rows("model.called", a5r), 1, l + "journaled too");
+        self.wait_row("work.settled", ops::usage_work_of(a5), l + "and the Work, its attempts spent, settles: the repeats are bounded");
     }
     // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
     @unbounded
