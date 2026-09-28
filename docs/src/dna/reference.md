@@ -153,8 +153,8 @@ restart `HALE_DNA_RESTART_FOR` / `HALE_DNA_EXPRESSION`. A node sets
 `HALE_DNA_ONESHOT` makes a generated application's `run()` return
 after its first cycle (for tests). `HALE_DNA_NO_BUILD_CACHE=1` makes
 the host build the organization's seed — and under `dev` the
-application's — from scratch on every start, instead of reusing the
-binary it built for the same sources ([the host, the nerves, the
+application's — from scratch on every start (into `.hale/dna/build/`),
+instead of reusing the binary it built for the same sources ([the host, the nerves, the
 nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
 `init` looks for when it writes the catalog, and the
 `HostedCredential` sources it names. Git config: `dna.remote` (default

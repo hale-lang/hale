@@ -301,9 +301,12 @@ type FleetOutcome {
 // variable that changes codegen; and the seed's own path, because a
 // binary carries the paths of the sources it was built from.
 //
-// A hit is a copy and nothing else, so a fingerprint that cannot be
-// taken whole is simply not taken: every miss builds exactly as
-// before. `HALE_DNA_NO_BUILD_CACHE=1` turns the cache off.
+// A hit is the stored entry, used where it lies, so a fingerprint that
+// cannot be taken whole is simply not taken: every miss builds. `HALE_DNA_NO_BUILD_CACHE=1` turns the cache off.
+//
+// An entry is a directory, `<cache>/<fingerprint>/<seed name>`, so the
+// process a host starts keeps the seed's own name in `ps`; the binary
+// is built into it with `-o` and started from it, never copied out.
 const BUILD_CACHE_KEEP: Int = 32;
 const BUILD_ENV_KNOBS: String = "HALE_DEV HALE_TS_SHIM_A LOTUS_LTO LOTUS_ASAN LOTUS_DUMP_IR LOTUS_NO_BUS_DEVIRT LOTUS_NO_DEBUGINFO LOTUS_NO_CHUNK_POOL";
 
@@ -393,7 +396,7 @@ fn build_fingerprint(hale: String, root: String, seed_dir: String) -> String {
     // on this machine is — a dev build keeps its predecessor's version
     let id = dna::run_tool("sh\n-c\np=$(command -v -- \"$1\" 2>/dev/null || echo \"$1\"); ls -lnL -- \"$p\" 2>/dev/null; \"$1\" --version 2>&1\nsh\n" + hale);
     if id.code != 0 { return ""; }
-    let mut t = "hale dna build cache v1\n";
+    let mut t = "hale dna build cache v2\n";
     t = t + "toolchain " + std::env::var("HALE_DNA_TOOLCHAIN") + "\n";
     t = t + "compiler " + dna::trim_nl(id.stdout) + "\n";
     t = t + "seed " + seed_relative(root, seed_dir) + "\n";
@@ -413,27 +416,74 @@ fn build_fingerprint(hale: String, root: String, seed_dir: String) -> String {
     return dna::hex(std::crypto::sha256(std::bytes::from_string(t)));
 }
 
-// Put the cached binary at `bin`. The copy lands beside it and is
-// renamed over it, so a reader sees the old file or the whole new one
-// and never a half-copied one, and a binary that is still running is
-// replaced rather than written through. The entry is touched on the
-// way, so the pruning below is least-recently-USED.
-fn build_cache_take(entry: String, bin: String) -> Bool {
-    if !std::io::fs::file_exists(entry) { return false; }
-    let r = dna::run_tool("sh\n-c\nset -e; cp -- \"$1\" \"$2.cache.$$\"; chmod +x -- \"$2.cache.$$\"; mv -f -- \"$2.cache.$$\" \"$2\"; touch -- \"$1\"\nsh\n" + entry + "\n" + bin);
-    if r.code != 0 { return false; }
-    return std::io::fs::file_exists(bin);
+// A hit: `entry` is a directory holding the seed's binary at `hit`,
+// and it is used where it lies — nothing is copied. Touched on the way,
+// so the pruning below is least-recently-USED.
+fn build_cache_touch(entry: String, hit: String) -> Bool {
+    if !std::io::fs::file_exists(hit) { return false; }
+    let r = dna::run_tool("touch\n--\n" + entry);
+    return r.code == 0;
 }
 
-// Keep what was just built under its fingerprint, and hold the cache
-// to BUILD_CACHE_KEEP binaries, pruned least-recently-used first. No
-// lock: a store is a rename, so a reader finds a whole binary or
-// none, and two hosts that build the same thing at once simply both
-// store it. An entry pruned mid-copy fails that copy, and a failed
-// copy builds — the behaviour without a cache at all.
-fn build_cache_keep(entry: String, bin: String, cache: String) {
+// Keep what was just built, in the private directory `work`, as `entry`,
+// and hold the cache to BUILD_CACHE_KEEP entries, pruned
+// least-recently-used first. No lock: a store is one rename of a whole
+// directory, so a reader finds a whole entry or none, and a binary that
+// is still running keeps its inode when its entry is replaced or pruned.
+// Two hosts that build the same thing at once both rename; the second
+// finds the entry there (a rename onto a non-empty directory is refused)
+// and drops its own copy — the first is byte for byte what it built. An
+// entry pruned between a hit and its start fails that start, and a
+// failed start rebuilds — the behaviour without a cache at all.
+fn build_cache_keep(entry: String, work: String, cache: String) {
     let after = to_string(BUILD_CACHE_KEEP + 1);
-    let r = dna::run_tool("sh\n-c\nset -e; cp -- \"$2\" \"$1.tmp.$$\"; mv -f -- \"$1.tmp.$$\" \"$1\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -f -- \"./$x\"; done\nsh\n" + entry + "\n" + bin + "\n" + cache);
+    let r = dna::run_tool("sh\n-c\nmv -T -- \"$1\" \"$2\" 2>/dev/null || rm -rf -- \"$1\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -rf -- \"./$x\"; done\nsh\n" + work + "\n" + entry + "\n" + cache);
+}
+
+// The outcome of a seed build: the binary's path, or "" and why not.
+type SeedBuild { bin: String = ""; why: String = ""; }
+
+// A seed is built ONCE per content fingerprint (see `build_cache_dir`
+// above): every start and every restart of an organism whose sources
+// did not move re-emitted the IR for the whole vendored core, 3.8s of
+// it, for a binary that could only come out the same. A miss builds.
+//
+// Nothing is built into the seed's own directory, so a build leaves the
+// source tree as it found it. With a cache, the binary is built with
+// `-o` into a private directory beside the entries and renamed to
+// `<cache>/<fingerprint>/<seed name>`, and THAT path is the answer: a
+// hit is that path and nothing else, with no copy. Without one
+// (`HALE_DNA_NO_BUILD_CACHE`, no cache home, a fingerprint that could not
+// be taken whole) it is built into
+// `<root>/.hale/dna/build/<seed>/<seed name>`, the tree `.hale/` already
+// is. `cache` is "" for "no cache".
+@unbounded
+fn build_seed_at(hale: String, root: String, seed_dir: String, cache: String) -> SeedBuild {
+    let sl = last_index_of(seed_dir, "/");
+    let name = if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] };
+    let key = if len(cache) > 0 { build_fingerprint(hale, root, seed_dir) } else { "" };
+    if len(key) == 0 {
+        let rel = seed_relative(root, seed_dir);
+        let bin = root + "/.hale/dna/build" + (if rel == "." { "" } else { "/" + rel }) + "/" + name;
+        let b = dna::run_tool(hale + "\nbuild\n" + seed_dir + "\n-o\n" + bin);
+        if b.code != 0 { return SeedBuild { why: "`hale build " + seed_dir + "` failed" }; }
+        if !std::io::fs::file_exists(bin) { return SeedBuild { why: "no binary at " + bin }; }
+        return SeedBuild { bin: bin };
+    }
+    let entry = cache + "/" + key;
+    let hit = entry + "/" + name;
+    if build_cache_touch(entry, hit) { return SeedBuild { bin: hit }; }
+    let made = dna::run_tool("mktemp\n-d\n" + cache + "/.build.XXXXXX");
+    if made.code != 0 { return SeedBuild { why: "no scratch directory under " + cache }; }
+    let work = dna::trim_nl(made.stdout);
+    let b = dna::run_tool(hale + "\nbuild\n" + seed_dir + "\n-o\n" + work + "/" + name);
+    if b.code != 0 || !std::io::fs::file_exists(work + "/" + name) {
+        dna::run_tool("rm\n-rf\n" + work);
+        return SeedBuild { why: "`hale build " + seed_dir + "` failed" };
+    }
+    build_cache_keep(entry, work, cache);
+    if !std::io::fs::file_exists(hit) { return SeedBuild { why: "no binary at " + hit }; }
+    return SeedBuild { bin: hit };
 }
 
 // The exact production relay, also composed by the focused native command
@@ -1099,23 +1149,11 @@ main locus Host {
         if r.ok && r.expires > self.lease.expires { self.lease.expires = r.expires; }
         return true;
     }
-    // A seed is built ONCE per content fingerprint and copied
-    // thereafter (see `build_cache_dir` above): every start and every
-    // restart of an organism whose sources did not move re-emitted the
-    // IR for the whole vendored core, 3.8s of it, for a binary that
-    // could only come out the same. A miss builds exactly as before.
+    // The build is `build_seed_at` below; this only says why it failed.
     fn build_seed(seed_dir: String) -> String {
-        let sl = last_index_of(seed_dir, "/");
-        let bin = seed_dir + "/" + (if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] });
-        let cache = build_cache_dir();
-        let key = if len(cache) > 0 { build_fingerprint(self.hale, self.root, seed_dir) } else { "" };
-        let entry = if len(key) > 0 { cache + "/" + key } else { "" };
-        if len(entry) > 0 && build_cache_take(entry, bin) { return bin; }
-        let b = dna::run_tool(self.hale + "\nbuild\n" + seed_dir);
-        if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
-        if !std::io::fs::file_exists(bin) { self.say("no binary at " + bin); return ""; }
-        if len(entry) > 0 { build_cache_keep(entry, bin, cache); }
-        return bin;
+        let r = build_seed_at(self.hale, self.root, seed_dir, build_cache_dir());
+        if len(r.bin) == 0 { self.say(r.why); }
+        return r.bin;
     }
     fn sha12(bin: String) -> String {
         let h = dna::sha256_file(bin);
