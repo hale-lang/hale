@@ -123,7 +123,16 @@ locus ReferenceInfrastructure {
         let hp = dna::trim_nl(port.stdout);
         let colon = std::str::index_of(hp, ":");
         if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the database's port from compose: " + dna::trim_nl(port.stderr) }; }
-        return dna::Database { present: true, dsn: "postgres://dna:dna@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
+        // GH #989: the superuser's password is the vault's; a database
+        // made with another adopts it, from the file compose mounts (read
+        // inside the container, never on a command line)
+        let seed = compose_seed(self.root);
+        let owner = std::secret::Credential { vault: postgres_owner_vault(seed) };
+        if len(seed) == 0 || !owner.ready() { return dna::Database { why: "the vault holds no password for the compose database (" + postgres_owner_vault(seed) + "; `hale dna upgrade` draws it, `hale dna secrets` lists it)" }; }
+        let adopt = "docker\ncompose\n-f\n" + compose + "\nexec\n-T\nknowledge-db\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
+        let mut tries = 0;
+        while dna::run_tool(adopt).code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; }
+        return dna::Database { present: true, dsn: "postgres://dna:" + owner.reveal_text() + "@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
     }
     // The nerves' server (GH #986), from dna/compose.yaml's `nerves`
     // service, brought up when it is not: its URL, without a user.

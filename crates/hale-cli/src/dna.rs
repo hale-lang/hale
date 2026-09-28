@@ -1296,7 +1296,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let gi = root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
-    for line in ["/vendor/", "/.hale/", NATS_SECRETS_IGNORE] {
+    for line in ["/vendor/", "/.hale/", SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
         if !gtext.lines().any(|l| l.trim() == line) {
             if !gtext.is_empty() && !gtext.ends_with('\n') {
                 gtext.push('\n');
@@ -1312,9 +1312,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     }
     // 8b. GH #989: the organism's secrets, provisioned in one place (the
     // skin's list, dna/host/secrets.hl): drawn into the vault, the nerves'
-    // dna/nats.conf (tracked, no secret) written, and the server's
-    // dna/nats.secrets.conf (the only file with a password: mode 600,
-    // ignored) from the same draw. After the record (the
+    // dna/nats.conf (tracked, no secret) written, and the servers'
+    // dna/nats.secrets.conf and dna/postgres.secrets (the only files with a
+    // password: mode 600, ignored) from the same draw. After the record (the
     // vault names are its organization's) and after .gitignore (the writer
     // refuses a file git would track).
     out.push(organism_secrets(&root, true));
@@ -1493,54 +1493,49 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}: `dna::Ownership {{ path: \"dna/org/owners\" }}` no longer builds; delete the field — ownership is the graph's (GH #1123)", main_path.display()));
         }
     }
-    // GH #986, #989: the nerves — a NATS server beside memory's Postgres,
-    // one user per family of subjects. dna/nats.conf is a generated seed
-    // file and is regenerated, and a regenerated seed rotates the nerves'
-    // passwords: drawn anew into the vault, and into the untracked
-    // dna/nats.secrets.conf (the project's .gitignore gains it first)
+    // GH #986, #988, #989: dev's environment. dna/compose.yaml is a
+    // generated seed file and is regenerated (a hard cut: its own compose
+    // project, `hale-dna-<name>`, the nerves and the senses beside memory,
+    // the servers' passwords from the vault's files); dna/senses.yml is
+    // created when missing. Then the organism's secrets, provisioned, and
+    // a regenerated seed rotates the nerves' passwords. The project's
+    // .gitignore gains the secrets files first.
     if root.join("dna").is_dir() {
         let gi = root.join(".gitignore");
         let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
-        if !gtext.lines().any(|l| l.trim() == NATS_SECRETS_IGNORE) {
-            if !gtext.is_empty() && !gtext.ends_with('\n') {
+        let mut added = Vec::new();
+        for line in SECRETS_IGNORES {
+            if !gtext.lines().any(|l| l.trim() == line) {
+                if !gtext.is_empty() && !gtext.ends_with('\n') {
+                    gtext.push('\n');
+                }
+                gtext.push_str(line);
                 gtext.push('\n');
+                added.push(line);
             }
-            gtext.push_str(NATS_SECRETS_IGNORE);
-            gtext.push('\n');
+        }
+        if !added.is_empty() {
             fs::write(&gi, gtext).map_err(|e| e.to_string())?;
-            out.push(format!("edited  {} ({NATS_SECRETS_IGNORE})", gi.display()));
+            out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
+        }
+        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
+        let compose = root.join("dna/compose.yaml");
+        let want = compose_yaml(&project);
+        let had = fs::read_to_string(&compose).unwrap_or_default();
+        if had != want {
+            fs::write(&compose, &want).map_err(|e| format!("write {}: {e}", compose.display()))?;
+            out.push(format!("{} {} (its own compose project, hale-dna-{}; the servers' passwords from the vault)", if had.is_empty() { "created" } else { "rewrote" }, compose.display(), compose_name(&project)));
+            let stale = compose_containers_elsewhere(&compose, &format!("hale-dna-{}", compose_name(&project)));
+            if !stale.is_empty() {
+                out.push(format!("note    the services the previous dna/compose.yaml started are still up under another compose project, on the same ports: stop them (`docker stop {}`) before `hale dna dev`", stale.join(" ")));
+            }
+        }
+        let senses = root.join("dna/senses.yml");
+        if !senses.is_file() {
+            fs::write(&senses, senses_yml()).map_err(|e| format!("write {}: {e}", senses.display()))?;
+            out.push(format!("created {}", senses.display()));
         }
         out.push(organism_secrets(&root, true));
-    }
-    // GH #988: the senses — the store's scrape configuration is new and
-    // created; the compose file is the project's, and is told
-    let senses = root.join("dna/senses.yml");
-    if root.join("dna").is_dir() && !senses.is_file() {
-        fs::write(&senses, senses_yml()).map_err(|e| format!("write {}: {e}", senses.display()))?;
-        out.push(format!("created {}", senses.display()));
-    }
-    let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
-    if compose_text.contains("nerves:") && !compose_text.contains("nats.secrets.conf") {
-        out.push(
-            "note    dna/compose.yaml's `nerves` service does not mount dna/nats.secrets.conf (GH #989): the server's passwords are there now, not in nats.conf. Add `- ./nats.secrets.conf:/etc/nats/nats.secrets.conf:ro` to its volumes, as `hale dna init` writes it"
-                .to_string(),
-        );
-    }
-    if !compose_text.is_empty() && !compose_text.contains("senses:") {
-        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
-        out.push(format!(
-            "note    dna/compose.yaml has no `senses` service (GH #988); add it and its volume, as `hale dna init` writes them:\n  senses:\n    image: {PROMETHEUS_IMAGE}\n    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time={SENSES_RETENTION}\"]\n    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    ports:\n      - \"127.0.0.1:{}:9090\"\n    volumes:\n      - ./senses.yml:/etc/prometheus/senses.yml:ro\n      - senses:/prometheus\n  (under volumes:)  senses:\n    name: hale-dna-{}-senses",
-            compose_senses_port(&project),
-            compose_name(&project)
-        ));
-    }
-    if !compose_text.is_empty() && !compose_text.contains("nerves:") {
-        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
-        out.push(format!(
-            "note    dna/compose.yaml has no `nerves` service (GH #986); add it and its volume, as `hale dna init` writes them:\n  nerves:\n    image: nats:2\n    command: [\"-c\", \"/etc/nats/nats.conf\"]\n    ports:\n      - \"127.0.0.1:{}:4222\"\n    volumes:\n      - ./nats.conf:/etc/nats/nats.conf:ro\n      - nerves:/data\n  (under volumes:)  nerves:\n    name: hale-dna-{}-nerves",
-            compose_nats_port(&project),
-            compose_name(&project)
-        ));
     }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
     if main_text.contains("main locus Org") && main_text.contains("unix(") {
@@ -1631,16 +1626,23 @@ fn compose_yaml(project: &str) -> String {
 # dna/nats.conf. Senses (GH #988): the store keeps every part's readings
 # (dna/senses.yml says which), for the reflexes to read; `hale dna dev`
 # brings it up with the rest. All three listen on 127.0.0.1 only.
+# Secrets (GH #989): the database's superuser password and the nerves'
+# are the vault's, and reach the servers through dna/postgres.secrets
+# and dna/nats.secrets.conf, which `hale dna init` and `upgrade` write:
+# never tracked, mode 600. The project is this seed's alone, so two
+# seeds on one machine never share a container.
+name: hale-dna-{name}
 services:
   knowledge-db:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: dna
-      POSTGRES_PASSWORD: dna
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner
       POSTGRES_DB: dna
     ports:
       - "127.0.0.1:{port}:5432"
     volumes:
+      - ./postgres.secrets:/run/secrets/postgres-owner:ro
       - knowledge-db:/var/lib/postgresql/data
   nerves:
     image: nats:2
@@ -1725,9 +1727,26 @@ fn compose_name(project: &str) -> String {
     project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase()
 }
 
-/// The line the project's .gitignore carries for the nerves' secrets
-/// (GH #989): the one file with a password is never tracked.
-const NATS_SECRETS_IGNORE: &str = "/dna/nats.secrets.conf";
+/// The running containers that `compose` (its absolute path) started under
+/// a compose project other than `project`: what an older file, before
+/// each seed had its own project, left up.
+fn compose_containers_elsewhere(compose: &Path, project: &str) -> Vec<String> {
+    let file = compose.canonicalize().unwrap_or_else(|_| compose.to_path_buf());
+    let out = Command::new("docker")
+        .args(["ps", "--filter", &format!("label=com.docker.compose.project.config_files={}", file.display()), "--format", "{{.Names}}\t{{.Label \"com.docker.compose.project\"}}"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(_, p)| *p != project)
+        .map(|(n, _)| n.to_string())
+        .collect()
+}
+
+/// The lines the project's .gitignore carries for the servers' secrets
+/// (GH #989): the only files with a password are never tracked.
+const SECRETS_IGNORES: [&str; 2] = ["/dna/nats.secrets.conf", "/dna/postgres.secrets"];
 
 /// GH #989: the organism's secrets, provisioned by its bootstrap through
 /// the host (`secrets-provision`, dna/host/secrets.hl, the skin's one

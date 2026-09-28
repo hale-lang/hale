@@ -890,6 +890,7 @@ fn dna_fixture_set_is_complete() {
             "build_fingerprint_location_test.hl",
             "claims_test.hl",
             "command_relay_trust_test.hl",
+            "compose_projects_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",
             "deployment_test.hl",
