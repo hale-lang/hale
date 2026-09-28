@@ -128,6 +128,28 @@ The spec is **not aspirational**. If it's in
 shipped behavior. If a feature has been removed, the spec
 entry must be removed too.
 
+## A fixture that shells out
+
+A test that runs a tool (`std::process::run`, `sh -c`) runs on macOS
+too: a CI gate, with no Mac to try it on first. Write it for both:
+
+- `/tmp` is a symlink to `/private/tmp`: compare a path as it was
+  given, or canonicalize both sides.
+- BSD tools differ: `touch -t 200101010000`, not `touch -d`; no
+  `stat -c`; no `sed -i` without a suffix (`sed -i.bak '…' f &&
+  rm -f f.bak` works on both); no `date -d`; no `mv -T`; `wc -l`
+  pads its count (trim it: `tr -d ' '`).
+- Use the helpers where they exist: `dna::file_mode` (a file's mode on
+  either system), `dna::free_port` (a port bound before it is handed
+  back), `dna::scratch_root` / `dna::scratch_done` (a scratch root the
+  suite collects).
+- A compose-backed fixture takes its host ports from its own seed:
+  `dna/compose.yaml`'s ports come from the project's name, so give the
+  seed a per-run name and read the ports from its compose file, never a
+  fixed `5432` or `4222`.
+- A step that only Linux has (`/proc`, `stat -c`) is gated on
+  `uname -s`, and says so.
+
 ## Two-channel rule (narrowed 2026-05-25)
 
 `fallible(E)` is rejected on **substrate-facing surfaces**:
