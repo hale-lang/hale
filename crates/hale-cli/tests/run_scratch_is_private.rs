@@ -51,12 +51,21 @@ impl Scratch {
         self.0.join("tmp")
     }
 
+    /// What is left under the `TMPDIR` `hale` was given. `hale test` keeps
+    /// one per-user root for its test vaults (`hale-test-vaults-<uid>`);
+    /// the root stays, and only a vault left inside it counts.
     fn leftovers(&self) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(self.tmp())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let mut v: Vec<String> = Vec::new();
+        for e in std::fs::read_dir(self.tmp()).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("hale-test-vaults-") {
+                for inner in std::fs::read_dir(e.path()).unwrap().flatten() {
+                    v.push(format!("{name}/{}", inner.file_name().to_string_lossy()));
+                }
+            } else {
+                v.push(name);
+            }
+        }
         v.sort();
         v
     }
