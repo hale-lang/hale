@@ -1,0 +1,17 @@
+//! The `bus_transport` integration-test binary: 5 test files of this area, kept
+//! where they are (their paths, names and history unchanged) and built as
+//! modules of one binary, so the crate links once for the area instead of
+//! once per file. Each file is a module; a test's name is `<file>::<fn>`.
+//! A new test file joins an area by a line here (and is refused by
+//! `every_test_file_is_built` until it does).
+
+#[path = "mirror_ring.rs"]
+mod mirror_ring;
+#[path = "spsc_ring.rs"]
+mod spsc_ring;
+#[path = "transport.rs"]
+mod transport;
+#[path = "transport_counters.rs"]
+mod transport_counters;
+#[path = "transport_tcp.rs"]
+mod transport_tcp;

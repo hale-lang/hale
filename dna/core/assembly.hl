@@ -2,7 +2,7 @@
 // comment 1: constructor-shaped assembly).
 //
 // "Configuration" is Hale source: a project writes `Dna { memory:
-// ..., work: ..., governance: ..., membrane: ... }` in its main's
+// ..., work: ..., governance: ..., board: ... }` in its main's
 // params, supplying concrete children behind the core's interfaces.
 // The assembly is visible to the ApplicationModel, claims can reason
 // about its reachability and effects, and changing it is an ordinary
@@ -13,7 +13,7 @@
 // (constitutions adopted by the main, never a constructor flag), and
 // durable state (behind the constructed stores, never a literal).
 
-// ---- the human/external membrane -----------------------------------
+// ---- the Board: where people see and decide -------------------------
 
 @form(vec)
 locus KnowledgeReviewIds { capacity { heap rows of String; } }
@@ -43,7 +43,7 @@ locus LocalHumanMembrane {
 
 // The Board (GH #566 F2): the human authority at the top of the org
 // chart. Intent enters through it, escalations and reports leave
-// through it; it owns every grant. It is the membrane's human side
+// through it; it owns every grant. It is the organism's human side
 // under its organizational name.
 locus Board {
     params { who: String = "board"; offered: Int = 0; notified: Int = 0; escalations: Int = 0; last: String = ""; }
@@ -312,7 +312,7 @@ locus Dna {
         unrecorded_contraction: String = "";
         review_policy: ReviewPolicy = HumanBeforeApply { };
         deployment: Deployment = NoDeployment { };
-        membrane: Membrane = LocalHumanMembrane { };
+        board: Membrane = LocalHumanMembrane { }; // the Board: where people see and decide
         // Phase 2 (GH #529): where a mutation edits, how it is verified,
         // and who edits. The gateway and the verification journal
         // through THIS assembly's Journal (handed to them per call).
@@ -417,7 +417,7 @@ locus Dna {
     }
     // A mutation's Review is a child of the assembly: born when the
     // candidate is verified, keyed on its review id so a verdict from
-    // the membrane reaches exactly it. The Journal is the authority:
+    // the Board reaches exactly it. The Journal is the authority:
     // a pending mutation Review is re-born from it at birth, so an
     // organism restarted mid-review can still be answered.
     // A Review is a resident: it stays for a re-approval after it has
@@ -459,9 +459,9 @@ locus Dna {
                 if std::env::var_exists("HALE_DNA_EXPRESSION") { std::env::var("HALE_DNA_EXPRESSION") } else { "" });
         }
     }
-    // GH #527 B6: intent crossing the membrane on the typed channel
+    // GH #527 B6: intent arriving on the nerves' typed channel
     // (`hale dna task create`, Iris) enters through the SAME gate as a local
-    // `ask` — the membrane decides, the Metabolism births the Task,
+    // `ask` — the Board decides, the Metabolism births the Task,
     // the Journal records both. The organism's main binds this topic
     // to the nerves (GH #986); nothing about the decision lives in the
     // transport.
@@ -716,7 +716,7 @@ locus Dna {
         return len(d) > 0 && self.verification.receipts.read(d) == text;
     }
     // The window's allowance is spent: journaled once per window, the
-    // membrane told; the caller refuses or waits.
+    // the Board told; the caller refuses or waits.
     fn budget_exhausted(now: Int) -> Bool {
         if !self.budget.exhausted(now) { return false; }
         if self.budget.announce() {
@@ -729,7 +729,7 @@ locus Dna {
             b.int_field("at", now);
             b.end_object();
             let x = self.journal.append(self.journal.revision(), "budget.exhausted", "budget", b.result());
-            self.membrane.notify("budget", "exhausted: " + self.budget.describe(now) + "; model-backed work waits for the next window, Reviews wait for the Board");
+            self.board.notify("budget", "exhausted: " + self.budget.describe(now) + "; model-backed work waits for the next window, Reviews wait for the Board");
         }
         return true;
     }
@@ -964,7 +964,7 @@ locus Dna {
         q.end_object();
         if !self.governance_once("review.requested", "review:" + review_id, q.result()) { return ""; }
         if !self.ensure_knowledge_review(review_id) { return ""; }
-        self.membrane.notify("knowledge", "board needed for " + review_id + ": " + question);
+        self.board.notify("knowledge", "board needed for " + review_id + ": " + question);
         return digest;
     }
     // The `review.requested` body of a knowledge proposal's Review, ""
@@ -1315,7 +1315,7 @@ locus Dna {
         let head = self.gateway.head_of(wt);
         if head != reviewed {
             let x = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "candidate moved after review: " + head + " != " + reviewed);
-            self.membrane.notify("mutation", mutation_id + " refused: the candidate moved after the review");
+            self.board.notify("mutation", mutation_id + " refused: the candidate moved after the review");
             return "refused: candidate moved after review";
         }
         // The DESTINATION must also be the base the review was against
@@ -1333,7 +1333,7 @@ locus Dna {
         let now_head = self.gateway.head();
         if len(base) > 0 && now_head != base && !(already.done && already.ok) {
             let y = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome moved since the review: " + now_head + " != " + base + "; propose again on the new base");
-            self.membrane.notify("mutation", mutation_id + " refused: the genome moved since the review (" + short_sha(base) + " -> " + short_sha(now_head) + ")");
+            self.board.notify("mutation", mutation_id + " refused: the genome moved since the review (" + short_sha(base) + " -> " + short_sha(now_head) + ")");
             return "refused: the genome moved since the review";
         }
         // A destination carrying uncommitted work of its own. The
@@ -1346,7 +1346,7 @@ locus Dna {
         let dirty = self.gateway.dirty(self.genome_seed, wt);
         if len(dirty) > 0 && !(already.done && already.ok) {
             let z = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome has uncommitted changes; commit or stash them and approve again:\n" + dirty);
-            self.membrane.notify("mutation", mutation_id + " refused: the genome has uncommitted changes");
+            self.board.notify("mutation", mutation_id + " refused: the genome has uncommitted changes");
             return "refused: the genome has uncommitted changes";
         }
         return self.apply_candidate(mutation_id, reviewed, now);
@@ -1360,7 +1360,7 @@ locus Dna {
         let r = self.gateway.apply(self.journal, mutation_id, candidate, lease.token, now);
         if !r.ok {
             let x = self.journal.append(self.journal.revision(), "mutation.failed", mutation_id, "apply: " + r.refused);
-            self.membrane.notify("mutation", mutation_id + " apply failed: " + r.refused);
+            self.board.notify("mutation", mutation_id + " apply failed: " + r.refused);
             return "failed: " + r.refused;
         }
         if r.replayed { return "applied (replayed)"; }
@@ -1379,7 +1379,7 @@ locus Dna {
             return "applied";
         }
         let x = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "apply " + candidate + " seed " + seed + " fitness " + fitness);
-        self.membrane.notify("restart", mutation_id + " applied as " + candidate + "; rebuild and restart requested");
+        self.board.notify("restart", mutation_id + " applied as " + candidate + "; rebuild and restart requested");
         return "applied";
     }
     // Back to the Mutation's base through the gateway, and the old
@@ -1393,18 +1393,18 @@ locus Dna {
         let r = self.gateway.rollback(self.journal, mutation_id, base, lease.token, now);
         if !r.ok {
             let y = self.journal.append(self.journal.revision(), "mutation.failed", mutation_id, "rollback: " + r.refused);
-            self.membrane.notify("mutation", mutation_id + " rollback failed: " + r.refused);
+            self.board.notify("mutation", mutation_id + " rollback failed: " + r.refused);
             return;
         }
         if self.deployment.kind() != "none" {
             let back = self.deployment.rollback(base);
             let d = self.journal.append(self.journal.revision(), "expression.deployed", mutation_id, (if back { "restored " } else { "failed to restore " }) + base + " via " + self.deployment.kind() + " after " + why);
-            self.membrane.notify("restart", mutation_id + " rolled back to " + base + " after " + why + (if back { "" } else { " — the deployment did not restore it" }));
+            self.board.notify("restart", mutation_id + " rolled back to " + base + " after " + why + (if back { "" } else { " — the deployment did not restore it" }));
             return;
         }
         self.restarts_requested = self.restarts_requested + 1;
         let y = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "rollback " + base + " seed " + std::json::find_string_field(req, "seed") + " after " + why);
-        self.membrane.notify("restart", mutation_id + " rolled back to " + base + " after " + why);
+        self.board.notify("restart", mutation_id + " rolled back to " + base + " after " + why);
     }
     @unbounded
     fn approved(mutation_id: String) -> Bool {
@@ -1838,7 +1838,7 @@ locus Dna {
     }
     // A planned ask becomes a Mutation under the class and target the
     // leader named; an ask the leader calls a person's job is handed
-    // rather than mutated. Bounded by the Tasks the membrane admits.
+    // rather than mutated. Bounded by the Tasks the Board admits.
     @unbounded
     fn on_planned(p: Plan) {
         // card 16: a human attempt awaiting the leader's word is handed
@@ -1959,7 +1959,7 @@ locus Dna {
         let req = c.request;
         let case_id = case_id_of(req);
         if len(case_id) == 0 {
-            self.membrane.notify("case", "attempt " + c.attempt_id + " names no Work of a step: no case for it");
+            self.board.notify("case", "attempt " + c.attempt_id + " names no Work of a step: no case for it");
             return;
         }
         if len(self.recorded_case(case_id)) > 0 || len(self.case_of_attempt(c.attempt_id)) > 0 {
@@ -2038,12 +2038,12 @@ locus Dna {
             if a.error != "stale_revision" && a.error != "claimed" {
                 self.record_refusals = self.record_refusals + 1;
                 self.held_cases.push(c);
-                self.membrane.notify("record", "the case of " + req.work_id + " was not admitted by the record (" + a.error + "); held");
+                self.board.notify("record", "the case of " + req.work_id + " was not admitted by the record (" + a.error + "); held");
                 return;
             }
         }
         self.held_cases.push(c);
-        self.membrane.notify("record", "the case of " + req.work_id + " was not admitted: the record moved too often; held");
+        self.board.notify("record", "the case of " + req.work_id + " was not admitted: the record moved too often; held");
     }
     // The admission of a case: versioned, self-sufficient, naming its
     // origin (`owner`), its disposition (`to`: the owner whose person
@@ -2124,9 +2124,9 @@ locus Dna {
         if !y.ok { self.hold_rows(case_id, kind, y.error); return false; }
         self.release_rows(case_id);
         if transfer {
-            self.membrane.notify("task", case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
+            self.board.notify("task", case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
         } else {
-            self.membrane.notify("task", case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
+            self.board.notify("task", case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
         }
         return true;
     }
@@ -2135,7 +2135,7 @@ locus Dna {
     @unbounded
     fn hold_rows(case_id: String, kind: String, why: String) {
         self.record_refusals = self.record_refusals + 1;
-        self.membrane.notify("record", "the " + kind + " row of case " + case_id + " was refused by the record (" + why + "); held");
+        self.board.notify("record", "the " + kind + " row of case " + case_id + " was refused by the record (" + why + "); held");
         let mut i = 0;
         while i < self.held_rows.len() {
             if (self.held_rows.get(i) or "") == case_id { return; }
@@ -2231,7 +2231,7 @@ locus Dna {
                 + (if len(c.evidence) > 0 { " (evidence " + c.evidence + ")" } else if len(c.exception) > 0 { " (exception: " + c.exception + ")" } else { "" });
             if !self.reported(attempt) {
                 self.cases_completed = self.cases_completed + 1;
-                self.membrane.notify("case", how + "; attempt " + attempt + " is done");
+                self.board.notify("case", how + "; attempt " + attempt + " is done");
             }
             self.report_attempt(self.org_id, attempt, WorkResult {
                 disposition: "done", result: how, narrative: how, evidence: c.evidence,
@@ -2242,7 +2242,7 @@ locus Dna {
         if c.found && !self.noted_refusal(case_id) {
             self.completions_refused = self.completions_refused + 1;
             self.refused_completions.push(case_id);
-            self.membrane.notify("case", "case " + case_id + " has a completion its bound condition refuses (" + c.why + "); the attempt " + attempt + " stays out");
+            self.board.notify("case", "case " + case_id + " has a completion its bound condition refuses (" + c.why + "); the attempt " + attempt + " stays out");
         }
         return false;
     }
@@ -2383,7 +2383,7 @@ locus Dna {
         b.int_field("at", std::time::now());
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "attempt.outcome_refused", s.attempt_id, b.result());
-        self.membrane.notify("attempt", "attempt " + s.attempt_id + ": the outcome " + s.holder + " handed back is refused: " + why);
+        self.board.notify("attempt", "attempt " + s.attempt_id + ": the outcome " + s.holder + " handed back is refused: " + why);
     }
     // The calls a leg made under the attempt, as it reported them: each
     // is one `model.called` row on the attempt id, accounted by the
@@ -2783,7 +2783,7 @@ locus Dna {
     fn on_intent(o: IntentOffer) {
         let mut from = o.from;
         if from == "" { from = "membrane"; }
-        // Intent through the membrane asks the organism to change: the
+        // Intent through the Board asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
         self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to, kind: o.kind });
@@ -2871,7 +2871,7 @@ locus Dna {
         if seen >= self.appendage_threshold && !proposed {
             let y = self.journal.append(self.journal.revision(), "appendage.proposed", p.source,
                 "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times");
-            self.membrane.notify("appendage", p.source + ": " + p.what + " persists; an organ is proposed, not grown");
+            self.board.notify("appendage", p.source + ": " + p.what + " persists; an organ is proposed, not grown");
             // GH #566 F3: initiative — the proposal is a candidate commit to
             // the organization's own seed, verified like any change and
             // the Board's to decide (an `organization` change always is)
@@ -2945,7 +2945,7 @@ locus Dna {
         }
         let digest = self.propose_knowledge(Idea { id: "concern:" + source, kind: "concern", text: what, author: source }, parent);
         let y = self.journal.append(self.journal.revision(), "concern.proposed", source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
-        self.membrane.notify("concern", source + ": `" + what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
+        self.board.notify("concern", source + ": `" + what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
     }
     // A person proposes a practice for the whole organization (GH #602).
     // The proposal is the organization's — author `org`, an initiative the
@@ -2963,7 +2963,7 @@ locus Dna {
             let x = self.governance_once("practice.refused", r.request_id, "a practice has a name and a text");
             return;
         }
-        // The Body has actually received this request through its membrane.
+        // The Body has actually received this request over the nerves.
         // Resume from this fact, never from an unverified incoming Record row:
         // the host owns signature checks before delivering those rows.
         if len(r.request_id) > 0 {
@@ -2994,7 +2994,7 @@ locus Dna {
         b.string_field("supersedes", r.supersedes);
         b.end_object();
         if !self.governance_once("practice.proposed", r.request_id, b.result()) { return; }
-        self.membrane.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
+        self.board.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
     }
     // GH #1143: a schedule asked of the organization, declared or refused,
     // answered once under the request's id. Declaring is the Board's, or
@@ -3122,7 +3122,7 @@ locus Dna {
         a.string_field("by", r.by);
         a.end_object();
         if !self.governance_once("hold.proposed", r.request_id, a.result()) { return; }
-        self.membrane.notify("holds", r.by + " proposes " + r.holder + " for " + name + ": the Board's to ratify as " + review_id);
+        self.board.notify("holds", r.by + " proposes " + r.holder + " for " + name + ": the Board's to ratify as " + review_id);
     }
     // A generic knowledge command carries the exact native document it means
     // to propose. Delivery is the host's trust boundary; the started row is
@@ -3159,7 +3159,7 @@ locus Dna {
         // An unavailable receipt or append is pending work, not a refusal.
         if digest != r.candidate_digest { return; }
         if !self.governance_once("knowledge.node.proposed", r.request_id, codec.proposed(r)) { return; }
-        self.membrane.notify("knowledge", r.by + " proposes " + r.kind + ": the Board's to ratify as " + knowledge_review_id(digest));
+        self.board.notify("knowledge", r.by + " proposes " + r.kind + ": the Board's to ratify as " + knowledge_review_id(digest));
     }
     @unbounded
     fn ensure_binding_review(r: KnowledgeBindingRequest) -> Bool {
@@ -3209,7 +3209,7 @@ locus Dna {
         let id = codec.review_id(r.candidate_digest);
         if !self.governance_once("review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_binding_review(r) { return; }
         if !self.governance_once("knowledge.binding.proposed", r.request_id, codec.proposed(r)) { return; }
-        self.membrane.notify("knowledge", r.by + " proposes a binding change: the Board's to decide as " + id);
+        self.board.notify("knowledge", r.by + " proposes a binding change: the Board's to decide as " + id);
     }
     @unbounded
     fn resume_binding_result(review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
@@ -3295,7 +3295,7 @@ locus Dna {
         let id = codec.review_id(r.candidate_digest);
         if !self.governance_once("review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_edge_review(r) { return; }
         if !self.governance_once("knowledge.edge.proposed", r.request_id, codec.proposed(r)) { return; }
-        self.membrane.notify("knowledge", r.by + " proposes a relationship change: the Board's to decide as " + id);
+        self.board.notify("knowledge", r.by + " proposes a relationship change: the Board's to decide as " + id);
     }
     @unbounded
     fn resume_edge_result(review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
@@ -3719,7 +3719,7 @@ locus Dna {
         }
         self.revisit_steps(true);
     }
-    // Intent enters through the membrane and births a durable Task;
+    // Intent enters through the Board and births a durable Task;
     // its birth and its settlement are Journal events (the causal
     // authority), the live locus is the expression.
     @unbounded
@@ -3733,7 +3733,7 @@ locus Dna {
         // and one whose leader's word is still out is in planning: offered
         // again meanwhile it is neither gated nor journaled a second time
         if self.in_planning(i.id) { return "planning"; }
-        let gate = self.membrane.offer(i);
+        let gate = self.board.offer(i);
         if gate != "accepted" {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
             return gate;
@@ -3990,10 +3990,10 @@ locus Dna {
         return true;
     }
     // A root's workflow settled: the ask is answered as far as the
-    // organism goes; the membrane hears it.
+    // organism goes; the Board hears it.
     fn on_workflow_settled(w: WorkflowSettlement) {
         self.executions_settled = self.executions_settled + 1;
-        self.membrane.notify("task", w.task_id + " settled " + w.disposition + (if len(w.reason) > 0 { ": " + w.reason } else { "" }));
+        self.board.notify("task", w.task_id + " settled " + w.disposition + (if len(w.reason) > 0 { ": " + w.reason } else { "" }));
     }
     // ---- GH #995: the catalog's steps, performed by the organization ------
     //
@@ -4351,7 +4351,7 @@ locus Dna {
                 return id;
             }
             if r.error != "stale_revision" && r.error != "claimed" {
-                self.membrane.notify("journal", "append failed; workflow " + a.id + " not admitted");
+                self.board.notify("journal", "append failed; workflow " + a.id + " not admitted");
                 return self.refuse_task(id, rev, a, "the record refused the admission: " + r.error);
             }
             // the record moved under the decision: it is taken again — and
@@ -4668,7 +4668,7 @@ locus Dna {
             let document = hb.result();
             let x = self.journal.append_exact(n, "task.handed", task_id, document);
             if x.ok || self.handoff_recorded(n, "task.handed", task_id, document) {
-                self.membrane.notify("task", task_id + " transferred from " + from + " and handed to " + assignee);
+                self.board.notify("task", task_id + " transferred from " + from + " and handed to " + assignee);
                 return true;
             }
             if x.error != "stale_revision" { return false; }
@@ -4960,16 +4960,16 @@ locus Dna {
                 if self.deployment.apply(candidate_digest) {
                     "applied"
                 } else {
-                    self.membrane.notify("mutation", "staged (no deployment): " + candidate_digest);
+                    self.board.notify("mutation", "staged (no deployment): " + candidate_digest);
                     "stage"
                 }
             },
             Disposition::Review -> {
-                self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
+                self.board.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
                 name
             },
             Disposition::Stage -> {
-                self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
+                self.board.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
                 name
             },
             Disposition::Escalate -> name,
@@ -5022,7 +5022,7 @@ locus Dna {
             // under it — no summary row, no worktree, no effect. The
             // caller holds the request; a restart never sees this id
             self.record_refusals = self.record_refusals + 1;
-            self.membrane.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
+            self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
         let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + task_id + " " + change_class + ": " + objective + " (" + target + ") at " + base);
@@ -5031,7 +5031,7 @@ locus Dna {
             // request row and recovery reads every row it has; the refusal
             // is counted and said, and the Mutation proceeds on its request
             self.record_refusals = self.record_refusals + 1;
-            self.membrane.notify("record", id + ": the record would not take the Mutation's summary row (" + x0.error + "); it proceeds on its request row");
+            self.board.notify("record", id + ": the record would not take the Mutation's summary row (" + x0.error + "); it proceeds on its request row");
         }
         let lease = self.gateway.take(id, "dna", now);
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
@@ -5201,7 +5201,7 @@ locus Dna {
         let xr = self.journal.append(self.journal.revision(), "mutation.requested", id, asked.result());
         if !xr.ok {
             self.record_refusals = self.record_refusals + 1;
-            self.membrane.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
+            self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
         let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + req.task_id + " " + class + ": " + req.objective + " (" + s.holder + "'s commit " + sha + ") at " + base);
@@ -5247,7 +5247,7 @@ locus Dna {
     }
     fn mutation_failed(id: String, why: String) -> String {
         let x = self.journal.append(self.journal.revision(), "mutation.failed", id, why);
-        self.membrane.notify("mutation", id + " failed: " + why);
+        self.board.notify("mutation", id + " failed: " + why);
         return id + ": failed: " + why;
     }
     // Assess under the boundary, record the disposition, and — Phase 2,
@@ -5325,7 +5325,7 @@ locus Dna {
         if prepared {
             if !self.governance_once("review.requested", "review:" + m.id, b.result()) || !self.ensure_organization_source_review(source, m.candidate_commit) { return "pending"; }
         } else { let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result()); }
-        self.membrane.notify("review", (if len(need.signers) > 0 { "signers " + approver_owners(need.signers) } else { authority }) + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
+        self.board.notify("review", (if len(need.signers) > 0 { "signers " + approver_owners(need.signers) } else { authority }) + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
         // GH #583 M1: a model-backed position decides only while there is
         // budget; on an exhausted window the Review waits for the Board
         // (`hale dna review`), which needs no model.
@@ -5544,7 +5544,7 @@ locus Dna {
                         verdict = if std::io::fs::file_exists(self.gateway.workspaces.path_of(m)) { "ok (reconciled after a restart: the worktree is there)" } else { "failed (reconciled after a restart: no worktree was opened)" };
                     }
                     let x = self.journal.append(self.journal.revision(), "effect.result", key, verdict);
-                    if std::str::starts_with(verdict, "unknown") { self.membrane.notify("effect", key + ": outcome unknown after a restart; `hale dna effect resolve " + key + " --outcome ok|failed`"); }
+                    if std::str::starts_with(verdict, "unknown") { self.board.notify("effect", key + ": outcome unknown after a restart; `hale dna effect resolve " + key + " --outcome ok|failed`"); }
                 }
             }
             i = i + 1;
@@ -5734,7 +5734,7 @@ locus Dna {
         b.string_field("review_policy", self.review_policy.name());
         b.string_field("deployment", self.deployment.kind());
         b.int_field("knowledge_revision", self.knowledge.revision);
-        b.int_field("notifications", self.membrane.notifications());
+        b.int_field("notifications", self.board.notifications());
         b.string_field("last_task", self.last_task);
         b.end_object();
         return b.result();

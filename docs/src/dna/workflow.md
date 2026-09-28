@@ -16,7 +16,7 @@ $ hale dna ask document the chat server in main.hl
 task t1 born for intent i1a08c0786c5 [pending]
 ```
 
-Three things happened. The membrane admitted the intent
+Three things happened. The Board admitted the intent
 (`intent.offered`). Where the organization plans, the Leader read it
 first and said what kind of work it is and for whom; while that word
 is out the state is `[planning]`, and an intent offered again

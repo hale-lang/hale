@@ -102,7 +102,11 @@ A few switches worth knowing from day one:
   so it works even when nothing is installed on disk) — and the custom requests `hale/busGraph`,
   `hale/placement`, and `hale/allocSummary` return the pub/sub
   topology, the thread/pool map, and the allocation survey's leak
-  sites. No configuration. Prefer plain JSON?
+  sites. If the compiler itself panics on a half-typed file the server
+  stays up: that file gets one error, "the compiler hit an internal error
+  on this file: …; please report it with the file" (a request gets a
+  JSON-RPC internal error), and the next edit is checked as usual. No
+  configuration. Prefer plain JSON?
   `hale check app.hl --json` emits one object per diagnostic
   (file, line, col, severity, message) on stdout — a save-hook is
   all a minimal integration needs.

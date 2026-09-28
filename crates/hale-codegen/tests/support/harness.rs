@@ -212,54 +212,22 @@ pub fn statm_resident_bytes(line: &str) -> i64 {
 ///     what nextest actually gives us;
 ///   * a process-local **counter** — separates tests within one
 ///     process, which the pid alone does not (libtest threads).
+///
+/// In an area binary every test file includes this module for itself,
+/// so there is one copy per file (`<area>::<file>::harness`) and each
+/// copy counts from 0: two files asking for `unique_bin("basic")` would
+/// draw the same path. There the file's module name joins the path. A
+/// binary of one file (`<file>::harness`) keeps the plain shape.
 pub fn unique_bin(name: &str) -> PathBuf {
+    let module: Vec<&str> = module_path!().split("::").collect();
+    let file = if module.len() >= 3 { format!("{}_", module[module.len() - 2]) } else { String::new() };
     let mut p = std::env::temp_dir();
     p.push(format!(
-        "hale_t_{}_{}_{}",
+        "hale_t_{}{}_{}_{}",
+        file,
         name,
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     p
-}
-
-/// A TCP port nothing else holds, obtained by binding `:0` and
-/// letting the kernel choose.
-///
-/// The alternative in the suite today is a hand-maintained registry
-/// of high port numbers (the 57xxx / 47xxx blocks) spread across 159
-/// files — a uniqueness invariant kept in a person's head, and
-/// already violated: `9876` appears six times.
-///
-/// Note the inherent race: the listener is closed before the port is
-/// handed back, so it is *free*, not *reserved*. That is still
-/// strictly better than a fixed number, because the kernel does not
-/// hand out a port already bound by a concurrent test.
-/// NOTE: this does not RESERVE the port. It binds an ephemeral port,
-/// reads the number, and drops the listener — so between the return
-/// and whoever binds it next there is a window in which a parallel
-/// test can take it. The window cannot be closed: holding the port is
-/// exactly what would stop the caller (often a child process) from
-/// binding it.
-///
-/// A test that must actually bind the port should therefore retry the
-/// acquire-and-bind pair as a unit rather than trusting one draw —
-/// see `tcp_listener_exclusive_bind.rs`, which flaked in CI on
-/// 2026-08-03 for exactly this reason.
-pub fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("read back the bound addr")
-        .port()
-}
-
-/// Same, for UDP — the kernel's UDP and TCP port spaces are
-/// separate, so a datagram test must ask on the right one.
-pub fn free_udp_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .expect("bind an ephemeral udp port")
-        .local_addr()
-        .expect("read back the bound addr")
-        .port()
 }

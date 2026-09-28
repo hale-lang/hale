@@ -17,10 +17,12 @@ use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/ports.rs"]
+mod ports;
 
 #[test]
 fn a_deliberate_server_shutdown_is_silent() {
-    let port = harness::free_port();
+    let port = ports::free_port();
     let src = format!(
         r#"
 locus Hello {{ fn handle(req: std::http::Request) -> std::http::Response {{ return std::http::Response {{ status: 200, body: "hi" }}; }} }}

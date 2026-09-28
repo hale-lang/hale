@@ -25,7 +25,7 @@ main locus Org {
             work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
             boundary: dna::AutonomyBoundary { child: "chat", grant: dna::Grant { … } },
             review_policy: dna::OrgPolicy { },
-            membrane: dna::Board { who: "board" },
+            board: dna::Board { who: "board" },
             gateway: dna::MutationGateway { leases: dna::GitLeases { repo: "." }, workspaces: dna::IsolatedWorktrees { … }, repo: dna::LocalGit { repo: "." } },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
             editor: dna::SourceEditor { name: "editor", models: … },
@@ -49,7 +49,7 @@ main locus Org {
 ```
 
 `core` is the substrate: the record, the work system, the grant and
-the policy, the Board as the membrane, the gateway, verification,
+the policy, the Board, the gateway, verification,
 the editor. `leader` is the position that decides inside the grant.
 `catalog` is the workflows it admits (`dna/org/workflows.hl`: DNA's
 baseline and your own; `hale dna definitions` lists them). The bindings

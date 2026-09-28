@@ -6,7 +6,6 @@
 //! field. Validates: out-of-order keys, whitespace, negatives, missing
 //! fields, and nested objects/arrays skipped by the depth scan.
 
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 

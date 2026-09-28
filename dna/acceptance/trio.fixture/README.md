@@ -124,3 +124,15 @@ context digest was reproduced from the new context, kept as a run's
 receipt, with the three changes taken back out, and each new key was the
 one the miss named. No fresh model call was made; every answer, token and
 cost field is unchanged.
+
+The Board's field on `dna::Dna` was renamed from `membrane` to `board`,
+which changed one line of the generated organization's `main.hl`
+(`board: dna::Board { who: "board" }`). Two entries carry that file in
+their context. The organization-growth edit (`aaff169d9019…`, was
+`911a2531e52e…`) is re-keyed, and its recorded output carries the same
+one line and nothing else; the growth assessment (`1ba00dde397f…`, was
+`0f8fa3aab6c4…`) is re-keyed for the changed context alone. Each old
+context digest was reproduced from the new context, kept as a run's
+receipt, with the line put back, and each new key was the one the miss
+named. No fresh model call was made; every answer, token and cost field
+is unchanged.

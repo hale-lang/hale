@@ -1984,8 +1984,8 @@ forwarder into `__api.frame`. Two synthesized loci on their own
 ids, the bound, stream forwarding) and one accepted child per
 connection (line reader, reply writer, watcher queue). All of it
 is typechecked like the author's code, and it shows in `hale
-topology` under `__api.*` subjects. The correlation store is the
-membrane's shape (#684): the request row exists before dispatch,
+topology` under `__api.*` subjects. The correlation store has the
+shape DNA's requests have (#684): the request row exists before dispatch,
 an answer is written once, and a request is admitted once.
 
 Transport surface:
@@ -2510,8 +2510,12 @@ unchanged.
 
 Bundle-wide rules:
 
-1. At most one `main` locus per bundle. Zero is fine — the
-   classic bare `fn main()` shape is still legal.
+1. At most one `main` locus per bundle, counting the entry program's
+   own. A `main locus` that arrives through `import` belongs to the
+   imported seed, not to the entry: it does not count (rule 3), so a
+   program may import a seed that has one and declare its own
+   (GH #1059). Zero is fine — the classic bare `fn main()` shape is
+   still legal.
 2. Each `bindings` entry's topic must name a declared `topic`.
 3. A topic may appear at most once across the entrypoint's bindings.
    An imported seed's `main locus` is renamed with its seed and its
@@ -2737,7 +2741,14 @@ key type") and avoids surprising semantics at registration time.
 **Key stability — captured by value at register.**
 
 A routing-key subscription captures its key value at the locus's
-instantiation (or restart). Subsequent mutations to fields the
+instantiation (or restart). The key expression is evaluated once,
+when the subscription is registered: at the instance's
+construction, before `birth()` runs (GH #737). A key a locus
+computes in `birth()` is therefore not the registered one — the
+field's default is — so a key comes in as a param at the literal
+(`Feed { symbol_id: 7 }`); registering the default on purpose stays
+valid. The same holds for a subscription a locus imported from
+another module declares. Subsequent mutations to fields the
 filter expression references do **not** change which messages the
 handler receives. If dynamic re-keying is needed, dissolve and
 re-instantiate the locus. The alternative — re-evaluating the
@@ -2773,13 +2784,6 @@ Static checks at typecheck:
    typo'd filters.
 4. `where key == _` is forbidden except on topics with
    `on_unmatched: fallback`.
-
-The key expression is evaluated once, when the subscription is
-registered: at the instance's construction, before `birth()` runs.
-A key a locus computes in `birth()` is therefore not the registered
-one — the field's default is — and assigning the field later does
-not retarget the subscription (GH #737). A key comes in as a param
-at the literal.
 5. `fail` topics: every `Topic <- value` send site must carry an
    `or` disposition clause (`or raise` / `or discard` at v0.1
    of the impl; `or handler(err)` / `or fail <p>` reserved for

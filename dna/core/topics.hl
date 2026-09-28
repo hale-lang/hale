@@ -3,9 +3,9 @@
 // Most transitions stay inside the owning locus and are read by the
 // owner through `release(c)`. Topics exist only where a fact must
 // cross an ownership tower, a placement, persistence, observation, or
-// the external membrane (#521 "domain facts and topic families").
+// the Board and the outside (#521 "domain facts and topic families").
 
-// Human/external intent entering the organism's membrane.
+// Human/external intent entering the organism through the Board.
 type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; kind: String = ""; }
 topic IntentOffered { payload: IntentOffer; subject: "dna.intent.offered"; }
 
@@ -406,7 +406,7 @@ topic KnowledgeEdgeRequested { payload: KnowledgeEdgeRequest; subject: "dna.know
 type OrganizationSourceTrigger { request_id: String = ""; }
 topic OrganizationSourceRequested { payload: OrganizationSourceTrigger; subject: "dna.organization.source.requested"; }
 
-// Review requests and verdicts cross the membrane (a human answers).
+// Review requests and verdicts cross the Board (a human answers).
 type ReviewRequest {
     review_id: String = "";
     question: String = "";
@@ -568,7 +568,7 @@ topic ModelCalled { payload: ModelEvidence; subject: "dna.model.called"; }
 
 // GH #529 D6: what became of the expression after an apply. The host
 // (`hale dna run`) rebuilds and restarts on the organism's request,
-// watches the observation window, and reports back on the membrane;
+// watches the observation window, and reports back on the nerves;
 // the organism decides whether the Mutation is retained or rolled back.
 type Observation {
     mutation_id: String = "";

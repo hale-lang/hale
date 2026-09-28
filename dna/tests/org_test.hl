@@ -90,7 +90,7 @@ main locus Org {
                 tools: dna::WorktreeTools { hale_bin: toolchain() }
             },
             review_policy: dna::OrgPolicy { },
-            membrane: dna::Board { who: "riley" },
+            board: dna::Board { who: "riley" },
             // the Leader's grant: application changes up to magnitude 2 —
             // a first change (novelty 3) is outside it, a second (novelty 1) inside
             boundary: dna::AutonomyBoundary {
@@ -128,7 +128,7 @@ main locus Org {
         std::time::sleep(150ms);
         std::test::assert_eq_str(self.last("review.settled", "m1"), "approve by riley", "the Board settled it");
         std::test::assert_eq_str(self.head(), cand1, "applied");
-        std::test::assert(self.core.membrane.notifications() > 0, "the Board was notified");
+        std::test::assert(self.core.board.notifications() > 0, "the Board was notified");
 
         // ---- 2. inside the grant: the Leader's ---------------------------
         let m2 = self.core.mutate("t2", "application", "document A in main.hl again", "main.hl", 200);

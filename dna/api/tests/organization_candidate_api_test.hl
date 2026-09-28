@@ -26,7 +26,7 @@ locus SourceCandidateCases {
             ownership: dna::Ownership { me_env: "" },
             gateway: dna::MutationGateway { leases: dna::GitLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
-            review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+            review_policy: dna::OrgPolicy { }, board: dna::Board { }
         }; body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: id });
     }
     fn first(response: std::http::Response) -> String {

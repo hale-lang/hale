@@ -1,4 +1,4 @@
-//! GH #566 F4 — GitHub as a membrane: a pending Review becomes a pull
+//! GH #566 F4 — GitHub as the Board's surface: a pending Review becomes a pull
 //! request with the three views as its body; a GitHub review becomes a
 //! `review.verdict` row in the reviewer's login with the authority the
 //! project grants that login; the settlement goes back as a comment
@@ -59,7 +59,7 @@ fn main() {
             }
         },
         review_policy: dna::OrgPolicy { },
-        membrane: dna::Board { who: "board" },
+        board: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary { child: "orggh", grant: dna::Grant { child: "orggh", classes: "docs refactor", max_magnitude: 4, review: "pre" } }
     };
     println(core.mutate("t0", "docs", "document the entrypoint in main.hl", "main.hl", 1));
@@ -200,7 +200,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// GH #648: the same membrane against the file forge — reviews and
+/// GH #648: the same surface against the file forge — reviews and
 /// verdicts as files, no `gh` anywhere — appends the same rows, and the
 /// host's profile says which forge it found.
 #[test]

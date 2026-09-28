@@ -37,7 +37,7 @@ locus BindingReviewReadCases {
         let admitted = commands.submit(alice, command); std::test::assert(admitted.ok, "native admission: " + admitted.code);
         let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));
         std::test::assert(fact.valid, "original request retains exact command and grant");
-        let body_journal = dna::GitJournal { repo: root }; let body = dna::Dna { journal: body_journal, verification: dna::HaleVerification { receipts: receipts, repo: root }, membrane: dna::Board { who: "board" } };
+        let body_journal = dna::GitJournal { repo: root }; let body = dna::Dna { journal: body_journal, verification: dna::HaleVerification { receipts: receipts, repo: root }, board: dna::Board { who: "board" } };
         body.on_knowledge_binding_requested(fact.binding);
         let created = commands.lookup(alice, command.request_id); std::test::assert(created.ok && created.receipt.binding.proposal_state == "created", "actual Body creates exact binding candidate");
         let request = fact.binding; let native = dna::KnowledgeBindingCodec { }; let review_id = native.review_id(request.candidate_digest);

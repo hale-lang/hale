@@ -73,6 +73,12 @@ env:
   # Linking is not cached; that is what the dynamic libLLVM is for.
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: sccache
+  # The Actions cache answering 503 ServerBusy ("Egress is over the
+  # account limit") failed a face job in `cargo build`: sccache could not
+  # start its server and then failed `rustc -vV`. This covers server IO
+  # errors after it is up; a server that cannot START on the backend is
+  # the `sccache health` step's, after each install below.
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -170,6 +176,20 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      # A cache outage must cost a cache miss, not the job: if sccache
+      # cannot start on the GitHub cache backend (503 ServerBusy, GH
+      # egress over the account limit), this job builds on sccache's
+      # local disk instead. SCCACHE_IGNORE_SERVER_IO_ERROR (above) does
+      # not cover a server that never starts (checked against
+      # sccache 0.18.0 with a 503 stub).
+      - &sccache-health
+        name: sccache health
+        run: |
+          if ! sccache --start-server; then
+            echo "::warning::sccache's GitHub cache backend is unavailable; this job builds without it"
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -202,6 +222,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
@@ -302,6 +324,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       # Shared cache across the partitions (and reused run-to-run).
       # rust-cache keeps only the dependency artifacts — the workspace
@@ -532,6 +556,8 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - *sccache-health
+
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -554,17 +580,15 @@ jobs:
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: cargo nextest run (hale-codegen tests, half ${{ matrix.half }}/2)
-        # Split by FILE, not by test: each file under
-        # crates/hale-codegen/tests/ is its own binary, and naming
-        # half of them with `--test` is what makes cargo compile only
-        # that half. Half 1 also takes the lib's unit tests.
+        # The crate's test files are built as ~40 area binaries (each
+        # `tests/<area>.rs` names its files with `#[path]`; see
+        # `every_test_file_is_built`), where they were 352 binaries and
+        # this step named half of them with `--test`. One link per area
+        # is cheap, so both halves build every binary and nextest deals
+        # the TESTS between them by hash, the lib's unit tests included.
         run: |
-          set -euo pipefail
-          tests=$(ls crates/hale-codegen/tests/*.rs | xargs -n1 basename | sed 's/\.rs$//' \
-            | sort | awk -v h=${{ matrix.half }} 'NR % 2 == h % 2' | sed 's/^/--test /')
-          lib=""; [ "${{ matrix.half }}" = "1" ] && lib="--lib"
-          echo "$(echo "$tests" | wc -l) test binaries in this half"
-          cargo nextest run --release -p hale-codegen --features dynamic-llvm $lib $tests
+          cargo nextest run --release -p hale-codegen --features dynamic-llvm \
+            --partition hash:${{ matrix.half }}/2
 
       - name: sccache stats
         if: always()
@@ -617,6 +641,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
@@ -753,6 +779,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
@@ -902,6 +930,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
@@ -1140,6 +1170,8 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - *sccache-health
+
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -1266,6 +1298,8 @@ jobs:
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
+      - *sccache-health
+
       - name: Cache cargo registry + dependency artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -1306,8 +1340,16 @@ jobs:
               "$dir"/*.rs 2>/dev/null | xargs -n1 basename | sed 's/\.rs$//' || true)
             names=$(printf '%s\n%s\n' "$marked" "$grouped" | sort -u \
               | while read -r n; do
-                  if [ -n "$n" ] && [ -f "$dir/$n.rs" ]; then printf '%s\n' "$n"; fi
-                done)
+                  [ -n "$n" ] && [ -f "$dir/$n.rs" ] || continue
+                  # A file is a binary of its own (a [[test]] in
+                  # Cargo.toml) or a module an area root names with
+                  # #[path]: run the binary that holds it.
+                  if grep -q "^path = \"tests/$n\.rs\"" "crates/$crate/Cargo.toml"; then
+                    printf '%s\n' "$n"; continue
+                  fi
+                  root=$(grep -lF "#[path = \"$n.rs\"]" "$dir"/*.rs | head -1 || true)
+                  if [ -n "$root" ]; then basename "$root" .rs; else printf '%s\n' "$n"; fi
+                done | sort -u)
             if [ -z "$names" ]; then
               echo "$crate: no shared-state binaries"; continue
             fi
@@ -1353,6 +1395,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       # Dependency artifacts only (see the test job); the sanitizer
       # env vars reach clang at test time, not the Rust build, so
@@ -1426,6 +1470,8 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
 
       # Dependency artifacts only (see the test job); the sanitizer
       # env vars reach clang at test time, not the Rust build, so

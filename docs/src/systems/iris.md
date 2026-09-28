@@ -73,7 +73,7 @@ law artifact.
 **An organism is a Hale binary.** Iris inspects a DNA organism the
 way it inspects any other program — `hale dna run` attaches it to
 the organization's process — and knows nothing of DNA: no record,
-no membrane, no status projection. DNA's people surface is the face,
+no Board, no status projection. DNA's people surface is the face,
 under `dna/face`, served by the head (see [DNA](../dna/index.md)).
 
 **`hale iris inspect`** is the artifact-side half of that

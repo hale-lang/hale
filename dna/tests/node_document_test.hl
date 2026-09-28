@@ -33,7 +33,7 @@ main locus App {
         std::test::assert_eq_int(init.code, 0, "temporary native Record");
         let j = dna::GitJournal { repo: repo };
         let receipts = dna::GitReceipts { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" } };
         let text = exact_text(); std::test::assert_eq_int(len(text), 8192, "advertised maximum text byte bound");
         let codec = dna::KnowledgeNodeRequestCodec { };
         let mut request = dna::KnowledgeNodeRequest {

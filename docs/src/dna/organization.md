@@ -93,9 +93,7 @@ work for the sake of activity. The pass is an execution of the
 practice `operating/optimize-cadence` declares one a day, convened by
 the Board, once the Board ratifies it (see
 [On a schedule](./working.md#on-a-schedule)). A different cadence is an
-amendment to that practice. The org chart no longer sets one:
-`optimize_every_ms` is gone, so remove it from an older
-`dna/org/main.hl`.
+amendment to that practice; the org chart sets no cadence of its own.
 
 The live organization's loop calls
 `self.core.request_tick(std::time::nanos(std::time::current()) / 1000000)`:

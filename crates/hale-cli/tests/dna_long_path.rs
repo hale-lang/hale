@@ -1,11 +1,11 @@
 //! The shakeout's finding 6 — a project whose path is ordinary but not
 //! short. A Unix socket address holds 108 bytes, path and all, and the
-//! membrane's five sockets used to live at `<root>/.hale/dna/<name>.sock`
+//! old socket transport's five sockets used to live at `<root>/.hale/dna/<name>.sock`
 //! (39 bytes of suffix, so a root of 70 characters was already too long)
 //! bound RELATIVE to the root the organization ran in, while the client
 //! wrote absolute routes — so `hale dna task create` could not reach
 //! sockets that were there and listening, and the manual shakeout had
-//! to move the checkout to `/tmp/…` to proceed. The membrane is gone
+//! to move the checkout to `/tmp/…` to proceed. That transport is gone
 //! (GH #986: an ask crosses the nerves, a NATS URL, not a filesystem
 //! path), so the 108-byte ceiling no longer applies; this keeps the
 //! regression that a long, ordinary project path still works end to
@@ -41,8 +41,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orglong");
     // the shakeout's finding 6 was a 108-byte Unix socket address the
-    // membrane's client and server disagreed on relative vs absolute;
-    // the membrane is gone (GH #986), and nothing an organization binds
+    // old socket transport's client and server disagreed on relative vs
+    // absolute; that transport is gone (GH #986), and nothing an organization binds
     // any longer names a path of its own, so there is no ceiling left
     // to cross — this keeps only the regression that an ordinary,
     // not-short project path still works end to end

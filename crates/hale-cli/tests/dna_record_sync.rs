@@ -101,7 +101,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
             }
         }
         // GH #986: "no organism here" used to be answered by the
-        // membrane's sockets being gone; it is the body lease now
+        // old socket transport being gone; it is the body lease now
         // (`organism_here`), which outlives the killed process until
         // its TTL — release it so A goes back to being a plain clone
         // (below, both A and B append offline with nobody local)

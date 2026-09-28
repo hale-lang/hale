@@ -1,6 +1,6 @@
 // Exact prepared Organization source. The owning adapter proves the complete
 // admission envelope; this native shape never supplies authority by itself.
-// Source bytes live in the Record, while the membrane carries only their key.
+// Source bytes live in the Record, while the nerves carry only their key.
 type OrganizationSourceRequest {
     application_id: String = "";
     request_id: String = "";
