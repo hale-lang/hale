@@ -24,6 +24,7 @@ fn harness_script() -> String {
 locus TwoMinds {
     params { calls: Int = 0; }
     fn identity() -> String { return "quick"; }
+    fn adapter() -> String { return "quick"; }
     fn model_name() -> String { return "minds-1"; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return 100000; }

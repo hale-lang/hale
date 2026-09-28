@@ -562,6 +562,7 @@ locus Dna {
         b.string_field("bodies", self.file_bodies(ev));
         b.bool_field("ok", ev.ok);
         b.string_field("refused", ev.refused);
+        b.int_field("waited_ms", ev.waited_ms);
         let now = std::time::now();
         b.int_field("at", now);
         b.end_object();

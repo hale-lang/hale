@@ -535,7 +535,11 @@ topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }
 // that made the call on `ModelCalled`; the assembly journals it.
 type ModelEvidence {
     attempt_id: String = "";
-    adapter: String = ""; // "openai-chat" | "local" | "fake"
+    // GH #1131: one vocabulary, in process and from a leg: the adapter that
+    // answered the call ("openai-chat", "anthropic", "local", a harness's,
+    // "fake", "recorded"); `legs` only on a leg's wait row, a call that
+    // was not made, which says so in `refused` and `waited_ms`
+    adapter: String = "";
     backend: String = ""; // the router-facing name ("quick", "deep", "private")
     endpoint: String = ""; // where the prompt went (never the credential)
     credential: String = ""; // the credential's fingerprint (a correlation handle), or ""
@@ -563,6 +567,7 @@ type ModelEvidence {
     data_class: String = "";
     ok: Bool = false;
     refused: String = "";
+    waited_ms: Int = 0; // a leg's wait row: how long it backed off before asking again
 }
 topic ModelCalled { payload: ModelEvidence; subject: "dna.model.called"; }
 

@@ -47,6 +47,7 @@ fn evidence_json(ev: dna::ModelEvidence) -> String {
     b.string_field("retry_of", ev.retry_of);
     b.string_field("data_class", ev.data_class);
     b.string_field("refused", ev.refused);
+    b.int_field("waited_ms", if ev.waited_ms < 0 { 0 } else { ev.waited_ms });
     b.end_object();
     return b.result();
 }
@@ -96,10 +97,10 @@ locus ModelPerformer {
     // long, and whether the lease was kept meanwhile.
     fn waited(brief: Brief, refused: String, ms: Int, renewed: String) {
         self.on_called(dna::ModelEvidence {
-            attempt_id: brief.attempt_id, adapter: "legs-router", backend: self.router.last_backend,
+            attempt_id: brief.attempt_id, adapter: "legs", backend: self.router.last_backend,
             prompt_digest: prompt_digest(brief.rendered), context_digest: brief.hat_digest,
             elapsed: to_string(ms) + "ms", retry_of: brief.attempt_id, data_class: std::json::find_string_field(brief.hat, "data_class"),
-            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed
+            refused: "rate limited, backed off " + to_string(ms) + "ms: " + refused + renewed, waited_ms: ms
         });
     }
     // One call through the router, its answer as evidence: the split of

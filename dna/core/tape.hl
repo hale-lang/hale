@@ -97,6 +97,7 @@ locus RecordedModel {
         if len(self.mode_env) > 0 && std::env::var_exists(self.mode_env) { self.mode = std::env::var(self.mode_env); }
     }
     fn identity() -> String { return self.inner.identity(); }
+    fn adapter() -> String { return "recorded"; }
     fn model_name() -> String { return self.inner.model_name(); }
     // Replay is permitted whatever the inner would say: an entry that
     // recorded a refusal replays the refusal, and a miss is refused.

@@ -34,6 +34,7 @@ locus Delayed {
     params { calls: Int = 0; }
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return "delayed"; }
+    fn adapter() -> String { return "delayed"; }
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         self.calls = self.calls + 1;
         return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
@@ -71,6 +72,7 @@ locus Refusing {
 locus Flaky {
     params { refused: Bool = false; calls: Int = 0; }
     fn identity() -> String { return "flaky"; }
+    fn adapter() -> String { return "flaky"; }
     fn model_name() -> String { return "flaky-1"; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return 100000; }
