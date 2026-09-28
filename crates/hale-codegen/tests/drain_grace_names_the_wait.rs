@@ -18,8 +18,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
 
@@ -35,7 +37,7 @@ struct Ran {
 fn term_after_up(tag: &str, src: &str) -> Ran {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(tag);
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_DRAIN_GRACE_MS", GRACE_MS.to_string())
         .stdout(Stdio::piped())
@@ -162,7 +164,7 @@ fn main() { Root { }; }
     )
     .expect("parse");
     let bin = harness::unique_bin("drain_grace_quiet");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .env("LOTUS_DRAIN_GRACE_MS", GRACE_MS.to_string())
         .stdout(Stdio::piped())
