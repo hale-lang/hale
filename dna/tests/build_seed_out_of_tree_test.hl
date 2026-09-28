@@ -95,7 +95,7 @@ fn main() {
     let fresh = host::build_seed_at(hale, f, f + "/app", pcache);
     std::test::assert_eq_str(fresh.why, "", "the build beside a full cache succeeds");
     std::test::assert(std::io::fs::file_exists(fresh.bin), "the fresh binary survives the pruning");
-    let kept = dna::run_tool("sh\n-c\nls -1 -- \"$1\" | wc -l | tr -d " "\nsh\n" + pcache);
+    let kept = dna::run_tool("sh\n-c\nls -1 -- \"$1\" | wc -l | tr -d ' '\nsh\n" + pcache);
     std::test::assert_eq_str(dna::trim_nl(kept.stdout), "32", "the cache is held to 32 entries");
     std::test::assert(!std::io::fs::file_exists(pcache + "/oldfile"), "an old-layout file entry is pruned too");
 
