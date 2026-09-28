@@ -178,3 +178,100 @@ fn build_refuses_what_check_refuses() {
     let _ = std::fs::remove_dir_all(&d);
     assert!(!out.status.success() && text.contains(KEPT_RULE), "{text}");
 }
+
+// ---- the review of PR #1214: every way a router is reached --------------
+
+/// `hale check` over a seed of several files; `files` are
+/// `(relative path, source)`, the entry `main.hl`.
+fn check_seed(files: &[(&str, &str)], tag: &str) -> (bool, String) {
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_borrow_lifetime_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&d);
+    for (rel, src) in files {
+        let f = d.join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, src).unwrap();
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", &d.join("main.hl").to_string_lossy()])
+        .current_dir(Path::new("/"))
+        .output()
+        .expect("hale");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let _ = std::fs::remove_dir_all(&d);
+    (out.status.success(), text)
+}
+
+#[test]
+fn a_router_reached_by_alias_field_factory_or_record_is_decided() {
+    let cases = [
+        ("alias", "fn build(dir: String) -> std::http::Router {\n    let r = std::http::Router { };\n    let r2 = r;\n    r2.add(\"GET\", \"/x\", Echo { s: dir });\n    return r;\n}\nfn main() { let r = build(\"d\"); }\n"),
+        ("local_field", "locus Api {\n    params { router: std::http::Router = std::http::Router { }; }\n    fn handle(req: std::http::Request) -> std::http::Response { return self.router.dispatch(req); }\n}\nfn build(dir: String) -> Api {\n    let a = Api { };\n    a.router.add(\"GET\", \"/x\", Echo { s: dir });\n    return a;\n}\nfn main() { let a = build(\"d\"); }\n"),
+        ("factory", "fn fresh() -> std::http::Router { return std::http::Router { }; }\nfn build(dir: String) -> std::http::Router {\n    let r = fresh();\n    r.add(\"GET\", \"/x\", Echo { s: dir });\n    return r;\n}\nfn main() { let r = build(\"d\"); }\n"),
+        ("record", "type Pair { r: std::http::Router; n: Int; }\nfn build(dir: String) -> Pair {\n    let r = std::http::Router { };\n    r.add(\"GET\", \"/x\", Echo { s: dir });\n    return Pair { r: r, n: 1 };\n}\nfn main() { let p = build(\"d\"); }\n"),
+    ];
+    for (tag, rest) in cases {
+        let (ok, out) = check(&with_echo(rest), &format!("kept_{tag}"));
+        assert!(!ok && out.contains(KEPT_RULE) && out.contains("(returned by `build`)"), "{tag}: {out}");
+    }
+}
+
+#[test]
+fn a_router_held_by_an_accepted_child_is_selfs() {
+    let src = with_echo("locus Child {\n    params { router: std::http::Router = std::http::Router { }; }\n    run() { println(self.router.dispatch(std::http::Request { method: \"GET\", path: \"/x\" }).body); }\n}\nlocus Parent {\n    params { dir: String = \"d\"; }\n    accept(c: Child) { c.router.add(\"GET\", \"/x\", Echo { s: self.dir }); }\n    birth() { Child { }; }\n}\nfn main() { Parent { }; }\n");
+    let (ok, out) = check(&src, "kept_accepted");
+    assert!(!ok && out.contains("so `c.router` holds it as a borrow") && out.contains("(a child `self` accepted)"), "{out}");
+}
+
+#[test]
+fn a_literal_handed_through_selfs_keeping_method_is_witnessed() {
+    // `install(h)` keeps `h` into `self.router`: the literal at the call
+    // in `birth()` is the witness, as a `let` there would be
+    let src = with_echo("locus Api {\n    params { dir: String = \"d\"; router: std::http::Router = std::http::Router { }; }\n    birth() { self.install(Echo { s: self.dir }); }\n    fn install(h: std::http::RouteHandler) { self.router.add(\"GET\", \"/x\", h); }\n    fn handle(req: std::http::Request) -> std::http::Response { return self.router.dispatch(req); }\n}\nfn main() { let a = Api { }; }\n");
+    let (ok, out) = check(&src, "kept_install");
+    assert!(
+        !ok && out.contains("`h` is a parameter of `Api.install`") && out.contains("At the call in `birth`") && out.contains("the argument `Echo { … }` is a temporary of that frame"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_router_filled_in_birth_is_decided_even_when_birth_is_all_that_reads_it() {
+    // no birth-only exemption for a kept handle: `birth()` can hand the
+    // router on (`self.h.r = self.router`) to something that outlives it
+    let src = with_echo("locus Holder {\n    params { r: std::http::Router = std::http::Router { }; }\n    fn go(req: std::http::Request) -> std::http::Response { return self.r.dispatch(req); }\n}\nlocus Api {\n    params { dir: String = \"d\"; router: std::http::Router = std::http::Router { }; h: Holder = Holder { }; }\n    birth() {\n        self.router.add(\"GET\", \"/x\", Echo { s: self.dir });\n        self.h.r = self.router;\n    }\n    fn handle(req: std::http::Request) -> std::http::Response { return self.h.go(req); }\n}\nfn main() { let a = Api { }; }\n");
+    let (ok, out) = check(&src, "kept_birth_copy");
+    assert!(!ok && out.contains("so `self.router` holds it as a borrow"), "{out}");
+}
+
+#[test]
+fn a_keeping_method_in_an_imported_seed_is_read_from_its_body() {
+    let lib = "interface Job { fn work() -> String; }\ntype Slot { job: Job; }\n@form(vec)\nlocus Slots { capacity { heap items of Slot; } }\nlocus Table {\n    params { slots: Slots = Slots { }; }\n    fn register(j: Job) { self.slots.push(Slot { job: j }); }\n}\n";
+    let main = "import \"./lib/table\" as tb;\nlocus Once { params { s: String = \"\"; } fn work() -> String { return self.s; } }\nfn fill(dir: String) -> tb::Table {\n    let t = tb::Table { };\n    t.register(Once { s: dir });\n    return t;\n}\nfn main() { let t = fill(\"d\"); }\n";
+    let (ok, out) = check_seed(&[("main.hl", main), ("lib/table.hl", lib)], "kept_import");
+    assert!(!ok && out.contains("keeps this argument, so `t` holds it as a borrow"), "{out}");
+}
+
+#[test]
+fn a_literal_built_in_a_loop_into_an_outer_router_is_refused() {
+    // a loop body's locus is reclaimed when the next iteration reuses its
+    // slot: every route would dispatch to the last handler
+    let src = with_echo("fn main() {\n    let r = std::http::Router { };\n    let mut i = 0;\n    while i < 3 {\n        r.add(\"GET\", \"/x\" + to_string(i), Echo { s: to_string(i) });\n        i = i + 1;\n    }\n}\n");
+    let (ok, out) = check(&src, "kept_loop");
+    assert!(!ok && out.contains("is built inside a loop in `main` and its storage is reused by the next iteration"), "{out}");
+}
+
+#[test]
+fn sound_shapes_the_review_named_are_accepted() {
+    let cases = [
+        // a `push` that stores nothing: `Acc` is no container
+        ("non_storing_push", "interface Job { fn work() -> Int; }\nlocus Once { params { n: Int = 1; } fn work() -> Int { return self.n; } }\nlocus Acc {\n    params { total: Int = 0; }\n    fn push(j: Job) { self.total = self.total + j.work(); }\n}\nlocus Registry {\n    params { acc: Acc = Acc { }; }\n    fn record(j: Job) { self.acc.push(j); }\n}\nfn fill() -> Registry {\n    let r = Registry { };\n    r.record(Once { n: 2 });\n    return r;\n}\nfn main() { let r = fill(); }\n".to_string()),
+        // a shadowed `r` returned earlier is another binding
+        ("shadowed_return", with_echo("fn body(dir: String) -> String {\n    if dir == \"\" {\n        let r = \"none\";\n        return r;\n    }\n    let r = std::http::Router { };\n    r.add(\"GET\", \"/x\", Echo { s: dir });\n    return r.dispatch(std::http::Request { method: \"GET\", path: \"/x\" }).body;\n}\nfn main() { println(body(\"d\")); }\n")),
+        // an `if` block's handler lives to the frame's end
+        ("if_block", with_echo("fn main() {\n    let r = std::http::Router { };\n    if len(\"a\") == 1 {\n        let h = Echo { s: \"d\" };\n        r.add(\"GET\", \"/x\", h);\n        r.add(\"GET\", \"/y\", Echo { s: \"e\" });\n    }\n    println(r.dispatch(std::http::Request { method: \"GET\", path: \"/x\" }).body);\n}\n")),
+    ];
+    for (tag, src) in cases {
+        let (ok, out) = check(&src, &format!("kept_sound_{tag}"));
+        assert!(ok && !out.contains(KEPT_RULE), "{tag}: {out}");
+    }
+}

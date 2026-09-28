@@ -197,6 +197,25 @@ pub fn check_bundle_opts_whole_program(
     check_bundle_opts_scoped(bundle, allow_unowned_subscriber, true, true)
 }
 
+/// What a build refuses: the whole-program check, and the borrow rule
+/// (GH #730, #1048) — a handle stored by name into a locus-carrying
+/// field, or kept by a method (`Router.add`), is never the holder's to
+/// reclaim, so it must outlive the holder. `hale check` runs the same
+/// rule beside its own reports; here it gates `build`, `run` and `test`,
+/// so a program `check` refuses never builds into a dangling handle.
+/// It runs after the model half, which it does not gate.
+pub fn check_bundle_for_build(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
+    let mut diags = check_bundle_opts_whole_program(bundle, allow_unowned_subscriber);
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let mut borrow = borrow_lifetime::borrow_lifetime_diags_with_renames(&programs, &bundle.import_renames);
+    stdlib_bodies::demangle_imports(&mut borrow, &[]);
+    diags.extend(borrow);
+    diags
+}
+
 /// The same check with the whole-program rules on: a call to a bare
 /// name nothing binds (F.18) and a bare identifier nothing binds
 /// (GH #721) are errors, as `hale build` would say. The CLI passes
@@ -217,15 +236,6 @@ pub fn check_bundle_opts_scoped(
         strict_callees,
         strict_idents,
     ));
-    // GH #730 / #1048: a borrow must outlive its holder — a handle
-    // stored by name into a locus-carrying field, or kept by a method
-    // (`Router.add`), is never the holder's to reclaim. Decided here,
-    // on the one path `check`, `build`, `run` and `test` share, so a
-    // program `check` refuses never builds into a dangling handle.
-    {
-        let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-        diags.extend(borrow_lifetime::borrow_lifetime_diags(&programs));
-    }
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a

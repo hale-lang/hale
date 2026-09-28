@@ -6887,9 +6887,21 @@ fn run_check_impl_labelled(
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::frontier::secret_taint_strict(&progs));
     }
-    // GH #730 / #1048 (a borrow outlives its holder) and the GH #737
-    // notice run inside `check_bundle_opts_scoped` above, the path
-    // `build`, `run` and `test` share.
+    // GH #730 / #1048: a borrow must outlive its holder — a handle stored
+    // by name into a locus-carrying field, or kept by a method
+    // (`Router.add`), is never the holder's to reclaim, so the frame, the
+    // dispatch or the binding that owns it must last longer than the
+    // holder. Errors, with the witness call site where a parameter carries
+    // the handle in. Beside it the GH #737 notice. `build`, `run` and
+    // `test` refuse the same through `check_bundle_for_build`.
+    {
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags_with_renames(
+            &progs,
+            &bundle.import_renames,
+        ));
+    }
     // GH #738: a bare fallible stdlib call — no `or` — is a warning by
     // default and an error under `--strict-fallible`; the default
     // flips at the next minor. The typing of the bare call is
@@ -7527,7 +7539,7 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
-    let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
+    let diags = hale_types::check_bundle_for_build(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
         for d in diags.iter().filter(|d| d.is_error()) {
@@ -8111,7 +8123,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     bundle_programs.insert(prog.display().to_string(), &program);
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
-    let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
+    let diags = hale_types::check_bundle_for_build(&bundle, false);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));
@@ -8595,7 +8607,7 @@ fn run_program(
         bundle.import_renames = renames.clone();
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
-        let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
+        let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
         if !diags.is_empty() {
             for d in &diags {
                 eprintln!("{}", render_located(d, &file_bases, &sources));
@@ -8781,7 +8793,7 @@ fn run_program(
     bundle.import_renames = renames.clone();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
+    let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &path_sources));
@@ -9081,7 +9093,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     bundle.target_label = options.target.spec().platform_label();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
+    let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));

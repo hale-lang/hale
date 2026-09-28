@@ -113,9 +113,12 @@ fn main() {
 A handler literal built in a function that returns the router, or
 in a function handed someone else's router, would be reclaimed with
 that function's frame while the router still dispatches to it, so
-`hale check` refuses it and names the rule (GH #1048). Building and
-using a router in one function — `r.add(…, Hello { }); r.dispatch(…)`
-— is sound: the handler and the router end together.
+`hale check` (and `hale build`) refuses it and names the rule (GH
+#1048). Building and using a router in one function — `r.add(…,
+Hello { }); r.dispatch(…)` — is sound: the handler and the router end
+together. Not inside a loop, though: a handler built in a loop body
+is reclaimed when the next iteration reuses its storage, so register
+handlers that are fields, or build each one outside the loop.
 
 `:name` segments capture (`path_param`), `?k=v` pairs are one
 `query_param(ctx.params, "k")` away, the first matching route

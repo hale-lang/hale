@@ -227,13 +227,16 @@ fn add_fn_registers_bare_fn_routes() {
 
 // ---- GH #1048: the handler outlives the router that keeps it ---------
 //
-// `Router.add` keeps its handler as a borrow, so `hale check` refuses a
-// handler literal from a frame the router outlives (the checker half is
+// `Router.add` keeps its handler as a borrow, so the checker refuses a
+// handler literal from a frame the router outlives (that half is
 // `hale-cli`'s `check_borrow_lifetime`). These are the shapes it lets
-// through, held to the ASan and residency oracles: the handler's
-// `String` param is built on the heap (a literal's static bytes would
-// hide a use-after-free), read back through the router after the
-// building frame is gone, and no arena outlives the program.
+// through. The oracle that would see GH #1048's defect is the OUTPUT:
+// the handler's `String` param is built on the heap (a literal's static
+// bytes would hide it) and read back through the router after the
+// building frame is gone, so a reclaimed handler prints garbage. ASan
+// and residency are hygiene here, not the detector: the reclaimed
+// handler's bytes stay in memory the process still maps, so neither
+// reports the refused shapes either.
 
 /// Run `src` twice: under `LOTUS_ARENA_RESIDENCY=1`, and as an ASan
 /// build with chunk recycling off. Returns the first run's stdout.
