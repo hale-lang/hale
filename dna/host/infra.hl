@@ -187,23 +187,19 @@ locus ReferenceInfrastructure {
         self.last = dna::trim_nl(r.stderr);
         return r.stdout;
     }
-    // ---- credentials: one line of `~/.config/hale-dna/<project>.env`
-    // (mode 600), the value on the shell's stdin, never in argv
-    fn put_credential(name: String, value: String) -> Bool {
-        let cut = std::str::index_of(name, "/");
-        let project = if cut < 0 { "" } else { name[0..cut] };
-        let var = if cut < 0 { name } else { name[(cut + 1)..len(name)] };
-        let install = "umask 077; d=\"$HOME/.config/hale-dna\"; f=\"$d/" + project + ".env\"; mkdir -p \"$d\"; IFS= read -r line; { [ -f \"$f\" ] && grep -v '^" + var + "=' \"$f\" || true; printf '%s\\n' \"$line\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
-        let r = self.run_at(install, var + "=" + value + "\n");
+    // ---- credentials: a slot of the vault where the body runs (GH #989:
+    // the local vault's directory, mode 600), the value on the shell's
+    // stdin, never in argv
+    fn put_credential(vault: String, value: String) -> Bool {
+        if !std::secret::vault_name_is_safe(vault) { self.last = "the vault name " + vault + " is not safe"; return false; }
+        let install = "umask 077; d=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}\"; f=\"$d/" + vault + "\"; mkdir -p \"$d\"; IFS= read -r line; printf '%s' \"$line\" > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
+        let r = self.run_at(install, value + "\n");
         self.last = dna::trim_nl(r.stdout + r.stderr);
         return r.code == 0;
     }
-    fn credential(name: String) -> dna::Credential {
-        let cut = std::str::index_of(name, "/");
-        let project = if cut < 0 { "" } else { name[0..cut] };
-        let var = if cut < 0 { name } else { name[(cut + 1)..len(name)] };
-        let r = self.run_at("grep -q '^" + var + "=' \"$HOME/.config/hale-dna/" + project + ".env\" 2>/dev/null && echo present || echo absent", "");
-        return dna::Credential { name: name, present: std::str::contains(r.stdout, "present") };
+    fn credential(vault: String) -> dna::Credential {
+        let r = self.run_at("f=\"${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}/" + vault + "\"; [ -s \"$f\" ] && echo present || echo absent", "");
+        return dna::Credential { name: vault, present: std::str::contains(r.stdout, "present") };
     }
     // ---- the pieces a provisioning script is composed from
     // The supervisor's part: the unit written and enabled.

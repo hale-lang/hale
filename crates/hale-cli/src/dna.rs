@@ -604,6 +604,11 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
+        // GH #989: every secret the organism requires, and whether the vault holds it
+        Some("secrets") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            host_exec("secrets", &dir, &[])
+        }
         Some("schedule") => host_exec("schedule", Path::new("."), &args[1..]),
         Some("receipt") => host_exec("receipt", Path::new("."), &args[1..]),
         // GH #615: connections to other records, and what crosses them
@@ -850,8 +855,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a schedule asked of the organization, which declares it or refuses it; an occurrence");
     eprintln!("                                    is an execution of the definition (GH #1143)");
     eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
-    eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
-    eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
+    eprintln!("                                    a credential from stdin (never argv, never the record) into its slot of the vault");
+    eprintln!("                                    (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
+    eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
     eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
@@ -1229,7 +1235,6 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project))? {
         out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
-    created(&mut out, &root.join("dna/nats.conf"), &nats_conf())?;
     created(&mut out, &root.join("dna/senses.yml"), &senses_yml())?;
     let kept = match &app {
         Some(app) => format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED),
@@ -1289,7 +1294,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let gi = root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
-    for line in ["/vendor/", "/.hale/"] {
+    for line in ["/vendor/", "/.hale/", NATS_SECRETS_IGNORE] {
         if !gtext.lines().any(|l| l.trim() == line) {
             if !gtext.is_empty() && !gtext.ends_with('\n') {
                 gtext.push('\n');
@@ -1303,6 +1308,14 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&gi, gtext).map_err(|e| e.to_string())?;
         out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
     }
+    // 8b. GH #989: the organism's secrets, provisioned in one place (the
+    // skin's list, dna/host/secrets.hl): drawn into the vault, the nerves'
+    // dna/nats.conf (tracked, no secret) written, and the server's
+    // dna/nats.secrets.conf (the only file with a password: mode 600,
+    // ignored) from the same draw. After the record (the
+    // vault names are its organization's) and after .gitignore (the writer
+    // refuses a file git would track).
+    out.push(organism_secrets(&root, true));
     // 9. format what we generated and touched
     let mut fmt = Command::new(&me);
     fmt.arg("fmt").arg(root.join("dna"));
@@ -1478,20 +1491,24 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}: `dna::Ownership {{ path: \"dna/org/owners\" }}` no longer builds; delete the field — ownership is the graph's (GH #1123)", main_path.display()));
         }
     }
-    // GH #986: the nerves — a NATS server beside memory's Postgres, with
-    // one user per family of subjects. The config is new and created; the
-    // compose file is the project's, and is told
-    let nats = root.join("dna/nats.conf");
-    if root.join("dna").is_dir() && !nats.is_file() {
-        fs::write(&nats, nats_conf()).map_err(|e| format!("write {}: {e}", nats.display()))?;
-        out.push(format!("created {}", nats.display()));
-    }
-    let nats_text = fs::read_to_string(&nats).unwrap_or_default();
-    if nats_text.contains("user: spine") && !nats_text.contains("*.head.>") {
-        out.push(
-            "note    dna/nats.conf does not let the spine publish `<org>.head.>`: a node tells the face's head every row it lands there (GH #986), and a refused publish collapses its connection. Add \"*.head.>\", \"*.*.head.>\" to the spine user's `publish` list, as `hale dna init` writes it"
-                .to_string(),
-        );
+    // GH #986, #989: the nerves — a NATS server beside memory's Postgres,
+    // one user per family of subjects. dna/nats.conf is a generated seed
+    // file and is regenerated, and a regenerated seed rotates the nerves'
+    // passwords: drawn anew into the vault, and into the untracked
+    // dna/nats.secrets.conf (the project's .gitignore gains it first)
+    if root.join("dna").is_dir() {
+        let gi = root.join(".gitignore");
+        let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
+        if !gtext.lines().any(|l| l.trim() == NATS_SECRETS_IGNORE) {
+            if !gtext.is_empty() && !gtext.ends_with('\n') {
+                gtext.push('\n');
+            }
+            gtext.push_str(NATS_SECRETS_IGNORE);
+            gtext.push('\n');
+            fs::write(&gi, gtext).map_err(|e| e.to_string())?;
+            out.push(format!("edited  {} ({NATS_SECRETS_IGNORE})", gi.display()));
+        }
+        out.push(organism_secrets(&root, true));
     }
     // GH #988: the senses — the store's scrape configuration is new and
     // created; the compose file is the project's, and is told
@@ -1500,13 +1517,13 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&senses, senses_yml()).map_err(|e| format!("write {}: {e}", senses.display()))?;
         out.push(format!("created {}", senses.display()));
     }
-    if nats_text.contains("user: app") && !nats_text.contains("user: reflexes") {
+    let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
+    if compose_text.contains("nerves:") && !compose_text.contains("nats.secrets.conf") {
         out.push(
-            "note    dna/nats.conf has no `reflexes` user (GH #988): the reflexes publish their firings with it, on `*.app.reflexes.>` alone, and the `app` user must be denied that subject. Add the user and the deny, as `hale dna init` writes them"
+            "note    dna/compose.yaml's `nerves` service does not mount dna/nats.secrets.conf (GH #989): the server's passwords are there now, not in nats.conf. Add `- ./nats.secrets.conf:/etc/nats/nats.secrets.conf:ro` to its volumes, as `hale dna init` writes it"
                 .to_string(),
         );
     }
-    let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
     if !compose_text.is_empty() && !compose_text.contains("senses:") {
         let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
         out.push(format!(
@@ -1630,6 +1647,7 @@ services:
       - "127.0.0.1:{nats_port}:4222"
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
+      - ./nats.secrets.conf:/etc/nats/nats.secrets.conf:ro
       - nerves:/data
   senses:
     image: {image}
@@ -1705,48 +1723,21 @@ fn compose_name(project: &str) -> String {
     project.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "-").to_lowercase()
 }
 
-/// `dna/nats.conf`: the nerves' server (GH #986). One user per family of
-/// subjects, each allowed only its own (`dna/core/nerves.hl` names them).
-/// The passwords are placeholders until the vault (#989), as the Postgres
-/// roles' are; the organization's token stands as `*` because this server
-/// carries one organization.
-fn nats_conf() -> String {
-    r#"# dna/nats.conf — the nerves' server for `hale dna dev` (GH #986;
-# project-owned, generated by `hale dna init`). One user per family of
-# subjects, each allowed only its own; `hale dna dev` hands each part of
-# the organism its own. The passwords are PLACEHOLDERS until the vault
-# (#989) — the port is bound to 127.0.0.1 in dna/compose.yaml.
-port: 4222
-jetstream { store_dir: "/data" }
-authorization {
-  users = [
-    # creates the organization's stream; held by no process that runs it
-    { user: owner, password: "dna-owner-dev" }
-    # the spine: a node's host publishes the organization's facts, and the
-    # organization reads them through its durable consumer (`spine`, or
-    # over a shared record an owner's `spine_<owner>`, its facts under
-    # `<org>.<owner>.dna.>`). `*` stands for the organization's token: this
-    # server carries one organization, and a spine user may publish into
-    # any organization's subjects on it. One user per organization, each
-    # allowed only its own token, is #989's, with the vault. A node also
-    # tells the heads every row it lands (`<org>.head.row.landed`).
-    { user: spine, password: "dna-spine-dev",
-      permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
-    # an application: publishes on its own subjects, reads nothing of DNA's
-    # (#987); never on the reflexes', which are theirs alone
-    { user: app, password: "dna-app-dev",
-      permissions: { publish: { allow: ["*.app.*.>"], deny: ["*.app.reflexes.>"] }, subscribe: ["_INBOX.>"] } }
-    # the reflexes (#988): publish their firings on their own subjects,
-    # read nothing
-    { user: reflexes, password: "dna-reflexes-dev",
-      permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
-    # the head: subscribes, publishes nothing
-    { user: head, password: "dna-head-dev",
-      permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }
-  ]
-}
-"#
-    .to_string()
+/// The line the project's .gitignore carries for the nerves' secrets
+/// (GH #989): the one file with a password is never tracked.
+const NATS_SECRETS_IGNORE: &str = "/dna/nats.secrets.conf";
+
+/// GH #989: the organism's secrets, provisioned by its bootstrap through
+/// the host (`secrets-provision`, dna/host/secrets.hl, the skin's one
+/// list): what it did, as lines of init's or upgrade's report. `rotate`:
+/// the nerves' passwords are drawn anew, as a regenerated seed does.
+fn organism_secrets(root: &Path, rotate: bool) -> String {
+    let args: Vec<String> = if rotate { vec!["--rotate".to_string()] } else { vec![] };
+    match host_run("secrets-provision", root, &args) {
+        Ok(out) if !out.starts_with("none: ") => out.trim().to_string(),
+        Ok(out) => format!("note    the organism's secrets were not provisioned: {} (`hale dna secrets` lists them)", out.trim().strip_prefix("none: ").unwrap_or(out.trim())),
+        Err(e) => format!("note    the organism's secrets were not provisioned: {e}"),
+    }
 }
 
 /// A host port for the project's NATS in 42xx, like `compose_port`.
