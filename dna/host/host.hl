@@ -809,6 +809,9 @@ main locus Host {
         // (`untyped`): the host declares no application's events.
         nerves: nats::NatsConn = nats::NatsConn {
             url: dna::nerves_spine_url(),
+            // GH #989: the spine's account, sealed: presented on CONNECT alone
+            user: "spine",
+            credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node",
             subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()),
             jetstream: true,
@@ -1329,7 +1332,7 @@ main locus Host {
         let deadline = std::time::now() + secs;
         if !self.nerves_on { return exit_code(self.org) == -2; }
         let stale_until = if self.org_stopped_at > 0 { self.org_stopped_at + NERVES_PULL_LIFE_MS * 1000000 } else { 0 };
-        let c = nats::NatsClient { url: dna::nerves_spine_url(), name: "dna-node-probe", timeout: 2s };
+        let c = nats::NatsClient { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "dna-node-probe", timeout: 2s };
         let mut why = "";
         while true {
             if exit_code(self.org) != -2 { c.close(); return false; }

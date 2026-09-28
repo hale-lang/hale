@@ -158,6 +158,8 @@ main locus App {
         let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let reflexes_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_REFLEXES");
         let app_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_APP");
+        let app_vault = line_value(nerves.stdout, "HALE_DNA_NATS_VAULT_APP");
+        let reflexes_vault = line_value(nerves.stdout, "HALE_DNA_NATS_VAULT_REFLEXES");
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
         let senses = in_dir(self.app, self.project, toolchain() + "\ndna\nsenses\nup\n.");
         let store = line_value(senses.stdout, "HALE_DNA_SENSES_URL");
@@ -183,7 +185,7 @@ main locus App {
         let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
 
         // ---- the reflexes fire, the heart lands it, the node acts
-        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org).stdout) } else { "" };
+        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
         let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };
@@ -196,7 +198,7 @@ main locus App {
 
         // ---- an application cannot speak as the reflexes: its user may not
         // publish on their subjects, so no firing it forges reaches a node
-        let forger = nats::NatsClient { url: app_url, name: "senses-forger", timeout: 2s };
+        let forger = nats::NatsClient { url: app_url, user: "app", credential: std::secret::Credential { vault: app_vault }, name: "senses-forger", timeout: 2s };
         let forged = if len(app_url) > 0 && forger.open() { nats::js_publish(forger, org + ".app.reflexes.reflex.fired", std::bytes::from_string("{\"id\": \"forged\", \"node\": \"edge-1\", \"target\": \"api-0\", \"action\": \"restart\"}")) or nats::PubAck { seq: -1 } } else { nats::PubAck { seq: -2 } };
         forger.close();
 

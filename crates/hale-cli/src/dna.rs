@@ -426,10 +426,12 @@ pub fn run(args: &[String]) -> ExitCode {
             // owner's URL, and the host is handed the spine's URL and the
             // organization's token — never the owner's, nor the head's
             let nerves: Vec<(String, String)> = match nerves_migrate(&dir) {
-                // GH #986: and the application credential, which the host's
-                // application inherits (started without the spine's, the
-                // owner's and the head's) to say its own events
-                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP").collect(),
+                // GH #986, #989: and the application's server and the vault
+                // name of its credential, which the host's application
+                // inherits (started without the spine's, the owner's and the
+                // head's) to say its own events. URLs carry no password; a
+                // part presents its credential from the vault by name
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
                 Ok(NervesPlan::NoServer(why)) => {
                     eprintln!("hale dna dev: {why}");
                     Vec::new()
@@ -2506,6 +2508,10 @@ main locus Org {{
         // user and the organization's token.
         nerves: nats::NatsConn = nats::NatsConn {{
             url: dna::nerves_spine_url(),
+            // the spine's account: its password is the vault's, presented
+            // on CONNECT and nowhere else (GH #989)
+            user: "spine",
+            credential: std::secret::Credential {{ vault: dna::nerves_role_vault("spine") }},
             name: "organization",
             subject_prefix: dna::nerves_subject_prefix(),
             stream: dna::nerves_stream_here(),

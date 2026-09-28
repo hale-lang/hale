@@ -2,10 +2,12 @@
 //
 // A program of the private-services tier, beside the store the senses
 // keep. It holds two things and nothing else: the store's read URL
-// (HALE_DNA_SENSES_URL) and a publish-only credential on its own subjects
-// (HALE_DNA_NATS_URL_REFLEXES — the `reflexes` user, which may publish on
-// `<org>.app.reflexes.>` and nothing else, and which no application's
-// user may publish on — under the organization's HALE_DNA_NATS_ORG). It
+// (HALE_DNA_SENSES_URL) and a publish-only credential on its own subjects:
+// the `reflexes` user on the server HALE_DNA_NATS_URL_REFLEXES names, which
+// may publish on `<org>.app.reflexes.>` and nothing else (no application's
+// user may), under the organization's HALE_DNA_NATS_ORG. Its password is
+// the vault's entry HALE_DNA_NATS_VAULT_REFLEXES names (GH #989), presented
+// on CONNECT by pond's client and nowhere else. It
 // never holds the record, memory or the vault, and imports nothing of the
 // organism but pond's NATS client: to the organism it is one more
 // application, and the heart lands what it says as readings.
@@ -163,10 +165,12 @@ main locus Reflexes {
 fn main() {
     let org = env_or("HALE_DNA_NATS_ORG", "");
     let url = env_or("HALE_DNA_NATS_URL_REFLEXES", "");
-    if len(org) == 0 || len(url) == 0 { eprintln("reflexes: HALE_DNA_NATS_URL_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto"); std::process::exit(2); }
+    let vault = env_or("HALE_DNA_NATS_VAULT_REFLEXES", "");
+    if len(org) == 0 || len(url) == 0 || len(vault) == 0 { eprintln("reflexes: HALE_DNA_NATS_URL_REFLEXES, HALE_DNA_NATS_VAULT_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto"); std::process::exit(2); }
+    if !std::secret::Credential { vault: vault }.ready() { eprintln("reflexes: the vault holds no credential ", vault, " (`hale dna upgrade` provisions the organism's secrets)"); std::process::exit(2); }
     Reflexes {
         store: env_or("HALE_DNA_SENSES_URL", ""),
         tick_ms: std::str::parse_int(env_or("HALE_DNA_REFLEX_TICK_MS", "5000")) or 5000,
-        nerves: nats::NatsConn { url: url, name: "reflexes", subject_prefix: org + ".", jetstream: true }
+        nerves: nats::NatsConn { url: url, user: "reflexes", credential: std::secret::Credential { vault: vault }, name: "reflexes", subject_prefix: org + ".", jetstream: true }
     };
 }

@@ -165,7 +165,7 @@ main locus App {
 
         // the organization stops reading: once its outstanding pull has
         // expired (a second), nothing the host publishes reaches it
-        let c = nats::NatsClient { url: spine, name: "nerves-loss-thief", timeout: 2s };
+        let c = nats::NatsClient { url: spine, user: "spine", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") }, name: "nerves-loss-thief", timeout: 2s };
         std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
         let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);
@@ -173,7 +173,7 @@ main locus App {
 
         // the heads hear every row the node's view gains (GH #986), on
         // their own family: a head's user subscribes, as the face's head does
-        let heads = nats::NatsClient { url: line_value(nerves.stdout, "HALE_DNA_NATS_URL_HEAD"), name: "nerves-loss-head", timeout: 2s };
+        let heads = nats::NatsClient { url: line_value(nerves.stdout, "HALE_DNA_NATS_URL_HEAD"), user: "head", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "head") }, name: "nerves-loss-head", timeout: 2s };
         std::test::assert(heads.open(), "a head reaches the nerves: " + heads.last_error);
         let sid = heads.sub_to(org + ".head.row.landed", "") or - 1;
         std::test::assert(sid > 0, "a head subscribes to the rows landing: " + heads.last_error);

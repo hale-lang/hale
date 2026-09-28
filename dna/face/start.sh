@@ -259,9 +259,10 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
   senses_url=$("$hale" dna senses up "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
   roles=$("$hale" dna nerves migrate "$project" 2>/dev/null) || roles=
   reflexes_url=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_URL_REFLEXES=//p')
+  reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
-  if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$org" ]]; then
-    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
+  if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$reflexes_vault" && -n "$org" ]]; then
+    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else
