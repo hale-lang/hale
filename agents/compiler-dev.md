@@ -311,20 +311,25 @@ Rules (CLAUDE.md has the reasons):
   it on first. Write it for both:
   - `/tmp` is a symlink to `/private/tmp`: compare a path as it was
     given, or canonicalize both sides.
-  - BSD tools differ: `touch -t 200101010000`, not `touch -d`; no
-    `stat -c`; no `sed -i` without a suffix (`sed -i.bak '…' f &&
-    rm -f f.bak` works on both); no `date -d`; no `mv -T`; `wc -l`
-    pads its count (trim it: `tr -d ' '`).
-  - Use the helpers where they exist: `dna::file_mode` (a file's mode on
-    either system), `dna::free_port` (a port bound before it is handed
-    back), `dna::scratch_root` / `dna::scratch_done` (a scratch root the
-    suite collects).
-  - A compose-backed fixture takes its host ports from its own seed:
-    `dna/compose.yaml`'s ports come from the project's name, so give the
-    seed a per-run name and read the ports from its compose file, never a
-    fixed `5432` or `4222`.
-  - A step that only Linux has (`/proc`, `stat -c`) is gated on
-    `uname -s` or `cfg(target_os = "linux")`, and says so.
+  - BSD tools differ from GNU: `touch -t 200101010000`, not a free-form
+    `touch -d`; no `stat -c`; `sed -i` needs a suffix (`sed -i.bak '…' f
+    && rm -f f.bak` works on both); no `date -d`, `mv -T` or `readlink -f`;
+    `ls` flags differ; `wc -l` pads its count (trim it: `tr -d ' '`); no
+    `timeout` or `sha256sum` on a stock Mac; bash 3.2 fails on an empty
+    array under `set -u`.
+  - A fixture under `dna/` uses the helpers that already cover these:
+    `dna::file_mode`, `dna::free_port`, `dna::run_tool_timeout`,
+    `dna::sha256_file`, and `dna::scratch_root` / `dna::scratch_done` (a
+    scratch root the suite collects).
+  - A compose-backed fixture takes its host ports from its own seed: give
+    the seed a per-run name (the pid in it) and read the ports back from
+    it (`docker compose -f dna/compose.yaml port <service> <port>`, or the
+    URLs `hale dna memory migrate` / `nerves migrate` print), never a
+    fixed `5432` or `4222`. The ports come from a hash of the name into
+    100 slots per range, so a per-run name narrows a collision; it does
+    not rule one out.
+  - A step only Linux has (`/proc`) is gated on `uname -s` or
+    `cfg(target_os = "linux")`, and says so.
 - New keyword: `hale-syntax/src/keywords.rs`, then
   `UPDATE_KEYWORDS=1 cargo test -p hale-syntax --test keyword_sync`.
 - Never delete a test to make it pass; if the spec changed, update it
