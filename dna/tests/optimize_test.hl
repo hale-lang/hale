@@ -60,7 +60,7 @@ main locus App {
     // organization's own); the occurrence it was declared at.
     @unbounded
     fn cadence(d: dna::Dna, every_ms: Int) -> Int {
-        std::test::assert_eq_str(d.schedule(dna::Schedule { id: "optimize", every_ms: every_ms, definition: "optimize-walk", args: "{}", convener: "position:leader" }), "", "the optimize cadence is declared");
+        std::test::assert_eq_str(d.scheduler.declare(dna::Schedule { id: "optimize", every_ms: every_ms, definition: "optimize-walk", args: "{}", convener: "position:leader" }, d.catalog, d.knowledge_client), "", "the optimize cadence is declared");
         let mut out = 0;
         let mut i = 0;
         while i < d.journal.revision() {
