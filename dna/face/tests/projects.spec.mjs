@@ -347,6 +347,43 @@ test('Projects: a succeeded verb is observed through the head, the preview submi
   expect(host.state().posts).toHaveLength(4);
 });
 
+test('Projects: one lookup is in flight at a time, so a settled receipt is never undone and its observation follows it', async ({ page, host }) => {
+  // The head's stream reconnects every 100 ms here and fires `open` and
+  // `changed` on each connection; each is a reason to look the receipt up.
+  // Two lookups in flight answer in either order, and an older answer
+  // landing after the settled one replaced it — abandoning the re-read of
+  // the head that follows a settle, so the observation could stay pending.
+  await mount(page, host, { active: true, lookupsUntilSettled: 3 });
+  await page.evaluate(() => {
+    window.panelHistory = [];
+    new MutationObserver(() => {
+      const panel = document.getElementById('projects-request');
+      if (panel?.dataset.state) window.panelHistory.push(panel.dataset.state + '/' + panel.dataset.observation);
+    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-state', 'data-observation'] });
+  });
+  // The first lookup's answer is held for 1.5 s, a dozen of the stream's
+  // reconnects: a second lookup started meanwhile is an overlap.
+  let lookups = 0, inFlight = false, overlapping = 0;
+  await page.route(url => url.pathname === '/api/hale/v1/head/commands' && url.searchParams.has('request_id'), async route => {
+    if (inFlight) overlapping += 1;
+    inFlight = true;
+    lookups += 1;
+    const response = await route.fetch();
+    if (lookups === 1) await new Promise(resolve => setTimeout(resolve, 1500));
+    inFlight = false;
+    await route.fulfill({ response });
+  });
+  await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
+  await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed', { timeout: 10_000 });
+  expect(overlapping, 'a lookup started while another was in flight').toBe(0);
+  const history = await page.evaluate(() => window.panelHistory);
+  const settledAt = history.findIndex(entry => entry.startsWith('succeeded/'));
+  expect(settledAt, history.join(' ')).toBeGreaterThanOrEqual(0);
+  expect(history.slice(settledAt).every(entry => entry.startsWith('succeeded/')), 'the settled state never went back: ' + history.join(' ')).toBe(true);
+  expect(host.state().posts).toHaveLength(1);
+});
+
 test('Projects: a saved identity is restored as a lookup, never a POST; a lost response keeps its identity and is looked up until it settles', async ({ page, host }) => {
   await page.goto(host.origin);
   const s = host.script({ active: true });
@@ -379,11 +416,17 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   // The head records the POST; only its response is lost on the way back.
   // The uncertain moment in between is not asserted: the head's push makes
   // the browser look the identity up at once, so it may never be seen.
-  let reservedAtPost = null;
-  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { reservedAtPost = await saved(page); await route.fetch(); await route.abort('failed'); } else await route.continue(); });
+  // The route is removed only once its handler has aborted the response:
+  // unrouting while the handler is still between `fetch` and `abort` lets
+  // the browser's own request through, so the head records it twice and
+  // the page gets the answer that was meant to be lost.
+  let reservedAtPost = null, lostSettled;
+  const lostHandled = new Promise(resolve => { lostSettled = resolve; });
+  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { reservedAtPost = await saved(page); await route.fetch(); await route.abort('failed'); lostSettled(); } else await route.continue(); });
   await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
-  await expect.poll(() => host.state().posts.length).toBe(1);
+  await lostHandled;
   await page.unroute('**/api/hale/v1/head/commands');
+  expect(host.state().posts).toHaveLength(1);
   const lost = host.state().posts[0].body.request_id;
   expect(reservedAtPost).toHaveLength(1);
   expect(reservedAtPost[0].value.request_id).toBe(lost);
