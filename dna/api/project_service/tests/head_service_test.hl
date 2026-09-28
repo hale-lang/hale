@@ -95,7 +95,11 @@ fn main() {
 
     // ---- the head under OIDC, the project attached at start, the service mapped
     std::io::fs::mkdir(root + "/head") or discard;
-    let f = fixture::HeadFixture { root: root + "/head", oidc_env: "HALE_DNA_OIDC_ISSUER=" + issuer + "\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_SECRET=dna-local-secret\nHALE_DNA_OIDC_MEMBER=local-sub=tester\nHALE_DNA_OIDC_KEY=" + oidc::STUB_SPKI };
+    let f = fixture::HeadFixture { root: root + "/head", oidc_env: "HALE_DNA_OIDC_ISSUER=" + issuer + "\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_MEMBER=local-sub=tester\nHALE_DNA_OIDC_KEY=" + oidc::STUB_SPKI };
+    // the head signs a person in with its client's secret, from its own
+    // vault, the one the stub holds
+    std::io::fs::mkdir(f.home + "/vault") or discard;
+    std::io::fs::write_file(f.home + "/vault/oidc-client-dna-local", client_secret) or discard;
     let mapped = dna::run_tool("git\n-C\n" + f.project + "\nconfig\n--local\n--add\ndna.oidc.service\nvoice-api=voice");
     std::test::assert_eq_int(mapped.code, 0, "the record maps the service");
     // a subject mapped both ways, as a person and as a service
