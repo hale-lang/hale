@@ -126,10 +126,15 @@ locus Napper {
     run() {
         println("up");
         // a wait a drain cannot cut short (a `sleep` is a timed park, which
-        // the drain expires): a subprocess the loop is inside of
-        while !self.draining {
+        // the drain expires): a subprocess the loop is inside of. The
+        // subprocess runs BEFORE `draining` is first tested, so a SIGTERM
+        // that lands between `up` and here still finds this locus inside
+        // a 3 s wait, past the grace, and never ends the loop early.
+        let mut going = true;
+        while going {
             let r = std::process::run("sleep\n3")
                 or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+            going = !self.draining;
         }
     }
 }
