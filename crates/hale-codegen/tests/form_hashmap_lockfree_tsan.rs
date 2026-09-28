@@ -2,8 +2,8 @@
 //! validation for the lockfree `@form(hashmap)` path.
 //!
 //! Builds the headline cross-pool lockfree workload with
-//! `LOTUS_TSAN=1` (the codegen-side hook that adds
-//! `-fsanitize=thread` to clang). Asserts the resulting binary
+//! `LOTUS_TSAN=1` (`support/sanitize.rs` turns it into
+//! `BuildOptions::tsan`, which adds `-fsanitize=thread` to clang). Asserts the resulting binary
 //! exits clean and produces no `WARNING: ThreadSanitizer` lines
 //! on stderr. Suppressions for pre-existing substrate races
 //! (arena allocator, bus queue, shutdown) are embedded into the
@@ -29,10 +29,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/sanitize.rs"]
+mod sanitize;
 
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -51,7 +52,7 @@ fn unique_path(tag: &str) -> PathBuf {
 fn build_and_run(tag: &str, src: &str) -> (String, String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(tag);
-    build_executable(&program, &bin).expect("build");
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run binary");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

@@ -1134,7 +1134,7 @@ jobs:
   # the workspace build already does, and the thread shape for the
   # binaries that actually share process-wide state — the ones that
   # reach for a build knob which used to be a process-env var
-  # (`harness::build_ir_text` / `build_asan` / `set_build_env_var`),
+  # (`harness::build_ir_text` / `build_asan`),
   # take a cross-test lock file, or hardcode a multicast group, plus
   # everything `.config/nextest.toml` already had to put in a
   # `max-threads` group. 32 binaries and 41s of run time, and the
@@ -1338,7 +1338,7 @@ jobs:
             # A build knob that used to be a process-env var; the
             # `create_new` idiom both cross-test lock files use; a
             # hardcoded multicast group.
-            marked=$(grep -lE 'build_ir_text|build_asan|set_build_env_var|create_new\(true\)|239\.' \
+            marked=$(grep -lE 'build_ir_text|build_asan|create_new\(true\)|239\.' \
               "$dir"/*.rs 2>/dev/null | xargs -n1 basename | sed 's/\.rs$//' || true)
             names=$(printf '%s\n%s\n' "$marked" "$grouped" | sort -u \
               | while read -r n; do
@@ -1421,10 +1421,10 @@ jobs:
 
       - name: LOTUS_TSAN=1 cargo test (form_hashmap_lockfree_tsan)
         # The TSAN tests are #[ignore]'d so the normal suite
-        # skips them; --ignored opts in. LOTUS_TSAN=1 in env
-        # tells `build_executable` to pass -fsanitize=thread to
-        # clang for both the runtime C compile and the binary
-        # link. The C runtime's embedded
+        # skips them; --ignored opts in. LOTUS_TSAN=1 in env is
+        # turned into `BuildOptions::tsan` by the test's own build,
+        # which passes -fsanitize=thread to clang for both the
+        # runtime C compile and the binary link. The C runtime's embedded
         # __tsan_default_suppressions returns empty as of
         # 2026-05-26 — any race surfaced here is a new
         # regression and gates the merge.
@@ -1511,9 +1511,10 @@ jobs:
 
       - name: LOTUS_ASAN=1 cargo test (corpus_oracle under ASAN)
         # #[ignore]'d like the tsan suite; --ignored opts in.
-        # LOTUS_ASAN=1 tells build_executable to pass
-        # -fsanitize=address to clang for the runtime C compile +
-        # binary link. A new leak outside KNOWN_CLOSURE_LEAKS, or
+        # LOTUS_ASAN=1 is turned into `BuildOptions::asan` by the
+        # test's own build (codegen reads no environment variable),
+        # which passes -fsanitize=address to clang for the runtime C
+        # compile + binary link. A new leak outside KNOWN_CLOSURE_LEAKS, or
         # any UAF/overflow, gates the merge.
         env:
           LOTUS_ASAN: "1"

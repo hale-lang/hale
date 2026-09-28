@@ -29,13 +29,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// The one lock any test-process environment mutation is taken
-/// under. See [`set_build_env_var`].
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Build `program` to `bin` with the PRE-optimization LLVM IR dumped
 /// beside it, and hand back the IR text. The `.ll` is removed; the
@@ -104,39 +99,6 @@ pub fn build_asan(program: &hale_syntax::ast::Program, bin: &Path) {
          assertion downstream would pass vacuously",
         bin.display()
     );
-}
-
-/// The ONE place in this suite that mutates the test process's
-/// environment, and the reason `harness_paths_are_unique.rs` refuses
-/// a `set_var` anywhere else (GH #843).
-///
-/// Every other build knob a test needs is a `BuildOptions` field.
-/// The exception is a knob read by a free function several frames
-/// below `build_executable_with_options`, with no options in scope —
-/// today that is `HALE_NO_TS_SHIM`, read by
-/// `locate_ts_shim_staticlib()`, which `missing_ts_shim.rs` must
-/// force to miss.
-///
-/// Two properties make it as safe as a process-global can be:
-///
-///   * every caller is serialized on `ENV_LOCK`, and holds the
-///     returned guard across the build that reads the variable, so
-///     no two tests can be mid-mutation at once; and
-///   * the variable is **set, never unset**. A set/unset pair is
-///     what makes a concurrent reader observe a value the test that
-///     wrote it never intended; a write-once value cannot. The cost
-///     is that the knob stays on for the rest of the test binary,
-///     which is why it belongs only to knobs whose whole test file
-///     wants them.
-///
-/// It is still a process-global write: prefer a `BuildOptions` field
-/// whenever the knob can reach one.
-#[allow(dead_code)]
-#[must_use = "hold the guard across the build that reads the variable"]
-pub fn set_build_env_var(key: &str, value: &str) -> MutexGuard<'static, ()> {
-    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::set_var(key, value);
-    guard
 }
 
 /// Resident bytes out of a `/proc/self/statm` line — the memory a

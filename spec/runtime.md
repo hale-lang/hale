@@ -2698,6 +2698,46 @@ What the compiler emits for a native `hale build`:
 - **`wasm32` is unaffected** — it stays `generic`/O2 (the browser
   bundle is size/compat-sensitive).
 
+## Build-time environment
+
+Codegen reads no environment variable. Every knob that changes what a
+build emits is a field of `hale_codegen::BuildOptions`, and the one
+function that turns the process environment into those fields is
+`build_options_from_env` (`crates/hale-cli/src/build_env.rs`); every
+command that compiles (`hale build`, `run`, `test`, `replay`) starts
+from it, so a variable means the same thing to all four. A caller of
+the library (a test, another tool) sets the field and touches no
+environment; `crates/hale-codegen/tests/codegen_reads_no_environment.rs`
+fails if a read appears in the crate.
+
+A boolean variable is on for `1`, `true` or `TRUE` and off for anything
+else. A variable marked *set* is on by being set to any value at all.
+
+| Variable | `BuildOptions` field | Effect | Default |
+|---|---|---|---|
+| `HALE_DEV` (*set*) | `dev_profile` | The `--dev` profile: LLVM O1 module pipeline and Less machine codegen, trading runtime speed for build latency. | off |
+| `LOTUS_LTO` | `lto` | `1`, `true` or `full`: full LTO; `thin`: ThinLTO; anything else, off. Native, non-sanitizer builds only (see *Native codegen defaults*). | off |
+| `LOTUS_ASAN` | `asan` | Build with AddressSanitizer and skip the O3 module pipeline, so a leak or use-after-free report carries accurate frames. | off |
+| `LOTUS_TSAN` | `tsan` | Build with ThreadSanitizer for the runtime compile and the link; the `-Wl,--wrap` shims are left out. | off |
+| `LOTUS_UBSAN` | `ubsan` | Build with address and undefined-behavior sanitizers, aborting on the first UB (`-fno-sanitize-recover=all`). | off |
+| `LOTUS_DUMP_IR` (*set*) | `dump_ir_beside_output` | Write the pre-optimization LLVM IR to `<output>.ll`. A library caller may instead name the path in `dump_ir`. | off |
+| `LOTUS_NO_BUS_DEVIRT` | `no_bus_devirt` | Force the all-dynamic bus lowering: every subject's dispatch plan is empty. The differential harness's control arm. | off |
+| `LOTUS_NO_OWNERSHIP_BUBBLE` | `no_ownership_bubble` | Force the pre-bubble ownership lowering: no bubble plans, no forwarding sets, no threading fields. | off |
+| `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
+| `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
+| `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject on stderr. | off |
+| `HALE_TIME` (*set*) | `time_phases` | Print per-phase wall times of the build on stderr. | off |
+| `HALE_CC_WARNINGS` | `cc_warnings` | Let the runtime's C warnings through instead of `-w`. For work on the runtime itself. | off |
+| `HALE_NO_LLD` | `no_lld` | Link with the default linker even when `ld.lld` is on PATH (Linux only; lld is otherwise used). | off |
+| `HALE_NO_TS_SHIM` | `no_ts_shim` | Behave as if `libhale_ts_shim.a` was never built: a `std::ts` program gets the located refusal, other programs link without it. | off |
+| `HALE_TS_SHIM_A` | `ts_shim` | The tree-sitter shim staticlib to link, ahead of `<hale binary dir>` and the workspace `target/` dirs. | unset |
+| `HALE_ZIG` | `zig` | The `zig` binary a cross build (`--target`) compiles and links with. | `zig` on PATH |
+| `HALE_TARGET_GLIBC` | `target_glibc` | The glibc version a cross build's Linux gnu binary asks for. | `2.31` |
+| `HALE_TARGET_SYSROOT` | `target_sysroot` | The sysroot a cross build finds OpenSSL, zlib and the shim in. | `<cache>/hale/sysroot/<triple>` |
+| `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache` |
+| `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
+| `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
+
 ## Diagnostic + tuning env vars
 
 A small set of env vars toggle runtime instrumentation and
@@ -2716,7 +2756,7 @@ the runtime quiet.
 | `LOTUS_BUS_CALL_ARENA_STATS=1` | At exit, prints `[bus call arenas] opened=N live_bytes=L peak_bytes=P` to stderr: how many per-call arenas adapter `send`s and keyed adapter deliveries opened, the chunk bytes still held (0 unless a call is in flight), and the most held at once. The call arenas are not residency targets, so this is how a test sees them (GH #1038). |
 | `LOTUS_ARENA_RESIDENCY=1` | Registers every top-level arena (locus `__arena`s, `g_bus_payload_arena`, the program-wide global) into a side-table at creation time with a 24-frame construction backtrace. `std::process::dump_arena_residency()` walks the live set and emits one line per arena to stderr — bytes / chunks / parent / label, sorted by bytes desc — with the construction backtrace. Subregions (method scratch) are skipped; they destroy at method exit and don't accumulate residency. Atexit also dumps, but post-dissolve fires after all loci tear down — useful only for the global arena's final state. Long-running daemons should call `dump_arena_residency` from a heartbeat / checkpoint tick so locus arenas are sampled while still alive. |
 | `LOTUS_CHUNK_POOL_PREFILL=<N>` | Per-thread chunk-pool pre-fill on first touch. Default 32 (= 2 MiB resident per scheduler thread). Set 0 to disable. Bumps the pool's steady-state floor so brief bursts don't drain to zero and miss into malloc; the trade-off is per-thread resident memory. |
-| `LOTUS_TSAN=1` | Read at *build time* (by the codegen's `build_executable`, not at runtime). When set, the emitted clang command passes `-fsanitize=thread` for both the C runtime compile and the binary link, and skips the `-Wl,--wrap=malloc/realloc/calloc/mmap` shim surface (TSAN intercepts malloc itself; the wrap'd `LOTUS_ARENA_LOG_BIG_CHUNKS` diagnostic is silently no-op under TSAN). The resulting binary runs ~5-15× slower; use only for race-hunting workloads. The C runtime embeds an empty `__tsan_default_suppressions` hook at link time so no external suppression file is needed; all originally-flagged substrate races (bus queue drain, arena destroy, coop pool worker, env-var lazy-init) have been fixed and the suppression list is empty. Opt-in tests live behind `#[ignore]` and the env var (see `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`). |
+| `LOTUS_TSAN=1` | Read at *build time* (by `hale build`, not at runtime; see *Build-time environment*). When set, the emitted clang command passes `-fsanitize=thread` for both the C runtime compile and the binary link, and skips the `-Wl,--wrap=malloc/realloc/calloc/mmap` shim surface (TSAN intercepts malloc itself; the wrap'd `LOTUS_ARENA_LOG_BIG_CHUNKS` diagnostic is silently no-op under TSAN). The resulting binary runs ~5-15× slower; use only for race-hunting workloads. The C runtime embeds an empty `__tsan_default_suppressions` hook at link time so no external suppression file is needed; all originally-flagged substrate races (bus queue drain, arena destroy, coop pool worker, env-var lazy-init) have been fixed and the suppression list is empty. Opt-in tests live behind `#[ignore]` and the env var (see `crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs`). |
 | `LOTUS_LTO=1` | Read at *build time*. Opt-in full-LTO native build: the Hale module is emitted as bitcode and the lotus runtime TUs compile with `-flto`, so the `clang -flto -O3 -fuse-ld=lld` link inlines the runtime hot paths (arena / string / shm_ring) across the TU boundary into the Hale callers. A few percent on allocation/coordination-heavy code, neutral on vectorized loops (host tuning preserved via per-function `target-features`). Off by default — ~3–4× slower link, requires `lld`. Native non-sanitizer only; `--wrap` shims survive (lld resolves them before LTO codegen). See *Native codegen defaults* above. |
 | `LOTUS_BUS_LOG_UNMATCHED=1` | Surfaces silent no-key-match drops in `lotus_bus_local_dispatch_keyed` (Phase 3 routing keys). When set, each publish that matches no `where key == ...` subscriber for the topic emits a single stderr line citing subject, key, and the per-topic subscriber counts (specific vs unkeyed). Off by default — the silent-drop is correct for `on_unmatched: swallow` topics in steady state, but during bring-up the lack of any signal is load-bearing on debug cycles. Implied by `LOTUS_BUS_LOG_DROP=1`. |
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | Surfaces silent drops in the udp:// reader thread when (a) no deserializer is registered for the inbound subject, or (b) the deserializer returns `<= 0` (size mismatch, bounded-read failure). Emits one stderr line per drop naming the subject, the payload size, and (when applicable) the deserializer's return value. Off by default; the silent-skip on cross-routed multicast noise is the correct steady-state behavior. Same env-gated pattern as `LOTUS_BUS_LOG_UNMATCHED` for keyed-dispatch misses. Implied by `LOTUS_BUS_LOG_DROP=1`. |

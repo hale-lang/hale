@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+mod build_env;
 mod fleet;
 mod dna;
 mod iris;
@@ -7319,8 +7320,8 @@ fn compile_and_exec(
 /// into the execution identity below) and the canonical entity ids
 /// codegen stamps into the observation manifest.
 ///
-/// `LOTUS_NO_BUS_DEVIRT=1` (the differential harness's control arm)
-/// makes codegen emit the empty plan — every subject dynamic — so
+/// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
+/// harness's control arm) makes codegen emit the empty plan — every subject dynamic — so
 /// the identity folded into the exec digest must be the EMPTY
 /// plan's, not the model's. Otherwise the control arm and the live
 /// arm would share a build identity while running different
@@ -7368,12 +7369,10 @@ fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
 
 fn model_identity(
     bundle: &hale_types::Bundle<'_>,
+    options: &hale_codegen::BuildOptions,
 ) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
     let model = hale_types::model_builder::derive_application_model(bundle);
-    let plan_digest = if std::env::var("LOTUS_NO_BUS_DEVIRT")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false)
-    {
+    let plan_digest = if options.no_bus_devirt {
         hale_model::dispatch_plan::DispatchPlan::default().digest()
     } else {
         hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
@@ -8129,7 +8128,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
     let options_fp = options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &build_options);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
@@ -8616,7 +8615,7 @@ fn run_program(
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
         let options_fp = options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity(&bundle);
+        let (plan_digest, obs_ids) = model_identity(&bundle, &options);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
@@ -8801,7 +8800,7 @@ fn run_program(
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
     let options_fp = options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
@@ -9107,7 +9106,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // plan's digest — held here and folded into the execution
     // identity once the options are FINAL (below), since the
     // fingerprint covers options that are still being set.
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
@@ -9340,7 +9339,7 @@ fn collect_ffi_from_imports(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> hale_codegen::BuildOptions {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     let mut seen_dirs: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
     for imp in imports {
@@ -9445,12 +9444,11 @@ fn parse_build_options(
     cmd: &str,
     args: &[String],
 ) -> Result<hale_codegen::BuildOptions, String> {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     // #8 dev profile: `HALE_DEV=1` is the environment spelling of
     // `--dev` below. Read here, with the flag, so every command that
     // compiles honors it identically (GH #904; `run` honored
     // neither).
-    opts.dev_profile = std::env::var("HALE_DEV").is_ok();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {

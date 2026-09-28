@@ -28,15 +28,16 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/sanitize.rs"]
+mod sanitize;
 
 fn build_named(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
-    build_executable(&program, &bin).expect("build");
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
     bin
 }
 

@@ -38,25 +38,26 @@
 //! So the assertions here are on stdout, not only on the exit
 //! status: a lifecycle body that prints makes the cascade's reach
 //! and its ORDER observable without a sanitizer. Run the binary
-//! under `LOTUS_ASAN=1` (`build_executable` reads the flag at
-//! codegen time, as `ownership_bubble.rs` does) and the same
+//! under `LOTUS_ASAN=1` (`support/sanitize.rs` turns the flag into
+//! `BuildOptions`, as `ownership_bubble.rs` does) and the same
 //! programs additionally prove the arenas and the vec buffer are
 //! freed: a leak makes the child process exit non-zero and every
 //! `status.success()` assertion below fails.
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/sanitize.rs"]
+mod sanitize;
 
 /// Compile `src`, run it, return its stdout. Asserts a clean exit —
 /// which under `LOTUS_ASAN=1` is also the leak oracle.
 fn run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_gh750_{}", name));
-    build_executable(&program, &bin).expect("build");
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

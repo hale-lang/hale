@@ -16,28 +16,27 @@
 //!      `CodegenError::MissingTsShim` carrying the `std::ts::*`
 //!      call site and the command that builds the staticlib.
 //!
-//! `HALE_NO_TS_SHIM=1` forces the lookup to miss, so these run in
-//! a fully-built workspace. It is read by
-//! `locate_ts_shim_staticlib()`, a free function with no
-//! `BuildOptions` in scope, so it is the one knob in this suite that
-//! still travels through the process environment — via
-//! `harness::set_build_env_var`, the single allow-listed mutation
-//! (GH #843). Both tests take that one mutex and set the same value;
-//! nothing here ever unsets it.
+//! `BuildOptions::no_ts_shim` (the CLI's `HALE_NO_TS_SHIM=1`) forces
+//! the lookup to miss, so these run in a fully-built workspace. It is
+//! a field like every other build knob, so the request is scoped to
+//! one build and no test here touches the process environment.
 
 use std::process::Command;
 
-use hale_codegen::{build_executable, CodegenError};
+use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError};
 
 #[path = "support/harness.rs"]
 mod harness;
 
-/// Run `f` with the shim lookup forced to `None`. Serialized on the
-/// harness's `ENV_LOCK`, held for the whole of `f`, so the write
-/// never races a concurrent read in the sibling test.
-fn without_ts_shim<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = harness::set_build_env_var("HALE_NO_TS_SHIM", "1");
-    f()
+/// Build with the shim lookup forced to miss: the `BuildOptions` field
+/// asks for it, so the request is scoped to one build and nothing
+/// touches the process environment.
+fn build_without_ts_shim(
+    program: &hale_syntax::ast::Program,
+    bin: &std::path::Path,
+) -> Result<(), CodegenError> {
+    let options = BuildOptions { no_ts_shim: true, ..BuildOptions::default() };
+    build_executable_with_options(program, bin, &[], &options)
 }
 
 #[test]
@@ -51,11 +50,9 @@ fn main() {
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("libm_no_ts_shim");
-    let out = without_ts_shim(|| {
-        build_executable(&program, &bin)
-            .expect("a std::math program must link without the ts shim");
-        Command::new(&bin).output().expect("run")
-    });
+    build_without_ts_shim(&program, &bin)
+        .expect("a std::math program must link without the ts shim");
+    let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exited non-zero: {:?}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -76,10 +73,8 @@ fn main() {
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("std_ts_no_shim");
-    let err = without_ts_shim(|| {
-        build_executable(&program, &bin)
-            .expect_err("a std::ts program must be refused without the shim")
-    });
+    let err = build_without_ts_shim(&program, &bin)
+        .expect_err("a std::ts program must be refused without the shim");
     let _ = std::fs::remove_file(&bin);
     let (msg, span) = match err {
         CodegenError::MissingTsShim(msg, span) => (msg, span),
