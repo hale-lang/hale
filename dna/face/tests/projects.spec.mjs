@@ -259,7 +259,9 @@ test('Projects: an attach reserves the identity before the POST, follows the rec
   // running depends on how soon the head's push makes it look again, so a
   // transient state is not asserted; the end and what follows it are.
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
-  await expect(request(page)).toHaveAttribute('data-observation', 'observed');
+  // the observation follows the settled state (the record is read after it),
+  // so it gets the same budget, not the default's
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed', { timeout: 10_000 });
   expect(host.state().gets.filter(id => id === body.request_id).length).toBeGreaterThanOrEqual(2);
   expect(host.state().posts).toHaveLength(1);
   expect(await page.evaluate(() => window.attached)).toEqual([APP]);
@@ -386,7 +388,9 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   expect(reservedAtPost).toHaveLength(1);
   expect(reservedAtPost[0].value.request_id).toBe(lost);
   await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
-  await expect(request(page)).toHaveAttribute('data-observation', 'observed');
+  // the observation follows the settled state (the record is read after it),
+  // so it gets the same budget, not the default's
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed', { timeout: 10_000 });
   // learned by looking the saved identity up, never by posting again
   expect(host.state().posts).toHaveLength(1);
   expect(host.state().gets).toContain(lost);
