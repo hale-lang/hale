@@ -55,11 +55,8 @@ The parent is the supervisor. It decides policy per child type:
 locus Bank {
     accept(a: Account) { }
 
-    on_failure(a: Account, err: Error) {
-        match err {
-            Error::ClosureViolation(v) -> { quarantine(a); },
-            _                          -> { bubble(err); },
-        }
+    on_failure(a: Account, err: ClosureViolation) {
+        quarantine(a);
     }
 }
 ```
@@ -75,6 +72,12 @@ main locus App {
     on_failure(c: Cache, err: ClosureViolation) { restart(c); }
 }
 ```
+
+One handler per type, and only one: a second `on_failure` for a
+type that already has one could never run — the first is the one a
+failing child reaches — so `hale check` refuses it and points at
+the first. Everything a failure of that type needs goes in the one
+handler.
 
 The parent is the locus that holds the child in a field. It
 does not matter whether the child's literal is the field's
