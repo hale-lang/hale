@@ -7622,6 +7622,70 @@ fn run_test_files(files: &[PathBuf], jobs: usize) -> Vec<TestOutcome> {
         .collect()
 }
 
+/// A fresh vault directory for one test file's run (mode 700), under
+/// `<tmp>/hale-test-vaults-<uid>/<pid>-<n>`: this user's root, this
+/// process, a counter, so parallel files never share one. The root is
+/// refused when it is not a directory this user owns (another user's, a
+/// planted symlink), so a test's secrets never go where someone else can
+/// reach them. The first call sweeps the vaults of processes that are
+/// gone (a run killed before it removed its own).
+fn test_vault_dir() -> Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(unix)]
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0;
+    let root = std::env::temp_dir().join(format!("hale-test-vaults-{uid}"));
+    let _ = std::fs::create_dir(&root);
+    let meta = std::fs::symlink_metadata(&root).map_err(|e| format!("test vault root {}: {e}", root.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if !meta.is_dir() || meta.uid() != uid {
+            return Err(format!("test vault root {} is not a directory of this user's", root.display()));
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("test vault root {}: {e}", root.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    if n == 0 {
+        sweep_dead_test_vaults(&root);
+    }
+    let dir = root.join(format!("{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).map_err(|e| format!("test vault {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("test vault {}: {e}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
+/// Remove each `<pid>` / `<pid>-<n>` vault under `root` whose process
+/// no longer runs. The Rust tests' `support/vault.rs` keeps its vaults
+/// under the same root, one per test module and process, and sweeps them
+/// the same way.
+fn sweep_dead_test_vaults(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
+        #[cfg(unix)]
+        let gone = pid > 0
+            && unsafe { libc::kill(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        #[cfg(not(unix))]
+        let gone = false;
+        if gone {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Compile and run one `_test.hl` file and judge it by the
 /// `spec/testing.md` contract.
 fn run_one_test_file(f: &Path) -> TestOutcome {
@@ -7639,8 +7703,33 @@ fn run_one_test_file(f: &Path) -> TestOutcome {
                     cmd.env("HALE_BIN", me);
                 }
             }
+            // Each test file runs with a vault of its own, made empty for
+            // the run and removed after it: a test that provisions a secret,
+            // or a fixture that runs `hale dna init` (which draws the
+            // organism's), never writes into the developer's vault, and no
+            // test reaches a real vault (`HALE_VAULT_ADDR`). Everything the
+            // test starts inherits it.
+            // `HALE_TEST_KEEP_VAULT=1` keeps it, and says where.
+            let vault = match test_vault_dir() {
+                Ok(v) => v,
+                Err(why) => {
+                    let _ = std::fs::remove_file(&bin);
+                    return TestOutcome {
+                        file: f.to_path_buf(),
+                        passed: false,
+                        message: Some(format!("no vault for the test: {why}")),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    };
+                }
+            };
+            cmd.env("HALE_VAULT_DIR", &vault).env_remove("HALE_VAULT_ADDR");
             let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
+            if std::env::var("HALE_TEST_KEEP_VAULT").is_ok_and(|v| v == "1") {
+                eprintln!("hale test: {}'s vault is kept at {}", f.display(), vault.display());
+            } else {
+                let _ = std::fs::remove_dir_all(&vault);
+            }
             match output {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);

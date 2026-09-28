@@ -5,6 +5,8 @@
 //! same status projection `hale dna status --json` prints; CI runs
 //! the organism without a browser.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -12,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -123,7 +125,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     // 2. a local governed session (iris reads the same status projection)
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let log = d.join("dev.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
@@ -157,7 +159,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     std::thread::sleep(Duration::from_millis(500));
     // the verdict flags are read fresh per call; the organism must not see ONESHOT
     let run = |args: &[&str]| -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        let out = vault::hale()
             .args(args)
             .current_dir(&app)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

@@ -6,6 +6,8 @@
 //! nothing running, both clones append offline and `sync` reconciles
 //! them into one linear record with every event and identical heads.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -13,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale_in(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -75,7 +77,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     // the organism runs in A
     let log = d.join("run.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&a)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))

@@ -6,6 +6,8 @@
 //! intent offered over the nerves lands in the organism's Journal, not
 //! in the host. Iris carries nothing of DNA: no status (#998).
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::io::{Read, Write};
@@ -15,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).output().expect("hale");
+    let out = vault::hale().args(args).current_dir(cwd).output().expect("hale");
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
@@ -47,7 +49,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     assert!(ok, "{migrated}");
     let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--port", &port.to_string()])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
@@ -117,7 +119,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     // organism's Journal
     let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
     let before = record(&app).lines().count();
-    let ask = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let ask = vault::hale()
         .args(["dna", "task", "create", "write", "the", "changelog"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)

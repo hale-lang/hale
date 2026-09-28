@@ -6,6 +6,8 @@
 //! organization retains or rolls back. Killing one instance inside the
 //! window rolls the whole fleet back, with the instance named.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -104,7 +106,7 @@ struct Fleet {
 impl Fleet {
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
         let _s = trace::Span::new("hale", args.join(" "));
-        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        let out = vault::hale()
             .args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -121,7 +123,7 @@ impl Fleet {
         let _s = trace::Span::new("spawn", args.join(" "));
         // stderr to a file per process, shown when the test fails
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
-        let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+        let mut c = vault::hale();
         c.args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -193,7 +195,7 @@ fn bring_up(tag: &str) -> Fleet {
     // schema and its stream on the nerves, whose durable consumer the two
     // organizations would then share, each hearing the other's facts
     // (GH #986). A committer of the test's own makes the first commit its.
-    let made = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let made = vault::hale()
         .args(["dna", "new", "fleetapp"])
         .current_dir(&d)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

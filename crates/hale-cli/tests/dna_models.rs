@@ -8,11 +8,12 @@
 //! here: two scripted backends answer, a hosted one without its key is
 //! not permitted, and nothing of the organization is started.
 
+#[path = "support/vault.rs"]
+mod vault;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)], unset: &[&str]) -> (bool, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd);
     for k in unset {
         c.env_remove(k);
@@ -30,7 +31,7 @@ fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)], unset: &[&str]) -> 
 /// stdout alone: what the verb answers (the toolchain's build notices
 /// go to stderr).
 fn hale_stdout(args: &[&str], cwd: &Path, unset: &[&str]) -> (bool, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd);
     for k in unset {
         c.env_remove(k);
@@ -187,7 +188,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     // so an ordinary `hale dna models` refused every harness slot (the
     // review's second round, finding 2). Whether bubblewrap is on this
     // machine or not, that is the one answer that must never come back.
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(["dna", "models"]).current_dir(&app).env("PATH", &path).env_remove("HALE_DNA_GENOME");
     for k in NO_KEYS {
         c.env_remove(k);
@@ -202,7 +203,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     // leave is given in the probe's copy of the catalog)
     let probed = catalog.replace("confinement: dna::Bubblewrap { } };", "confinement: dna::NoConfinement { }, allow_unconfined: true };");
     std::fs::write(app.join("dna/org/models.hl"), probed).unwrap();
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(["dna", "models"]).current_dir(&app).env("PATH", &path);
     for k in NO_KEYS {
         c.env_remove(k);

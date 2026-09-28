@@ -7,6 +7,8 @@
 //! refused with the checkpoint named — never silently accepted into git.
 //! Readers of history see one history across both memories.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -17,7 +19,7 @@ use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
         c.env(k, v);
@@ -64,7 +66,7 @@ fn nerves(app: &Path) -> (String, String) {
 /// `<name>.stderr`.
 fn spine(app: &Path, d: &Path, spine_dsn: &str, name: &str) -> std::process::Child {
     let (url, org) = nerves(app);
-    Command::new(env!("CARGO_BIN_EXE_hale"))
+    vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -110,7 +112,7 @@ fn unmigrate(app: &Path, owner: &str) {
     let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
     let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
     // and its stream on the nerves (GH #986), with the owner's URL
-    let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
+    let _ = vault::hale().args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
 }
 
 #[test]

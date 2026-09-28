@@ -121,10 +121,11 @@ carrying its own `HALE_DNA_SUITE_TAG` when the slice ends, however
 it ends, and never a root it did not stamp. To look at what a
 fixture built, run it under `HALE_DNA_KEEP_SCRATCH=1`: both the
 fixture and the sweep leave everything where it is, and the
-fixture says where.
+fixture says where. The fixture's vault is `hale test`'s, one per
+file; add `HALE_TEST_KEEP_VAULT=1` to keep that too.
 
 ```sh
-HALE_DNA_KEEP_SCRATCH=1 hale test dna/tests/<name>_test.hl
+HALE_DNA_KEEP_SCRATCH=1 HALE_TEST_KEEP_VAULT=1 hale test dna/tests/<name>_test.hl
 ```
 
 The repo also tests the language *in* the language:

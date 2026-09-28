@@ -862,6 +862,8 @@ jobs:
           # built beside the warm, above.
           HALE_API_BIN="$PWD/dna/api/api" \
             ./target/release/hale test dna/api/tests
+          # The practice-review adapter over a stub provider: no service.
+          ./target/release/hale test dna/api/practice_review/tests
           # The head (GH #965): its fixtures spawn the built head over
           # the plain API and exec this compiler's `hale dna` verbs detached.
           HALE_HEAD_BIN="$PWD/dna/api/project_service/project_service" \

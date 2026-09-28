@@ -6,6 +6,8 @@
 //! ratifying a proposal that supersedes an earlier version retires it;
 //! declining the replacement leaves the earlier version in force.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -27,7 +29,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 
 fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
         c.env(k, v);
@@ -73,7 +75,7 @@ fn start_org(app: &Path) -> std::process::Child {
     let _s = trace::Span::new("start_org", "hale dna run");
     let log = app.join(".hale/dna/host.log");
     let _ = std::fs::remove_file(&log);
-    let host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -205,7 +207,7 @@ fn unmigrate(app: &Path, owner: &str) {
     let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
     let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
     // and its stream on the nerves (GH #986), with the owner's URL
-    let _ = Command::new(env!("CARGO_BIN_EXE_hale")).args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
+    let _ = vault::hale().args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
 }
 
 /// A driver that ratifies an EARLIER version of two design practices

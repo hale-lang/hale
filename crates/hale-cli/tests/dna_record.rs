@@ -4,11 +4,13 @@
 //! the same record and answers `hale dna status` / `history` offline;
 //! the host's own appends are commits with the user's identity.
 
+#[path = "support/vault.rs"]
+mod vault;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).output().expect("hale");
+    let out = vault::hale().args(args).current_dir(cwd).output().expect("hale");
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 

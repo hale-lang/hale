@@ -6,6 +6,8 @@
 //! it was asked and answers from files the test writes, so the mapping
 //! runs without the network.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -98,7 +100,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
         let _s = trace::Span::new("hale", args.join(" "));
-        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        let out = vault::hale()
             .args(args)
             .current_dir(cwd)
             .env("PATH", &path)
@@ -136,7 +138,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     assert!(ok, "{migrated}");
     let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("PATH", &path)
@@ -216,7 +218,7 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     std::fs::create_dir_all(&d).unwrap();
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
         let _s = trace::Span::new("hale", args.join(" "));
-        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        let out = vault::hale()
             .args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -250,7 +252,7 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     assert!(ok, "{migrated}");
     let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))

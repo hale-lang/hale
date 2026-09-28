@@ -6,6 +6,8 @@
 //! it, the host restarts the organization itself, the window judges it,
 //! and the new position is live. `hale dna report` files what happened.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -16,7 +18,7 @@ use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -100,7 +102,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let log = d.join("run.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
