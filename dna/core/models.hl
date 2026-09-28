@@ -371,21 +371,19 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
     // POST a JSON body with the credential attached HERE, per its
     // scheme; `extra` is the adapter's own headers (CRLF-terminated
     // lines, e.g. `anthropic-version`), which never name the material.
+    // The header line is the wire write: the credential is revealed in the
+    // one statement that sends the request (spec/semantics.md § "@sealed").
     @effects(is: { secret_use, external_model })
     fn post_json(url: String, body: String, extra: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = std::http::parse_url(url) or raise;
-        let presented = if self.scheme == "x-api-key" {
-            "x-api-key: " + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() })
-        } else {
-            "Authorization: Bearer " + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() })
-        };
-        let req = std::http::ClientRequest {
+        return std::http::request(std::http::ClientRequest {
             method: "POST",
             url: u,
-            headers: "Content-Type: application/json\r\n" + extra + presented,
+            headers: "Content-Type: application/json\r\n" + extra
+                + (if self.scheme == "x-api-key" { "x-api-key: " } else { "Authorization: Bearer " })
+                + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() }),
             body: std::bytes::from_string(body)
-        };
-        return std::http::request(req) or raise;
+        }) or raise;
     }
 }
 

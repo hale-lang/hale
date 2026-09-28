@@ -360,11 +360,20 @@ from the moment it enters the program — there is no line anywhere in
 your code where you hold it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
 a token or password, plus a `fingerprint()` for logs, and `reveal()` /
-`reveal_text()` for the cases where a plain credential has to leave as
-text to be usable at all — a Postgres connection string, a CLI's own
-auth. `Signer`'s key never does; `Credential`'s "never becomes a value
-the application can name" is a default, not an absolute, and `reveal`
-is named so a caller of it is grep-able.
+`reveal_text()` for when a plain credential has to leave as text to be
+usable at all. `Signer`'s key never does. A reveal is held to the one
+use it exists for: it is called in a locus method, and its value is
+consumed in the same statement by a wire write's payload (the body or
+headers, never the URL), a comparison of the whole value or a `@secret`
+parameter — never bound to a `let` or a `match` pattern, stored,
+returned, used to decide a branch or handed to `std::process`. Compare
+with `matches`: it is constant-time, and `==` is not; comparing a slice
+of the secret is refused, because each answer gives away part of it.
+`hale check` (and `build`) refuses anything else and says where the
+value went. A tool that reads a secret from a file gets it through
+`write_private(path)`, which writes a new 0600 file in a private
+directory on the sealed side with nothing revealed; what the tool, or
+your own code, reads back from that file is beyond the check.
 
 When the source is encoded — many venues issue an HMAC secret in
 base64 — name the encoding with `decode:` (`Signer { env_var: "…",
@@ -380,12 +389,20 @@ every privileged call: a vault's whole point is that a value can
 change without restarting every process that reads it.
 
 ```hale,fragment
-locus RoleClient {
+locus ApiClient {
     params {
-        password: std::secret::Credential =
-            std::secret::Credential { vault: "postgres-role" };
+        token: std::secret::Credential =
+            std::secret::Credential { vault: "api-token" };
     }
-    fn dsn() -> String { return self.password.reveal_text(); }
+    // the header line is the wire write: revealed in its statement
+    fn call(url: std::http::Url, body: Bytes) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        return std::http::request(std::http::ClientRequest {
+            method: "POST",
+            url: url,
+            headers: "Authorization: Bearer " + self.token.reveal_text(),
+            body: body
+        }) or raise;
+    }
 }
 ```
 

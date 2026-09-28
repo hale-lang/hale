@@ -119,10 +119,15 @@ main locus App {
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
         let watched = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(self.head.pid));
         let deadline = std::time::now() + dna::wait_secs(30);
+        // up: the reads answer, and the head has announced the binding's
+        // commands transport on this port, which it prints once that
+        // listener is bound; the reads' server is born first and can
+        // answer while the commands port is still closed
+        let announced = "hale dna api: commands http://127.0.0.1:" + to_string(commands_port) + "/";
         let mut up = false;
         while !up && std::time::now() < deadline {
             let probe = dna::run_tool("curl\n-s\n-o\n/dev/null\n-w\n%{http_code}\n" + api + "/api/hale/v1/applications");
-            up = probe.code == 0 && dna::trim_nl(probe.stdout) != "000";
+            up = probe.code == 0 && dna::trim_nl(probe.stdout) != "000" && std::str::contains(std::io::fs::read_file(repo + "/.hale/head.log") or "", announced);
             if !up {
                 let state = std::process::try_wait(self.head) or - 1;
                 std::test::assert_eq_int(state, -2, "the head exited before listening: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
@@ -136,7 +141,7 @@ main locus App {
         let alice_token = oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", 600);
         let described = post(commands, "{\"describe\":true}", alice_token);
         let name = command_named(std::json::find_field_raw(body_of(described), "value"), "dna.commands.attempt.claim");
-        std::test::assert(len(name) > 0, "the head describes the claim: " + described.stdout);
+        std::test::assert(len(name) > 0, "the head describes the claim: " + described.stdout + "\nthe head's log:\n" + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
         // the reads' server relays a caller's line to the binding under the
         // caller's own bearer, which the binding verifies: the same answer
         let relay = "http://127.0.0.1:" + to_string(port) + "/api/hale/v1/applications/" + identity + "/commands";

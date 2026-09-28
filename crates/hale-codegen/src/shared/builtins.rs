@@ -3646,6 +3646,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_fs_write_file", fs_write_ty, None);
+        // declare i32 @lotus_fs_write_private(ptr path, ptr buf, i64 len):
+        // a new 0600 file in a directory the process owns (std::secret)
+        self.module
+            .add_function("lotus_fs_write_private", fs_write_ty, None);
 
         // declare i32 @lotus_fs_write_file_append(ptr path, ptr buf, i64 len)
         // ergonomics arc — returns 0 or -1; opens with O_APPEND

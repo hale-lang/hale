@@ -66,10 +66,19 @@ fn the_default_pass_is_a_warning_not_an_error() {
         "the direct leak must still be reported: {:?}",
         ds.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+    // The lint itself stays a warning. What fails the build now is the
+    // reveal rule (spec/semantics.md § "`@sealed` and a revealed
+    // secret"): a `@secret` parameter is a declared consumer, and one
+    // that is published is refused in its own fn.
     assert!(
-        !ds.iter().any(|d| d.is_error()),
+        !ds.iter().any(|d| d.is_error() && d.message.starts_with("lint:")),
         "a lint must not fail the build: {:?}",
         ds.iter().filter(|d| d.is_error()).collect::<Vec<_>>()
+    );
+    assert!(
+        ds.iter().any(|d| d.is_error() && d.message.contains("the `@secret` parameter `token`") && d.message.contains("is published on the bus")),
+        "the reveal rule refuses the publish: {:?}",
+        ds.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -81,8 +90,15 @@ fn the_default_pass_keeps_its_old_reach_exactly() {
     for body in [IN_ELSE, VIA_ALIAS] {
         let ds = diags(&program(body));
         assert!(
-            !ds.iter().any(|d| d.message.contains("`@secret`")),
+            !ds.iter().any(|d| d.message.starts_with("lint:") && d.message.contains("`@secret`")),
             "default pass unexpectedly widened on {body:?}: {:?}",
+            ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // The holes the lint leaves are closed by the reveal rule, which
+        // holds a `@secret` parameter to its statement wherever it goes.
+        assert!(
+            ds.iter().any(|d| d.is_error() && d.message.contains("the `@secret` parameter `token`")),
+            "the reveal rule refuses {body:?}: {:?}",
             ds.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

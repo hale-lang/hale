@@ -41,6 +41,17 @@ fn connect_line(user: String, pass: String, token: String, name: String, echo: B
     return "CONNECT " + b.result() + crlf();
 }
 
+/// `line`, a CONNECT built with an empty `pass`, with `pass` spliced in.
+/// A pure fn: a revealed password passes through it inside the one
+/// statement that writes the CONNECT, and is kept nowhere
+/// (spec/semantics.md § "@sealed").
+fn with_password(line: String, pass: String) -> String {
+    // the Builder writes `"pass": ""`; the value goes between the quotes
+    let at = std::str::index_of(line, "\"pass\": \"\"");
+    if at < 0 { return line; }
+    return line[0..(at + 9)] + std::json::escape_string(pass) + line[(at + 9)..len(line)];
+}
+
 /// `PUB <subject> [reply] <size>\r\n<payload>\r\n`.
 fn pub_frame(subject: String, reply: String, data: Bytes) -> Bytes {
     let out = std::bytes::BytesBuilder { };

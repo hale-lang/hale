@@ -15473,6 +15473,159 @@ int lotus_fs_write_file(const char *path,
     return 0;
 }
 
+/* std::secret: a credential written to a file only its owner reads,
+ * for a tool that takes a secret from a file (`gh` through
+ * `GH_TOKEN=$(cat …)`), so the secret never crosses an argv or an
+ * environment this process builds.
+ *
+ * The directory `path` is in must be the effective user's own and
+ * private — no group or world access (EACCES otherwise), not itself a
+ * symlink (ELOOP) — and must not sit in a git work tree: no `.git`
+ * entry in it or any ancestor (EPERM), so the file cannot be committed.
+ * The file is created with mode 0600 by openat(2) itself —
+ * O_CREAT|O_EXCL|O_NOFOLLOW, never chmod after — and must not exist yet
+ * (EEXIST, a symlink included). Every check and the create go through
+ * one descriptor of the directory. Returns 0, or -1 with errno set; a
+ * partial write unlinks the file. Removing it after the tool has read
+ * it is the caller's. */
+#ifdef __wasm__
+/* wasm has no owner, mode or work tree to check: refuse, never write
+ * (its libc has no ENOSYS) */
+int lotus_fs_write_private(const char *path,
+                           const void *buf,
+                           uint64_t len) {
+    (void)path;
+    (void)buf;
+    (void)len;
+    errno = EINVAL;
+    return -1;
+}
+#else
+#ifdef O_PATH
+#define LOTUS_WALK_FLAGS (O_PATH | O_DIRECTORY | O_CLOEXEC)
+#else
+#define LOTUS_WALK_FLAGS (O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+#endif
+int lotus_fs_write_private(const char *path,
+                           const void *buf,
+                           uint64_t len) {
+    if (!path || !*path || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    if (!*base || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t dlen = !slash ? 1 : (slash == path ? 1 : (size_t)(slash - path));
+    char *dir = (char *)malloc(dlen + 1);
+    if (!dir) {
+        errno = ENOMEM;
+        return -1;
+    }
+    if (!slash) {
+        dir[0] = '.';
+    } else {
+        memcpy(dir, path, dlen);
+    }
+    dir[dlen] = '\0';
+    /* Every check and the create go through this one descriptor of the
+     * directory, so no component of the path can be swapped between
+     * them: the directory itself may not be a symlink (O_NOFOLLOW), and
+     * the file is made relative to it (openat). */
+    int dfd;
+    do {
+        dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (dfd < 0 && errno == EINTR);
+    free(dir);
+    if (dfd < 0) {
+        return -1;
+    }
+    struct stat st;
+    if (fstat(dfd, &st) != 0) {
+        int saved = errno;
+        close(dfd);
+        errno = saved;
+        return -1;
+    }
+    /* the effective user's own, and private: no group or world access */
+    if (st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        close(dfd);
+        errno = EACCES;
+        return -1;
+    }
+    /* no `.git` in the directory or any ancestor, walked up through
+     * `..` from the descriptor until `..` is the directory itself */
+    int cur = openat(dfd, ".", LOTUS_WALK_FLAGS);
+    if (cur < 0) {
+        int saved = errno;
+        close(dfd);
+        errno = saved;
+        return -1;
+    }
+    for (;;) {
+        struct stat gs, here, up;
+        if (fstatat(cur, ".git", &gs, AT_SYMLINK_NOFOLLOW) == 0) {
+            close(cur);
+            close(dfd);
+            errno = EPERM;
+            return -1;
+        }
+        int parent = openat(cur, "..", LOTUS_WALK_FLAGS);
+        if (parent < 0 || fstat(cur, &here) != 0 || fstat(parent, &up) != 0) {
+            int saved = errno;
+            if (parent >= 0) close(parent);
+            close(cur);
+            close(dfd);
+            errno = saved;
+            return -1;
+        }
+        close(cur);
+        cur = parent;
+        if (up.st_dev == here.st_dev && up.st_ino == here.st_ino) break;
+    }
+    close(cur);
+    int fd;
+    do {
+        fd = openat(dfd, base, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        int saved = errno;
+        close(dfd);
+        errno = saved;
+        return -1;
+    }
+    const char *p = (const char *)buf;
+    size_t left = len;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w > 0) {
+            p    += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        int saved = w == 0 ? EIO : errno;
+        close(fd);
+        unlinkat(dfd, base, 0);
+        close(dfd);
+        errno = saved;
+        return -1;
+    }
+    if (close(fd) != 0) {
+        int saved = errno;
+        unlinkat(dfd, base, 0);
+        close(dfd);
+        errno = saved;
+        return -1;
+    }
+    close(dfd);
+    return 0;
+}
+#endif /* __wasm__ */
+
 /* Append `len` bytes of `buf` to `path`. Creates the file with
  * mode 0644 if it doesn't exist; otherwise opens existing for
  * append. Returns 0 on success, -1 on error (errno set).
