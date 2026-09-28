@@ -4880,6 +4880,9 @@ otherwise.
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
+| `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
+| `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
+| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |
@@ -4908,7 +4911,6 @@ otherwise.
 | `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
 | `HALE_DNA_OIDC_MEMBER=<subject>=<member>` | unset | Which member a subject is. |
 | `HALE_DNA_OIDC_KEY=<pin>` | unset | The pin of the issuer's signing key. |
-| `HALE_DNA_OIDC_SECRET=<secret>` | unset | The stub issuer's (`hale dna oidc serve`, and `ui`) client secret, sixteen characters or more. |
 | `HALE_DNA_OIDC_KEY_FILE=<path>` | unset | The stub issuer's private signing key. |
 | `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
 | `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
