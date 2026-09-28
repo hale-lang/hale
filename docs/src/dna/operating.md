@@ -327,9 +327,10 @@ owner's or a head's URL before the host sees them. The server needs
 JetStream on (`-js`, or `jetstream {}` in its configuration);
 `dna/nats.conf`, which `init` writes, is the configuration
 `dna/compose.yaml` runs, with each user allowed only its own subjects.
-Until the vault holds their credentials (#989) the passwords are
-placeholders (`dna-<role>-dev`), so keep the server where only the
-machines you trust can reach it.
+The passwords are the seed's own, in the vault (#989), and reach the
+server through `dna/nats.secrets.conf`, which is untracked and mode
+600. A server of your own, named by `HALE_DNA_NATS_URL_OWNER`, takes
+the same users: give it the conf and that secrets file.
 
 The organization reads through its durable consumer, `spine`, which
 keeps its place across restarts, so a fact published while it was down
