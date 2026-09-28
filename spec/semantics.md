@@ -1372,8 +1372,10 @@ leaked.
 stored by name into a locus-carrying param field — `LocusRef`,
 `interface`, `perspective(P)` — is borrowed, never the holder's to
 reclaim, so what owns it must outlive the holder. Ownership is
-structural and reclamation a tree cascade, so `hale check` decides
-this from position, with no annotation:
+structural and reclamation a tree cascade, so the checker decides
+this from position, with no annotation — on the path `hale check`,
+`build`, `run` and `test` share, so a program `check` refuses never
+builds:
 
 | the handle comes from | holder owned by the frame | by `self` (a field, an accepted child) | by the caller (returned) |
 |---|---|---|---|
@@ -1393,6 +1395,37 @@ is the shape a resident uses to copy what it was handed before the
 dispatch ends. Not decided here: a borrow across thread domains, and
 a container (not a locus) a handler built and handed to a resident's
 form-typed field; both are named in GH #730 and #712.
+
+**A handle a method keeps is the same borrow (GH #1048).** A method
+*keeps* a parameter of a locus-carrying type when its body stores it
+into `self` — assigns it to a field, hands it to a mutator of a
+container of `self`'s (`push`, `set`, `insert`, …) inside a record, a
+tuple or an array, or passes it to another method of `self`'s that
+keeps it. `hale check` reads that from the body, the stdlib's
+included: `std::http::Router.add` keeps its handler and `use` its
+middleware. The argument at a call to such a method is a borrow the
+**receiver** holds, decided by the table above with the receiver as the
+holder: a receiver under `self` is `self`'s, a parameter or a `let` the
+body hands back is the caller's, any other `let` is the frame's. A
+locus literal written as the argument is a temporary of the frame that
+builds it, so it counts as that frame's `let`:
+
+```hale
+fn build(dir: String) -> std::http::Router {
+    let r = std::http::Router { };
+    r.add("GET", "/x", Echo { s: dir });   // refused: r is returned
+    return r;
+}
+```
+
+The router would dispatch into a handler its building frame reclaimed.
+A handler that is a field of the locus owning the router
+(`self.router.add("GET", "/x", self.echo)`) lives as long as the router
+and is sound, and so is a router built and used in one frame. A
+keeping method called on `self` itself (`self.observe(j)`) is a store
+into `self` spelled as a call, left where an assignment
+`self.observed = j` is left (GH #967). A call through a value this walk
+cannot type (an interface, a call's result) is left alone.
 
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not

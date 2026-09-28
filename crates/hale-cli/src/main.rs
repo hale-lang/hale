@@ -6887,16 +6887,9 @@ fn run_check_impl_labelled(
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::frontier::secret_taint_strict(&progs));
     }
-    // GH #730: a borrow must outlive its holder — a handle stored by name
-    // into a locus-carrying field is never the holder's to reclaim, so
-    // the frame, the dispatch or the binding that owns it must last
-    // longer than the holder. Errors, with the witness call site where a
-    // parameter carries the handle in. Beside it the GH #737 notice.
-    {
-        let progs: Vec<&hale_syntax::ast::Program> =
-            bundle.programs.values().copied().collect();
-        diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags(&progs));
-    }
+    // GH #730 / #1048 (a borrow outlives its holder) and the GH #737
+    // notice run inside `check_bundle_opts_scoped` above, the path
+    // `build`, `run` and `test` share.
     // GH #738: a bare fallible stdlib call — no `or` — is a warning by
     // default and an error under `--strict-fallible`; the default
     // flips at the next minor. The typing of the bare call is

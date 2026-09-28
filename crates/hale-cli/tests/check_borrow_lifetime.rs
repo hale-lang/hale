@@ -93,3 +93,88 @@ fn a_key_assigned_in_birth_is_noticed() {
     assert!(ok, "a notice, not a refusal: {out}");
     assert!(out.contains("warning:") && out.contains("GH #737") && out.contains("keys its subscription to `Ticks` by `self.n`"), "{out}");
 }
+
+// ---- GH #1048: a handle a method keeps is the same borrow ------------
+
+const KEPT_RULE: &str = "keeps this argument, so";
+const ECHO: &str = "locus Echo {\n    params { s: String = \"\"; }\n    fn handle(ctx: std::http::Context) -> std::http::Response {\n        return std::http::Response { status: 200, body: \"[\" + self.s + \"]\" };\n    }\n}\n";
+
+fn with_echo(rest: &str) -> String {
+    format!("{ECHO}{rest}")
+}
+
+#[test]
+fn a_handler_literal_into_a_returned_router_is_refused() {
+    let src = with_echo("fn build(dir: String) -> std::http::Router {\n    let r = std::http::Router { };\n    r.add(\"GET\", \"/x\", Echo { s: dir + \"/canned\" });\n    return r;\n}\nfn main() {\n    let r = build(\"some/dir\");\n    println(r.dispatch(std::http::Request { method: \"GET\", path: \"/x\" }).body);\n}\n");
+    let (ok, out) = check(&src, "kept_returned");
+    assert!(
+        !ok && out.contains("`std::http::Router.add` keeps this argument, so `r` holds it as a borrow")
+            && out.contains("`Echo { … }` is built in `build`")
+            && out.contains("(returned by `build`)")
+            && out.contains("GH #730, #1048"),
+        "{out}"
+    );
+    // a `let`-bound handler is the same frame's
+    let src = with_echo("fn build(dir: String) -> std::http::Router {\n    let r = std::http::Router { };\n    let h = Echo { s: dir };\n    r.add(\"GET\", \"/x\", h);\n    return r;\n}\nfn main() { let r = build(\"d\"); }\n");
+    let (ok, out) = check(&src, "kept_returned_let");
+    assert!(!ok && out.contains(KEPT_RULE) && out.contains("`h` is built in `build`"), "{out}");
+}
+
+#[test]
+fn a_handler_literal_into_a_callers_router_is_refused() {
+    let src = with_echo("fn register(r: std::http::Router, dir: String) {\n    r.add(\"GET\", \"/x\", Echo { s: dir + \"/canned\" });\n}\nfn main() {\n    let r = std::http::Router { };\n    register(r, \"some/dir\");\n}\n");
+    let (ok, out) = check(&src, "kept_param");
+    assert!(!ok && out.contains(KEPT_RULE) && out.contains("(a parameter, the caller's)"), "{out}");
+}
+
+#[test]
+fn a_handler_literal_into_selfs_router_is_refused() {
+    let src = with_echo("locus Api {\n    params { dir: String = \"d\"; router: std::http::Router = std::http::Router { }; }\n    birth() { self.router.add(\"GET\", \"/x\", Echo { s: self.dir + \"/canned\" }); }\n    fn handle(req: std::http::Request) -> std::http::Response { return self.router.dispatch(req); }\n}\nfn main() { let a = Api { }; }\n");
+    let (ok, out) = check(&src, "kept_self");
+    assert!(
+        !ok && out.contains("so `self.router` holds it as a borrow") && out.contains("(owned by `self`)") && out.contains("`Api.birth`"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_router_built_and_used_in_one_frame_is_sound() {
+    let src = with_echo("fn main() {\n    let r = std::http::Router { };\n    r.add(\"GET\", \"/x\", Echo { s: \"a\" });\n    let h = Echo { s: \"b\" };\n    r.add(\"GET\", \"/y\", h);\n    println(r.dispatch(std::http::Request { method: \"GET\", path: \"/x\" }).body);\n}\n");
+    let (ok, out) = check(&src, "kept_one_frame");
+    assert!(ok && !out.contains(KEPT_RULE), "{out}");
+}
+
+#[test]
+fn a_handler_that_is_a_field_of_the_routers_owner_is_sound() {
+    let src = with_echo("locus Api {\n    params { dir: String = \"d\"; echo: Echo = Echo { }; router: std::http::Router = std::http::Router { }; }\n    birth() {\n        self.echo.s = self.dir + \"/canned\";\n        self.router.add(\"GET\", \"/x\", self.echo);\n    }\n    fn handle(req: std::http::Request) -> std::http::Response { return self.router.dispatch(req); }\n}\nfn main() { let a = Api { }; }\n");
+    let (ok, out) = check(&src, "kept_field");
+    assert!(ok && !out.contains(KEPT_RULE), "{out}");
+}
+
+#[test]
+fn a_users_own_keeping_method_is_read_from_its_body() {
+    // `Registry.register` stores its handle through a container of
+    // `self`'s, inside a record — it keeps it, as `Router.add` does
+    let src = "interface Job { fn work() -> Int; }\nlocus Once { params { n: Int = 1; } fn work() -> Int { return self.n; } }\ntype Slot { job: Job; }\n@form(vec)\nlocus Slots { capacity { heap items of Slot; } }\nlocus Registry {\n    params { slots: Slots = Slots { }; }\n    fn register(j: Job) { self.slots.push(Slot { job: j }); }\n}\nfn fill() -> Registry {\n    let r = Registry { };\n    r.register(Once { n: 2 });\n    return r;\n}\nfn main() { let r = fill(); }\n";
+    let (ok, out) = check(src, "kept_user");
+    assert!(!ok && out.contains("`Registry.register` keeps this argument, so `r` holds it as a borrow"), "{out}");
+}
+
+#[test]
+fn build_refuses_what_check_refuses() {
+    // the rule runs on the path `check`, `build`, `run` and `test` share
+    let src = with_echo("fn build(dir: String) -> std::http::Router {\n    let r = std::http::Router { };\n    r.add(\"GET\", \"/x\", Echo { s: dir });\n    return r;\n}\nfn main() { let r = build(\"d\"); }\n");
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_borrow_lifetime_{}_kept_build", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, src).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["build", &f.to_string_lossy()])
+        .current_dir(Path::new("/"))
+        .output()
+        .expect("hale");
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(!out.status.success() && text.contains(KEPT_RULE), "{text}");
+}

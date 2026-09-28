@@ -29,6 +29,15 @@
 //! `@form` field), which needs the field kinds this walk does not
 //! model. Both are named in the issue.
 //!
+//! GH #1048 extends the table to a handle a **method keeps**: a
+//! parameter of a locus-carrying type that the method's body stores into
+//! `self` (a field, a container of `self`'s through a mutator, another
+//! keeping method). `std::http::Router.add` keeps its handler, read from
+//! the stdlib's own body. The argument at such a call is a borrow the
+//! receiver holds, decided by the same table with the receiver as the
+//! holder, so a handler literal built in a function that returns the
+//! router, or hands it to someone else's, is refused (see `Kept`).
+//!
 //! Beside it, the GH #737 notice: a keyed subscription reads its key
 //! when it is registered, at construction and before `birth()`, so a
 //! key field assigned in `birth()` did not reach the subscription.
@@ -93,11 +102,19 @@ struct World {
     loci: BTreeMap<String, LocusFacts>,
     carriers: BTreeSet<String>, // locus, interface and perspective names
     calls: Vec<CallSite>,
+    /// GH #1048: the keeping facts, over the user's loci and the
+    /// Hale-source stdlib's (by mangled name)
+    kept: Kept,
 }
 
 impl World {
     fn gather(programs: &[&Program]) -> World {
-        let mut w = World { loci: BTreeMap::new(), carriers: BTreeSet::new(), calls: Vec::new() };
+        let mut w = World { loci: BTreeMap::new(), carriers: BTreeSet::new(), calls: Vec::new(), kept: Kept::default() };
+        let mut with_stdlib: Vec<&Program> = programs.to_vec();
+        if let Some(std_prog) = crate::stdlib_bodies::program() {
+            with_stdlib.push(std_prog);
+        }
+        w.kept = Kept::gather(&with_stdlib);
         for p in programs {
             w.gather_items(&p.items);
         }
@@ -178,6 +195,283 @@ fn type_name(t: &TypeExpr) -> Option<String> {
     }
 }
 
+
+// ---------------------------------------------------------------------
+// GH #1048: what a method keeps
+// ---------------------------------------------------------------------
+//
+// `r.add("GET", "/x", Echo { … })` hands the router a handle it stores
+// (`self.entries.push(Entry { handler: h, … })`), so the argument is a
+// borrow the ROUTER holds — the same borrow GH #730 decides for a
+// literal's field, reached through a method. Which parameters a method
+// keeps is read from its body, the stdlib's included: a parameter
+// stored into `self` (a field, a container of `self`'s through one of
+// its mutators, or a method of `self`'s that keeps it in turn).
+
+/// The mutators through which a container of `self`'s stores its
+/// argument.
+const STORING_MUTATORS: &[&str] = &["push", "push_back", "push_front", "set", "insert", "put", "append"];
+
+#[derive(Default)]
+struct Kept {
+    /// locus key -> method -> the parameter indices it keeps
+    methods: BTreeMap<String, BTreeMap<String, BTreeSet<usize>>>,
+    /// locus key -> param field -> the locus key its type names
+    fields: BTreeMap<String, BTreeMap<String, String>>,
+    /// every locus key: the user's names and the stdlib's mangled ones
+    loci: BTreeSet<String>,
+    /// every type that carries a locus handle: loci, interfaces,
+    /// perspectives — only a parameter of one of these is a handle
+    carriers: BTreeSet<String>,
+}
+
+/// A type's locus key: a stdlib path (`std::http::Router`) as the
+/// mangled name the stdlib declares, anything else by its last segment.
+fn locus_key(t: &TypeExpr) -> Option<String> {
+    let TypeExpr::Named { path, .. } = t else { return None };
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    if segs.len() > 1 {
+        if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+            return Some(m.to_string());
+        }
+    }
+    segs.last().map(|s| s.to_string())
+}
+
+/// A locus key as the user spells it: a stdlib locus by its public
+/// path.
+fn locus_display(key: &str) -> String {
+    hale_stdlib::PATH_RENAMES
+        .iter()
+        .find(|(_, m)| *m == key)
+        .map(|(path, _)| path.join("::"))
+        .unwrap_or_else(|| key.to_string())
+}
+
+/// Whether `e` puts `name` itself somewhere as a value: the name, or a
+/// record, tuple or array literal holding it.
+fn holds_value(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Ident(i) => i.name == name,
+        Expr::Struct { inits, .. } => inits.iter().any(|i| holds_value(&i.value, name)),
+        Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().any(|x| holds_value(x, name)),
+        _ => false,
+    }
+}
+
+/// Whether `e` is `self` or a place under it (`self.f`, `self.f.g`).
+fn rooted_at_self(e: &Expr) -> bool {
+    match e {
+        Expr::KwSelf(_) => true,
+        Expr::Field { receiver, .. } => rooted_at_self(receiver),
+        _ => false,
+    }
+}
+
+impl Kept {
+    fn gather(programs: &[&Program]) -> Kept {
+        let mut k = Kept::default();
+        // (locus, method, each param's name when its type carries a
+        // handle, body)
+        let mut bodies: Vec<(String, String, Vec<Option<String>>, &Block)> = Vec::new();
+        fn carriers(items: &[TopDecl], k: &mut Kept) {
+            for item in items {
+                match item {
+                    TopDecl::Module(m) => carriers(&m.items, k),
+                    TopDecl::Locus(l) => {
+                        k.carriers.insert(l.name.name.clone());
+                    }
+                    TopDecl::Interface(i) => {
+                        k.carriers.insert(i.name.name.clone());
+                    }
+                    TopDecl::Perspective(pd) => {
+                        k.carriers.insert(pd.name.name.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for p in programs {
+            carriers(&p.items, &mut k);
+        }
+        fn collect<'p>(items: &'p [TopDecl], k: &mut Kept, bodies: &mut Vec<(String, String, Vec<Option<String>>, &'p Block)>) {
+            for item in items {
+                match item {
+                    TopDecl::Module(m) => collect(&m.items, k, bodies),
+                    TopDecl::Locus(l) => {
+                        let name = l.name.name.clone();
+                        k.loci.insert(name.clone());
+                        let mut fields = BTreeMap::new();
+                        for m in &l.members {
+                            match m {
+                                LocusMember::Params(pb) => {
+                                    for pd in &pb.params {
+                                        if let Some(key) = pd.ty.as_ref().and_then(locus_key) {
+                                            fields.insert(pd.name.name.clone(), key);
+                                        }
+                                    }
+                                }
+                                LocusMember::Fn(fd) => {
+                                    let handles = fd
+                                        .params
+                                        .iter()
+                                        .map(|p| {
+                                            locus_key(&p.ty)
+                                                .filter(|t| k.carriers.contains(t))
+                                                .map(|_| p.name.name.clone())
+                                        })
+                                        .collect();
+                                    bodies.push((name.clone(), fd.name.name.clone(), handles, &fd.body))
+                                }
+                                _ => {}
+                            }
+                        }
+                        k.fields.insert(name, fields);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for p in programs {
+            collect(&p.items, &mut k, &mut bodies);
+        }
+        // to a fixpoint: a method that hands its parameter to one of
+        // `self`'s keeping methods keeps it too
+        loop {
+            let mut grew = false;
+            for (locus, method, params, body) in &bodies {
+                for (i, p) in params.iter().enumerate() {
+                    let Some(p) = p else { continue };
+                    let already = k.methods.get(locus).and_then(|m| m.get(method)).map(|s| s.contains(&i)).unwrap_or(false);
+                    if !already && k.body_keeps(locus, body, p) {
+                        k.methods.entry(locus.clone()).or_default().entry(method.clone()).or_default().insert(i);
+                        grew = true;
+                    }
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        k
+    }
+
+    /// The parameter indices `(locus, method)` keeps.
+    fn keeps(&self, locus: &str, method: &str) -> Option<&BTreeSet<usize>> {
+        self.methods.get(locus).and_then(|m| m.get(method))
+    }
+
+    /// The locus key of a place under `self` in `locus` (`self.f`).
+    fn place_type(&self, locus: &str, place: &Expr) -> Option<String> {
+        match place {
+            Expr::KwSelf(_) => Some(locus.to_string()),
+            Expr::Field { receiver, name, .. } => {
+                let owner = self.place_type(locus, receiver)?;
+                self.fields.get(&owner)?.get(&name.name).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `b` stores the parameter `p` into `self`.
+    fn body_keeps(&self, locus: &str, b: &Block, p: &str) -> bool {
+        b.stmts.iter().any(|s| self.stmt_keeps(locus, s, p))
+            || b.tail.as_deref().map(|t| self.expr_keeps(locus, t, p)).unwrap_or(false)
+    }
+
+    fn stmt_keeps(&self, locus: &str, s: &Stmt, p: &str) -> bool {
+        match s {
+            Stmt::Assign { target, value, .. } => {
+                (target.head.name == "self" && !target.tail.is_empty() && holds_value(value, p))
+                    || self.expr_keeps(locus, value, p)
+            }
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Expr(value) | Stmt::Fail { value, .. } => {
+                self.expr_keeps(locus, value, p)
+            }
+            Stmt::Return(Some(e), _) => self.expr_keeps(locus, e, p),
+            Stmt::If(i) => self.if_keeps(locus, i, p),
+            Stmt::Match(m) => m.arms.iter().any(|a| match &a.body {
+                MatchArmBody::Expr(e) => self.expr_keeps(locus, e, p),
+                MatchArmBody::Block(b) => self.body_keeps(locus, b, p),
+            }),
+            Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) | Stmt::ShmWrite { body, .. } => {
+                self.body_keeps(locus, body, p)
+            }
+            _ => false,
+        }
+    }
+
+    fn if_keeps(&self, locus: &str, i: &hale_syntax::ast::IfStmt, p: &str) -> bool {
+        self.body_keeps(locus, &i.then_block, p)
+            || match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => self.body_keeps(locus, b, p),
+                Some(ElseBranch::ElseIf(n)) => self.if_keeps(locus, n, p),
+                None => false,
+            }
+    }
+
+    fn expr_keeps(&self, locus: &str, e: &Expr, p: &str) -> bool {
+        match e {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    if rooted_at_self(receiver) {
+                        let mutator = STORING_MUTATORS.contains(&name.name.as_str()) && !matches!(receiver.as_ref(), Expr::KwSelf(_));
+                        let keeping = self
+                            .place_type(locus, receiver)
+                            .and_then(|t| self.keeps(&t, &name.name).cloned())
+                            .unwrap_or_default();
+                        for (i, a) in args.iter().enumerate() {
+                            if holds_value(a, p) && (mutator || keeping.contains(&i)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                args.iter().any(|a| self.expr_keeps(locus, a, p))
+            }
+            Expr::Block(b) => self.body_keeps(locus, b, p),
+            Expr::If(i) => self.if_keeps(locus, i, p),
+            Expr::Or { inner, .. } => self.expr_keeps(locus, inner, p),
+            _ => false,
+        }
+    }
+}
+
+/// The names a body hands back: `return x;` and block tails `x`.
+fn returned_names(b: &Block, out: &mut BTreeSet<String>) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Return(Some(Expr::Ident(i)), _) => {
+                out.insert(i.name.clone());
+            }
+            Stmt::If(i) => returned_names_if(i, out),
+            Stmt::Match(m) => {
+                for a in &m.arms {
+                    if let MatchArmBody::Block(bb) = &a.body {
+                        returned_names(bb, out);
+                    }
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) | Stmt::ShmWrite { body, .. } => {
+                returned_names(body, out)
+            }
+            _ => {}
+        }
+    }
+    if let Some(Expr::Ident(i)) = b.tail.as_deref() {
+        out.insert(i.name.clone());
+    }
+}
+
+fn returned_names_if(i: &hale_syntax::ast::IfStmt, out: &mut BTreeSet<String>) {
+    returned_names(&i.then_block, out);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => returned_names(b, out),
+        Some(ElseBranch::ElseIf(n)) => returned_names_if(n, out),
+        None => {}
+    }
+}
+
 // ---------------------------------------------------------------------
 // where a handle comes from, and who owns a holder
 // ---------------------------------------------------------------------
@@ -221,6 +515,12 @@ struct Ctx {
     /// declared at
     locals: Vec<(String, Source)>,
     depth: usize,
+    /// GH #1048: name -> the locus a param or a `let` of a locus literal
+    /// holds (its key: the declared name, or a stdlib locus's mangled
+    /// one), innermost wins
+    types: Vec<(String, String)>,
+    /// the names this body hands back (`return x;`, a tail `x`)
+    returned: BTreeSet<String>,
 }
 
 impl Ctx {
@@ -323,39 +623,33 @@ impl<'a> Walk<'a> {
                         is_handler: false,
                         locals: Vec::new(),
                         depth: 0,
+                        types: Vec::new(),
+                        returned: BTreeSet::new(),
                     });
+                    self.enter(&fd.params, &fd.body);
                     self.block(&fd.body);
                     self.ctx = None;
                 }
                 TopDecl::Locus(l) => {
                     let facts = self.world.loci.get(&l.name.name).cloned().unwrap_or_default();
                     for m in &l.members {
-                        let (name, params, body) = match m {
-                            LocusMember::Fn(fd) => (
-                                fd.name.name.clone(),
-                                fd.params.iter().map(|p| p.name.name.clone()).collect::<Vec<_>>(),
-                                &fd.body,
-                            ),
-                            LocusMember::Lifecycle(lc) => (
-                                lifecycle_name(lc.kind).to_string(),
-                                lc.params.iter().map(|p| p.name.name.clone()).collect(),
-                                &lc.body,
-                            ),
-                            LocusMember::Mode(md) => (
-                                "<mode>".to_string(),
-                                md.params.iter().map(|p| p.name.name.clone()).collect(),
-                                &md.body,
-                            ),
+                        let (name, decls, body) = match m {
+                            LocusMember::Fn(fd) => (fd.name.name.clone(), &fd.params, &fd.body),
+                            LocusMember::Lifecycle(lc) => (lifecycle_name(lc.kind).to_string(), &lc.params, &lc.body),
+                            LocusMember::Mode(md) => ("<mode>".to_string(), &md.params, &md.body),
                             _ => continue,
                         };
                         self.ctx = Some(Ctx {
                             locus: Some(l.name.name.clone()),
                             is_handler: facts.handlers.contains(&name),
                             fn_name: name,
-                            params,
+                            params: decls.iter().map(|p| p.name.name.clone()).collect(),
                             locals: Vec::new(),
                             depth: 0,
+                            types: Vec::new(),
+                            returned: BTreeSet::new(),
                         });
+                        self.enter(decls, body);
                         self.block(body);
                         self.ctx = None;
                     }
@@ -365,8 +659,168 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// GH #1048: a body's params' locus types and the names it hands
+    /// back, for the keeping calls it makes.
+    fn enter(&mut self, decls: &[hale_syntax::ast::Param], body: &Block) {
+        let loci = &self.world.kept.loci;
+        let Some(c) = self.ctx.as_mut() else { return };
+        for p in decls {
+            if let Some(k) = locus_key(&p.ty).filter(|k| loci.contains(k)) {
+                c.types.push((p.name.name.clone(), k));
+            }
+        }
+        returned_names(body, &mut c.returned);
+    }
+
+    /// The locus a receiver is, when position says: `self`, a place
+    /// under it, a param or a `let` of a locus literal.
+    fn receiver_type(&self, recv: &Expr) -> Option<String> {
+        let c = self.ctx.as_ref()?;
+        match recv {
+            Expr::Ident(id) => c.types.iter().rev().find(|(n, _)| *n == id.name).map(|(_, t)| t.clone()),
+            other if rooted_at_self(other) => self.world.kept.place_type(c.locus.as_ref()?, other),
+            _ => None,
+        }
+    }
+
+    /// Who holds what a receiver keeps: `self` for a place under it, the
+    /// caller for a param or a `let` the body hands back, else the
+    /// frame. None when a place under `self` is read only in `birth()`
+    /// (birth-scoped: the instantiation runs inside the frame that owns
+    /// the handle) or position does not say.
+    fn receiver_holder(&self, recv: &Expr) -> Option<(Holder, String, String)> {
+        let c = self.ctx.as_ref()?;
+        match recv {
+            Expr::Ident(id) => {
+                let name = format!("`{}`", id.name);
+                if c.returned.contains(&id.name) {
+                    return Some((Holder::Caller, name, format!("returned by `{}`", c.fn_name)));
+                }
+                match c.resolve(&id.name) {
+                    Source::Param(_) | Source::Payload(_) => {
+                        Some((Holder::Caller, name, "a parameter, the caller's".to_string()))
+                    }
+                    Source::Owned { depth, .. } => Some((Holder::Frame(depth), name, "a binding of this frame".to_string())),
+                    _ => None,
+                }
+            }
+            // a keeping method called on `self` itself is a store into
+            // `self` spelled as a call — `self.observe(j)` for
+            // `self.observed = j` — and this rule leaves it where GH
+            // #967 leaves the assignment (it decides a literal's fields,
+            // not an assignment's lifetime)
+            Expr::KwSelf(_) => None,
+            other if rooted_at_self(other) => {
+                let mut root = other;
+                while let Expr::Field { receiver, .. } = root {
+                    if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                        break;
+                    }
+                    root = receiver.as_ref();
+                }
+                if let Expr::Field { name, .. } = root {
+                    let birth_only = c
+                        .locus
+                        .as_ref()
+                        .and_then(|l| self.world.loci.get(l))
+                        .map(|f| !f.used_outside_birth.contains(&name.name))
+                        .unwrap_or(false);
+                    if birth_only {
+                        return None;
+                    }
+                }
+                Some((Holder::SelfOwned, format!("`{}`", field_path(other)), "owned by `self`".to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    /// A call to a method that keeps its argument: that argument is a
+    /// borrow the receiver holds (GH #1048), decided by the GH #730
+    /// table.
+    fn kept_call(&mut self, callee: &Expr, args: &[Expr]) {
+        let Expr::Field { receiver, name: method, .. } = callee else { return };
+        let Some(recv_ty) = self.receiver_type(receiver) else { return };
+        let Some(kept) = self.world.kept.keeps(&recv_ty, &method.name).cloned() else { return };
+        let Some((holder, holder_name, lives)) = self.receiver_holder(receiver) else { return };
+        for i in kept {
+            let Some(arg) = args.get(i) else { continue };
+            let Some(ctx) = self.ctx.as_ref() else { return };
+            let where_ = match &ctx.locus {
+                Some(l) => format!("`{}.{}`", l, ctx.fn_name),
+                None => format!("`{}`", ctx.fn_name),
+            };
+            let depth = ctx.depth;
+            // what the argument is: a locus literal built right here, or
+            // a handle by name
+            let src = match arg {
+                Expr::Struct { path, .. } => {
+                    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                    let key = if segs.len() > 1 {
+                        crate::stdlib_bodies::mangled_locus_name(&segs).map(str::to_string)
+                    } else {
+                        segs.last().map(|s| s.to_string())
+                    };
+                    match key.filter(|k| self.world.kept.loci.contains(k)) {
+                        Some(k) => Source::Owned { name: format!("{} {{ … }}", locus_display(&k)), depth },
+                        None => continue,
+                    }
+                }
+                other => match source_of(other, ctx) {
+                    Some(s) => strip_alias(&s),
+                    None => continue,
+                },
+            };
+            let why = match (&src, holder) {
+                (Source::Owned { name, .. }, Holder::SelfOwned | Holder::Caller) => Some(format!(
+                    "`{}` is built in {} and reclaimed when that frame ends, while {} ({}) lives on.",
+                    name, where_, holder_name, lives
+                )),
+                (Source::Owned { name, depth: d }, Holder::Frame(hd)) if *d > hd => Some(format!(
+                    "`{}` is bound in a block inside {} and reclaimed when that block ends, before {}.",
+                    name, where_, holder_name
+                )),
+                (Source::Payload(p), Holder::SelfOwned | Holder::Caller) => Some(format!(
+                    "`{}` is the payload delivered to the handler {}, gone when it returns, while {} ({}) lives on (GH #712).",
+                    p, where_, holder_name, lives
+                )),
+                (Source::SelfField(f), Holder::Caller) => Some(format!(
+                    "`{}` is a field of `self`, and {} ({}) may be kept after `self` is gone.",
+                    f, holder_name, lives
+                )),
+                (Source::Param(p), Holder::SelfOwned) => {
+                    let callee_fn = (ctx.locus.clone(), ctx.fn_name.clone());
+                    match ctx.params.iter().position(|x| x == p) {
+                        Some(j) if ctx.locus.is_some() => self.witness(&callee_fn, j, 0, &mut Vec::new()).map(|(site, w)| {
+                            format!(
+                                "`{}` is a parameter of {}, and {} ({}) outlives the call. At the call in `{}`, {}",
+                                p, where_, holder_name, lives, site.in_fn, w
+                            )
+                        }),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(why) = why {
+                let call = format!("{}.{}", locus_display(&recv_ty), method.name);
+                self.diags.push(Diag::ty(
+                    arg.span(),
+                    format!(
+                        "`{}` keeps this argument, so {} holds it as a borrow, and a borrow must \
+                         outlive its holder: {} A handle a method keeps is borrowed, never owned \
+                         by the holder (F.39): make it a field of the locus that owns {}, or \
+                         build and use {} in the frame that builds the argument (GH #730, #1048).",
+                        call, holder_name, why, holder_name, holder_name
+                    ),
+                ));
+            }
+        }
+    }
+
     fn block(&mut self, b: &Block) {
         let mark = self.ctx.as_ref().map(|c| c.locals.len()).unwrap_or(0);
+        let types_mark = self.ctx.as_ref().map(|c| c.types.len()).unwrap_or(0);
         if let Some(c) = self.ctx.as_mut() {
             c.depth += 1;
         }
@@ -379,6 +833,7 @@ impl<'a> Walk<'a> {
         if let Some(c) = self.ctx.as_mut() {
             c.depth -= 1;
             c.locals.truncate(mark);
+            c.types.truncate(types_mark);
         }
     }
 
@@ -396,8 +851,23 @@ impl<'a> Walk<'a> {
                         None => Source::Unknown,
                     },
                 };
+                let key = match value {
+                    Expr::Struct { path, .. } => {
+                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                        if segs.len() > 1 {
+                            crate::stdlib_bodies::mangled_locus_name(&segs).map(str::to_string)
+                        } else {
+                            segs.last().map(|s| s.to_string())
+                        }
+                    }
+                    _ => None,
+                }
+                .filter(|k| self.world.kept.loci.contains(k));
                 if let Some(c) = self.ctx.as_mut() {
                     c.locals.push((name.name.clone(), src));
+                    if let Some(k) = key {
+                        c.types.push((name.name.clone(), k));
+                    }
                 }
             }
             Stmt::LetTuple { names, value, .. } => {
@@ -493,6 +963,7 @@ impl<'a> Walk<'a> {
                 }
             }
             Expr::Call { callee, args, .. } => {
+                self.kept_call(callee, args);
                 self.expr(callee, Position::Other);
                 for a in args {
                     self.expr(a, Position::Other);
@@ -685,6 +1156,8 @@ impl<'a> Walk<'a> {
                 is_handler: site.in_handler,
                 locals: site.locals.iter().map(|(n, s)| (n.clone(), s.clone())).collect(),
                 depth: 0,
+                types: Vec::new(),
+                returned: BTreeSet::new(),
             };
             let Some(src) = source_of(arg, &ctx) else { continue };
             match strip_alias(&src) {
@@ -752,6 +1225,8 @@ impl<'a> CallCollector<'a> {
                         is_handler: false,
                         locals: Vec::new(),
                         depth: 0,
+                        types: Vec::new(),
+                        returned: BTreeSet::new(),
                     });
                     self.block(&fd.body);
                     self.ctx = None;
@@ -784,6 +1259,8 @@ impl<'a> CallCollector<'a> {
                             params,
                             locals: Vec::new(),
                             depth: 0,
+                            types: Vec::new(),
+                            returned: BTreeSet::new(),
                         });
                         self.block(body);
                         self.ctx = None;

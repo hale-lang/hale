@@ -74,9 +74,13 @@ router.add_fn("GET", "/hello/:name", greet);
 
 A locus handler (`add`) buys you state — counters, a database
 child, config params — and both forms share one list and one
-first-match-wins precedence order. Register patterns, get path
-captures and query params extracted, and mount the router as the
-server's handler —
+first-match-wins precedence order. The router **keeps** what `add`
+(and `use`) hand it: it holds the handler as a borrow and never
+owns it, so the handler has to live as long as the router does.
+Make each handler a field of the locus that owns the router, and
+fill the router in `birth()` — register patterns, get path captures
+and query params extracted, and mount the owner as the server's
+handler —
 
 ```hale
 locus Hello {
@@ -86,16 +90,32 @@ locus Hello {
     }
 }
 
-fn build_router() -> std::http::Router {
-    let r = std::http::Router { };
-    r.add("GET", "/hello/:name", Hello { });
-    return r;
+// The routes' owner: each handler is a field, so it lives exactly as
+// long as the router that dispatches to it.
+locus Routes {
+    params {
+        hello: Hello = Hello { };
+        router: std::http::Router = std::http::Router { };
+    }
+    birth() {
+        self.router.add("GET", "/hello/:name", self.hello);
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return self.router.dispatch(req);
+    }
 }
 
 fn main() {
-    std::http::Server { port: 8080, handler: build_router() };
+    std::http::Server { port: 8080, handler: Routes { } };
 }
 ```
+
+A handler literal built in a function that returns the router, or
+in a function handed someone else's router, would be reclaimed with
+that function's frame while the router still dispatches to it, so
+`hale check` refuses it and names the rule (GH #1048). Building and
+using a router in one function — `r.add(…, Hello { }); r.dispatch(…)`
+— is sound: the handler and the router end together.
 
 `:name` segments capture (`path_param`), `?k=v` pairs are one
 `query_param(ctx.params, "k")` away, the first matching route
@@ -113,7 +133,8 @@ locus Cors {
         };
     }
 }
-// r.use(Cors { });
+// on the owner: a field `cors: Cors = Cors { };`, and in `birth()`
+// `self.router.use(self.cors);` — `use` keeps its middleware as `add` does
 ```
 
 Each route's handler is its own locus, so per-route state lives

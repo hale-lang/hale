@@ -217,6 +217,15 @@ pub fn check_bundle_opts_scoped(
         strict_callees,
         strict_idents,
     ));
+    // GH #730 / #1048: a borrow must outlive its holder — a handle
+    // stored by name into a locus-carrying field, or kept by a method
+    // (`Router.add`), is never the holder's to reclaim. Decided here,
+    // on the one path `check`, `build`, `run` and `test` share, so a
+    // program `check` refuses never builds into a dangling handle.
+    {
+        let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+        diags.extend(borrow_lifetime::borrow_lifetime_diags(&programs));
+    }
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a

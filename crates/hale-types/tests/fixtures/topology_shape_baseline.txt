@@ -785,6 +785,7 @@ crates/hale-codegen/tests/http_response_headers.rs#3 865d341109268295
 crates/hale-codegen/tests/http_route_matching.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/http_router.rs#0 d57a225f18d70f1a
 crates/hale-codegen/tests/http_router.rs#2 b5782caf934f5fa8
+crates/hale-codegen/tests/http_router.rs#3 250342ebc529d515
 crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#0 d28956b68188a8e9
 crates/hale-codegen/tests/http_split_write.rs#0 455c3144fd92e193
 crates/hale-codegen/tests/if_expression.rs#0 865d341109268295
