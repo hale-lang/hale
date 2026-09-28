@@ -38,7 +38,7 @@ fn workdir(tag: &str) -> PathBuf {
 /// The reference organism, beside a copy of `dna/core` (and what it
 /// imports beneath it, pond's driver — GH #985): it binds its two typed
 /// topics to pond's NATS adapter directly (GH #986), so — unlike the
-/// membrane's Unix sockets — there is no per-test path to relocate.
+/// old socket transport's Unix sockets — there is no per-test path to relocate.
 fn organism_fixture(root: &Path) -> PathBuf {
     let core_src = repo().join("dna/core");
     let core_dst = root.join("dna/core");
@@ -107,7 +107,7 @@ fn the_nerves_edge_is_a_declared_route_in_the_fleet_model() {
     let org = dir.join("organism.topology");
     let out = hale().arg("check").arg(&seed).arg(format!("--dump-topology={}", org.display())).output().unwrap();
     assert!(org.is_file(), "organism artifact: {}", String::from_utf8_lossy(&out.stderr));
-    // the host, not a membrane client: `NodeRelay` (dna/host/host.hl)
+    // the host, not a socket client: `NodeRelay` (dna/host/host.hl)
     // publishes every fact topic once its row is in the record
     let host_artifact = dir.join("host.topology");
     let out = hale()

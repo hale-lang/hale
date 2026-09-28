@@ -59,7 +59,7 @@ fn source_body(repo: String, j: SourceApplyJournal, request_id: String, owner: S
         ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
-        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+        review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     if len(request_id) > 0 { body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
 }
@@ -159,7 +159,7 @@ main locus App {
                 organization_source_inputs: source::OrganizationPublicationInputs { root: repo },
                 gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
                 verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
-                review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+                review_policy: dna::OrgPolicy { }, board: dna::Board { }
             };
             std::test::assert_eq_int(source_count(j, "effect.requested", dna::effect_key("", "apply", candidate)), 0, "missing post-apply proof composition blocks fresh source effect");
             std::test::assert_eq_str(std::io::fs::read_file(repo + "/dna/org/main.hl") or "", ORIGINAL, "missing composition leaves source unchanged");

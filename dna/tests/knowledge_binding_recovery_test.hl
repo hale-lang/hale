@@ -36,12 +36,12 @@ fn count(j: dna::Journal, kind: String, id: String) -> Int {
     let mut i = 0; let mut n = 0; while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
 }
 fn body_once(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
     if len(r.request_id) > 0 { body.on_knowledge_binding_requested(r); }
     body.reconcile_governance();
 }
 fn configured_body_once(repo: String, j: BindingStageJournal) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, binding_policy_syntax: ops::OrganizationJson { } };
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, binding_policy_syntax: ops::OrganizationJson { } };
     body.reconcile_governance();
 }
 fn capture_request(req: dna::WorkRequest) -> String { let b = std::json::Builder { }; b.begin_object(); dna::request_json(b, req); b.end_object(); return b.result(); }
@@ -63,7 +63,7 @@ main locus App {
     }
     fn bootstrap(repo: String, j: BindingStageJournal) -> String {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity exists");
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/binding", text: "Actual native knowledge.", author: "org" }, "org/source");
         dna::ReviewVerdict <- dna::Verdict { command_id: "baseline/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
         self.wait(j, "knowledge.ratified", digest); return digest;
@@ -101,7 +101,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn interrupted_effect(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         body.on_knowledge_binding_requested(r); self.verdict(r, "effect/decision", "approve"); self.wait(j, "review.command_decided", "effect/decision");
         let mut n = 0; while j.faults == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; } std::test::assert(j.faults > 0, "exact consequence stage interrupted");
     }
@@ -149,7 +149,7 @@ main locus App {
         std::test::assert(store.open(), "the store opens: " + store.last_error());
         let before = ops::apply_record(store, j, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "original org/source binding does not cover support");
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" } };
         let add = self.request(repo, j, "add", "bind", idea, "org/support"); body.on_knowledge_binding_requested(add);
         let delayed = self.request(repo, j, "delayed", "bind", idea, "org/support"); body.on_knowledge_binding_requested(delayed);
         self.verdict(add, "add/decision", "approve"); self.wait(j, "knowledge.binding.bound", add.request_id);

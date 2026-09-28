@@ -55,7 +55,7 @@ main locus App {
         self.dna = dna::Dna {
             journal: dna::GitJournal { repo: repo },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
 
         // 1. a practice proposed by the worker's supervisor for the worker: a goal
@@ -87,7 +87,7 @@ main locus App {
         self.again = dna::Dna {
             journal: dna::GitJournal { repo: repo },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         std::test::assert_eq_int(self.again.rehydrated, 1, "the pending knowledge Review is re-born");
 

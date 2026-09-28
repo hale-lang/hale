@@ -79,7 +79,7 @@ fn body_once(repo: String, j: PracticeStageJournal, delivered: dna::PracticeRequ
     let body = dna::Dna {
         journal: j,
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-        membrane: dna::Board { who: "board" }
+        board: dna::Board { who: "board" }
     };
     if len(delivered.request_id) > 0 { body.on_practice_requested(delivered); }
     body.reconcile_governance();
@@ -139,7 +139,7 @@ main locus App {
         let body = dna::Dna {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         body.on_practice_requested(request(j, "command/seed", "Collect a receipt.", ""));
         let old = std::json::find_string_field(event(j, "practice.proposed", "command/seed").body, "digest");
@@ -194,7 +194,7 @@ main locus App {
         let body = dna::Dna {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         body.on_practice_requested(request(j, "command/late-seed", "One exact pending Practice.", ""));
         let digest = dna::native_json_string(event(j, "practice.proposed", "command/late-seed").body, "digest");
@@ -213,7 +213,7 @@ main locus App {
         let body = dna::Dna {
             journal: fresh,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         std::test::assert_eq_int(count(fresh, "review.command_decided", "command/late"), 0, "restoration does not bypass trusted delivery of pending verdict");
         self.approve("command/late", digest);

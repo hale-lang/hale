@@ -202,7 +202,7 @@ spent:
   exhausted (spent 25000000 of 25000000 micro-dollars this day in 41
   call(s))`;
 - `budget.exhausted` is journaled once for the window and the
-  membrane is told;
+  Board is told;
 - a pending Review is not announced to the Leader; it waits for you
   (`hale dna review <id> approve`), which needs no model.
 

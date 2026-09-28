@@ -222,7 +222,7 @@ locus KnowledgeAdmissionCases {
         let before_review = ops::apply_record(graph, j, receipts);
         std::test::assert(before_review.error == "" && graph.count("edges") == 1, "pending request cannot project a second direct relationship");
         let direct_facts = ops::StrictKnowledgeDirectEdgeFacts { };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: direct_facts };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" }, edge_facts: direct_facts };
         body.on_knowledge_edge_requested(fact.edge);
         let proposed = fresh.lookup(context, c.request_id);
         std::test::assert(proposed.ok && proposed.receipt.reviewed && proposed.receipt.relationship.proposal_state == "created" && proposed.receipt.relationship.review_state == "pending" && proposed.receipt.relationship.effect_state == "unknown", "actual Body proposal stays distinct from effect under changed policy");

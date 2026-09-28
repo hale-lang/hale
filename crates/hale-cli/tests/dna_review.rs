@@ -59,7 +59,7 @@ fn main() {
             }
         },
         review_policy: dna::OrgPolicy { },
-        membrane: dna::Board { who: "board" },
+        board: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary {
             child: "orgrev",
             grant: dna::Grant { child: "orgrev", classes: "docs refactor", max_magnitude: 4, review: "pre" }

@@ -13,7 +13,7 @@ fn body(repo: String, request_id: String) {
         organization_source_apply_inputs: source::OrganizationPublicationInputs { root: repo },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
-        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+        review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     if len(request_id) > 0 { app.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
 }

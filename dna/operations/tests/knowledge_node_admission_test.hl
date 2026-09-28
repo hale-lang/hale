@@ -85,7 +85,7 @@ locus NodeAdmissionCases {
         let retired = self.command(context, c.record_head, c.request_id, "retire", f.node.candidate_digest, "", "");
         std::test::assert_eq_str(fresh.submit(context, retired).code, "request_conflict", "request namespace is shared by node operations");
         let j = dna::GitJournal { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         body.on_knowledge_node_requested(f.node);
         let proposed = fresh.lookup(context, c.request_id);
         std::test::assert(proposed.ok && proposed.receipt.state == "succeeded" && proposed.receipt.node.proposal_state == "created", "real Body creates the exact proposal");
@@ -146,7 +146,7 @@ locus NodeAdmissionCases {
         let bad = std::str::replace(codec.fact(context, c, NodeAuthority { }.authorize(context, c.operation, false, dna::MemJournal { }), f.node), f.node.candidate_digest, dna::digest_of("wrong candidate"));
         std::test::assert(!codec.decode_fact(dna::Event { kind: "knowledge.node.requested", entity: f.command_id, prev: c.record_head, body: bad }).valid, "mismatched candidate cannot be recovered as a canonical request");
         let j = dna::GitJournal { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         body.on_knowledge_node_requested(f.node);
         std::test::assert_eq_str(commands.lookup(context, c.request_id).receipt.node.proposal_state, "created", "actual proposal established before contradictory acknowledgment");
         self.append(j, "knowledge.node.proposed", f.command_id, std::str::replace(native.proposed(f.node), "Working idea", "Unrelated idea"));

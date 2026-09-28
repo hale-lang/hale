@@ -154,7 +154,7 @@ main locus App {
                 tools: dna::WorktreeTools { hale_bin: toolchain() }
             },
             knowledge_client: dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV, budget: 1 },
-            membrane: dna::Board { who: "board" },
+            board: dna::Board { who: "board" },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } }
         };
         let app_package = dna::digest_of("org/app:" + IDEA);

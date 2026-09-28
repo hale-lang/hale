@@ -894,8 +894,7 @@ repository:
   the occurrence key is owed when spine nodes multiply.
 - **The optimize pass (GH #596 O).** The pass is an execution of
   `optimize-walk` (GH #995: **The workflow catalog**) and nothing
-  else: there is no `optimize_every_ms` and no `Dna.optimize()`. Its
-  cadence is a schedule (above) that the seeded operating practice
+  else. Its cadence is a schedule (above) that the seeded operating practice
   `operating/optimize-cadence` declares once the Board ratifies it —
   `{"id": "optimize", "every_ms": 86400000, "definition":
   "optimize-walk", "args": "{}", "convener": "position:leader"}` —
@@ -1241,8 +1240,8 @@ repository:
   permissions, with placeholder passwords until the vault (#989).
   `upgrade` writes it when it is missing, and says so when an older
   one's spine may not publish `<org>.head.>`.
-- **Liveness.** At start the host waits, as it waited for sockets, for
-  the organization to read its facts: its durable consumer has a pull
+- **Liveness.** At start the host waits for the organization to read
+  its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
   nerves (DNA_<ID>)`) or that it did not within 20 s; the facts wait in
   the stream either way. A restarted or rolled-back organization is
@@ -1327,9 +1326,8 @@ repository:
   connection drains on SIGTERM: an API that imports the core keeps the
   default action. The head holds its own connection and drains: its
   watcher stops and the server stops accepting, at once.
-- **There is no second transport** (GH #986). DNA writes no
-  `LOTUS_BUS_CONFIG`, binds no Unix socket and writes no route file:
-  every fact between the organism's parts travels over the nerves, and
+- **One transport: the nerves** (GH #986). Every fact between the
+  organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
   events**; **The application side**). An application — an instance a
   node starts, the expression `dev` starts — inherits the application
@@ -3463,7 +3461,7 @@ The organization's models are a catalog in source (GH #583 M1):
   is exhausted intent is refused (`intent.refused`: `budget
   exhausted (spent … of … micro-dollars this day in … call(s))`),
   `budget.exhausted` is journaled once per window (`detail`,
-  `spent_micros`, `allowance_micros`, `window`, `at`), the membrane is
+  `spent_micros`, `allowance_micros`, `window`, `at`), the Board is
   told, and a Review is not announced to the model-backed positions —
   it waits for the Board, which needs no model. A `ModelRouter` counts
   what its calls cost and has no allowance of its own.
@@ -3726,8 +3724,8 @@ The live half is memory's, projected from the record by the spine
   model that answers, whose plans take the defaults, and which spends
   nothing. The CLI fixtures set it.
 - **An ask is admitted as a workflow, in the one engine (card 18).**
-  `Dna.ask(Intent)` — intent through the membrane, an optimizer's —
-  passes the membrane's gate, the owner's (GH #664) and
+  `Dna.ask(Intent)` — intent through the Board, an optimizer's —
+  passes the Board's gate, the owner's (GH #664) and
   the budget's, journals `intent.offered`, and admits a workflow for
   it (`workflow.admitted`, the one positive discriminator, under the
   intent's id as the admission's identity — offered again it is the
@@ -4252,8 +4250,8 @@ The live half is memory's, projected from the record by the spine
 The assembly names what fills each role; `hale check` sees the wiring.
 
 - **Record** — `Journal`: `GitJournal` (the branch), `MemJournal` (tests).
-- **Membrane** — where humans see and decide: `Board` /
-  `LocalHumanMembrane`, reached over the nerves on one machine; the record
+- **Board** (the `board` field, a `Membrane`) — where humans see and
+  decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
   relayed by the host); GitHub, mirrored by the host when `git config
   dna.github` names `owner/repo`: every pending mutation Review becomes
@@ -4275,7 +4273,7 @@ The assembly names what fills each role; `hale check` sees the wiring.
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
   `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
   behaviour, and `hale dna profile`'s `github:` line names which the
-  host found (`HALE_DNA_FORGE`, or `dna.github`). The membrane's pass
+  host found (`HALE_DNA_FORGE`, or `dna.github`). The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
   not change with the forge. Nothing in the core or the host spells

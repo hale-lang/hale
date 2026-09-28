@@ -71,7 +71,7 @@ fn run_body(repo: String, id: String) {
         ownership: dna::Ownership { me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
-        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+        review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: id });
 }
@@ -82,7 +82,7 @@ fn continue_application(repo: String, command_id: String, stage: String) {
         ownership: dna::Ownership { me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
-        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+        review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     body.resume_review_command(command_id);
 }

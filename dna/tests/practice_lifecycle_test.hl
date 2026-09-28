@@ -34,7 +34,7 @@ main locus App {
         std::io::fs::mkdir(repo) or discard;
         std::test::assert_eq_int(dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain").code, 0, "isolated actual Record");
         let j = dna::GitJournal { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         let first = lifecycle_request("practice/create", "propose", "practice", "A Practice — exact café evidence.", "");
         body.on_knowledge_node_requested(first);
         std::test::assert_eq_str(body.practice_in_force(first.name), "", "pending Practice is not in force");

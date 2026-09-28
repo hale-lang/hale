@@ -2,7 +2,7 @@
 //! `bindings { }` inert. Found by the DNA's own verification: `hale
 //! test <worktree>` on a governed application built a test binary that
 //! imported the application's main — and bound (unlinking) the
-//! organism's live membrane sockets from under it.
+//! organism's live sockets of the old socket transport from under it.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,7 +13,7 @@ fn a_test_binary_importing_a_bound_main_does_not_touch_its_sockets() {
     let _ = std::fs::remove_dir_all(&d);
     let app: PathBuf = d.join("app");
     std::fs::create_dir_all(app.join("tests")).unwrap();
-    let sock = d.join("membrane.sock");
+    let sock = d.join("facts.sock");
     std::fs::write(&sock, "a file standing where the application's socket would be").unwrap();
     std::fs::write(app.join("hale.toml"), "[deps]\n").unwrap();
     std::fs::write(

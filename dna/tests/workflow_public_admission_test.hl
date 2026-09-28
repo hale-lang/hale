@@ -1,7 +1,7 @@
 // dna/tests/workflow_public_admission_test.hl — the public admission
 // runs in the one engine (DNA workflow card 18).
 //
-// `Dna.ask` — intent through the membrane, a schedule's, an optimizer's
+// `Dna.ask` — intent through the Board, a schedule's, an optimizer's
 // — admits a workflow (`workflow.admitted`, the one positive
 // discriminator, carrying the ask's identity and the leader's word) and
 // runs it in the engine the assembly owns for its scope: an edit leaf
@@ -230,7 +230,7 @@ main locus App {
         std::test::assert(c.code == 0, "the base commit: " + c.stderr);
         self.boot(repo, false);
 
-        // ---- t1: intent through the membrane is an admitted workflow, run
+        // ---- t1: intent through the Board is an admitted workflow, run
         //      in the assembly's own engine: one edit leaf, performed by the
         //      assembly's editor, its candidate in review; the root settles
         //      done through the engine, and no legacy row is written

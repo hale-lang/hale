@@ -309,7 +309,9 @@ reaches only the `Feed` instances that subscribed with
   `birth()` runs**: pass it as a param at the literal
   (`Feed { symbol_id: 7 }`). A field left at its default and
   assigned in `birth()` registers the default, and a later
-  assignment to the field does not retarget the subscription. It can also be the bare
+  assignment to the field does not retarget the subscription. A
+  locus imported from another module behaves the same way: pass
+  its key at the literal that makes it. It can also be the bare
   word **`replica`**: the instance's 0-based replica index, so a
   `pinned(..., replicas = K)` fan-out shards an Int-keyed topic
   with one subscribe line (see the concurrency chapter's

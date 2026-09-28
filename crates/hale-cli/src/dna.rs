@@ -1457,6 +1457,18 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}: `optimize_every_ms` no longer builds and a monotonic tick names no occurrence; delete the field, tick with `std::time::nanos(std::time::current()) / 1000000`, and declare a cadence other than the seeded one with `hale dna schedule declare` (GH #1143)", main_path.display()));
         }
     }
+    // The Board's field is `board`: the generated `membrane:` line an older
+    // main.hl carries is rewritten, and one written by hand is named
+    if let Ok(main_text) = fs::read_to_string(&main_path) {
+        let next = main_text.replace(BOARD_MAIN_HL.0, BOARD_MAIN_HL.1);
+        if next != main_text {
+            fs::write(&main_path, &next).map_err(|e| format!("write {}: {e}", main_path.display()))?;
+            out.push(format!("rewrote {} (the Board's field is `board`, no longer `membrane`)", main_path.display()));
+        }
+        if next.lines().any(|l| { let t = l.trim_start(); !t.starts_with("//") && t.starts_with("membrane:") }) {
+            out.push(format!("note    {}: `membrane:` no longer builds; the Board's field on `dna::Dna` is `board:`", main_path.display()));
+        }
+    }
     // the generated main.hl's owners map line goes with it
     if let Ok(main_text) = fs::read_to_string(&main_path) {
         if main_text.contains(OWNERS_MAIN_HL) {
@@ -1514,7 +1526,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
     if main_text.contains("main locus Org") && main_text.contains("unix(") {
         out.push(format!(
-            "note    {}/main.hl binds its facts to unix sockets; the membrane is gone (GH #986) and they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
+            "note    {}/main.hl binds its facts to unix sockets, which DNA no longer serves (GH #986): they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
             ORG_SEED
         ));
     }
@@ -2243,7 +2255,7 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 }
 
 // ---------------------------------------------------------------
-// GitHub as a membrane (GH #566 F4): a mirror of the record, never the record
+// GitHub as the Board's surface (GH #566 F4): a mirror of the record, never the record
 // ---------------------------------------------------------------
 
 // ---------------------------------------------------------------
@@ -2462,7 +2474,7 @@ main locus Org {{
                 grant: dna::Grant {{ child: "{project}", classes: "refactor docs", max_magnitude: 4, review: "pre" }}
             }},
             review_policy: dna::OrgPolicy {{ }},
-            membrane: dna::Board {{ who: "board" }},
+            board: dna::Board {{ who: "board" }},
             gateway: dna::MutationGateway {{
                 leases: dna::GitLeases {{ repo: "." }},
                 workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
@@ -2921,6 +2933,10 @@ const SCHEDULE_MAIN_HL: [(&str, &str); 3] = [
     ),
     ("self.core.request_tick(std::time::monotonic_ns() / 1000000); }", "self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }"),
 ];
+
+/// The Board's field as an older generator wrote it in `main.hl`, and as it
+/// writes it now; `upgrade` takes the exact old line to the new one.
+const BOARD_MAIN_HL: (&str, &str) = ("            membrane: dna::Board { who: \"board\" },\n", "            board: dna::Board { who: \"board\" },\n");
 
 /// The generated `main.hl`'s owners map field before GH #1123, which
 /// `upgrade` takes out.

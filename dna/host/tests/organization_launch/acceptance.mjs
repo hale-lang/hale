@@ -59,7 +59,7 @@ async function run(mode) {
   await fs.writeFile(path.join(work, 'app/main.hl'), 'main locus App { run() { } }\nfn main() { App { }; }\n');
   await fs.writeFile(path.join(work, '.gitignore'), '/.hale/\n/vendor/\n/dna/org/org\n/app/app\n');
   await copyHlTree(path.join(repo, 'dna/core'), path.join(work, 'vendor/core'));
-  // GH #986: no membrane binary or socket transport any more — the
+  // GH #986: no socket transport or its binary any more — the
   // organization reads its facts over the nerves (NATS), whose URLs
   // travel in HALE_DNA_NATS_URL_SPINE / HALE_DNA_NATS_ORG (already in
   // `process.env` when the caller set them, e.g. via `hale dna nerves
