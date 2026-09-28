@@ -472,7 +472,7 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("extension", EffectSet::SYSCALL), e("file_exists", EffectSet::SYSCALL), e("file_size", EffectSet::SYSCALL),             e("list_dir_at", EffectSet::SYSCALL), e("list_dir_count", EffectSet::SYSCALL), e("mkdir", EffectSet::SYSCALL), e("mktemp", EffectSet::SYSCALL),
             e("read_bytes", EffectSet::SYSCALL), e("read_file", EffectSet::SYSCALL), e("rename", EffectSet::SYSCALL), e("unlink", EffectSet::SYSCALL), e("write_bytes", EffectSet::SYSCALL),
-            e("write_file", EffectSet::SYSCALL),
+            e("write_file", EffectSet::SYSCALL), e("__write_private", EffectSet::SYSCALL),
             e("write_file_append", EffectSet::SYSCALL),
         ],
         open_prefixes: &[],
@@ -1372,6 +1372,7 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_FS, "read_bytes", [Str], Bytes, "IoError"),
     sig!(NS_FS, "write_file", [Str, Str], Unit, "IoError"),
     sig!(NS_FS, "write_bytes", [Str, Bytes], Unit, "IoError"),
+    sig!(NS_FS, "__write_private", [Str, Bytes], Unit, "IoError"),
     // GH #535 (DNA F.9): the `or` form lowers through the same
     // fallible channel as write_file (Unit success); the BARE legacy
     // call returns an Int status and stays typed Unknown like every

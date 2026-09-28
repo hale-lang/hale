@@ -15473,6 +15473,138 @@ int lotus_fs_write_file(const char *path,
     return 0;
 }
 
+/* std::secret: a credential written to a file only its owner reads,
+ * for a tool that takes a secret from a file (`gh` through
+ * `GH_TOKEN=$(cat …)`), so the secret never crosses an argv or an
+ * environment this process builds.
+ *
+ * The directory `path` is in must be the effective user's own, with no
+ * world access and no group write (EACCES otherwise), and must not sit
+ * in a git work tree — no `.git` entry in it or any ancestor (EPERM),
+ * so the file cannot be committed. The file is created with mode 0600
+ * by open(2) itself — O_CREAT|O_EXCL|O_NOFOLLOW, never chmod after —
+ * and must not exist yet (EEXIST). Returns 0, or -1 with errno set; a
+ * partial write unlinks the file. */
+#ifdef __wasm__
+/* wasm has no owner, mode or work tree to check: refuse, never write
+ * (its libc has no ENOSYS) */
+int lotus_fs_write_private(const char *path,
+                           const void *buf,
+                           uint64_t len) {
+    (void)path;
+    (void)buf;
+    (void)len;
+    errno = EINVAL;
+    return -1;
+}
+#else
+int lotus_fs_write_private(const char *path,
+                           const void *buf,
+                           uint64_t len) {
+    if (!path || !*path || (!buf && len > 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t plen = strlen(path);
+    char *dir = (char *)malloc(plen + 1);
+    if (!dir) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(dir, path, plen + 1);
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        dir[0] = '.';
+        dir[1] = '\0';
+    } else if (slash == dir) {
+        dir[1] = '\0';
+    } else {
+        *slash = '\0';
+    }
+    struct stat st;
+    if (stat(dir, &st) != 0) {
+        int saved = errno;
+        free(dir);
+        errno = saved;
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        free(dir);
+        errno = ENOTDIR;
+        return -1;
+    }
+    if (st.st_uid != geteuid() || (st.st_mode & (S_IRWXO | S_IWGRP)) != 0) {
+        free(dir);
+        errno = EACCES;
+        return -1;
+    }
+    /* no `.git` in the directory or any ancestor */
+    char *real = realpath(dir, NULL);
+    free(dir);
+    if (!real) {
+        return -1;
+    }
+    size_t rlen = strlen(real);
+    char *probe = (char *)malloc(rlen + 6);
+    if (!probe) {
+        free(real);
+        errno = ENOMEM;
+        return -1;
+    }
+    for (;;) {
+        struct stat gs;
+        size_t n = strlen(real);
+        int at_root = (n == 1 && real[0] == '/');
+        /* `<dir>/.git`, or `/.git` at the root */
+        memcpy(probe, real, n);
+        memcpy(probe + (at_root ? 1 : n), at_root ? ".git" : "/.git", at_root ? 5 : 6);
+        if (lstat(probe, &gs) == 0) {
+            free(probe);
+            free(real);
+            errno = EPERM;
+            return -1;
+        }
+        if (at_root) break;
+        char *up = strrchr(real, '/');
+        if (!up) break;
+        if (up == real) {
+            real[1] = '\0';
+        } else {
+            *up = '\0';
+        }
+    }
+    free(probe);
+    free(real);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -1;
+    }
+    const char *p = (const char *)buf;
+    size_t left = len;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w > 0) {
+            p    += (size_t)w;
+            left -= (size_t)w;
+            continue;
+        }
+        if (w < 0 && errno == EINTR) continue;
+        int saved = errno;
+        close(fd);
+        unlink(path);
+        errno = saved;
+        return -1;
+    }
+    if (close(fd) != 0) {
+        int saved = errno;
+        unlink(path);
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+#endif /* __wasm__ */
+
 /* Append `len` bytes of `buf` to `path`. Creates the file with
  * mode 0644 if it doesn't exist; otherwise opens existing for
  * append. Returns 0 on success, -1 on error (errno set).

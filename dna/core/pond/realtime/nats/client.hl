@@ -28,7 +28,7 @@ locus NatsTransport {
             std::io::tcp::set_recv_timeout(self.sock, d) or discard;
         }
     }
-    fn write_all(b: Bytes) -> Int {
+    fn write_all(@secret b: Bytes) -> Int {
         if self.tls >= 0 { return std::io::tls::send_bytes(self.tls, b); }
         if self.sock >= 0 { return std::io::tcp::__send_bytes(self.sock, b); }
         return -1;
@@ -144,7 +144,7 @@ locus NatsClient {
         return true;
     }
 
-    fn write(b: Bytes) -> Bool {
+    fn write(@secret b: Bytes) -> Bool {
         if !self.io.is_open() { return false; }
         if self.io.write_all(b) < 0 {
             self.connected = false;
@@ -154,7 +154,10 @@ locus NatsClient {
         return true;
     }
 
-    fn write_str(s: String) -> Bool { return self.write(std::bytes::from_string(s)); }
+    // `@secret`: the CONNECT line carries a revealed password through
+    // these three to the socket, each in one statement (spec/semantics.md
+    // § "@sealed")
+    fn write_str(@secret s: String) -> Bool { return self.write(std::bytes::from_string(s)); }
 
     /// Dial, read INFO, send CONNECT, and wait for the server's PONG to
     /// the PING after it: the server has accepted the connection when
@@ -196,7 +199,7 @@ locus NatsClient {
         }
         // the one place a sealed credential is revealed: straight into the
         // CONNECT it authenticates
-        if !self.write_str(connect_line(self.user, if credential.ready() { credential.reveal_text() } else { self.pass }, self.token, self.name, self.echo) + ping_line()) { self.io.close(); return false; }
+        if !self.write_str(with_password(connect_line(self.user, "", self.token, self.name, self.echo), if credential.ready() { credential.reveal_text() } else { self.pass }) + ping_line()) { self.io.close(); return false; }
         while std::time::monotonic() < deadline {
             if !self.pull() { break; }
             while self.framer.next() {

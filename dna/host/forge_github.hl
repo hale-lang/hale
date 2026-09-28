@@ -9,35 +9,34 @@
 
 import "../core" as dna;
 
-// GH #989: when the vault holds a forge token, `gh` uses it —
-// scoped to this one call. Review round 1: an argv element is any
-// co-resident user's to read from /proc/<pid>/cmdline for the life
-// of the process, whatever this process's own permissions are — a
-// token there is not scoped to this call at all, it is scoped to
-// "anyone on the box". `std::io::fs::mktemp` opens a file at mode
-// 0600 atomically (mkstemps(3)), so the token instead crosses through
-// a file only this user (or root) can read; the script that reads it
-// unlinks it immediately after, and the line below cleans up again in
-// case the script never reached that far (`rm -f` on an already-gone
-// path is a no-op). `std::process::run` has no per-call env — the
-// existing `run_tool_timeout` shells out the same way to reach a tool
-// a plain argv cannot configure. No token provisioned is not a
-// refusal: `gh`'s own ambient login (a developer's `gh auth login`, a
-// CI runner's own token) is what every deployment already had before
-// this cut, and vaulting the forge token is opt-in until one is
-// provisioned out of band.
+// GH #989: when the vault holds a forge token, `gh` uses it — scoped to
+// this one call. An argv element is any co-resident user's to read from
+// /proc/<pid>/cmdline, and nothing here reveals the token into a value at
+// all (spec/semantics.md § "@sealed"): the sealed `Credential` writes it
+// into a file only this user can read — created 0600 by open(2), in a
+// fresh `mktemp -d` directory (0700, outside any work tree) —
+// and `gh` reads it from there through `GH_TOKEN="$(cat …)"`, so the token
+// lives only in `gh`'s own environment. The script unlinks the file as
+// soon as it has read it, and the directory goes after the call. No token
+// provisioned is not a refusal: `gh`'s own ambient login (a developer's
+// `gh auth login`, a CI runner's token) is what every deployment already
+// had, and vaulting the forge token is opt-in until one is provisioned.
 fn gh(args: String) -> dna::RunResult {
-    let token = std::secret::Credential { vault: "forge-token" }.reveal_text();
-    if len(token) == 0 {
+    let token = std::secret::Credential { vault: "forge-token" };
+    if !token.ready() {
         return dna::run_tool("gh\n" + args);
     }
-    let tok_path = std::io::fs::mktemp("/tmp/hale-gh-token-", "") or "";
-    if len(tok_path) == 0 {
+    let made = dna::run_tool("mktemp\n-d\n-t\nhale-gh-XXXXXX");
+    let dir = dna::trim_nl(made.stdout);
+    if made.code != 0 || len(dir) == 0 {
         return dna::run_tool("gh\n" + args);
     }
-    std::io::fs::write_file(tok_path, token) or discard;
-    let result = dna::run_tool("sh\n-c\nGH_TOKEN=\"$(cat \"$1\")\"; rm -f \"$1\"; export GH_TOKEN; shift; exec gh \"$@\"\nsh\n" + tok_path + "\n" + args);
-    dna::run_tool("rm\n-f\n" + tok_path);
+    if !token.write_private(dir + "/token") {
+        dna::run_tool("rm\n-rf\n" + dir);
+        return dna::run_tool("gh\n" + args);
+    }
+    let result = dna::run_tool("sh\n-c\nGH_TOKEN=\"$(cat \"$1\")\"; rm -f \"$1\"; export GH_TOKEN; shift; exec gh \"$@\"\nsh\n" + dir + "/token\n" + args);
+    dna::run_tool("rm\n-rf\n" + dir);
     return result;
 }
 
