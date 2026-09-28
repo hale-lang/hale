@@ -1234,7 +1234,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
-    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project))? {
+    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project, &free_compose_ports(&project)))? {
         out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
     created(&mut out, &root.join("dna/senses.yml"), &senses_yml())?;
@@ -1523,7 +1523,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         let compose = root.join("dna/compose.yaml");
         let had = fs::read_to_string(&compose).unwrap_or_default();
         let project = compose_seed_of(&had).unwrap_or_else(|| locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string()));
-        let want = compose_yaml(&project);
+        // and its ports the ones it publishes: another seed's are not taken
+        let ports = compose_ports_of(&had).unwrap_or_else(|| free_compose_ports(&project));
+        let want = compose_yaml(&project, &ports);
         if had != want {
             fs::write(&compose, &want).map_err(|e| format!("write {}: {e}", compose.display()))?;
             out.push(format!("{} {} (its own compose project, hale-dna-{}; the servers' passwords from the vault)", if had.is_empty() { "created" } else { "rewrote" }, compose.display(), compose_name(&project)));
@@ -1623,7 +1625,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
 /// `dna/compose.yaml`: memory's Postgres (with pgvector)
 /// for `hale dna dev`, a named volume per repository so the graph
 /// outlives the container. Part of the genome, project-owned.
-fn compose_yaml(project: &str) -> String {
+fn compose_yaml(project: &str, ports: &ComposePorts) -> String {
     let name = compose_name(project);
     format!(
         r#"# dna/compose.yaml — the organism's environment for `hale dna dev`
@@ -1685,9 +1687,9 @@ volumes:
   senses:
     name: hale-dna-{name}-senses
 "#,
-        port = compose_port(project),
-        nats_port = compose_nats_port(project),
-        senses_port = compose_senses_port(project),
+        port = ports.db,
+        nats_port = ports.nats,
+        senses_port = ports.senses,
         image = PROMETHEUS_IMAGE,
         retention = SENSES_RETENTION,
     )
@@ -1730,10 +1732,47 @@ scrape_configs:
     .to_string()
 }
 
-/// A host port for the project's senses' store in 93xx, like `compose_port`.
-fn compose_senses_port(project: &str) -> u16 {
+/// The host ports a seed's compose publishes its services on: memory's
+/// Postgres in 54xx, the nerves' NATS in 42xx, the senses' store in 93xx.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ComposePorts {
+    db: u16,
+    nats: u16,
+    senses: u16,
+}
+
+/// The ports a seed's compose file already publishes, when it names all
+/// three: an upgrade, and a clone's, keep them, so a regenerated file is
+/// the file the seed already has.
+fn compose_ports_of(text: &str) -> Option<ComposePorts> {
+    let published = |inner: &str| {
+        text.lines().find_map(|l| {
+            let l = l.trim().trim_start_matches("- ").trim_matches('"');
+            let rest = l.strip_prefix("127.0.0.1:")?;
+            let (host, container) = rest.split_once(':')?;
+            (container == inner).then(|| host.parse::<u16>().ok()).flatten()
+        })
+    };
+    Some(ComposePorts { db: published("5432")?, nats: published("4222")?, senses: published("9090")? })
+}
+
+/// Free host ports for a new seed's compose, taken at seed time as
+/// `dna::free_port` takes a fixture's: each service's candidate comes from
+/// the seed's name, so a seed's ports are its own and stable, and one that
+/// something on this machine already listens on is stepped past. Hashed
+/// alone, two seeds, or a seed and a server the machine already runs (a CI
+/// runner's NATS on 4222), could be handed one port, and the second
+/// compose up fails.
+fn free_compose_ports(project: &str) -> ComposePorts {
     let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    9300 + (h % 100) as u16
+    let pick = |base: u16| {
+        let first = (h % 100) as u16;
+        (0..100u16)
+            .map(|i| base + (first + i) % 100)
+            .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
+            .unwrap_or(base + first)
+    };
+    ComposePorts { db: pick(5400), nats: pick(4200), senses: pick(9300) }
 }
 
 /// The seed's name a compose file carries: its project (`name:
@@ -1785,20 +1824,6 @@ fn organism_secrets(root: &Path, rotate: bool) -> String {
         Err(e) => format!("note    the organism's secrets were not provisioned: {e}"),
     }
 }
-
-/// A host port for the project's NATS in 42xx, like `compose_port`.
-fn compose_nats_port(project: &str) -> u16 {
-    let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    4200 + (h % 100) as u16
-}
-
-/// A host port for the project's Postgres in 54xx, from the project's
-/// name, so two governed repositories on one machine do not collide.
-fn compose_port(project: &str) -> u16 {
-    let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    5400 + (h % 100) as u16
-}
-
 
 // ---------------------------------------------------------------
 // the catalog (GH #583 M1)

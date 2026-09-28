@@ -28,6 +28,22 @@ fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
 
 fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
 
+// The host port a compose file publishes a service's `inner` port on
+// (`"127.0.0.1:<host>:<inner>"`), -1 when it names none.
+@unbounded
+fn published(compose: String, inner: String) -> Int {
+    let mut rest = compose;
+    while true {
+        let at = std::str::index_of(rest, "\"127.0.0.1:");
+        if at < 0 { return -1; }
+        rest = rest[(at + 11)..len(rest)];
+        let colon = std::str::index_of(rest, ":");
+        if colon < 0 { return -1; }
+        if std::str::starts_with(rest[(colon + 1)..len(rest)], inner + "\"") { return std::str::parse_int(rest[0..colon]) or - 1; }
+    }
+    return -1;
+}
+
 fn main() {
     let scratch = dna::scratch_root("compose-projects");
     let vault = scratch + "/vault";
@@ -88,5 +104,20 @@ fn main() {
     let upgraded = in_dir(root_b, vault, toolchain() + "\ndna\nupgrade\n.");
     let now = text_of(root_b + "/dna/compose.yaml");
     std::test::assert(upgraded.code == 0 && std::str::contains(upgraded.stdout, "rewrote") && now == compose_b, "upgrade rewrites an older compose file to the seed's own project and the vault's password: " + upgraded.stdout + upgraded.stderr);
+
+    // ---- a port something on this machine already listens on is stepped
+    // past: a seed takes its host ports at seed time, from its own name's
+    // candidate, never one another server holds (a CI runner's NATS on 4222)
+    let held = published(compose_a, "4222");
+    std::test::assert(held > 0, "the seed's compose publishes the nerves on a host port: " + compose_a);
+    let fd = std::io::tcp::__listen_socket("127.0.0.1", held);
+    std::test::assert(fd >= 0, "the fixture holds the first seed's nerves port, " + to_string(held));
+    let made_again = in_dir(scratch, vault, "sh\n-c\nmkdir -p again && cd again && exec \"$0\" dna new \"$1\"\n" + toolchain() + "\n" + a);
+    std::io::tcp::__close_fd(fd);
+    std::test::assert_eq_int(made_again.code, 0, "the same seed made again elsewhere: " + made_again.stdout + made_again.stderr);
+    let compose_again = text_of(scratch + "/again/" + a + "/dna/compose.yaml");
+    let again = published(compose_again, "4222");
+    std::test::assert(again > 0 && again != held, "its nerves take another port than the one held, " + to_string(held) + ": " + compose_again);
+    std::test::assert(published(compose_again, "5432") > 0 && published(compose_again, "9090") > 0, "and it publishes memory and the senses too: " + compose_again);
     dna::scratch_done(scratch);
 }

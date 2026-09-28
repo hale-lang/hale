@@ -3936,9 +3936,15 @@ The live half is memory's, projected from the record by the spine
   (its own compose project, `name: hale-dna-<project>`, so two seeds
   on one machine never share a container; the `knowledge-db` service,
   `pgvector/pgvector:pg16`, a named volume
-  `hale-dna-<project>-knowledge`, a host port in 54xx from the
-  project's name); it is part of the genome, and `upgrade` rewrites it
-  to the template. With no
+  `hale-dna-<project>-knowledge`, a host port in 54xx). Each service's
+  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx)
+  is taken at seed time: a candidate from the project's name, stepped past
+  any port something on the machine already listens on, as
+  `dna::free_port` takes a fixture's, so a seed never publishes on one
+  another server holds (a CI runner's NATS on 4222). The file is part of
+  the genome, and `upgrade` rewrites it to the template, keeping the ports
+  the file already publishes, so a clone's upgrade regenerates the same
+  file. With no
   `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
   dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
   DSN from the published port and the vault's `postgres-owner-<project>`
@@ -4589,7 +4595,8 @@ routes; it never plans on a reading.
   Prometheus, scraping what `dna/senses.yml` names over the host gateway
   (`honor_labels`, so a part's own labels are the readings'), and keeping
   what it scraped for its retention (`--storage.tsdb.retention.time`, a
-  week). Its port is the project's, in 93xx, on 127.0.0.1.
+  week). Its port is the seed's, in 93xx, on 127.0.0.1, taken as the
+  compose file's other ports are.
   - `init` writes both files. `upgrade` writes `dna/senses.yml` when it
     is missing, and says so when the compose file has no `senses`
     service or `dna/nats.conf` no `reflexes` user.
