@@ -1130,7 +1130,9 @@ deployment-time bindings live in the `main` locus's
 main: a `main locus` that arrives through `import` (a test seed
 importing the application it tests) keeps its `bindings { }` inert,
 so a test binary never binds, or unlinks, the sockets of the running
-application (GH #529 D7). Two transport shapes
+application (GH #529 D7). It is also not counted against the
+one-`main`-locus rule, so a program that imports such a seed may
+declare a `main locus` of its own (GH #1059). Two transport shapes
 ship: substrate-provided `unix("/path", role: ...)` and
 user-supplied adapter loci named directly on the right-hand
 side (any locus satisfying `__StdBusAdapter` —

@@ -13,6 +13,8 @@ use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/ports.rs"]
+mod ports;
 
 fn run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -32,7 +34,7 @@ fn run(name: &str, src: &str) -> String {
 
 #[test]
 fn a_refused_connect_answers_at_once_and_connect_wait_waits() {
-    let port = harness::free_port();
+    let port = ports::free_port();
     let src = format!(
         r#"
 fn main() {{
@@ -62,7 +64,7 @@ fn main() {{
 
 #[test]
 fn connect_wait_reaches_a_listener_that_comes_up_during_the_wait() {
-    let port = harness::free_port();
+    let port = ports::free_port();
     let src = format!(
         r#"
 locus Late {{

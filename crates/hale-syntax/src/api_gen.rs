@@ -34,7 +34,6 @@ use crate::ast::{
 };
 use crate::span::Span;
 use crate::json_gen;
-use crate::parse_source;
 
 /// The dev defaults `hale run --api` fills in, and the wording a
 /// missing knob's diagnostic quotes.

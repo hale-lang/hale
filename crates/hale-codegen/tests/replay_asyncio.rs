@@ -398,7 +398,7 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
 
     // Record: A's data first — recorded resume order is A, B.
     let _ = std::fs::remove_file(&ready);
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .env("LOTUS_OBS_RECORD", &rec)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -432,7 +432,7 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
     // drain must hold it on ready_head and resume A at its recorded
     // turn. stdout must be byte-identical to the recording.
     let _ = std::fs::remove_file(&ready);
-    let mut child = Command::new(&bin)
+    let child = Command::new(&bin)
         .env("LOTUS_REPLAY", &rec)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
