@@ -247,9 +247,9 @@ fn every_subcommand_answers_help() {
     let _ = std::fs::remove_dir_all(scratch_dir("every"));
 }
 
-/// The reported symptom, and the second half of the ask: `hale
-/// build` has no `-o`, so its usage is the only place the output
-/// path is stated.
+/// The reported symptom, and the second half of the ask: the usage
+/// is the place the output path is stated — where it lands by
+/// default, and that `-o` names it exactly.
 #[test]
 fn build_help_says_where_the_binary_lands() {
     let (out, code) =
@@ -262,8 +262,8 @@ fn build_help_says_where_the_binary_lands() {
         out
     );
     assert!(
-        out.contains("no `-o`"),
-        "`hale build` takes no -o; the usage has to say so: {}",
+        out.contains("-o, --out <path>") && out.contains("out/bin/myapp"),
+        "`hale build` takes -o; the usage has to list it and show it: {}",
         out
     );
     assert!(

@@ -1,4 +1,4 @@
-//! The `tooling_build` integration-test binary: 15 test files of this area, kept
+//! The `tooling_build` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -7,6 +7,8 @@
 
 #[path = "bench.rs"]
 mod bench;
+#[path = "build_output_path.rs"]
+mod build_output_path;
 #[path = "debug_info.rs"]
 mod debug_info;
 #[path = "doc.rs"]

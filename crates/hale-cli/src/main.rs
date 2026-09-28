@@ -637,11 +637,17 @@ The target is one `.hl` file, whose `import` directives are
 followed, or one directory, whose `.hl` files are one seed and one
 binary.
 
-The binary lands beside the target, and there is no `-o`:
+The binary lands beside the target unless `-o` says where:
 
     hale build app.hl    ->  ./app           the basename, minus .hl
     hale build myapp/    ->  myapp/myapp     the directory's own name,
                                              inside it
+    hale build myapp/ -o out/bin/myapp
+                         ->  out/bin/myapp   exactly that path, its
+                                             directories made; for a
+                                             wasm build the .wasm is
+                                             that path and its loader
+                                             (.mjs) sits beside it
 
 Flags may stand on either side of the target — the first argument
 that is not a flag is the target, as in `hale check`:
@@ -656,6 +662,9 @@ that is not a flag is the target, as in `hale check`:
                                    speed and not portable; `baseline`
                                    pins a portable x86-64-v3 for an
                                    artifact that travels
+  -o, --out <path>                 write the artifact to <path> instead
+                                   of beside the target (`build` only:
+                                   `run` and `replay` execute theirs)
   --dev                            LLVM O1 instead of the O3 default:
                                    build latency over run speed
   --link <name>                    link a system library (repeatable)
@@ -8875,7 +8884,45 @@ fn run_program(
 /// sides of the target (GH #861). The other build-time switches
 /// below are read straight from `std::env::args()` with a scan that
 /// never depended on position, so they keep working unchanged.
+/// `hale build`'s `-o <path>` / `--out <path>`: where the artifact goes,
+/// exactly, instead of beside the target. Returns the other flags and
+/// the path. The parent directory is created by the caller, so a build
+/// can be pointed into a directory that is not there yet
+/// (`-o target/seeds/api/api`).
+fn take_output_flag(
+    flags: &[String],
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
+    let mut rest = Vec::new();
+    let mut out: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < flags.len() {
+        let f = flags[i].as_str();
+        if f == "-o" || f == "--out" {
+            let Some(v) = flags.get(i + 1).filter(|v| !v.is_empty()) else {
+                return Err(format!("hale build: {f} requires the artifact's path"));
+            };
+            if out.is_some() {
+                return Err(format!("hale build: {f} given twice — one build, one artifact"));
+            }
+            out = Some(PathBuf::from(v));
+            i += 2;
+        } else {
+            rest.push(flags[i].clone());
+            i += 1;
+        }
+    }
+    Ok((rest, out))
+}
+
 fn run_build(target: &Path, flags: &[String]) -> ExitCode {
+    let (flags_without_out, out_override) = match take_output_flag(flags) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let flags: &[String] = &flags_without_out;
     // Phase 2i: warn if the CLI binary was built against an older
     // codegen+runtime source tree than what's on disk now. Silent
     // miscompile (stale CLI emitting old lowering against new
@@ -9176,10 +9223,24 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         } else {
             names.object
         };
-        if ext.is_empty() {
+        let named = if ext.is_empty() {
             output
         } else {
             output.with_extension(ext)
+        };
+        // `-o` names the artifact exactly: no extension is added or
+        // swapped, and its directory is made.
+        match &out_override {
+            Some(p) => {
+                if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+                    if let Err(e) = std::fs::create_dir_all(dir) {
+                        eprintln!("hale build: cannot create {}: {e}", dir.display());
+                        return ExitCode::from(1);
+                    }
+                }
+                p.clone()
+            }
+            None => named,
         }
     };
     // F.32-2 (2026-05-25): operator-facing per-locus working-set
@@ -9440,8 +9501,17 @@ fn collect_ffi_from_imports(
 /// shorthand). The splitter has to know their arity: without it,
 /// `hale build --link raylib app.hl` would take `raylib` — the
 /// first argument that does not start with `-` — for the target.
-const VALUE_FLAGS: &[&str] =
-    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache", "--api", "--env"];
+const VALUE_FLAGS: &[&str] = &[
+    "--link",
+    "--csrc",
+    "--target",
+    "--target-cpu",
+    "--target-cache",
+    "--api",
+    "--env",
+    "-o",
+    "--out",
+];
 
 /// GH #861: the one argument splitter `hale build` and `hale run`
 /// share. Given everything after the subcommand, it returns the
@@ -9682,6 +9752,8 @@ fn parse_build_options(
 /// and honor none of them, so they are refused by name instead of
 /// being accepted and quietly dropped (the whole complaint of #904).
 const BUILD_ONLY_FLAGS: &[&str] = &[
+    "-o",
+    "--out",
     "--locality-report",
     "--target-cache",
     "--strict",
