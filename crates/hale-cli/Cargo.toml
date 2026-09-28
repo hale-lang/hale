@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Hale language CLI"
+# Test targets are listed below, not discovered (see `every_test_file_is_built`).
+autotests = false
 
 [[bin]]
 name = "hale"
@@ -34,3 +36,81 @@ libc = "0.2"
 # shared libLLVM). Cargo accepts `pkg/feature` only for a selected
 # package, and CI's cli/dna jobs select hale-cli, not hale-codegen.
 dynamic-llvm = ["hale-codegen/dynamic-llvm"]
+
+# Each `tests/<name>.rs` below is one binary; the files an area root pulls in
+# with `#[path]` are its modules.
+[[test]]
+name = "check_cli"
+path = "tests/check_cli.rs"
+
+[[test]]
+name = "dna_fixture_ports_are_free"
+path = "tests/dna_fixture_ports_are_free.rs"
+
+[[test]]
+name = "dna_native_suite"
+path = "tests/dna_native_suite.rs"
+
+[[test]]
+name = "dna_orgs"
+path = "tests/dna_orgs.rs"
+
+[[test]]
+name = "dna_projects"
+path = "tests/dna_projects.rs"
+
+[[test]]
+name = "dna_records"
+path = "tests/dna_records.rs"
+
+[[test]]
+name = "effects_baseline_gate"
+path = "tests/effects_baseline_gate.rs"
+
+[[test]]
+name = "every_test_file_is_built"
+path = "tests/every_test_file_is_built.rs"
+
+[[test]]
+name = "fleet"
+path = "tests/fleet.rs"
+
+[[test]]
+name = "hale_native_suite"
+path = "tests/hale_native_suite.rs"
+
+[[test]]
+name = "imports"
+path = "tests/imports.rs"
+
+[[test]]
+name = "language_diags"
+path = "tests/language_diags.rs"
+
+[[test]]
+name = "mcp"
+path = "tests/mcp.rs"
+
+[[test]]
+name = "model_claims"
+path = "tests/model_claims.rs"
+
+[[test]]
+name = "three_hop_import"
+path = "tests/three_hop_import.rs"
+
+[[test]]
+name = "tooling_build"
+path = "tests/tooling_build.rs"
+
+[[test]]
+name = "tooling_services"
+path = "tests/tooling_services.rs"
+
+[[test]]
+name = "topology"
+path = "tests/topology.rs"
+
+[[test]]
+name = "xseed"
+path = "tests/xseed.rs"

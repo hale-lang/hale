@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! HALE_DNA_TEST_TRACE=1 cargo test --release -p hale-cli \
-//!     --test dna_design -- --nocapture
+//!     --test dna_orgs dna_design:: -- --nocapture
 //! ```
 //!
 //! Every line is prefixed `[dnatrace]`, so a run's events can be summed
