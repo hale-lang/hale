@@ -109,7 +109,9 @@ impl Drop for BuildLock<'_> {
     }
 }
 
-fn exec(bin: &Path, args: &[String]) -> ExitCode {
+/// `observer`: `bin` is fuse-hl, whose nonzero status is a failure worth a
+/// line; `inspect`'s exit status is its verdict and speaks for itself.
+fn exec(bin: &Path, args: &[String], observer: bool) -> ExitCode {
     let mut cmd = Command::new(bin);
     cmd.args(args);
     // fuse-hl is our child, not a peer: `hale iris` is a supervisor
@@ -127,7 +129,9 @@ fn exec(bin: &Path, args: &[String]) -> ExitCode {
         Ok(st) => match st.code() {
             Some(0) => ExitCode::SUCCESS,
             Some(c) => {
-                eprintln!("hale iris: {name} exited with status {c}");
+                if observer {
+                    eprintln!("hale iris: {name} exited with status {c}");
+                }
                 ExitCode::from(c.clamp(0, 255) as u8)
             }
             None => {
@@ -202,7 +206,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            exec(&bin, &args[1..])
+            exec(&bin, &args[1..], false)
         }
         _ => {
             // GH #527 B5: `--diff a b` diffs the pair HERE (one
@@ -262,7 +266,7 @@ pub fn run(args: &[String]) -> ExitCode {
             } else if let Some(artifact) = artifact {
                 fargs.push(artifact);
             }
-            exec(&bin, &fargs)
+            exec(&bin, &fargs, true)
         }
     }
 }

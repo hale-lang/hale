@@ -285,8 +285,9 @@ fn iris_diff_pair_rides_into_the_snapshot() {
 }
 
 /// An observed program that births loci it keeps, far past the
-/// live-locus table's bound: a million in about twenty seconds.
-const CHURN: &str = "locus Kid { params { n: Int = 0; } }\nlocus Kids {\n    params { }\n    accept(c: Kid) { }\n    fn add(n: Int) { Kid { n: n }; }\n}\nmain locus App {\n    params { kids: Kids = Kids { }; }\n    run() {\n        let mut i = 0;\n        while i < 1000000 && !self.draining {\n            self.kids.add(i);\n            i = i + 1;\n            if i % 100 == 0 { std::time::sleep(1ms); }\n        }\n        while !self.draining { std::time::sleep(100ms); }\n    }\n}\nfn main() { App { }; }\n";
+/// live-locus table's bound: a million in about twenty seconds, after a
+/// pause that lets iris attach before its first birth.
+const CHURN: &str = "locus Kid { params { n: Int = 0; } }\nlocus Kids {\n    params { }\n    accept(c: Kid) { }\n    fn add(n: Int) { Kid { n: n }; }\n}\nmain locus App {\n    params { kids: Kids = Kids { }; }\n    run() {\n        // time for iris's 1 Hz discovery to attach first\n        std::time::sleep(3s);\n        let mut i = 0;\n        while i < 1000000 && !self.draining {\n            self.kids.add(i);\n            i = i + 1;\n            if i % 100 == 0 { std::time::sleep(1ms); }\n        }\n        while !self.draining { std::time::sleep(100ms); }\n    }\n}\nfn main() { App { }; }\n";
 
 fn rss_kb(pid: u32) -> u64 {
     std::fs::read_to_string(format!("/proc/{pid}/status"))
@@ -314,6 +315,29 @@ fn fuse_hl_of(parent: u32) -> Option<u32> {
     None
 }
 
+/// A child this test started, stopped however the test ends: a failed
+/// assertion must not leave `hale iris` (and its fuse-hl) or the churn
+/// program running. SIGTERM first, so a Hale program drains and removes
+/// its own observer segment; SIGKILL if it has not gone within 5 s.
+struct Stopped(std::process::Child);
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        let pid = self.0.id();
+        if let Ok(None) = self.0.try_wait() {
+            let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = self.0.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 fn snapshot(port: u16) -> Option<serde_json::Value> {
     let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
@@ -338,40 +362,46 @@ fn fuse_hl_stays_flat_under_locus_churn_and_requests() {
     std::fs::write(seed.join("main.hl"), CHURN).unwrap();
     let (ok, _, err) = hale(&cache, &["build", &seed.join("main.hl").to_string_lossy()]);
     assert!(ok, "the churn program builds: {err}");
-    let (mut iris, port) = spawn_iris(&cache, &[]);
+    let (iris, port) = spawn_iris(&cache, &[]);
+    let iris = Stopped(iris);
     let runtime = cache.join(format!("iris-{port}-runtime"));
-    let mut churn = Command::new(seed.join("main"))
+    let churn = Command::new(seed.join("main"))
         .env("XDG_RUNTIME_DIR", &runtime)
         .env("LOTUS_OBS", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn the churn program");
-    let fuse = fuse_hl_of(iris.id()).expect("hale iris runs fuse-hl");
-    // the table fills, then evicts
+    let churn = Stopped(churn);
+    let fuse = fuse_hl_of(iris.0.id()).expect("hale iris runs fuse-hl");
+    // the table fills, then takes no more
     let deadline = Instant::now() + Duration::from_secs(120);
-    let mut evicting = false;
-    while Instant::now() < deadline && !evicting {
-        evicting = snapshot(port).map(|v| v["loci_evicted"].as_u64().unwrap_or(0) > 0).unwrap_or(false);
+    let mut full = false;
+    while Instant::now() < deadline && !full {
+        full = snapshot(port).map(|v| v["loci_untracked"].as_u64().unwrap_or(0) > 0).unwrap_or(false);
         std::thread::sleep(Duration::from_millis(250));
     }
     let warm = rss_kb(fuse);
     let mut rows = 0;
+    let mut types: Vec<String> = Vec::new();
     for _ in 0..200 {
         if let Some(v) = snapshot(port) {
-            rows = v["processes"].as_array().map(|p| p.iter().map(|x| x["loci"].as_array().map(|l| l.len()).unwrap_or(0)).sum()).unwrap_or(0);
+            let loci: Vec<&serde_json::Value> = v["processes"].as_array().into_iter().flatten().flat_map(|p| p["loci"].as_array().into_iter().flatten()).collect();
+            rows = loci.len();
+            types = loci.iter().filter_map(|l| l["type"].as_str().map(str::to_string)).collect();
             assert!(rows <= 8192, "the live-locus table holds at its bound: {rows} rows");
         }
     }
     let after = rss_kb(fuse);
-    let _ = churn.kill();
-    let _ = churn.wait();
-    let _ = iris.kill();
-    let _ = iris.wait();
+    drop(churn);
+    drop(iris);
     let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
     assert_no_signal_death(&log);
-    assert!(evicting, "the churn never filled the table:\n{log}");
+    assert!(full, "the churn never filled the table:\n{log}");
     assert_eq!(rows, 8192, "a full table shows its bound");
+    // the rows kept are the ones born first: the program's long-lived
+    // loci stay tracked, so their traffic stays attributed
+    assert!(types.iter().any(|t| t == "App") && types.iter().any(|t| t == "Kids"), "the long-lived loci are kept: {:?}", &types[..types.len().min(8)]);
     assert!(
         after <= warm + 32 * 1024,
         "fuse-hl grew {} KB over 200 snapshots under churn ({warm} KB to {after} KB)\n{log}",

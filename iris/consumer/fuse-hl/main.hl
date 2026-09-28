@@ -82,15 +82,18 @@ const M_CLAIMS_N: Int = 3; // ClaimVec rows in use (vec has no clear)
 const M_GROUPS_N: Int = 4; // GroupVec rows in use
 const M_RSS_LOG: Int = 5; // last rss_note() timestamp (ns)
 const M_LOCI_FREE: Int = 6; // rows on the live-locus free stack
-const M_LOCI_RING: Int = 7; // next row a full live-locus table overwrites
-const M_LOCI_EVICTED: Int = 8; // births that overwrote a live row
-const META_CELLS: Int = 9;
+const M_LOCI_UNTRACKED: Int = 7; // births a full live-locus table did not take
+const META_CELLS: Int = 8;
 
 // The live-locus table's bound (GH #578). A process that births loci
 // and never reports their dissolve (or births them faster than the
 // table can show) would otherwise grow the table without end: past
-// MAX_LOCI live rows, a birth overwrites the table in slot order and
-// is counted as `loci_evicted` in /snapshot. Every event reaches its
+// MAX_LOCI live rows, a birth is not tracked and is counted as
+// `loci_untracked` in /snapshot. The rows it keeps are the ones born
+// first — a program's long-lived loci (its main, its servers, its
+// workers) — so their traffic stays attributed; overwriting the oldest
+// row instead evicted exactly those, and the law view abstained on
+// their topics for good. Every event reaches its
 // row through LocusIndex, never a scan: a scan copied every row into
 // the cycle's region per event, O(rows) per event and O(rows^2) per
 // cycle — how an organism's fuse-hl reached 10 GB.
@@ -250,8 +253,10 @@ fn size_classed(snap: String) -> String {
     if class < n { class = base * 2; }
     let b = std::str::builder_new();
     std::str::builder_append(b, snap);
+    let chunk = "                                                                ";
     let mut pad = class - n;
-    while pad > 0 { std::str::builder_append(b, " "); pad = pad - 1; }
+    while pad >= 64 { std::str::builder_append(b, chunk); pad = pad - 64; }
+    if pad > 0 { std::str::builder_append(b, std::str::substring(chunk, 0, pad)); }
     return std::str::builder_finish(b);
 }
 
@@ -482,8 +487,7 @@ locus Cycle {
 
     // A known row is rewritten; a dissolve frees its row for the next
     // birth. A new birth takes a freed row, else a new one while the
-    // table is under MAX_LOCI, else overwrites the next row in slot order
-    // (the free stack is empty then, so every row is live).
+    // table is under MAX_LOCI, else it is not tracked (counted).
     fn locus_upsert(si: Int, inst: Int, btype: Int, parent: Int, alive: Int) {
         let key = locus_key(si, inst);
         let row = LocusRow { seg: si, inst: inst, btype: btype, parent: parent, alive: alive };
@@ -497,18 +501,15 @@ locus Cycle {
             return;
         }
         if alive == 0 { return; }
-        let mut target = self.free_pop();
+        let target = self.free_pop();
         if target < 0 {
             if self.loci.len() < MAX_LOCI {
                 self.loci.push(row);
                 self.lidx.set(LocusSlot { key: key, slot: self.loci.len() - 1 });
-                return;
+            } else {
+                self.meta.set(M_LOCI_UNTRACKED, (self.meta.get(M_LOCI_UNTRACKED) or 0) + 1) or discard;
             }
-            target = self.meta.get(M_LOCI_RING) or 0;
-            self.meta.set(M_LOCI_RING, (target + 1) % MAX_LOCI) or discard;
-            self.meta.set(M_LOCI_EVICTED, (self.meta.get(M_LOCI_EVICTED) or 0) + 1) or discard;
-            let old = self.loci.get(target) or LocusRow { };
-            self.lidx.remove(locus_key(old.seg, old.inst)) or discard;
+            return;
         }
         self.loci.set(target, row) or discard;
         self.lidx.set(LocusSlot { key: key, slot: target });
@@ -865,8 +866,14 @@ locus Cycle {
         if k == EK_LOCUS_DISSOLVE {
             let l = self.locus_row(si, id);
             self.locus_upsert(si, id, l.btype, l.parent, 0);
-            self.tail_push("pid " + g.pid + ": " + self.type_name(si, l.btype) + "#" + id
-                    + " dissolved (reason " + w1 + ")");
+            // the stdlib's own loci (a Server's per-connection child) come
+            // and go per request: in an eight-line tail they would push out
+            // the exits and restarts it is there for
+            let tname = self.type_name(si, l.btype);
+            if !std::str::starts_with(tname, "__Std") {
+                self.tail_push("pid " + g.pid + ": " + tname + "#" + id
+                        + " dissolved (reason " + w1 + ")");
+            }
         }
         if k == EK_RESTART {
             let mut gm = self.segs.get(si) or SegRow { };
@@ -1073,7 +1080,7 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "],\"loci_evicted\":" + (self.meta.get(M_LOCI_EVICTED) or 0) + self.law_json() + self.diff_json() + "}";
+        s = s + "],\"loci_untracked\":" + (self.meta.get(M_LOCI_UNTRACKED) or 0) + self.law_json() + self.diff_json() + "}";
         return s;
     }
 
@@ -1397,8 +1404,8 @@ locus Cycle {
         let pages = std::str::parse_int(std::str::substring(rest, 0, sp2)) or 0;
         println("fuse-hl: rss " + (pages * 4096 / 1048576) + "MB, segs "
                 + self.segs.len() + ", topics " + self.topics.len()
-                + ", loci " + self.loci.len() + " (" + (self.meta.get(M_LOCI_EVICTED) or 0)
-                + " evicted), edges " + self.edges.len());
+                + ", loci " + self.loci.len() + " (" + (self.meta.get(M_LOCI_UNTRACKED) or 0)
+                + " untracked), edges " + self.edges.len());
     }
 
     fn drop_sse(slot: Int) {

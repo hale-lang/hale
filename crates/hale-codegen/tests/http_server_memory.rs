@@ -58,6 +58,15 @@ fn rss_kb(pid: u32) -> u64 {
         .unwrap_or(0)
 }
 
+/// The server, stopped however the test ends.
+struct Stopped(std::process::Child);
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn get(port: u16) -> usize {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
@@ -80,10 +89,12 @@ fn a_server_answering_large_bodies_keeps_its_memory_flat() {
         .spawn()
         .expect("spawn the server");
     // the server's own word that it listens, never a guess
+    let stdout = child.stdout.take().unwrap();
+    let child = Stopped(child);
     let mut ready = String::new();
-    let _ = BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready);
+    let _ = BufReader::new(stdout).read_line(&mut ready);
     assert_eq!(ready.trim(), "ready", "the server did not start on {port}");
-    let pid = child.id();
+    let pid = child.0.id();
 
     for _ in 0..50 {
         assert!(get(port) > 400_000, "a full body");
@@ -93,8 +104,7 @@ fn a_server_answering_large_bodies_keeps_its_memory_flat() {
         get(port);
     }
     let after = rss_kb(pid);
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     let _ = std::fs::remove_file(&bin);
     // 400 bodies of ~450 KB would be ~175 MB kept; a flat server moves
     // by at most a few chunks
