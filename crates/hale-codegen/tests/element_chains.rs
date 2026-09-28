@@ -28,10 +28,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -40,7 +42,7 @@ fn run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
         name,
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)
@@ -753,7 +755,7 @@ fn min_key_mentioning_idx_is_rejected() {
         "hale_chain_minidx_{}",
         std::process::id()
     ));
-    let res = build_executable(&program, &bin);
+    let res = build_executable_with_options(&program, &bin, &[], &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     assert!(res.is_err(), "an idx-keyed min must not lower");
 }

@@ -2707,7 +2707,9 @@ function that turns the process environment into those fields is
 command that compiles (`hale build`, `run`, `test`, `replay`) starts
 from it, so a variable means the same thing to all four. A caller of
 the library (a test, another tool) sets the field and touches no
-environment; `crates/hale-codegen/tests/codegen_reads_no_environment.rs`
+environment, and must choose a `cache_dir`: `BuildOptions` has no
+`Default`, only `BuildOptions::new(cache_dir)`, because the runtime-object
+cache is the one setting with no right answer to guess; `crates/hale-codegen/tests/codegen_reads_no_environment.rs`
 fails if a read appears in the crate.
 
 A boolean variable is on for `1`, `true` or `TRUE` and off for anything
@@ -2736,7 +2738,7 @@ build.
 | `HALE_ZIG` | `zig` | The `zig` binary a cross build (`--target`) compiles and links with. | `zig` on PATH |
 | `HALE_TARGET_GLIBC` | `target_glibc` | The glibc version a cross build's Linux gnu binary asks for. | `2.31` |
 | `HALE_TARGET_SYSROOT` | `target_sysroot` | The sysroot a cross build finds OpenSSL, zlib and the shim in. | `<cache>/hale/sysroot/<triple>` |
-| `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache` |
+| `XDG_CACHE_HOME`, `HOME` | `cache_dir` | Where compiled runtime objects are cached, content-addressed: `$XDG_CACHE_HOME/hale/runtime`, else `~/.cache/hale/runtime`. An empty value is skipped. | else `<tmp>/hale-runtime-cache-<pid>`, a directory of that process's own |
 | `LOTUS_OPENSSL_PREFIX`, `OPENSSL_ROOT_DIR` | `openssl_prefix` | macOS: a Homebrew OpenSSL prefix (the first whose `include/openssl/ssl.h` exists) for the link. | the standard brew locations |
 | `LOTUS_NO_DEBUGINFO` | none: the CLI supplies no `debug` sources | Opt out of DWARF line tables for the Hale code (the runtime C always carries `-g`). | off |
 | `HALE_BIN` | none | The `hale` binary a child process runs as its toolchain: `hale dna` sets it, to the binary it is running as, for the hosts and fixtures it starts. | the running binary |

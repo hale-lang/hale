@@ -32,7 +32,7 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use hale_codegen::{build_executable, build_executable_with_imports, mangle};
+use hale_codegen::{build_executable_with_options, mangle};
 use hale_syntax::ast::{
     LocusMember, Program, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -40,6 +40,8 @@ use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn fixtures_dir() -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -63,7 +65,7 @@ fn check_build_run(tag: &str, src: &str) -> String {
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin(tag);
-    build_executable(&program, &bin)
+    build_executable_with_options(&program, &bin, &[], &build_opts::options())
         .unwrap_or_else(|e| panic!("build refused a check-clean program: {:?}", e));
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -334,7 +336,7 @@ fn qualified_paths_inside_a_module_body_resolve_across_an_import() {
     assert!(errors.is_empty(), "check refused it: {:?}", errors);
 
     let bin = harness::unique_bin("hale_module_xseed");
-    build_executable_with_imports(&merged, &bin, &renames)
+    build_executable_with_options(&merged, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

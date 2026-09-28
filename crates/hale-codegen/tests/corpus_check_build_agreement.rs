@@ -67,11 +67,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::TopDecl;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Does something in this program start it?
 fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
@@ -146,7 +148,7 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     // reason to add one.
     let program = with_synthetic_main(&program);
     let bin = harness::unique_bin(bin_tag);
-    match build_executable(&program, &bin) {
+    match build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Verdict::Built
@@ -526,7 +528,7 @@ fn strict_check_refuses_nothing_the_build_accepts() {
 
         // The rule refused it. Does codegen answer these names anyway?
         let bin = harness::unique_bin(&format!("hale_strict_{}", refused));
-        if build_executable(&program, &bin).is_ok() {
+        if build_executable_with_options(&program, &bin, &[], &build_opts::options()).is_ok() {
             let _ = std::fs::remove_file(&bin);
             for n in names {
                 divergences.entry(n).or_default().push(p.origin.clone());
@@ -722,7 +724,7 @@ fn every_bare_builtin_callee_lowers() {
             }
         };
         let bin = harness::unique_bin(&format!("hale_bbc_{}", i));
-        match build_executable(&program, &bin) {
+        match build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&bin);
             }
@@ -920,7 +922,7 @@ fn build_and_run_probe(src: &str, tag: &str) -> Result<String, String> {
         return Err(format!("`hale check` refuses it: {}", errs.join("; ")));
     }
     let bin = harness::unique_bin(&format!("hale_builtin_probe_{}", tag));
-    build_executable(&program, &bin)
+    build_executable_with_options(&program, &bin, &[], &build_opts::options())
         .map_err(|e| format!("`hale build` refuses it: {:?}", e))?;
     let out = std::process::Command::new(&bin)
         .output()

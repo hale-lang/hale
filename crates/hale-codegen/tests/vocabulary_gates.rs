@@ -44,11 +44,13 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::{TopDecl, TypeDeclBody, TypeExpr};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Does the CHECKER accept this program? The verdict `hale check`
 /// reports, as the agreement sweep reads it.
@@ -72,7 +74,7 @@ fn build_accepts(
     tag: &str,
 ) -> Result<(), String> {
     let bin = harness::unique_bin(tag);
-    match build_executable(program, &bin) {
+    match build_executable_with_options(program, &bin, &[], &build_opts::options()) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             Ok(())
@@ -272,7 +274,7 @@ fn a_bytes_generic_argument_round_trips_at_run_time() {
                println(\"b0=\", std::bytes::at(h.b.item, 0));\n}\n";
     let program = hale_syntax::parse_source(src).expect("parses");
     let bin = harness::unique_bin("hale_vg_bytes_monomorph");
-    build_executable(&program, &bin).expect("a Bytes monomorph must build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("a Bytes monomorph must build");
     let out = Command::new(&bin).output().expect("runs");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

@@ -18,15 +18,17 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_restartbound_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 
@@ -178,7 +180,7 @@ fn quarantine_for_a_duration_refuses_as_the_unlowered_feature_it_is() {
     let program = hale_syntax::parse_source(&src("quarantine(c) for 3;"))
         .expect("parse");
     let bin = harness::unique_bin("hale_test_restartbound_quarfor");
-    let err = build_executable(&program, &bin).expect_err("must refuse");
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("must refuse");
     let msg = format!("{:?}", err);
     assert!(
         msg.contains("quarantine") && msg.contains("not lowered"),
@@ -195,7 +197,7 @@ fn until_refuses_and_points_at_the_bound_that_works() {
     let program =
         hale_syntax::parse_source(&src("restart(c) until 3;")).expect("parse");
     let bin = harness::unique_bin("hale_test_restartbound_until");
-    let err = build_executable(&program, &bin).expect_err("must refuse");
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("must refuse");
     let msg = format!("{:?}", err);
     assert!(
         msg.contains("until") && msg.contains("for N"),

@@ -11,13 +11,15 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 /// Build, run, and read `final_rss_mb=` from stdout (MB). Panics if the
 /// program crashes or never prints the line — which also asserts the flood
 /// ran to completion (the line is only printed once the count reaches N).
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// The megabytes the program reports for ITSELF, out of the
 /// `/proc/self/statm` line it prints (`harness::statm_resident_bytes`).
@@ -30,7 +32,7 @@ mod harness;
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_bp_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

@@ -26,38 +26,42 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
     let is_set = |name: &str| get(name).is_some();
     let non_empty = |name: &str| get(name).filter(|v| !v.is_empty());
 
-    BuildOptions {
-        dev_profile: is_set("HALE_DEV"),
-        dump_ir_beside_output: is_set("LOTUS_DUMP_IR"),
-        no_bus_devirt: flag("LOTUS_NO_BUS_DEVIRT"),
-        no_ownership_bubble: flag("LOTUS_NO_OWNERSHIP_BUBBLE"),
-        asan: flag("LOTUS_ASAN"),
-        tsan: flag("LOTUS_TSAN"),
-        ubsan: flag("LOTUS_UBSAN"),
-        lto: get("LOTUS_LTO").map(|v| LtoMode::parse(&v)),
-        disable_prefetch: flag("LOTUS_DISABLE_PREFETCH"),
-        di_trace: is_set("LOTUS_DI_TRACE"),
-        dispatch_trace: flag("HALE_DISPATCH_TRACE"),
-        time_phases: is_set("HALE_TIME"),
-        cc_warnings: flag("HALE_CC_WARNINGS"),
-        no_lld: flag("HALE_NO_LLD"),
-        no_ts_shim: flag("HALE_NO_TS_SHIM"),
-        ts_shim: non_empty("HALE_TS_SHIM_A").map(PathBuf::from),
-        zig: non_empty("HALE_ZIG"),
-        target_glibc: non_empty("HALE_TARGET_GLIBC"),
-        target_sysroot: non_empty("HALE_TARGET_SYSROOT").map(PathBuf::from),
-        cache_dir: non_empty("XDG_CACHE_HOME")
-            .map(|x| PathBuf::from(x).join("hale").join("runtime"))
-            .or_else(|| {
-                non_empty("HOME").map(|h| PathBuf::from(h).join(".cache").join("hale").join("runtime"))
-            }),
-        openssl_prefix: ["LOTUS_OPENSSL_PREFIX", "OPENSSL_ROOT_DIR"]
-            .iter()
-            .filter_map(|v| non_empty(v))
-            .map(PathBuf::from)
-            .find(|p| p.join("include/openssl/ssl.h").exists()),
-        ..BuildOptions::default()
-    }
+    // The runtime-object cache is the caller's to choose (`BuildOptions`
+    // has no default for it): `$XDG_CACHE_HOME/hale/runtime`, else
+    // `~/.cache/hale/runtime`. With neither set there is no per-user
+    // place, and the fallback is a directory this process names for
+    // itself, never a fixed path in the shared temp dir.
+    let cache_dir = non_empty("XDG_CACHE_HOME")
+        .map(|x| PathBuf::from(x).join("hale").join("runtime"))
+        .or_else(|| non_empty("HOME").map(|h| PathBuf::from(h).join(".cache").join("hale").join("runtime")))
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("hale-runtime-cache-{}", std::process::id())));
+
+    let mut o = BuildOptions::new(cache_dir);
+    o.dev_profile = is_set("HALE_DEV");
+    o.dump_ir_beside_output = is_set("LOTUS_DUMP_IR");
+    o.no_bus_devirt = flag("LOTUS_NO_BUS_DEVIRT");
+    o.no_ownership_bubble = flag("LOTUS_NO_OWNERSHIP_BUBBLE");
+    o.asan = flag("LOTUS_ASAN");
+    o.tsan = flag("LOTUS_TSAN");
+    o.ubsan = flag("LOTUS_UBSAN");
+    o.lto = get("LOTUS_LTO").map(|v| LtoMode::parse(&v));
+    o.disable_prefetch = flag("LOTUS_DISABLE_PREFETCH");
+    o.di_trace = is_set("LOTUS_DI_TRACE");
+    o.dispatch_trace = flag("HALE_DISPATCH_TRACE");
+    o.time_phases = is_set("HALE_TIME");
+    o.cc_warnings = flag("HALE_CC_WARNINGS");
+    o.no_lld = flag("HALE_NO_LLD");
+    o.no_ts_shim = flag("HALE_NO_TS_SHIM");
+    o.ts_shim = non_empty("HALE_TS_SHIM_A").map(PathBuf::from);
+    o.zig = non_empty("HALE_ZIG");
+    o.target_glibc = non_empty("HALE_TARGET_GLIBC");
+    o.target_sysroot = non_empty("HALE_TARGET_SYSROOT").map(PathBuf::from);
+    o.openssl_prefix = ["LOTUS_OPENSSL_PREFIX", "OPENSSL_ROOT_DIR"]
+        .iter()
+        .filter_map(|v| non_empty(v))
+        .map(PathBuf::from)
+        .find(|p| p.join("include/openssl/ssl.h").exists());
+    o
 }
 
 #[cfg(test)]
@@ -74,7 +78,7 @@ mod tests {
     fn an_empty_environment_is_the_default_build() {
         let o = from(&[]);
         assert!(!o.asan && !o.tsan && !o.ubsan && !o.dev_profile && !o.no_lld && !o.cc_warnings);
-        assert!(o.lto.is_none() && o.cache_dir.is_none() && o.zig.is_none() && o.ts_shim.is_none());
+        assert!(o.lto.is_none() && o.zig.is_none() && o.ts_shim.is_none());
         assert!(!o.dump_ir_beside_output && !o.time_phases && !o.di_trace && !o.dispatch_trace);
     }
 
@@ -107,9 +111,15 @@ mod tests {
     #[test]
     fn the_runtime_cache_is_under_xdg_then_home_and_an_empty_one_is_skipped() {
         let rt = |p: &str| PathBuf::from(p).join("hale").join("runtime");
-        assert_eq!(from(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")]).cache_dir, Some(rt("/x")));
-        assert_eq!(from(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")]).cache_dir, Some(PathBuf::from("/h/.cache/hale/runtime")));
-        assert_eq!(from(&[("HOME", "")]).cache_dir, None);
+        assert_eq!(from(&[("XDG_CACHE_HOME", "/x"), ("HOME", "/h")]).cache_dir, rt("/x"));
+        assert_eq!(from(&[("XDG_CACHE_HOME", ""), ("HOME", "/h")]).cache_dir, PathBuf::from("/h/.cache/hale/runtime"));
+    }
+
+    #[test]
+    fn with_no_cache_home_the_fallback_is_this_processs_own_directory() {
+        let own = std::env::temp_dir().join(format!("hale-runtime-cache-{}", std::process::id()));
+        assert_eq!(from(&[("HOME", "")]).cache_dir, own);
+        assert_eq!(from(&[]).cache_dir, own);
     }
 
     #[test]

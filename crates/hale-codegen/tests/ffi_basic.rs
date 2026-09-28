@@ -19,6 +19,8 @@ use hale_codegen::{build_executable_with_options, BuildOptions};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_with_csrc(
     name: &str,
@@ -36,7 +38,7 @@ fn build_with_csrc(
     let options = BuildOptions {
         link_libs: Vec::new(),
         csrc_files: vec![csrc_path.clone()],
-        ..Default::default()
+        ..build_opts::options()
     };
     build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");

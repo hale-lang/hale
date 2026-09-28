@@ -10,12 +10,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const PERSPECTIVE: &str = r#"
 perspective Router {
@@ -52,7 +54,7 @@ fn main() {{ App {{ }}; }}
         diags.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let bin = harness::unique_bin("hale_test_persp_ctor_locus");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?}", out.status);

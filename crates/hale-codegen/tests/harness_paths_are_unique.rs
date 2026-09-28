@@ -103,8 +103,10 @@ fn no_hand_rolled_binary_temp_paths() {
                 .filter(|v| !v.is_empty() && v.chars().all(|c| c.is_alphanumeric() || c == '_'))
                 .collect();
             temp_vars.iter().any(|v| {
-                text.contains(&format!("build_executable(&program, &{})", v))
-                    || text.contains(&format!("build_executable(&prog, &{})", v))
+                ["program", "prog"].iter().any(|p| {
+                    text.contains(&format!("build_executable_with_options(&{p}, &{v},"))
+                        || text.contains(&format!("build_executable(&{p}, &{v})"))
+                })
             })
         })
         .map(|(name, _)| name)

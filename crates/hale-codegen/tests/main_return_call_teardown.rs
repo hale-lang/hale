@@ -20,10 +20,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -73,7 +75,7 @@ const SRC: &str = r#"
 fn main_return_call_runs_before_teardown() {
     let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = unique_path("wrapped");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     // The exit code proves the returned expression's VALUE made it

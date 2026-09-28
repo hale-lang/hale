@@ -11,13 +11,15 @@
 //! the heap-bearing payload correctly. The file name is kept
 //! for git-blame continuity (the test bodies tell the story).
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -36,7 +38,7 @@ fn unique_path(tag: &str) -> PathBuf {
 fn build_and_run(tag: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(tag);
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

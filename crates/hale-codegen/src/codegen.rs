@@ -563,7 +563,7 @@ impl std::error::Error for CodegenError {}
 /// runtime. Stage 2 will populate this from `hale.toml [ffi]`
 /// sections of imported libs; Stage 1 wires it through the CLI's
 /// `--link` and `--csrc` flags.
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct BuildOptions {
     /// GH #1106: `--api <path>` binds the program's API to a Unix
     /// socket with the dev defaults, as if the main locus spelled
@@ -693,13 +693,61 @@ pub struct BuildOptions {
     /// The sysroot a cross build finds OpenSSL, zlib and the shim in
     /// (`HALE_TARGET_SYSROOT`); `None` is `<cache>/sysroot/<triple>`.
     pub target_sysroot: Option<std::path::PathBuf>,
-    /// Where compiled runtime objects are cached; the CLI puts it under
-    /// `$XDG_CACHE_HOME` or `~/.cache`. `None` is a directory in the
-    /// system temp dir.
-    pub cache_dir: Option<std::path::PathBuf>,
+    /// Where compiled runtime objects are cached. REQUIRED, and there is
+    /// no default: the runtime's C is compiled once per flag set and the
+    /// objects are content-addressed, written by a unique temp name and
+    /// renamed into place, so any number of builds and processes can
+    /// share one directory safely, but only the caller knows which one
+    /// is theirs. The CLI uses `$XDG_CACHE_HOME/hale/runtime` (else
+    /// `~/.cache/hale/runtime`); a test uses its checkout's
+    /// `CARGO_TARGET_TMPDIR`. A fixed path in the system temp dir shared
+    /// by everyone is what this refuses to guess.
+    pub cache_dir: std::path::PathBuf,
     /// A Homebrew OpenSSL prefix for the macOS link
     /// (`LOTUS_OPENSSL_PREFIX`, then `OPENSSL_ROOT_DIR`).
     pub openssl_prefix: Option<std::path::PathBuf>,
+}
+
+impl BuildOptions {
+    /// The default build, caching runtime objects in `cache_dir`. There
+    /// is no `Default`: a caller chooses where the cache lives.
+    pub fn new(cache_dir: std::path::PathBuf) -> BuildOptions {
+        BuildOptions {
+            cache_dir,
+            api: Default::default(),
+            env: Default::default(),
+            api_roles: Default::default(),
+            dev_profile: Default::default(),
+            link_libs: Default::default(),
+            csrc_files: Default::default(),
+            target: Default::default(),
+            target_cpu: Default::default(),
+            debug: Default::default(),
+            model_hash: Default::default(),
+            exec_digest: Default::default(),
+            obs_entity_ids: Default::default(),
+            dump_ir: Default::default(),
+            dump_ir_beside_output: Default::default(),
+            no_bus_devirt: Default::default(),
+            no_ownership_bubble: Default::default(),
+            asan: Default::default(),
+            tsan: Default::default(),
+            ubsan: Default::default(),
+            lto: Default::default(),
+            disable_prefetch: Default::default(),
+            di_trace: Default::default(),
+            dispatch_trace: Default::default(),
+            time_phases: Default::default(),
+            cc_warnings: Default::default(),
+            no_lld: Default::default(),
+            no_ts_shim: Default::default(),
+            ts_shim: Default::default(),
+            zig: Default::default(),
+            target_glibc: Default::default(),
+            target_sysroot: Default::default(),
+            openssl_prefix: Default::default(),
+        }
+    }
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -836,14 +884,10 @@ fn lld_on_path() -> bool {
     })
 }
 
-/// Where compiled+cached runtime objects live: `BuildOptions::cache_dir`
-/// (the CLI puts it under `$XDG_CACHE_HOME` or `~/.cache`), else a
-/// directory in the system temp dir.
+/// Where compiled+cached runtime objects live: `BuildOptions::cache_dir`,
+/// which the caller chose.
 fn runtime_cache_dir(options: &BuildOptions) -> PathBuf {
-    options
-        .cache_dir
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("hale-runtime-cache"))
+    options.cache_dir.clone()
 }
 
 /// Compile (or reuse a cached) runtime translation unit to a `.o`,
@@ -984,42 +1028,21 @@ fn compile_cached_runtime_object_with(
     }
 }
 
-/// Compile `program` to an executable at `output_path`. Uses
-/// `clang` to link the object file produced by LLVM. Equivalent
-/// to `build_executable_with_imports(program, output_path, &[])`;
-/// callers with no cross-seed imports should use this entry point.
-pub fn build_executable(
-    program: &Program,
-    output_path: &Path,
-) -> Result<(), CodegenError> {
-    build_executable_with_imports(program, output_path, &[])
-}
-
-/// v1.x-IMPORT: variant of `build_executable` that accepts a
-/// per-build path-rename table for cross-seed imports. The caller
-/// (the CLI) resolves any `import "lib/X" as foo;` declarations,
-/// mangles each imported sub-program, merges the mangled decls
-/// into `program`, and passes the per-build table here. Each
-/// entry maps a segment vector (`["foo", "Bar"]`) to the mangled
-/// symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
+/// Compile `program` to an executable at `output_path`, linking it with
+/// `clang`. The one entry point: what to build with (the cache directory
+/// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
+/// `--link` and `--csrc` flags carry, every other knob) is in `options`,
+/// and `BuildOptions::new` takes the cache directory, so there is no way
+/// to build without choosing one.
+///
+/// `import_renames` is the per-build path-rename table for cross-seed
+/// imports (v1.x-IMPORT). The caller (the CLI) resolves any
+/// `import "lib/X" as foo;` declarations, mangles each imported
+/// sub-program, merges the mangled decls into `program`, and passes the
+/// table here. Each entry maps a segment vector (`["foo", "Bar"]`) to the
+/// mangled symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
 /// this table after the static stdlib table when resolving
-/// qualified-name paths.
-pub fn build_executable_with_imports(
-    program: &Program,
-    output_path: &Path,
-    import_renames: &[(Vec<String>, String)],
-) -> Result<(), CodegenError> {
-    build_executable_with_options(
-        program,
-        output_path,
-        import_renames,
-        &BuildOptions::default(),
-    )
-}
-
-/// Stage-1 FFI entry point. Accepts a `BuildOptions` that carries
-/// the link surface for `@ffi("c")` consumers. The CLI's `--link`
-/// and `--csrc` flags route here.
+/// qualified-name paths. A caller with no imports passes `&[]`.
 pub fn build_executable_with_options(
     program: &Program,
     output_path: &Path,

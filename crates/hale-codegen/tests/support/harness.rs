@@ -30,6 +30,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "build.rs"]
+mod build_opts;
+
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Build `program` to `bin` with the PRE-optimization LLVM IR dumped
@@ -62,7 +65,7 @@ pub fn build_ir_text(
     let ll = bin.with_extension("ll");
     let options = hale_codegen::BuildOptions {
         dump_ir: Some(ll.clone()),
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(program, bin, &[], &options)?;
     let text = std::fs::read_to_string(&ll)
@@ -86,7 +89,7 @@ pub fn build_ir_text(
 pub fn build_asan(program: &hale_syntax::ast::Program, bin: &Path) {
     let options = hale_codegen::BuildOptions {
         asan: true,
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(program, bin, &[], &options)
         .expect("asan build");

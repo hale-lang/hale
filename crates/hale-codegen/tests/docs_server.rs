@@ -16,10 +16,12 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -39,7 +41,7 @@ fn build_docs_server() -> PathBuf {
     let src = std::fs::read_to_string(&src_path).expect("read example");
     let program = hale_syntax::parse_source(&src).expect("parse example");
     let bin = harness::unique_bin("docs_server");
-    build_executable(&program, &bin).expect("build example");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build example");
     bin
 }
 

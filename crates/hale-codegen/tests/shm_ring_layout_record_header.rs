@@ -17,10 +17,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -107,7 +109,7 @@ fn hale_subscriber_reads_record_header_ring_with_post_copy() {
 
     let program = hale_syntax::parse_source(&src).expect("parse");
     let consumer_bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("consumer")));
-    build_executable(&program, &consumer_bin).expect("build consumer");
+    build_executable_with_options(&program, &consumer_bin, &[], &build_opts::options()).expect("build consumer");
 
     let producer_bin = build_producer();
 

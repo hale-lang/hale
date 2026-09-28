@@ -14,10 +14,12 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn pick_free_port() -> u16 {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
@@ -56,7 +58,7 @@ fn registry_renders_counter_gauge_histogram() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_metrics_direct_{}", std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?}", out.status);
@@ -101,7 +103,7 @@ fn render_keeps_every_digit() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_metrics_digits_{}", std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?}", out.status);
@@ -144,7 +146,7 @@ fn endpoint_scrapes_through_server_over_tcp() {
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_metrics_wire_{}", std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())
         .spawn()

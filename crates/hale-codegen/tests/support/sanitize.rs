@@ -10,6 +10,9 @@
 
 use hale_codegen::BuildOptions;
 
+#[path = "build.rs"]
+mod build_opts;
+
 fn on(name: &str) -> bool {
     std::env::var(name).map(|v| v == "1" || v == "true" || v == "TRUE").unwrap_or(false)
 }
@@ -20,6 +23,6 @@ pub fn options() -> BuildOptions {
         asan: on("LOTUS_ASAN"),
         tsan: on("LOTUS_TSAN"),
         ubsan: on("LOTUS_UBSAN"),
-        ..BuildOptions::default()
+        ..build_opts::options()
     }
 }

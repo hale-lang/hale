@@ -27,6 +27,8 @@ use hale_codegen::{build_executable_with_options, BuildOptions, CodegenError};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Build with the shim lookup forced to miss: the `BuildOptions` field
 /// asks for it, so the request is scoped to one build and nothing
@@ -35,7 +37,7 @@ fn build_without_ts_shim(
     program: &hale_syntax::ast::Program,
     bin: &std::path::Path,
 ) -> Result<(), CodegenError> {
-    let options = BuildOptions { no_ts_shim: true, ..BuildOptions::default() };
+    let options = BuildOptions { no_ts_shim: true, ..build_opts::options() };
     build_executable_with_options(program, bin, &[], &options)
 }
 

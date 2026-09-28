@@ -14,10 +14,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -26,7 +28,7 @@ fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
         name,
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
@@ -250,7 +252,7 @@ fn build_rejects_locus_missing_send_method() {
         "hale_adapter_missing_send_{}",
         std::process::id()
     ));
-    let err = build_executable(&program, &bin).expect_err("expected codegen err");
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect_err("expected codegen err");
     let msg = format!("{:?}", err);
     assert!(
         msg.contains("has no `send` method"),
@@ -349,7 +351,7 @@ fn build_with_lib(
         name,
         std::process::id()
     ));
-    hale_codegen::build_executable_with_imports(&consumer, &bin, &renames)?;
+    hale_codegen::build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())?;
     Ok(bin)
 }
 
@@ -559,7 +561,7 @@ fn adapter_publish_leaves_the_payload_arena_flat() {
         "hale_adapter_binding_payload_flat_{}",
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()
@@ -747,7 +749,7 @@ fn a_parking_send_under_overlapping_publishes_stays_flat() {
         "hale_adapter_binding_call_arena_{}",
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_BUS_CALL_ARENA_STATS", "1")
         .output()

@@ -31,6 +31,8 @@ use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/sanitize.rs"]
 mod sanitize;
 
@@ -50,7 +52,7 @@ fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
     let options = hale_codegen::BuildOptions {
         no_ownership_bubble: true,
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");

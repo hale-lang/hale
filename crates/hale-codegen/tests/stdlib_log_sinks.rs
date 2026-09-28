@@ -6,10 +6,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[test]
 fn file_sink_rotates_and_console_sink_renders() {
@@ -42,7 +44,7 @@ fn file_sink_rotates_and_console_sink_renders() {
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_log_sinks_bin_{}", std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("NO_COLOR", "1")
         .output()

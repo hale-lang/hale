@@ -18,10 +18,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// The resident bytes of the arena labelled `H`, per residency dump,
 /// in order.
@@ -63,7 +65,7 @@ fn assert_flat(name: &str, fields: &str, a: &str, b: &str, args: &str, setup: &s
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_self_field_alt_{name}"));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()

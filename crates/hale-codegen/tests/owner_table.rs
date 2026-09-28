@@ -32,6 +32,8 @@ use hale_codegen::ownership::{
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 // ===================================================================
 // Fixtures
@@ -584,7 +586,7 @@ fn build(src: &str, tag: &str) -> Option<String> {
     let p = hale_syntax::parse_source(src)
         .unwrap_or_else(|e| panic!("{tag}: does not parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&["ownertab_", tag].concat());
-    let r = hale_codegen::build_executable(&p, &bin);
+    let r = hale_codegen::build_executable_with_options(&p, &bin, &[], &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     match r {
         Ok(()) => None,

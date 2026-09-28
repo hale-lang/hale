@@ -26,15 +26,17 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_named(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_multi_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 
@@ -47,7 +49,7 @@ fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_multi_{}", name));
     let options = hale_codegen::BuildOptions {
         no_ownership_bubble: true,
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");
