@@ -32,10 +32,20 @@ async function prebuiltHeadReady() {
     await sleep(250);
   }
 }
+// The launcher's stop is the head's drain plus the removal of its build
+// directory, in that order. The runtime gives a drain LOTUS_DRAIN_GRACE_MS
+// (5 s) before it ends the process itself, so a window of the same length
+// killed the launcher just before it removed the directory whenever a
+// drain used its whole grace (a CI run left `hale-dna-head.*` behind that
+// way). This window is longer than the grace plus the removal; a drain
+// that DOES use the grace is not tolerated here, it fails the launch's own
+// check below.
+const STOP_WINDOW_MS = 20000;
+const DRAIN_HUNG = 'did not finish within';
 async function stop(child) {
   if (child.exitCode !== null || child.signalCode) return;
   const closed = new Promise(resolve => child.once('close', resolve));
-  child.kill('SIGTERM'); const timeout = setTimeout(() => child.kill('SIGKILL'), 5000);
+  child.kill('SIGTERM'); const timeout = setTimeout(() => child.kill('SIGKILL'), STOP_WINDOW_MS);
   await closed; clearTimeout(timeout);
 }
 const test = base.extend({
@@ -130,6 +140,12 @@ const test = base.extend({
         }
       }
       await rm(scratch, { recursive: true, force: true });
+      // A head whose drain outlasted the runtime's grace was ended by the
+      // runtime, not by its own stop; the line it printed then says which
+      // pool and locus it was waiting on. That is a defect of the head,
+      // and it fails the case here instead of passing on a lucky window.
+      const hung = launches.map(launch => launch.log().split('\n').find(line => line.includes(DRAIN_HUNG))).filter(Boolean);
+      if (hung.length) throw new Error('A head\'s drain hit the runtime\'s grace and was ended by it:\n' + hung.join('\n'));
     }
   },
 });
