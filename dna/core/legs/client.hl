@@ -108,17 +108,22 @@ locus Wire {
     fn describe() -> String { return self.ask("{\"describe\": true}"); }
 }
 
+// Whether a head's answer admitted nothing because its record moved
+// under it: asked again, it is answered. Both are error codes, never a
+// receipt: a refusal is a receipt, and a binding's refusal names its kind.
+fn head_moved(error: String) -> Bool {
+    return std::str::starts_with(error, "snapshot_changed") || error == "command_busy";
+}
+
+// How long a leg asks again a command, or a read, its head's moving
+// record left unanswered: ten seconds, by the clock.
+const HEAD_MOVED_NS: Int = 10000000000;
+
 // A binding's answer as the verbs read one. The value is the head's
 // `CommandReply`: its receipt goes under `data`, its head under
 // `source`; a reply that carries no receipt is the head's error code;
 // a refusal of the binding (`unknown`, `unauthorized`, `malformed`) is
 // the error, naming its kind.
-// Whether a head's answer decided nothing because its record moved under
-// it: asked again, it is answered.
-fn head_moved(error: String) -> Bool {
-    return std::str::starts_with(error, "snapshot_changed") || error == "command_busy" || std::str::starts_with(error, "command_busy:");
-}
-
 fn socket_reply(path: String, line: String) -> Reply {
     if len(line) == 0 { return Reply { status: 0, error: "the head's socket at " + path + " gave no answer" }; }
     if !std::json::find_bool_field(line, "ok") {
@@ -206,11 +211,10 @@ locus Head {
     fn attach() -> Bool {
         // a read while another leg's row lands answers `snapshot_changed`:
         // read again, for up to ten seconds
+        let mut until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let mut apps = self.get("/api/hale/v1/applications");
-        let mut tries = 0;
-        while !apps.ok && std::str::starts_with(apps.error, "snapshot_changed") && tries < 50 {
+        while !apps.ok && head_moved(apps.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
-            tries = tries + 1;
             apps = self.get("/api/hale/v1/applications");
         }
         if !apps.ok { self.error = apps.error; return false; }
@@ -220,10 +224,9 @@ locus Head {
         self.record_revision = std::json::find_string_field(source, "record_revision");
         if len(self.application) == 0 { self.error = "the head at " + self.api + " names no application"; return false; }
         let mut caps = self.get(self.prefix() + "/capabilities");
-        tries = 0;
-        while !caps.ok && std::str::starts_with(caps.error, "snapshot_changed") && tries < 50 {
+        until = std::time::monotonic_ns() + HEAD_MOVED_NS;
+        while !caps.ok && head_moved(caps.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
-            tries = tries + 1;
             caps = self.get(self.prefix() + "/capabilities");
         }
         if !caps.ok { self.error = caps.error; return false; }
@@ -259,18 +262,18 @@ locus Head {
     // One call on a topic, the receipt as the verbs read it. A head that
     // read its record while another writer's row landed answers
     // `snapshot_changed`, and one whose record kept moving through all of
-    // its reads answers `command_busy`: neither decided anything. The
-    // command is asked again for up to ten seconds, under the same request
-    // id, so it is the same act: one that landed meanwhile is found by it
-    // and answered with its receipt. A record several legs and the owner
-    // write moves often; the answer is never the leg's to give up on.
+    // its reads answers `command_busy`: neither admitted the command. It is
+    // asked again, 200ms apart, until ten seconds have passed, under the
+    // same request id, so it is the same act: one that landed meanwhile is
+    // found by it and answered with its receipt. A record several legs and
+    // the owner write moves often; the answer is never the leg's to give
+    // up on.
     @unbounded
     fn call(request_id: String, topic: String, payload: String) -> Reply {
+        let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let mut r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
-        let mut tries = 0;
-        while !r.ok && head_moved(r.error) && tries < 50 {
+        while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
-            tries = tries + 1;
             r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
         }
         return r;
@@ -370,15 +373,14 @@ locus Head {
     }
     // The hat of one Work, as the head renders it: structure, never a
     // prompt (a read). The head refuses a hat the record moved under
-    // while it was built (`snapshot_changed`, another leg's claim landing):
-    // read again, a few times, before giving up.
+    // while it was built (`snapshot_changed`, another leg's row landing):
+    // read again, as a command is asked again, for up to ten seconds.
     @unbounded
     fn context(work_id: String) -> Reply {
-        let mut tries = 0;
+        let until = std::time::monotonic_ns() + HEAD_MOVED_NS;
         let mut r = self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
-        while !r.ok && std::str::starts_with(r.error, "snapshot_changed") && tries < 5 {
+        while !r.ok && head_moved(r.error) && std::time::monotonic_ns() < until {
             std::time::sleep(200ms);
-            tries = tries + 1;
             r = self.get(self.prefix() + "/dna/context?id=" + dna::url_encode(work_id));
         }
         return r;

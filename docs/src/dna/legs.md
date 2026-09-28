@@ -298,15 +298,15 @@ ends, its output read as it runs; the loop's own line comes last.
 `--once` runs each child once; `--only <kind>` claims one work kind;
 `--performer`, `--capabilities`, `--classes`, `--orgs` and `--ttl`
 pass through to the children, which each mint their own claim id.
-
-Workers side by side move the record under each other: a head that read
-it while another worker's row landed answers `snapshot_changed`, or
-`command_busy` once it has read it moving too often. Neither is an
-answer. A leg asks the same command again, under the same request id,
-for up to ten seconds, and a command that landed meanwhile is found by
-that id. A harness of your own over the socket does the same.
 `--parallel` is 1..64 and `--performer` one of the three, judged
 before the head is asked.
+
+Workers side by side move the record under each other. A head that read
+it while another worker's row landed answers `snapshot_changed`, or
+`command_busy` once it has read it moving too often. Neither admits the
+command. A leg asks the same command again, under the same request id,
+for up to ten seconds, and a command that landed meanwhile is found by
+that id. A harness of your own over the socket should do the same.
 
 The loop owns its process tree. The leg is its program's main locus,
 so SIGTERM or SIGINT drains it: no child is started again, every
