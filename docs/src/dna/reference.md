@@ -16,7 +16,8 @@ hale dna --embedded-digest [--from-tree <dir>]
                              checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([legs](./legs.md)): next, brief,
-                             renew, submit, settle, release, friction, run; --as position:<name>, --api <origin>;
+                             renew, allowance (the attempt's spend, asked of the budget's one gate before the first
+                             model call), submit, settle, release, friction, run; --as position:<name>, --api <origin>;
                              --effect effect_free|idempotent|uncertain on next and submit (the performer's class;
                              run and loop use their performer's); an uncertain performer's failed settle or lost
                              reply marks the attempt `unresolved` (effect.result unknown, friction filed), never
@@ -319,7 +320,9 @@ sequence either way — see [The record](./record.md).
 | `schedule.skipped` / `schedule.missed` | ledger | the schedule id | an occurrence not run because the last execution is still open (`occurrence`, `task`) / occurrences that passed while the organization was down (`first`, `last`, `count`, `why`) |
 | `schedule.paused` / `schedule.resumed` | ledger | the schedule id | paused and resumed by hand, in your name |
 | `budget.exhausted` | ledger | `budget` | the window's model allowance is spent: what was spent, of what, and when the window turns |
-| `model.called` | ledger | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
+| `attempt.allowance_requested` | ledger | the attempt | a leg asked for its attempt's spend under its lease (GH #1131); a node relays it until the organization answers |
+| `attempt.allowance_granted` / `attempt.allowance_refused` | ledger | the attempt, or `review:<id>` | the budget's one gate answered: what the attempt may cost (`allowance_micros`), or why nothing may be spent — for a leg, the editor, or the Leader's Review |
+| `model.called` | ledger | `<work>/a<n>` or a review id | the model evidence; `adapter` is the adapter that answered, in process or from a leg (`legs` only on a leg's wait row, with `waited_ms`); the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`
 
@@ -384,7 +387,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `dna/tests/workflow_conformance_test.hl` (card 19) | the baseline: the canonical example under every reply pattern and every mode — in process, a git record with a restart mid-flight, two memories reconstructed mid-flight, a fenced lease — with one oracle over the record and the adapters' stores; `dna/tests/conformance/runner.hl` is the public assembly over a git record, built and run as a separate process by that fixture and killed at three cuts (`spec/dna.md`, "Workflow execution: the baseline") |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
-| `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
+| `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter), `Budget.admit` (the one gate for spend, in process and out) |
 | `hat.hl` | `Hat` (GH #946): one content-addressed context per Work — position and charter, practices as structure, bindings, grant, contract, class, history, head and watermark — `hat_body` / `hat_digest` / `hat_json`, `hat_position_of` (one id for a position wherever it is keyed), `hat_with_package`, `hat_sealed`; the owner builds one for the edits it asks, a head reads one for a leg (`dna/operations/context.hl`), memory keeps each by digest |
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
 | `legs/` (`dna/core/legs`, vendored as `vendor/dna/legs`) | the legs seed (GH #946): `Head` (the API as a leg sees it: attach, submit, lookup, context), `render` / `prompt_digest` / `RENDERER_VERSION`, `Brief` / `Performance` / `Performer` (`Person`, `NoDeterministic`, `FixedAnswer`, `NoModel`, `PerformerCatalog`), the hands (`GitHand` / `ScratchGit`, `ForgeHand` / `GhForge`, `ToolchainHand` / `Toolchain`, `NoDeploy`, `NoHeart`, `Hands`), `leg_main` (the verbs) |

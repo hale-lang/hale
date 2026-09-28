@@ -58,8 +58,12 @@ editor's router at a local or scripted model in `dna/org/models.hl`
 model; with no key it cannot, and the review waits. Answer it as the
 Board (`hale dna review m1 approve --as you`), or give the Leader a
 model. The same happens when the budget is spent: `history` shows
-`budget.exhausted`, `task create` is refused with the spend, and the review
-is yours until the next window.
+`budget.exhausted`, `task create` is refused with the spend, the
+Leader's decision is refused by the budget's gate
+(`attempt.allowance_refused review:<id>`), and the review is yours
+until the next window. An edit the editor would make is declined the
+same way, and so is a leg's attempt (`attempt.allowance_refused` on
+the attempt; the leg makes no call).
 
 **`task t1 born … [planning]`**, and it stays there. The Leader is
 asked what kind of work the intent is before it is admitted, and the
