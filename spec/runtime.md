@@ -212,7 +212,10 @@ the model: runtime is automatic; stdlib is explicit.
   returns a sentinel `-1` once `shutdown_all` is signalled and the
   stdlib accept loops (`Server`/`Listener`) break out of their
   forever loop; and (b) the **main locus joins all pool workers
-  before dissolving its `params` fields**, so a worker still
+  before dissolving its `params` fields** — whether it dissolves
+  eagerly or, being a subscriber, at the exit of the fn that
+  instantiated it, `main` or another (`fn main() { start() }`
+  with the locus built in `start`; GH #1148) — so a worker still
   executing a pool-placed field's `run()` can never touch that
   field's arena after it's freed (the alternative — freeing first
   — is a use-after-free; the alternative join-without-(a) is a

@@ -8413,6 +8413,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(process_bb);
+            // GH #1148: the MAIN locus's deferred teardown joins the
+            // cooperative pools first, as its eager dissolve does
+            // (`lower_locus_instantiation`, 2026-06-01) and as fn main's
+            // exit does before its flush. A main locus that subscribes is
+            // deferred to its instantiating fn's exit, and when that fn is
+            // not `main` (`fn main() { start(..) }` with the locus built in
+            // `start`), nothing joined the pools before this cascade freed
+            // the arenas of the fields placed on them: a field whose run()
+            // was still on its pool worker — a metrics endpoint on
+            // `cooperative(pool = senses)` — touched its freed parent arena
+            // as it unwound, and the process died on every stop
+            // (downstream handoff). Joining here is idempotent: the pools'
+            // later join at main's exit finds no worker left.
+            let is_main_entry = self
+                .deployment
+                .main_locus_name
+                .as_deref()
+                .is_some_and(|n| n == locus_name);
+            if is_main_entry && !self.is_wasm {
+                self.emit_bus_ingress_quiesce()?;
+                self.emit_coop_pool_shutdown_all()?;
+                self.emit_bus_wait_abort_all()?;
+            }
             // m28a + m28b: pinned loci — pthread_join blocks until
             // the pinned thread's full lifecycle (birth → run →
             // mailbox loop (if subscriptions) → drain → dissolve)
