@@ -117,6 +117,30 @@ so the compiler asks you which. The fix is in the message: drop the
 file import and spell the names you wanted through the alias the
 directory already has.
 
+## A library's own `main locus`
+
+A library directory can be a program of its own: a `main.hl` that
+declares a `main locus` and a `fn main`. Importing it does not make
+that locus yours. The `main locus` that arrives through an `import`
+belongs to the library, not to your entry: it does not count
+against the rule that a program has at most one, its `bindings { }`
+stay inert (nothing is bound, and no socket path is touched), and
+its `run()` is never started by your program. So an app can import a
+seed for its functions and types and still declare its own:
+
+```hale
+import "../lib" as lib;
+
+main locus App {
+    run() { println(lib::greeting()); }
+}
+
+fn main() { App { }; }
+```
+
+Two `main locus` declarations in *your own* files are still an error:
+``more than one `main` locus declared``.
+
 ## When the path names nothing
 
 A path that resolves to none of those places fails the check where

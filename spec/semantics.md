@@ -2510,8 +2510,12 @@ unchanged.
 
 Bundle-wide rules:
 
-1. At most one `main` locus per bundle. Zero is fine — the
-   classic bare `fn main()` shape is still legal.
+1. At most one `main` locus per bundle, counting the entry program's
+   own. A `main locus` that arrives through `import` belongs to the
+   imported seed, not to the entry: it does not count (rule 3), so a
+   program may import a seed that has one and declare its own
+   (GH #1059). Zero is fine — the classic bare `fn main()` shape is
+   still legal.
 2. Each `bindings` entry's topic must name a declared `topic`.
 3. A topic may appear at most once across the entrypoint's bindings.
    An imported seed's `main locus` is renamed with its seed and its
