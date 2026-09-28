@@ -45,7 +45,7 @@ done
 names=()
 for seed in "${seeds[@]}"; do
   name=$(basename -- "$seed")
-  for other in "${names[@]}"; do
+  for other in ${names[@]+"${names[@]}"}; do
     [[ "$other" != "$name" ]] || { echo "warm-and-build: two seeds are named $name; each needs its own <name>/<name>" >&2; exit 2; }
   done
   names+=("$name")

@@ -8,8 +8,12 @@
 //! and the whole directory is removed on the way out, so nothing a build
 //! wrote — the binary, the objects codegen puts beside it — outlives it.
 //!
-//! The probe program reads where it is running from through `/proc`, so
-//! the directory is observed from inside, while it exists.
+//! The probe program reads where it is running from through `/proc` and
+//! the mode with GNU `stat -c`, so the two tests that use it run on Linux;
+//! the compile-failure test runs everywhere.
+
+// On macOS the probe helpers below have no test that uses them.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code, unused_imports))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -111,6 +115,7 @@ fn probe_report(text: &str, tmp: &Path) -> (String, String) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn run_builds_in_a_private_directory_and_removes_it() {
     let s = Scratch::new("run");
     let src = s.0.join("probe.hl");
@@ -125,6 +130,7 @@ fn run_builds_in_a_private_directory_and_removes_it() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn test_builds_every_binary_in_one_private_directory_and_removes_it() {
     let s = Scratch::new("test");
     let tests = s.0.join("suite");
