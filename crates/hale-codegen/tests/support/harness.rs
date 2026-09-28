@@ -212,10 +212,19 @@ pub fn statm_resident_bytes(line: &str) -> i64 {
 ///     what nextest actually gives us;
 ///   * a process-local **counter** — separates tests within one
 ///     process, which the pid alone does not (libtest threads).
+///
+/// In an area binary every test file includes this module for itself,
+/// so there is one copy per file (`<area>::<file>::harness`) and each
+/// copy counts from 0: two files asking for `unique_bin("basic")` would
+/// draw the same path. There the file's module name joins the path. A
+/// binary of one file (`<file>::harness`) keeps the plain shape.
 pub fn unique_bin(name: &str) -> PathBuf {
+    let module: Vec<&str> = module_path!().split("::").collect();
+    let file = if module.len() >= 3 { format!("{}_", module[module.len() - 2]) } else { String::new() };
     let mut p = std::env::temp_dir();
     p.push(format!(
-        "hale_t_{}_{}_{}",
+        "hale_t_{}{}_{}_{}",
+        file,
         name,
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
