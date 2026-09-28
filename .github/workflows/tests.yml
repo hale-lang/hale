@@ -571,7 +571,7 @@ jobs:
         run: sccache --show-stats
 
   dna:
-    name: dna ${{ matrix.part }}/2
+    name: dna ${{ matrix.part }}/4
     needs: scope
     if: needs.scope.outputs.code == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
@@ -580,7 +580,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2]
+        part: [1, 2, 3, 4]
     services:
       knowledge-db:
         image: pgvector/pgvector:pg16
@@ -665,11 +665,15 @@ jobs:
 
       - *toolchain-save
 
-      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
-        # The suite alone on its runner: twenty slice tests, hashed
-        # across two jobs, running four-wide (the `dna-fixtures`
-        # group in .config/nextest.toml) now that nothing else
-        # competes for the four cores.
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/4)
+        # The suite alone on its runner: twenty slice tests split across
+        # four jobs, each running two slices at a time (`--profile
+        # small`, the `dna-fixtures-small` group in .config/nextest.toml).
+        # `count:` deals the alphabetical test list out round-robin, so
+        # the split is the same every run — the slices' minutes come out
+        # 769 / 595 / 587 / 773 s over the four parts, where a hash of
+        # the names left one of two jobs 330 s of slice time heavier than
+        # the other and would move with every renamed test.
         env:
           # The free 4-core runner answers a proposal slower than the suite's
           # default wait (2) allows while four slices run beside each other;
@@ -679,7 +683,7 @@ jobs:
           cargo nextest run --release -p hale-cli --features dynamic-llvm \
             --test dna_native_suite \
             --profile small \
-            --partition hash:${{ matrix.part }}/2
+            --partition count:${{ matrix.part }}/4
 
       - name: sccache stats
         if: always()

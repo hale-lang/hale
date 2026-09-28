@@ -29,8 +29,9 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Twenty slices of ~6 fixtures, so the hash
-/// partition over the slice tests spreads them evenly across two jobs
+/// contention (GH #795). Twenty slices of ~6 fixtures, so the
+/// round-robin (`count:`) partition over the test list spreads them
+/// evenly across four jobs
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
