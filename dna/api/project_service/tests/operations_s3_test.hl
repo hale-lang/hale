@@ -367,9 +367,12 @@ locus S3Cases {
         std::test::assert(!nested_value.ok && nested_value.refused == "invalid_command", "nor inside the source");
         // the verb's own refusal is the run's failure, and the source stays
         std::test::assert(head::write_private(self.sources + "/other", "other-value\n"), "another source written");
-        let never = self.drive(c, "s3-secret-never", "dna.secret.rotate", "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
+        let never = self.drive(c, "s3-secret-never", "dna.secret.rotate", "{\"name\":\"FORGE_TOKEN\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
         std::test::assert(never.state == "failed" && std::str::contains(never.reason, "was never set"), "rotating a name never set fails with the verb's words: " + never.state + " " + never.reason);
         std::test::assert(std::io::fs::file_exists(self.sources + "/other") && !std::json::find_bool_field(never.outcome, "source_consumed"), "a failed run consumes nothing");
+        // a name that is no slot of the organism's is refused by the verb too
+        let stray = self.drive(c, "s3-secret-stray", "dna.secret.rotate", "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
+        std::test::assert(stray.state == "failed" && std::str::contains(stray.reason, "is no slot of the organism's"), "a name that is no slot fails with the verb's words: " + stray.state + " " + stray.reason);
         std::io::fs::unlink(self.sources + "/other") or discard;
         std::io::fs::unlink(self.sources + "/loose") or discard;
         std::io::fs::unlink(self.sources + "/two") or discard;

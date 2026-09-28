@@ -1258,11 +1258,13 @@ repository:
     600, ignored by the project's `.gitignore` (which `init` and
     `upgrade` give the line), mounted into compose's `nerves` service.
   - **The guard.** The writer refuses a secrets file git tracks or would
-    track, and a conf that would carry any role's password.
+    track.
   - **Rotation.** `init` and `upgrade` draw every role's password anew
     (a regenerated seed rotates them); a server compose is running is
-    restarted to read them. `upgrade` says so when an older
-    `dna/compose.yaml` does not mount the secrets file.
+    restarted to read them, and a restart that fails is said. `upgrade`
+    rewrites `dna/compose.yaml`, which mounts the secrets file. A server
+    of the operator's (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the
+    secrets file again after each rotation.
 - **Liveness.** At start the host waits for the organization to read
   its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
@@ -1291,7 +1293,9 @@ repository:
   is its events. It declares each as a topic of its own, under its own
   subject `app.<app>.<event>`, binds it to pond's `NatsAdapter` with a
   codec that writes one JSON object, and publishes it through a pinned
-  `NatsConn` under the organization's prefix, acknowledged by the
+  `NatsConn` as the `app` user, presenting the vault's entry
+  `HALE_DNA_NATS_VAULT_APP` names, under the organization's prefix,
+  acknowledged by the
   stream. It imports nothing of DNA. The event names itself: its body
   is one JSON object as `std::json::valid_object` admits it (well-formed
   UTF-8, unique unescaped keys, at most 64 top-level members, nesting
@@ -1353,8 +1357,9 @@ repository:
   organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
   events**; **The application side**). An application — an instance a
-  node starts, the expression `dev` starts — inherits the application
-  credential and the organization's token (`HALE_DNA_NATS_URL_APP`,
+  node starts, the expression `dev` starts — inherits the application's
+  server, the vault name of its credential and the organization's token
+  (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_VAULT_APP`,
   `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
   started with them), and none of the organism's other credentials: the
   spine's, the owner's, the head's and the reflexes' NATS URLs and
@@ -3239,20 +3244,21 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   implementation.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
-  refused), never the record — and writes `NAME=value` into
-  `~/.config/hale-dna/<project>-<record>.env` (mode 600; one line per name,
-  the newest) on the body over ssh's stdin, or on this machine. The
-  host loads that file into its children's environment. `secret
-  rotate <NAME>` is the same for a name already set. The record gets
-  `secret.rotated <NAME> {where, by}` and nothing else. At start the
-  host checks the credentials its catalog names (`env_var` in
-  `dna/org/models.hl`): when none is set in its environment or the
-  file it says so and appends `body.credential_missing model
-  {any_of}`; `status` and `board` carry "no credential for the
-  model" until a start finds one and appends
-  `body.credential_present`.
+  refused), never the record — and fills that name's slot of the vault
+  (**The organism's secrets**; mode 600, the newest value) on the body
+  over ssh's stdin, or on this machine. A name is a slot the organism
+  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential the
+  catalog names — and any other is refused. No process's environment
+  carries the value: the part that sends it reads it from the vault.
+  `secret rotate <NAME>` is the same for a name already set. The record
+  gets `secret.rotated <NAME> {where, by}` and nothing else. At start
+  the host checks the credentials its catalog names (`env_var` in
+  `dna/org/models.hl`): when none is set in its environment or its slot
+  it says so and appends `body.credential_missing model {any_of}`;
+  `status` and `board` carry "no credential for the model" until a
+  start finds one and appends `body.credential_present`.
 - **What a body holds on a machine is bound to its record (#635).**
-  `<record>` in the unit's and the secrets file's names is the first
+  `<record>` in the unit's and the env file's names is the first
   twelve hex digits of the record's identity (its journal's genesis), so
   two records whose directories share a name on one machine never share
   a unit or a credential. Everything else a body reads lives in its
@@ -4323,9 +4329,12 @@ The assembly names what fills each role; `hale check` sees the wiring.
 The skin's (GH #989). **A secret is provisioned when its owner is
 declared and consumed when it runs.** Organism-level secrets are
 provisioned by `hale dna init` and `upgrade`, whether or not the part
-that uses one runs; per-member secrets (a node's own account, a
-per-application broker account, both not yet built) are provisioned at
-that member's admission. One skin-owned function
+that uses one runs; per-member secrets are provisioned at that member's
+admission, and are not on the organism's list: an owner's head role on
+a shared record (`postgres-<schema>_head_<owner>`) where the owner
+is declared to memory (`memory migrate` under `HALE_DNA_OWNER_KEYS`);
+a node's own account and a per-application broker account, not yet
+built. One skin-owned function
 (`dna/host/secrets.hl`, `organism_secrets`) holds the list, and one
 (`provision_secrets`) provisions it; every other part only consumes a
 secret, by its vault name, and never creates one.
@@ -4356,7 +4365,11 @@ secret, by its vault name, and never creates one.
   (`HALE_VAULT_DIR`, else the toolchain's cache), each entry a file of
   the secret's exact bytes, mode 600. A real vault (`HALE_VAULT_ADDR`)
   is provisioned out of band: there the bootstrap only checks, and says
-  what the vault lacks.
+  what the vault lacks. The local vault is one directory per user, not a
+  boundary between the parts one user runs: any of them can read any
+  entry by name. What keeps a part to its own credential is what it is
+  handed (an application gets the app's vault name and none of the
+  others'), not what it could read.
 - **Presented, never held.** A credential is presented by the adapter
   that puts it on the wire, and never exists as a String elsewhere: a
   part carries a `std::secret::Credential { vault: … }` (a sealed

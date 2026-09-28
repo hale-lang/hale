@@ -86,7 +86,8 @@ fn transport_kind() -> String {
 // ---- the reference infrastructure -------------------------------------------
 //
 // compose for the knowledge database, a systemd user unit for the
-// supervisor, an env file under ~/.config/hale-dna for credentials —
+// supervisor, an env file under ~/.config/hale-dna for the owner's DSN
+// (a credential a person supplies fills its slot of the vault, GH #989) —
 // each reached through the transport at `target` ("" is this machine).
 // The three compose independently: choosing a database never chooses a
 // deployment platform.
@@ -117,21 +118,26 @@ locus ReferenceInfrastructure {
         if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER: there is no memory to run on (`hale dna upgrade` writes the compose file)" }; }
         let have = dna::run_tool("docker\ncompose\nversion");
         if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
+        // GH #989: the superuser's password is the vault's, and reaches the
+        // server through the file compose mounts: both before `up`, which
+        // would otherwise make a directory where the file belongs
+        let seed = compose_seed(self.root);
+        let owner = std::secret::Credential { vault: postgres_owner_vault(seed) };
+        if len(seed) == 0 || !owner.ready() || !std::io::fs::file_exists(self.root + "/" + POSTGRES_SECRETS) { return dna::Database { why: "the compose database's password is not provisioned (" + postgres_owner_vault(seed) + " in the vault, " + POSTGRES_SECRETS + " beside compose; `hale dna upgrade` provisions them, `hale dna secrets` lists them)" }; }
         let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
         if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
         let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
         let hp = dna::trim_nl(port.stdout);
         let colon = std::str::index_of(hp, ":");
         if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the database's port from compose: " + dna::trim_nl(port.stderr) }; }
-        // GH #989: the superuser's password is the vault's; a database
-        // made with another adopts it, from the file compose mounts (read
-        // inside the container, never on a command line)
-        let seed = compose_seed(self.root);
-        let owner = std::secret::Credential { vault: postgres_owner_vault(seed) };
-        if len(seed) == 0 || !owner.ready() { return dna::Database { why: "the vault holds no password for the compose database (" + postgres_owner_vault(seed) + "; `hale dna upgrade` draws it, `hale dna secrets` lists it)" }; }
+        // a database made with another password adopts the vault's, from
+        // the file compose mounts (read inside the container, never on a
+        // command line)
         let adopt = "docker\ncompose\n-f\n" + compose + "\nexec\n-T\nknowledge-db\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
         let mut tries = 0;
-        while dna::run_tool(adopt).code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; }
+        let mut adopted = dna::run_tool(adopt);
+        while adopted.code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; adopted = dna::run_tool(adopt); }
+        if adopted.code != 0 { return dna::Database { why: "the compose database did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
         return dna::Database { present: true, dsn: "postgres://dna:" + owner.reveal_text() + "@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
     }
     // The nerves' server (GH #986), from dna/compose.yaml's `nerves`

@@ -23,9 +23,10 @@ fn nerves_migrate_verb(root: String) -> Answer {
     let org = dna::schema_for(id);
     let missing = dna::nerves_missing(org);
     if len(missing) > 0 { return fail("nerves migrate: the vault holds no credential for the nerves' " + missing + " (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)"); }
-    if !std::io::fs::file_exists(root + "/" + NATS_SECRETS) { return fail("nerves migrate: " + NATS_SECRETS + " is not written (`hale dna upgrade` writes it from the vault's provisioning)"); }
     let mut server = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
     if len(server) == 0 {
+        // compose's server reads the passwords from the include
+        if !std::io::fs::file_exists(root + "/" + NATS_SECRETS) { return fail("nerves migrate: " + NATS_SECRETS + " is not written (`hale dna upgrade` writes it from the vault's provisioning)"); }
         let infra = ReferenceInfrastructure { root: root };
         let up = infra.nerves_server(root);
         if !up.present { return answer("none: " + up.why + "\n"); }
@@ -105,7 +106,8 @@ fn nerves_drop_verb(root: String) -> Answer {
     let org = dna::schema_for(record_identity(root));
     let owner = if std::env::var_exists(dna::NATS_OWNER_URL_ENV) { std::env::var(dna::NATS_OWNER_URL_ENV) } else { "" };
     if len(owner) == 0 { return answer("none: no " + dna::NATS_OWNER_URL_ENV + "; the stream is dropped with the owner's URL\n"); }
-    let c = nats::NatsClient { url: owner, name: "dna-owner", timeout: 2s };
+    if std::str::contains(" " + dna::nerves_missing(org) + " ", " owner ") { return fail("nerves drop: the vault holds no credential for the nerves' owner (`hale dna secrets` lists it)"); }
+    let c = nats::NatsClient { url: dna::nerves_server_url(owner), user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "dna-owner", timeout: 2s };
     if !c.open() { return fail("nerves drop: " + c.last_error); }
     let stream = dna::nerves_stream(org);
     let gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + stream, "") or "";

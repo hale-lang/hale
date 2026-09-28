@@ -187,7 +187,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     // ---- the host: a missing credential surfaces at once ----
     // (the bootstrap left the key's slot of the vault empty)
     let slot = home.join(format!("vault/model-{cred}"));
-    assert_eq!(std::fs::read_to_string(&slot).unwrap_or_default(), "", "the bootstrap named the slot, empty");
+    assert_eq!(std::fs::read_to_string(&slot).expect("the bootstrap named the slot"), "", "the bootstrap named the slot, empty");
     let log = d.join("host.log");
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());

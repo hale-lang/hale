@@ -377,7 +377,8 @@ fn graph_generation_ddl(sch: String) -> String {
 // advisory lock is per database and does not cover that).
 fn role_sql(role: String) -> String {
     // the vault's password is the role's: a role that exists takes it again
-    let pw = role_password(role);
+    // (a literal: a value a real vault holds may carry a quote)
+    let pw = std::str::replace(role_password(role), "'", "''");
     return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + pw + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN ALTER ROLE " + role + " WITH LOGIN PASSWORD '" + pw + "'; END $$";
 }
 

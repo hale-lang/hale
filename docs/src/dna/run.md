@@ -258,8 +258,11 @@ main locus Api {
 }
 ```
 
-It imports nothing of DNA. It connects as the `app` user
-(`HALE_DNA_NATS_URL_APP`, which `hale dna nerves migrate` prints), with
+It imports nothing of DNA. It connects as the `app` user to the server
+`HALE_DNA_NATS_URL_APP` names, presenting the vault's entry
+`HALE_DNA_NATS_VAULT_APP` names (`user: "app"`, `credential:
+std::secret::Credential { vault: … }` on its `NatsConn`; `hale dna nerves
+migrate` prints both, and no URL carries a password), with
 the organization's token and a dot (`HALE_DNA_NATS_ORG`) as its
 connection's `subject_prefix`, and `jetstream: true`, so the
 organization's stream acknowledges each event. Today you hand it those
@@ -361,7 +364,9 @@ the organism's secrets (the local vault, /home/riley/.cache/hale/vault):
 2 missing
 ```
 
-It never prints a value. The board says the same for each one missing.
+It never prints a value. The board says the same for each one missing
+but a model key, which the body reports itself, since it may hold the
+key in its environment.
 A start that finds a drawn secret missing refuses and names it:
 `hale dna upgrade` draws it. With a real vault (`HALE_VAULT_ADDR`) the
 secrets are provisioned out of band, and the bootstrap only checks.

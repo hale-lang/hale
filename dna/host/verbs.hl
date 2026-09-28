@@ -999,6 +999,8 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
     if !env_var_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not an environment variable name (A-Z, 0-9, _)"); }
+    // GH #989: a slot the organism requires, and no other name
+    if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl names: " + catalog_credentials(root) + "); `hale dna secrets` lists them"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
     let p = open_projection(root, ".", "", memory);

@@ -105,6 +105,8 @@ UPSTREAM*.md
 # the one program whose name has a dot of its own (`main.v2.hl` builds
 # `main.v2`), which the extension rule cannot tell from a source
 /dna/acceptance/books.fixture/main.v2
+/dna/**/nats.secrets.conf
+/dna/**/postgres.secrets
 tests/hale/*_test
 iris/**/upstream-repro/repro[0-9]*
 !iris/**/upstream-repro/*.hl
