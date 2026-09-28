@@ -37,7 +37,7 @@ main locus Body {
             text: "Collect the exact receipt.\nKeep its provenance.",
             by: "fixture-author", because: "Native command acceptance bootstrap."
         });
-        let proposed = self.core.governance_event("practice.proposed", "native-command-bootstrap");
+        let proposed = dna::first_row(self.core.journal, "practice.proposed", "native-command-bootstrap");
         let digest = std::json::find_string_field(proposed.body, "digest");
         if len(digest) == 0 { eprintln("native command Body: bootstrap proposal is incomplete"); std::process::exit(2); }
         if !self.core.knowledge_ratified(digest) {

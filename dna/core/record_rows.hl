@@ -1,0 +1,130 @@
+// The record's rows, read and appended by whichever part of the
+// organization holds the journal (C3, the assembly's split). Each of
+// these was a method of the assembly that touched nothing but the
+// journal; as functions over it, a family carved out of the assembly
+// reaches the record the same way the assembly does, through its rows,
+// and shares no state with it.
+
+// Whether the record holds a `kind` row for `entity`.
+fn row_exists(j: Journal, kind: String, entity: String) -> Bool {
+    let n = j.revision();
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The first `kind` row for `entity`; an empty Event when there is none.
+@unbounded
+fn first_row(j: Journal, kind: String, entity: String) -> Event {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { return e; }
+        i = i + 1;
+    }
+    return Event { };
+}
+
+// Whether a row already recorded says what `body` would: the same body,
+// or, for a knowledge proposal, the same document (its timestamp is
+// observation metadata; every field its digest binds must agree on an
+// interrupted replay).
+fn rows_agree(kind: String, existing: String, body: String) -> Bool {
+    if kind == "knowledge.proposed" {
+        return native_json_string(existing, "digest") == native_json_string(body, "digest")
+            && native_json_string(existing, "review_id") == native_json_string(body, "review_id")
+            && native_json_string(existing, "kind") == native_json_string(body, "kind")
+            && native_json_string(existing, "author") == native_json_string(body, "author")
+            && native_json_string(existing, "target") == native_json_string(body, "target")
+            && native_json_string(existing, "class") == native_json_string(body, "class")
+            && native_json_string(existing, "name") == native_json_string(body, "name")
+            && native_json_string(existing, "supersedes") == native_json_string(body, "supersedes");
+    }
+    return existing == body;
+}
+
+// Append a `kind` row for `entity` once: true when the record holds it
+// (appended here, or already there saying the same), false when another
+// writer recorded something else for it or the record kept moving.
+@unbounded
+fn append_once(j: Journal, kind: String, entity: String, body: String) -> Bool {
+    let mut tries = 0;
+    while tries < 20 {
+        let moved = j.refresh();
+        let revision = j.revision();
+        let existing = first_row(j, kind, entity);
+        if len(existing.kind) > 0 { return rows_agree(kind, existing.body, body); }
+        let appended = j.append_exact(revision, kind, entity, body);
+        if appended.ok { return true; }
+        let refreshed = j.refresh();
+        let recovered = first_row(j, kind, entity);
+        if len(recovered.kind) > 0 { return rows_agree(kind, recovered.body, body); }
+        if appended.error != "stale_revision" { return false; }
+        tries = tries + 1;
+    }
+    return false;
+}
+
+// The `review.requested` body of a mutation's Review, "" for any other
+// (the purpose Review, an unknown id).
+@unbounded
+fn mutation_review_request(j: Journal, review_id: String) -> String {
+    let n = j.revision();
+    let mut i = 0;
+    let mut out = "";
+    while i < n {
+        let e = j.read(i);
+        if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"mutation_id\"") { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The last `mutation.<disposition>` recorded for an id.
+@unbounded
+fn mutation_disposition(j: Journal, mutation_id: String) -> String {
+    let n = j.revision();
+    let mut i = 0;
+    let mut out = "";
+    while i < n {
+        let e = j.read(i);
+        if e.entity == mutation_id && std::str::contains(e.kind, "mutation.") && e.kind != "mutation.worktree" && e.kind != "mutation.candidate" {
+            out = e.kind[9..len(e.kind)];
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The body of the latest `review.routed` row for `review_id`, "" when
+// none: a re-routing supersedes the one before it.
+@unbounded
+fn routed_row(j: Journal, review_id: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.routed" && e.entity == review_id { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// GH #604 rule 5: whether `who` retired, and to whom their work goes.
+@unbounded
+fn retirement(j: Journal, who: String) -> RetiredPerson {
+    if len(who) == 0 { return RetiredPerson { }; }
+    let n = j.revision();
+    let mut out = RetiredPerson { };
+    let mut i = 0;
+    while i < n {
+        let e = j.read(i);
+        if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: native_json_string(e.body, "to") }; }
+        i = i + 1;
+    }
+    return out;
+}

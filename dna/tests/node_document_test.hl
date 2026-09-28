@@ -44,7 +44,7 @@ main locus App {
         std::test::assert(codec.valid(request), "maximum-sized exact request is valid");
         body.on_knowledge_node_requested(request);
         let digest = request.candidate_digest;
-        std::test::assert_eq_str(body.governance_event("knowledge.node.proposed", request.request_id).body, codec.proposed(request), "real Body acknowledges exact candidate");
+        std::test::assert_eq_str(dna::first_row(j, "knowledge.node.proposed", request.request_id).body, codec.proposed(request), "real Body acknowledges exact candidate");
         let id = "nodedocument" + to_string(std::process::pid());
         let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
         let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
