@@ -304,15 +304,21 @@ one per family of subjects:
 | `HALE_DNA_NATS_URL_HEAD` | a head (the face's) | subscribe; publish nothing |
 | `HALE_DNA_NATS_URL_APP` | an application (#987) | publish on its own subjects (`<org>.app.<app>.>`) |
 
-Create the stream with the owner's URL, and the command prints the
-organization's token and the others:
+Each is the server alone, `nats://host:port`; the role's password is
+the vault's `nats-<org>-<role>`, which the part presents when it
+connects (#989). Create the stream with the owner's server, and the
+command prints the organization's token, the others, and the vault
+names a program that is not the host presents:
 
 ```text
-$ HALE_DNA_NATS_URL_OWNER=nats://owner:…@nats.internal:4222 hale dna nerves migrate
+$ HALE_DNA_NATS_URL_OWNER=nats://nats.internal:4222 hale dna nerves migrate
 HALE_DNA_NATS_ORG=dna_9f3c…
-HALE_DNA_NATS_URL_SPINE=nats://spine:…@nats.internal:4222
-HALE_DNA_NATS_URL_HEAD=nats://head:…@nats.internal:4222
-HALE_DNA_NATS_URL_APP=nats://app:…@nats.internal:4222
+HALE_DNA_NATS_URL_SPINE=nats://nats.internal:4222
+HALE_DNA_NATS_URL_HEAD=nats://nats.internal:4222
+HALE_DNA_NATS_URL_APP=nats://nats.internal:4222
+HALE_DNA_NATS_URL_REFLEXES=nats://nats.internal:4222
+HALE_DNA_NATS_VAULT_APP=nats-dna_9f3c…-app
+HALE_DNA_NATS_VAULT_REFLEXES=nats-dna_9f3c…-reflexes
 ```
 
 `hale dna nerves drop` deletes the stream, and everything it held, with
@@ -327,9 +333,10 @@ owner's or a head's URL before the host sees them. The server needs
 JetStream on (`-js`, or `jetstream {}` in its configuration);
 `dna/nats.conf`, which `init` writes, is the configuration
 `dna/compose.yaml` runs, with each user allowed only its own subjects.
-Until the vault holds their credentials (#989) the passwords are
-placeholders (`dna-<role>-dev`), so keep the server where only the
-machines you trust can reach it.
+The passwords are the seed's own, in the vault (#989), and reach the
+server through `dna/nats.secrets.conf`, which is untracked and mode
+600. A server of your own, named by `HALE_DNA_NATS_URL_OWNER`, takes
+the same users: give it the conf and that secrets file.
 
 The organization reads through its durable consumer, `spine`, which
 keeps its place across restarts, so a fact published while it was down
@@ -364,9 +371,10 @@ spine may not publish `<org>.head.>`; `hale dna upgrade` says what to
 add.
 
 Every fact travels over the nerves. A fleet
-node hands each instance it starts the application credential and the
-organization's token it was started with (`HALE_DNA_NATS_URL_APP`,
-`HALE_DNA_NATS_ORG`, which `hale dna nerves migrate` prints), and an
+node hands each instance it starts the application's server, the vault
+name of its credential and the organization's token it was started with
+(`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`,
+which `hale dna nerves migrate` prints), and an
 instance that raises a concern publishes it onto the nerves itself, as
 one of its own events. The heart lands it and the spine puts it into
 the record, where the host relays it like any other request.

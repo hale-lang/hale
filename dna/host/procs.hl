@@ -21,10 +21,13 @@ fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> 
 // An application — an instance a node starts, the expression `dev` starts
 // — holds no credential of the organism's: the spine's, the owner's, the
 // head's and the reflexes' are taken out of what it inherits. What it
-// keeps of the nerves is the application credential and the
-// organization's token (HALE_DNA_NATS_URL_APP, HALE_DNA_NATS_ORG), which
-// it inherits, never on a command line (GH #986).
-const APPLICATION_UNSET: String = "HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_HEAD HALE_DNA_NATS_URL_REFLEXES HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_HEAD";
+// keeps of the nerves is the application's server, the vault name of its
+// credential and the organization's token (HALE_DNA_NATS_URL_APP,
+// HALE_DNA_NATS_VAULT_APP, HALE_DNA_NATS_ORG), which it inherits, never
+// on a command line (GH #986, #989). The local vault is one directory per
+// user: a part reads any entry of it by name, so this is what it is
+// handed, not a boundary it cannot cross (spec: the organism's secrets).
+const APPLICATION_UNSET: String = "HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_HEAD HALE_DNA_NATS_URL_REFLEXES HALE_DNA_NATS_VAULT_REFLEXES HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_HEAD";
 fn start_application(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
     return start_env(dir, name, cwd, envs, argv, "-u " + std::str::replace(APPLICATION_UNSET, " ", " -u ") + " ");
 }

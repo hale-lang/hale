@@ -8,9 +8,10 @@
 // #987): it declares it as its own topic, `concern.raised` under its
 // own subject `app.trio.`, and publishes it onto the nerves through
 // pond's publish-only adapter (`NatsPublisher`: it dispatches nothing
-// into the worker, so the fleet's law stays provable over it) with the
-// application credential its node hands it (HALE_DNA_NATS_URL_APP,
-// under HALE_DNA_NATS_ORG). It imports nothing of the DNA. The organism's heart lands it as a reading, and
+// into the worker, so the fleet's law stays provable over it) as the
+// application's account its node names (HALE_DNA_NATS_URL_APP, the vault
+// entry HALE_DNA_NATS_VAULT_APP, under HALE_DNA_NATS_ORG). It imports
+// nothing of the DNA. The organism's heart lands it as a reading, and
 // the spine puts it into the record as a concern; the organization
 // proposes it as knowledge; the Board ratifies; the next change to the
 // trio is made with it in hand.
@@ -66,7 +67,9 @@ main locus TrioWorker {
     }
     bus { publish Fulfil; publish WorkerConcerns; }
     // the nerves its node handed it (no url: it says nothing)
-    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker" } codec(ConcernJson { }); }
+    // the application's account: its password is the vault's entry its node
+    // names (HALE_DNA_NATS_VAULT_APP), presented on CONNECT alone (GH #989)
+    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker", user: "app", credential: std::secret::Credential { vault: env_or_empty("HALE_DNA_NATS_VAULT_APP") } } codec(ConcernJson { }); }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);

@@ -56,11 +56,14 @@ locus NatsPublisher {
         url: String = "";
         subject_prefix: String = "";
         name: String = "hale-bus-publisher";
+        user: String = "";
+        // `user`'s password, sealed: revealed only on the CONNECT line
+        credential: std::secret::Credential = std::secret::Credential { };
     }
     fn send(subject: String, bytes: Bytes) {
         if len(self.url) == 0 { return; }
-        let c = NatsClient { url: self.url, name: self.name, timeout: 2s };
-        if !c.open() { eprintln("nats publisher: ", c.last_error); return; }
+        let c = NatsClient { url: self.url, name: self.name, user: self.user, timeout: 2s };
+        if !c.open_as(self.credential) { eprintln("nats publisher: ", c.last_error); return; }
         let ack = js_publish(c, self.subject_prefix + subject, bytes) or PubAck { seq: -1 };
         if ack.seq < 0 { eprintln("nats publisher: the stream did not take ", self.subject_prefix, subject, ": ", c.last_error); }
         c.close();
@@ -73,6 +76,9 @@ locus NatsConn {
         user: String = "";
         pass: String = "";
         token: String = "";
+        // `user`'s password, sealed (std::secret): the client reveals it on
+        // the line that writes CONNECT and nowhere else
+        credential: std::secret::Credential = std::secret::Credential { };
         name: String = "hale-bus";
         // Core subscriptions, comma-separated NATS subjects (wildcards
         // allowed); each inbound message is dispatched under its own
@@ -327,7 +333,7 @@ locus NatsConn {
     // the server has not acknowledged. False when the server is not
     // reachable yet (retried with backoff).
     fn connect() -> Bool {
-        if !self.client.open() { self.last_error = self.client.last_error; return false; }
+        if !self.client.open_as(self.credential) { self.last_error = self.client.last_error; return false; }
         if self.jetstream {
             self.ack_sid = self.client.sub_to(self.inbox + ".ack.*", "") or 0;
         }

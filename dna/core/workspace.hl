@@ -169,6 +169,14 @@ fn run_failed(e: IoError) -> std::process::ProcessOutput {
     return std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: e.kind };
 }
 
+// A file's permission bits as octal digits (`600`, `700`), "" when there
+// is no such file. std::io::fs reads no permissions, and stat spells the
+// question per platform: `-f %Lp` on macOS (BSD), `-c %a` elsewhere (GNU).
+fn file_mode(path: String) -> String {
+    let r = run_tool("sh\n-c\nif [ \"$(uname -s)\" = Darwin ]; then stat -f %Lp \"$1\"; else stat -c %a \"$1\"; fi\nsh\n" + path);
+    return if r.code == 0 { trim_nl(r.stdout) } else { "" };
+}
+
 // argv as `std::process::run` takes it: newline-separated.
 fn run_tool(argv: String) -> RunResult {
     let out = std::process::run(argv) or run_failed(err);

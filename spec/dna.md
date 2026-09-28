@@ -268,9 +268,11 @@ host's tick (**The spine**, below).
   at most 56 characters of it), and two roles of its own,
   `dna_<identity>_spine` and `dna_<identity>_head`, cut to fit
   Postgres's 63-byte names: one role granted on every record's schema
-  would read every other record's evidence on the same server. Until
-  the vault holds them (GH #989) a role's password is a placeholder
-  equal to the role's name.
+  would read every other record's evidence on the same server. A
+  role's password is the vault's `postgres-<role>` (**The organism's
+  secrets**), drawn when the role is declared and read at use; the
+  migration sets each role's password from the vault (`ALTER ROLE`
+  when it exists), so the vault stays the one source.
 - **Three DSNs.** `HALE_DNA_MEMORY_DSN_OWNER` is the schema owner's,
   used only to migrate: by `hale dna memory migrate [dir]`, by `hale
   dna dev` before it starts the host, by `hale dna upgrade` when it is
@@ -1024,7 +1026,8 @@ repository:
   #635), sends the browser to its authorize endpoint with a random
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
-  (`dna.oidc.client`, `HALE_DNA_OIDC_SECRET` read into a sealed locus,
+  (`dna.oidc.client`, its secret the vault's `oidc-client-<client>`,
+  revealed on the one line that builds the token request,
   `dna.oidc.redirect` as the callback, else the head's own
   `/auth/callback`). **Every ID token is verified**: its ES256
   signature under a key of the issuer's JWKS — the head reads the
@@ -1044,7 +1047,7 @@ repository:
   `principal_mode: oidc`, the person, and the positions they hold
   (`principal_positions`). The face (`dna/api/project_service`) is
   itself a client of the issuer under `HALE_DNA_OIDC_ISSUER`,
-  `_CLIENT`, `_SECRET` and `_MEMBER` (the `<subject>=<person>` who
+  `_CLIENT` and `_MEMBER` (the `<subject>=<person>` who
   signs in there), configures a project it attaches for that issuer,
   and forwards the session's ID token to the project's API child as
   the bearer, which the child verifies itself; an OIDC child is ready
@@ -1054,8 +1057,9 @@ repository:
   anyone's who can bind its port**, so its key is pinned: a head under
   a loopback issuer does not start without `dna.oidc.key` (the issuer's
   SubjectPublicKeyInfo) and trusts that key alone. In local mode the stub
-  signs under a key made for the launch, its client secret goes by the
-  environment, never argv, the face pins the key into a project it
+  signs under a key made for the launch, its client secret is the
+  vault's `oidc-client-<client>`, which the stub and the head each read
+  there (never the environment or argv), the face pins the key into a project it
   attaches (restarting a child that pinned another), only the browser
   that opened the URL the face prints (its 0600 launch token) may start
   or finish a sign-in, and the face answers only as `127.0.0.1` or
@@ -1218,7 +1222,7 @@ repository:
   node) and hands it to the organization (`HALE_DNA_OWNER`); an owner's
   name in a subject or a durable keeps
   its letters, digits, `-` and `_`, anything else `_`.
-- **Credentials, one per family**, each a URL with its user: `owner`
+- **Credentials, one per family**, each a user on the server: `owner`
   creates the stream and is held by no process that runs the organism;
   `spine` publishes and reads `<org>.dna.>` and an owner's
   `<org>.<owner>.dna.>` (the host and the organization), reads
@@ -1228,18 +1232,39 @@ repository:
   publishes on `<org>.app.*.>` and reads nothing of DNA's. `hale dna nerves migrate [dir]`
   creates or updates the stream with the owner's URL
   (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
-  `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG` and
-  one `HALE_DNA_NATS_URL_<ROLE>` per role; `hale dna dev` runs it
+  `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG`, one
+  `HALE_DNA_NATS_URL_<ROLE>` per role — `nats://host:port` alone — and
+  `HALE_DNA_NATS_VAULT_APP` and `_REFLEXES`, the vault names a program
+  that is not the host presents; `hale dna dev` runs it
   before it starts the host and hands the host the spine's URL and the
   token, never the owner's nor the head's; `hale dna run` takes the
   two from its environment and has the owner's and the head's removed
   from it. `hale dna nerves drop [dir]` deletes the stream, and
   everything it held, with the owner's URL — beside dropping memory's
-  schema, when an organization is torn down. `dna/nats.conf`, which
-  `init` writes, is that server's configuration: the users and their
-  permissions, with placeholder passwords until the vault (#989).
-  `upgrade` writes it when it is missing, and says so when an older
-  one's spine may not publish `<org>.head.>`.
+  schema, when an organization is torn down.
+- **The nerves' passwords** (GH #989) are the vault's, one per role
+  and seed, `nats-<org>-<role>` (**The organism's secrets**). A part
+  that connects holds `std::secret::Credential { vault: … }` beside its
+  user, and pond's client reveals it on the one line that writes
+  `CONNECT` — never a field, a return value, a URL or the environment.
+  No URL carries a password: userinfo in a server's URL is dropped. A
+  role whose entry the vault lacks is refused (`nerves migrate`, the
+  host, the reflexes); nothing connects with a default.
+  - **The server's files.** `dna/nats.conf` is a tracked seed file with
+    no secret in it: it `include`s `./nats.secrets.conf` and names each
+    user's password as its variable (`$NATS_<ROLE>_PASSWORD`).
+    `dna/nats.secrets.conf`, written by the bootstrap from the same draw
+    as the vault's entries, is the one file that holds a password: mode
+    600, ignored by the project's `.gitignore` (which `init` and
+    `upgrade` give the line), mounted into compose's `nerves` service.
+  - **The guard.** The writer refuses a secrets file git tracks or would
+    track.
+  - **Rotation.** `init` and `upgrade` draw every role's password anew
+    (a regenerated seed rotates them); a server compose is running is
+    restarted to read them, and a restart that fails is said. `upgrade`
+    rewrites `dna/compose.yaml`, which mounts the secrets file. A server
+    of the operator's (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the
+    secrets file again after each rotation.
 - **Liveness.** At start the host waits for the organization to read
   its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
@@ -1268,7 +1293,9 @@ repository:
   is its events. It declares each as a topic of its own, under its own
   subject `app.<app>.<event>`, binds it to pond's `NatsAdapter` with a
   codec that writes one JSON object, and publishes it through a pinned
-  `NatsConn` under the organization's prefix, acknowledged by the
+  `NatsConn` as the `app` user, presenting the vault's entry
+  `HALE_DNA_NATS_VAULT_APP` names, under the organization's prefix,
+  acknowledged by the
   stream. It imports nothing of DNA. The event names itself: its body
   is one JSON object as `std::json::valid_object` admits it (well-formed
   UTF-8, unique unescaped keys, at most 64 top-level members, nesting
@@ -1330,8 +1357,9 @@ repository:
   organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
   events**; **The application side**). An application — an instance a
-  node starts, the expression `dev` starts — inherits the application
-  credential and the organization's token (`HALE_DNA_NATS_URL_APP`,
+  node starts, the expression `dev` starts — inherits the application's
+  server, the vault name of its credential and the organization's token
+  (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_VAULT_APP`,
   `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
   started with them), and none of the organism's other credentials: the
   spine's, the owner's, the head's and the reflexes' NATS URLs and
@@ -3216,20 +3244,21 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   implementation.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
-  refused), never the record — and writes `NAME=value` into
-  `~/.config/hale-dna/<project>-<record>.env` (mode 600; one line per name,
-  the newest) on the body over ssh's stdin, or on this machine. The
-  host loads that file into its children's environment. `secret
-  rotate <NAME>` is the same for a name already set. The record gets
-  `secret.rotated <NAME> {where, by}` and nothing else. At start the
-  host checks the credentials its catalog names (`env_var` in
-  `dna/org/models.hl`): when none is set in its environment or the
-  file it says so and appends `body.credential_missing model
-  {any_of}`; `status` and `board` carry "no credential for the
-  model" until a start finds one and appends
-  `body.credential_present`.
+  refused), never the record — and fills that name's slot of the vault
+  (**The organism's secrets**; mode 600, the newest value) on the body
+  over ssh's stdin, or on this machine. A name is a slot the organism
+  requires — `FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a credential the
+  catalog names — and any other is refused. No process's environment
+  carries the value: the part that sends it reads it from the vault.
+  `secret rotate <NAME>` is the same for a name already set. The record
+  gets `secret.rotated <NAME> {where, by}` and nothing else. At start
+  the host checks the credentials its catalog names (`env_var` in
+  `dna/org/models.hl`): when none is set in its environment or its slot
+  it says so and appends `body.credential_missing model {any_of}`;
+  `status` and `board` carry "no credential for the model" until a
+  start finds one and appends `body.credential_present`.
 - **What a body holds on a machine is bound to its record (#635).**
-  `<record>` in the unit's and the secrets file's names is the first
+  `<record>` in the unit's and the env file's names is the first
   twelve hex digits of the record's identity (its journal's genesis), so
   two records whose directories share a name on one machine never share
   a unit or a credential. Everything else a body reads lives in its
@@ -3805,12 +3834,17 @@ The live half is memory's, projected from the record by the spine
   (`intent.unrecovered`) and never re-offered: work may already have
   run.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
-  (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
-  volume `hale-dna-<project>-knowledge`, a host port in 54xx from the
-  project's name); it is part of the genome. With no
+  (its own compose project, `name: hale-dna-<project>`, so two seeds
+  on one machine never share a container; the `knowledge-db` service,
+  `pgvector/pgvector:pg16`, a named volume
+  `hale-dna-<project>-knowledge`, a host port in 54xx from the
+  project's name); it is part of the genome, and `upgrade` rewrites it
+  to the template. With no
   `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
   dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
-  DSN from the published port; an operator's
+  DSN from the published port and the vault's `postgres-owner-<project>`
+  (**The organism's secrets**), which a database made with another
+  password adopts first; an operator's
   `HALE_DNA_MEMORY_DSN_OWNER` wins. It applies memory's schema with the
   owner's DSN and starts the host with the record's spine DSN alone
   (**Memory**). With compose not on PATH, or no compose file, it says
@@ -4289,6 +4323,70 @@ The assembly names what fills each role; `hale check` sees the wiring.
 - **Observation** — for a shell gateway, the command's exit; for a
   host, the window it watches; for a fleet, what its nodes report
   (below).
+
+## The organism's secrets
+
+The skin's (GH #989). **A secret is provisioned when its owner is
+declared and consumed when it runs.** Organism-level secrets are
+provisioned by `hale dna init` and `upgrade`, whether or not the part
+that uses one runs; per-member secrets are provisioned at that member's
+admission, and are not on the organism's list: an owner's head role on
+a shared record (`postgres-<schema>_head_<owner>`) where the owner
+is declared to memory (`memory migrate` under `HALE_DNA_OWNER_KEYS`);
+a node's own account and a per-application broker account, not yet
+built. One skin-owned function
+(`dna/host/secrets.hl`, `organism_secrets`) holds the list, and one
+(`provision_secrets`) provisions it; every other part only consumes a
+secret, by its vault name, and never creates one.
+
+| vault name | kind | whose |
+|---|---|---|
+| `postgres-dna_<identity>_spine`, `_head` | drawn | memory's roles (**Memory**) |
+| `postgres-owner-<seed>`, when the seed has `dna/compose.yaml` | drawn | the compose database's superuser |
+| `nats-<org>-<role>`, for `owner spine head app reflexes` | drawn | the nerves' accounts (**The nerves**) |
+| `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
+| `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
+| `forge-token` | slot | the forge's token (else `gh`'s own login) |
+| `model-<NAME>`, per credential the catalog names | slot | a model's key (**Models**) |
+
+- **Drawn or a slot.** A secret the organism owns the value of is drawn
+  from urandom (32 hex characters) into the vault when the vault lacks
+  it; the nerves' are drawn anew on every `init` and `upgrade`, since
+  the server's include is written from the same draw. The servers
+  compose runs read theirs from files written from the same draw as the
+  vault's entries: `dna/nats.secrets.conf` for the nerves and
+  `dna/postgres.secrets` for the database (its `POSTGRES_PASSWORD_FILE`),
+  each mode 600, ignored, and refused when git tracks it or would. No
+  committed file holds a secret. A secret a person
+  supplies is a named empty entry that `hale dna secret set <NAME>`
+  fills (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a model key's name);
+  an entry that is empty is not held.
+- **The vault.** The local vault is `std::secret::vault_local_dir()`
+  (`HALE_VAULT_DIR`, else the toolchain's cache), each entry a file of
+  the secret's exact bytes, mode 600. A real vault (`HALE_VAULT_ADDR`)
+  is provisioned out of band: there the bootstrap only checks, and says
+  what the vault lacks. The local vault is one directory per user, not a
+  boundary between the parts one user runs: any of them can read any
+  entry by name. What keeps a part to its own credential is what it is
+  handed (an application gets the app's vault name and none of the
+  others'), not what it could read.
+- **Presented, never held.** A credential is presented by the adapter
+  that puts it on the wire, and never exists as a String elsewhere: a
+  part carries a `std::secret::Credential { vault: … }` (a sealed
+  locus), and `reveal_text()` is called on the line that writes the
+  secret out — pond's NATS client on `CONNECT`, the head's token
+  request, the model's request header. No field, URL, argument or
+  environment variable carries one. Two are not sealed yet: memory's
+  DSNs carry their role's password, and the forge's token reaches
+  `gh`, which takes it no other way, as `GH_TOKEN` in that one child's
+  environment (through a file unlinked at once).
+- **Fail closed.** `hale dna run` (and `dev`, which starts it) refuses
+  when the vault lacks a drawn secret, naming each; `nerves migrate`
+  refuses a role with no entry; nothing falls back to a default.
+- **`hale dna secrets`** lists every secret the organism requires,
+  whether the vault holds it, and the remedy for each missing one;
+  never a value. The board says so for each missing one (a model key
+  is reported by the body, which may hold it in its environment).
 
 ## The fleet
 

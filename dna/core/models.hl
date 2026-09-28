@@ -344,10 +344,15 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
             self.value = std::bytes::from_string(std::env::var(self.env_var));
         }
     }
-    fn ready() -> Bool { return len(self.value) > 0; }
+    // GH #989: with nothing in the environment, the key is the vault's slot
+    // for it (`model-<env_var>`, which `hale dna secret set` fills), read
+    // where it is presented and nowhere else
+    fn slot() -> String { return "model-" + self.env_var; }
+    fn ready() -> Bool { return len(self.value) > 0 || std::secret::Credential { vault: self.slot() }.ready(); }
     @effects(is: { secret_use })
     fn fingerprint() -> String {
         if !self.ready() { return ""; }
+        if len(self.value) == 0 { return "fp:" + std::secret::Credential { vault: self.slot() }.fingerprint(); }
         let h = hex(std::crypto::sha256(self.value));
         return "fp:" + h[0..16];
     }
@@ -358,9 +363,9 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
     fn post_json(url: String, body: String, extra: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = std::http::parse_url(url) or raise;
         let presented = if self.scheme == "x-api-key" {
-            "x-api-key: " + std::str::from_bytes(self.value)
+            "x-api-key: " + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() })
         } else {
-            "Authorization: Bearer " + std::str::from_bytes(self.value)
+            "Authorization: Bearer " + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() })
         };
         let req = std::http::ClientRequest {
             method: "POST",

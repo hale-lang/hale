@@ -96,56 +96,61 @@ fn owners_of_keys(keys: String) -> String {
     return out;
 }
 
-// GH #989: the role's password lives in the vault, resolved at use —
-// `std::secret::Credential` fails closed when nothing is there. A
-// real vault (`HALE_VAULT_ADDR` set) is provisioned out of band;
-// this only reads it, so a role with nothing provisioned yet gets no
-// password and no connection, same as any other unresolved secret.
-// Local mode has no server to provision through, so
-// `vault_provision_local` draws a random password from urandom and
-// persists it under the vault's own local-file convention the first
-// time a role is asked for — self-provisioning local dev already
-// had, now a real secret instead of one derivable from the role's
-// own name.
+// GH #989: a role's password lives in the vault under
+// `postgres-<role>`. The organism's bootstrap provisions it (`hale dna
+// init` / `upgrade`, dna/host/secrets.hl, through
+// `provision_record_roles`); an owner's head role is provisioned where the
+// owner is declared (`migrate_for`'s owners). Everything else only
+// consumes it: `role_password` is "" when the vault holds none, and
+// migration then refuses — never a default, never made on the spot.
+fn role_vault_name(role: String) -> String { return "postgres-" + identifier_part(role, 63); }
+
 fn role_password(role: String) -> String {
-    // `role` is project-derived (`spine_role`/`head_role`/`owner_role`
-    // already run it through `identifier_part`, but this is the
-    // credential site, not a trusted-input assumption about its
-    // callers) — run it through the SAME [a-z0-9_] restriction again
-    // before it becomes a vault name, so a name built from it can
-    // never carry a `/`, a `\`, or a `..` regardless of what a future
-    // caller passes.
-    let name = "postgres-" + identifier_part(role, 63);
-    let from_vault = std::secret::Credential { vault: name }.reveal_text();
-    if len(from_vault) > 0 { return from_vault; }
-    return vault_provision_local(name);
+    return std::secret::Credential { vault: role_vault_name(role) }.reveal_text();
+}
+
+// The record's own roles into the vault (the spine's and the head's, and
+// each of `owners`' head roles): drawn where none is. "" when every one
+// has a password, else why not. The bootstrap's step, and a fixture's.
+@unbounded
+fn provision_record_roles(record_id: String, owners: String) -> String {
+    if len(provision_role(spine_role(record_id))) == 0 { return "the spine's role password could not be provisioned in the vault"; }
+    if len(provision_role(head_role(record_id))) == 0 { return "the head's role password could not be provisioned in the vault"; }
+    let mut i = 0;
+    while len(nth_word(owners, i)) > 0 {
+        if len(provision_role(owner_role(record_id, nth_word(owners, i)))) == 0 { return "an owner's role password could not be provisioned in the vault"; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// A role's password, drawn into the local vault when it has none; with a
+// real vault only what is there. "" when there is none.
+fn provision_role(role: String) -> String {
+    let name = role_vault_name(role);
+    if std::secret::Credential { vault: name }.ready() { return "present"; }
+    return if len(vault_provision_local(name)) > 0 { "drawn" } else { "" };
 }
 
 // Local mode only (`HALE_VAULT_ADDR` unset): the same directory
 // `std::secret`'s `vault:` source reads, written to directly because
-// its own contract is read-only. Refuses (returns "") when a real
-// vault is configured, `name` is not vault-safe (the same check
-// `vault:` itself refuses through — belt and suspenders, since
-// `role_password` already sanitizes what it passes here), or the
-// directory cannot be prepared. Not a lock: a second caller racing
-// the first may draw a different value, but the read-back after
-// write is what every caller agrees on, so the race converges to
-// whichever write landed last rather than two callers disagreeing
-// about which password a role has.
+// its own contract is read-only, mode 600. Refuses (returns "") when a
+// real vault is configured, `name` is not vault-safe, or the directory
+// cannot be prepared. An existing value is kept.
 fn vault_provision_local(name: String) -> String {
     if std::env::var_exists("HALE_VAULT_ADDR") { return ""; }
     if !std::secret::vault_name_is_safe(name) { return ""; }
     let dir = std::secret::vault_local_dir();
     let path = dir + "/" + name;
-    let made = run_tool("mkdir\n-p\n" + dir);
+    let made = run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + dir);
     if made.code != 0 { return ""; }
-    let already = std::io::fs::read_file(path) or "";
-    if len(already) > 0 { return already; }
+    if std::secret::Credential { vault: name }.ready() { return "kept"; }
     let drawn = run_tool("od\n-An\n-tx1\n-N16\n/dev/urandom");
     let value = std::str::replace(std::str::replace(drawn.stdout, " ", ""), "\n", "");
     if drawn.code != 0 || len(value) != 32 { return ""; }
+    if run_tool("sh\n-c\numask 077 && : > \"$1\"\nsh\n" + path).code != 0 { return ""; }
     std::io::fs::write_file(path, value) or discard;
-    return std::io::fs::read_file(path) or "";
+    return if std::secret::Credential { vault: name }.matches(std::bytes::from_string(value)) { "drawn" } else { "" };
 }
 
 // `owner` with the role in place of the owner's user and password.
@@ -371,7 +376,10 @@ fn graph_generation_ddl(sch: String) -> String {
 // database on the same server creating it at the same moment (an
 // advisory lock is per database and does not cover that).
 fn role_sql(role: String) -> String {
-    return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + role_password(role) + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$";
+    // the vault's password is the role's: a role that exists takes it again
+    // (a literal: a value a real vault holds may carry a quote)
+    let pw = std::str::replace(role_password(role), "'", "''");
+    return "DO $$ BEGIN CREATE ROLE " + role + " LOGIN PASSWORD '" + pw + "'; EXCEPTION WHEN duplicate_object OR unique_violation THEN ALTER ROLE " + role + " WITH LOGIN PASSWORD '" + pw + "'; END $$";
 }
 
 // What the spine may do in its record's schema: read and write every
@@ -437,6 +445,16 @@ fn migrate(owner: Dsn, record_id: String) -> Migrated {
 @unbounded
 fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
+    // the organism's roles are provisioned by its bootstrap and only
+    // consumed here; an owner's head role is declared here, and provisioned
+    if !std::secret::Credential { vault: role_vault_name(spine_role(record_id)) }.ready() || !std::secret::Credential { vault: role_vault_name(head_role(record_id)) }.ready() {
+        return Migrated { why: "the vault holds no password for this record's roles (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)" };
+    }
+    let mut oi = 0;
+    while len(nth_word(owners, oi)) > 0 {
+        if len(provision_role(owner_role(record_id, nth_word(owners, oi)))) == 0 { return Migrated { why: "the vault could not hold a password for the owner " + nth_word(owners, oi) + "'s role" }; }
+        oi = oi + 1;
+    }
     let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, database: owner.database, sslmode: owner.sslmode };
     let st = c.open();
     if !st.ok { return Migrated { why: "open: " + st.err.kind + " " + st.err.detail }; }
@@ -572,6 +590,9 @@ fn memory_fence(c: pq::PgConn, sch: String) -> String {
 // the schema could not be applied.
 // (the spine's; `migrated_head` hands back the head's)
 fn migrated(owner: String, record_id: String) -> Dsn {
+    // a fixture's record is its own organism: its bootstrap first
+    let pw = provision_record_roles(record_id, "");
+    if len(pw) > 0 { return Dsn { why: pw }; }
     let m = migrate(parse_dsn(owner), record_id);
     if !m.ok { return Dsn { why: m.why }; }
     return parse_dsn(m.spine_dsn);
@@ -598,6 +619,8 @@ fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
 // As `migrated`, over a shared record of `owners` (space-separated): the
 // DSN of `name`'s head role (GH #1026).
 fn migrated_owner(owner: String, record_id: String, owners: String, name: String) -> Dsn {
+    let pw = provision_record_roles(record_id, "");
+    if len(pw) > 0 { return Dsn { why: pw }; }
     let d = parse_dsn(owner);
     let m = migrate_for(d, record_id, owners);
     if !m.ok { return Dsn { why: m.why }; }
@@ -606,6 +629,8 @@ fn migrated_owner(owner: String, record_id: String, owners: String, name: String
 
 // As `migrated`, the head's DSN.
 fn migrated_head(owner: String, record_id: String) -> Dsn {
+    let pw = provision_record_roles(record_id, "");
+    if len(pw) > 0 { return Dsn { why: pw }; }
     let m = migrate(parse_dsn(owner), record_id);
     if !m.ok { return Dsn { why: m.why }; }
     return parse_dsn(m.head_dsn);

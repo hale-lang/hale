@@ -26,7 +26,7 @@ import "../core/pond/realtime/nats" as nats;
 // organization pulls, and refuses, what the other's host published.
 @unbounded
 fn owner_reading(url: String, org: String, owner: String, secs: Int) -> String {
-    let c = nats::NatsClient { url: url, name: "two-owners-probe", timeout: 2s };
+    let c = nats::NatsClient { url: url, user: "spine", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") }, name: "two-owners-probe", timeout: 2s };
     if !c.open() { return "the nerves: " + c.last_error; }
     let deadline = std::time::now() + dna::wait_secs(secs);
     let mut why = "";

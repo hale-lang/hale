@@ -87,28 +87,26 @@ UPSTREAM*.md
 # Agent worktrees (transient; can hold root-owned build artifacts)
 .claude/worktrees/
 
-# the built host (`hale dna` builds it into the toolchain cache; a local `hale build dna/host` lands here)
-dna/host/host
-
-# `hale build` / `hale test` write the binary beside the source; a
-# compiled fixture is never a source (a 6.6 MB `dna/tests/apply_test`
-# and a 6 MB `upstream-repro/repro3` were committed by accident).
-dna/tests/*_test
-dna/tests/heart/heart
-dna/reflexes/reflexes
+# `hale build` / `hale test` write the binary beside the source: a seed
+# `<dir>` builds `<dir>/<basename of dir>`, a file `x.hl` builds `x`. A
+# compiled program is never a source (a 6.6 MB `dna/tests/apply_test`, a
+# 6 MB `upstream-repro/repro3` and a 6.4 MB `dna/oidc/serve/serve` were
+# committed by accident). Every binary is an extensionless file, and no
+# source under dna/ is one but the names re-included below, so every
+# extensionless file under dna/ is ignored — every seed's binary without
+# a list to keep. The vendored onboarding trees are someone else's
+# repository, taken whole: nothing in them is ignored.
+/dna/**
+!/dna/**/
+!/dna/**/*.*
+!/dna/**/LICENSE
+!/dna/**/Dockerfile
+!/dna/tests/onboarding/**
+# the one program whose name has a dot of its own (`main.v2.hl` builds
+# `main.v2`), which the extension rule cannot tell from a source
+/dna/acceptance/books.fixture/main.v2
+/dna/**/nats.secrets.conf
+/dna/**/postgres.secrets
 tests/hale/*_test
 iris/**/upstream-repro/repro[0-9]*
 !iris/**/upstream-repro/*.hl
-# Source-built service API; the read-contract files are tracked.
-dna/api/api
-dna/api/contract/v1/check/check
-dna/api/tests/read_api_test
-# The head and its fixtures build beside their sources too.
-dna/api/practice_review/practice_review
-dna/api/project_service/project_service
-dna/api/tests/knowledge/knowledge
-dna/api/project_service/tests/*_test
-# Composed command head, its seed and the scripted command provider that the
-# API and face verification recipes build beside their sources.
-dna/api/tests/tasks_seed
-dna/api/tests/commands/commands

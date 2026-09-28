@@ -2,10 +2,11 @@
 //! provision against an unreachable host, a record with no remote, or a
 //! remote local to this machine writes nothing; the dry run shows the
 //! exact plan (the toolchain the lock pins, the clone, the unit that
-//! supervises the host). A secret is read from stdin, never argv, lands
-//! in a 600 file, and the record carries `secret.rotated <NAME>` and no
-//! value. A host with no credential for its model says so on the board
-//! at once; one with it hands it to the organization.
+//! supervises the host). A secret is read from stdin, never argv, fills
+//! its slot of the vault (a 600 file, GH #989), and the record carries
+//! `secret.rotated <NAME>` and no value. A host with no credential for its
+//! model says so on the board at once; with one, the organization reads it
+//! from the vault where it sends it, and no environment carries it.
 
 #[path = "support/reap.rs"]
 mod reap;
@@ -24,6 +25,8 @@ fn hale_env(args: &[&str], cwd: &Path, home: &Path, stdin: Option<&str>) -> (boo
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HOME", home)
+        .env("HALE_VAULT_DIR", home.join("vault"))
+        .env_remove("HALE_VAULT_ADDR")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
@@ -58,6 +61,8 @@ fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HOME", home)
+        .env("HALE_VAULT_DIR", home.join("vault"))
+        .env_remove("HALE_VAULT_ADDR")
         .env_remove("ANTHROPIC_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .stdout(Stdio::null())
@@ -104,9 +109,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let home_empty = d.join("home-empty");
     let home = d.join("home");
-    std::fs::create_dir_all(&home_empty).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     let (ok, out) = hale_env(&["dna", "new", "prov"], &d, &home, None);
     assert!(ok, "{out}");
@@ -181,41 +184,47 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(!ok && out.contains("no value was given on stdin"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("x\n"));
     assert!(!ok && out.contains("was never set"), "{out}");
+    // ---- the host: a missing credential surfaces at once ----
+    // (the bootstrap left the key's slot of the vault empty)
+    let slot = home.join(format!("vault/model-{cred}"));
+    assert_eq!(std::fs::read_to_string(&slot).expect("the bootstrap named the slot"), "", "the bootstrap named the slot, empty");
+    let log = d.join("host.log");
+    let mut host = run_host(&app, &home, &log);
+    assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
+    let l = std::fs::read_to_string(&log).unwrap();
+    assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in the vault's slot for it")), "{l}");
+    let (ok, st) = hale_env(&["dna", "status"], &app, &home, None);
+    assert!(ok && st.contains(&format!("; no credential for the model (none of {cred} is set where the body runs)")), "{st}");
+    let (ok, board) = hale_env(&["dna", "board"], &app, &home, None);
+    assert!(ok && board.contains(&format!("body: no credential for the model (none of {cred} is set where the body runs)")), "{board}");
+    stop_host(&app, &mut host);
+    assert!(journal(&app).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
+
+    // ---- set and rotate: the slot of the vault, never the record ----
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some("sk-test-123\n"));
-    assert!(ok && out.contains(&format!("secret set: {cred} is in ")) && out.contains("the value is nowhere in the record"), "{out}");
-    let env_file = home.join(format!(".config/hale-dna/{key}.env"));
-    assert_eq!(std::fs::read_to_string(&env_file).unwrap(), format!("{cred}=sk-test-123\n"));
+    assert!(ok && out.contains(&format!("secret set: {cred} is in its slot of the vault")) && out.contains("the value is nowhere in the record"), "{out}");
+    assert_eq!(std::fs::read_to_string(&slot).unwrap(), "sk-test-123");
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&env_file).unwrap().permissions().mode() & 0o777, 0o600, "only this user reads it");
+        assert_eq!(std::fs::metadata(&slot).unwrap().permissions().mode() & 0o777, 0o600, "only this user reads it");
     }
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("sk-test-456\n"));
-    assert!(ok && out.contains(&format!("secret rotate: {cred} is in ")), "{out}");
-    assert_eq!(std::fs::read_to_string(&env_file).unwrap(), format!("{cred}=sk-test-456\n"), "one line per name, the newest");
+    assert!(ok && out.contains(&format!("secret rotate: {cred} is in its slot of the vault")), "{out}");
+    assert_eq!(std::fs::read_to_string(&slot).unwrap(), "sk-test-456", "the newest value");
     let j = journal(&app);
     assert_eq!(j.matches(&format!("\"kind\": \"secret.rotated\", \"entity\": \"{cred}\"")).count(), 2, "{j}");
     assert!(!j.contains("sk-test"), "the value is nowhere in the record: {j}");
     assert!(std::fs::read_dir(app.join(".hale/dna")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with("secret.")), "no temp file is left behind");
 
-    // ---- the host: a missing credential surfaces at once ----
-    let log = d.join("host.log");
-    let mut host = run_host(&app, &home_empty, &log);
-    assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
-    let l = std::fs::read_to_string(&log).unwrap();
-    assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in ~/.config/hale-dna/{key}.env")), "{l}");
-    let (ok, st) = hale_env(&["dna", "status"], &app, &home_empty, None);
-    assert!(ok && st.contains(&format!("; no credential for the model (none of {cred} is set where the body runs)")), "{st}");
-    let (ok, board) = hale_env(&["dna", "board"], &app, &home_empty, None);
-    assert!(ok && board.contains(&format!("body: no credential for the model (none of {cred} is set where the body runs)")), "{board}");
-    stop_host(&app, &mut host);
-    assert!(journal(&app).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
-    // with the secret on this machine: present, handed to the organization, and the board is clear
+    // with the key in its slot: present, and the board is clear; the
+    // organization reads it from the vault where it sends it, so no
+    // process's environment carries it
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     assert!(std::fs::read_to_string(&log).unwrap().contains("the model's credential is present now"), "{}", std::fs::read_to_string(&log).unwrap());
     let org_pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap().trim().to_string();
     let environ = std::fs::read(format!("/proc/{org_pid}/environ")).unwrap_or_default();
-    assert!(String::from_utf8_lossy(&environ).contains(&format!("{cred}=sk-test-456")), "the organization has the credential in its environment");
+    assert!(!environ.is_empty() && !String::from_utf8_lossy(&environ).contains("sk-test-456"), "the organization's environment does not carry the key");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home, None);
     assert!(ok && !st.contains("no credential"), "{st}");
     stop_host(&app, &mut host);

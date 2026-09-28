@@ -25,11 +25,11 @@ fn source() -> String {
     return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
 }
 
-// Run `argv` (newline-separated) in `dir`, as this fixture's compose
-// project, with no server of anyone else's named: memory, the nerves and
-// the store are the seed compose's.
-fn in_dir(dir: String, project: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export COMPOSE_PROJECT_NAME=\"$2\" && shift 2 && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + project + "\n" + argv);
+// Run `argv` (newline-separated) in `dir`, under the seed's own compose
+// project (its name is this run's), with no server of anyone else's
+// named: memory, the nerves and the store are the seed compose's.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
 }
 
 // The value of `NAME=` on its own line of `text`.
@@ -92,7 +92,7 @@ fn every_series_has_part(exposition: String) -> Bool {
 }
 
 main locus App {
-    params { app: String = ""; project: String = ""; }
+    params { app: String = ""; }
     fn log(name: String) -> String { return text_of(self.app + "/" + name + ".log"); }
     fn logs() -> String { return "--- host\n" + self.log("host") + "\n--- node\n" + text_of(self.app + "/../node.log") + "\n--- reflexes\n" + text_of(self.app + "/../reflexes.log"); }
     // Wait until `rows(kind, entity)` has `n` lines, within `secs`.
@@ -126,15 +126,15 @@ main locus App {
         if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("senses_reflex_test: not exercised (docker compose is not on PATH)"); return; }
         let scratch = dna::scratch_root("senses");
         dna::reap_on_exit(scratch);
-        self.project = "hale-dna-senses-" + to_string(std::process::pid());
         let spine_port = dna::free_port(0);
         let node_port = dna::free_port(1);
 
         // ---- the application, its fleet of one, and the seed's compose
-        // the application's name is this run's: compose's volumes and ports
-        // are named from it, so two checkouts on one box never share them
+        // the application's name is this run's: compose's project, volumes
+        // and ports are named from it, so two checkouts on one box never
+        // share them
         let name = "sensing" + to_string(std::process::pid());
-        let made = in_dir(scratch, self.project, toolchain() + "\ndna\nnew\n" + name);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
         let compose = text_of(self.app + "/dna/compose.yaml");
@@ -150,26 +150,28 @@ main locus App {
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";
-        let c0 = in_dir(self.app, self.project, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*' && git clone -q \"$0\" \"$1\"\n" + bare + "\n" + edge);
+        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*' && git clone -q \"$0\" \"$1\"\n" + bare + "\n" + edge);
         std::test::assert_eq_int(c0.code, 0, "the application, its origin and the node's clone: " + c0.stderr);
 
         // ---- the nerves and the store, from the seed's compose
-        let nerves = in_dir(self.app, self.project, toolchain() + "\ndna\nnerves\nmigrate\n.");
+        let nerves = in_dir(self.app, toolchain() + "\ndna\nnerves\nmigrate\n.");
         let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let reflexes_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_REFLEXES");
         let app_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_APP");
+        let app_vault = line_value(nerves.stdout, "HALE_DNA_NATS_VAULT_APP");
+        let reflexes_vault = line_value(nerves.stdout, "HALE_DNA_NATS_VAULT_REFLEXES");
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
-        let senses = in_dir(self.app, self.project, toolchain() + "\ndna\nsenses\nup\n.");
+        let senses = in_dir(self.app, toolchain() + "\ndna\nsenses\nup\n.");
         let store = line_value(senses.stdout, "HALE_DNA_SENSES_URL");
         let up = nerves.code == 0 && len(spine) > 0 && len(reflexes_url) > 0 && len(org) > 0 && senses.code == 0 && len(store) > 0;
 
         // ---- the organism: the spine, its node, the base deployed
         let reflexes_seed = source() + "/dna/reflexes";
         let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed) } else { dna::RunResult { code: -1 } };
-        let host = if up { dna::trim_nl(in_dir(self.app, self.project, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
+        let host = if up { dna::trim_nl(in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
         let reading = up && len(host) > 0 && self.wait_log("the organization reads its facts from the nerves", 300);
         let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
-        let deployed = if len(node) > 0 { in_dir(self.app, self.project, toolchain() + "\ndna\ndeploy\nHEAD") } else { dna::RunResult { code: -1 } };
+        let deployed = if len(node) > 0 { in_dir(self.app, toolchain() + "\ndna\ndeploy\nHEAD") } else { dna::RunResult { code: -1 } };
         let first_up = if deployed.code == 0 { self.wait_rows("instance.up", "api-0", 1, 180) } else { "" };
         // past the deploy's observation window, so an exit is the reflex's
         std::time::sleep(4s);
@@ -183,7 +185,7 @@ main locus App {
         let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
 
         // ---- the reflexes fire, the heart lands it, the node acts
-        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org).stdout) } else { "" };
+        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
         let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };
@@ -196,13 +198,13 @@ main locus App {
 
         // ---- an application cannot speak as the reflexes: its user may not
         // publish on their subjects, so no firing it forges reaches a node
-        let forger = nats::NatsClient { url: app_url, name: "senses-forger", timeout: 2s };
+        let forger = nats::NatsClient { url: app_url, user: "app", credential: std::secret::Credential { vault: app_vault }, name: "senses-forger", timeout: 2s };
         let forged = if len(app_url) > 0 && forger.open() { nats::js_publish(forger, org + ".app.reflexes.reflex.fired", std::bytes::from_string("{\"id\": \"forged\", \"node\": \"edge-1\", \"target\": \"api-0\", \"action\": \"restart\"}")) or nats::PubAck { seq: -1 } } else { nats::PubAck { seq: -2 } };
         forger.close();
 
         // ---- down, whatever happened
         let stop = dna::run_tool("sh\n-c\nfor p in \"$1\" \"$2\" \"$3\"; do [ -n \"$p\" ] && kill \"$p\" 2>/dev/null; done; for i in $(seq 1 150); do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; done; true\nsh\n" + reflexes + "\n" + node + "\n" + host);
-        let down = in_dir(self.app, self.project, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
+        let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
 
         std::test::assert(up, "the seed compose's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
         std::test::assert_eq_int(built.code, 0, "the reflexes build (HALE_DNA_SOURCE names the repository): " + built.stderr);

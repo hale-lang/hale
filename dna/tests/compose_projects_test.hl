@@ -1,0 +1,87 @@
+// dna/tests/compose_projects_test.hl — each seed's compose is a project
+// of its own, and its database's password is the vault's (GH #989).
+//
+// Two seeds on one machine used to share one compose project, `dna`,
+// named after the directory their compose files sit in, so the second
+// seed's `up` replaced the first seed's containers. Each seed's
+// dna/compose.yaml now names its own, `hale-dna-<seed>`, the token its
+// volumes already carried, and `upgrade` rewrites an older file to it.
+// The database's superuser password is drawn by the bootstrap into the
+// vault (`postgres-owner-<seed>`) and into dna/postgres.secrets, which
+// compose mounts for the server and git never tracks; no committed file
+// holds it. A clone elsewhere is the same seed, whatever its directory
+// is called. Nothing here starts a container: `docker compose config`
+// shows the project compose resolves, when docker compose is on PATH.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, with `vault` as the vault, no
+// compose project named from outside and no discovery.
+fn in_dir(dir: String, vault: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" HALE_DNA_DISCOVER=off && shift 2 && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && exec \"$@\"\nsh\n" + dir + "\n" + vault + "\n" + argv);
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+fn main() {
+    let scratch = dna::scratch_root("compose-projects");
+    let vault = scratch + "/vault";
+    let a = "twin-a" + to_string(std::process::pid());
+    let b = "twin-b" + to_string(std::process::pid());
+    let made_a = in_dir(scratch, vault, toolchain() + "\ndna\nnew\n" + a);
+    std::test::assert_eq_int(made_a.code, 0, "hale dna new " + a + ": " + made_a.stdout + made_a.stderr);
+    let made_b = in_dir(scratch, vault, toolchain() + "\ndna\nnew\n" + b);
+    std::test::assert_eq_int(made_b.code, 0, "hale dna new " + b + ": " + made_b.stdout + made_b.stderr);
+    let root_a = scratch + "/" + a;
+    let root_b = scratch + "/" + b;
+
+    // ---- two seeds, two compose projects
+    let compose_a = text_of(root_a + "/dna/compose.yaml");
+    let compose_b = text_of(root_b + "/dna/compose.yaml");
+    std::test::assert(std::str::contains(compose_a, "\nname: hale-dna-" + a + "\n") && std::str::contains(compose_b, "\nname: hale-dna-" + b + "\n"), "each seed's compose names its own project: " + compose_a + compose_b);
+    if dna::run_tool("docker\ncompose\nversion").code == 0 {
+        let seen_a = in_dir(root_a, vault, "docker\ncompose\n-f\ndna/compose.yaml\nconfig");
+        let seen_b = in_dir(root_b, vault, "docker\ncompose\n-f\ndna/compose.yaml\nconfig");
+        std::test::assert(std::str::starts_with(seen_a.stdout, "name: hale-dna-" + a + "\n") && std::str::starts_with(seen_b.stdout, "name: hale-dna-" + b + "\n"), "and compose resolves two distinct projects: " + seen_a.stdout + seen_a.stderr + seen_b.stderr);
+    } else {
+        eprintln("compose_projects_test: docker compose is not on PATH; the resolved project names are not checked");
+    }
+
+    // ---- the database's password: the vault's, never a committed value
+    std::test::assert(!std::str::contains(compose_a, "POSTGRES_PASSWORD:") && std::str::contains(compose_a, "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner") && std::str::contains(compose_a, "./postgres.secrets:/run/secrets/postgres-owner:ro"), "the compose file names the password's file, never the password: " + compose_a);
+    let pw_a = text_of(root_a + "/dna/postgres.secrets");
+    let pw_b = text_of(root_b + "/dna/postgres.secrets");
+    std::test::assert(len(pw_a) == 32 && len(pw_b) == 32 && pw_a != pw_b, "each seed's password is drawn, and its own");
+    std::test::assert_eq_str(dna::file_mode(root_a + "/dna/postgres.secrets"), "600", "the password's file is yours alone");
+    std::test::assert_eq_str(dna::file_mode(vault), "700", "and so is the vault");
+    std::test::assert_eq_str(dna::file_mode(vault + "/postgres-owner-" + a), "600", "and its entry");
+    let ignored = in_dir(root_a, vault, "git\ncheck-ignore\n-q\ndna/postgres.secrets");
+    std::test::assert_eq_int(ignored.code, 0, "and git ignores it");
+    let listed = in_dir(root_a, vault, toolchain() + "\ndna\nsecrets\n.");
+    std::test::assert(std::str::contains(listed.stdout, "present  postgres-owner-" + a + "  ") && !std::str::contains(listed.stdout, pw_a), "`hale dna secrets` names the entry, never its value: " + listed.stdout + listed.stderr);
+    let held = in_dir(root_a, vault, "sh\n-c\ncmp -s \"$HALE_VAULT_DIR/postgres-owner-$1\" dna/postgres.secrets\nsh\n" + a);
+    std::test::assert_eq_int(held.code, 0, "the vault's entry and the server's file are one draw");
+
+    // ---- a clone elsewhere, under another directory name, is the same
+    // seed: upgrade leaves its compose file as it is, and writes its
+    // server's password file from the vault's entry, not a new draw
+    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m seed && git clone -q . ../elsewhere && git -C ../elsewhere fetch -q origin 'refs/dna/*:refs/dna/*'");
+    std::test::assert_eq_int(committed.code, 0, "the seed committed and cloned: " + committed.stderr);
+    let cloned = in_dir(scratch + "/elsewhere", vault, toolchain() + "\ndna\nupgrade\n.");
+    let drift = in_dir(scratch + "/elsewhere", vault, "git\nstatus\n--porcelain\ndna/compose.yaml");
+    std::test::assert(cloned.code == 0 && len(dna::trim_nl(drift.stdout)) == 0 && text_of(scratch + "/elsewhere/dna/compose.yaml") == compose_a, "the clone's compose is the seed's, unchanged: " + cloned.stdout + cloned.stderr + drift.stdout);
+    std::test::assert_eq_str(text_of(scratch + "/elsewhere/dna/postgres.secrets"), pw_a, "and its password file is the vault's entry, not a new draw");
+
+    // ---- an older compose file, rewritten by upgrade (a hard cut)
+    let old = std::str::replace(std::str::replace(compose_b, "name: hale-dna-" + b + "\n", ""), "POSTGRES_PASSWORD_FILE: /run/secrets/postgres-owner", "POSTGRES_PASSWORD: dna");
+    std::io::fs::write_file(root_b + "/dna/compose.yaml", old) or discard;
+    let upgraded = in_dir(root_b, vault, toolchain() + "\ndna\nupgrade\n.");
+    let now = text_of(root_b + "/dna/compose.yaml");
+    std::test::assert(upgraded.code == 0 && std::str::contains(upgraded.stdout, "rewrote") && now == compose_b, "upgrade rewrites an older compose file to the seed's own project and the vault's password: " + upgraded.stdout + upgraded.stderr);
+    dna::scratch_done(scratch);
+}

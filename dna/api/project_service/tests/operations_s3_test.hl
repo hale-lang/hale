@@ -313,7 +313,7 @@ locus S3Cases {
         std::test::assert(!typed.ok && typed.refused == "invalid_command", "confirm_spend is a boolean");
         let plan = head::s3_plan(c, "dna.models.probe", "{\"confirm_spend\":true}");
         std::test::assert(plan.ok && plan.kind == "run" && plan.external && plan.deadline_secs == 300, "confirmed, the probe is a run");
-        std::test::assert(std::str::contains(plan.script, "\"$HALE_BIN\" dna models ") && std::str::contains(plan.script, ".config/hale-dna/alpha-" + self.alpha_id[0..12] + ".env"), "the probe sources the body's env file: " + plan.script);
+        std::test::assert(std::str::contains(plan.script, "\"$HALE_BIN\" dna models ") && !std::str::contains(plan.script, ".env"), "the probe reads each key from its slot of the vault, and sources no env file: " + plan.script);
     }
 
     // Secrets by source name: the value never enters the head.
@@ -329,9 +329,9 @@ locus S3Cases {
         let set = self.drive(c, "s3-secret-file", "dna.secret.set", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"openai\"}}");
         std::test::assert_eq_str(set.state, "succeeded", "secret set from a file: " + set.reason_code + " " + set.reason);
         std::test::assert(std::json::find_string_field(set.outcome, "name") == "OPENAI_API_KEY" && std::json::find_string_field(set.outcome, "where") == "local" && std::json::find_bool_field(set.outcome, "source_consumed"), "the outcome: " + set.outcome);
-        let env_file = self.home + "/.config/hale-dna/alpha-" + self.alpha_id[0..12] + ".env";
-        std::test::assert_eq_str(std::io::fs::read_file(env_file) or "", "OPENAI_API_KEY=" + FILE_SECRET + "\n", "the verb wrote the body's env file");
-        std::test::assert_eq_str(head::mode_of(env_file), "600", "the env file is private");
+        let slot = self.home + "/vault/model-OPENAI_API_KEY";
+        std::test::assert_eq_str(std::io::fs::read_file(slot) or "", FILE_SECRET, "the verb filled the key's slot of the vault");
+        std::test::assert_eq_str(head::mode_of(slot), "600", "the slot is private");
         std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 1, "exactly one secret.rotated row");
         std::test::assert(!std::io::fs::file_exists(self.sources + "/openai"), "the file source is consumed");
         std::test::assert(!anywhere_under(self.state, FILE_SECRET), "the value is in no receipt, log or script of the head");
@@ -340,7 +340,7 @@ locus S3Cases {
         let rotate = self.drive(c, "s3-secret-env", "dna.secret.rotate", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}");
         std::test::assert_eq_str(rotate.state, "succeeded", "secret rotated from the environment: " + rotate.reason_code + " " + rotate.reason);
         std::test::assert(!std::json::find_bool_field(rotate.outcome, "source_consumed"), "an env source is not consumed");
-        std::test::assert_eq_str(std::io::fs::read_file(env_file) or "", "OPENAI_API_KEY=" + ENV_SECRET + "\n", "the line was replaced");
+        std::test::assert_eq_str(std::io::fs::read_file(slot) or "", ENV_SECRET, "the slot was refilled");
         std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 2, "two secret.rotated rows");
         std::test::assert(!anywhere_under(self.state, ENV_SECRET) && !anywhere_under(self.state, FILE_SECRET), "neither value is anywhere under the head's state");
         // refusals
@@ -367,9 +367,12 @@ locus S3Cases {
         std::test::assert(!nested_value.ok && nested_value.refused == "invalid_command", "nor inside the source");
         // the verb's own refusal is the run's failure, and the source stays
         std::test::assert(head::write_private(self.sources + "/other", "other-value\n"), "another source written");
-        let never = self.drive(c, "s3-secret-never", "dna.secret.rotate", "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
+        let never = self.drive(c, "s3-secret-never", "dna.secret.rotate", "{\"name\":\"FORGE_TOKEN\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
         std::test::assert(never.state == "failed" && std::str::contains(never.reason, "was never set"), "rotating a name never set fails with the verb's words: " + never.state + " " + never.reason);
         std::test::assert(std::io::fs::file_exists(self.sources + "/other") && !std::json::find_bool_field(never.outcome, "source_consumed"), "a failed run consumes nothing");
+        // a name that is no slot of the organism's is refused by the verb too
+        let stray = self.drive(c, "s3-secret-stray", "dna.secret.rotate", "{\"name\":\"NEVER_SET_S3\",\"source\":{\"kind\":\"file\",\"name\":\"other\"}}");
+        std::test::assert(stray.state == "failed" && std::str::contains(stray.reason, "is no slot of the organism's"), "a name that is no slot fails with the verb's words: " + stray.state + " " + stray.reason);
         std::io::fs::unlink(self.sources + "/other") or discard;
         std::io::fs::unlink(self.sources + "/loose") or discard;
         std::io::fs::unlink(self.sources + "/two") or discard;
@@ -578,7 +581,7 @@ fn main() {
         std::io::fs::mkdir(home + "/dna") or discard;
         let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
         let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
-                + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nUSER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL
+                + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nHALE_VAULT_DIR=" + home + "/vault\nUSER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL
                 + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
                 + "\nOPENAI_API_KEY=" + ENV_SECRET + "\nHALE_S3_TEST_CLEAN=1\nHALE_S3_TEST_ROOT=" + root + "\n" + std::env::arg_or(0, ""));
         print(clean.stdout);

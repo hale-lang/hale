@@ -6,7 +6,7 @@ export const MEMORY_DSNS = ['HALE_DNA_MEMORY_DSN_OWNER', 'HALE_DNA_MEMORY_DSN_SP
 // The nerves' URLs likewise (GH #1029): the owner's goes only to the host a
 // harness starts (`hale dna dev` creates the stream and hands the host the
 // spine's), never to a browser fixture by inheritance.
-export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE', 'HALE_DNA_NATS_URL_HEAD', 'HALE_DNA_NATS_URL_APP', 'HALE_DNA_NATS_ORG'];
+export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE', 'HALE_DNA_NATS_URL_HEAD', 'HALE_DNA_NATS_URL_APP', 'HALE_DNA_NATS_VAULT_APP', 'HALE_DNA_NATS_VAULT_REFLEXES', 'HALE_DNA_NATS_ORG'];
 
 export function isolatedEnvironment() {
   const env = { ...process.env };
@@ -14,7 +14,7 @@ export function isolatedEnvironment() {
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
     'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
     'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', ...MEMORY_DSNS, ...NERVES_URLS,
-    'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_DNA_EVIDENCE_KEY', 'HALE_DNA_OIDC_SECRET',
+    'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_DNA_EVIDENCE_KEY',
     'HALE_DNA_OWNER', 'HALE_DNA_LEASE', 'HALE_DNA_LEASE_TOKEN', 'HALE_DNA_TAPE', 'HALE_DNA_ONESHOT',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LOTUS_OBS', 'HALE_DNA_ORG_DRAFTS',
   ]) delete env[key];

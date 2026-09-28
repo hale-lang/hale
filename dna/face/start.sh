@@ -233,18 +233,20 @@ if ((oidc_local)); then
   key_x=$(pub | tail -c 64 | head -c 32 | b64url)
   key_y=$(pub | tail -c 32 | b64url)
   [[ ${#key_x} == 43 && ${#key_y} == 43 && -n "$spki" ]] || fail 'cannot read the provider key'\''s public half'
-  secret=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  [[ ${#secret} == 32 ]] || fail 'no randomness for the provider secret'
-  env -u LOTUS_OBS HALE_DNA_OIDC_SECRET="$secret" HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
+  # GH #989: the client's secret is the vault's `oidc-client-dna-local`,
+  # which the organism's bootstrap provisions (`hale dna init`, `upgrade`);
+  # the provider and the head each read it there, and nothing here draws,
+  # holds or passes it. None in the vault: the provider refuses to start.
+  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
   provider=$!
   for _ in $(seq 1 100); do
     curl -sf "http://127.0.0.1:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
-    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened'
+    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale dna init` or `hale dna upgrade` in a project)'
     sleep 0.1
   done
   # the provider answering is ours: it publishes the key made above
   curl -sf "http://127.0.0.1:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
-  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
 fi
 
@@ -259,9 +261,10 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
   senses_url=$("$hale" dna senses up "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
   roles=$("$hale" dna nerves migrate "$project" 2>/dev/null) || roles=
   reflexes_url=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_URL_REFLEXES=//p')
+  reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
-  if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$org" ]]; then
-    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
+  if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$reflexes_vault" && -n "$org" ]]; then
+    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else
