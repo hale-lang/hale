@@ -173,7 +173,10 @@ fn package(app: &Path) -> (Vec<String>, String) {
     let mut last = String::new();
     trace::wait_until("the projection reaches the record's head", Duration::from_secs(120), Duration::from_millis(250), || {
         let (ok, out) = hale_env(&["run", "pkg"], app, &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str())]);
-        last = out.lines().last().unwrap_or("").to_string();
+        // the program's one line, not the build's: importing the core
+        // prints the `pq` deferral warnings (spec/semantics.md § "@sealed")
+        // on stderr, which comes after stdout here
+        last = out.lines().rev().find(|l| l.split('\t').count() == 4).unwrap_or("").to_string();
         let f: Vec<&str> = last.split('\t').collect();
         ok && f.len() == 4 && f[0].is_empty() && f[1] == f[2]
     });

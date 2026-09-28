@@ -69,8 +69,13 @@ fn main() {
 
     // ---- a clone elsewhere, under another directory name, is the same
     // seed: upgrade leaves its compose file as it is, and writes its
-    // server's password file from the vault's entry, not a new draw
-    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m seed && git clone -q . ../elsewhere && git -C ../elsewhere fetch -q origin 'refs/dna/*:refs/dna/*'");
+    // server's password file from the vault's entry, not a new draw.
+    // Git's auto-maintenance after a commit may pack the loose objects
+    // and delete them while a local clone copies them file by file
+    // ("failed to copy file to ../elsewhere/.git/objects/…"): the seed
+    // runs none, and the clone reads through git's object store
+    // (`--no-local`), which finds an object loose or packed.
+    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git config maintenance.auto false && git config gc.auto 0 && git add -A && git commit -q -m seed && git clone -q --no-local . ../elsewhere && git -C ../elsewhere fetch -q origin 'refs/dna/*:refs/dna/*'");
     std::test::assert_eq_int(committed.code, 0, "the seed committed and cloned: " + committed.stderr);
     let cloned = in_dir(scratch + "/elsewhere", vault, toolchain() + "\ndna\nupgrade\n.");
     let drift = in_dir(scratch + "/elsewhere", vault, "git\nstatus\n--porcelain\ndna/compose.yaml");
