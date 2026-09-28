@@ -891,7 +891,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
     eprintln!("       hale dna ui [project] [--port N]");
     eprintln!("                                    under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,");
-    eprintln!("                                    subjects mapped by dna.oidc.member, the secret in HALE_DNA_OIDC_SECRET;");
+    eprintln!("                                    subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;");
     eprintln!("                                    with no principal source it refuses to start (trusted-local is a test fixture's mode)");
     eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");

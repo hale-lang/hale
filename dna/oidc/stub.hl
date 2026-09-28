@@ -109,6 +109,9 @@ locus StubIssuer {
         base: String = "";
         client: String = "dna-local";
         secret: String = "dna-local-secret";
+        // GH #989: the client's secret as the vault holds it; set, it is the
+        // one the token endpoint checks (sealed: matched, never read out)
+        secret_vault: String = "";
         subject: String = ""; // who /authorize signs in without a login_hint ("" = STUB_SUBJECT)
         // the signing key and its public coordinates (base64url): the
         // published test key unless a launch made its own
@@ -173,7 +176,9 @@ locus StubIssuer {
         }
         if std::http::is_route(ctx, "POST", "/token") {
             if form_field(req.body, "grant_type") == "client_credentials" { return self.service_token(form_field(req.body, "client_id"), form_field(req.body, "client_secret")); }
-            if form_field(req.body, "client_secret") != self.secret || form_field(req.body, "client_id") != self.client {
+            let presented = form_field(req.body, "client_secret");
+            let secret_ok = if len(self.secret_vault) > 0 { std::secret::Credential { vault: self.secret_vault }.matches(std::bytes::from_string(presented)) } else { presented == self.secret };
+            if !secret_ok || form_field(req.body, "client_id") != self.client {
                 self.refused_secrets = self.refused_secrets + 1;
                 return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
             }

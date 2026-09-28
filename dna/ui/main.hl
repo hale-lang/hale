@@ -96,21 +96,16 @@ type Session {
 @form(vec)
 locus Sessions { capacity { heap rows of Session; } }
 
-// The client's secret, read from the environment into this sealed locus
-// and presented only to the token endpoint.
+// The client's secret (GH #989): the vault's `oidc-client-<client>`, which
+// the organism's bootstrap provisions; read on the one line that builds
+// the token request and nowhere else — no field, no environment.
 @sealed locus CodeExchange {
-    params {
-        env_var: String = "HALE_DNA_OIDC_SECRET";
-        secret: String = "";
-    }
-    birth() {
-        if len(self.secret) == 0 && std::env::var_exists(self.env_var) { self.secret = std::env::var(self.env_var); }
-    }
-    fn ready() -> Bool { return len(self.secret) > 0; }
+    fn vault_of(client: String) -> String { return "oidc-client-" + client; }
+    fn ready(client: String) -> Bool { return std::secret::Credential { vault: self.vault_of(client) }.ready(); }
     // The ID token the endpoint answers the code with, or "".
     fn id_token(token_url: String, code: String, redirect_uri: String, client: String) -> String {
         let body = "grant_type=authorization_code&code=" + dna::url_encode(code) + "&redirect_uri=" + dna::url_encode(redirect_uri)
-            + "&client_id=" + dna::url_encode(client) + "&client_secret=" + dna::url_encode(self.secret);
+            + "&client_id=" + dna::url_encode(client) + "&client_secret=" + dna::url_encode(std::secret::Credential { vault: self.vault_of(client) }.reveal_text());
         let resp = std::http::post(token_url, std::bytes::from_string(body), "application/x-www-form-urlencoded") or token_failed(err);
         if resp.status != 200 { return ""; }
         return std::json::find_string_field(std::str::from_bytes(resp.body), "id_token");
@@ -268,7 +263,7 @@ locus Ui {
     fn finish_sign_in(code: String, state: String, binding: String) -> std::http::Response {
         let nonce = self.take_pending(state, binding);
         if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
-        if !self.exchange.ready() { return page(503, "no client secret: HALE_DNA_OIDC_SECRET is not set where the head runs"); }
+        if !self.exchange.ready(self.client) { return page(503, "no client secret: the vault holds none for the client " + self.client + " (oidc-client-" + self.client + "; `hale dna upgrade` provisions it, `hale dna secrets` lists it)"); }
         if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
         let token = self.exchange.id_token(self.token_url, code, self.redirect_uri, self.client);
         if len(token) == 0 { return page(502, "the issuer did not exchange the code"); }

@@ -71,11 +71,12 @@ fn main() {
     let secret = dna::hex(std::os::getrandom(16) or b"");
     std::io::fs::mkdir(root + "/vault") or discard;
     std::io::fs::write_file(root + "/vault/oidc-service-voice-api", secret) or discard;
+    std::io::fs::write_file(root + "/vault/oidc-client-dna-local", dna::hex(std::os::getrandom(16) or b"")) or discard;
     std::io::fs::write_file(root + "/stub.pem", oidc::STUB_KEY) or discard;
     let chmod = dna::run_tool("chmod\n0600\n" + root + "/stub.pem");
     let port = dna::free_port(9);
     let issuer = "http://127.0.0.1:" + to_string(port);
-    let stub_argv = "env\n-u\nHALE_VAULT_ADDR\nHALE_VAULT_DIR=" + root + "/vault\nHALE_DNA_OIDC_SECRET=dna-local-secret\nHALE_DNA_OIDC_KEY_FILE=" + root + "/stub.pem\nHALE_DNA_OIDC_KEY_X=" + oidc::STUB_X + "\nHALE_DNA_OIDC_KEY_Y=" + oidc::STUB_Y + "\nHALE_DNA_OIDC_SERVICES=voice-api\n" + stub_binary(root) + "\n" + to_string(port) + "\ndna-local";
+    let stub_argv = "env\n-u\nHALE_VAULT_ADDR\nHALE_VAULT_DIR=" + root + "/vault\nHALE_DNA_OIDC_KEY_FILE=" + root + "/stub.pem\nHALE_DNA_OIDC_KEY_X=" + oidc::STUB_X + "\nHALE_DNA_OIDC_KEY_Y=" + oidc::STUB_Y + "\nHALE_DNA_OIDC_SERVICES=voice-api\n" + stub_binary(root) + "\n" + to_string(port) + "\ndna-local";
     let stub = std::process::spawn(stub_argv) or std::process::Child { };
     std::test::assert(stub.pid > 0, "the stub provider spawned");
     // it goes with this process, however this process ends
