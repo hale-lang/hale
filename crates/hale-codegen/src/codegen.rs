@@ -1914,7 +1914,15 @@ pub fn build_executable_with_options(
     };
     let lto_active = lto_kind != LtoMode::Off;
 
-    let obj_path: PathBuf = output_path.with_extension("o");
+    // Every intermediate and the binary itself get a name no
+    // other build can share, even one writing the SAME `output_path`
+    // (DNA's fixtures build one seed dir from parallel slices). The
+    // object used to sit at `output_path.with_extension("o")`, so one
+    // build's post-link `remove_file` deleted it while another's clang
+    // was reading it.
+    let tmp_tag = build_tmp_tag();
+    let obj_path: PathBuf = build_tmp_sibling(output_path, &tmp_tag, "o");
+    let out_tmp: PathBuf = build_tmp_sibling(output_path, &tmp_tag, "out");
     // GH #843: `BuildOptions::dump_ir` names the file; the
     // `LOTUS_DUMP_IR` spelling keeps its implied
     // `output_path.with_extension("ll")`.
@@ -2077,7 +2085,7 @@ pub fn build_executable_with_options(
     // inlining). Otherwise emit a native object as before. `main_input`
     // is the first clang input either way.
     let main_input: PathBuf = if lto_active {
-        let bc_path = output_path.with_extension("bc");
+        let bc_path = build_tmp_sibling(output_path, &tmp_tag, "bc");
         if !cx.module.write_bitcode_to_path(&bc_path) {
             return Err(CodegenError::LlvmEmit(
                 "write_bitcode_to_path failed".into(),
@@ -2107,7 +2115,7 @@ pub fn build_executable_with_options(
             let linked = link_cross(
                 &target_spec,
                 &obj_path,
-                output_path,
+                &out_tmp,
                 &cx.module,
                 cx.ts_call_span,
                 options,
@@ -2117,7 +2125,7 @@ pub fn build_executable_with_options(
             // The object is the build's own intermediate either way —
             // a failed link must not leave it looking like a result.
             let _ = std::fs::remove_file(&obj_path);
-            return linked;
+            return publish_output(linked, &out_tmp, output_path);
         }
         if obj_path != output_path {
             std::fs::rename(&obj_path, output_path).map_err(|e| {
@@ -2539,21 +2547,68 @@ pub fn build_executable_with_options(
     }
     let status = clang
         .arg("-o")
-        .arg(output_path)
+        .arg(&out_tmp)
         .status()
-        .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)))?;
+        .map_err(|e| CodegenError::Link(format!("clang invocation: {}", e)));
     phase("emit+link", &mut t_last);
     // Only the per-build user input (object, or bitcode under LTO) is
     // transient; the cached runtime objects persist for reuse by later
     // builds.
     let _ = std::fs::remove_file(&main_input);
-    if !status.success() {
-        return Err(CodegenError::Link(format!(
-            "clang exited with {}",
-            status
-        )));
+    let linked = status.and_then(|status| {
+        if status.success() {
+            Ok(())
+        } else {
+            Err(CodegenError::Link(format!("clang exited with {}", status)))
+        }
+    });
+    publish_output(linked, &out_tmp, output_path)
+}
+
+/// `{pid}.{nonce}`: unique across processes by pid, across threads of
+/// one process by the counter (the corpus oracle and the harness build
+/// in parallel threads, so a pid alone is not enough).
+fn build_tmp_tag() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BUILD_TMP_NONCE: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{}.{}",
+        std::process::id(),
+        BUILD_TMP_NONCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A build-private name in `output_path`'s own directory (the same
+/// filesystem, so the final rename is atomic): `<file>.<tag>.<ext>`.
+/// The extension is what clang reads a link input's kind from.
+fn build_tmp_sibling(output_path: &Path, tag: &str, ext: &str) -> PathBuf {
+    let name = output_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "out".into());
+    output_path.with_file_name(format!("{name}.{tag}.{ext}"))
+}
+
+/// Land a finished link at `output_path` by renaming the build's private
+/// file over it: a concurrent build, or a running copy of the old
+/// binary, never sees a half-written file. A failed link leaves nothing
+/// behind under either name.
+fn publish_output(
+    linked: Result<(), CodegenError>,
+    out_tmp: &Path,
+    output_path: &Path,
+) -> Result<(), CodegenError> {
+    if let Err(e) = linked {
+        let _ = std::fs::remove_file(out_tmp);
+        return Err(e);
     }
-    Ok(())
+    std::fs::rename(out_tmp, output_path).map_err(|e| {
+        let _ = std::fs::remove_file(out_tmp);
+        CodegenError::Link(format!(
+            "move the linked binary to {}: {e}",
+            output_path.display()
+        ))
+    })
 }
 
 /// The lotus runtime C source, bundled at compile time so the
