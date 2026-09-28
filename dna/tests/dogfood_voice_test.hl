@@ -256,6 +256,8 @@ locus App {
         self.ratify("hale dna init");
         self.identity = dna::GitRecord { repo: self.repo }.identity();
         if len(self.owner) > 0 {
+            // the record's roles into the vault first, as its bootstrap does (GH #989)
+            let provisioned = dna::provision_record_roles(self.identity, "");
             let m = dna::migrate(dna::parse_dsn(self.owner), self.identity);
             std::test::assert(m.ok, "memory migrates: " + m.why);
             self.head_dsn = m.head_dsn;

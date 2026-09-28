@@ -120,6 +120,8 @@ locus App {
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
 
         let identity = dna::GitRecord { repo: self.repo }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
         std::test::assert(m.ok, "memory migrates: " + m.why);
         self.head = m.head_dsn;

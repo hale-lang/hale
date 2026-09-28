@@ -89,6 +89,8 @@ main locus App {
         }
         let length = j.revision();
         let identity = dna::GitRecord { repo: self.repo }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
         std::test::assert(m.ok, "memory migrates for the record: " + m.why);
         self.spine = m.spine_dsn;

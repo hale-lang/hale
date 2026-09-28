@@ -99,6 +99,8 @@ main locus App {
         let born = dna::GitJournal { repo: self.repo };
         std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row gives it its identity");
         let identity = dna::GitRecord { repo: self.repo }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
         std::test::assert(m.ok, "memory migrates for the record: " + m.why);
         self.spine = m.spine_dsn;
