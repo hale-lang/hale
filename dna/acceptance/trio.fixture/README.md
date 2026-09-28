@@ -4,6 +4,18 @@ The catalog replays the exchanges in `tape/` without model credentials.
 Each filename is the exact request key produced by `RecordedModel.fields`;
 source changes require updating their affected context digests and keys.
 
+`rows.jsonl` is the record the organization writes on a replay, one
+normalized row per line, sorted, and every replay must write the same
+rows (the differential row harness, `dna_recorded_fixture.rs`). A
+refactor of the organization proves with it that nothing the organization
+does moved. A change that means to move a row re-records it with
+`HALE_DNA_TRIO_ROWS=record` and names in its PR which rows moved and why:
+a row's wording, a kind or a field added, a schema version the rows
+carry (`"schema"`, the topology's). Recording, like replaying, needs
+memory and the nerves (`HALE_DNA_MEMORY_DSN_OWNER`,
+`HALE_DNA_NATS_URL_OWNER`). Without them the fixture says so and
+exercises nothing, and the rows are not compared.
+
 The organization-growth edit (`ea6311e87bce…`) and its assessment
 (`f36f4798b9e3…`) were adapted for the queued cadence scaffold: the edit
 preserves the new `request_tick` call and its comments while retaining the

@@ -76,6 +76,214 @@ fn dump(app: &Path) -> String {
     journal(app).iter().map(|(q, k, e, b)| format!("{q} {k} {e} {}", b.chars().take(160).collect::<String>())).collect::<Vec<_>>().join("\n")
 }
 
+// ---- the differential row harness (C3, the assembly's split) --------
+//
+// The record this fixture's organization writes, row for row, is checked
+// in beside the tape (`dna/acceptance/trio.fixture/rows.jsonl`) and every
+// replay must write the same. It is what a refactor of the organization
+// proves it kept: the same rows, of the same kinds, for the same
+// entities, saying the same things. The fixture's children run as one
+// person (`USER=riley`) on every machine. Two things vary from run to run
+// and are normalized away: values a run draws (commit and build hashes,
+// digests over them, times, pids, the scratch root and the machine's
+// name, the toolchain's version, ids minted from the clock, row numbers
+// and the heads read at them, and the size of the model diff, which
+// carries the core's own shape), and the order rows of
+// different writers interleave in (the nodes, the heart and the
+// organization append concurrently), so the comparison is of the
+// multiset. Re-record, on the organization as it stands:
+//   HALE_DNA_TRIO_ROWS=record cargo test --release -p hale-cli --test dna_records dna_recorded_fixture::
+
+/// `s` with every value a run draws replaced by the name of its class.
+fn normalize_row_text(s: &str, root: &str) -> String {
+    let s = s.replace(root, "<root>").replace(&format!("@{}:", this_host()), "@<host>:");
+    let s = string_after(&s, &["\"toolchain\":\"", "\"toolchain\": \""]);
+    let s = number_after(&s, &["\"revision\": ", "\"head\": ", "\"pid\": ", "\"ratified_at\": ", "\"watermark\": ", "\"hat_watermark\": ", "at row "]);
+    let mut out = String::with_capacity(s.len());
+    let mut token = String::new();
+    let flush = |token: &mut String, out: &mut String| {
+        if token.is_empty() {
+            return;
+        }
+        out.push_str(&token_class(token).unwrap_or_else(|| token.clone()));
+        token.clear();
+    };
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            token.push(c);
+        } else {
+            flush(&mut token, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut token, &mut out);
+    out
+}
+
+/// The class of a token a run draws, or None for one it does not.
+fn token_class(t: &str) -> Option<String> {
+    let hex = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let digits = t.bytes().all(|b| b.is_ascii_digit());
+    if digits && t.starts_with('1') && t.len() == 19 {
+        return Some("<ns>".into());
+    }
+    if digits && t.starts_with('1') && t.len() == 10 {
+        return Some("<time>".into());
+    }
+    if hex(t) {
+        return match t.len() {
+            64 => Some("<digest>".into()),
+            40 => Some("<sha>".into()),
+            16 => Some("<hex16>".into()),
+            12 => Some("<hex12>".into()),
+            _ => None,
+        };
+    }
+    // an intent or request id minted from the clock: `i` / `r` + hex(millis)
+    let (first, rest) = t.split_at(1);
+    if (first == "i" || first == "r") && (5..=12).contains(&rest.len()) && hex(rest) && rest.bytes().any(|b| b.is_ascii_digit()) {
+        return Some(format!("{first}<clock>"));
+    }
+    None
+}
+
+/// `s` with the number after each of `prefixes` (quoted or not) replaced
+/// by `<n>`: a row number, or the head read at one.
+fn number_after(s: &str, prefixes: &[&str]) -> String {
+    let mut s = s.to_string();
+    for p in prefixes {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s.as_str();
+        while let Some(at) = rest.find(p) {
+            out.push_str(&rest[..at + p.len()]);
+            rest = &rest[at + p.len()..];
+            let quoted = rest.starts_with('"');
+            let body = if quoted { &rest[1..] } else { rest };
+            let n = body.bytes().take_while(|b| b.is_ascii_digit()).count();
+            // the whole value, not the digits a hash happens to start with
+            let whole = match body.as_bytes().get(n) {
+                None => true,
+                Some(&c) => if quoted { c == b'"' } else { !c.is_ascii_alphanumeric() },
+            };
+            if n > 0 && whole {
+                out.push_str(if quoted { "\"<n>" } else { "<n>" });
+                rest = &body[n..];
+            }
+        }
+        out.push_str(rest);
+        s = out;
+    }
+    s
+}
+
+/// This machine's name, as the organization reads it (`hostname`): part
+/// of a body's holder, `<user>@<host>:<place>`.
+fn this_host() -> String {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        Command::new("hostname").output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_else(|| "localhost".into())
+    })
+    .clone()
+}
+
+/// `s` with the quoted string after each of `prefixes` replaced by `<v>`:
+/// the toolchain's version, which a release moves and the organization
+/// does not choose.
+fn string_after(s: &str, prefixes: &[&str]) -> String {
+    let mut s = s.to_string();
+    for p in prefixes {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s.as_str();
+        while let Some(at) = rest.find(p) {
+            out.push_str(&rest[..at + p.len()]);
+            rest = &rest[at + p.len()..];
+            let end = rest.find('"').unwrap_or(rest.len());
+            out.push_str("<v>");
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        s = out;
+    }
+    s
+}
+
+/// The record as the harness compares it: one line per row, normalized,
+/// sorted.
+fn normalized_rows(rows: &[Row], root: &str) -> Vec<String> {
+    // a body's holder names the root as `pwd -P` resolves it: where the
+    // temporary directory is a symlink (macOS's /var), that is another path
+    let canonical = std::fs::canonicalize(root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| root.to_string());
+    let root_text = |t: &str| normalize_row_text(&t.replace(&canonical, root), root);
+    let mut out: Vec<String> = rows
+        .iter()
+        .map(|(_, k, e, b)| {
+            // An evidence step's output size: the model diff's is the
+            // organization's model, which carries the shape of the core it
+            // imports (a refactor of the core moves it without changing a
+            // thing the organization does), and the others' name paths under
+            // the scratch root, whose pid is as wide as the machine makes it.
+            // Their digests are normalized with every other; their sizes go
+            // the same way.
+            let b = if k.starts_with("evidence.") { number_after(b, &["\"bytes\": "]) } else { b.clone() };
+            serde_json::json!([k, root_text(e), root_text(&b)]).to_string()
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Assert this replay wrote the rows recorded beside the tape (or, under
+/// `HALE_DNA_TRIO_ROWS=record`, record them).
+fn same_rows_as_recorded(rows: &[Row], root: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../dna/acceptance/trio.fixture/rows.jsonl");
+    let now = normalized_rows(rows, root);
+    if std::env::var("HALE_DNA_TRIO_ROWS").as_deref() == Ok("record") {
+        std::fs::write(&path, now.join("\n") + "\n").unwrap();
+        return;
+    }
+    let recorded: Vec<String> = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the rows recorded beside the tape, {}: {e} (HALE_DNA_TRIO_ROWS=record records them)", path.display()))
+        .lines()
+        .map(String::from)
+        .collect();
+    let mut left: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+    for r in &recorded {
+        *left.entry(r.as_str()).or_default() += 1;
+    }
+    for r in &now {
+        *left.entry(r.as_str()).or_default() -= 1;
+    }
+    let mut missing: Vec<String> = left.iter().filter(|(_, n)| **n > 0).map(|(r, n)| format!("  recorded, not written ({n}x): {r}")).collect();
+    let mut extra: Vec<String> = left.iter().filter(|(_, n)| **n < 0).map(|(r, n)| format!("  written, not recorded ({}x): {r}", -n)).collect();
+    missing.sort();
+    extra.sort();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "the organization's rows differ from the ones recorded beside the tape ({} recorded, {} written):\n{}\n{}",
+        recorded.len(),
+        now.len(),
+        missing.join("\n"),
+        extra.join("\n")
+    );
+}
+
+#[test]
+fn the_row_normalization_keeps_what_a_row_says_and_drops_what_a_run_draws() {
+    let root = "/tmp/hale_dna_trio_42";
+    let a = normalize_row_text(
+        "{\"base\": \"3e3bf378db66fc11b67910a093348d6e338bbc53\", \"at\": 1790620494, \"id\": \"backlog-1790620491573709736-2\", \"head\": \"152\", \"revision\": 175, \"request\": \"r43c9e4e\", \"path\": \"/tmp/hale_dna_trio_42/trio\", \"what\": \"mail backlog\"}",
+        root,
+    );
+    assert_eq!(a, "{\"base\": \"<sha>\", \"at\": <time>, \"id\": \"backlog-<ns>-2\", \"head\": \"<n>\", \"revision\": <n>, \"request\": \"r<clock>\", \"path\": \"<root>/trio\", \"what\": \"mail backlog\"}");
+    // the machine: its name in a body's holder, the toolchain's version
+    let holder = format!("{{\"holder\": \"riley@{}:/tmp/hale_dna_trio_42/trio\", \"toolchain\":\"0.21.0\"}}", this_host());
+    assert_eq!(normalize_row_text(&holder, root), "{\"holder\": \"riley@<host>:<root>/trio\", \"toolchain\":\"<v>\"}");
+    // a hash under a number's key is a hash, whatever it starts with
+    assert_eq!(normalize_row_text("{\"revision\": \"8a45cfb3ca423ffd138a1c2c031d921b17794437\", \"head\": \"55d4703af8442f0aefd734426a6a506bb1234567\"}", root), "{\"revision\": \"<sha>\", \"head\": \"<sha>\"}");
+    // what a row says stays: a mutation id, a count, a word, a small number
+    assert_eq!(normalize_row_text("m2 applied 3 of 4 to gateway-1, review:m3, t9, i2", root), "m2 applied 3 of 4 to gateway-1, review:m3, t9, i2");
+}
+
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for e in std::fs::read_dir(from).unwrap() {
@@ -111,6 +319,10 @@ impl Fixture {
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+            // who asks, and whose body holds the organization, is part of
+            // what the record says: the same person on every machine
+            .env("USER", "riley")
+            .env("LOGNAME", "riley")
             .env("HALE_DNA_TAPE", &self.mode)
             .env("HALE_DNA_TAPE_DIR", &self.tape)
             .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine)
@@ -417,11 +629,19 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     // mutation row the test waited on; wait for the last attempt's
     // rows and re-read, rather than judging an older snapshot.
     let calls_landed = wait_row(&app, "model.called m3/a0", 60, |(_, k, e, _)| k == "model.called" && e == "m3/a0");
+    // the run's last facts, before the snapshot the harness compares: both
+    // of the attempt's calls (each lands from its own bus delivery) and the
+    // denied change's workflow settled
+    let _ = wait_rows(&app, "model.called m3/a0 x2", 60, 2, |(_, k, e, _)| k == "model.called" && e == "m3/a0");
+    let _ = wait_row(&app, "workflow.settled t9", 60, |(_, k, e, _)| k == "workflow.settled" && e == "t9");
     let (ok, status) = f.hale(&["dna", "status"], &app);
     f.stop();
     assert!(ok, "{status}");
     assert!(calls_landed, "the last attempt's evidence reached the record:\n{}", dump(&app));
     let rows = journal(&app);
+    if f.mode == "replay" {
+        same_rows_as_recorded(&rows, &f.d.to_string_lossy());
+    }
     let calls: Vec<&Row> = rows.iter().filter(|(_, k, _, _)| k == "model.called").collect();
     assert!(calls.len() >= 6, "model calls happened:\n{}", dump(&app));
     if f.mode == "replay" {
