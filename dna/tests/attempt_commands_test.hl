@@ -547,15 +547,21 @@ locus App {
         // ---- t4: an outcome handed back while the lease was live settles, however late the relay (B3)
         let a4 = self.ask();
         let head4 = record.head("journal").id;
+        // (a lease short enough to outlive, long enough for the ask's round
+        // trip before the outcome on a slow runner; the fixture then waits for
+        // the lease's own end, not a clock)
         let mut brief4 = self.claim_of(label + "c7", identity, head4, "agent", alice_leg, "internal");
-        brief4.ttl = 2;
+        brief4.ttl = 8;
         let c4 = commands.submit(alice, brief4);
         std::test::assert(c4.ok && c4.receipt.attempt.state == "claimed" && c4.receipt.attempt.attempt_id == a4, l + "t4 claimed under a short lease");
         let hat4 = self.hat_of(a4);
         let g4 = self.granted(commands, alice, label + "aw4", identity, a4, alice_leg, c4.receipt.attempt.token, l);
         let o4 = commands.submit(alice, self.outcome_of(label + "o4", identity, a4, alice_leg, c4.receipt.attempt.token, hat4));
-        std::test::assert(o4.ok && o4.receipt.attempt.state == "requested", l + "t4 outcome requested while the lease was live");
-        std::time::sleep(2500ms);
+        std::test::assert(o4.ok && o4.receipt.attempt.state == "requested", l + "t4 outcome requested while the lease was live: " + o4.code + " " + o4.receipt.reason);
+        let until4 = c4.receipt.attempt.until;
+        let mut past4 = 0;
+        while std::time::now() <= until4 && past4 < 200 * dna::wait_scale() { std::time::sleep(100ms); past4 = past4 + 1; }
+        std::test::assert(std::time::now() > until4, l + "the lease ran out");
         std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "relayed after the lease ran out");
         self.wait_row("attempt.outcome", a4, l + "the owner judges the lease as of the head's admission and settles it");
         // tokens per task hold out of process

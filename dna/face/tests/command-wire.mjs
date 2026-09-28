@@ -79,7 +79,7 @@ export function commandReceipt(fields = {}) {
     task: { state: '', from: '', to: '', event_id: '', ...task },
     person: { state: '', from: '', to: '', event_id: '', transferred: -1, ...person },
     task_create: { intent_id: '', intent_state: '', task_id: '', event_id: '', kind: '', ...task_create },
-    attempt: { state: '', attempt_id: '', work_id: '', task_id: '', performer_kind: '', holder: '', token: -1, until: 0, disposition: '', reason: '', event_id: '', ...attempt },
+    attempt: { state: '', attempt_id: '', work_id: '', task_id: '', performer_kind: '', holder: '', token: -1, until: 0, disposition: '', reason: '', event_id: '', allowance_micros: -1, ...attempt },
   };
 }
 // The provider's answer around a receipt: `source` is a Record envelope's

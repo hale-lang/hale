@@ -697,7 +697,7 @@
     task: [["state", "from", "to", "event_id"], []],
     person: [["state", "from", "to", "event_id"], ["transferred"]],
     task_create: [["intent_id", "intent_state", "task_id", "event_id", "kind"], []],
-    attempt: [["state", "attempt_id", "work_id", "task_id", "performer_kind", "holder", "disposition", "reason", "event_id"], ["token", "until"]]
+    attempt: [["state", "attempt_id", "work_id", "task_id", "performer_kind", "holder", "disposition", "reason", "event_id"], ["token", "until", "allowance_micros"]]
   };
   function typedObject(value, text, integers) {
     return closedObject(value, [...text, ...integers]) && text.every(key => unicodeText(value[key])) && integers.every(key => Number.isSafeInteger(value[key]));

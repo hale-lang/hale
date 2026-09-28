@@ -437,10 +437,13 @@ attempt's spend (`allowance`, above); the organization answers from the
 budget with a row — `attempt.allowance_granted`, or
 `attempt.allowance_refused` naming why. Refused, the leg makes no call
 and hands back `declined` with the reason. Granted, it makes no call
-once its calls have spent the allowance; since a call's cost is known
-only once it is answered, the call that crosses the allowance is made
-whole. The organization refuses an outcome whose calls cost more than
-the lease was granted, and journals the calls anyway. Nothing is
+whose cost is known before it is sent (a price per call, a recorded
+answer) and past what is left, nor any once its calls have spent the
+allowance; a cost learned only from the answer (a price per token) can
+cross it, and that call is made whole. The organization settles an
+attempt whose calls cost more than the lease was granted as `failed`,
+naming the overrun, so the Work's attempts bound the repeats, and
+journals the calls anyway. Nothing is
 reserved: legs granted against the same remainder can together overrun
 the window, by at most what they were granted plus one call each.
 
@@ -473,8 +476,8 @@ the hands, `allowance` asks for the spend before the first model call
 does the work, `submit --evidence-file calls.json` hands it back with
 its calls as evidence (the array of `model.called` bodies, `adapter`
 naming what answered) and the digests the brief reported. Calls that
-cost more than was granted — anything, when nothing was asked — refuse
-the outcome. Through
+cost more than was granted — anything, when nothing was asked — settle
+the attempt `failed`, naming the overrun. Through
 `hale mcp` the same verbs are one tool, `hale_dna_work`.
 
 ## Over the head's socket
