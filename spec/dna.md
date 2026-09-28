@@ -1068,21 +1068,29 @@ repository:
   client id and secret — the stub (`dna/oidc`) answers for the ids
   `services` names (`HALE_DNA_OIDC_SERVICES` to `dna/oidc/serve`), each
   secret the vault's entry `oidc-service-<id>` (`std::secret`'s
-  `vault:` source), read at every ask and refused when there is none —
-  with an ES256 token whose subject is the client id and whose audience
-  is the issuer's relying party. The record maps it by `git config
-  --local --add dna.oidc.service "<subject>=<service>"`; a subject
-  mapped as a member is that person, never a service. The face accepts
-  the token as `Authorization: Bearer` on the project's API routes only
-  (`/api/hale/v1/applications…`; on its own routes a bearer is 401),
-  verifies it as it verifies an ID token, refuses a subject the attached
-  project maps as no service (403), forwards it to the child as the
-  bearer, and never gives it a session or a cookie. The child reads as
-  that service; its only POST is a command, and a command is a
-  person's: the binding refuses an issuer's subject that maps to no
-  person (`forbidden`), gated or not, and never records it as the
-  account the head runs under. A service holds no position, so no
-  gate names it. A sign-in's state is used once, expires in ten minutes, and is bound to
+  `vault:` source; the entry is the secret's exact bytes, no trailing
+  newline), read at every ask and refused when there is none — with an
+  ES256 token whose subject is the client id and whose audience is the
+  issuer's relying party. A token verifies only in that shape (ES256,
+  `aud` the head's client): an identity provider whose
+  `client_credentials` tokens are RS256, or name another audience, is
+  not supported. The record maps it by `git config --local --add
+  dna.oidc.service "<subject>=<service>"`. A subject is a person or a
+  service, never both: the face refuses a bearer whose subject the
+  record maps as a member (a person signs in, and a service's token
+  cannot be told from an ID token), and the child refuses a subject
+  mapped both ways. The face accepts the token as `Authorization:
+  Bearer` on the project's API routes only (`/api/hale/v1/applications…`;
+  on its own routes a bearer is 401), verifies it as it verifies an ID
+  token, refuses a subject the attached project maps as no service
+  (403), forwards it to the child as the bearer, and never gives it a
+  session or a cookie. The child reads as the principal
+  `service:<service>`, never a person's name, so a read a person alone
+  may make (a Review's exact candidate) is refused it; its only POST is
+  a command, and a command or a lookup is a person's: the binding
+  refuses an issuer's subject that maps to no person (`forbidden`),
+  gated or not, and never records it as the account the head runs
+  under. A service holds no position, so no gate names it. A sign-in's state is used once, expires in ten minutes, and is bound to
   the browser that started it by an `HttpOnly; SameSite=Lax` `dna_signin`
   cookie: a callback carrying the state from any other browser is refused
   and leaves the sign-in for the browser that started it (so a callback

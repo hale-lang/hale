@@ -156,6 +156,13 @@ locus RecordRoles {
         if len(member_of(self.oidc, subject)) > 0 { return ""; }
         return member_of(self.services, subject);
     }
+    // Whether the record maps `subject` as a service at all, whatever else
+    // it maps it to: a subject mapped both ways is refused, never read as
+    // either.
+    fn service_mapped(subject: String) -> Bool {
+        self.scan();
+        return len(member_of(self.services, subject)) > 0;
+    }
     // Who `p` names before retirement is asked: a line the head's own
     // transport forwarded under a verified OIDC subject (`via` =
     // `oidc:<sub>`, a mark the binding takes from the program's own uid

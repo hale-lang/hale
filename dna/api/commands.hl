@@ -407,6 +407,10 @@ locus CommandAdmission {
         let mode = if std::str::starts_with(ctx.caller.via, "oidc:") { "oidc" } else { "local" };
         return CommandContext { root: self.root, source: source, principal_mode: mode, principal_name: name, principal_positions: self.roles.positions(ctx.caller) };
     }
+    // An issuer's subject that maps to no person — a service — asks
+    // nothing and looks nothing up: a command is a person's, and the store
+    // never records a subject as the account the head runs under.
+    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }
     fn reply(result: CommandResult, context: CommandContext) -> CommandReply {
         let mut receipt = result.receipt;
@@ -428,9 +432,7 @@ locus CommandAdmission {
         return self.codec.valid(native_context, native);
     }
     fn submit(ctx: std::api::Context, command: CommandRequest) -> CommandReply {
-        // a service reads, and asks nothing: a command, gated or not, is a
-        // person's (the store never records a subject as the head's account)
-        if std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0 { return self.refused("forbidden"); }
+        if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
         let mut request = command;
@@ -485,6 +487,7 @@ locus CommandAdmission {
     // provider's own recovery grant.
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply {
         if !self.wire.bounded(l.request_id, 128, true, false) { return self.refused("invalid_query"); }
+        if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
         return self.reply(self.provider.lookup(context, l.request_id), context);

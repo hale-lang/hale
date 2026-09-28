@@ -857,7 +857,13 @@ locus Head {
                 if len(subject) == 0 { return self.error(401, "unauthenticated", "the bearer token is refused: " + self.auth.bearer_refused, false); }
                 let ctx = context_of(self.cfg);
                 if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
-                let services = dna::GitRecord { repo: ctx.active_root }.git("config\n--local\n--get-all\ndna.oidc.service");
+                // a service, and only a service: a subject the record maps
+                // as a person signs in, so a token that can't be told from
+                // an ID token never acts as that person without a session
+                let record = dna::GitRecord { repo: ctx.active_root };
+                let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
+                if len(dna::member_of(if members.code == 0 { members.stdout } else { "" }, subject)) > 0 { return self.error(403, "forbidden", "subject `" + subject + "` is a person's (`dna.oidc.member`): a person signs in at /auth/login, and a bearer is a service's", false); }
+                let services = record.git("config\n--local\n--get-all\ndna.oidc.service");
                 if len(dna::member_of(if services.code == 0 { services.stdout } else { "" }, subject)) == 0 { return self.error(403, "forbidden", "subject `" + subject + "` is no service the attached project maps (`git config --local --add dna.oidc.service \"" + subject + "=<service>\"`)", false); }
                 return self.proxy(req);
             }

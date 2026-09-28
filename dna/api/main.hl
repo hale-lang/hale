@@ -230,9 +230,14 @@ locus Api {
             // the service the record maps it to, which reads; its only
             // POST is a command, and the socket's gate decides that — a
             // service holds no role
-            if len(actor) == 0 && len(std::http::header(req, "Authorization")) > 0 {
-                actor = self.roles.service(subject);
-                serviced = len(actor) > 0;
+            let bearer = len(std::http::header(req, "Authorization")) > 0;
+            if bearer && self.roles.service_mapped(subject) {
+                // a subject mapped both ways is neither: a service's token
+                // would otherwise act as the person
+                if len(actor) > 0 { return http.error(403, "forbidden", "subject `" + subject + "` is mapped both as a person (`dna.oidc.member`) and as a service (`dna.oidc.service`); a subject is one or the other", false); }
+                let service = self.roles.service(subject);
+                // its own principal, never a person's name
+                if len(service) > 0 { actor = "service:" + service; serviced = true; }
             }
             if len(actor) == 0 { return http.error(403, "forbidden", "subject `" + subject + "` maps to no person the record keeps (`git config --local --add dna.oidc.member \"" + subject + "=<person>\"`), or they retired, and to no service (`dna.oidc.service`)", false); }
             if serviced && req.method != "GET" && !commands_path { return http.error(403, "forbidden", "service `" + actor + "` reads; a draft is a person's", false); }
