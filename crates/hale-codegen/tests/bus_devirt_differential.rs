@@ -29,6 +29,8 @@ use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const DEADLINE: Duration = Duration::from_secs(20);
 
@@ -154,7 +156,7 @@ fn build(src: &str, tag: &str, devirt: bool) -> Option<PathBuf> {
     // cannot leak into each other or into a concurrent build.
     let options = hale_codegen::BuildOptions {
         no_bus_devirt: !devirt,
-        ..Default::default()
+        ..build_opts::options()
     };
     let ok =
         hale_codegen::build_executable_with_options(&program, &bin, &[], &options)

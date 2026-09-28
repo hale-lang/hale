@@ -21,6 +21,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn unique_path(tag: &str, ext: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -287,7 +289,7 @@ fn no_bus_devirt_forces_the_all_dynamic_lowering() {
     let options = hale_codegen::BuildOptions {
         no_bus_devirt: true,
         dump_ir: Some(ll.clone()),
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");

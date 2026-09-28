@@ -14,13 +14,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_imports;
+use hale_codegen::build_executable_with_options;
 use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -82,7 +84,7 @@ fn topic_decl_and_publisher_in_separate_lib_files() {
     consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!("hale_ws33_topic_split_{}", std::process::id()));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + split-topic lib");
 
     let out = Command::new(&bin).output().expect("run");

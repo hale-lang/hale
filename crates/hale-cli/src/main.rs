@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+mod build_env;
 mod fleet;
 mod dna;
 mod iris;
@@ -7303,6 +7304,31 @@ fn compile_and_exec(
     }
 }
 
+/// GH #476 Change 8: everything the BUILD needs from the canonical
+/// model, from ONE derivation — the dispatch plan's digest (folded
+/// into the execution identity below) and the canonical entity ids
+/// codegen stamps into the observation manifest.
+///
+/// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
+/// harness's control arm) makes codegen emit the empty plan — every subject dynamic — so
+/// the identity folded into the exec digest must be the EMPTY
+/// plan's, not the model's. Otherwise the control arm and the live
+/// arm would share a build identity while running different
+/// lowerings, and a recording taken under one would be admitted
+/// against the other.
+fn model_identity(
+    bundle: &hale_types::Bundle<'_>,
+    options: &hale_codegen::BuildOptions,
+) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
+    let model = hale_types::model_builder::derive_application_model(bundle);
+    let plan_digest = if options.no_bus_devirt {
+        hale_model::dispatch_plan::DispatchPlan::default().digest()
+    } else {
+        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
+    };
+    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
+}
+
 /// GH #296: build-manifest identity — a FRAMED SHA-256 over the
 /// build inputs this binary can see:
 ///
@@ -7319,73 +7345,6 @@ fn compile_and_exec(
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
-/// GH #476 Change 8: everything the BUILD needs from the canonical
-/// model, from ONE derivation — the dispatch plan's digest (folded
-/// into the execution identity below) and the canonical entity ids
-/// codegen stamps into the observation manifest.
-///
-/// `LOTUS_NO_BUS_DEVIRT=1` (the differential harness's control arm)
-/// makes codegen emit the empty plan — every subject dynamic — so
-/// the identity folded into the exec digest must be the EMPTY
-/// plan's, not the model's. Otherwise the control arm and the live
-/// arm would share a build identity while running different
-/// lowerings, and a recording taken under one would be admitted
-/// against the other.
-/// The build-options half of the execution identity. One spelling,
-/// so `hale build` and `hale run` fingerprint the same options the
-/// same way (they did not: the build path never computed a digest
-/// at all — GH #476 Change 8 review).
-fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
-    let mut fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        o.target,
-        o.target_cpu,
-        o.dev_profile,
-        o.debug.is_some()
-    );
-    // GH #904: the FFI surface is part of what the executable IS —
-    // two builds of one source that link different C are different
-    // programs. Appended only when non-empty, so every recording
-    // stamped before this (no `--link` / `--csrc`, which is every
-    // recording `hale run` could make) keeps the identity it
-    // carries.
-    if !o.link_libs.is_empty() {
-        fp.push_str(&format!(";link={}", o.link_libs.join(",")));
-    }
-    // GH #1106: an api binding is part of the program the binary is.
-    if let Some(api) = &o.api {
-        fp.push_str(&format!(";api={}", api));
-    }
-    // GH #1109: the role table is part of the binary too.
-    if let Some(t) = &o.api_roles {
-        fp.push_str(&format!(";roles={}", t));
-    }
-    if !o.csrc_files.is_empty() {
-        let files: Vec<String> = o
-            .csrc_files
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        fp.push_str(&format!(";csrc={}", files.join(",")));
-    }
-    fp
-}
-
-fn model_identity(
-    bundle: &hale_types::Bundle<'_>,
-) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
-    let model = hale_types::model_builder::derive_application_model(bundle);
-    let plan_digest = if std::env::var("LOTUS_NO_BUS_DEVIRT")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false)
-    {
-        hale_model::dispatch_plan::DispatchPlan::default().digest()
-    } else {
-        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
-    };
-    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
-}
-
 fn exec_digest(
     sources: &BTreeMap<PathBuf, String>,
     entry: &Path,
@@ -8133,8 +8092,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp = options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let options_fp = build_env::options_fingerprint(&build_options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &build_options);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
@@ -8620,8 +8579,8 @@ fn run_program(
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let options_fp = options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity(&bundle);
+        let options_fp = build_env::options_fingerprint(&options);
+        let (plan_digest, obs_ids) = model_identity(&bundle, &options);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
@@ -8805,8 +8764,8 @@ fn run_program(
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp = options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let options_fp = build_env::options_fingerprint(&options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
@@ -9112,7 +9071,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // plan's digest — held here and folded into the execution
     // identity once the options are FINAL (below), since the
     // fingerprint covers options that are still being set.
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
@@ -9285,7 +9244,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     options.exec_digest = Some(exec_digest(
         &sources,
         target,
-        &options_fingerprint(&options),
+        &build_env::options_fingerprint(&options),
         plan_digest,
     ));
     match hale_codegen::build_executable_with_options(
@@ -9345,7 +9304,7 @@ fn collect_ffi_from_imports(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> hale_codegen::BuildOptions {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     let mut seen_dirs: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
     for imp in imports {
@@ -9450,12 +9409,11 @@ fn parse_build_options(
     cmd: &str,
     args: &[String],
 ) -> Result<hale_codegen::BuildOptions, String> {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     // #8 dev profile: `HALE_DEV=1` is the environment spelling of
     // `--dev` below. Read here, with the flag, so every command that
     // compiles honors it identically (GH #904; `run` honored
     // neither).
-    opts.dev_profile = std::env::var("HALE_DEV").is_ok();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {

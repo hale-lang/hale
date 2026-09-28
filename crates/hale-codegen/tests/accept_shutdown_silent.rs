@@ -13,10 +13,12 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/ports.rs"]
 mod ports;
 
@@ -36,7 +38,7 @@ fn main() {{ App {{ srv: std::http::Server {{ host: "127.0.0.1", port: {port}, r
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_1081_accept_shutdown");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let child = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -71,7 +73,7 @@ fn an_accept_failure_nobody_asked_for_is_still_reported() {
     )
     .expect("parse");
     let bin = harness::unique_bin("hale_1081_accept_bad_fd");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);

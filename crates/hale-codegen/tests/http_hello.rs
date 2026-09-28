@@ -14,10 +14,12 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -40,7 +42,7 @@ fn build_http_hello() -> PathBuf {
         "hale_http_hello_{}",
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build example");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build example");
     bin
 }
 

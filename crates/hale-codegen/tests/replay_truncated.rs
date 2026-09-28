@@ -30,6 +30,8 @@ use hale_codegen::{build_executable_with_options, BuildOptions};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const REC_END_MAGIC: u64 = 0x30444E45454C4148; // "HALEEND0"
 
@@ -50,7 +52,7 @@ fn build(name: &str, src: &str) -> PathBuf {
         // change-key ignored words 2-3 and could persist a
         // half-published digest).
         exec_digest: Some([0xA1A1, 0xB2B2, 0xC3C3, 0xD4D4]),
-        ..BuildOptions::default()
+        ..build_opts::options()
     };
     build_executable_with_options(&program, &bin, &[], &options)
         .expect("build");

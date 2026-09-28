@@ -34,10 +34,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Adopt a spawned child into a locus field, twice, printing each
 /// pid. The first pid is the one `adopt` displaces (its release must
@@ -66,7 +68,7 @@ const SRC: &str = r#"
 fn build(name: &str) -> PathBuf {
     let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_process_child_adopt_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

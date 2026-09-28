@@ -17,15 +17,17 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_form_lru_codegen_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 
@@ -191,7 +193,7 @@ fn form_lru_cache_fixture_runs() {
     let src = std::fs::read_to_string(&path).expect("read fixture");
     let program = hale_syntax::parse_source(&src).expect("parse fixture");
     let bin = harness::unique_bin("hale_test_form_lru_fixture");
-    build_executable(&program, &bin).expect("build fixture");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build fixture");
     let (stdout, ok) = run(&bin);
     assert!(ok, "fixture exited non-zero: {:?}", stdout);
     assert!(

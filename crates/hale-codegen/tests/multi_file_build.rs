@@ -7,11 +7,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::ast::Program;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn unique_dir(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -71,7 +73,7 @@ fn cross_file_fn_call() {
     let dir = unique_dir("cross_fn");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let bin = dir.join("app");
-    build_executable(&merged, &bin).expect("build merged");
+    build_executable_with_options(&merged, &bin, &[], &build_opts::options()).expect("build merged");
 
     let out = Command::new(&bin).output().expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -113,7 +115,7 @@ fn cross_file_locus_referenced() {
     let dir = unique_dir("cross_type");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let bin = dir.join("app");
-    build_executable(&merged, &bin).expect("build merged");
+    build_executable_with_options(&merged, &bin, &[], &build_opts::options()).expect("build merged");
 
     let out = Command::new(&bin).output().expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();

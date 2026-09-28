@@ -21,12 +21,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 /// Build with `LOTUS_DUMP_IR=1` and return the emitted LLVM IR text. Lets a
 /// test assert directly whether a method body opened a scratch subregion.
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn dump_ir(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -51,7 +53,7 @@ fn carve_fn_body<'a>(ir: &'a str, name: &str) -> &'a str {
 fn build_and_run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_method_scratch_{}_{}", name, std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "{name}: non-zero exit {:?}", out.status);

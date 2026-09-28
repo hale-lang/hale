@@ -36,10 +36,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// An allocating program: a `@form(vec)` child grown a chunk's worth
 /// of rows, a String field rebuilt per call, and a fn-level scratch
@@ -196,7 +198,7 @@ fn no_chunk_pool_really_stops_recycling_and_asan_defaults_it_on() {
 
     // --- ordinary build -------------------------------------------
     let plain = harness::unique_bin("no_chunk_pool_plain");
-    build_executable(&program, &plain).expect("build plain");
+    build_executable_with_options(&program, &plain, &[], &build_opts::options()).expect("build plain");
 
     // Default: the pool recycles. The prefill alone guarantees the
     // first default-sized request is a hit and that chunks are

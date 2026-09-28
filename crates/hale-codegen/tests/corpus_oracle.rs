@@ -51,10 +51,12 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -415,7 +417,7 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
         Err(d) => return Outcome::Fail(format!("parse: {d:?}")),
     };
     let bin = harness::unique_bin(&format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
-    if let Err(e) = build_executable(&program, &bin) {
+    if let Err(e) = build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
         let msg = format!("{e:?}");
         // A codegen feature gap is ACKNOWLEDGED only when the fixture
         // is on the interpreter-only list; otherwise it's a

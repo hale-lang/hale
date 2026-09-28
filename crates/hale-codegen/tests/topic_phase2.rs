@@ -18,12 +18,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::{ast::*, parse_source};
 use hale_syntax::desugar::{desugar_intra_locus_topics, desugar_topics};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn parse(src: &str) -> Program {
     parse_source(src).expect("parse")
@@ -46,7 +48,7 @@ fn typecheck_diags(src: &str) -> Vec<String> {
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = parse(src);
     let bin = harness::unique_bin(&format!("hale_test_phase2_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

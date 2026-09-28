@@ -22,9 +22,11 @@ use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn wasm_opts() -> BuildOptions {
-    BuildOptions { target: CompileTarget::Wasm32, ..Default::default() }
+    BuildOptions { target: CompileTarget::Wasm32, ..build_opts::options() }
 }
 
 fn tmp(name: &str) -> PathBuf {
