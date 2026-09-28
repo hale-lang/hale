@@ -712,6 +712,22 @@ jobs:
             --profile small \
             --partition count:${{ matrix.part }}/4
 
+      - &tree-is-clean
+        name: The run left the source tree as it found it
+        # A build or a test that writes into the checkout (a binary beside
+        # its seed, a scratch directory, a rewritten fixture) is a defect
+        # this job only shows by listing it: `hale build -o` and the
+        # per-run scratch directory exist so that nothing does. Ignored
+        # files are not listed, and the only rule that ignores compiled
+        # output is `target/`.
+        run: |
+          status=$(git status --porcelain --untracked-files=all)
+          if [ -n "$status" ]; then
+            echo "::error::the run wrote into the source tree:"
+            echo "$status"
+            exit 1
+          fi
+
       - name: sccache stats
         if: always()
         run: sccache --show-stats
@@ -871,6 +887,8 @@ jobs:
             ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
+
+      - *tree-is-clean
 
       - name: sccache stats
         if: always()
@@ -1102,6 +1120,8 @@ jobs:
           path: dna/face/test-results
           if-no-files-found: ignore
           retention-days: 7
+
+      - *tree-is-clean
 
       - name: sccache stats
         if: always()
