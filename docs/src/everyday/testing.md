@@ -127,6 +127,11 @@ test that listens on a fixed port or writes a fixed path under `/tmp`
 can collide with its neighbour. Take a free port and a per-run
 scratch directory instead.
 
+Each test file also gets a **vault of its own**: `hale test` points
+`std::secret` at a fresh private directory (`HALE_VAULT_DIR`) for the
+file's run and removes it afterwards, so a test that draws or stores a
+secret never touches yours, and never sees one you hold.
+
 One property comes free with that binary: **a test whose loci all
 run on the main scheduler is deterministic.** No `placement`, no
 extra pools — then every publish and every delivery happens in the

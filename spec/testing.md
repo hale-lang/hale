@@ -213,7 +213,15 @@ state: every test binary starts in the cwd and with the environment
 `hale test` was started with — plus `HALE_BIN`, the path of the
 `hale` running the tests, when the caller did not set it, so a test
 that builds a program of its own (a child it signals, a tool it
-drives) builds it with the same toolchain (2026-09-24, GH #1039). A
+drives) builds it with the same toolchain (2026-09-24, GH #1039) —
+and a vault of its own. Each test file runs with `HALE_VAULT_DIR`
+set to a fresh private directory, removed when it ends, and
+`HALE_VAULT_ADDR` unset, so what a test draws or reads through
+`std::secret` never reaches the developer's vault and no test reads
+a secret the developer holds (2026-09-28; before it, a DNA fixture
+run by hand drew a throwaway organization's entries into
+`~/.cache/hale/vault`). A test that needs two vaults, or one kept
+across files, sets `HALE_VAULT_DIR` on the child it starts. A
 test that shares a fixed resource
 with another test — a port, a path, a record — is a test that races
 under the default; a fixture takes its port and scratch directory
