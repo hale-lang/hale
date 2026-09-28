@@ -38,6 +38,35 @@ locus NatsAdapter {
     }
 }
 
+/// A publish-only adapter: each `send` dials the server, publishes onto
+/// the JetStream stream that takes its subject, waits for the stream to
+/// acknowledge it (a PubAck), and hangs up — on the publisher's own
+/// thread, holding nothing between sends, so two publishers share
+/// nothing. It receives nothing and dispatches nothing into the program:
+/// a program bound to it keeps an exact artifact, its routes, publishes
+/// and reachability what its source declares, so a fleet claim over it
+/// can still be certified (a `NatsConn` hands whatever arrives to
+/// `std::bus::__local_dispatch`, any subject, which no checker can
+/// bound). For a program that says a little, rarely, and must stay
+/// provable; one that says much holds a `NatsConn`. `url` "" publishes
+/// nothing. A publish the stream did not take is said on stderr: `send`
+/// cannot fail, by contract, and this adapter keeps no queue to retry.
+locus NatsPublisher {
+    params {
+        url: String = "";
+        subject_prefix: String = "";
+        name: String = "hale-bus-publisher";
+    }
+    fn send(subject: String, bytes: Bytes) {
+        if len(self.url) == 0 { return; }
+        let c = NatsClient { url: self.url, name: self.name, timeout: 2s };
+        if !c.open() { eprintln("nats publisher: ", c.last_error); return; }
+        let ack = js_publish(c, self.subject_prefix + subject, bytes) or PubAck { seq: -1 };
+        if ack.seq < 0 { eprintln("nats publisher: the stream did not take ", self.subject_prefix, subject, ": ", c.last_error); }
+        c.close();
+    }
+}
+
 locus NatsConn {
     params {
         url: String = "nats://127.0.0.1:4222";

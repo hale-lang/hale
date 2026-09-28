@@ -5,8 +5,10 @@
 // <event>`, through the bus's NATS adapter. The host reads them through
 // the organization's durable `heart` (dna/core/nerves.hl) and lands each
 // as a `reading.recorded` row before anything acts on it. A reading is a
-// signal, never a fact: nothing acts on one yet, and what the organism
-// does to the application goes the other way, through its API.
+// signal, never a fact: it acts on nothing itself, and what the spine
+// does with one (a concern, below; a reflex's firing, reflex.hl) is a row
+// of its own. What the organism does to the application goes the other
+// way, through its API.
 //
 // The row comes first in delivery too: the durable's message is
 // acknowledged only once its row has landed or it has been refused for
@@ -125,4 +127,81 @@ fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory
         if why != "stale_revision" { return Landing { outcome: "failed", why: why }; }
     }
     return Landing { outcome: "failed", why: "the organism's memory kept moving under it" };
+}
+
+// An application's concern (GH #986, #987): not a socket of the node's
+// and not a subject of DNA's, but one of its own events, `concern.raised`
+// on `<org>.app.<app>.concern.raised`, whose body names the concern's
+// `source`, `what` and `severity` beside its `id`. The heart lands it as
+// a reading first; then the spine puts it into the record as
+// `concern.requested`, entity its source, request the reading's entity,
+// and the relay carries that onto the nerves until the organization
+// answers — row first, relayed until answered, admitted once by that
+// request, whichever delivery reads it.
+const CONCERN_EVENT: String = "concern.raised";
+
+// A concern's source as the record may carry it: `/`-separated tokens
+// (letters, digits and `-_.`), at most 128 bytes, one of them the
+// application whose subject it came on — an application speaks for its
+// own parts, never another's. "" when it is not one.
+@unbounded
+fn concern_source(source: String, app: String) -> String {
+    if len(source) == 0 || len(source) > 128 { return ""; }
+    let mut named = false;
+    let mut seg = "";
+    let mut i = 0;
+    while i <= len(source) {
+        let c = if i < len(source) { source[i..(i + 1)] } else { "/" };
+        if c == "/" {
+            if len(seg) == 0 { return ""; }
+            if seg == app { named = true; }
+            seg = "";
+        } else {
+            let ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+            if !ok { return ""; }
+            seg = seg + c;
+        }
+        i = i + 1;
+    }
+    return if named { source } else { "" };
+}
+
+// Put `r`, a concern the heart landed as `entity`, into the record as
+// `concern.requested`, once for that request, at the revisions its
+// absence was read at. `asked` when it landed; nothing when it was there
+// already; `why` when it was refused for good (a source that is not the
+// application's — the event is acknowledged, and nothing is recorded) or
+// could not be written (it comes again: `retry`).
+@unbounded
+fn reading_concern(root: String, entity: String, r: Reading, author: String, memory: dna::Memory) -> Escalation {
+    let named = std::json::string_field(r.payload, "source");
+    let source = concern_source(if named.kind == "string" { named.text } else { "" }, r.app);
+    if len(source) == 0 { return Escalation { why: "the concern " + entity + " names no source of its application `" + r.app + "` (a `/`-path of letters, digits and -_., one of its parts " + r.app + "); refused", refused: true }; }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request", entity);
+    b.string_field("source", source);
+    b.string_field("what", std::json::find_string_field(r.payload, "what"));
+    b.int_field("severity", std::json::find_int_field(r.payload, "severity"));
+    b.string_field("app", r.app);
+    b.end_object();
+    let body = b.result();
+    let mut tries = 0;
+    while tries < 50 {
+        tries = tries + 1;
+        let head = record_head(root);
+        if !head.ok { return Escalation { why: "the record's head could not be read: " + head.why }; }
+        let p = open_projection(root, ".", "", memory);
+        let at = ledger_revision(root, memory);
+        let mut j = p.rows() - 1;
+        while j >= 0 {
+            let e = p.row(j);
+            if e.kind == "concern.requested" && dna::request_named(e.body) == entity { return Escalation { }; }
+            j = j - 1;
+        }
+        let why = append_as_at(root, head.id, at, "concern.requested", source, body, author, memory);
+        if len(why) == 0 { return Escalation { asked: "a concern from " + source + " (" + entity + ")" }; }
+        if why != "stale_revision" { return Escalation { why: "the record refused the concern from " + source + ": " + why }; }
+    }
+    return Escalation { why: "the organism's memory kept moving under the concern from " + source };
 }

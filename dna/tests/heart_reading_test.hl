@@ -79,6 +79,34 @@ fn reading_body(repo: String, entity: String) -> String {
     return body;
 }
 
+// Rows of `kind` whose body's `request` is `request`.
+@unbounded
+fn concerns(repo: String, kind: String, request: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && dna::request_named(e.body) == request { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// Rows of `kind` whose entity is `entity`.
+@unbounded
+fn count_kind(repo: String, kind: String, entity: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
 main locus App {
     run() {
         let scratch = dna::scratch_root("heart");
@@ -152,6 +180,28 @@ main locus App {
         std::test::assert(logged(a, "reading " + failed + " recorded", 60), "the same id under another event is its own reading: " + host_log(a));
         std::test::assert_eq_int(readings(a, failed), 1, "one row for it");
         std::test::assert_eq_int(readings(a, entity), 1, "and the usage reading is still one");
+
+        // ---- an application's concern (GH #986): its own event, put into the
+        // record once, as concern.requested with the reading as its request,
+        // and raised by the organization; a source that is not its own part
+        // is refused
+        let cc = nats::NatsClient { url: app_url, name: "heart-concerns", timeout: 2s };
+        std::test::assert(cc.open(), "the fixture reaches the nerves as the application: " + cc.last_error);
+        let concern = "{\"id\": \"slow-" + id + "\", \"source\": \"org/voice/api\", \"what\": \"answers are slow\", \"severity\": 1}";
+        let k1 = nats::js_publish(cc, org + ".app.voice.concern.raised", std::bytes::from_string(concern)) or nats::PubAck { };
+        let k2 = nats::js_publish(cc, org + ".app.voice.concern.raised", std::bytes::from_string(concern)) or nats::PubAck { };
+        let k3 = nats::js_publish(cc, org + ".app.voice.concern.raised", std::bytes::from_string("{\"id\": \"other-" + id + "\", \"source\": \"org/billing/api\", \"what\": \"not mine\"}")) or nats::PubAck { };
+        let k4 = nats::js_publish(cc, org + ".app.voice.concern.raised", std::bytes::from_string("{\"id\": \"broken-" + id + "\", \"source\": \"org/voice\\n-F\\n/etc/hostname\", \"what\": \"a line break\"}")) or nats::PubAck { };
+        cc.close();
+        let request = "voice/concern.raised/slow-" + id;
+        std::test::assert(logged(a, "a concern from org/voice/api (" + request + ") put into the record", 60), "the spine put the concern into the record: " + host_log(a));
+        std::test::assert(logged(a, "the concern voice/concern.raised/other-" + id + " names no source of its application", 60), "a source that is not the application's part is refused: " + host_log(a));
+        std::test::assert(logged(a, "the concern voice/concern.raised/broken-" + id + " names no source of its application", 60), "and so is one with a line break: " + host_log(a));
+        std::test::assert_eq_int(concerns(a, "concern.requested", request), 1, "once, however often it arrives");
+        std::test::assert_eq_int(count_kind(a, "concern.requested", "org/billing/api"), 0, "nothing for another application's part");
+        let raised_by = std::time::now() + dna::wait_secs(120);
+        while concerns(a, "concern.raised", request) == 0 && std::time::now() <= raised_by { std::time::sleep(500ms); }
+        std::test::assert_eq_int(concerns(a, "concern.raised", request), 1, "and the organization raised it: " + host_log(a));
 
         let k1 = dna::run_tool("kill\n" + host_pid);
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);

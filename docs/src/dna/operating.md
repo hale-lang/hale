@@ -363,11 +363,13 @@ rows. A project initialized before this has a `dna/nats.conf` whose
 spine may not publish `<org>.head.>`; `hale dna upgrade` says what to
 add.
 
-A fleet node is the one exception: its instances hand their concerns
-to it on a Unix socket of its own (`.hale/node/concern.raised.sock`),
-because the application declares no bindings yet. The node writes each
-concern into the record, and the host relays it like any other request
-(#987 moves the application onto the nerves).
+There is no other transport: no Unix socket, no route file. A fleet
+node hands each instance it starts the application credential and the
+organization's token it was started with (`HALE_DNA_NATS_URL_APP`,
+`HALE_DNA_NATS_ORG`, which `hale dna nerves migrate` prints), and an
+instance that raises a concern publishes it onto the nerves itself, as
+one of its own events. The heart lands it and the spine puts it into
+the record, where the host relays it like any other request.
 
 ## The two memories, in operation
 

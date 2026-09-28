@@ -1284,9 +1284,13 @@ repository:
   organism declares an application's events. The host lands it as
   `reading.recorded`, entity `<app>/<event>/<id>`, body `app`, `event`,
   `id`, `subject` and `payload` (the event's JSON, at most 64 KiB),
-  before anything acts on it. Nothing acts on a reading yet: it is a
-  signal, never a fact, and what the organism does to the application
-  goes the other way, through the API the application exposes.
+  before anything acts on it. A reading is a signal, never a fact: it
+  acts on nothing itself. What the spine does with one is a row of its
+  own: an application's concern becomes `concern.requested` (**The
+  application side**), a reflex's firing is read with the others for its
+  target (**The senses and the reflexes**). What the organism does to
+  the application goes the other way, through the API the application
+  exposes.
   - **Duplicates.** A second arrival of an entity already recorded,
     whether a redelivery or a replay, is refused as a duplicate and
     lands nothing. Whether it is recorded is decided at the revisions the
@@ -1323,12 +1327,19 @@ repository:
   connection drains on SIGTERM: an API that imports the core keeps the
   default action. The head holds its own connection and drains: its
   watcher stops and the server stops accepting, at once.
-- **The fleet node's concerns stay local.** A node's instances are the
-  application, which declares no bindings, and an environment route
-  reaches Unix sockets only; `hale node` keeps the one
-  `LOTUS_BUS_CONFIG` DNA writes, for `dna.concern.raised` from its own
-  instances (**The application side**), and puts each concern into the
-  record, which a node relays like any request. #987 replaces it.
+- **There is no second transport** (GH #986). DNA writes no
+  `LOTUS_BUS_CONFIG`, binds no Unix socket and writes no route file:
+  every fact between the organism's parts travels over the nerves, and
+  an application's concern is one of its own events (**The heart's
+  events**; **The application side**). An application — an instance a
+  node starts, the expression `dev` starts — inherits the application
+  credential and the organization's token (`HALE_DNA_NATS_URL_APP`,
+  `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
+  started with them), and none of the organism's other credentials: the
+  spine's, the owner's, the head's and the reflexes' NATS URLs and
+  memory DSNs are taken out of what it inherits. A node materializes
+  `vendor/dna` in its clone for its toolchain, so an instance can import
+  pond's NATS client from it. Local mode is the seed compose's nerves.
 
 `.hale/dna/` holds only what is not the record: the status projection,
 worktrees, scratch inputs to the toolchain. Deleting it loses nothing
@@ -3833,8 +3844,9 @@ The live half is memory's, projected from the record by the spine
   reached the record's head within 20 s, is a package refused with the
   reason (**The spine projects; readers read**).
 - **Concerns (K2).** `ConcernRaised` (`source`, `what`, `severity`) is
-  a child's signal about the part above it: an application's, through
-  its node (K4), or `hale dna concern raise <source> <what…>
+  a child's signal about the part above it: an application's own
+  `concern.raised` event, which the heart lands and the spine puts into
+  the record (K4), or `hale dna concern raise <source> <what…>
   [--severity N]`'s, each a `concern.requested` row a node relays onto
   the nerves, and the substrate admits it as an execution of
   `concern-escalate` (GH #995: **The workflow catalog**) whose step
@@ -4194,27 +4206,37 @@ The live half is memory's, projected from the record by the spine
   normalized, deterministic, rendered as a pgvector literal — so `Pq`
   ranks with `<=>` over a `vector(64)` column (the migration creates
   the `vector` extension and says so when the Postgres has none).
-- **The application side (K4).** An application declares the wire
-  fact itself — a type of the nerves' shape (`source`, `what`,
-  `severity`) on the subject `dna.concern.raised`, no import of the
-  DNA — and publishes it when it observes something about the part
-  above it. A node routes that subject for every instance it starts
-  (`LOTUS_BUS_CONFIG=<node dir>/instance.bus.conf`, role connect) to
-  its own socket `<clone>/.hale/node/concern.raised.sock`, which the
-  `hale node` shim binds for it as an environment-configured listen
-  route before the node starts; the node subscribes `ConcernRaised`
-  with no source binding, and on each one appends `concern.requested
-  <source>` (`source`, `what`, `severity`, `node`) to the record in
-  its name and syncs. A node relays `concern.requested` rows onto the
-  nerves like `intent.requested` and `review.verdict`, and the
-  organization journals `concern.raised`. `hale dna concern raise`
-  takes the same road. This environment route is the one
-  `LOTUS_BUS_CONFIG` DNA writes (**The nerves**; #987 replaces it).
-  A route for a subject an instance never publishes is inert.
+- **The application side (K4).** A concern is one of the application's
+  own events (GH #986, #987). It declares it as its own topic,
+  `concern.raised` under its own subject `app.<app>.`, with a codec
+  that writes one JSON object: its `id`, and the concern's `source`,
+  `what` and `severity`. It publishes it through pond's NATS library
+  with the application credential its node handed it, and imports
+  nothing of the DNA. Its `id` is that concern's alone: a repeat is a
+  replay, refused. Its `source` is a `/`-path of letters, digits and
+  `-_.`, at most 128 bytes, one of whose parts is the application the
+  subject names: an application speaks for its own parts, never
+  another's, and a concern that does not is refused (acknowledged,
+  recorded nowhere). `NatsPublisher`, the publish-only adapter,
+  dispatches nothing into the program: its artifact stays exact, so a
+  fleet claim over it can still be certified (a `NatsConn` hands
+  whatever arrives to `__local_dispatch`, which no checker can bound).
+  The heart lands it as a reading first,
+  `reading.recorded <app>/concern.raised/<id>`. The spine then appends
+  `concern.requested <source>` (`request` the reading's entity,
+  `source`, `what`, `severity`, `app`) before the event is acknowledged,
+  once for that request, whichever delivery reads it; a concern the
+  record refuses leaves the event unacknowledged, to come again. A node
+  relays `concern.requested` rows onto the nerves like
+  `intent.requested` and `review.verdict` until the record holds the
+  answer, and the organization journals `concern.raised`, admitted once
+  by its request. `hale dna concern raise` writes the same
+  `concern.requested` row by hand.
 - **The learning scenario** is the acceptance (K4), in the fixture:
   the worker on the second node observes its mail backlog and raises
-  the concern three times; each travels node → record → host →
-  nerves → `concern.raised`; the third makes a proposal by
+  the concern three times; each travels as the worker's own event →
+  the heart's reading → `concern.requested` → the relay → the nerves →
+  `concern.raised`; the third makes a proposal by
   `org/trio/worker` bound to `org/trio` (a concern by the tower
   rule); the Board ratifies the exact digest (`hale dna review k:…
   approve --authority board`); the spine projects it into memory on

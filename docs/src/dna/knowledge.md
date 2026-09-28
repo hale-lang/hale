@@ -328,20 +328,31 @@ and a vector out, when one is worth its cost.
 ## Concerns
 
 A **concern** is a child's signal about the part above it. An
-application raises one by declaring the fact itself — the same shape
-the nerves carry, on the subject `dna.concern.raised`, with no
-import of the DNA — and publishing it when it sees something:
+application raises one as one of its own events: it declares the
+concern as its own topic, under its own subject (`app.<app>.`), with a
+JSON codec, and publishes it onto the nerves through pond's
+publish-only adapter, `NatsPublisher`, with the application credential
+its node hands it. That adapter takes nothing in, so the fleet's law
+can still be proven over the application. It imports nothing of the
+DNA:
 
 ```hale,fragment
-type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
-topic WorkerConcerns { payload: Concern; subject: "dna.concern.raised"; }
-// …
-WorkerConcerns <- Concern { source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+import "vendor/dna/pond/realtime/nats" as nats;
+
+type Concern { id: String = ""; source: String = ""; what: String = ""; severity: Int = 0; }
+topic WorkerConcerns { payload: Concern; subject: "app.trio.concern.raised"; }
+// … bound to nats::NatsPublisher { url: …, subject_prefix: … } codec(ConcernJson { }) in its main locus
+WorkerConcerns <- Concern { id: "backlog-" + to_string(std::time::nanos(std::time::current())), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
 ```
 
-The node the instance runs on hears it on a socket of its own and
-puts it in the record; the host beside the organization relays it
-onto the nerves; the organization writes `concern.raised`. Or you
+An `id` is that concern's alone (a repeat is refused as a replay), and
+the `source` names one of the application's own parts: `org/trio/worker`
+is the trio's. A concern whose source is not the application's is
+refused.
+
+The heart lands it as a reading; the spine puts it into the record as
+`concern.requested`, once for that event's id; the host relays it onto
+the nerves; the organization writes `concern.raised`. Or you
 raise one yourself, from anywhere with the record — the same row, the
 same relay:
 

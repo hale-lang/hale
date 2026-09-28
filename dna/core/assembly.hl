@@ -463,7 +463,7 @@ locus Dna {
     // (`hale dna task create`, Iris) enters through the SAME gate as a local
     // `ask` — the membrane decides, the Metabolism births the Task,
     // the Journal records both. The organism's main binds this topic
-    // on a unix socket; nothing about the decision lives in the
+    // to the nerves (GH #986); nothing about the decision lives in the
     // transport.
     bus {
         subscribe IntentOffered as on_intent;

@@ -718,6 +718,13 @@ locus GitRecord {
     // rule 6); `note` becomes the message's body.
     @unbounded
     fn build(at: String, row: Row, sign: Bool, note: String) -> String {
+        // the kind and the entity are the commit's subject line, and the
+        // arguments to git are newline-separated: a line break in either
+        // is never a row (GH #986 review), whoever wrote it
+        if std::str::contains(row.kind, "\n") || std::str::contains(row.kind, "\r") || std::str::contains(row.entity, "\n") || std::str::contains(row.entity, "\r") {
+            self.last_error = "a row's kind and entity are one line each";
+            return "";
+        }
         self.make_scratch();
         let tmp = self.tmp("journal");
         let idx = self.tmp("index");
