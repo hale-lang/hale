@@ -803,8 +803,8 @@ client, redirect (default: this service's `/auth/callback`) and member mapping
 configuration. The discovery document and the issuer's JWKS are read once at
 start, and every ID token is verified — ES256 under the issuer's key, then its
 issuer, audience and expiry. Start at `/auth/login`, or present an ID token as
-`Authorization: Bearer`. The service uses `HALE_DNA_OIDC_SECRET` for the
-configured exchange. Missing, forged, unmapped or expired tokens and sessions
+`Authorization: Bearer`. The service exchanges a code with the vault's
+`oidc-client-<client>`, the organism's bootstrap draws or a person sets. Missing, forged, unmapped or expired tokens and sessions
 cannot read the API. With no principal source the service refuses to start
 unless a fixture sets `HALE_DNA_TRUSTED_LOCAL=1`, where loopback access is
 trusted and the reader is server-derived. Unknown principal modes fail startup. No query

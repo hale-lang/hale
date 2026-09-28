@@ -894,6 +894,7 @@ crates/hale-codegen/tests/locus_member_fallible_rejects.rs#4 418503ee70a79b0c
 crates/hale-codegen/tests/log_routing.rs#0 e9b3a90b0626e56f
 crates/hale-codegen/tests/log_routing.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/lto_modes.rs#0 865d341109268295
+crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#0 42a6748f24d142bc
 crates/hale-codegen/tests/main_return_call_teardown.rs#0 c47d911d810acd9a
 crates/hale-codegen/tests/main_return_dissolve_frame.rs#0 f7f08146f24ab2d8
 crates/hale-codegen/tests/main_return_dissolve_frame.rs#1 f7f08146f24ab2d8

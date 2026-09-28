@@ -136,8 +136,11 @@ main locus App {
         let nerves = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
         let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
         let app_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_APP");
+        // GH #989: the URL carries no password; the account's credential is
+        // the vault's entry this names, which the heart presents on CONNECT
+        let app_vault = line_value(nerves.stdout, "HALE_DNA_NATS_VAULT_APP");
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
-        std::test::assert(nerves.code == 0 && len(spine) > 0 && len(app_url) > 0 && len(org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
+        std::test::assert(nerves.code == 0 && len(spine) > 0 && len(app_url) > 0 && len(app_vault) > 0 && len(org) > 0 && !std::str::contains(app_url, "@"), "the nerves' stream is in place, its URLs without a password: " + nerves.stdout + nerves.stderr);
 
         let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
         let host_pid = dna::trim_nl(started.stdout);
@@ -147,7 +150,7 @@ main locus App {
         // ---- one usage event: a reading row
         let id = "u" + to_string(std::process::pid());
         let entity = "voice/usage.recorded/" + id;
-        let once = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
+        let once = dna::run_tool("env\nHALE_DNA_NATS_VAULT_APP=" + app_vault + "\n" + heart + "\n" + app_url + "\n" + org + ".\n" + id);
         std::test::assert(std::str::contains(once.stdout, "heart: usage " + id + " published"), "the stream took the heart's event: " + once.stdout + once.stderr);
         std::test::assert(logged(a, "reading " + entity + " recorded", 60), "the host recorded it as a reading: " + host_log(a));
         std::test::assert_eq_int(readings(a, entity), 1, "one reading row, in the record's routing");
@@ -157,20 +160,20 @@ main locus App {
         std::test::assert(std::json::find_string_field(payload, "id") == id && std::json::find_int_field(payload, "output_tokens") == 34, "and keeps what the event said: " + payload);
 
         // ---- the same id again: refused, still one row
-        let again = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
+        let again = dna::run_tool("env\nHALE_DNA_NATS_VAULT_APP=" + app_vault + "\n" + heart + "\n" + app_url + "\n" + org + ".\n" + id);
         std::test::assert(std::str::contains(again.stdout, "published"), "the replay reached the stream: " + again.stdout + again.stderr);
         std::test::assert(logged(a, "reading " + entity + " is recorded already; refused as a duplicate", 60), "the host refused the replay: " + host_log(a));
         std::test::assert_eq_int(readings(a, entity), 1, "a replayed event lands no second row");
 
         // ---- an event that names no id: not a reading
-        let anonymous = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n-");
+        let anonymous = dna::run_tool("env\nHALE_DNA_NATS_VAULT_APP=" + app_vault + "\n" + heart + "\n" + app_url + "\n" + org + ".\n-");
         std::test::assert(std::str::contains(anonymous.stdout, "published"), "the anonymous event reached the stream: " + anonymous.stdout + anonymous.stderr);
         std::test::assert(logged(a, "the heart's " + org + ".app.voice.usage.recorded is not a reading: the body names no string `id`", 60), "the host refused it: " + host_log(a));
 
         // ---- raw, as any holder of the application's credential could
         // publish: an `id` that is not a string is no id, and the same id
         // under another event is a reading of its own
-        let c = nats::NatsClient { url: app_url, name: "heart-raw", timeout: 2s };
+        let c = nats::NatsClient { url: app_url, user: "app", credential: std::secret::Credential { vault: app_vault }, name: "heart-raw", timeout: 2s };
         std::test::assert(c.open(), "the fixture reaches the nerves as the application: " + c.last_error);
         let n1 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": null, \"why\": \"nothing\"}")) or nats::PubAck { };
         let n2 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": \"" + id + "\", \"why\": \"no capacity\"}")) or nats::PubAck { };
@@ -185,7 +188,7 @@ main locus App {
         // record once, as concern.requested with the reading as its request,
         // and raised by the organization; a source that is not its own part
         // is refused
-        let cc = nats::NatsClient { url: app_url, name: "heart-concerns", timeout: 2s };
+        let cc = nats::NatsClient { url: app_url, user: "app", credential: std::secret::Credential { vault: app_vault }, name: "heart-concerns", timeout: 2s };
         std::test::assert(cc.open(), "the fixture reaches the nerves as the application: " + cc.last_error);
         let concern = "{\"id\": \"slow-" + id + "\", \"source\": \"org/voice/api\", \"what\": \"answers are slow\", \"severity\": 1}";
         let k1 = nats::js_publish(cc, org + ".app.voice.concern.raised", std::bytes::from_string(concern)) or nats::PubAck { };

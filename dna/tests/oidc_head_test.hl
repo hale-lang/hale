@@ -175,7 +175,7 @@ main locus App {
         std::test::assert(status_of(retired) == "404" && std::str::contains(retired.stdout, "\"kind\":\"unknown\""), "a retired person's token holds nothing: the gate refuses it: " + retired.stdout);
 
         // ---- alice's ID token, from the stub's token endpoint
-        let issued = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=alice-sub&client_id=dna-local&client_secret=dna-local-secret\n" + self.issuer + "/token");
+        let issued = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=alice-sub&client_id=dna-local&client_secret=oidc-head-test-secret\n" + self.issuer + "/token");
         let token = std::json::find_string_field(issued.stdout, "id_token");
         std::test::assert(len(token) > 0, "the stub mints an ID token: " + issued.stdout);
         // bob holds no position: the socket's gate lists him no claim, and
@@ -222,5 +222,5 @@ main locus App {
 fn main() {
     let port = dna::free_port(80);
     let url = "http://127.0.0.1:" + to_string(port);
-    App { issuer: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url } } };
+    App { issuer: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url, secret: "oidc-head-test-secret" } } };
 }

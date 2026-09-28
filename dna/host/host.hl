@@ -809,6 +809,9 @@ main locus Host {
         // (`untyped`): the host declares no application's events.
         nerves: nats::NatsConn = nats::NatsConn {
             url: dna::nerves_spine_url(),
+            // GH #989: the spine's account, sealed: presented on CONNECT alone
+            user: "spine",
+            credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") },
             name: "dna-node",
             subject_prefix: dna::nerves_prefix_of(dna::nerves_org(), host_owner()),
             jetstream: true,
@@ -929,35 +932,27 @@ main locus Host {
         std::metrics::counter(self.senses.registry, "model_calls_total", dna::part_labels("spine")).add(std::math::int_to_float(self.relay.called));
         self.relay.called = 0;
     }
-    // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
-    // credential, as `hale dna secret set` wrote them ("" when none).
-    fn secrets_file() -> String {
-        let home = std::env::var("HOME");
-        if len(home) == 0 { return ""; }
-        let text = std::io::fs::read_file(home + "/.config/hale-dna/" + body_key(self.root) + ".env") or "";
-        return dna::trim_nl(text);
-    }
     // GH #617: a missing credential surfaces at once — on the board and
     // in `status` — instead of on a task hours later. The catalog names
     // the credentials its hosted backends read; the body is short of one
-    // when NONE of them is set here or in the secrets file. Rows only
-    // name the variables.
+    // when NONE of them is in its environment or its slot of the vault
+    // (GH #989: `model-<NAME>`, which `hale dna secret set` fills). Rows
+    // only name the variables.
     fn check_credentials() {
         let names = catalog_credentials(self.root);
         if len(names) == 0 { return; }
-        let file = "\n" + self.secrets_file() + "\n";
         let mut have = false;
         let mut rest = names + " ";
         while len(rest) > 1 {
             let sp = std::str::index_of(rest, " ");
             let name = rest[0..sp];
             rest = rest[(sp + 1)..len(rest)];
-            if len(name) > 0 && (std::env::var_exists(name) || std::str::contains(file, "\n" + name + "=")) { have = true; }
+            if len(name) > 0 && (std::env::var_exists(name) || secret_present(model_key_vault(name))) { have = true; }
         }
         let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let was_missing = len(credential_gap(p)) > 0;
         if !have && !was_missing {
-            self.say("no credential for the model: none of " + names + " is set here or in ~/.config/hale-dna/" + body_key(self.root) + ".env (`hale dna secret set <NAME>`); the board says so until one is");
+            self.say("no credential for the model: none of " + names + " is set here or in the vault's slot for it (`hale dna secret set <NAME>`); the board says so until one is");
             let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host", self.memory);
         }
         if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is set"); }
@@ -1119,10 +1114,8 @@ main locus Host {
         // GH #583: the genome a harness must never reach, whatever its
         // role. A HarnessModel reads it at birth (finding 1).
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale + "\nHALE_DNA_GENOME=" + self.root;
-        // GH #617: the credentials `hale dna secret set` put on this
-        // machine, for the organization and the knowledge service
-        let file = self.secrets_file();
-        if len(file) > 0 { e = e + "\n" + file; }
+        // GH #989: no credential travels in a child's environment; each
+        // part reads its own from the vault, by name, where it uses it
         // the fourth review of #622: the body's mark, inherited by every tool
         // a child starts, so the fence finds them even once that child is gone
         // GH #1026: and the node's name in the claims its organism takes
@@ -1338,7 +1331,7 @@ main locus Host {
         let deadline = std::time::now() + secs;
         if !self.nerves_on { return exit_code(self.org) == -2; }
         let stale_until = if self.org_stopped_at > 0 { self.org_stopped_at + NERVES_PULL_LIFE_MS * 1000000 } else { 0 };
-        let c = nats::NatsClient { url: dna::nerves_spine_url(), name: "dna-node-probe", timeout: 2s };
+        let c = nats::NatsClient { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "dna-node-probe", timeout: 2s };
         let mut why = "";
         while true {
             if exit_code(self.org) != -2 { c.close(); return false; }
@@ -1849,6 +1842,10 @@ main locus Host {
         self.status_path = self.dna_dir + "/status.json";
         let org_seed = self.root + "/" + ORG_SEED;
         if !std::io::fs::file_exists(org_seed + "/main.hl") { self.say("no organization at " + org_seed + " (run `hale dna init`)"); std::process::exit(2); }
+        // GH #989: the organism's drawn secrets are its bootstrap's; a start
+        // without one refuses rather than run on a default
+        let unprovisioned = missing_drawn(self.root);
+        if len(unprovisioned) > 0 { self.say("the organism's secrets are not all in the vault: " + std::str::replace(dna::trim_nl(unprovisioned), "\n", ", ") + " (`hale dna upgrade` draws them; `hale dna secrets` lists them); nothing starts without them"); std::process::exit(2); }
         // 0. the body lease (GH #617): a record admits one body at a
         //    time; nothing is built or run under a lease that is not ours
         self.holder = body_holder(self.root);

@@ -124,6 +124,16 @@ fn slice_tag(slice: usize) -> String {
     format!("{}-slice{}-{}", std::process::id(), slice, now)
 }
 
+/// The slice's own vault (GH #989): every fixture's `hale dna init`
+/// provisions the organism's secrets, and a fixture's `secret set` fills
+/// a slot, so a slice that used the developer's vault would leave a
+/// throwaway organization's entries there — or a fixture's fake model
+/// key in the slot a real one belongs in. Removed when the slice ends,
+/// with its scratch roots.
+fn slice_vault(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("hale-dna-vault-{tag}"))
+}
+
 /// The DNA scratch root a command line or a working directory names, if
 /// it names one: the fixtures build their roots as
 /// `/tmp/dna-<what>-<pid>` and run their organisms from inside them, so
@@ -324,6 +334,9 @@ struct SliceScratch {
 impl Drop for SliceScratch {
     fn drop(&mut self) {
         let swept = sweep_scratch_roots(&self.tag, keep_scratch());
+        if !keep_scratch() {
+            let _ = std::fs::remove_dir_all(slice_vault(&self.tag));
+        }
         if !swept.is_empty() {
             eprintln!(
                 "dna slice: swept {} scratch root(s) no fixture reclaimed (HALE_DNA_KEEP_SCRATCH=1 keeps them):\n  {}",
@@ -526,6 +539,7 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     cmd.arg("test").arg("--json").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
     cmd.env("HALE_DNA_SOURCE", repo_root());
     cmd.env(SLICE_TAG, tag);
+    cmd.env("HALE_VAULT_DIR", slice_vault(tag)).env_remove("HALE_VAULT_ADDR");
     cmd.current_dir(std::env::temp_dir());
     if let Some(dsn) = dsn {
         cmd.env("HALE_DNA_MEMORY_DSN_OWNER", dsn);
@@ -890,6 +904,7 @@ fn dna_fixture_set_is_complete() {
             "build_fingerprint_location_test.hl",
             "claims_test.hl",
             "command_relay_trust_test.hl",
+            "compose_projects_test.hl",
             "concern_identity_test.hl",
             "concern_restart_test.hl",
             "deployment_test.hl",

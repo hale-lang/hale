@@ -100,7 +100,8 @@ struct Fixture {
     spine: String,     // memory under the record's spine role (K4; GH #985)
     nats_spine: String, // the nerves' spine URL (GH #986)
     nats_org: String,   // the organization's token on the nerves (GH #986)
-    nats_app: String,   // an application's credential, which a node hands its instances (GH #986)
+    nats_app: String,   // an application's server, which a node hands its instances (GH #986)
+    nats_app_vault: String, // the vault name of the application's credential (GH #989; never the password)
 }
 
 impl Fixture {
@@ -115,7 +116,8 @@ impl Fixture {
             .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine)
             .env("HALE_DNA_NATS_URL_SPINE", &self.nats_spine)
             .env("HALE_DNA_NATS_ORG", &self.nats_org)
-            .env("HALE_DNA_NATS_URL_APP", &self.nats_app);
+            .env("HALE_DNA_NATS_URL_APP", &self.nats_app)
+            .env("HALE_DNA_NATS_VAULT_APP", &self.nats_app_vault);
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
@@ -192,7 +194,7 @@ fn bring_up() -> Fixture {
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new() };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new(), nats_app_vault: String::new() };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
@@ -227,6 +229,7 @@ fn bring_up() -> Fixture {
     f.nats_spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).unwrap_or("").to_string();
     f.nats_org = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).unwrap_or("").to_string();
     f.nats_app = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_APP=")).unwrap_or("").to_string();
+    f.nats_app_vault = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_VAULT_APP=")).unwrap_or("").to_string();
     f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {

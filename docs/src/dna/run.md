@@ -171,13 +171,13 @@ Credentials go where the body runs, and never into the record:
 ```text
 $ hale dna secret set ANTHROPIC_API_KEY --body riley@srv
 value for ANTHROPIC_API_KEY on riley@srv, on one line:
-secret set: ANTHROPIC_API_KEY is in /home/riley/.config/hale-dna/chat-3f9c2a1b7d04.env on riley@srv (secret.rotated ANTHROPIC_API_KEY; the value is nowhere in the record)
+secret set: ANTHROPIC_API_KEY is in its slot of the vault, /home/riley/.cache/hale/vault/model-ANTHROPIC_API_KEY on riley@srv (secret.rotated ANTHROPIC_API_KEY; the value is nowhere in the record). A part reads it from the vault where it uses it
 ```
 
 The value is read from stdin — never from the command line — and
-lands in a file only that user can read; the host loads it for the
-organization. Without `--body` it goes on
-this machine. A body that starts with no credential for its model
+lands in its slot of that machine's vault, a file only that user can
+read; the part that uses it reads it there. Without `--body` it goes
+on this machine. A body that starts with no credential for its model
 says so at once, on the board and in `status`, instead of on a task
 hours later.
 
@@ -210,8 +210,18 @@ reads it through its durable consumer, so a fact published while it
 was restarting reaches it when it is back. Each part holds its own
 credential: the owner creates the stream, the spine (the host and the
 organization) publishes and reads, the head only subscribes.
-`dna/nats.conf` configures `dna/compose.yaml`'s server that way, with
-placeholder passwords for now.
+`dna/nats.conf` configures `dna/compose.yaml`'s server that way.
+
+Each role's password is the seed's own, drawn at random into your
+vault by `hale dna init` (and anew by `hale dna upgrade`). A part that
+connects names its entry, and the NATS client presents it on the
+connection and holds it nowhere else: the URLs `hale dna nerves
+migrate` prints are `nats://host:port` alone, with the vault names
+beside them for the programs that are not the host. `dna/nats.conf` is
+tracked and holds no password. It includes `dna/nats.secrets.conf`,
+which does: that file is written with the vault's entries, readable by
+you alone, and ignored by git. A role with no password in the vault is
+refused; nothing connects with a default.
 
 A verdict is admitted by the Review that owns it — authority,
 independence from the author, and the candidate digest are checked
@@ -248,8 +258,11 @@ main locus Api {
 }
 ```
 
-It imports nothing of DNA. It connects as the `app` user
-(`HALE_DNA_NATS_URL_APP`, which `hale dna nerves migrate` prints), with
+It imports nothing of DNA. It connects as the `app` user to the server
+`HALE_DNA_NATS_URL_APP` names, presenting the vault's entry
+`HALE_DNA_NATS_VAULT_APP` names (`user: "app"`, `credential:
+std::secret::Credential { vault: … }` on its `NatsConn`; `hale dna nerves
+migrate` prints both, and no URL carries a password), with
 the organization's token and a dot (`HALE_DNA_NATS_ORG`) as its
 connection's `subject_prefix`, and `jetstream: true`, so the
 organization's stream acknowledges each event. Today you hand it those
@@ -320,6 +333,53 @@ falling over is something a workflow answers to, not something the body
 keeps restarting quietly. `dna/tests/senses_reflex_test.hl` runs the
 whole loop on the seed's compose.
 
+## The organism's secrets
+
+Setting up secrets is part of the bootstrap. `hale dna init` provisions
+every secret the organism needs, in one place, whether or not the part
+that uses it runs yet; `hale dna upgrade` does the same for a seed that
+has fewer. Where the organism owns the value it is drawn at random into
+your vault: memory's two roles and the compose database's superuser,
+the nerves' five, the local head's OIDC client and each service client
+the record maps. The servers `dna/compose.yaml` runs read theirs from
+`dna/nats.secrets.conf` and `dna/postgres.secrets`, written from the
+same draw, readable by you alone and ignored by git; no committed file
+holds a secret. Each seed's compose is a project of its own,
+`hale-dna-<name>`, so two seeds on one machine never share a container. Where a person supplies
+it, the vault gets a named empty slot: the forge's token and each model
+key your catalog names. Nothing else creates one; `dev`, `nerves
+migrate`, the head and `dna/face/start.sh` only read them, by name.
+
+```text
+$ hale dna secrets
+the organism's secrets (the local vault, /home/riley/.cache/hale/vault):
+  present  postgres-dna_4f…_spine  memory: the spine's role
+  present  postgres-dna_4f…_head  memory: the head's role
+  present  postgres-owner-chat  memory: the compose database's superuser (dna/postgres.secrets)
+  present  nats-dna_4f…-owner  the nerves: the owner's account
+  …
+  present  oidc-client-dna-local  the skin: the head's OIDC client secret (the local stub's)
+  MISSING  forge-token  the forge's token (else `gh`'s own login) — a person supplies it: `hale dna secret set FORGE_TOKEN`
+  MISSING  model-ANTHROPIC_API_KEY  the model's key ANTHROPIC_API_KEY — a person supplies it: `hale dna secret set ANTHROPIC_API_KEY`
+2 missing
+```
+
+It never prints a value. The board says the same for each one missing
+but a model key, which the body reports itself, since it may hold the
+key in its environment.
+A start that finds a drawn secret missing refuses and names it:
+`hale dna upgrade` draws it. With a real vault (`HALE_VAULT_ADDR`) the
+secrets are provisioned out of band, and the bootstrap only checks.
+
+A secret is handed to the adapter that puts it on the wire — the NATS
+client when it connects, the head when it asks the identity provider,
+the model client in its request — and is never a string anywhere else:
+not in a URL, an environment variable or a command line. Two do not
+follow that yet: memory's DSNs carry their role's password, and `gh`
+gets the forge's token in its own environment. A node's own
+account and an application's own broker account will be provisioned
+when that member is admitted; neither exists yet.
+
 ## The nodes
 
 A node is the host's counterpart on a machine that runs instances.
@@ -361,8 +421,12 @@ git config dna.oidc.client 1234.apps.googleusercontent.com
 git config dna.oidc.redirect https://dna.example.com/auth/callback
 git config --add dna.oidc.member "109876543210=riley"
 git config dna.oidc.board riley
-hale dna secret set HALE_DNA_OIDC_SECRET
+hale dna secret set OIDC_CLIENT_SECRET
 ```
+
+The client secret your provider issued goes into the vault as
+`oidc-client-<client>`, and the head reads it there when it exchanges a
+code.
 
 The head's socket (the api binding on `dna/api`, one per record under
 `$XDG_RUNTIME_DIR/hale/dna/<id12>.sock` — the record id's first twelve
@@ -428,8 +492,8 @@ client, as the stub issues it.
 
 **Local mode is OIDC too (GH #989).** `dna/face/start.sh` starts a stub
 identity provider (`dna/oidc`) on the loopback beside the head, under a
-key and a client secret made for that launch (0600, never on a command
-line), and you sign in through it as yourself: the subject `local-sub`,
+key made for that launch (0600, never on a command line) and the client
+secret `hale dna init` drew into the vault, and you sign in through it as yourself: the subject `local-sub`,
 mapped to `$USER`. Only the browser that opened the URL the head prints
 (it carries the head's launch token, 0600 in its state directory) may
 sign in, so another account on the machine cannot. An issuer on the

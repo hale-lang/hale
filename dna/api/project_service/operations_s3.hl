@@ -91,20 +91,6 @@ fn s3_body_mode(ctx: HeadContext) -> String {
     return "";
 }
 
-// The project's name as the host keys its files: the last segment of
-// the root's physical path (`dna/host/verbs.hl`).
-fn s3_project_name(root: String) -> String {
-    let abs = dna::run_tool("sh\n-c\ncd \"$1\" && pwd -P\nsh\n" + root);
-    let p = if abs.code == 0 { dna::trim_nl(abs.stdout) } else { root };
-    return p[(dna::last_slash(p) + 1)..len(p)];
-}
-
-// `<name>-<id[0..12]>`: the body's env file and unit are keyed by it.
-fn s3_body_key(ctx: HeadContext) -> String {
-    let id = ctx.active_id;
-    return s3_project_name(ctx.active_root) + (if len(id) >= 12 { "-" + id[0..12] } else { "" });
-}
-
 // The model credentials the catalog names (`env_var: "X"` in
 // dna/org/models.hl), space-separated — the host's own scan.
 @unbounded
@@ -546,13 +532,14 @@ fn s3_plan_secret(ctx: HeadContext, operation: String, arguments: String) -> Pla
     return s3_run(verb + " < " + s3_sq(path) + "\nrm -f -- " + s3_sq(path) + "\n" + s3_trailer(facts), ctx.active_root, 60, len(body) > 0);
 }
 
-// `dna.models.probe`: the catalog probed with the body's env file
-// sourced, one live request per backend — confirmed spend only.
+// `dna.models.probe`: the catalog probed, each key read from its slot of
+// the vault (GH #989), one live request per backend — confirmed spend
+// only.
 fn s3_plan_models(ctx: HeadContext, arguments: String) -> Plan {
     let confirm = s3_bool_of(arguments, "confirm_spend");
     if confirm < 0 { return s3_invalid("`confirm_spend` is a boolean"); }
     if confirm != 1 { return s3_refuse("spend_unconfirmed", "the probe makes one live request per backend; confirm the spend (`confirm_spend: true`)"); }
-    let script = "set -a\nf=\"$HOME/.config/hale-dna/" + s3_body_key(ctx) + ".env\"\nif [ -f \"$f\" ]; then . \"$f\"; fi\nset +a\n\"$HALE_BIN\" dna models " + s3_sq(ctx.active_root) + "\n" + s3_trailer("{}");
+    let script = "\"$HALE_BIN\" dna models " + s3_sq(ctx.active_root) + "\n" + s3_trailer("{}");
     return s3_run(script, ctx.active_root, 300, true);
 }
 

@@ -613,6 +613,9 @@ fn board_verb(p: Projection) -> Answer {
     // GH #617: a missing credential surfaces here at once, not on a task hours later
     let gap = credential_gap(p);
     if len(gap) > 0 { out = out + "body: no credential for the model (none of " + gap + " is set where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there\n"; }
+    // GH #989: each secret the organism requires that the vault lacks (the
+    // model's keys are the body's to report, above)
+    out = out + secrets_board(p.root);
     return answer(out + "decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one\n");
 }
 
@@ -905,7 +908,10 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
     s = s + "\"$HOME/.hale/bin/hale\" --version | head -1 | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
     s = s + "export PATH=\"$HOME/.hale/bin:$PATH\"\n";
     s = s + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
-    s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true)\n";
+    // GH #989: upgrade again once the record is here: a fresh clone has no
+    // record identity until it syncs, and the organism's secrets are
+    // provisioned under the identity's names
+    s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true) && hale dna upgrade . >/dev/null\n";
     // GH #647: the database's and the supervisor's parts are theirs to
     // write; a body with another supervisor or another database gets
     // another implementation's, not another `if`
@@ -965,12 +971,15 @@ fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
     return answer("body " + sub + " on " + target + ":\n" + indent_lines(infra.last, "    ") + "\n");
 }
 
-// ---- secrets (GH #617 ask 4) ----------------------------------------
-// A credential is read from stdin (a prompt on a terminal, a pipe
-// otherwise), never from argv, and lands in `~/.config/hale-dna/
-// <project>-<record>.env` (mode 600) — on the body over ssh's stdin when one is
-// named, here otherwise; the host loads that file for its children.
-// The record gets `secret.rotated <NAME>` and nothing else.
+// ---- secrets (GH #617 ask 4, GH #989) --------------------------------
+// A credential a person supplies is read from stdin (a prompt on a
+// terminal, a pipe otherwise), never from argv, and fills its slot of the
+// vault where the body runs (dna/host/secrets.hl: `model-<NAME>` for a
+// model key, `forge-token` for FORGE_TOKEN, `oidc-client-<client>` for
+// OIDC_CLIENT_SECRET; mode 600) — over ssh's stdin
+// when a body is named, here otherwise. Each part reads it from the vault
+// where it uses it. The record gets `secret.rotated <NAME>` and nothing
+// else.
 
 fn env_var_name_ok(name: String) -> Bool {
     if len(name) == 0 { return false; }
@@ -990,7 +999,8 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
     if !env_var_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not an environment variable name (A-Z, 0-9, _)"); }
-    let project = body_key(root);
+    // GH #989: a slot the organism requires, and no other name
+    if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl names: " + catalog_credentials(root) + "); `hale dna secrets` lists them"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
     let p = open_projection(root, ".", "", memory);
@@ -1010,10 +1020,10 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     // in argv, here or over the transport
     let scratch_dir = root + "/.hale/dna";
     let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
-    if !infra.put_credential(project + "/" + name, value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
+    if !infra.put_credential(slot_vault(root, name), value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
     let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who, memory);
     let s = sync_record(root, memory);
-    return answer("secret " + sub + ": " + name + " is in " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A running body reads it at its next start: `hale dna body stop && hale dna body start`\n");
+    return answer("secret " + sub + ": " + name + " is in its slot of the vault, " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A part reads it from the vault where it uses it\n");
 }
 
 // The model credentials the catalog names (`env_var: "X"` in

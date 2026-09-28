@@ -122,6 +122,8 @@ locus App {
         std::test::assert(j.append(j.revision(), "knowledge.proposed", law, "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\"}").ok, "a practice proposed for store.md");
         std::test::assert(j.append(j.revision(), "knowledge.ratified", law, "{\"class\": \"initiative\", \"target\": \"contract:spec/store.md\", \"decided_by\": \"ada\"}").ok, "and ratified: store.md is law");
         self.identity = dna::GitRecord { repo: self.repo }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(self.identity, "");
         let m = dna::migrate(dna::parse_dsn(self.owner), self.identity);
         std::test::assert(m.ok, "memory migrates: " + m.why);
         self.head = m.head_dsn;

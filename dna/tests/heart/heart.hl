@@ -85,5 +85,8 @@ main locus Heart {
 fn main() {
     if std::env::args_count() < 4 { eprintln("usage: heart <nats url> <subject prefix> <id>"); return; }
     let id = if std::env::arg(3) == "-" { "" } else { std::env::arg(3) };
-    Heart { id: id, nerves: nats::NatsConn { url: std::env::arg(1), name: "heart", subject_prefix: std::env::arg(2), jetstream: true } };
+    // the application's account: its password is the vault's entry
+    // HALE_DNA_NATS_VAULT_APP names, presented on CONNECT alone (GH #989)
+    let vault = if std::env::var_exists("HALE_DNA_NATS_VAULT_APP") { std::env::var("HALE_DNA_NATS_VAULT_APP") } else { "" };
+    Heart { id: id, nerves: nats::NatsConn { url: std::env::arg(1), user: "app", credential: std::secret::Credential { vault: vault }, name: "heart", subject_prefix: std::env::arg(2), jetstream: true } };
 }

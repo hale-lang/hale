@@ -130,16 +130,18 @@ locus NervesWatch {
     // The server the head subscribes on for the project at `root`, as the
     // head's user; "" when there is none to reach. Compose's is asked for,
     // never brought up: that is `hale dna dev`'s.
-    fn nerves_url(root: String) -> String {
-        if len(self.head_url) > 0 { return self.head_url; }
-        if len(self.owner_url) > 0 { return dna::nerves_role_url(self.owner_url, "head"); }
+    // The server the head's account reaches (GH #989: a URL never carries a
+    // password; the head presents its credential from the vault on CONNECT).
+    fn nerves_url(root: String, org: String) -> String {
+        if len(self.head_url) > 0 { return dna::nerves_server_url(self.head_url); }
+        if len(self.owner_url) > 0 { return dna::nerves_server_url(self.owner_url); }
         let compose = root + "/dna/compose.yaml";
         if !std::io::fs::file_exists(compose) { return ""; }
         let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
         let hp = dna::trim_nl(port.stdout);
         let colon = std::str::index_of(hp, ":");
         if port.code != 0 || colon < 0 { return ""; }
-        return dna::nerves_role_url("nats://127.0.0.1:" + hp[(colon + 1)..len(hp)], "head");
+        return "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)];
     }
     // Subscribe to the active project's rows — the organization's and
     // every owner's — when it changed, or when the connection went.
@@ -152,8 +154,11 @@ locus NervesWatch {
         self.org = "";
         if len(p.org) == 0 { return; }
         self.retry_at = now + NERVES_RETRY_SECS;
-        self.client.url = self.nerves_url(p.root);
-        if len(self.client.url) == 0 || !self.client.open() { self.org = p.org; return; }
+        self.client.url = self.nerves_url(p.root, p.org);
+        self.client.user = "head";
+        // the head's account, sealed: its password is the vault's and is
+        // revealed on CONNECT alone; none in the vault, no connection
+        if len(self.client.url) == 0 || !self.client.open_as(std::secret::Credential { vault: dna::nerves_vault_name(p.org, "head") }) { self.org = p.org; return; }
         let a = self.client.sub_to(p.org + ".head.row.landed", "") or - 1;
         let b = self.client.sub_to(p.org + ".*.head.row.landed", "") or - 1;
         if a < 0 || b < 0 { self.client.close(); }

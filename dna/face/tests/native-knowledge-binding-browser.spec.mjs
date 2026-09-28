@@ -146,9 +146,9 @@ test.skip('native bindings: approved competing candidate reports refused effect 
 
 // Declared skipped, so the fixture never starts for it.
 test.skip('native bindings: removal absence requires complete unfiltered pagination and survives a failed continuation', {
-  annotation: { type: 'issue', description: 'Gated on GH #1148: under the real host the composed head dies with SIGSEGV partway through the 27 reviewed bindings and their restarts.' },
+  annotation: { type: 'issue', description: "GH #1148 (the head's SIGSEGV, and the host's on every stop) is fixed: the 27 bindings and their restarts now run through. Still gated on the lane itself: after the last restart the head's knowledge reads answer knowledge_unavailable (memory refuses the head role's password, 'password authentication failed for user dna_<record>_head'), so the DSN the harness took at start no longer holds; and the setup alone takes ~330 s locally, against the 600 s budget below." },
 }, async ({ page, service }) => {
-  test.setTimeout(180_000); let chosen;
+  test.setTimeout(600_000); let chosen;
   // Every tuple is a real admitted, independently reviewed native effect.
   // Bound setup lifetimes; this proves full-history restart and pagination,
   // not sustained-service operation (tracked separately as a deployment limit).

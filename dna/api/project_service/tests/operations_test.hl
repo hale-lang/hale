@@ -240,7 +240,7 @@ fn main() {
     let parent = root + "/projects";
     std::io::fs::mkdir(parent) or discard;
     // the project the CLI makes (600 s budget for a cold host build)
-    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
+    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_VAULT_DIR=" + parent + "/vault\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stderr);
     git(parent + "/alpha", "config\nuser.name\nops-fixture");
     git(parent + "/alpha", "config\nuser.email\nops-fixture@example.invalid");

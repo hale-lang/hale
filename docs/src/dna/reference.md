@@ -35,8 +35,10 @@ hale dna memory migrate [dir]
                              (HALE_DNA_MEMORY_DSN_SPINE=…, HALE_DNA_MEMORY_DSN_HEAD=…)
 hale dna nerves migrate [dir]
                              create the organization's NATS JetStream stream with the owner's URL
-                             (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token and
-                             each role's URL (HALE_DNA_NATS_ORG=…, HALE_DNA_NATS_URL_SPINE=…, …)
+                             (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token, each
+                             role's URL, nats://host:port alone (HALE_DNA_NATS_ORG=…,
+                             HALE_DNA_NATS_URL_SPINE=…, …), and the vault names the application and
+                             the reflexes present (HALE_DNA_NATS_VAULT_APP=…, …_REFLEXES=…)
 hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
@@ -49,7 +51,7 @@ hale dna ui [project] [--port N]
                              (under `git config dna.principal oidc`: a hosted head behind sign-in at
                              dna.oidc.issuer, every ID token verified ES256 against its JWKS, read at
                              start; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
-                             "<subject>=<name>", dna.oidc.board, HALE_DNA_OIDC_SECRET; without it,
+                             "<subject>=<name>", dna.oidc.board, the vault's oidc-client-<client>; without it,
                              a fixture's trusted-local session only (HALE_DNA_TRUSTED_LOCAL=1);
                              the head's socket knows a peer by uid: --local dna.unix.member "uid:<n>=<name>";
                              the record's own commands are gated topics on that same socket, listed by
@@ -122,8 +124,11 @@ hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definit
                              each occurrence is one execution of the definition, `sched:<id>@<time>`;
                              --args names every input the definition takes (GH #1143)
 hale dna secret set <NAME> [--body <user@host>]
-                             a credential from stdin into ~/.config/hale-dna/<project>-<record>.env there or
-                             here; `secret rotate <NAME>`; the record gets `secret.rotated` only
+                             a credential from stdin into its slot of the vault there or here (a model
+                             key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET); `secret rotate <NAME>`; the
+                             record gets `secret.rotated` only
+hale dna secrets [dir]       every secret the organism requires, whether the vault holds it, and what
+                             provides a missing one (never a value)
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one
 hale dna concern raise <source> <what…> [--severity N]
@@ -176,7 +181,10 @@ the stream (`nerves migrate`, `dev`); `HALE_DNA_NATS_URL_SPINE` and
 runs the organism is handed and the organization inherits;
 `HALE_DNA_NATS_URL_HEAD` and `HALE_DNA_NATS_URL_APP`, a head's and an
 application's (the face's head, without its own, subscribes as the head
-on the owner's server or the project's compose `nerves`). The host
+on the owner's server or the project's compose `nerves`). No URL carries
+a password: each role's is the vault's `nats-<org>-<role>`, and a program
+that is not the host is handed the name of its entry
+(`HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_VAULT_REFLEXES`). The host
 hands its organization its body lease as `HALE_DNA_LEASE` /
 `HALE_DNA_LEASE_TOKEN` once the ledger is adopted.
 `LOTUS_DRAIN_GRACE_MS` is how long a node has to drain on SIGTERM —
@@ -190,8 +198,8 @@ compiler every operation execs, absolute), `HALE_DNA_HEAD_STATE`
 `${XDG_STATE_HOME:-~/.local/state}/hale/dna/head`: registry, receipt
 journal, runs, children). Secret sources live under
 `${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, one line,
-mode `0600`, beside the `.env` file `hale dna secret set` writes; the
-head passes the name, the run's shell reads the value.
+mode `0600`; the head passes the name, the run's shell reads the
+value.
 
 ## The record's vocabulary
 

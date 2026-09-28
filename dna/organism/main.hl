@@ -17,7 +17,9 @@
 //   hale build dna/organism && ./dna/organism/organism
 //
 // with HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG naming the nerves
-// (`hale dna nerves migrate` prints both). The pending Review `r1` stands
+// (`hale dna nerves migrate` prints both); it connects as the spine, its
+// password the vault's entry, presented on CONNECT alone (GH #989). The
+// pending Review `r1` stands
 // in for the first governed workflow (ratify the declared purpose).
 
 import "../core" as dna;
@@ -38,7 +40,7 @@ main locus Organism {
         reported_settled: Bool = false;
         // 0 = run until killed; otherwise the number of 100ms ticks.
         ticks: Int = 0;
-        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), name: "organism", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
+        nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "organism", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
     }
 
     placement { nerves: pinned; }

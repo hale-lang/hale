@@ -80,6 +80,8 @@ main locus App {
         }
         let p1 = self.in_dir(app, "git\npush\n-q\norigin\nrefs/dna/*:refs/dna/*");
         let identity = dna::GitRecord { repo: app }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
         std::test::assert(m.ok, "memory migrates: " + m.why);
         self.head = m.head_dsn;

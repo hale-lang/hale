@@ -190,7 +190,7 @@ main locus App {
         // reading (once its outstanding pull has expired, a second, nothing
         // reaches it), the host relays the concern, and the fixture takes
         // it off the organization's consumer and acknowledges it.
-        let c = nats::NatsClient { url: spine, name: "relay-repeat-thief", timeout: 2s };
+        let c = nats::NatsClient { url: spine, user: "spine", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "spine") }, name: "relay-repeat-thief", timeout: 2s };
         std::test::assert(c.open(), "the fixture reaches the nerves: " + c.last_error);
         let stopped = dna::run_tool("kill\n-STOP\n" + org_pid);
         std::test::assert_eq_int(stopped.code, 0, "the organization is stopped: " + stopped.stderr);

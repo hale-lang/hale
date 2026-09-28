@@ -242,6 +242,8 @@ main locus App {
         std::test::assert_eq_str(ops::graph_seat(j, "position:board", "ada"), "", "ada holds the board");
         std::test::assert(j.append(j.revision(), "graph.node", "position:facilitator", ops::graph_node_body("position", "facilitator", "", "")).ok, "the facilitator is a position nobody holds");
         let identity = dna::GitRecord { repo: root }.identity();
+        // the record's roles into the vault first, as its bootstrap does (GH #989)
+        let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
         std::test::assert(m.ok, "memory migrates: " + m.why);
         let spine = dna::migrated(owner, identity);
