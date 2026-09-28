@@ -1259,7 +1259,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 duration_wrapper_fn: None,
                 duration_last_fire_field_idxs,
                 explicit_closures_fn: None,
-                failure_handler: None,
+                failure_handlers: Vec::new(),
                 children_field_idx,
                 child_count_field_idx,
                 child_cap_field_idx,
@@ -1336,7 +1336,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             std::collections::BTreeSet::new();
         let mut closures: Vec<(String, ClosureAssertion, EpochSpec)> =
             Vec::new();
-        let mut failure_handler: Option<(String, FunctionValue<'ctx>)> = None;
+        let mut failure_handlers: Vec<(String, FunctionValue<'ctx>)> = Vec::new();
 
         // Pre-collect bus-handler method names so we can reject
         // defaults on them: bus dispatch is a fixed (self, payload)
@@ -1826,17 +1826,29 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             l.name.name, err_ty
                         )));
                     }
-                    // Sig: void(parent_self, child_self, violation)
+                    // Every handler gets its own fn, pushed in
+                    // declaration order (the body pass pairs them back
+                    // up the same way). The child's locus type is what
+                    // selects one at routing time
+                    // (`LocusInfo::failure_handler_for`); two handlers
+                    // for the SAME child type are check-clean, and the
+                    // first declared is the one that runs.
+                    //
+                    // Sig: void(parent_self, child_self, violation).
+                    // The first handler keeps the plain
+                    // `<L>.on_failure` symbol; later ones carry their
+                    // child type (LLVM uniquifies a repeat).
                     let fn_ty = void_t.fn_type(
                         &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
                         false,
                     );
-                    let func = self.module.add_function(
-                        &format!("{}.on_failure", l.name.name),
-                        fn_ty,
-                        None,
-                    );
-                    failure_handler = Some((child_locus_name, func));
+                    let fn_name = if failure_handlers.is_empty() {
+                        format!("{}.on_failure", l.name.name)
+                    } else {
+                        format!("{}.on_failure.{}", l.name.name, child_locus_name)
+                    };
+                    let func = self.module.add_function(&fn_name, fn_ty, None);
+                    failure_handlers.push((child_locus_name, func));
                 }
                 LocusMember::Mode(md) => {
                     // Modes lower as locus methods named after
@@ -2123,7 +2135,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.duration_closures_fn = duration_closures_fn;
         info.duration_wrapper_fn = duration_wrapper_fn;
         info.explicit_closures_fn = explicit_closures_fn;
-        info.failure_handler = failure_handler;
+        info.failure_handlers = failure_handlers;
         Ok(())
     }
 

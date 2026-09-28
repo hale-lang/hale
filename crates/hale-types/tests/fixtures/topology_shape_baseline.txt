@@ -976,6 +976,9 @@ crates/hale-codegen/tests/obs_fleet_contract.rs#8 d4d1e344f3f21d5c
 crates/hale-codegen/tests/obs_fleet_contract.rs#9 9005b6a9fafa93c0
 crates/hale-codegen/tests/obs_intra_tree_publish.rs#0 7d85b161bd9cf62e
 crates/hale-codegen/tests/obs_net_seq.rs#1 304944bd620cd334
+crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#0 afa7b4b1458e2788
+crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#1 afa7b4b1458e2788
+crates/hale-codegen/tests/on_failure_dispatch_by_child_type.rs#2 c31f3127d0b085e6
 crates/hale-codegen/tests/or_block_disposer.rs#0 8321183f441b55cc
 crates/hale-codegen/tests/or_block_disposer.rs#1 8321183f441b55cc
 crates/hale-codegen/tests/or_block_disposer.rs#2 227c1d5e90db3a24

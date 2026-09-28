@@ -38,9 +38,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Resolve the (parent_self, on_failure_fn) pair for a child
     /// of `child_locus_name` whose closure may fail at dissolve.
     /// Reads `current_self` (set while we're in the parent's
-    /// lifecycle body) and that parent's `failure_handler`. If
+    /// lifecycle body) and that parent's `failure_handlers`. If
     /// the parent declares an on_failure that takes this child
-    /// type, returns the parent's self_ptr + the handler fn ptr.
+    /// type, returns the parent's self_ptr + that handler's fn ptr
+    /// (a parent may declare one handler per child type).
     /// Otherwise returns (null, null) — the closure-fail path
     /// will fall back to the v0 dprintf+exit report.
     pub(crate) fn resolve_failure_route(
@@ -76,14 +77,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let Some(parent_info) = self.user_loci.get(&cs.locus_name) else {
             return (null_ptr, null_ptr);
         };
-        let Some((expected_child, handler_fn)) =
-            parent_info.failure_handler.as_ref()
+        let Some(handler_fn) = parent_info.failure_handler_for(child_locus_name)
         else {
             return (null_ptr, null_ptr);
         };
-        if expected_child != child_locus_name {
-            return (null_ptr, null_ptr);
-        }
         (
             cs.self_ptr,
             handler_fn.as_global_value().as_pointer_value(),

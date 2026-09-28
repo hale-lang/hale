@@ -79,20 +79,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // string) only costs that locus one copy of its params.
         for item in hale_syntax::ast::flat_decls(&self.program.items) {
             let hale_syntax::ast::TopDecl::Locus(l) = item else { continue };
-            let restarts_in_place = l.members.iter().any(|m| {
-                matches!(m, hale_syntax::ast::LocusMember::Failure(fd)
-                    if format!("{:?}", fd.body).contains("RestartInPlace"))
-            });
-            if !restarts_in_place {
+            let Some(info) = self.user_loci.get(&l.name.name) else {
                 continue;
-            }
-            if let Some((child, _)) = self
-                .user_loci
-                .get(&l.name.name)
-                .and_then(|info| info.failure_handler.as_ref())
-            {
-                self.restart_in_place_targets.insert(child.clone());
-            }
+            };
+            // One handler per child type, paired with its lowered fn
+            // in declaration order: only the child types whose OWN
+            // handler restarts in place are targets.
+            let handlers = l.members.iter().filter_map(|m| match m {
+                hale_syntax::ast::LocusMember::Failure(fd) => Some(fd),
+                _ => None,
+            });
+            let targets: Vec<String> = handlers
+                .zip(info.failure_handlers.iter())
+                .filter(|(fd, _)| {
+                    format!("{:?}", fd.body).contains("RestartInPlace")
+                })
+                .map(|(_, (child, _))| child.clone())
+                .collect();
+            self.restart_in_place_targets.extend(targets);
         }
         let names: Vec<String> = self.user_loci.keys().cloned().collect();
         for name in names {

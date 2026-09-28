@@ -64,6 +64,18 @@ locus Bank {
 }
 ```
 
+A parent with children of several types writes one handler per
+type. The failing child's type picks the handler, so each child's
+failure reaches its own:
+
+```hale
+main locus App {
+    params { server: std::http::Server; cache: Cache = Cache { }; }
+    on_failure(s: std::http::Server, err: ClosureViolation) { eprintln("server down"); }
+    on_failure(c: Cache, err: ClosureViolation) { restart(c); }
+}
+```
+
 The parent is the locus that holds the child in a field. It
 does not matter whether the child's literal is the field's
 default or is written in the parent's literal where the parent

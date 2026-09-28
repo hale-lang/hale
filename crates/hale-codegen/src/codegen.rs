@@ -7149,14 +7149,16 @@ pub(crate) struct LocusInfo<'ctx> {
     /// `payload` in scope, not parent context). Always paired
     /// with `tick_closures_fn`.
     pub(crate) tick_wrapper_fn: Option<FunctionValue<'ctx>>,
-    /// `on_failure(child: ChildL, err: ClosureViolation)` handler
-    /// declared on this locus, if any. Each parent has at most
-    /// one handler (per FailureDecl AST shape); the handler's
-    /// first param's type names the single child locus it accepts.
-    /// Stored as (child_locus_name, llvm_fn). When a child of
-    /// matching type fails its closure, the runtime routes the
-    /// violation to this fn instead of dprintf+exit.
-    pub(crate) failure_handler: Option<(String, FunctionValue<'ctx>)>,
+    /// `on_failure(child: ChildL, err: ClosureViolation)` handlers
+    /// declared on this locus, one entry per declaration, in
+    /// declaration order; each handler's first param names the
+    /// child type it accepts. Stored as (child_locus_name, llvm_fn).
+    /// When a child fails its closure, the violation routes to the
+    /// handler whose child type is the child's own locus type
+    /// (`failure_handler_for`; the first declared, if two name the
+    /// same type) instead of dprintf+exit. Every handler takes
+    /// `ClosureViolation`, so the child type is the only selector.
+    pub(crate) failure_handlers: Vec<(String, FunctionValue<'ctx>)>,
     /// When this locus declares `accept(child: T)` AND a method
     /// body iterates `for child in self.children`, every accept
     /// dispatch appends the child's self_ptr to a growable
@@ -7444,6 +7446,23 @@ pub(crate) struct LocusInfo<'ctx> {
     /// — for accept-in-a-loop patterns (`coord_with_churn`-style)
     /// that's the dominant per-child cost.
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
+}
+
+impl<'ctx> LocusInfo<'ctx> {
+    /// The `on_failure` handler this locus declares for a child of
+    /// locus type `child_locus_name`, if any. Selection is by the
+    /// child's type alone: a locus with a handler per child type
+    /// routes each child's failure to its own handler, never to
+    /// whichever handler happens to be declared first or last.
+    pub(crate) fn failure_handler_for(
+        &self,
+        child_locus_name: &str,
+    ) -> Option<FunctionValue<'ctx>> {
+        self.failure_handlers
+            .iter()
+            .find(|(child, _)| child == child_locus_name)
+            .map(|(_, f)| *f)
+    }
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -12132,9 +12151,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .deployment.main_locus_name
                 .as_ref()
                 .and_then(|n| self.user_loci.get(n))
-                .and_then(|info| info.failure_handler.as_ref())
-                .filter(|(child, _)| child == "__StdBusUnixConnectTransport")
-                .map(|(_, f)| *f);
+                .and_then(|info| {
+                    info.failure_handler_for("__StdBusUnixConnectTransport")
+                });
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler)?;
             }

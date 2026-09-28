@@ -1,0 +1,41 @@
+// A locus with one `on_failure` per child type routes each child's
+// failure to the handler for that child's own locus type (downstream
+// handoff). Both handlers take `ClosureViolation`, so the child's
+// type is the only selector: codegen used to keep one handler slot,
+// which ran the first handler's body for the last handler's type and
+// found no handler at all for the first.
+//
+// Each handler counts into its own field and records the child it
+// was handed; the counters must end where each child's failures went.
+
+locus Alpha {
+    params { n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = self.n + 1; violate boom; }
+}
+
+locus Beta {
+    params { n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = self.n + 10; violate boom; }
+}
+
+main locus App {
+    params {
+        a: Alpha = Alpha { };
+        b: Beta = Beta { };
+        alpha_seen: Int = 0;
+        beta_seen: Int = 0;
+    }
+    on_failure(x: Alpha, err: ClosureViolation) { self.alpha_seen = self.alpha_seen + x.n; }
+    on_failure(y: Beta, err: ClosureViolation) { self.beta_seen = self.beta_seen + y.n; }
+    run() {
+        self.b.go();
+        self.a.go();
+        self.b.go();
+        std::test::assert_eq_int(self.alpha_seen, 1, "Alpha's failure ran the Alpha handler once");
+        std::test::assert_eq_int(self.beta_seen, 30, "Beta's two failures ran the Beta handler, handed Beta");
+    }
+}
+
+fn main() { App { }; }
