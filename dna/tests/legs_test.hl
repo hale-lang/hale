@@ -191,6 +191,24 @@ locus App {
         return n;
     }
     fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
+    // An attempt's outcome is requested, once, and not yet answered.
+    fn outcome_waits(attempt: String) -> Bool {
+        return self.count_rows("attempt.outcome_requested", attempt) == 1 && !self.has_row("attempt.outcome", attempt) && !self.has_row("attempt.outcome_refused", attempt);
+    }
+    // Every row about an attempt, in the record's order (`seq kind`), its
+    // effect's included: what a relay that missed it had to go on.
+    @unbounded
+    fn attempt_rows(attempt: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = attempt + ":";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.entity == attempt || e.entity == "attempt:" + attempt { out = out + " " + to_string(i) + " " + e.kind; }
+            i = i + 1;
+        }
+        return out;
+    }
     @unbounded
     fn row_body(kind: String, entity: String) -> String {
         let moved = self.journal.refresh();
@@ -476,7 +494,12 @@ locus App {
         std::test::assert(std::str::contains(looped, "\"holder\": \"position:agent#1\"") && std::str::contains(looped, "\"holder\": \"position:agent#2\""), "two workers, each its own holder: " + looped);
         std::test::assert(std::str::contains(looped, "\"attempt_id\": \"" + a8 + "\"") && std::str::contains(looped, "\"attempt_id\": \"" + a9 + "\""), "each took one attempt: " + looped);
         std::test::assert(std::str::contains(looped, "\"state\": \"ended\", \"workers\": 2, \"ran\": 2"), "and the loop ended after one task each: " + looped);
-        std::test::assert_eq_int(relay_once(self.app), 2, "both outcomes relayed");
+        // each worker's outcome is a row the relay can see, and neither is
+        // answered yet: a relay that finds fewer names the one it missed
+        std::test::assert(self.outcome_waits(a8), "the first worker's outcome waits to be relayed: " + self.attempt_rows(a8) + "\nthe workers said: " + looped);
+        std::test::assert(self.outcome_waits(a9), "the second worker's outcome waits to be relayed: " + self.attempt_rows(a9) + "\nthe workers said: " + looped);
+        let relayed = relay_once(self.app);
+        std::test::assert(relayed == 2, "both outcomes relayed, not " + to_string(relayed) + ":\n" + self.attempt_rows(a8) + "\n" + self.attempt_rows(a9));
         self.wait_row("attempt.outcome", a8, "the first settles");
         self.wait_row("attempt.outcome", a9, "and the second");
         // a loop with nothing to claim ends its --once children on the refusal
