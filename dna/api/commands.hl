@@ -84,6 +84,7 @@ type TaskCreateOutcome { intent_id: String = ""; intent_state: String = ""; task
 type AttemptCommandOutcome {
     state: String = ""; attempt_id: String = ""; work_id: String = ""; task_id: String = ""; performer_kind: String = "";
     holder: String = ""; token: Int = -1; until: Int = 0; disposition: String = ""; reason: String = ""; event_id: String = "";
+    allowance_micros: Int = -1; // GH #1131: an ask for spend the spine granted, what the attempt may cost (-1: nothing bounds it)
 }
 type OrganizationCommandOutcome {
     proposal_state: String = "pending";
@@ -324,6 +325,8 @@ type Outcome {
 }
 type Renewal { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; ttl: Int = 0; }
 type Release { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; why: String = ""; }
+// A leg's ask for its attempt's spend (GH #1131): the lease alone.
+type Allowance { request_id: String = ""; attempt_id: String = ""; holder: String = ""; token: Int = 0; }
 type Friction { request_id: String = ""; record_head: String = ""; position: String = ""; attempt_id: String = ""; text: String = ""; }
 type Lookup { request_id: String = ""; }
 // Every command's answer: the provider's result and the receipt as the
@@ -347,6 +350,7 @@ topic AttemptClaim { payload: Claim; subject: "dna.commands.attempt.claim"; }
 topic AttemptOutcome { payload: Outcome; subject: "dna.commands.attempt.outcome"; }
 topic AttemptRenew { payload: Renewal; subject: "dna.commands.attempt.renew"; }
 topic AttemptRelease { payload: Release; subject: "dna.commands.attempt.release"; }
+topic AttemptAllowance { payload: Allowance; subject: "dna.commands.attempt.allowance"; }
 topic FrictionFile { payload: Friction; subject: "dna.commands.friction.file"; }
 topic CommandLookup { payload: Lookup; subject: "dna.commands.lookup"; }
 
@@ -480,6 +484,9 @@ locus CommandAdmission {
     fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: r.request_id, operation: "dna.attempt.release", target_kind: "dna.attempt", target_id: r.attempt_id, subject_digest: lease_of(r.holder, r.token), attempt_id: r.attempt_id, holder: r.holder, token: r.token, narrative: r.why });
     }
+    fn allowance(a: Allowance, ctx: std::api::Context) -> CommandReply {
+        return self.submit(ctx, CommandRequest { request_id: a.request_id, operation: "dna.attempt.allowance", target_kind: "dna.attempt", target_id: a.attempt_id, subject_digest: lease_of(a.holder, a.token), attempt_id: a.attempt_id, holder: a.holder, token: a.token });
+    }
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply {
         return self.submit(ctx, CommandRequest { request_id: f.request_id, operation: "dna.friction.file", target_kind: "dna.friction", subject_digest: f.record_head, record_head: f.record_head, performer: f.position, attempt_id: f.attempt_id, result: f.text });
     }
@@ -516,6 +523,7 @@ locus Commands {
         subscribe AttemptOutcome as outcome;
         subscribe AttemptRenew as renew;
         subscribe AttemptRelease as release_attempt;
+        subscribe AttemptAllowance as ask_allowance;
         subscribe FrictionFile as file_friction;
         subscribe CommandLookup as lookup;
         subscribe KnowledgeEdgeLink as link_knowledge;
@@ -546,6 +554,8 @@ locus Commands {
     fn renew(r: Renewal, ctx: std::api::Context) -> CommandReply { return self.admission.renew(r, ctx); }
     @gated(role: position)
     fn release_attempt(r: Release, ctx: std::api::Context) -> CommandReply { return self.admission.release_attempt(r, ctx); }
+    @gated(role: position)
+    fn ask_allowance(a: Allowance, ctx: std::api::Context) -> CommandReply { return self.admission.allowance(a, ctx); }
     @gated(role: position)
     fn file_friction(f: Friction, ctx: std::api::Context) -> CommandReply { return self.admission.file_friction(f, ctx); }
     fn lookup(l: Lookup, ctx: std::api::Context) -> CommandReply { return self.admission.lookup(l, ctx); }

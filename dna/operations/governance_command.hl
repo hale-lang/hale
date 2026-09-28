@@ -71,7 +71,7 @@ type GovernanceCommand {
 // What a claim or an outcome command reads back (GH #946): the attempt
 // and its lease as a value, or the refusal with its reason.
 type AttemptCommandOutcome {
-    state: String = ""; // claimed | requested | settled | refused | unknown
+    state: String = ""; // claimed | renewed | released | filed | requested | granted | settled | unresolved | refused | unknown
     attempt_id: String = "";
     work_id: String = "";
     task_id: String = "";
@@ -82,6 +82,7 @@ type AttemptCommandOutcome {
     disposition: String = "";
     reason: String = "";
     event_id: String = "";
+    allowance_micros: Int = -1; // an ask for spend the spine granted: what the attempt may cost (-1: nothing bounds it)
 }
 
 locus GovernanceCommandCodec {

@@ -16,7 +16,11 @@
 // — `attempt.outcome` naming the request, so the relay stops — or refuses
 // it as a row when the lease moved under it. An owner restart with a leg
 // attempt in flight leaves it to its claim, and asks again when the
-// claim expires. With memory (HALE_DNA_MEMORY_DSN_OWNER) the same runs
+// claim expires. Before its first model call the leg asks the spine for
+// the attempt's spend (GH #1131): the ask lands under the lease, the relay
+// carries it, and the owner's one gate grants it as a row the lookup
+// reads; calls handed back with no grant, or past it, refuse the outcome
+// and are journaled all the same. With memory (HALE_DNA_MEMORY_DSN_OWNER) the same runs
 // with the store deciding the race, the hat kept by its digest, and the
 // whole of it again on an organism that adopted the ledger.
 
@@ -79,7 +83,7 @@ locus App {
             org_id: "legs"
         };
         std::test::assert_eq_str(self.core.catalog.define("judge", 1, "record", "one judgment"), "", "judge");
-        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment" }, 2), "", "j");
+        std::test::assert_eq_str(self.core.catalog.leaf("judge", 1, 0, "j", dna::WorkRequest { objective: "assess the storage migration", requires: "judgment", output_contract: "Assessment", cost_ceiling: 100 }, 2), "", "j");
         // a person's job: the organism's own human relay holds it (GH #1158)
         std::test::assert_eq_str(self.core.catalog.define("person", 1, "record", "a person's job"), "", "person");
         std::test::assert_eq_str(self.core.catalog.leaf("person", 1, 0, "p", dna::WorkRequest { objective: "sign the lease", requires: "human" }, 1), "", "p");
@@ -153,6 +157,25 @@ locus App {
             request_id: request, operation: "dna.attempt.renew", operation_version: "1", application_id: identity, position_id: "org",
             target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
             attempt_id: attempt, holder: holder, token: token, ttl: 600
+        };
+    }
+    // The spend asked for a lease and granted (GH #1131): the ask admitted,
+    // relayed, answered. The allowance.
+    fn granted(commands: ops::GovernanceCommands, who: ops::GovernanceContext, request: String, identity: String, attempt: String, holder: String, token: Int, l: String) -> Int {
+        let asked = commands.submit(who, self.allowance_of(request, identity, attempt, holder, token));
+        std::test::assert(asked.ok && asked.receipt.attempt.state == "requested", l + "the ask for " + attempt + " is admitted: " + asked.code + " " + asked.receipt.reason);
+        let relayed = relay_once(self.app, "\n");
+        let mut tries = 0;
+        let mut read = commands.lookup(who, request);
+        while tries < 400 * dna::wait_scale() && read.receipt.attempt.state == "requested" { std::time::sleep(25ms); tries = tries + 1; read = commands.lookup(who, request); }
+        std::test::assert_eq_str(read.receipt.attempt.state, "granted", l + "the spine grants the spend for " + attempt + ": " + read.receipt.reason);
+        return read.receipt.attempt.allowance_micros;
+    }
+    fn allowance_of(request: String, identity: String, attempt: String, holder: String, token: Int) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand {
+            request_id: request, operation: "dna.attempt.allowance", operation_version: "1", application_id: identity, position_id: "org",
+            target_kind: "dna.attempt", target_id: attempt, subject_digest: "lease:" + holder + "@" + to_string(token),
+            attempt_id: attempt, holder: holder, token: token
         };
     }
     fn claim_of(request: String, identity: String, head: String, kind: String, performer: String, classes: String) -> ops::GovernanceCommand {
@@ -392,6 +415,22 @@ locus App {
         // refuses a leg's word on an attempt never relayed to one
         self.core.on_work_submit(dna::WorkSubmission { attempt_id: ap, holder: "position:human#" + pass, token: 1, disposition: "done", result: "signed", request: label + "sp" });
         std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", ap), "was never relayed to a leg") && !self.has_row("attempt.outcome", ap), l + "the owner refuses a leg's outcome on the person's case: " + self.row_body("attempt.outcome_refused", ap));
+        // ---- the spend (GH #1131): the ask, under the lease — a wrong token is
+        // stale, and writes nothing
+        let aw0 = commands.submit(alice, self.allowance_of(label + "aw0", identity, a1, alice_leg, token + 1));
+        std::test::assert(aw0.ok && aw0.receipt.state == "refused" && std::str::contains(aw0.receipt.reason, "stale"), l + "an ask under a wrong token is stale: " + aw0.receipt.reason);
+        std::test::assert(!self.has_row("attempt.allowance_requested", a1), l + "and writes no row");
+        let aw = commands.submit(alice, self.allowance_of(label + "aw1", identity, a1, alice_leg, token));
+        std::test::assert(aw.ok && aw.receipt.attempt.state == "requested", l + "the ask is admitted, requested until the spine answers: " + aw.code + " " + aw.receipt.reason);
+        std::test::assert(std::str::contains(self.row_body("attempt.allowance_requested", a1), "\"holder\": \"" + alice_leg + "\""), l + "a row under the lease");
+        let relay_a = relay_once(self.app, "\n");
+        std::test::assert_eq_int(relay_a.relayed_count, 1, l + "the ask is relayed: " + relay_a.error);
+        self.wait_row("attempt.allowance_granted", a1, l + "the spine's gate answers the ask");
+        let granted = self.row_body("attempt.allowance_granted", a1);
+        let allowance = std::json::find_int_field(granted, "allowance_micros");
+        std::test::assert(allowance == 100 && std::str::contains(granted, "\"token\": " + to_string(token)) && std::str::contains(granted, "\"ceiling_micros\": 100"), l + "granted to the lease, the Work's own ceiling under what the window has left: " + granted);
+        let aw_read = commands.lookup(alice, label + "aw1");
+        std::test::assert(aw_read.ok && aw_read.receipt.attempt.state == "granted" && aw_read.receipt.attempt.allowance_micros == allowance, l + "the lookup reads the grant: " + aw_read.receipt.attempt.state + " " + to_string(aw_read.receipt.attempt.allowance_micros));
         // the hat the leg wears, and the outcome under the lease
         let hat = self.hat_of(a1);
         let r4 = commands.submit(alice, self.outcome_of(label + "o0", identity, a1, alice_leg, token + 1, hat));
@@ -475,6 +514,7 @@ locus App {
         // the lease's holder now hands an outcome back: a refused request under
         // the earlier lease is nobody's duplicate (B3), and the owner settles it
         let carol = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "carol" };
+        let g2 = self.granted(commands, carol, label + "aw3c", identity, a2, carol_leg, carol_token, l);
         let o2c = commands.submit(carol, self.outcome_of(label + "o3c", identity, a2, carol_leg, carol_token, hat2));
         std::test::assert(o2c.ok && o2c.receipt.attempt.state == "requested", l + "the lease's holder hands an outcome back after a refusal: " + o2c.code + " " + o2c.receipt.state + " " + o2c.receipt.reason);
         std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "and it is relayed");
@@ -512,6 +552,7 @@ locus App {
         let c4 = commands.submit(alice, brief4);
         std::test::assert(c4.ok && c4.receipt.attempt.state == "claimed" && c4.receipt.attempt.attempt_id == a4, l + "t4 claimed under a short lease");
         let hat4 = self.hat_of(a4);
+        let g4 = self.granted(commands, alice, label + "aw4", identity, a4, alice_leg, c4.receipt.attempt.token, l);
         let o4 = commands.submit(alice, self.outcome_of(label + "o4", identity, a4, alice_leg, c4.receipt.attempt.token, hat4));
         std::test::assert(o4.ok && o4.receipt.attempt.state == "requested", l + "t4 outcome requested while the lease was live");
         std::time::sleep(2500ms);
@@ -522,6 +563,25 @@ locus App {
         let t = usage.under(task_of(a1));
         std::test::assert_eq_int(t.input_tokens, 1200, l + "tokens per task hold out of process");
         std::test::assert(std::str::contains(t.by_position, "position:agent 1 1200 340 55"), l + "under the position: " + t.by_position);
+        // ---- t5: the spend's refusals (GH #1131), on an attempt of their own:
+        // calls handed back with no grant for the lease refuse the outcome,
+        // calls past the grant refuse it too, and what was spent is journaled
+        // either way; within the grant it settles
+        let a5 = self.ask();
+        let c5 = commands.submit(alice, self.claim_of(label + "c8", identity, record.head("journal").id, "agent", alice_leg, "internal"));
+        std::test::assert(c5.ok && c5.receipt.attempt.state == "claimed" && c5.receipt.attempt.attempt_id == a5, l + "t5 claimed: " + c5.receipt.reason);
+        let token5 = c5.receipt.attempt.token;
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5, holder: alice_leg, token: token5, disposition: "done", result: "unasked", calls: CALLS, request: label + "ng", at: std::time::now() });
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", a5), "with no spend admitted for the lease") && !self.has_row("attempt.outcome", a5), l + "calls with no grant refuse the outcome: " + self.row_body("attempt.outcome_refused", a5));
+        std::test::assert_eq_int(self.count_rows("model.called", a5), 1, l + "and what was spent is journaled");
+        let g5 = self.granted(commands, alice, label + "aw5", identity, a5, alice_leg, token5, l);
+        self.core.on_work_submit(dna::WorkSubmission { attempt_id: a5, holder: alice_leg, token: token5, disposition: "done", result: "overspent", calls: "[{\"adapter\": \"fake\", \"backend\": \"deep\", \"cost_micros\": " + to_string(g5 + 1) + "}]", request: label + "ov", at: std::time::now() });
+        std::test::assert(std::str::contains(self.row_body("attempt.outcome_refused", a5), "past the allowance of " + to_string(g5) + " granted") && !self.has_row("attempt.outcome", a5), l + "calls past the grant refuse the outcome: " + self.row_body("attempt.outcome_refused", a5));
+        std::test::assert_eq_int(self.count_rows("model.called", a5), 2, l + "journaled too");
+        let o5 = commands.submit(alice, self.outcome_of(label + "o5", identity, a5, alice_leg, token5, self.hat_of(a5)));
+        std::test::assert(o5.ok && o5.receipt.attempt.state == "requested", l + "the outcome within the grant: " + o5.receipt.reason);
+        std::test::assert_eq_int(relay_once(self.app, "\n").relayed_count, 1, l + "relayed");
+        self.wait_row("attempt.outcome", a5, l + "and it settles");
     }
     // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
     @unbounded

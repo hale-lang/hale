@@ -643,3 +643,17 @@ type WorkSubmission {
     renderer: String = "";
 }
 topic WorkSubmit { payload: WorkSubmission; subject: "dna.work.submit"; }
+// A leg's ask for the spend of its attempt (GH #1131), relayed from the
+// `attempt.allowance_requested` row the head writes under the lease:
+// before its first model call a leg asks the spine, which holds the one
+// budget, and the answer is a row naming the request —
+// `attempt.allowance_granted` with what the attempt may cost, or
+// `attempt.allowance_refused` with why. The leg reads it at the head.
+type WorkAllowance {
+    attempt_id: String = "";
+    holder: String = ""; // the performer the claim was taken for
+    token: Int = 0; // the claim's fencing token
+    request: String = ""; // the command id the row answers
+    at: Int = 0; // when the head admitted it: the lease is judged as of then
+}
+topic WorkAllowanceAsk { payload: WorkAllowance; subject: "dna.work.allowance"; }

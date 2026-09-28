@@ -198,6 +198,25 @@ locus StepAsks { capacity { heap rows of StepAsk; } }
 // what it wrote, or no disposition — it waits, and is performed again.
 type StepVerdict { disposition: String = ""; result: String = ""; narrative: String = ""; }
 
+// What a leg's reported calls spent (GH #1131): the calls made — a wait
+// row (`adapter: legs`) is none — and what they cost together.
+type LegSpend { calls: Int = 0; cost_micros: Int = 0; }
+@unbounded
+fn spend_of(calls: String) -> LegSpend {
+    let mut out = LegSpend { };
+    if len(calls) == 0 || !std::json::valid(calls) { return out; }
+    let mut it = std::json::array_first(calls);
+    let mut n = 0;
+    while !it.done && n < 256 {
+        if std::json::find_string_field(it.element, "adapter") != "legs" { out.calls = out.calls + 1; }
+        let c = std::json::find_int_field(it.element, "cost_micros");
+        out.cost_micros = out.cost_micros + (if c > 0 { c } else { 0 });
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
 fn step_done(result: String, narrative: String) -> StepVerdict { return StepVerdict { disposition: "done", result: result, narrative: narrative }; }
 fn step_failed(why: String) -> StepVerdict { return StepVerdict { disposition: "failed", narrative: why }; }
 fn step_waits() -> StepVerdict { return StepVerdict { }; }
@@ -506,6 +525,7 @@ locus Dna {
         subscribe KnowledgeEdgeRequested as on_knowledge_edge_requested;
         subscribe OrganizationSourceRequested as on_organization_source_requested;
         subscribe WorkSubmit as on_work_submit;
+        subscribe WorkAllowanceAsk as on_work_allowance;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
         publish ReviewRequested;
@@ -2482,11 +2502,47 @@ locus Dna {
                 retry_of: std::json::find_string_field(c, "retry_of"),
                 data_class: std::json::find_string_field(c, "data_class"),
                 ok: len(refused) == 0,
-                refused: refused
+                refused: refused,
+                waited_ms: std::json::find_int_field(c, "waited_ms")
             });
             n = n + 1;
             it = std::json::array_next(it);
         }
+    }
+    // A leg's ask for its attempt's spend (GH #1131), relayed from its
+    // `attempt.allowance_requested` row: the lease checked as an outcome's
+    // is — this holder, this token, live as of the head's admission — then
+    // the one gate, with the attempt's own cost ceiling. The answer is a
+    // row naming the request: granted with the allowance, or refused.
+    @unbounded
+    fn on_work_allowance(a: WorkAllowance) {
+        let moved = self.journal.refresh();
+        if len(a.attempt_id) == 0 { return; }
+        let adm = recorded_attempt_admission(self.journal, a.attempt_id, self.journal.revision());
+        if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
+        if self.allowance_answered(a) { return; }
+        let claim = self.recorded_claim(a.attempt_id);
+        let now = if a.at > 0 { a.at } else { std::time::now() };
+        let mut why = "";
+        if recorded_attempt_outcome(self.journal, a.attempt_id, self.journal.revision()).ok { why = "attempt " + a.attempt_id + " is settled; no spend is admitted for it"; }
+        else if !self.has_row("effect.relayed", execution_key(a.attempt_id)) { why = "attempt " + a.attempt_id + " was never relayed to a leg; the organism performs it"; }
+        else if !claim.present { why = "attempt " + a.attempt_id + " was never claimed by a leg"; }
+        else if claim.holder != a.holder || claim.token != a.token { why = "the lease on attempt " + a.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + a.holder + "'s at token " + to_string(a.token) + ": stale"; }
+        else if claim.expires <= now { why = "the lease on attempt " + a.attempt_id + " expired at " + to_string(claim.expires); }
+        if len(why) > 0 {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("why", why);
+            b.string_field("holder", a.holder);
+            b.int_field("token", a.token);
+            b.string_field("request", a.request);
+            b.int_field("at", std::time::now());
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", a.attempt_id, b.result());
+            return;
+        }
+        let g = self.spend_gate(a.attempt_id, adm.value.request.cost_ceiling, a.request, a.holder, a.token, std::time::now());
+        if !g.ok { self.board.notify("attempt", "attempt " + a.attempt_id + ": no spend admitted for " + a.holder + ": " + g.why); }
     }
     // A leg's outcome for the attempt it claimed, relayed from its
     // `attempt.outcome_requested` row. The lease is checked here as the
@@ -2529,6 +2585,22 @@ locus Dna {
             else if !live.present || live.holder != s.holder || live.token != s.token || live.expires <= now { why = "memory's claim on attempt " + s.attempt_id + " is not " + s.holder + "'s at token " + to_string(s.token) + " now: stale"; }
         }
         if len(why) > 0 { self.refuse_submission(s, why); return; }
+        // GH #1131: what a leg's calls cost is within what the spine granted
+        // its lease — nothing, when it asked for nothing; past it, the
+        // outcome is refused, and the calls are journaled all the same:
+        // what was spent is spent
+        let spent = spend_of(s.calls);
+        if spent.calls > 0 {
+            let g = self.granted_to(s.attempt_id, s.holder, s.token);
+            let past = if !g.ok && spent.cost_micros > 0 { "the calls cost " + to_string(spent.cost_micros) + " micro-dollars with no spend admitted for the lease (`hale dna work allowance` before the first call)" }
+            else if g.ok && g.allowance_micros >= 0 && spent.cost_micros > g.allowance_micros { "the calls cost " + to_string(spent.cost_micros) + " micro-dollars, past the allowance of " + to_string(g.allowance_micros) + " granted to the lease" }
+            else { "" };
+            if len(past) > 0 {
+                self.journal_calls(s.attempt_id, s.calls);
+                self.refuse_submission(s, past);
+                return;
+            }
+        }
         let mut r = WorkResult {
             disposition: s.disposition, result: s.result, result_ref: s.result_ref, narrative: s.narrative, evidence: s.evidence_ref,
             performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id,

@@ -20,13 +20,20 @@
 // with the same token and a later `until`), `dna.attempt.release@1`
 // gives it back without an outcome (`attempt.released`), and
 // `dna.friction.file@1` files what got in a position's way as a row
-// (`friction.filed`), which nobody admits: it is a fact.
+// (`friction.filed`), which nobody admits: it is a fact. And
+// `dna.attempt.allowance@1` (GH #1131) asks the spine for the attempt's
+// spend before the leg's first model call: under the lease, as a renewal
+// is, the head writes `attempt.allowance_requested`; a node relays it to
+// the owner, which holds the one budget and answers with
+// `attempt.allowance_granted` (what the attempt may cost) or
+// `attempt.allowance_refused` (why). It reads back `requested` until then.
 import "../core" as dna;
 
 const ATTEMPT_CLAIM_FORMAT: String = "dna.attempt-claim-command/1";
 const ATTEMPT_OUTCOME_FORMAT: String = "dna.attempt-outcome-command/1";
 const ATTEMPT_RENEW_FORMAT: String = "dna.attempt-renew-command/1";
 const ATTEMPT_RELEASE_FORMAT: String = "dna.attempt-release-command/1";
+const ATTEMPT_ALLOWANCE_FORMAT: String = "dna.attempt-allowance-command/1";
 const FRICTION_FORMAT: String = "dna.friction-command/1";
 const ATTEMPT_TTL_MAX: Int = 86400;
 const ATTEMPT_CLASSES: String = "public internal customer confidential";
@@ -108,15 +115,17 @@ locus AttemptCommandCodec {
     fn outcome(operation: String) -> Bool { return operation == "dna.attempt.outcome"; }
     fn renew(operation: String) -> Bool { return operation == "dna.attempt.renew"; }
     fn releasing(operation: String) -> Bool { return operation == "dna.attempt.release"; }
+    fn allowance(operation: String) -> Bool { return operation == "dna.attempt.allowance"; }
     fn friction(operation: String) -> Bool { return operation == "dna.friction.file"; }
     // The operations that name a lease: an attempt, its holder and token.
-    fn leased(operation: String) -> Bool { return self.outcome(operation) || self.renew(operation) || self.releasing(operation); }
+    fn leased(operation: String) -> Bool { return self.outcome(operation) || self.renew(operation) || self.releasing(operation) || self.allowance(operation); }
     fn known(operation: String, version: String) -> Bool { return version == "1" && (self.claim(operation) || self.leased(operation) || self.friction(operation)); }
     fn format_of(operation: String) -> String {
         if self.claim(operation) { return ATTEMPT_CLAIM_FORMAT; }
         if self.outcome(operation) { return ATTEMPT_OUTCOME_FORMAT; }
         if self.renew(operation) { return ATTEMPT_RENEW_FORMAT; }
         if self.releasing(operation) { return ATTEMPT_RELEASE_FORMAT; }
+        if self.allowance(operation) { return ATTEMPT_ALLOWANCE_FORMAT; }
         return FRICTION_FORMAT;
     }
     // The fields these two operations carry; every other variant
@@ -217,6 +226,10 @@ locus AttemptCommandCodec {
             // `narrative` says why it is given back
             return lease && c.effect_class == "" && c.ttl == 0 && common.bounded(c.narrative, 2048, false, true) && c.disposition == "" && c.result == "" && c.result_ref == "" && c.evidence == "" && c.receipts == "";
         }
+        if self.allowance(c.operation) {
+            // the lease alone: what the attempt may cost is the spine's to say
+            return lease && c.effect_class == "" && c.ttl == 0 && c.narrative == "" && c.disposition == "" && c.result == "" && c.result_ref == "" && c.evidence == "" && c.receipts == "";
+        }
         // the outcome names its performer's effect class: what a failed settle may have left behind
         return lease && c.ttl == 0 && dna::effect_class_ok(c.effect_class)
             && self.disposition_ok(c.disposition) && (c.disposition != "unresolved" || c.effect_class == "uncertain") && common.bounded(c.result, 16384, false, true) && common.bounded(c.result_ref, 256, false, false)
@@ -241,6 +254,7 @@ locus AttemptCommandCodec {
             b.append_str(",\"token\":"); b.append_str(to_string(c.token));
             if self.renew(c.operation) { b.append_str(",\"ttl\":"); b.append_str(to_string(c.ttl)); }
             else if self.releasing(c.operation) { self.field(b, "why", c.narrative); }
+            else if self.allowance(c.operation) { }
             else {
                 self.field(b, "effect_class", c.effect_class);
                 self.field(b, "disposition", c.disposition); self.field(b, "result", c.result); self.field(b, "result_ref", c.result_ref); self.field(b, "narrative", c.narrative);
@@ -274,6 +288,7 @@ locus AttemptCommandCodec {
             c.subject_digest = self.lease_digest(c.holder, c.token);
             if self.renew(operation) { c.ttl = std::json::find_int_field(document, "ttl"); }
             else if self.releasing(operation) { c.narrative = common.string(document, "why"); }
+            else if self.allowance(operation) { }
             else {
                 c.effect_class = common.string(document, "effect_class");
                 c.disposition = common.string(document, "disposition"); c.result = common.string(document, "result"); c.result_ref = common.string(document, "result_ref"); c.narrative = common.string(document, "narrative");
@@ -512,6 +527,18 @@ locus AttemptCommandCodec {
         self.command_fields(b, context, c, grant, head, ATTEMPT_RELEASE_FORMAT);
         b.end_object(); return b.result();
     }
+    // The `attempt.allowance_requested` row (GH #1131): the lease the ask
+    // was made under, the command, when the head admitted it, and the
+    // request the spine's answer names.
+    fn allowance_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String, at: Int) -> String {
+        let common = GovernanceCommandCodec { };
+        if !self.valid(context, c) || !self.allowance(c.operation) || !grant.allowed || !common.bounded(head, 256, true, false) { return ""; }
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("holder", c.holder); b.int_field("token", c.token);
+        b.string_field("request", common.identity(context, c.request_id)); b.int_field("at", at);
+        self.command_fields(b, context, c, grant, head, ATTEMPT_ALLOWANCE_FORMAT);
+        b.end_object(); return b.result();
+    }
     // The `friction.filed` row: what got in a position's way, on which
     // attempt when one, in whose name.
     fn friction_fact(context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, head: String) -> String {
@@ -550,7 +577,7 @@ locus AttemptCommandCodec {
     fn decode_fact(e: dna::Event) -> AttemptCommandFact {
         let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { };
         let claimed = e.kind == "attempt.claimed";
-        if (!claimed && e.kind != "attempt.outcome_requested" && e.kind != "attempt.unresolved" && e.kind != "attempt.released" && e.kind != "friction.filed") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
+        if (!claimed && e.kind != "attempt.outcome_requested" && e.kind != "attempt.unresolved" && e.kind != "attempt.released" && e.kind != "attempt.allowance_requested" && e.kind != "friction.filed") || len(e.body) > 262144 || !syntax.valid(e.body) { return AttemptCommandFact { }; }
         let payload = common.string(e.body, "command_payload");
         if len(payload) > 131072 || !syntax.valid(payload) { return AttemptCommandFact { }; }
         let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
@@ -566,6 +593,8 @@ locus AttemptCommandCodec {
             self.releasing(c.operation) && c.attempt_id == e.entity && e.body == self.release_fact(context, c, grant, head)
         } else if e.kind == "friction.filed" {
             self.friction(c.operation) && self.friction_entity(c) == e.entity && e.body == self.friction_fact(context, c, grant, head)
+        } else if e.kind == "attempt.allowance_requested" {
+            self.allowance(c.operation) && c.attempt_id == e.entity && e.body == self.allowance_fact(context, c, grant, head, std::json::find_int_field(e.body, "at"))
         } else {
             self.outcome(c.operation) && c.attempt_id == e.entity && self.outcome_fact_at(context, c, grant, head, common.string(e.body, "evidence_ref"), std::json::find_int_field(e.body, "at")) == e.body
         };
@@ -605,6 +634,21 @@ locus AttemptCommandCodec {
         }
         if self.releasing(c.operation) {
             return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome { state: "released", attempt_id: a.entity, work_id: usage_work_of(a.entity), holder: c.holder, token: c.token, event_id: a.event_id });
+        }
+        if self.allowance(c.operation) {
+            // `requested` until the spine's answer that names this command
+            let mut state = "requested"; let mut reason = ""; let mut allowance = -1;
+            let mut i = if a.sequence < 0 { 0 } else { a.sequence + 1 };
+            while i < j.revision() && state == "requested" {
+                let e = j.read(i);
+                if e.entity == c.attempt_id && dna::request_named(e.body) == a.command_id {
+                    if e.kind == "attempt.allowance_granted" { state = "granted"; allowance = std::json::find_int_field(e.body, "allowance_micros"); }
+                    if e.kind == "attempt.allowance_refused" { state = "refused"; reason = std::json::find_string_field(e.body, "why"); }
+                }
+                i = i + 1;
+            }
+            return self.receipt_of(context, c, a.command_id, a.fingerprint, if state == "refused" { "refused" } else { "succeeded" }, reason,
+                AttemptCommandOutcome { state: state, attempt_id: c.attempt_id, work_id: usage_work_of(c.attempt_id), holder: c.holder, token: c.token, reason: reason, event_id: a.event_id, allowance_micros: allowance });
         }
         if self.friction(c.operation) {
             return self.receipt_of(context, c, a.command_id, a.fingerprint, "succeeded", "", AttemptCommandOutcome { state: "filed", attempt_id: c.attempt_id, work_id: usage_work_of(c.attempt_id), holder: c.performer, token: -1, event_id: a.event_id });
