@@ -97,7 +97,9 @@ fn dump(app: &Path) -> String {
 //   HALE_DNA_TRIO_ROWS=record cargo test --release -p hale-cli --test dna_records dna_recorded_fixture::
 
 /// `s` with every value a run draws replaced by the name of its class.
-fn normalize_row_text(s: &str, root: &str) -> String {
+/// `minted` is the set of ids this run minted from its clock (see
+/// `minted_ids`): each is replaced whole, whatever its length or letters.
+fn normalize_row_text(s: &str, root: &str, minted: &std::collections::HashSet<String>) -> String {
     let s = s.replace(root, "<root>").replace(&format!("@{}:", this_host()), "@<host>:");
     let s = string_after(&s, &["\"toolchain\":\"", "\"toolchain\": \""]);
     let s = number_after(&s, &["\"revision\": ", "\"head\": ", "\"pid\": ", "\"ratified_at\": ", "\"watermark\": ", "\"hat_watermark\": ", "at row "]);
@@ -107,7 +109,8 @@ fn normalize_row_text(s: &str, root: &str) -> String {
         if token.is_empty() {
             return;
         }
-        out.push_str(&token_class(token).unwrap_or_else(|| token.clone()));
+        let class = if minted.contains(token.as_str()) { Some(format!("{}<clock>", &token[..1])) } else { token_class(token) };
+        out.push_str(&class.unwrap_or_else(|| token.clone()));
         token.clear();
     };
     for c in s.chars() {
@@ -140,11 +143,6 @@ fn token_class(t: &str) -> Option<String> {
             12 => Some("<hex12>".into()),
             _ => None,
         };
-    }
-    // an intent or request id minted from the clock: `i` / `r` + hex(millis)
-    let (first, rest) = t.split_at(1);
-    if (first == "i" || first == "r") && (5..=12).contains(&rest.len()) && hex(rest) && rest.bytes().any(|b| b.is_ascii_digit()) {
-        return Some(format!("{first}<clock>"));
     }
     None
 }
@@ -209,13 +207,41 @@ fn string_after(s: &str, prefixes: &[&str]) -> String {
     s
 }
 
+/// The ids this run minted from its clock: an intent's (`i` + hex of the
+/// machine's monotonic milliseconds, the entity of its `intent.*` rows)
+/// and a request's (a row's top-level `request`, `r` or `i` + hex). Their
+/// length and letters follow the machine's uptime, so no shape names them
+/// all: an id of five hex letters and no digit is as much one as any. They
+/// are read from the rows themselves and replaced exactly.
+fn minted_ids(rows: &[Row]) -> std::collections::HashSet<String> {
+    let clock_id = |v: &str| {
+        let mut chars = v.chars();
+        matches!(chars.next(), Some('i') | Some('r')) && v.len() > 1 && chars.all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    };
+    let mut out = std::collections::HashSet::new();
+    for (_, k, e, b) in rows {
+        if k.starts_with("intent.") && clock_id(e) {
+            out.insert(e.clone());
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(b) {
+            if let Some(r) = v.get("request").and_then(|r| r.as_str()) {
+                if clock_id(r) {
+                    out.insert(r.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The record as the harness compares it: one line per row, normalized,
 /// sorted.
 fn normalized_rows(rows: &[Row], root: &str) -> Vec<String> {
+    let minted = minted_ids(rows);
     // a body's holder names the root as `pwd -P` resolves it: where the
     // temporary directory is a symlink (macOS's /var), that is another path
     let canonical = std::fs::canonicalize(root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| root.to_string());
-    let root_text = |t: &str| normalize_row_text(&t.replace(&canonical, root), root);
+    let root_text = |t: &str| normalize_row_text(&t.replace(&canonical, root), root, &minted);
     let mut out: Vec<String> = rows
         .iter()
         .map(|(_, k, e, b)| {
@@ -272,18 +298,43 @@ fn same_rows_as_recorded(rows: &[Row], root: &str) {
 #[test]
 fn the_row_normalization_keeps_what_a_row_says_and_drops_what_a_run_draws() {
     let root = "/tmp/hale_dna_trio_42";
+    let none = std::collections::HashSet::new();
+    let minted: std::collections::HashSet<String> = ["r43c9e4e", "iabcde", "i4f2"].iter().map(|s| s.to_string()).collect();
     let a = normalize_row_text(
         "{\"base\": \"3e3bf378db66fc11b67910a093348d6e338bbc53\", \"at\": 1790620494, \"id\": \"backlog-1790620491573709736-2\", \"head\": \"152\", \"revision\": 175, \"request\": \"r43c9e4e\", \"path\": \"/tmp/hale_dna_trio_42/trio\", \"what\": \"mail backlog\"}",
         root,
+        &minted,
     );
     assert_eq!(a, "{\"base\": \"<sha>\", \"at\": <time>, \"id\": \"backlog-<ns>-2\", \"head\": \"<n>\", \"revision\": <n>, \"request\": \"r<clock>\", \"path\": \"<root>/trio\", \"what\": \"mail backlog\"}");
+    // an id the run minted is its class whatever its shape: five hex letters
+    // and no digit (a machine up about twelve minutes), or four characters
+    // (one up about a minute), and wherever it appears
+    assert_eq!(normalize_row_text("plan/iabcde claimed; iabcde/plan called; i4f2: ask-edit@1", root, &minted), "plan/i<clock> claimed; i<clock>/plan called; i<clock>: ask-edit@1");
+    // and a word that merely looks like one is not an id the run minted
+    assert_eq!(normalize_row_text("ice, iface, reface, i2", root, &minted), "ice, iface, reface, i2");
     // the machine: its name in a body's holder, the toolchain's version
     let holder = format!("{{\"holder\": \"riley@{}:/tmp/hale_dna_trio_42/trio\", \"toolchain\":\"0.21.0\"}}", this_host());
-    assert_eq!(normalize_row_text(&holder, root), "{\"holder\": \"riley@<host>:<root>/trio\", \"toolchain\":\"<v>\"}");
+    assert_eq!(normalize_row_text(&holder, root, &none), "{\"holder\": \"riley@<host>:<root>/trio\", \"toolchain\":\"<v>\"}");
     // a hash under a number's key is a hash, whatever it starts with
-    assert_eq!(normalize_row_text("{\"revision\": \"8a45cfb3ca423ffd138a1c2c031d921b17794437\", \"head\": \"55d4703af8442f0aefd734426a6a506bb1234567\"}", root), "{\"revision\": \"<sha>\", \"head\": \"<sha>\"}");
+    assert_eq!(normalize_row_text("{\"revision\": \"8a45cfb3ca423ffd138a1c2c031d921b17794437\", \"head\": \"55d4703af8442f0aefd734426a6a506bb1234567\"}", root, &none), "{\"revision\": \"<sha>\", \"head\": \"<sha>\"}");
     // what a row says stays: a mutation id, a count, a word, a small number
-    assert_eq!(normalize_row_text("m2 applied 3 of 4 to gateway-1, review:m3, t9, i2", root), "m2 applied 3 of 4 to gateway-1, review:m3, t9, i2");
+    assert_eq!(normalize_row_text("m2 applied 3 of 4 to gateway-1, review:m3, t9, i2", root, &none), "m2 applied 3 of 4 to gateway-1, review:m3, t9, i2");
+}
+
+#[test]
+fn the_ids_a_run_minted_are_read_from_its_rows() {
+    let row = |k: &str, e: &str, b: &str| (0u64, k.to_string(), e.to_string(), b.to_string());
+    let rows = vec![
+        row("intent.requested", "iabcde", "{\"outcome\": \"x\"}"),
+        row("intent.offered", "i4f2", "document the Gateway (from riley)"),
+        row("pressure.requested", "worker", "{\"request\": \"r43c9e4e\"}"),
+        row("concern.raised", "org/trio/worker", "{\"request\": \"trio/concern.raised/backlog-1-2\"}"),
+        row("task.born", "t5", "iabcde: ask-edit@1 (workflow)"),
+        row("mutation.requested", "m1", "{\"task_id\": \"t5\"}"),
+    ];
+    let mut minted: Vec<String> = minted_ids(&rows).into_iter().collect();
+    minted.sort();
+    assert_eq!(minted, vec!["i4f2", "iabcde", "r43c9e4e"]);
 }
 
 fn copy_dir(from: &Path, to: &Path) {
