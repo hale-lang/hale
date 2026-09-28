@@ -6431,6 +6431,9 @@ fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
                 .to_string(),
         ));
     }
+    for (span, why) in &surface.serve_errors {
+        diags.push(Diag::ty(*span, format!("api binding: {}", why)));
+    }
     for (topic, first, second) in &surface.ambiguous_replies {
         diags.push(
             Diag::ty(

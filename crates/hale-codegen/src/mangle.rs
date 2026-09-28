@@ -588,8 +588,9 @@ pub fn apply_qualified_path_renames(
                 // GH #1104 piece 5: an imported locus is marked so the api
                 // binding serves the entrypoint's own loci only.
                 TopDecl::Locus(l) => {
-                    if display.contains_key(l.name.name.as_str()) {
+                    if let Some(d) = display.get(l.name.name.as_str()) {
                         l.imported = true;
+                        l.display = Some(d.clone());
                     }
                 }
                 TopDecl::Module(m) => record(&mut m.items, display),

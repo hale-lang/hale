@@ -3307,6 +3307,7 @@ impl Parser {
         }
         Ok(LocusDecl {
             imported: false,
+            display: None,
             phase_effects: None,
             depends: None,
             supervised: false,
@@ -3953,6 +3954,34 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen, ")")?;
+        // GH #1137: clauses after the transport — `serve: [param, …]`.
+        let mut serve: Vec<Ident> = Vec::new();
+        while self.eat(&TokenKind::Comma) {
+            let clause = self.expect_ident("api clause (`serve`)")?;
+            match clause.name.as_str() {
+                "serve" => {
+                    self.expect(TokenKind::Colon, ":")?;
+                    self.expect(TokenKind::LBracket, "[")?;
+                    while !self.at(&TokenKind::RBracket) {
+                        serve.push(self.expect_ident("a param of the main locus")?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RBracket, "]")?;
+                }
+                other => {
+                    return Err(Diag::parse(
+                        clause.span,
+                        format!(
+                            "unknown api clause `{}` (after the transport: `serve: \
+                             [param, …]`)",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ApiBinding {
             transport: ApiTransport::Unix {
@@ -3965,6 +3994,7 @@ impl Parser {
             watch_bound,
             on_unauthorized,
             on_watch_full,
+            serve,
             span: api_tok.span.merge(semi.span),
         })
     }

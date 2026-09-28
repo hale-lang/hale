@@ -66,6 +66,23 @@ are served, so a head that imports a large core never hands out the
 core's internal topics as commands (an imported *topic* your locus
 subscribes is served under its qualified name, `lib::Orders`).
 
+To serve a library's handler locus as it is, hold it as a param of
+your main locus and name it after the transport:
+
+```hale
+main locus Head {
+    params { commands: api::Commands = api::Commands { }; core: dna::Dna = dna::Dna { }; }
+    bindings {
+        api: unix("/run/head.sock", bound: 64, on_full: refuse), serve: [commands];
+    }
+}
+```
+
+`commands` is on the surface — its handlers are commands and its
+gates hold — and `core` is not: holding a locus never serves it,
+naming it does. `hale check --dump-api` lists what you named under
+`"serve"`.
+
 For a program you are only trying out, skip even that line:
 
 ```sh

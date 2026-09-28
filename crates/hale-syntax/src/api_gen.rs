@@ -166,6 +166,23 @@ pub struct ApiSurface {
     pub roles: Vec<ApiRole>,
     /// Program name -> author spelling, for imported types.
     pub type_display: BTreeMap<String, String>,
+    /// GH #1137: what the entry's `serve:` put on the surface, one per
+    /// name, in the order written.
+    pub served: Vec<ApiServed>,
+    /// GH #1137: a `serve:` name that is not a param of the main locus
+    /// holding a locus: (where it was written, why).
+    pub serve_errors: Vec<(Span, String)>,
+}
+
+/// GH #1137: one `serve:` name — the main locus's param and the locus
+/// it holds, which another seed declared.
+#[derive(Debug, Clone)]
+pub struct ApiServed {
+    pub param: String,
+    /// The locus's program name (mangled when imported).
+    pub locus: String,
+    /// As the importer spells it (`api::Commands`).
+    pub display: String,
 }
 
 // ---- walking -------------------------------------------------------
@@ -338,6 +355,50 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         });
     }
     let (main_locus, binding) = main?;
+    // GH #1137: the surface is the entrypoint seed's own loci plus the
+    // loci the entry's `serve:` names — main's params, whichever seed
+    // declared their type. Holding a locus never serves its bus; naming
+    // it does.
+    let mut main_params: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for m in &main_locus.members {
+        if let LocusMember::Params(pb) = m {
+            for p in &pb.params {
+                main_params.insert(p.name.name.clone(), p.ty.as_ref().and_then(named_type));
+            }
+        }
+    }
+    let mut served: Vec<ApiServed> = Vec::new();
+    let mut serve_errors: Vec<(Span, String)> = Vec::new();
+    for name in &binding.serve {
+        match main_params.get(&name.name) {
+            None => serve_errors.push((
+                name.span,
+                format!("`serve:` names `{}`, which is not a param of the main locus `{}`", name.name, main_locus.name.name),
+            )),
+            Some(None) => serve_errors.push((
+                name.span,
+                format!("`serve:` names `{}`, whose type is not written as a locus type", name.name),
+            )),
+            Some(Some(tn)) => match loci.get(tn) {
+                None => serve_errors.push((
+                    name.span,
+                    format!("`serve:` names `{}`, whose type `{}` is not a locus", name.name, tn),
+                )),
+                Some(l) if !l.imported => serve_errors.push((
+                    name.span,
+                    format!(
+                        "`serve:` names `{}`, whose locus `{}` is the entrypoint seed's own and on the surface already",
+                        name.name, tn
+                    ),
+                )),
+                Some(_) if served.iter().any(|s| s.locus == *tn) => serve_errors.push((
+                    name.span,
+                    format!("`serve:` names the locus `{}` twice", tn),
+                )),
+                Some(l) => served.push(ApiServed { param: name.name.clone(), locus: tn.clone(), display: l.display.clone().unwrap_or_else(|| tn.clone()) }),
+            },
+        }
+    }
     let mut excluded = Vec::new();
     let mut json_types: BTreeSet<String> = BTreeSet::new();
     let mut ambiguous = Vec::new();
@@ -351,8 +412,9 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
     for l in loci.values() {
         // A library's loci are not the application's API (GH #1104
         // piece 5): the head that imports its core must not serve the
-        // core's internal bus.
-        if l.name.name.starts_with("__Api") || l.imported {
+        // core's internal bus. An imported locus the entry names in
+        // `serve:` is on it (GH #1137).
+        if l.name.name.starts_with("__Api") || (l.imported && !served.iter().any(|s| s.locus == l.name.name)) {
             continue;
         }
         let fns: BTreeMap<&str, &crate::ast::FnDecl> = l
@@ -694,6 +756,8 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
         schemas,
         type_display,
         roles,
+        served,
+        serve_errors,
     })
 }
 
@@ -837,10 +901,20 @@ fn role_json(role: &Option<String>) -> String {
 pub fn describe_parts(surface: &ApiSurface) -> DescriptionParts {
     // The socket path is deployment (I2), not form: a description
     // names what the program is, never where one copy of it listens.
+    // GH #1137: which of main's params put another seed's locus on the
+    // surface, as the author spelled its type — what a composer serves
+    // is part of what the program is.
+    let serve = surface
+        .served
+        .iter()
+        .map(|s| format!("{{\"param\":{},\"locus\":{}}}", json_str(&s.param), json_str(&s.display)))
+        .collect::<Vec<_>>()
+        .join(",");
     let head = format!(
-        "{{\"hale_api\":{},\"app\":{},\"notes\":{{\"gates\":{},\"reads\":{}}},\"commands\":[",
+        "{{\"hale_api\":{},\"app\":{},\"serve\":[{}],\"notes\":{{\"gates\":{},\"reads\":{}}},\"commands\":[",
         API_DESCRIPTION_VERSION,
         json_str(&surface.main_locus),
+        serve,
         json_str(GATE_NOTE),
         json_str(READ_NOTE)
     );
@@ -997,6 +1071,7 @@ pub fn inject_api_entry(program: &mut Program, path: &str) -> Result<(), String>
             watch_bound: None,
             on_watch_full: None,
             on_unauthorized: None,
+            serve: Vec::new(),
             span,
         };
         if let Some(LocusMember::Bindings(bb)) =

@@ -1701,18 +1701,38 @@ main locus App {
 }
 ```
 
-Nothing else in the source changes. The entry binds **every topic
-some locus of the entrypoint's own seed subscribes** (a *command*),
-**every topic such a locus publishes** (a *stream*), and **every
-`expose` member of the main locus or of a param-default child of the
-seed's own whose type appears once among main's params** (a *read*,
-named `member` on main and `param.member` on the child). A locus that
-came in through `import` is not part of the surface, however much of
-it the entrypoint composes (GH #1104 piece 5): a library's internal
-bus is not the application's API, and a head importing its core must
-not serve the core's topics as commands. An imported *topic* a seed's
-own locus subscribes or publishes is served as any other, under its
-qualified name. An imported seed's `main locus` is not the entrypoint
+Nothing else in the source changes. **The surface is one rule
+(GH #1137): the loci of the entrypoint's own seed, plus the loci the
+entry names in `serve:`, and nothing else.** The entry binds **every
+topic such a locus subscribes** (a *command*), **every topic such a
+locus publishes** (a *stream*), and **every `expose` member of the
+main locus or of a param-default child of the seed's own whose type
+appears once among main's params** (a *read*, named `member` on main
+and `param.member` on the child). `serve: [p, …]` follows the
+transport and names params of the main locus whose type is a locus
+another seed declared:
+
+```hale
+bindings {
+    api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), serve: [commands];
+}
+```
+
+puts the locus `commands` holds (`api::Commands`) on the surface — its
+subscriptions are commands, its gates are gates, as if the seed had
+declared it. A locus that came in through `import` and is not named
+is not part of the surface, however much of it the entrypoint holds
+or composes (GH #1104 piece 5): a library's internal bus is not the
+application's API, and a head holding its core's loci as params does
+not serve the core's topics as commands. Holding a locus never serves
+it; naming it does. A `serve:` name that is not a param of main, whose
+type is not a locus, whose locus is the seed's own (already on the
+surface) or that names a locus twice is an error at the name. The
+description carries what `serve:` named, `"serve": [{"param":
+"commands", "locus": "api::Commands"}]` (empty when nothing is), so
+`hale check --dump-api` shows a composer exactly what it serves. An
+imported *topic* a seed's own locus subscribes or publishes is served
+as any other, under its qualified name. An imported seed's `main locus` is not the entrypoint
 either: renamed with its seed, it does not count toward the one-main
 rule, and an `api:` entry it carries is inert — a composed head that
 imports the standalone head declares its own entry to get a socket. A subscription by literal subject
