@@ -149,3 +149,15 @@ for the changed context alone. Each old context digest was reproduced
 from the new context, kept as a run's receipt, with the four lines taken
 back out, and each new key was the one the miss named. No fresh model
 call was made; every answer, token and cost field is unchanged.
+
+GH #1131 put a leg's ask for its attempt's spend on the nerves, which
+changed one place in the generated organization's `main.hl`: its
+`bindings` gain `dna::WorkAllowanceAsk: nats::NatsAdapter { };` after
+`dna::WorkSubmit`. Two entries carry that file in their context. The
+organization-growth edit (`25dcff4e759e…`, was `0f311e0493a1…`) is
+re-keyed, and its recorded output carries the same line and nothing else;
+the growth assessment (`860b4feb6840…`, was `5e1da236ac7c…`) is re-keyed
+for the changed context alone. Each old context digest was reproduced
+from the new context, kept as a run's receipt, with the line taken back
+out, and each new key was the one the miss named. No fresh model call was
+made; every answer, token and cost field is unchanged.
