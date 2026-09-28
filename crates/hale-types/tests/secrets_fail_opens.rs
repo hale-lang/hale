@@ -153,7 +153,9 @@ fn a_claim_over_secret_use_sees_credential_reveal() {
                 c: std::secret::Credential =
                     std::secret::Credential { vault: \"forge-token\" };
             }
-            fn sneak() -> String { return self.c.reveal_text(); }
+            // a legal reveal (consumed by the comparison in its
+            // statement) still carries `secret_use`
+            fn sneak(other: String) -> Bool { return self.c.reveal_text() == other; }
         }
         group plugins = { Plugin };
         main locus App {

@@ -35,6 +35,9 @@ main locus PracticeReviewHead {
         api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), http("127.0.0.1", self.http_port, principals: self.bearer), serve: [commands];
     }
     run() {
+        // the binding's transports listen before run(): announce the
+        // commands port a launcher waits for (as dna/api's Head does)
+        if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
         while !self.draining { std::time::sleep(100ms); }
     }
 }
