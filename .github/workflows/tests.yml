@@ -670,10 +670,11 @@ jobs:
         # four jobs, each running two slices at a time (`--profile
         # small`, the `dna-fixtures-small` group in .config/nextest.toml).
         # `count:` deals the alphabetical test list out round-robin, so
-        # the split is the same every run — the slices' minutes come out
-        # 769 / 595 / 587 / 773 s over the four parts, where a hash of
-        # the names left one of two jobs 330 s of slice time heavier than
-        # the other and would move with every renamed test.
+        # the split is the same every run, and the slice tests are named
+        # `dna_fixtures_slice_<ii>` (zero-padded) so that list is slice
+        # order: `HEAVY` in dna_native_suite.rs places the heavy fixtures
+        # so the four parts' slice minutes come out level and each part
+        # starts its longest slice first.
         env:
           # The free 4-core runner answers a proposal slower than the suite's
           # default wait (2) allows while four slices run beside each other;
@@ -845,27 +846,28 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  # The browser suite in two shards, by what dominates each. `startup` is
-  # startup.spec.mjs alone: its first case is the one-command launcher
-  # building the head and its API from a fresh checkout copy (side by
-  # side since GH #1147; in turn they were 9.4 of the suite's 20 minutes
-  # on 2026-09-26), and it is the longest shard however the rest is cut.
-  # `rest` is every other spec (about 7 minutes of cases). A third shard
-  # would only add a runner's setup: `rest` already finishes before
-  # `startup`. Each shard warms and restores as below. The builds cache
-  # is `rest`'s to fill and save: `startup` builds only the API before
-  # the suite and its head beside the first case (see its step). The
-  # toolchain cache is shared, and its second saver logs that the entry
-  # exists and carries on.
+  # The browser suite in two balanced shards, about 315 s of Playwright
+  # each (run 36371607135: 630 s in all, of which the startup spec is 96 s,
+  # its first case being the one-command launcher building the head and its
+  # API from a fresh checkout copy). Shard 1 is startup.spec plus the four
+  # longest spec files that sit beside it; shard 2 is every other spec, so
+  # a new spec file lands there (the step below has the pattern and the
+  # measurements). It was `startup` alone against `rest`, and `rest` was
+  # the longest job in the workflow at 665 s to 782 s, `startup` about
+  # 270 s. A third shard would add a runner's setup, and the job count sits
+  # at the free cap's edge. Both shards warm and build the same set and
+  # restore as below. The builds cache is shard 2's to save. The toolchain
+  # cache is shared, and its second saver logs that the entry exists and
+  # carries on.
   face-browser:
-    name: face (browser, ${{ matrix.shard }})
+    name: face (browser, ${{ matrix.shard }}/2)
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [startup, rest]
+        shard: [1, 2]
     # GH #985: Knowledge lives in memory. The browser suite's Knowledge
     # fixture migrates its record into this Postgres with the owner's DSN
     # (set on the step that runs the suite, below) and hands the API the
@@ -941,8 +943,8 @@ jobs:
       #
       # dna/api/practice_review is not among the cached three: nothing in
       # the browser suite reads HALE_NATIVE_HEAD_API (the startup case's
-      # launcher builds its own), and face-api builds and tests it. The
-      # rest shard builds it beside them when it is missing, uncached: the
+      # launcher builds its own), and face-api builds and tests it. Each
+      # shard builds it beside them when it is missing, uncached: the
       # native command lanes (GH #1029) start it as their API
       # (HALE_NATIVE_COMMAND_API).
       - name: Restore the DNA API and the head
@@ -969,31 +971,22 @@ jobs:
         # cache hit not at all: it checks the restored three are there and
         # executable.
         #
-        # The startup shard needs only the API and the head, and it builds
-        # the head beside its first case instead (in the suite's step, below;
-        # GH #1147): that case builds its own head and API through the
-        # launcher, so a head built here held the suite back by its build
-        # for a case that comes after. So on a miss it builds the API
-        # alone here, and it never saves the builds cache (rest does).
+        # Both shards run the same builds: shard 1 carries the startup
+        # spec, whose first case builds its own head and API through the
+        # launcher, but the other specs in it (and all of shard 2's) hand
+        # the launcher the binaries built here.
         env:
           HALE_DNA_DISCOVER: "off"
           HALE_WARM_SKIP_IRIS: "1"
         run: |
           set -euo pipefail
           hit=${{ steps.face-builds.outputs.cache-hit == 'true' }}
-          case "${{ matrix.shard }}" in
-            rest)
-              seeds=()
-              [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
-              # the native command lanes start the composed head (GH #1029)
-              [ -x dna/api/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
-              built=(dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge
-                dna/api/practice_review/practice_review) ;;
-            startup)
-              seeds=()
-              [ "$hit" = true ] || seeds=(dna/api)
-              built=(dna/api/api) ;;
-          esac
+          seeds=()
+          [ "$hit" = true ] || seeds=(dna/api dna/api/project_service dna/api/tests/knowledge)
+          # the native command lanes start the composed head (GH #1029)
+          [ -x dna/api/practice_review/practice_review ] || seeds+=(dna/api/practice_review)
+          built=(dna/api/api dna/api/project_service/project_service dna/api/tests/knowledge/knowledge
+            dna/api/practice_review/practice_review)
           scripts/warm-and-build.sh ./target/release/hale --target-cpu baseline "${seeds[@]}"
           for b in "${built[@]}"; do
             if [ ! -f "$b" ] || [ ! -x "$b" ]; then
@@ -1007,7 +1000,7 @@ jobs:
       # the builds just wrote their outputs under dna/, which would change
       # the hash.
       - name: Save the DNA API and the head
-        if: matrix.shard == 'rest' && steps.face-builds.outputs.cache-hit != 'true'
+        if: matrix.shard == '2' && steps.face-builds.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1033,52 +1026,32 @@ jobs:
         # the composed head as their API, `hale dna dev` (HALE_BIN) as
         # their host over this NATS and this Postgres.
         #
-        # The shard picks its specs by file: `startup` names the one file,
-        # `rest` inverts the same pattern (Playwright's --grep matches a
-        # case's file path as well as its title), so between them every
-        # spec runs exactly once.
-        #
-        # The startup shard's head, when the builds cache missed, is built
-        # here beside the suite (GH #1147): its first case builds its own
-        # through the launcher and takes minutes, and only the cases after
-        # it hand the launcher this one. The build writes its exit status
-        # to HALE_NATIVE_HEAD_BUILD_STATUS when it ends and a case that
-        # needs the head waits for that; its output is printed after the
-        # suite, as its own group, and the step fails if it failed.
+        # The shard picks its specs by file. Playwright's --grep matches a
+        # case's file path as well as its title, so shard 1 names its
+        # files and shard 2 inverts the same pattern: between them every
+        # spec runs exactly once, and a new spec file lands in shard 2.
+        # The two carry about 315 s of Playwright each (measured on run
+        # 36371607135: startup.spec 96 s, and 47 s to 53 s each for
+        # native-knowledge-browser, organization-structure, organization
+        # and organization-navigation, of 534 s for everything else); move
+        # a file between them only with a look at a run's per-spec times.
         env:
           HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
           HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
           SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
+          shard_one='(^|[ /])(startup|native-knowledge-browser|organization-structure|organization|organization-navigation)\.spec\.mjs'
           case "$SHARD" in
-            startup) select=(--grep 'startup\.spec\.mjs') ;;
-            rest) select=(--grep-invert 'startup\.spec\.mjs') ;;
+            1) select=(--grep "$shard_one") ;;
+            2) select=(--grep-invert "$shard_one") ;;
             *) echo "::error::unknown shard $SHARD"; exit 1 ;;
           esac
-          head_build=
-          if [ "$SHARD" = startup ] && [ ! -x "$GITHUB_WORKSPACE/dna/api/project_service/project_service" ]; then
-            head_build=$RUNNER_TEMP/head-build
-            (
-              cd "$GITHUB_WORKSPACE"
-              start=$SECONDS
-              if ./target/release/hale build dna/api/project_service --target-cpu baseline; then status=0; else status=$?; fi
-              echo "(dna/api/project_service: $((SECONDS - start)) s)"
-              echo "$status" > "$head_build.status.tmp" && mv "$head_build.status.tmp" "$head_build.status"
-            ) > "$head_build.log" 2>&1 &
-            head_pid=$!
-            export HALE_NATIVE_HEAD_BUILD_STATUS=$head_build.status
-          fi
-          # The Knowledge fixture is the rest shard's: the startup shard does
-          # not build it, and tests/run.mjs refuses a named binary that is not there.
-          knowledge=()
-          if [ "$SHARD" = rest ]; then
-            knowledge=(
-              HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
-              HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api"
-              HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
-            )
-          fi
+          knowledge=(
+            HALE_FACE_KNOWLEDGE_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+            HALE_KNOWLEDGE_API_BIN="$GITHUB_WORKSPACE/dna/api/api"
+            HALE_KNOWLEDGE_SEED_BIN="$GITHUB_WORKSPACE/dna/api/tests/knowledge/knowledge"
+          )
           npm ci
           npx playwright install --with-deps chromium --only-shell
           HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
@@ -1086,17 +1059,6 @@ jobs:
             HALE_NATIVE_COMMAND_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
             HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
             env "${knowledge[@]}" npm test -- "${select[@]}" || result=$?
-          if [ -n "$head_build" ]; then
-            wait "$head_pid" || true
-            status=$(cat "$head_build.status" 2>/dev/null || echo missing)
-            echo "::group::dna/api/project_service, built beside the suite: exit $status"
-            cat "$head_build.log"
-            echo "::endgroup::"
-            if [ "$status" != 0 ]; then
-              echo "::error::hale build dna/api/project_service failed (its group above has the output)"
-              result=${result:-1}
-            fi
-          fi
           exit "${result:-0}"
 
       - name: Preserve face browser failure evidence
