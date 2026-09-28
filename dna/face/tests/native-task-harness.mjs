@@ -5,13 +5,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { seatRecord, unseatRecord } from './record-seats.mjs';
-import { settle, wireLine } from './command-wire.mjs';
+import { headPort, settle, wireLine } from './command-wire.mjs';
 
 export const nativeTaskEnvironmentPresent = () => Boolean(process.env.HALE_NATIVE_TASK_API && process.env.HALE_NATIVE_TASK_SEED);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -49,8 +48,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const authorityFile = path.join(evidence, 'authority.json'), taskFile = path.join(evidence, 'task-policy.json');
   fs.writeFileSync(authorityFile, JSON.stringify({ format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: actor, authority: 'board', practice_propose: false, review_verdict: false, recover: true }] }));
   fs.writeFileSync(taskFile, JSON.stringify(taskPolicy(application, actor)));
-  const listener = net.createServer(); await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
-  const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const port = await headPort();
   const origin = `http://127.0.0.1:${port}`, prefix = `/api/hale/v1/applications/${application}`;
   const processes = [], requests = []; let api, stopped = false, sequence = 0;
   // Each API start mints a launch token (GH #989): every POST carries it, and

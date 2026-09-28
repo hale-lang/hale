@@ -256,7 +256,7 @@ locus Api {
             if bearer && self.roles.service_mapped(subject) {
                 // a subject mapped both ways is neither: a service's token
                 // would otherwise act as the person
-                if len(actor) > 0 { return http.error(403, "forbidden", "subject `" + subject + "` is mapped both as a person (`dna.oidc.member`) and as a service (`dna.oidc.service`); a subject is one or the other", false); }
+                if self.roles.member_mapped(subject) { return http.error(403, "forbidden", "subject `" + subject + "` is mapped both as a person (`dna.oidc.member`) and as a service (`dna.oidc.service`); a subject is one or the other", false); }
                 let service = self.roles.service(subject);
                 // its own principal, never a person's name
                 if len(service) > 0 { actor = "service:" + service; serviced = true; }

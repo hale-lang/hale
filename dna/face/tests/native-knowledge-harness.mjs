@@ -20,20 +20,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import net from 'node:net';
 import { boundedNative, isolatedEnvironment, memoryOwner, launchToken } from './environment.mjs';
 import { seatRecord } from './record-seats.mjs';
-import { wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
+import { headPort, wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
 
 const webroot = fileURLToPath(new URL('../web', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function port() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const value = server.address().port;
-  await new Promise(resolve => server.close(resolve));
-  return value;
-}
 async function stopChild(child) {
   if (!child || child.exitCode !== null || child.signalCode) return;
   const done = new Promise(resolve => child.once('close', resolve));
@@ -70,7 +62,7 @@ export async function startKnowledgeService(options = {}) {
   // The actor holds a seat: a Knowledge change is gated `position`.
   seatRecord(root, env, actor, options.seats || ['editor']);
   const refs = JSON.parse(await readFile(resolve(root, 'fixture.json'), 'utf8'));
-  const apiPort = options.port || await port();
+  const apiPort = options.port || await headPort();
   const origin = `http://127.0.0.1:${apiPort}`;
   const apiPath = `/api/hale/v1/applications/${refs.application}`;
   const policyPath = resolve(root, 'knowledge-authority.json');

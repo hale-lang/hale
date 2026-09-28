@@ -146,26 +146,30 @@ and compares its full catalog encoding. Browser export alone does not establish
 that a source fragment compiles. Draft validation/export does not prove original
 source roundtrip, governed publication, activation or real DNA command recovery.
 
-## Record commands over the forwarding transport
+## Record commands over the binding's HTTP transport
 
 Every record command is a gated topic on the head's api binding (GH #1104
-piece 5); the head's HTTP route forwards one line of that wire to its own socket
-(`dna/api/forward.hl`). The face POSTs `{"call", "payload"}` — the operation's
+piece 5), served over the binding's own HTTP transport (GH #1135); the head
+serving the face relays the session's line there with the session's token as
+the bearer (`dna/api/bearer.hl`). The face POSTs `{"call", "payload"}` — the operation's
 call (`PracticePropose`, `ReviewVerdict`, `OrganizationPropose`, `TaskCreate`,
 `TaskReassign`, `PersonRetire`) and its flat payload — to
 `…/applications/{id}/commands` under the same `Origin`, JSON and
-`X-Hale-Command: 1` headers, recovers with `GET …/commands?request_id=`, and
+`X-Hale-Command: 1` headers, recovers with a `CommandLookup` line, and
 reads back the binding's receipt line verbatim: `{request_id, ok, value, caller,
 role}` with the `CommandReply` (`ok`, `code`, `application_id`, `head`,
 `revision`, the typed `receipt`) as `value`, or `{ok:false, refusal}`. A
 recorded-but-unsettled command is a 200 whose `receipt.state` says so; a
 provider's refusal is `value.ok:false` with its `code`. `/capabilities` names the
-route as `api.http` (`""` in an OIDC session); what this session may send is the
+route as `api.http` (in every session, OIDC included); what this session may send is the
 `{"describe": true}` slice, fetched once after the capabilities, and a command is
 offered exactly when its call is in it. The describe line is a read, so lanes
-that watch for writes use `command-wire.mjs`'s `isWrite`.
+that watch for writes use `command-wire.mjs`'s `isWrite` (a lookup is a read
+too). A head's port comes from `headPort()`, which leaves its successor free for
+the binding's transport.
 
-The forwarded caller is the head's own uid, which the record maps to a person
+The session's caller is the launch token's account, the head's own uid, which
+the record maps to a person
 (`dna.unix.member`); a lane that sends a real command seats that person first
 (`record-seats.mjs`: the mapping, one row in the person's own name so memory
 knows them as a holder, and the `holds` edges, before the head starts).

@@ -1,3 +1,5 @@
+import net from 'node:net';
+
 // The head's command wire as the face meets it (GH #1104, #1135): one line
 // of the api binding's wire POSTed to …/commands, the binding's own HTTP
 // transport under the session's bearer, and its receipt line back — a
@@ -157,4 +159,25 @@ export function settle(status, json) {
   if (!json.ok) return { status, code: json.refusal.kind, refusal: json.refusal };
   if (!json.value.ok) return { status, code: json.value.code };
   return { status, code: '', reply: json.value, receipt: receiptView(json.value.receipt) };
+}
+
+// A loopback port for a head whose successor is free too: the head's api
+// binding serves its HTTP transport one port past the reads (GH #1135),
+// and a port it cannot hold stops the head at start.
+export async function headPort() {
+  const listen = port => new Promise(resolve => {
+    const server = net.createServer();
+    server.once('error', () => resolve(null));
+    server.listen(port, '127.0.0.1', () => resolve(server));
+  });
+  const close = server => new Promise(resolve => server.close(resolve));
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const first = await listen(0);
+    if (!first) continue;
+    const port = first.address().port;
+    const next = port < 65535 ? await listen(port + 1) : null;
+    await close(first);
+    if (next) { await close(next); return port; }
+  }
+  throw new Error('no loopback port with a free successor for the head');
 }

@@ -807,12 +807,16 @@ locus Head {
         if std::str::ends_with(bare, "/commands") {
             if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed line of the api wire; a lookup is a `CommandLookup` call", false); }
             // a session is an ambient credential: its line keeps the CSRF
-            // guard before it becomes a bearer; a caller's own bearer is not
-            if len(given) == 0 {
+            // guard before it becomes a bearer; only an OIDC caller's own
+            // bearer is not asked (a local session's bearer is always the
+            // child's token the head substitutes)
+            if self.cfg.principal_mode != "oidc" || len(given) == 0 {
                 let guard = api::command_guard(req, head_origin(self.cfg));
                 if len(guard) > 0 { return self.command_error(guard); }
             }
-            let up = proxy_exchange(req, api::commands_port(self.cfg.api_port), head_origin(self.cfg), "", if self.cfg.principal_mode == "local" { child_token } else { bearer });
+            // the binding waits 30 s for a handler; the relay outlasts it
+            let port = api::commands_port(self.cfg.api_port);
+            let up = api::exchange(port, "POST", req.path, proxied_headers(req, port, head_origin(self.cfg), "", if self.cfg.principal_mode == "local" { child_token } else { bearer }), req.body, api::COMMAND_RELAY_TIMEOUT_NS);
             if up.ok { self.api_ready_pid = child.pid; }
             return proxied_response(up);
         }

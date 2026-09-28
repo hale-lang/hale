@@ -15,13 +15,12 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
-import { settle } from './command-wire.mjs';
+import { headPort, settle } from './command-wire.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
@@ -436,9 +435,7 @@ export async function startService(options = {}) {
     save('authority.json', { format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: principal, authority: 'board', practice_propose: true, review_verdict: true, recover: true }] });
     let port = options.port;
     if (port === undefined) {
-      const server = net.createServer();
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-      port = server.address().port; await new Promise(resolve => server.close(resolve));
+      port = await headPort();
     }
     assert(Number.isInteger(port) && port > 0 && port < 65536, 'Expected a valid loopback port');
     origin = `http://127.0.0.1:${port}`;

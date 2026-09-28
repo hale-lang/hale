@@ -348,8 +348,8 @@ mapped person holds the named role. Every reply is a `CommandReply { ok, code, a
 revision, receipt }`, its receipt exactly what an HTTP command receipt
 used to carry. `CommandLookup { request_id }` is recovery, in place of
 the old `GET /commands?request_id=`. The HTTP head answers 405 to every
-mutation now, except a draft POST; commands are the binding's own HTTP
-transport, on its own port.
+other mutation now, except a draft POST: a `POST …/commands` is relayed
+to the binding's own HTTP transport, on its own port (below).
 `/capabilities` no longer carries `writes`, `knowledge_write` or any
 command profile, and `read_only` is always `true` (HTTP itself writes
 nothing); it carries `api{transport,socket,http}` instead, and what a

@@ -29,12 +29,16 @@ fn lib_source() -> String {
 }
 
 fn app_source(sock: String, me: String, serve: String) -> String {
+    return app_with("handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { };", sock, me, serve);
+}
+
+fn app_with(held: String, sock: String, me: String, serve: String) -> String {
     return "import \"../lib\" as lib;\n"
         + "locus Table {\n"
         + "    fn holds(p: std::api::Principal, r: String) -> Bool { return p.name == \"uid:" + me + "\"; }\n"
         + "}\n"
         + "main locus App {\n"
-        + "    params { handlers: lib::Handlers = lib::Handlers { }; core: lib::Internal = lib::Internal { }; }\n"
+        + "    params { " + held + " }\n"
         + "    bindings { api: unix(\"" + sock + "\", bound: 8, on_full: refuse, roles: Table { })" + serve + "; }\n"
         + "    run() { std::time::sleep(8s); }\n"
         + "}\n"
@@ -108,6 +112,15 @@ fn main() {
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, ", serve: [nobody]")) or discard;
     let wrong = run_tool(hale + "\ncheck\n" + root + "/app");
     std::test::assert(wrong.code != 0 && std::str::contains(wrong.stderr, "`serve:` names `nobody`, which is not a param of the main locus"), "a serve name must be a param of main: " + wrong.stderr);
+
+    // ---- the binding serves a locus type: one main holds twice is refused
+    std::io::fs::write_file(root + "/app/main.hl", app_with("handlers: lib::Handlers = lib::Handlers { }; spare: lib::Handlers = lib::Handlers { };", sock, me, ", serve: [handlers]")) or discard;
+    let twice = run_tool(hale + "\ncheck\n" + root + "/app");
+    std::test::assert(twice.code != 0 && std::str::contains(twice.stderr, "but the main locus also holds `lib::Handlers` as `spare`"), "a served type held twice would answer for both: " + twice.stderr);
+    // ---- and the seed's own locus is on the surface already
+    std::io::fs::write_file(root + "/app/main.hl", app_with("mine: Table = Table { };", sock, me, ", serve: [mine]")) or discard;
+    let own = run_tool(hale + "\ncheck\n" + root + "/app");
+    std::test::assert(own.code != 0 && std::str::contains(own.stderr, "is the entrypoint seed's own and on the surface already"), "naming the seed's own locus is refused: " + own.stderr);
 
     // ---- without serve, holding the locus serves nothing of it
     std::io::fs::write_file(root + "/app/main.hl", app_source(sock, me, "")) or discard;

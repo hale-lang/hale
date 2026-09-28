@@ -6,12 +6,11 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
-import { settle, wireLine } from './command-wire.mjs';
+import { headPort, settle, wireLine } from './command-wire.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 import { scaffoldProject, hostReady, organizationReady, hostChildren, running, headMemory } from './native-command-harness.mjs';
 
@@ -128,13 +127,6 @@ async function stop(item, kill = false) {
 process.on('exit', () => { for (const item of owned) signal(item, 'SIGKILL'); });
 for (const name of ['SIGINT', 'SIGTERM']) process.on(name, () => { interrupted = `Interrupted by ${name}`; for (const item of owned) signal(item, 'SIGKILL'); });
 
-async function availablePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const port = server.address().port;
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return port;
-}
 function httpRequest(method, suffix, value, { discard = false } = {}) {
   checkProcesses();
   const encoded = value === undefined ? undefined : Buffer.from(JSON.stringify(value), 'utf8');
@@ -219,7 +211,7 @@ function actAs(name, seat) {
 async function stopHost(kill = false) { await stop(host, kill); await reapHostChildren(); }
 async function startApi(name = 'alice') {
   actor = name; actAs(name, name !== 'mallory');
-  const port = await availablePort(); origin = `http://127.0.0.1:${port}`;
+  const port = await headPort(); origin = `http://127.0.0.1:${port}`;
   api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn });
   await until('command API startup', async () => {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }

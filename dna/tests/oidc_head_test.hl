@@ -91,7 +91,7 @@ main locus App {
         let git = dna::GitRecord { repo: repo };
         let identity = git.identity();
         // the graph says who holds what: no local trust, alice at agent, bob nowhere
-        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local --add dna.oidc.member carol-sub=carol && git config --local dna.oidc.key \"$3\"\nsh\n" + repo + "\n" + self.issuer + "\n" + oidc::STUB_SPKI;
+        let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local --add dna.oidc.member carol-sub=carol && git config --local --add dna.oidc.member alice2-sub=alice && git config --local --add dna.oidc.service alice2-sub=robot && git config --local dna.oidc.key \"$3\"\nsh\n" + repo + "\n" + self.issuer + "\n" + oidc::STUB_SPKI;
         std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
         let as_alice = dna::GitJournal { repo: repo, author: "alice" };
         std::test::assert(as_alice.append(as_alice.revision(), "intent.offered", "i-alice", "alice was here").ok, "alice is a person the record knows");
@@ -161,6 +161,10 @@ main locus App {
         std::test::assert(status_of(elsewhere) == "401" && std::str::contains(elsewhere.stdout, "audience"), "a token for another client is refused: " + elsewhere.stdout);
         let foreign = post(commands, claim, oidc::stub_id_token("https://issuer.example", "dna-local", "alice-sub", "", 600));
         std::test::assert(status_of(foreign) == "401" && std::str::contains(foreign.stdout, "issuer"), "a token from another issuer is refused: " + foreign.stdout);
+        // ---- a subject the record maps both as a person and as a service
+        // is neither: its token never acts as alice, on the binding itself
+        let dual = post(commands, claim, oidc::stub_id_token(self.issuer, "dna-local", "alice2-sub", "", 600));
+        std::test::assert(status_of(dual) == "404" && std::str::contains(dual.stdout, "\"kind\":\"unknown\""), "a subject mapped both ways holds nothing at the gate: " + dual.stdout);
         // ---- a retired person's token reads nothing
         std::test::assert(j.append(j.revision(), "person.retired", "carol", "{}").ok, "carol retired");
         // (the record's roles ask whether it moved at most once a second)

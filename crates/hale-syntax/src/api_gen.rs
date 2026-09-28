@@ -395,6 +395,23 @@ pub fn api_surface(programs: &[&Program]) -> Option<ApiSurface> {
                     name.span,
                     format!("`serve:` names the locus `{}` twice", tn),
                 )),
+                // The binding serves a locus type — every instance of it
+                // subscribes — so a type main holds twice would answer
+                // for both params, the unnamed one too.
+                Some(_) if main_params.iter().any(|(other, t)| other != &name.name && t.as_deref() == Some(tn.as_str())) => {
+                    let others: Vec<&str> = main_params
+                        .iter()
+                        .filter(|(other, t)| *other != &name.name && t.as_deref() == Some(tn.as_str()))
+                        .map(|(other, _)| other.as_str())
+                        .collect();
+                    serve_errors.push((
+                        name.span,
+                        format!(
+                            "`serve:` names `{}`, but the main locus also holds `{}` as `{}`: the binding serves a locus type, so every instance would answer; hold the served locus once",
+                            name.name, tn, others.join("`, `")
+                        ),
+                    ))
+                }
                 Some(l) => served.push(ApiServed { param: name.name.clone(), locus: tn.clone(), display: l.display.clone().unwrap_or_else(|| tn.clone()) }),
             },
         }
@@ -1381,14 +1398,13 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
 /// unauthenticated, 403 unauthorized, 404 unknown, 503 over the bound, 400
 /// otherwise — and closes the connection. No program writes this path.
 fn http_src() -> String {
-    r#"fn __api_http_header(head: String, name: String, lower: String) -> String {
+    r#"fn __api_http_header(head: String, lower: String) -> String {
     let mut rest = head + "\r\n";
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\r\n");
         let line = rest[0..nl];
         rest = rest[(nl + 2)..len(rest)];
-        if std::str::starts_with(line, name + ":") { return std::str::trim(line[(len(name) + 1)..len(line)]); }
-        if std::str::starts_with(line, lower + ":") { return std::str::trim(line[(len(lower) + 1)..len(line)]); }
+        if len(line) > len(lower) && std::str::lower(line[0..(len(lower) + 1)]) == lower + ":" { return std::str::trim(line[(len(lower) + 1)..len(line)]); }
     }
     return "";
 }
@@ -1428,10 +1444,12 @@ locus __ApiHttpPeer {
     }
     @unbounded
     run() {
+        // the whole request within 10 s, however slowly it trickles
+        let deadline = std::time::monotonic_ns() + 10000000000;
         let mut buf = "";
         let mut head_end = -1;
         let mut open = true;
-        while open && head_end < 0 && len(buf) < 65536 {
+        while open && head_end < 0 && len(buf) < 65536 && std::time::monotonic_ns() < deadline {
             let chunk = self.stream.recv(65536) or "";
             if len(chunk) == 0 { open = false; } else { buf = buf + chunk; head_end = std::str::index_of(buf, "\r\n\r\n"); }
         }
@@ -1441,17 +1459,17 @@ locus __ApiHttpPeer {
             return;
         }
         let head = buf[0..head_end];
-        let mut body = buf[(head_end + 4)..len(buf)];
-        let want = std::str::parse_int(__api_http_header(head, "Content-Length", "content-length")) or 0;
-        while open && len(body) < want && len(body) < 1048576 {
-            let chunk = self.stream.recv(65536) or "";
-            if len(chunk) == 0 { open = false; } else { body = body + chunk; }
-        }
         if !std::str::starts_with(head, "POST ") {
             self.respond(405, "{\"ok\":false," + __api_refusal("malformed", "the api binding's HTTP transport takes one POSTed line of the wire") + "}");
             return;
         }
-        let auth = __api_http_header(head, "Authorization", "authorization");
+        let mut body = buf[(head_end + 4)..len(buf)];
+        let want = std::str::parse_int(__api_http_header(head, "content-length")) or 0;
+        while open && len(body) < want && len(body) < 1048576 && std::time::monotonic_ns() < deadline {
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 { open = false; } else { body = body + chunk; }
+        }
+        let auth = __api_http_header(head, "authorization");
         let token = if std::str::starts_with(auth, "Bearer ") { std::str::trim(auth[7..len(auth)]) } else { "" };
         if len(token) == 0 {
             self.refuse_here(nobody, "", "unauthenticated", "a request carries `Authorization: Bearer <token>`");
@@ -1513,9 +1531,18 @@ locus __ApiHttp {
     }
     birth() {
         if self.port <= 0 { return; }
+        // A transport the entry names is the program's or nothing: a port
+        // it cannot hold is refused at start, never run without, so a live
+        // program always owns its port and a relay never hands a bearer to
+        // whoever took it first.
+        if self.port > 65535 {
+            eprintln("api: the api binding's HTTP port " + to_string(self.port) + " is not a port");
+            std::process::exit(2);
+        }
         self.listen_fd = std::io::tcp::__listen_socket(self.host, self.port);
         if self.listen_fd < 0 {
-            eprintln("api: the api binding's HTTP transport could not listen on " + self.host + ":" + to_string(self.port) + "; the program runs without it");
+            eprintln("api: the api binding's HTTP transport could not listen on " + self.host + ":" + to_string(self.port));
+            std::process::exit(2);
         }
     }
     @unbounded
@@ -1523,7 +1550,12 @@ locus __ApiHttp {
         if self.listen_fd < 0 { return; }
         while !self.draining {
             let conn = std::io::tcp::__accept_one(self.listen_fd);
-            if conn < 0 { break; }
+            // a failed accept (out of descriptors, an aborted connection)
+            // ends one request, never the transport
+            if conn < 0 {
+                if !self.draining { std::time::sleep(50ms); }
+                continue;
+            }
             let n = self.next_peer;
             self.next_peer = n + 1;
             __ApiHttpPeer { peer: n, fd: conn };

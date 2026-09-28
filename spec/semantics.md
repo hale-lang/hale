@@ -1719,15 +1719,19 @@ bindings {
 ```
 
 puts the locus `commands` holds (`api::Commands`) on the surface — its
-subscriptions are commands, its gates are gates, as if the seed had
-declared it. A locus that came in through `import` and is not named
+subscriptions are commands, its publishes streams, its gates gates, as
+if the seed had declared them; its `expose` members are not reads,
+which stay the seed's own. The binding serves a locus *type*: every
+instance of it subscribes, so a served type main also holds under
+another param is refused. A locus that came in through `import` and is not named
 is not part of the surface, however much of it the entrypoint holds
 or composes (GH #1104 piece 5): a library's internal bus is not the
 application's API, and a head holding its core's loci as params does
 not serve the core's topics as commands. Holding a locus never serves
 it; naming it does. A `serve:` name that is not a param of main, whose
 type is not a locus, whose locus is the seed's own (already on the
-surface) or that names a locus twice is an error at the name. The
+surface), that names a locus twice or whose type main holds under
+another param too is an error at the name. The
 description carries what `serve:` named, `"serve": [{"param":
 "commands", "locus": "api::Commands"}]` (empty when nothing is), so
 `hale check --dump-api` shows a composer exactly what it serves. An
@@ -1885,8 +1889,11 @@ with the source's reason, gated or not. From there the request is any
 socket peer's: the same surface, gates, bound, description, receipts
 and replies. The response carries the reply line as its body and the
 refusal's kind as its status: 200 answered, 401 `unauthenticated`,
-403 `unauthorized`, 404 `unknown`, 503 `over_bound`, 400 otherwise, and
-405 for anything but a POST. An `http(…)` without `principals:` is an
+403 `unauthorized`, 404 `unknown`, 503 `over_bound`, 400 otherwise,
+405 for anything but a POST, and 504 when the program does not answer
+within 30 s. The whole request arrives within 10 s or is refused. A
+port the transport cannot hold stops the program at start: a live
+program always owns its port. An `http(…)` without `principals:` is an
 error at the clause, since every token would be nobody.
 
 `Principal.via` is set by the binding and never by a caller: `"http"`
