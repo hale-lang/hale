@@ -368,6 +368,24 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        // GH #988: the senses' store, compose's `senses` service brought up
+        Some("senses") if args.get(1).map(String::as_str) == Some("up") => {
+            let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            match host_run("senses-up", &dir, &[]) {
+                Ok(out) if !out.starts_with("none: ") => {
+                    print!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Ok(out) => {
+                    eprintln!("hale dna senses up: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim()));
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna senses up: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         // GH #986: the stream deleted with the owner's URL, as memory's
         // schema is dropped
         Some("nerves") if args.get(1).map(String::as_str) == Some("drop") => {
@@ -432,6 +450,20 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
+            // GH #988: the senses' store, with the rest of compose — when
+            // compose is where this machine's services come from: an
+            // environment that names its own memory or nerves (an owner's
+            // DSN or URL) names its own store too. No part is handed the
+            // store's URL (the store scrapes them), so one that cannot come
+            // up is said and nothing stops for it
+            let own_servers = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().any(|k| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false));
+            if !own_servers {
+                match host_run("senses-up", &dir, &[]) {
+                    Ok(out) if !out.starts_with("none: ") => eprintln!("hale dna dev: senses: {}", out.trim()),
+                    Ok(out) => eprintln!("hale dna dev: senses: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim())),
+                    Err(e) => eprintln!("hale dna dev: senses: {e}"),
+                }
+            }
             let mut env: Vec<(&str, &OsStr)> = Vec::new();
             if let Some(spine) = &spine {
                 env.push(("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(spine.as_str())));
@@ -772,6 +804,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,");
     eprintln!("                                    or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)");
     eprintln!("       hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL");
+    eprintln!("       hale dna senses up [dir]     bring up the senses' store (compose's `senses` service) and print its read URL");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
@@ -1208,6 +1241,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
     created(&mut out, &root.join("dna/nats.conf"), &nats_conf())?;
+    created(&mut out, &root.join("dna/senses.yml"), &senses_yml())?;
     let kept = match &app {
         Some(app) => format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED),
         None => format!("kept    {} (the repository is not modified; the organization oversees it from {})", root.display(), ORG_SEED),
@@ -1458,7 +1492,28 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
                 .to_string(),
         );
     }
+    // GH #988: the senses — the store's scrape configuration is new and
+    // created; the compose file is the project's, and is told
+    let senses = root.join("dna/senses.yml");
+    if root.join("dna").is_dir() && !senses.is_file() {
+        fs::write(&senses, senses_yml()).map_err(|e| format!("write {}: {e}", senses.display()))?;
+        out.push(format!("created {}", senses.display()));
+    }
+    if nats_text.contains("user: app") && !nats_text.contains("user: reflexes") {
+        out.push(
+            "note    dna/nats.conf has no `reflexes` user (GH #988): the reflexes publish their firings with it, on `*.app.reflexes.>` alone, and the `app` user must be denied that subject. Add the user and the deny, as `hale dna init` writes them"
+                .to_string(),
+        );
+    }
     let compose_text = fs::read_to_string(root.join("dna/compose.yaml")).unwrap_or_default();
+    if !compose_text.is_empty() && !compose_text.contains("senses:") {
+        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
+        out.push(format!(
+            "note    dna/compose.yaml has no `senses` service (GH #988); add it and its volume, as `hale dna init` writes them:\n  senses:\n    image: {PROMETHEUS_IMAGE}\n    command: [\"--config.file=/etc/prometheus/senses.yml\", \"--storage.tsdb.path=/prometheus\", \"--storage.tsdb.retention.time={SENSES_RETENTION}\"]\n    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    ports:\n      - \"127.0.0.1:{}:9090\"\n    volumes:\n      - ./senses.yml:/etc/prometheus/senses.yml:ro\n      - senses:/prometheus\n  (under volumes:)  senses:\n    name: hale-dna-{}-senses",
+            compose_senses_port(&project),
+            compose_name(&project)
+        ));
+    }
     if !compose_text.is_empty() && !compose_text.contains("nerves:") {
         let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string());
         out.push(format!(
@@ -1553,7 +1608,9 @@ fn compose_yaml(project: &str) -> String {
 # stream as their owners, and hands the organism its own roles. Beyond
 # one machine, point HALE_DNA_MEMORY_DSN_OWNER at a Postgres of your own
 # and HALE_DNA_NATS_URL_OWNER at a NATS server configured like
-# dna/nats.conf. Both listen on 127.0.0.1 only.
+# dna/nats.conf. Senses (GH #988): the store keeps every part's readings
+# (dna/senses.yml says which), for the reflexes to read; `hale dna dev`
+# brings it up with the rest. All three listen on 127.0.0.1 only.
 services:
   knowledge-db:
     image: pgvector/pgvector:pg16
@@ -1573,15 +1630,73 @@ services:
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
       - nerves:/data
+  senses:
+    image: {image}
+    command: ["--config.file=/etc/prometheus/senses.yml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time={retention}"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:{senses_port}:9090"
+    volumes:
+      - ./senses.yml:/etc/prometheus/senses.yml:ro
+      - senses:/prometheus
 volumes:
   knowledge-db:
     name: hale-dna-{name}-knowledge
   nerves:
     name: hale-dna-{name}-nerves
+  senses:
+    name: hale-dna-{name}-senses
 "#,
         port = compose_port(project),
         nats_port = compose_nats_port(project),
+        senses_port = compose_senses_port(project),
+        image = PROMETHEUS_IMAGE,
+        retention = SENSES_RETENTION,
     )
+}
+
+/// The senses' store (GH #988): Prometheus, kept this long.
+const PROMETHEUS_IMAGE: &str = "prom/prometheus:v3.5.0";
+const SENSES_RETENTION: &str = "7d";
+
+/// `dna/senses.yml`: what the senses' store scrapes (GH #988) — every
+/// long-running part's readings, on the ports `dna/core/senses.hl` names
+/// (`SENSES_PORT_SPINE`, `_NODE`, `_HEAD`), reached from the store's
+/// container over the host gateway. `honor_labels`: a part's own labels
+/// (a node's `instance`) are the readings', never the target's.
+fn senses_yml() -> String {
+    r#"# dna/senses.yml — what the senses' store scrapes (GH #988; project-owned,
+# generated by `hale dna init`). Every long-running part of the organism
+# serves its readings (std::metrics) on its own port, each series labelled
+# `part`: the spine (the node's host) on 9464, a node on 9465, the head on
+# 9466 — or on HALE_DNA_SENSES_PORT when its environment names one. The
+# store in dna/compose.yaml reaches them over the host gateway and keeps
+# what they said for its retention (--storage.tsdb.retention.time); the
+# reflexes read it. A part never learns where its readings go.
+global:
+  scrape_interval: 5s
+scrape_configs:
+  - job_name: spine
+    honor_labels: true
+    static_configs:
+      - targets: ["host.docker.internal:9464"]
+  - job_name: node
+    honor_labels: true
+    static_configs:
+      - targets: ["host.docker.internal:9465"]
+  - job_name: head
+    honor_labels: true
+    static_configs:
+      - targets: ["host.docker.internal:9466"]
+"#
+    .to_string()
+}
+
+/// A host port for the project's senses' store in 93xx, like `compose_port`.
+fn compose_senses_port(project: &str) -> u16 {
+    let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
+    9300 + (h % 100) as u16
 }
 
 /// The project's name as compose's volumes carry it.
@@ -1616,9 +1731,14 @@ authorization {
     # tells the heads every row it lands (`<org>.head.row.landed`).
     { user: spine, password: "dna-spine-dev",
       permissions: { publish: ["*.dna.>", "*.*.dna.>", "*.head.>", "*.*.head.>", "$JS.API.CONSUMER.CREATE.*.*", "$JS.API.CONSUMER.INFO.*.*", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.*.*.>"], subscribe: ["_INBOX.>"] } }
-    # an application: publishes on its own subjects, reads nothing of DNA's (#987)
+    # an application: publishes on its own subjects, reads nothing of DNA's
+    # (#987); never on the reflexes', which are theirs alone
     { user: app, password: "dna-app-dev",
-      permissions: { publish: ["*.app.*.>"], subscribe: ["_INBOX.>"] } }
+      permissions: { publish: { allow: ["*.app.*.>"], deny: ["*.app.reflexes.>"] }, subscribe: ["_INBOX.>"] } }
+    # the reflexes (#988): publish their firings on their own subjects,
+    # read nothing
+    { user: reflexes, password: "dna-reflexes-dev",
+      permissions: { publish: ["*.app.reflexes.>"], subscribe: ["_INBOX.>"] } }
     # the head: subscribes, publishes nothing
     { user: head, password: "dna-head-dev",
       permissions: { publish: { deny: [">"] }, subscribe: ["*.>"] } }

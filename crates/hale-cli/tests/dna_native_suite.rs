@@ -49,14 +49,16 @@ const SLICES: usize = 20;
 /// books_slice_test ~280 s; receipt_retention_test ~110 s), the body
 /// fixtures that build the host
 /// cold in a cache of their own (body_claim_expired_test ~425 s,
-/// body_lease_blocked_test ~380 s, body_lease_start_test), and legs_test
-/// and dogfood_voice_test, which build a head. The sorted listing's
+/// body_lease_blocked_test ~380 s, body_lease_start_test), legs_test
+/// and dogfood_voice_test, which build a head, and senses_reflex_test,
+/// which runs an organism, a node and the seed compose's store (GH #988).
+/// The sorted listing's
 /// modulo paired them by accident — adding or removing any fixture
 /// reshuffled which shared a
 /// slice, and two of them ran past the fifteen minutes a slice had then — so they
 /// lead the order: each opens a slice of its own, and the rest follow
 /// round-robin.
-const HEAVY: [&str; 9] = [
+const HEAVY: [&str; 10] = [
     "graph_holes_test.hl",
     "graph_holds_test.hl",
     "body_claim_expired_test.hl",
@@ -66,6 +68,7 @@ const HEAVY: [&str; 9] = [
     "legs_test.hl",
     "receipt_retention_test.hl",
     "dogfood_voice_test.hl",
+    "senses_reflex_test.hl",
 ];
 
 fn fixture_files() -> Vec<PathBuf> {
@@ -955,6 +958,7 @@ fn dna_fixture_set_is_complete() {
             "row_admission_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
+            "senses_reflex_test.hl",
             "status_chain_race_test.hl",
             "supersession_test.hl",
             "support_test.hl",

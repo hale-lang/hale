@@ -1,0 +1,237 @@
+// dna/tests/senses_reflex_test.hl — the senses and a reflex, end to end
+// (GH #988).
+//
+// An organism with one instance, on the seed's own compose: its nerves
+// and its senses' store (Prometheus, `senses`) come up from the
+// dna/compose.yaml `hale dna new` writes, as `dev` brings them up. The
+// node serves its readings, every series labelled `part`; the instance's
+// process exits; the store holds `dna_instance_up 0`; the reflexes
+// (dna/reflexes) read it and publish `reflex.fired` as an application,
+// which the heart lands as a reading row; the node restarts the instance
+// and lands `reflex.acted`; a second exit inside the window becomes a
+// concern the organization raises. Without docker compose, nothing here
+// is exercised.
+
+import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// Run `argv` (newline-separated) in `dir`, as this fixture's compose
+// project, with no server of anyone else's named: memory, the nerves and
+// the store are the seed compose's.
+fn in_dir(dir: String, project: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export COMPOSE_PROJECT_NAME=\"$2\" && shift 2 && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_SENSES_PORT && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + project + "\n" + argv);
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+fn text_of(path: String) -> String { return std::io::fs::read_file(path) or ""; }
+
+// A GET's body, "" when it did not answer 200.
+fn get(url: String) -> String {
+    let r = std::http::get(url) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+    return if r.status == 200 { std::str::from_bytes(r.body) } else { "" };
+}
+
+// The rows of the record at `repo` of `kind` whose entity starts with
+// `entity`, each `entity body` on a line.
+@unbounded
+fn rows(repo: String, kind: String, entity: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && std::str::starts_with(e.entity, entity) { out = out + e.entity + " " + e.body + "\n"; }
+        i = i + 1;
+    }
+    return out;
+}
+
+fn count_lines(s: String) -> Int {
+    let mut n = 0;
+    let mut i = 0;
+    while i < len(s) {
+        if s[i..(i + 1)] == "\n" { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// Whether every sample line of an exposition carries `part=`.
+@unbounded
+fn every_series_has_part(exposition: String) -> Bool {
+    let mut rest = exposition;
+    let mut samples = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 0 && !std::str::starts_with(line, "#") {
+            samples = samples + 1;
+            if !std::str::contains(line, "part=\"") { return false; }
+        }
+    }
+    return samples > 0;
+}
+
+main locus App {
+    params { app: String = ""; project: String = ""; }
+    fn log(name: String) -> String { return text_of(self.app + "/" + name + ".log"); }
+    fn logs() -> String { return "--- host\n" + self.log("host") + "\n--- node\n" + text_of(self.app + "/../node.log") + "\n--- reflexes\n" + text_of(self.app + "/../reflexes.log"); }
+    // Wait until `rows(kind, entity)` has `n` lines, within `secs`.
+    @unbounded
+    fn wait_rows(kind: String, entity: String, n: Int, secs: Int) -> String {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        let mut got = rows(self.app, kind, entity);
+        while count_lines(got) < n && std::time::now() <= deadline {
+            std::time::sleep(500ms);
+            got = rows(self.app, kind, entity);
+        }
+        return got;
+    }
+    @unbounded
+    fn wait_body(url: String, needle: String, secs: Int) -> String {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        let mut body = get(url);
+        while !std::str::contains(body, needle) && std::time::now() <= deadline {
+            std::time::sleep(500ms);
+            body = get(url);
+        }
+        return body;
+    }
+    // The instance's process, killed.
+    fn kill_instance(edge: String) -> Bool {
+        let pid = dna::trim_nl(text_of(edge + "/.hale/node/edge-1/api-0.pid"));
+        if len(pid) == 0 { return false; }
+        return dna::run_tool("kill\n-9\n" + pid).code == 0;
+    }
+    run() {
+        if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("senses_reflex_test: not exercised (docker compose is not on PATH)"); return; }
+        let scratch = dna::scratch_root("senses");
+        dna::reap_on_exit(scratch);
+        self.project = "hale-dna-senses-" + to_string(std::process::pid());
+        let spine_port = dna::free_port(0);
+        let node_port = dna::free_port(1);
+
+        // ---- the application, its fleet of one, and the seed's compose
+        // the application's name is this run's: compose's volumes and ports
+        // are named from it, so two checkouts on one box never share them
+        let name = "sensing" + to_string(std::process::pid());
+        let made = in_dir(scratch, self.project, toolchain() + "\ndna\nnew\n" + name);
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        self.app = scratch + "/" + name;
+        let compose = text_of(self.app + "/dna/compose.yaml");
+        std::test::assert(std::str::contains(compose, "senses:") && std::str::contains(compose, "retention.time=7d"), "the seed's compose has the senses' store, kept a week: " + compose);
+        // this run's parts serve on ports of its own: the store is told so
+        let senses_yml = text_of(self.app + "/dna/senses.yml");
+        std::test::assert(std::str::contains(senses_yml, "host.docker.internal:9465") && std::str::contains(senses_yml, "honor_labels: true"), "the seed names what the store scrapes: " + senses_yml);
+        let told = std::str::replace(std::str::replace(senses_yml, "host.docker.internal:9464", "host.docker.internal:" + to_string(spine_port)), "host.docker.internal:9465", "host.docker.internal:" + to_string(node_port));
+        std::io::fs::write_file(self.app + "/dna/senses.yml", told) or discard;
+        let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
+        std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
+        let manifest = text_of(self.app + "/hale.toml") + "\n[fleets]\nproduction = \"fleet.plan.json\"\n\n[dna]\nfleet = \"production\"\n";
+        std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
+        let bare = scratch + "/origin.git";
+        let edge = scratch + "/edge-1";
+        let c0 = in_dir(self.app, self.project, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*' && git clone -q \"$0\" \"$1\"\n" + bare + "\n" + edge);
+        std::test::assert_eq_int(c0.code, 0, "the application, its origin and the node's clone: " + c0.stderr);
+
+        // ---- the nerves and the store, from the seed's compose
+        let nerves = in_dir(self.app, self.project, toolchain() + "\ndna\nnerves\nmigrate\n.");
+        let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let reflexes_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_REFLEXES");
+        let app_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_APP");
+        let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        let senses = in_dir(self.app, self.project, toolchain() + "\ndna\nsenses\nup\n.");
+        let store = line_value(senses.stdout, "HALE_DNA_SENSES_URL");
+        let up = nerves.code == 0 && len(spine) > 0 && len(reflexes_url) > 0 && len(org) > 0 && senses.code == 0 && len(store) > 0;
+
+        // ---- the organism: the spine, its node, the base deployed
+        let reflexes_seed = source() + "/dna/reflexes";
+        let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed) } else { dna::RunResult { code: -1 } };
+        let host = if up { dna::trim_nl(in_dir(self.app, self.project, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
+        let reading = up && len(host) > 0 && self.wait_log("the organization reads its facts from the nerves", 300);
+        let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
+        let deployed = if len(node) > 0 { in_dir(self.app, self.project, toolchain() + "\ndna\ndeploy\nHEAD") } else { dna::RunResult { code: -1 } };
+        let first_up = if deployed.code == 0 { self.wait_rows("instance.up", "api-0", 1, 180) } else { "" };
+        // past the deploy's observation window, so an exit is the reflex's
+        std::time::sleep(4s);
+        let readings_up = if len(first_up) > 0 { self.wait_body("http://127.0.0.1:" + to_string(node_port) + "/metrics", "dna_instance_up{part=\"node\",node=\"edge-1\",instance=\"api-0\"}", 30) } else { "" };
+
+        // ---- the instance exits: the node reads it down, the store holds it
+        let killed = len(readings_up) > 0 && self.kill_instance(edge);
+        let exited = if killed { self.wait_rows("instance.exited", "api-0", 1, 60) } else { "" };
+        let readings_down = if len(exited) > 0 { self.wait_body("http://127.0.0.1:" + to_string(node_port) + "/metrics", "\"} 0", 30) } else { "" };
+        let q = store + "/api/v1/query?query=dna_instance_up";
+        let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
+
+        // ---- the reflexes fire, the heart lands it, the node acts
+        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org).stdout) } else { "" };
+        let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
+        let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
+        let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };
+
+        // ---- a second exit inside the window: a concern
+        std::time::sleep(1s);
+        let killed_again = count_lines(second_up) >= 2 && self.kill_instance(edge);
+        let fired_twice = if killed_again { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 2, 120) } else { "" };
+        let concern = if count_lines(fired_twice) >= 2 { self.wait_rows("concern.raised", "reflexes/api-0", 1, 180) } else { "" };
+
+        // ---- an application cannot speak as the reflexes: its user may not
+        // publish on their subjects, so no firing it forges reaches a node
+        let forger = nats::NatsClient { url: app_url, name: "senses-forger", timeout: 2s };
+        let forged = if len(app_url) > 0 && forger.open() { nats::js_publish(forger, org + ".app.reflexes.reflex.fired", std::bytes::from_string("{\"id\": \"forged\", \"node\": \"edge-1\", \"target\": \"api-0\", \"action\": \"restart\"}")) or nats::PubAck { seq: -1 } } else { nats::PubAck { seq: -2 } };
+        forger.close();
+
+        // ---- down, whatever happened
+        let stop = dna::run_tool("sh\n-c\nfor p in \"$1\" \"$2\" \"$3\"; do [ -n \"$p\" ] && kill \"$p\" 2>/dev/null; done; for i in $(seq 1 150); do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; done; true\nsh\n" + reflexes + "\n" + node + "\n" + host);
+        let down = in_dir(self.app, self.project, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
+
+        std::test::assert(up, "the seed compose's nerves and store came up: " + nerves.stdout + nerves.stderr + senses.stdout + senses.stderr);
+        std::test::assert_eq_int(built.code, 0, "the reflexes build (HALE_DNA_SOURCE names the repository): " + built.stderr);
+        std::test::assert(reading, "the organization reads its facts from the nerves: " + self.logs());
+        std::test::assert(deployed.code == 0 && len(first_up) > 0, "the base is deployed and api-0 is up: " + deployed.stdout + deployed.stderr + self.logs());
+        std::test::assert(len(readings_up) > 0 && every_series_has_part(readings_up), "the node serves its readings, every series labelled with its part: " + readings_up);
+        std::test::assert(std::str::contains(readings_up, "dna_pulse_seconds{part=\"node\"}"), "and its pulse: " + readings_up);
+        std::test::assert(killed && len(exited) > 0, "api-0's process exited and the node recorded it: " + self.logs());
+        std::test::assert(len(readings_down) > 0 && every_series_has_part(readings_down), "the node reads it down, `dna_instance_up 0`: " + readings_down);
+        std::test::assert(std::str::contains(stored, "\"success\""), "the store answers the query: " + stored);
+        std::test::assert(len(fired) > 0 && std::str::contains(fired, "restart") && std::str::contains(fired, "api-0"), "the reflex fired, and the heart landed it as a reading row with the restart: " + fired + self.logs());
+        std::test::assert(std::str::contains(acted, "\\\"outcome\\\": \\\"restarted\\\"") || std::str::contains(acted, "\"outcome\": \"restarted\""), "the node restarted api-0 and landed reflex.acted: " + acted + self.logs());
+        std::test::assert(count_lines(second_up) >= 2, "api-0 is up again: " + second_up);
+        std::test::assert(count_lines(fired_twice) >= 2, "a second exit fired again: " + fired_twice + self.logs());
+        std::test::assert(len(concern) > 0, "the second firing inside the window became a concern the organization raised: " + rows(self.app, "concern.requested", "reflexes/") + self.logs());
+        std::test::assert_eq_int(forged.seq, -1, "the application's user may not publish a firing (the stream took it at seq " + to_string(forged.seq) + ")");
+        std::test::assert_eq_str(rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged"), "", "and no forged firing was recorded");
+        std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
+        dna::scratch_done(scratch);
+    }
+    @unbounded
+    fn wait_log(text: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + dna::wait_secs(secs);
+        while std::time::now() <= deadline {
+            if std::str::contains(self.log("host"), text) { return true; }
+            std::time::sleep(500ms);
+        }
+        return false;
+    }
+}
+
+fn main() { App { }; }

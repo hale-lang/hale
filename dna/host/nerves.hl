@@ -40,6 +40,7 @@ fn nerves_migrate_verb(root: String) -> Answer {
     out = out + dna::NATS_SPINE_URL_ENV + "=" + dna::nerves_role_url(owner, "spine") + "\n";
     out = out + dna::NATS_HEAD_URL_ENV + "=" + dna::nerves_role_url(owner, "head") + "\n";
     out = out + dna::NATS_APP_URL_ENV + "=" + dna::nerves_role_url(owner, "app") + "\n";
+    out = out + dna::NATS_REFLEXES_URL_ENV + "=" + dna::nerves_role_url(owner, "reflexes") + "\n";
     return answer(out);
 }
 
@@ -99,4 +100,15 @@ fn nerves_drop_verb(root: String) -> Answer {
     // err_code 10059: stream not found
     if std::str::contains(why, "10059") { return answer("absent " + stream + "\n"); }
     return fail("nerves drop: " + why);
+}
+
+// `senses-up` (GH #988): the senses' store, compose's `senses` service
+// brought up — `HALE_DNA_SENSES_URL=<read url>`, or `none: <why>`. No part
+// of the organism is handed it: the store scrapes the parts, and only the
+// reflexes read it.
+fn senses_up_verb(root: String) -> Answer {
+    let infra = ReferenceInfrastructure { root: root };
+    let store = infra.senses_store(root);
+    if !store.present { return answer("none: " + store.why + "\n"); }
+    return answer("HALE_DNA_SENSES_URL=" + store.dsn + "\n");
 }

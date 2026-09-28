@@ -1144,6 +1144,7 @@ crates/hale-codegen/tests/stdlib_m79.rs#2 865d341109268295
 crates/hale-codegen/tests/stdlib_m79.rs#3 865d341109268295
 crates/hale-codegen/tests/stdlib_m79.rs#4 865d341109268295
 crates/hale-codegen/tests/stdlib_metrics.rs#0 6b5127caf4fb3e6f
+crates/hale-codegen/tests/stdlib_metrics.rs#1 d9bd2e9ff9e85a19
 crates/hale-codegen/tests/stdlib_name.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_name.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_name.rs#2 f2c1228edb650960
@@ -1342,7 +1343,7 @@ crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/json.hl ebc4c7fe0e41748e
 crates/hale-stdlib/hl/lang.hl 2a31148c08652a87
 crates/hale-stdlib/hl/log.hl 8f96d39abe5b312b
-crates/hale-stdlib/hl/metrics.hl b9dee86669b92506
+crates/hale-stdlib/hl/metrics.hl f89fe6d80b752d5d
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl 303db68fd4e3b23b
 crates/hale-stdlib/hl/process.hl 016a44f03eb012c0

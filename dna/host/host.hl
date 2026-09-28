@@ -465,6 +465,7 @@ locus NodeRelay {
         error: String = ""; // the last relay's failure, "" when it had none
         relayed_count: Int = 0; // what the last relay published
         announced: Int = -1; // the rows of the view already told (-1: not yet looked)
+        called: Int = 0; // model calls announced, for the host's reading (GH #988)
     }
     bus {
         publish dna::IntentOffered;
@@ -496,6 +497,8 @@ locus NodeRelay {
         while self.announced < rows && n < ANNOUNCE_AT_ONCE {
             let e = p.row(self.announced);
             dna::RowLanded <- dna::LandedRow { seq: self.announced, kind: e.kind, entity: e.entity };
+            // GH #988: a model call, for the host's reading beside its row
+            if e.kind == "model.called" { self.called = self.called + 1; }
             self.announced = self.announced + 1;
             n = n + 1;
         }
@@ -740,7 +743,13 @@ locus NodeRelay {
 main locus Host {
     birth() { self.memory.point(self.root, dna::own_dsn_env()); }
     params {
-        verb: String = "run";
+        verb: String = "run"; // "run", "dev", or "node" (`hale node`: the Node below runs)
+        node_name: String = "";
+        node_tick: Int = 1000;
+        // GH #988: this part's readings (the spine's, or under `node` the
+        // node's), and the server that answers the store's scrape, on a
+        // pool of their own (dna/core/senses.hl)
+        senses: dna::Senses = dna::Senses { part: "spine", port: dna::senses_port_of("spine") };
         root: String = ".";
         seed: String = "."; // the application's seed, relative to the root
         fleet: String = "";
@@ -816,7 +825,7 @@ main locus Host {
         // never): its pulls outlive it for a pull's life
         org_stopped_at: Int = 0;
     }
-    placement { nerves: pinned; }
+    placement { nerves: pinned; senses: cooperative(pool = senses); }
     // GH #987: an application's event, as the heart's durable delivered it
     bus { subscribe nats::NatsInbound as on_reading; publish nats::NatsOutbound; }
     // Every topic the node publishes, onto the nerves: the record's
@@ -856,6 +865,8 @@ main locus Host {
     // durable only then — or once refused for good: a duplicate, or not a
     // reading. Anything else leaves it in the stream, to come again.
     fn on_reading(m: nats::Inbound) {
+        // a node is not the spine: the heart is the spine host's to read
+        if self.verb == "node" { return; }
         let body = std::str::from_bytes(m.data);
         let r = reading_of(m.subject, dna::nerves_heart_prefix(), body);
         if len(r.why) > 0 {
@@ -868,10 +879,10 @@ main locus Host {
         if l.outcome == "landed" {
             self.readings = self.readings + 1;
             self.say("reading " + entity + " recorded");
-            self.ack_reading(m.reply);
+            if self.read_firing(r, entity) { self.ack_reading(m.reply); }
         } else if l.outcome == "duplicate" {
             self.say("reading " + entity + " is recorded already; refused as a duplicate");
-            self.ack_reading(m.reply);
+            if self.read_firing(r, entity) { self.ack_reading(m.reply); }
         } else if l.outcome == "waiting" {
             if !self.readings_waiting { self.say("readings wait in the stream: " + l.why); }
             self.readings_waiting = true;
@@ -879,7 +890,30 @@ main locus Host {
             self.say("reading " + entity + " was not recorded (it comes again): " + l.why);
         }
     }
+    // GH #988: the spine's read of a reflex's firing (dna/host/reflex.hl),
+    // before the firing is acknowledged: a second one for its target within
+    // the window becomes a concern, once a window. False when the concern
+    // was due and the record refused it: the firing is then left
+    // unacknowledged, to come again.
+    fn read_firing(r: Reading, entity: String) -> Bool {
+        if r.app != REFLEX_APP || r.event != REFLEX_FIRED { return true; }
+        let e = reflex_escalation(self.root, entity, "host", self.memory);
+        if len(e.why) > 0 { self.say("reflexes: " + e.why + " (the firing comes again)"); return false; }
+        if len(e.asked) > 0 {
+            self.say("reflexes: " + e.asked + " put into the record");
+            let s = sync_record(self.root, self.memory);
+        }
+        return true;
+    }
     fn ack_reading(reply: String) { if len(reply) > 0 { nats::NatsOutbound <- nats::nats_ack(reply); } }
+    // GH #988: the model calls whose rows the relay announced, as the
+    // spine's counter. No `task` label: a series cannot be retired, so one
+    // per task would grow forever; the `model.called` row carries the task
+    fn read_model_calls() {
+        if self.relay.called == 0 { return; }
+        std::metrics::counter(self.senses.registry, "model_calls_total", dna::part_labels("spine")).add(std::math::int_to_float(self.relay.called));
+        self.relay.called = 0;
+    }
     // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
     // credential, as `hale dna secret set` wrote them ("" when none).
     fn secrets_file() -> String {
@@ -1762,6 +1796,8 @@ main locus Host {
         // what the view gained — this tick's rows, the sync's and memory's
         // — onto the nerves for the heads
         let told = self.relay.announce(self.memory);
+        self.read_model_calls();
+        std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("spine")).set(dna::senses_now());
         self.write_status();
         // no record, or one that could not be read: nothing to do this pass
         let now = record_head(self.root);
@@ -1782,6 +1818,15 @@ main locus Host {
         self.say(req.entity + " requests a restart (" + req.body + "); no expression is under this host — `hale dna dev`, a fleet (`[dna] fleet`), or a deployment gateway expresses it");
     }
     run() {
+        if self.verb == "node" {
+            let node = Node { name: self.node_name, root: self.root, fleet: self.fleet, tick_ms: self.node_tick, registry: self.senses.registry };
+            node.begin();
+            while !self.draining {
+                node.tick();
+                std::time::sleep(self.node_tick * 1ms);
+            }
+            return;
+        }
         self.hale = std::env::var("HALE_BIN");
         self.dna_dir = self.root + "/.hale/dna";
         std::io::fs::mkdir(self.root + "/.hale") or discard;

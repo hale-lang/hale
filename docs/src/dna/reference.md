@@ -381,7 +381,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
 | `legs/` (`dna/core/legs`, vendored as `vendor/dna/legs`) | the legs seed (GH #946): `Head` (the API as a leg sees it: attach, submit, lookup, context), `render` / `prompt_digest` / `RENDERER_VERSION`, `Brief` / `Performance` / `Performer` (`Person`, `NoDeterministic`, `FixedAnswer`, `NoModel`, `PerformerCatalog`), the hands (`GitHand` / `ScratchGit`, `ForgeHand` / `GhForge`, `ToolchainHand` / `Toolchain`, `NoDeploy`, `NoHeart`, `Hands`), `leg_main` (the verbs) |
 
-| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables — `hats` among them since version 5; version 7 admits the `reading` family — the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
+| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables — `hats` among them since version 5; version 7 admits the `reading` family, version 8 the `reflex` family — the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
 | `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres, the repository's graph and its two perspectives), `Dsn` / `parse_dsn`, `schema_for` |
 | `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
 | `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
@@ -393,13 +393,15 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |
 | `verification.hl` | `HaleVerification`, `assess_structure` |
 | `topics.hl` | the typed topics, including the facts that travel on the nerves |
+| `senses.hl` | the senses (GH #988): the port each part serves its readings on (`HALE_DNA_SENSES_PORT`, else the seed's), where it binds (`senses_host`), `Senses` (a part's registry and the server that answers the store's scrape, which its `main locus` places on a cooperative pool of its own), `part_labels`, `senses_now` |
 | `nerves.hl` | the nerves (GH #986): subjects under the organization's token (and an owner's), its stream, the durable consumers' names and filters (`spine` for the organization's facts, `heart` for the applications' events, GH #987), the roles' URLs; it imports no NATS (the host holds the migration and the readiness probe) |
 | `types.hl` | `Intent`, `WorkRequest`, `Grant`, `Magnitude`, `Evidence`, `Disposition`, `Mutation`, `dispose` |
 
 Beside the core, `dna/host` (the host: the projections, the writers,
 `run` / `dev`, the node agent — everything `hale dna` does that is DNA
 behaviour rather than manifest or scaffolding; `pulse.hl` lands an
-application's events as readings, GH #987) and `dna/ui` (the
+application's events as readings, GH #987; `reflex.hl` answers the
+reflexes' firings, GH #988) and `dna/ui` (the
 surface) ship in the
 toolchain the same way; `hale dna` resolves the project and execs the
 host. The compiler keeps `init` / `new` / `upgrade`, `hale fleet

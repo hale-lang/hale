@@ -89,6 +89,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "roles",
     "route",
     "routing",
+    "senses",
     "tape",
     "topics",
     "types",
@@ -133,7 +134,7 @@ macro_rules! host {
 /// person's name, the relay onto the nerves, the supervision — as a Hale
 /// program `hale dna` builds once into the toolchain cache and execs
 /// with the project resolved.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "pulse", "record", "record_verbs", "show", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "holes", "host", "infra", "main", "memory", "nerves", "node", "organization_launch", "procs", "projection", "pulse", "record", "reflex", "record_verbs", "show", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 

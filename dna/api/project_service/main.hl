@@ -154,10 +154,16 @@ main locus HeadMain {
         slots: PushSlots;
         srv: std::http::Server;
         watch: NervesWatch;
+        // GH #988: the head's readings, and the server the store scrapes
+        senses: dna::Senses = dna::Senses { part: "head", port: dna::senses_port_of("head") };
     }
-    placement { srv: cooperative(pool = io); watch: pinned; }
+    placement { srv: cooperative(pool = io); watch: pinned; senses: cooperative(pool = senses); }
     run() {
-        while !self.draining { std::time::sleep(100ms); }
+        let pulse = std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("head"));
+        while !self.draining {
+            pulse.set(dna::senses_now());
+            std::time::sleep(100ms);
+        }
     }
 }
 
