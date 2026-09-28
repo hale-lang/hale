@@ -167,7 +167,7 @@ main locus App {
 
         // ---- the organism: the spine, its node, the base deployed
         let reflexes_seed = source() + "/dna/reflexes";
-        let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed) } else { dna::RunResult { code: -1 } };
+        let built = if up { dna::run_tool(toolchain() + "\nbuild\n" + reflexes_seed + "\n-o\n" + scratch + "/reflexes-bin") } else { dna::RunResult { code: -1 } };
         let host = if up { dna::trim_nl(in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" dna run . --no-iris --observe 2 >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org + "\n" + to_string(spine_port)).stdout) } else { "" };
         let reading = up && len(host) > 0 && self.wait_log("the organization reads its facts from the nerves", 300);
         let node = if reading { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$2\" && HALE_DNA_SENSES_PORT=\"$4\" nohup timeout 600 \"$1\" node edge-1 --repo \"$3\" --tick 300 >node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + scratch + "\n" + edge + "\n" + to_string(node_port)).stdout) } else { "" };
@@ -185,7 +185,7 @@ main locus App {
         let stored = if len(readings_down) > 0 { self.wait_body(q, "\"api-0\"", 60) } else { "" };
 
         // ---- the reflexes fire, the heart lands it, the node acts
-        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + reflexes_seed + "/reflexes\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
+        let reflexes = if len(stored) > 0 && built.code == 0 { dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_SENSES_URL=\"$3\" HALE_DNA_NATS_URL_REFLEXES=\"$4\" HALE_DNA_NATS_ORG=\"$5\" HALE_DNA_NATS_VAULT_REFLEXES=\"$6\" HALE_DNA_REFLEX_TICK_MS=1000 nohup timeout 600 \"$2\" >reflexes.log 2>&1 </dev/null & echo $!\nsh\n" + scratch + "\n" + scratch + "/reflexes-bin\n" + store + "\n" + reflexes_url + "\n" + org + "\n" + reflexes_vault).stdout) } else { "" };
         let fired = if len(reflexes) > 0 { self.wait_rows("reading.recorded", "reflexes/reflex.fired/instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let acted = if len(fired) > 0 { self.wait_rows("reflex.acted", "instance.down:edge-1:api-0:", 1, 120) } else { "" };
         let second_up = if len(acted) > 0 { self.wait_rows("instance.up", "api-0", 2, 120) } else { "" };

@@ -14,7 +14,7 @@
 // The edge is a declared route in the fleet model, so `hale fleet check`
 // sees it.
 //
-//   hale build dna/organism && ./dna/organism/organism
+//   hale build dna/organism -o target/seeds/organism/organism && target/seeds/organism/organism
 //
 // with HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG naming the nerves
 // (`hale dna nerves migrate` prints both); it connects as the spine, its

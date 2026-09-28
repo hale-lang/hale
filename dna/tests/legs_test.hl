@@ -42,14 +42,17 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 }
 
 // The head's binary: the one the suite names, else built from the source
-// tree here, every run — a head left by an earlier build is an older head.
+// tree here, every run — a head left by an earlier build is an older head —
+// into a scratch directory of the run's own.
 fn head_binary() -> String {
     if std::env::var_exists("HALE_NATIVE_HEAD_API") && std::io::fs::file_exists(std::env::var("HALE_NATIVE_HEAD_API")) { return std::env::var("HALE_NATIVE_HEAD_API"); }
     let source = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
     let seed = source + "/dna/api/practice_review";
-    let built = dna::run_tool(toolchain() + "\nbuild\n" + seed);
+    // built OUT of the tree (`-o`): nothing is written beside the sources
+    let out = dna::scratch_root("head") + "/practice_review";
+    let built = dna::run_tool(toolchain() + "\nbuild\n" + seed + "\n-o\n" + out);
     std::test::assert_eq_int(built.code, 0, "the head builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
-    return seed + "/practice_review";
+    return out;
 }
 
 fn relay_once(app: String) -> Int {

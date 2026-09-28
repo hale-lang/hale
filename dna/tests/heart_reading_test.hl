@@ -119,9 +119,9 @@ main locus App {
         }
         // the heart: its own program, built from its own seed
         let heart_seed = source() + "/dna/tests/heart";
-        let built = dna::run_tool(toolchain() + "\nbuild\n" + heart_seed);
+        let heart = scratch + "/heart-bin";
+        let built = dna::run_tool(toolchain() + "\nbuild\n" + heart_seed + "\n-o\n" + heart);
         std::test::assert_eq_int(built.code, 0, "the heart builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
-        let heart = heart_seed + "/heart";
 
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbeating");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);

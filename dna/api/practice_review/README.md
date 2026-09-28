@@ -25,10 +25,10 @@ Authorized recovery of this principal's existing command receipts remains
 available through the native service's safe outcome projection.
 
 ```sh
-hale build dna/api/practice_review
+hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 HALE_DNA_COMMAND_POLICY=/path/to/authority.json \
   dna/face/start.sh /path/to/project \
-  --api dna/api/practice_review/practice_review --port 8792
+  --api target/seeds/practice_review/practice_review --port 8792
 ```
 
 The binary accepts the launcher's existing `PROJECT PORT WEBROOT` arguments;
@@ -126,14 +126,14 @@ Practice replacements and named org-wide Practice Review verdicts. Set
 is not updated by this source-built profile.
 
 ```sh
-hale build dna/host
+hale build dna/host -o target/seeds/host/host
 export HALE_DNA_COMMAND_POLICY=/path/to/authority.json
-dna/host/host practice /path/to/project . - - propose practice-name \
+target/seeds/host/host practice /path/to/project . - - propose practice-name \
   --supersedes PREDECESSOR-DIGEST --text 'Replacement text' \
   --because 'Reason for the change' --request-id replacement-1 --no-wait
-dna/host/host verdict /path/to/project . - - REVIEW-ID approve \
+target/seeds/host/host verdict /path/to/project . - - REVIEW-ID approve \
   --digest CANDIDATE-DIGEST --request-id verdict-1 --no-wait
-dna/host/host practice /path/to/project . - - lookup --request-id replacement-1
+target/seeds/host/host practice /path/to/project . - - lookup --request-id replacement-1
 ```
 
 `practice lookup --request-id ID` recovers either supported operation in the same

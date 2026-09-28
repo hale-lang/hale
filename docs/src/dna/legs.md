@@ -595,7 +595,8 @@ it, and the leg reads the head with an ID token the stub mints for
 riley's subject (its commands go over the socket, as the peer):
 
 ```sh
-cd "$HALE_SRC" && hale build dna/api/practice_review && hale build dna/oidc/serve
+cd "$HALE_SRC" && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review \
+    && hale build dna/oidc/serve -o target/seeds/serve/serve
 # the provider's key, made for this run and yours alone; its client's
 # secret is the vault's oidc-client-dna-local, which `hale dna init` drew
 (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out ~/voice/.hale/oidc.key)
@@ -604,7 +605,7 @@ b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
 vault=${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}
 HALE_DNA_OIDC_KEY_FILE=~/voice/.hale/oidc.key \
     HALE_DNA_OIDC_KEY_X=$(pub | tail -c 64 | head -c 32 | b64url) HALE_DNA_OIDC_KEY_Y=$(pub | tail -c 32 | b64url) \
-    dna/oidc/serve/serve 8794 dna-local &
+    "$HALE_SRC/target/seeds/serve/serve" 8794 dna-local &
 git -C ~/voice config --local dna.principal oidc
 git -C ~/voice config --local dna.oidc.issuer http://127.0.0.1:8794
 git -C ~/voice config --local dna.oidc.client dna-local
@@ -615,7 +616,7 @@ printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grant
     "$(git -C ~/voice rev-list --max-parents=0 refs/dna/journal)" > ~/voice/.hale/dna/authority.json
 env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
     HALE_DNA_COMMAND_POLICY=~/voice/.hale/dna/authority.json \
-    "$HALE_SRC/dna/api/practice_review/practice_review" ~/voice 8793 &
+    "$HALE_SRC/target/seeds/practice_review/practice_review" ~/voice 8793 &
 export HALE_DNA_ID_TOKEN=$(curl -s -d "grant_type=urn:hale:dna:stub&sub=riley-sub&client_id=dna-local" \
     --data-urlencode "client_secret@$vault/oidc-client-dna-local" \
     http://127.0.0.1:8794/token | sed 's/.*"id_token": *"\([^"]*\)".*/\1/')

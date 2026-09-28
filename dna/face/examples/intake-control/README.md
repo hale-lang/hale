@@ -63,9 +63,9 @@ vendored. See `sqlite/PROVENANCE.md` for the Apache-2.0 Pond wrapper source and
 local additions.
 
 ```
-hale build dna/face/examples/intake-control/
-hale build dna/face/examples/intake-control/tests/provider_test.hl
-dna/face/examples/intake-control/tests/provider_test /absolute/scratch-directory
+hale build dna/face/examples/intake-control/ -o target/seeds/intake-control/intake-control
+hale build dna/face/examples/intake-control/tests/provider_test.hl -o target/seeds/intake-control/provider_test
+target/seeds/intake-control/provider_test /absolute/scratch-directory
 ```
 
 The focused proof covers real SQLite state, pause/resume effect, exact idempotency,

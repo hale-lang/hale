@@ -159,14 +159,11 @@ hale=$(command -v -- "$hale")
 valid_path "$hale" || fail 'compiler paths cannot contain newlines'
 export HALE_BIN=$hale
 
-# Builds the seeds this launch was not handed into the temporary build
-# directory, as CI builds them: each seed directory itself is the program.
-# The checkout's Hale sources the seeds import (dna/, and the host's
-# iris/process_identity) are copied there once, so the builds write
-# nothing into the checkout. Not a one-line seed importing the checkout:
-# an imported `main locus` is inert (its placement is the entry's to
-# declare), and the head's server and watcher would run one after the
-# other on the main thread.
+# Builds the seeds this launch was not handed, straight from the checkout,
+# each into the temporary build directory with `hale build -o`, so a build
+# writes nothing into the checkout. (It used to copy the checkout's Hale
+# sources into that directory first and build the copies, because the binary
+# landed beside its seed.)
 #
 # The builds run side by side, as scripts/warm-and-build.sh runs CI's:
 # each `hale build` is one single-threaded process, and in turn the two
@@ -176,12 +173,11 @@ export HALE_BIN=$hale
 # either failed.
 build_seeds() {
   local i seed status failed=()
-  mkdir -p -- "$build_dir/src" "$build_dir/logs"
-  (cd -- "$checkout" && find dna iris/process_identity -name '*.hl' -print0 | tar --null -T - -cf -) | tar -xf - -C "$build_dir/src" || fail 'cannot copy the checkout'\''s Hale sources'
+  mkdir -p -- "$build_dir/bin" "$build_dir/logs"
   for i in "${!seeds[@]}"; do
     printf 'face: building %s from this checkout…\n' "${seeds[$i]}" >&2
     # Observation belongs to the application. Do not attach the compiler or the head.
-    env -u LOTUS_OBS "$hale" build "$build_dir/src/${seeds[$i]}" > "$build_dir/logs/$i.log" 2>&1 &
+    env -u LOTUS_OBS "$hale" build "$checkout/${seeds[$i]}" -o "$build_dir/bin/${seeds[$i]##*/}" > "$build_dir/logs/$i.log" 2>&1 &
     builds+=("$!")
   done
   for i in "${!seeds[@]}"; do
@@ -220,8 +216,8 @@ if ((oidc_local)) && [[ -n "$project" ]]; then seeds+=(dna/reflexes); fi
 if ((${#seeds[@]})); then
   build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
   build_seeds
-  [[ -n "$api" ]] || api=$build_dir/src/dna/api/practice_review/practice_review
-  [[ -n "$head" ]] || head=$build_dir/src/dna/api/project_service/project_service
+  [[ -n "$api" ]] || api=$build_dir/bin/practice_review
+  [[ -n "$head" ]] || head=$build_dir/bin/project_service
 fi
 
 # GH #989: the head's principal path is OIDC. Once every seed is built,
@@ -229,7 +225,7 @@ fi
 # for this launch, and the person running this signs in through it as
 # local-sub; it goes with the launcher (cleanup stops it on any exit).
 if ((oidc_local)); then
-  oidc=$build_dir/src/dna/oidc/serve/serve
+  oidc=$build_dir/bin/serve
   # the provider's key, made for this launch and readable by you alone; the
   # head pins its public half, since anyone on this machine could answer
   # on the loopback port
@@ -272,7 +268,7 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
   reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
   if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$reflexes_vault" && -n "$org" ]]; then
-    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
+    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_VAULT_REFLEXES="$reflexes_vault" HALE_DNA_NATS_ORG="$org" "$build_dir/bin/reflexes" >&2 &
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else

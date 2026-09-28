@@ -11,11 +11,11 @@ under `timeout -k 10 <secs> sh -e`; the head re-implements nothing and
 appends nothing to any Record itself.
 
 ```sh
-hale build dna/api/practice_review
-hale build dna/api/project_service
+hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
+hale build dna/api/project_service -o target/seeds/project_service/project_service
 HALE_BIN="$(command -v hale)" \
-  ./dna/api/project_service/project_service 8792 dna/face/web \
-  dna/api/practice_review/practice_review 8793 [/absolute/path/project]
+  ./target/seeds/project_service/project_service 8792 dna/face/web \
+  target/seeds/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 
 `dna/face/start.sh [PROJECT]` does the build and the launch. The
@@ -54,7 +54,7 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/<NAME>  operator-written secr
 
 ```sh
 export HALE_BIN=/abs/hale HALE_API_CONTRACT_ROOT=$PWD/dna/api/contract/v1
-HALE_HEAD_BIN=$PWD/dna/api/project_service/project_service HALE_API_BIN=$PWD/dna/api/api \
+HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_API_BIN=$PWD/target/seeds/api/api \
   hale test dna/api/project_service/tests
 ```
 

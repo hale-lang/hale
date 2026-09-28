@@ -102,8 +102,9 @@ whose intake follows the committed mode. Build it using that example's SQLite
 development prerequisites, then run two processes:
 
 ```sh
-dna/face/examples/intake-control/intake-control run /tmp/intake.sqlite operator
-dna/face/examples/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/dna/face/web" operator
+hale build dna/face/examples/intake-control -o target/seeds/intake-control/intake-control
+target/seeds/intake-control/intake-control run /tmp/intake.sqlite operator
+target/seeds/intake-control/intake-control serve /tmp/intake.sqlite 8793 "$PWD/dna/face/web" operator
 ```
 
 Open <http://127.0.0.1:8793/>. The generic host selects `#/application`; this

@@ -1,4 +1,4 @@
-// Build: hale build dna/api/practice_review
+// Build: hale build dna/api/practice_review -o <path>
 // Run: HALE_DNA_COMMAND_POLICY=authority.json practice_review <root> <port> [webroot]
 // One loopback Record/body/host deployment. The ordinary dna/api head answers
 // every command `commands_unsupported`. This head composes the shared native
