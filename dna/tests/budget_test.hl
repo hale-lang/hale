@@ -6,6 +6,12 @@
 // refuses further intent with the reason and journals
 // `budget.exhausted` once, and a Budget rehydrated from the same
 // record shows the same spend — a restart loses nothing.
+//
+// GH #1131: `Budget.admit` is the one gate for spend. It admits the
+// smaller of a work's ceiling and what the window has left, and on an
+// exhausted window the editor's attempt and the leader's Review are
+// refused through it — the refusal is the row a leg's is,
+// `attempt.allowance_refused`, on the attempt or `review:<id>`.
 
 import "../core" as dna;
 
@@ -18,6 +24,19 @@ main locus App {
         };
         again: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 } };
         daily: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "day", allowance_micros: 100 } };
+        gate: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 100 } };
+        unmetered: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 0 } };
+    }
+    @unbounded
+    fn last_of(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            let e = self.core.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
     }
     @unbounded
     fn count(kind: String) -> Int {
@@ -85,6 +104,39 @@ main locus App {
         std::test::assert_eq_int(self.daily.spent_micros, 0, "yesterday's row does not count today");
         std::test::assert_eq_int(self.daily.remaining_micros(86400 + 5), 100, "the whole allowance remains");
         std::test::assert_eq_str(self.daily.describe(86400 + 5), "spent 0 of 100 micro-dollars this day in 0 call(s)", self.daily.describe(86400 + 5));
+
+        // 5. the one gate (GH #1131): the smaller of the ceiling and what is left
+        std::test::assert_eq_int(self.gate.admit(30, 1).allowance_micros, 30, "a ceiling under the remainder bounds the allowance");
+        std::test::assert_eq_int(self.gate.admit(0, 1).allowance_micros, 100, "no ceiling: what the window has left");
+        self.gate.account(80, 1);
+        std::test::assert_eq_int(self.gate.admit(30, 1).allowance_micros, 20, "the remainder under the ceiling bounds it");
+        self.gate.account(20, 1);
+        let spent = self.gate.admit(30, 1);
+        std::test::assert(!spent.ok && std::str::starts_with(spent.why, "budget exhausted (spent 100 of 100"), "an exhausted window admits nothing: " + spent.why);
+        std::test::assert_eq_int(self.unmetered.admit(0, 1).allowance_micros, -1, "unmetered and no ceiling: nothing bounds it");
+        std::test::assert_eq_int(self.unmetered.admit(40, 1).allowance_micros, 40, "unmetered: the ceiling alone");
+
+        // 6. the editor goes through the gate: on the exhausted window of 1,
+        //    its attempt edits nothing and the refusal is the leg's row
+        let before = self.count("mutation.requested");
+        self.core.on_edit_requested(dna::EditAsk { scope: self.core.org_id, attempt_id: "t9/wf1/s0/e/a0", performer: "editor", request: dna::WorkRequest { work_id: "t9/wf1/s0/e", task_id: "t9", objective: "document main.hl", cost_ceiling: 10 } });
+        let edit = self.last_of("attempt.allowance_refused", "t9/wf1/s0/e/a0");
+        std::test::assert(std::str::contains(edit, "\"why\": \"budget exhausted (spent 55 of 20") && std::str::contains(edit, "\"ceiling_micros\": 10"), "the editor's attempt is refused by the gate, as a row: " + edit);
+        std::test::assert_eq_int(self.count("mutation.requested"), before, "nothing was edited");
+
+        // 7. the leader goes through it too: a Review is opened for the Board,
+        //    and the leader is not asked; the refusal is the same row
+        let repo = dna::scratch_root("budget-review");
+        let made = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m base && git -c user.name=t -c user.email=t@l commit -q --allow-empty -m candidate\nsh\n" + repo);
+        std::test::assert_eq_int(made.code, 0, "a repository with a base and a candidate: " + made.stderr);
+        let base = dna::trim_nl(dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD~1").stdout);
+        let cand = dna::trim_nl(dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
+        let asked = self.core.review_mutation(dna::Mutation { id: "m9", task_id: "t9", worktree: repo, base_commit: base, candidate_commit: cand, change_class: "application", rationale: "a change" },
+            dna::VerificationReport { candidate: cand, evidence: dna::Evidence { check_clean: true, verify_clean: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } }, "editor");
+        std::test::assert(len(self.last_of("review.requested", "review:m9")) > 0, "the Review is opened, for the Board: " + asked);
+        let review = self.last_of("attempt.allowance_refused", "review:m9");
+        std::test::assert(std::str::contains(review, "\"why\": \"budget exhausted (spent 55 of 20"), "the leader's decision is refused by the same gate, as the same row: " + review);
+        dna::scratch_done(repo);
     }
 }
 

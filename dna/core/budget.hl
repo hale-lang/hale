@@ -12,6 +12,16 @@
 // with the reason, Reviews wait for the Board — and journals
 // `budget.exhausted` once per window.
 
+// What the one gate answers a spend it is asked for (GH #1131): admitted
+// or not, and how much. `allowance_micros` is what the spend may cost —
+// the smaller of the work's own ceiling and what the window has left —
+// or -1 when neither bounds it (an unmetered budget, no ceiling).
+type SpendAdmission {
+    ok: Bool = false;
+    allowance_micros: Int = -1;
+    why: String = "";
+}
+
 type BudgetPolicy {
     window: String = "day"; // "day" | "week" | "none" (one allowance for the record's lifetime)
     allowance_micros: Int = 25000000; // micro-dollars per window; 0 = unmetered
@@ -59,6 +69,20 @@ locus Budget {
         if self.policy.allowance_micros == 0 { return 0; }
         let r = self.policy.allowance_micros - self.spent_micros;
         return if r < 0 { 0 } else { r };
+    }
+    // The one gate for spend, in process and out (GH #1131): the editor's
+    // and the leader's calls and a leg's are admitted here before they are
+    // made. `ceiling_micros` is the work's own (0: none). Refused on an
+    // exhausted window; else the allowance is the smaller of the ceiling
+    // and what the window has left. Nothing is reserved: two spends
+    // admitted against one remainder may together pass it, by at most
+    // what they were allowed.
+    fn admit(ceiling_micros: Int, now: Int) -> SpendAdmission {
+        if self.exhausted(now) { return SpendAdmission { why: "budget exhausted (" + self.describe(now) + ")" }; }
+        let ceiling = if ceiling_micros > 0 { ceiling_micros } else { -1 };
+        if self.policy.allowance_micros == 0 { return SpendAdmission { ok: true, allowance_micros: ceiling }; }
+        let left = self.remaining_micros(now);
+        return SpendAdmission { ok: true, allowance_micros: if ceiling >= 0 && ceiling < left { ceiling } else { left } };
     }
     // True once per window: the caller journals `budget.exhausted`.
     fn announce() -> Bool {
