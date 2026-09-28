@@ -2220,6 +2220,20 @@ memory is named to it.
   The leg takes the socket from `--socket`, `HALE_DNA_SOCKET`, or the
   head's capabilities.
 
+A command is one act per request id: sent again under the same id, a
+command that landed is found by it, before anything else is checked, and
+answered with its receipt. A head answers `snapshot_changed` when its
+record moved while it read it, and `command_busy` when the record moved
+through every read its admission allows itself. Neither admits the
+command, though a pass may have left what the command's own retry takes
+back or finds (a claim is given back; a renewal extends the same lease;
+receipts are filed by their digest). So a leg asks the same command
+again, 200ms apart, under the same id, until ten seconds have passed,
+whatever the command, and reads the hat again the same way. A record
+several legs and the owner write moves often. `command_outcome_unknown`
+is not asked again: the leg reads the command back by its id. A hat it
+still cannot read gives the lease back.
+
 ## Workflow execution: one step
 
 One active step and its leaf Works are resident loci

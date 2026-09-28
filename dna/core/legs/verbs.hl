@@ -341,7 +341,12 @@ locus Leg {
         let attempt = std::json::find_string_field(lease, "attempt_id");
         let token = std::str::parse_int(std::json::find_string_field(lease, "token")) or 0;
         let context = self.head.context(std::json::find_string_field(lease, "work_id"));
-        if !context.ok { return self.fail("run", "the hat: " + context.error); }
+        if !context.ok {
+            // nothing was performed: the lease goes back, so the attempt is
+            // another's to take at once rather than when its TTL runs out
+            let given = self.head.give_back("work-release:" + attempt + ":" + to_string(token), attempt, self.holder, token, "the hat could not be read: " + context.error);
+            return self.fail("run", "the hat: " + context.error + (if given.ok { "; the lease was given back" } else { "; the lease was not given back: " + given.error }));
+        }
         let hat = std::json::find_field_raw(context.body, "data");
         let mode = self.catalog.mode_for(who);
         let rendered = render(hat, mode);
