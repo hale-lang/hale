@@ -270,9 +270,13 @@
     }
     // One lookup in flight per request. The head's stream fires on every
     // (re)connect and every push, so without this two lookups overlap, and
-    // their answers can land in either order.
+    // their answers can land in either order. A reason to look that comes
+    // while one is in flight — a push, "Check status" — is kept, and one
+    // more lookup runs when the flight answers: the real head pushes only
+    // when its state moves, so that push may be the only wakeup.
     async function lookup() {
-      if (!request || disposed || request.looking) return;
+      if (!request || disposed) return;
+      if (request.looking) { request.again = true; return; }
       const current = request, id = request.payload.request_id;
       // the bound counts lookups made, not stream events: one in flight
       // skips the events that fire meanwhile
@@ -291,7 +295,11 @@
         request.phase = "uncertain";
         request.error = error.status === 404 ? "No receipt was found for the saved request. It may still be arriving; check again before discarding its identity. Nothing is resubmitted." : error.status === 503 || error.status === 504 ? "The project service is unavailable. The saved request keeps its identity; check its status when the service answers." : error.message;
         render(); schedule();
-      } finally { current.looking = false; }
+      } finally {
+        current.looking = false;
+        const again = current.again; current.again = false;
+        if (again && !disposed && request === current && !settled()) void lookup();
+      }
     }
     // A terminal receipt is final: a later answer for the same identity can
     // only repeat it, and an older one must not undo it. Replacing it would
