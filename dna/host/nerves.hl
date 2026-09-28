@@ -125,6 +125,26 @@ fn nerves_drop_verb(root: String) -> Answer {
     return fail("nerves drop: " + why);
 }
 
+// `oidc-up` (GH #989): local mode's sign-in, compose's `oidc` service up
+// with the stub the toolchain built (`--stub`), for `--client`
+// (`dna-local`): HALE_DNA_OIDC_ISSUER, _CLIENT, _KEY (the launch key's
+// public half, which the head pins) and _LAUNCH (its per-launch
+// directory), or `none: <why>`. `oidc-down` stops it and removes every
+// per-launch directory.
+fn oidc_up_verb(root: String, stub: String, client: String) -> Answer {
+    if len(stub) == 0 || !std::io::fs::file_exists(stub) { return answer("none: the stub provider is not built (`hale dna oidc up` builds it)\n"); }
+    let infra = ReferenceInfrastructure { root: root };
+    let p = infra.oidc_up(stub, client);
+    if !p.present { return answer("none: " + p.why + "\n"); }
+    return answer("HALE_DNA_OIDC_ISSUER=" + p.issuer + "\nHALE_DNA_OIDC_CLIENT=" + p.client + "\nHALE_DNA_OIDC_KEY=" + p.key + "\nHALE_DNA_OIDC_LAUNCH=" + p.launch + "\n");
+}
+fn oidc_down_verb(root: String) -> Answer {
+    let infra = ReferenceInfrastructure { root: root };
+    let why = infra.oidc_down();
+    if len(why) > 0 { return fail("oidc down: " + why); }
+    return answer("the provider is down, and its per-launch directories gone\n");
+}
+
 // `senses-up` (GH #988): the senses' store, compose's `senses` service
 // brought up — `HALE_DNA_SENSES_URL=<read url>`, or `none: <why>`. No part
 // of the organism is handed it: the store scrapes the parts, and only the

@@ -354,6 +354,38 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
+        // GH #989: local mode's sign-in, the stub OpenID provider in the
+        // seed compose's `oidc` service; the stub is built once into the
+        // toolchain cache, like the host, and mounted into its container
+        Some("oidc") if matches!(args.get(1).map(String::as_str), Some("up") | Some("down")) => {
+            let up = args.get(1).map(String::as_str) == Some("up");
+            let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+            let dir = rest.iter().find(|a| !a.starts_with("--") && rest.iter().position(|b| b == "--client").map_or(true, |i| rest.get(i + 1) != Some(a))).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            let client = rest.iter().position(|a| a == "--client").and_then(|i| rest.get(i + 1)).cloned().unwrap_or_else(|| "dna-local".to_string());
+            let result = if up {
+                hale_iris::materialize()
+                    .map_err(|e| format!("cannot materialize the toolchain cache: {e}"))
+                    .and_then(|cache| crate::iris::ensure_built_in(&cache, hale_dna::OIDC_SEED, hale_dna::OIDC_BIN, "the OpenID provider"))
+                    .and_then(|stub| host_run("oidc-up", &dir, &["--stub".to_string(), stub.to_string_lossy().to_string(), "--client".to_string(), client]))
+            } else {
+                host_run("oidc-down", &dir, &[])
+            };
+            let verb = if up { "up" } else { "down" };
+            match result {
+                Ok(out) if !out.starts_with("none: ") => {
+                    print!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Ok(out) => {
+                    eprintln!("hale dna oidc {verb}: {}", out.trim().strip_prefix("none: ").unwrap_or(out.trim()));
+                    ExitCode::from(1)
+                }
+                Err(e) => {
+                    eprintln!("hale dna oidc {verb}: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         // GH #988: the senses' store, compose's `senses` service brought up
         Some("senses") if args.get(1).map(String::as_str) == Some("up") => {
             let dir = args.get(2).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -806,6 +838,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)");
     eprintln!("       hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL");
     eprintln!("       hale dna senses up [dir]     bring up the senses' store (compose's `senses` service) and print its read URL");
+    eprintln!("       hale dna oidc up|down [dir] [--client <id>]");
+    eprintln!("                                    local mode's sign-in: the stub OpenID provider in compose's `oidc` service; up prints its issuer and key");
     eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
     eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
     eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
@@ -1242,7 +1276,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&project, app.as_ref().map(|a| a.seed_rel.as_str())))?;
     // GH #583 K1: dev's environment is compose — the knowledge graph's
     // Postgres, a named volume per repository
-    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project, &free_compose_ports(&project)))? {
+    if created(&mut out, &root.join("dna/compose.yaml"), &compose_yaml(&project, &compose_ports("", &project)))? {
         out.push("memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG".to_string());
     }
     created(&mut out, &root.join("dna/senses.yml"), &senses_yml())?;
@@ -1532,7 +1566,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         let had = fs::read_to_string(&compose).unwrap_or_default();
         let project = compose_seed_of(&had).unwrap_or_else(|| locate(&root).map(|a| a.project).unwrap_or_else(|_| "project".to_string()));
         // and its ports the ones it publishes: another seed's are not taken
-        let ports = compose_ports_of(&had).unwrap_or_else(|| free_compose_ports(&project));
+        let ports = compose_ports(&had, &project);
         let want = compose_yaml(&project, &ports);
         if had != want {
             fs::write(&compose, &want).map_err(|e| format!("write {}: {e}", compose.display()))?;
@@ -1649,7 +1683,9 @@ fn compose_yaml(project: &str, ports: &ComposePorts) -> String {
 # and HALE_DNA_NATS_URL_OWNER at a NATS server configured like
 # dna/nats.conf. Senses (GH #988): the store keeps every part's readings
 # (dna/senses.yml says which), for the reflexes to read; `hale dna dev`
-# brings it up with the rest. All three listen on 127.0.0.1 only.
+# brings it up with the rest. Sign-in (GH #989): the stub OpenID
+# provider, which `hale dna oidc up` starts for local mode. All four
+# listen on 127.0.0.1 only.
 # Secrets (GH #989): the database's superuser password and the nerves'
 # are the vault's, and reach the servers through dna/postgres.secrets
 # and dna/nats.secrets.conf, which `hale dna init` and `upgrade` write:
@@ -1687,6 +1723,27 @@ services:
     volumes:
       - ./senses.yml:/etc/prometheus/senses.yml:ro
       - senses:/prometheus
+  # the stub OpenID provider (GH #989): local mode's sign-in, started by
+  # `hale dna oidc up` alone (its profile keeps any other `up` from
+  # starting it). It runs the stub the toolchain builds, mounted read-only,
+  # and reads the two entries it needs from a per-launch directory `oidc up`
+  # writes (mode 600) and `oidc down` removes, never the vault.
+  oidc:
+    profiles: ["oidc"]
+    image: {oidc_image}
+    command: ["/oidc/serve", "{oidc_inner}", "${{HALE_DNA_OIDC_CLIENT:-dna-local}}"]
+    environment:
+      HALE_VAULT_DIR: /run/oidc
+      HALE_DNA_OIDC_LISTEN: 0.0.0.0
+      HALE_DNA_OIDC_BASE: http://127.0.0.1:{oidc_port}
+      HALE_DNA_OIDC_KEY_FILE: /run/oidc/key.pem
+      HALE_DNA_OIDC_KEY_X: ${{HALE_DNA_OIDC_KEY_X:-}}
+      HALE_DNA_OIDC_KEY_Y: ${{HALE_DNA_OIDC_KEY_Y:-}}
+    ports:
+      - "127.0.0.1:{oidc_port}:{oidc_inner}"
+    volumes:
+      - ${{HALE_DNA_OIDC_STUB:-/dev/null}}:/oidc/serve:ro
+      - ${{HALE_DNA_OIDC_LAUNCH:-/dev/null}}:/run/oidc:ro
 volumes:
   knowledge-db:
     name: hale-dna-{name}-knowledge
@@ -1698,10 +1755,18 @@ volumes:
         port = ports.db,
         nats_port = ports.nats,
         senses_port = ports.senses,
+        oidc_port = ports.oidc,
+        oidc_inner = OIDC_CONTAINER_PORT,
+        oidc_image = OIDC_IMAGE,
         image = PROMETHEUS_IMAGE,
         retention = SENSES_RETENTION,
     )
 }
+
+/// The image the stub OpenID provider runs in: the release the toolchain
+/// builds its binaries against, so the stub finds its libraries (libssl,
+/// libcrypto, libz) and glibc there.
+const OIDC_IMAGE: &str = "ubuntu:24.04";
 
 /// The senses' store (GH #988): Prometheus, kept this long.
 const PROMETHEUS_IMAGE: &str = "prom/prometheus:v3.5.0";
@@ -1741,37 +1806,34 @@ scrape_configs:
 }
 
 /// The host ports a seed's compose publishes its services on: memory's
-/// Postgres in 54xx, the nerves' NATS in 42xx, the senses' store in 93xx.
+/// Postgres in 54xx, the nerves' NATS in 42xx, the senses' store in 93xx,
+/// the stub OpenID provider in 94xx.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ComposePorts {
     db: u16,
     nats: u16,
     senses: u16,
+    oidc: u16,
 }
 
-/// The ports a seed's compose file already publishes, when it names all
-/// three: an upgrade, and a clone's, keep them, so a regenerated file is
-/// the file the seed already has.
-fn compose_ports_of(text: &str) -> Option<ComposePorts> {
+/// A seed's compose ports. Each one `had` (the compose file the seed
+/// already has) publishes is kept: an upgrade, and a clone's, regenerate
+/// the file the seed already has. Each one it does not publish is taken
+/// free now, as `dna::free_port` takes a fixture's: the candidate comes
+/// from the seed's name, so a seed's ports are its own and stable, and one
+/// that something on this machine already listens on is stepped past.
+/// Hashed alone, two seeds, or a seed and a server the machine already runs
+/// (a CI runner's NATS on 4222), could be handed one port, and the second
+/// compose up fails.
+fn compose_ports(had: &str, project: &str) -> ComposePorts {
     let published = |inner: &str| {
-        text.lines().find_map(|l| {
+        had.lines().find_map(|l| {
             let l = l.trim().trim_start_matches("- ").trim_matches('"');
             let rest = l.strip_prefix("127.0.0.1:")?;
             let (host, container) = rest.split_once(':')?;
             (container == inner).then(|| host.parse::<u16>().ok()).flatten()
         })
     };
-    Some(ComposePorts { db: published("5432")?, nats: published("4222")?, senses: published("9090")? })
-}
-
-/// Free host ports for a new seed's compose, taken at seed time as
-/// `dna::free_port` takes a fixture's: each service's candidate comes from
-/// the seed's name, so a seed's ports are its own and stable, and one that
-/// something on this machine already listens on is stepped past. Hashed
-/// alone, two seeds, or a seed and a server the machine already runs (a CI
-/// runner's NATS on 4222), could be handed one port, and the second
-/// compose up fails.
-fn free_compose_ports(project: &str) -> ComposePorts {
     let h = project.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
     let pick = |base: u16| {
         let first = (h % 100) as u16;
@@ -1780,8 +1842,16 @@ fn free_compose_ports(project: &str) -> ComposePorts {
             .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
             .unwrap_or(base + first)
     };
-    ComposePorts { db: pick(5400), nats: pick(4200), senses: pick(9300) }
+    ComposePorts {
+        db: published("5432").unwrap_or_else(|| pick(5400)),
+        nats: published("4222").unwrap_or_else(|| pick(4200)),
+        senses: published("9090").unwrap_or_else(|| pick(9300)),
+        oidc: published(OIDC_CONTAINER_PORT).unwrap_or_else(|| pick(9400)),
+    }
 }
+
+/// The port the stub OpenID provider listens on inside its container.
+const OIDC_CONTAINER_PORT: &str = "9400";
 
 /// The seed's name a compose file carries: its project (`name:
 /// hale-dna-<seed>`) or, in a file from before each seed had one, its

@@ -1018,8 +1018,21 @@ repository:
   session under its own identity (the launch token, `hale dna ui` with
   no principal source) — is a fixture's mode alone: a head serves it
   only under `HALE_DNA_TRUSTED_LOCAL=1`, and refuses to start without
-  either it or `dna.principal = oidc`. Local mode is OIDC too:
-  `dna/face/start.sh` starts the **stub provider** (`dna/oidc`: the
+  either it or `dna.principal = oidc`. Local mode is OIDC too, and the
+  whole skin runs on one machine: with a project, the **stub provider**
+  runs in its seed compose's `oidc` service (`hale dna oidc up|down`,
+  which `dna/face/start.sh` calls). It runs the stub the toolchain builds
+  into its cache, like the host, mounted read-only in a slim image (the
+  release the toolchain builds against). It reads the two entries it
+  needs, the client's secret (written from the vault on the sealed side,
+  `write_private`) and a key made for the launch, from a per-launch
+  directory: 0700, under the temporary root and outside any work tree,
+  mounted into that container alone, read-only, and removed by `down`.
+  The container never sees the vault. Its host port is the seed's own,
+  as compose's other ports are, and it listens on the container's
+  interface under its loopback issuer. It is the one provider path:
+  local sign-in needs a project, and `start.sh` without one refuses,
+  naming `hale dna new`. The **stub provider** (`dna/oidc`: the
   discovery document, a JWKS, an authorization endpoint that signs in
   `local-sub`, and a token endpoint that exchanges a code or mints for a
   subject, every ID token ES256 under its published test key) and signs
@@ -3973,7 +3986,8 @@ The live half is memory's, projected from the record by the spine
   on one machine never share a container; the `knowledge-db` service,
   `pgvector/pgvector:pg16`, a named volume
   `hale-dna-<project>-knowledge`, a host port in 54xx). Each service's
-  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx)
+  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx,
+  the stub OpenID provider's in 94xx)
   is taken at seed time: a candidate from the project's name, stepped past
   any port something on the machine already listens on, as
   `dna::free_port` takes a fixture's, so a seed never publishes on one

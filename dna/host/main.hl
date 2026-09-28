@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener --stub --client ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -231,6 +231,11 @@ fn main() {
     } else if verb == "secrets" {
         // GH #989: what the organism requires, and what the vault holds
         ans = secrets_status_verb(root);
+    } else if verb == "oidc-up" {
+        // GH #989: local mode's sign-in, compose's `oidc` service up
+        ans = oidc_up_verb(root, flag(a, "--stub"), if len(flag(a, "--client")) > 0 { flag(a, "--client") } else { "dna-local" });
+    } else if verb == "oidc-down" {
+        ans = oidc_down_verb(root);
     } else if verb == "senses-up" {
         // GH #988: the senses' store, compose's `senses` service brought up
         ans = senses_up_verb(root);

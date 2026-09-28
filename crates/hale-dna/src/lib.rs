@@ -249,12 +249,20 @@ pub const LEGS_FILES: &[EmbeddedFile] = at![
     "dna/core/legs/verbs.hl",
 ];
 
+/// The stub OpenID provider (`dna/oidc`, GH #989): local mode's identity
+/// provider. `hale dna oidc up` builds it once into the toolchain cache,
+/// like the host, and runs it in the seed compose's `oidc` service; it is
+/// never part of a seed's `vendor/`.
+pub const OIDC_FILES: &[EmbeddedFile] = at!["dna/oidc/stub.hl", "dna/oidc/serve/main.hl"];
+pub const OIDC_SEED: &str = "dna/oidc/serve";
+pub const OIDC_BIN: &str = "dna/oidc/serve/serve";
+
 /// Every embedded file as a `(path, content)` pair: the core, the
-/// host, the surface, pond's copies and the legs —
+/// host, the surface, pond's copies, the legs and the stub provider —
 /// the whole of what `EMBEDDED_DIGEST` names.
 pub fn embedded_pairs() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES).chain(LEGS_FILES) {
+    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(POND_FILES).chain(LEGS_FILES).chain(OIDC_FILES) {
         out.push((f.path.to_string(), f.content.to_string()));
     }
     for f in [&UI_MAIN, &UI_HTML] {

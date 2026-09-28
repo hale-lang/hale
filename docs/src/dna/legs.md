@@ -590,26 +590,22 @@ own rows state one.
 
 The head runs from the toolchain's source, with a policy naming who
 may recover a lease, and without the spine's role. It serves under
-OIDC (GH #989), so the stub provider comes up first, the project names
+OIDC (GH #989), so the stub provider comes up first in the project's
+seed compose (`hale dna oidc down ~/voice` stops it), the project names
 it, and the leg reads the head with an ID token the stub mints for
 riley's subject (its commands go over the socket, as the peer):
 
 ```sh
-cd "$HALE_SRC" && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review \
-    && hale build dna/oidc/serve -o target/seeds/serve/serve
-# the provider's key, made for this run and yours alone; its client's
-# secret is the vault's oidc-client-dna-local, which `hale dna init` drew
-(umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out ~/voice/.hale/oidc.key)
-pub() { openssl ec -in ~/voice/.hale/oidc.key -pubout -outform DER 2>/dev/null; }
-b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+cd "$HALE_SRC" && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
+# the provider, in the project's seed compose: a key made for this run and
+# its client's secret (the vault's oidc-client-dna-local, which `hale dna
+# init` drew), mounted into its container alone
+eval "$(hale dna oidc up ~/voice | sed 's/^/export /')"
 vault=${HALE_VAULT_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hale/vault}
-HALE_DNA_OIDC_KEY_FILE=~/voice/.hale/oidc.key \
-    HALE_DNA_OIDC_KEY_X=$(pub | tail -c 64 | head -c 32 | b64url) HALE_DNA_OIDC_KEY_Y=$(pub | tail -c 32 | b64url) \
-    "$HALE_SRC/target/seeds/serve/serve" 8794 dna-local &
 git -C ~/voice config --local dna.principal oidc
-git -C ~/voice config --local dna.oidc.issuer http://127.0.0.1:8794
+git -C ~/voice config --local dna.oidc.issuer "$HALE_DNA_OIDC_ISSUER"
 git -C ~/voice config --local dna.oidc.client dna-local
-git -C ~/voice config --local dna.oidc.key "$(pub | base64 -w0)"   # the loopback issuer's key, pinned
+git -C ~/voice config --local dna.oidc.key "$HALE_DNA_OIDC_KEY"   # the loopback issuer's key, pinned
 git -C ~/voice config --local --add dna.oidc.member riley-sub=riley
 mkdir -p ~/voice/.hale/dna
 printf '{"format":"dna.practice-review-authority/1","application_id":"%s","grants":[{"mode":"oidc","name":"riley","authority":"board","practice_propose":false,"review_verdict":false,"recover":true}]}' \
@@ -619,7 +615,7 @@ env -u HALE_DNA_MEMORY_DSN_SPINE -u HALE_DNA_MEMORY_DSN_OWNER \
     "$HALE_SRC/target/seeds/practice_review/practice_review" ~/voice 8793 &
 export HALE_DNA_ID_TOKEN=$(curl -s -d "grant_type=urn:hale:dna:stub&sub=riley-sub&client_id=dna-local" \
     --data-urlencode "client_secret@$vault/oidc-client-dna-local" \
-    http://127.0.0.1:8794/token | sed 's/.*"id_token": *"\([^"]*\)".*/\1/')
+    "$HALE_DNA_OIDC_ISSUER/token" | sed 's/.*"id_token": *"\([^"]*\)".*/\1/')
 cd ~/voice && HALE_DNA_API=http://127.0.0.1:8793 \
     hale dna work run --as position:api/dev --kind software --worker 1 --wait 0
 ```

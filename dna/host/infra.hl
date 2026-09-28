@@ -92,6 +92,18 @@ fn transport_kind() -> String {
 // The three compose independently: choosing a database never chooses a
 // deployment platform.
 
+// The stub OpenID provider as `oidc_up` left it: its issuer, the client,
+// the launch key's public half (SPKI, base64) the head pins, and the
+// per-launch directory; `why` when it is not up.
+type OidcProvider {
+    present: Bool = false;
+    issuer: String = "";
+    client: String = "";
+    key: String = "";
+    launch: String = "";
+    why: String = "";
+}
+
 locus ReferenceInfrastructure {
     params {
         root: String = ".";
@@ -182,6 +194,81 @@ locus ReferenceInfrastructure {
         let colon = std::str::index_of(hp, ":");
         if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the store's port from compose: " + dna::trim_nl(port.stderr) }; }
         return dna::Database { present: true, dsn: "http://127.0.0.1:" + hp[(colon + 1)..len(hp)] };
+    }
+    // ---- sign-in (GH #989): the stub OpenID provider, compose's `oidc`
+    // service, for local mode. The stub is the toolchain's, built into its
+    // cache and mounted read-only. The container sees one per-launch
+    // directory, private (0700) under the temporary root and outside any
+    // work tree, as `write_private` requires: the client's secret, written
+    // from the vault on the sealed side (0600 at create), and a key made for
+    // this launch. It never sees the vault. The seed keeps only where that
+    // directory is (`.hale/dna/oidc.launch`), and `oidc_down` removes it with
+    // the container.
+    fn oidc_up(stub: String, client: String) -> OidcProvider {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return OidcProvider { why: "no dna/compose.yaml: there is no provider to run (`hale dna upgrade` writes the compose file)" }; }
+        let have = dna::run_tool("docker\ncompose\nversion");
+        if have.code != 0 { return OidcProvider { why: "dna/compose.yaml is here but `docker compose` is not on PATH" }; }
+        let secret = std::secret::Credential { vault: oidc_client_vault(client) };
+        if !secret.ready() { return OidcProvider { why: "the vault holds no secret for the client " + client + " (" + oidc_client_vault(client) + "): `hale dna upgrade` provisions it" }; }
+        let gone_before = self.oidc_down();
+        let made = dna::run_tool("mktemp\n-d\n-t\nhale-oidc-launch.XXXXXX");
+        let dir = dna::trim_nl(made.stdout);
+        if made.code != 0 || len(dir) == 0 { return OidcProvider { why: "no per-launch directory for the provider (mktemp -d: " + dna::trim_nl(made.stderr) + ")" }; }
+        let noted = dna::run_tool("sh\n-c\nmkdir -p \"$1/.hale/dna\" && printf '%s\\n' \"$2\" > \"$1/.hale/dna/oidc.launch\"\nsh\n" + self.root + "\n" + dir);
+        let entry = dir + "/" + oidc_client_vault(client);
+        if !secret.write_private(entry) {
+            let gone = dna::run_tool("rm\n-rf\n" + dir);
+            return OidcProvider { why: "the client's secret could not be written for the provider: " + dir + " must be this user's own and private" };
+        }
+        // the launch's key, made here and readable by this user alone; the
+        // head pins its public half, from the coordinates printed below
+        let key = dna::run_tool("sh\n-c\numask 077 && openssl ecparam -name prime256v1 -genkey -noout -out \"$1/key.pem\" 2>&1\nsh\n" + dir);
+        let pub_of = "openssl ec -in \"$1/key.pem\" -pubout -outform DER 2>/dev/null";
+        let b64url = "base64 -w0 | tr '+/' '-_' | tr -d '='";
+        let spki = dna::trim_nl(dna::run_tool("sh\n-c\n" + pub_of + " | base64 -w0\nsh\n" + dir).stdout);
+        let x = dna::trim_nl(dna::run_tool("sh\n-c\n" + pub_of + " | tail -c 64 | head -c 32 | " + b64url + "\nsh\n" + dir).stdout);
+        let y = dna::trim_nl(dna::run_tool("sh\n-c\n" + pub_of + " | tail -c 32 | " + b64url + "\nsh\n" + dir).stdout);
+        if key.code != 0 || len(x) != 43 || len(y) != 43 || len(spki) == 0 {
+            let gone = dna::run_tool("rm\n-rf\n" + dir);
+            return OidcProvider { why: "the provider's key could not be made (openssl): " + dna::trim_nl(key.stdout) };
+        }
+        let up = dna::run_tool("env\nHALE_DNA_OIDC_STUB=" + stub + "\nHALE_DNA_OIDC_LAUNCH=" + dir + "\nHALE_DNA_OIDC_KEY_X=" + x + "\nHALE_DNA_OIDC_KEY_Y=" + y + "\nHALE_DNA_OIDC_CLIENT=" + client + "\ndocker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\n--force-recreate\noidc");
+        if up.code != 0 {
+            let gone = dna::run_tool("rm\n-rf\n" + dir);
+            return OidcProvider { why: "docker compose up failed: " + dna::trim_nl(up.stderr) };
+        }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\noidc\n9400");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { return OidcProvider { why: "cannot read the provider's port from compose: " + dna::trim_nl(port.stderr), launch: dir }; }
+        let issuer = "http://127.0.0.1:" + hp[(colon + 1)..len(hp)];
+        // the provider answering is this launch's: it publishes the key made above
+        let mut tries = 0;
+        let mut ours = false;
+        while !ours && tries < 100 {
+            let r = std::http::get(issuer + "/jwks") or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            ours = r.status == 200 && std::str::contains(std::str::from_bytes(r.body), "\"x\":\"" + x + "\"");
+            if !ours { std::time::sleep(100ms); }
+            tries = tries + 1;
+        }
+        if !ours { return OidcProvider { why: issuer + " does not answer as this launch's provider", launch: dir }; }
+        return OidcProvider { present: true, issuer: issuer, client: client, key: spki, launch: dir };
+    }
+    // The provider stopped and its container removed, and every per-launch
+    // directory with it. "" when done, else why not.
+    fn oidc_down() -> String {
+        let compose = self.root + "/dna/compose.yaml";
+        let mut why = "";
+        if std::io::fs::file_exists(compose) {
+            let rm = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nrm\n-s\n-f\noidc");
+            if rm.code != 0 { why = "docker compose rm failed: " + dna::trim_nl(rm.stderr); }
+        }
+        // the launch's directory, where the seed noted it (a directory named
+        // there that is not a provider's launch is left alone)
+        let gone = dna::run_tool("sh\n-c\nf=\"$1/.hale/dna/oidc.launch\"; [ -f \"$f\" ] || exit 0; d=$(cat \"$f\"); case \"$(basename \"$d\")\" in hale-oidc-launch.*) rm -rf \"$d\";; esac; rm -f \"$f\"\nsh\n" + self.root);
+        if gone.code != 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "the per-launch directory was not removed: " + dna::trim_nl(gone.stderr); }
+        return why;
     }
     // ---- the supervisor: a systemd user unit
     fn unit_name(name: String) -> String { return "hale-dna-" + name; }

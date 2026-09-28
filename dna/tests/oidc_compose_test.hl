@@ -1,0 +1,67 @@
+// dna/tests/oidc_compose_test.hl — local mode's sign-in in the seed compose
+// (GH #989). `hale dna oidc up` runs the stub OpenID provider the toolchain
+// builds in the seed compose's `oidc` service. It reads the two entries it
+// needs from a per-launch directory, private and outside any work tree: the
+// client's secret, written from the vault on the sealed side, and a key made
+// for the launch. The container mounts that directory and the stub, both
+// read-only, and never the vault. `hale dna oidc down` removes the container
+// and the directory. Without docker compose, nothing is exercised.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, under this file's own vault
+// (`hale test` gives it one), with no compose project named from outside.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset COMPOSE_PROJECT_NAME HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// The value of `NAME=` in a verb's output, "" when it printed none.
+@unbounded
+fn field(out: String, name: String) -> String {
+    let at = std::str::index_of(out, name + "=");
+    if at < 0 { return ""; }
+    let rest = out[(at + len(name) + 1)..len(out)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+fn main() {
+    if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("oidc_compose_test: not exercised (docker compose is not on PATH)"); return; }
+    let scratch = dna::scratch_root("oidc-compose");
+    let name = "signin" + to_string(std::process::pid());
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
+    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    let app = scratch + "/" + name;
+    let compose = std::io::fs::read_file(app + "/dna/compose.yaml") or "";
+    std::test::assert(std::str::contains(compose, "\n  oidc:\n    profiles: [\"oidc\"]\n"), "the seed's compose has the provider, started only when asked: " + compose);
+
+    // ---- up: the provider answers as this launch's, on the loopback
+    let up = in_dir(app, toolchain() + "\ndna\noidc\nup\n.");
+    let issuer = field(up.stdout, "HALE_DNA_OIDC_ISSUER");
+    let launch = field(up.stdout, "HALE_DNA_OIDC_LAUNCH");
+    let key = field(up.stdout, "HALE_DNA_OIDC_KEY");
+    let mounts = in_dir(app, "sh\n-c\ndocker inspect -f '{{range .Mounts}}{{.Source}} {{.RW}}|{{end}}' \"$(docker compose -f dna/compose.yaml ps -q oidc)\"");
+    let discovery = std::http::get(issuer + "/.well-known/openid-configuration") or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+    let entries = dna::run_tool("sh\n-c\nls -A \"$1\" | sort\nsh\n" + launch);
+    let launch_mode = dna::file_mode(launch);
+
+    // ---- down, whatever happened
+    let down = in_dir(app, toolchain() + "\ndna\noidc\ndown\n.");
+    let launch_gone = len(launch) > 0 && !std::io::fs::file_exists(launch + "/key.pem");
+    let rest = in_dir(app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
+
+    std::test::assert(up.code == 0 && std::str::starts_with(issuer, "http://127.0.0.1:") && len(key) > 0 && len(launch) > 0, "hale dna oidc up: " + up.stdout + up.stderr);
+    std::test::assert(discovery.status == 200 && std::str::contains(std::str::from_bytes(discovery.body), "\"issuer\": \"" + issuer + "\""), "its discovery names its loopback issuer: " + std::str::from_bytes(discovery.body));
+    std::test::assert_eq_str(entries.stdout, "key.pem\noidc-client-dna-local\n", "the launch's directory holds the two entries the provider needs, and nothing else");
+    std::test::assert_eq_str(launch_mode, "700", "the launch's directory is this user's alone");
+    std::test::assert(!std::str::contains(launch, app + "/"), "and outside the seed's work tree: " + launch);
+    std::test::assert(std::str::contains(mounts.stdout, launch + " false|") && !std::str::contains(mounts.stdout, std::secret::vault_local_dir()) && !std::str::contains(mounts.stdout, " true|"), "the container mounts the stub and the launch read-only, never the vault: " + mounts.stdout + mounts.stderr);
+    std::test::assert(down.code == 0 && launch_gone, "hale dna oidc down removes the container and the launch's directory: " + down.stdout + down.stderr);
+    std::test::assert_eq_int(rest.code, 0, "compose's services and volumes go: " + rest.stderr);
+    dna::scratch_done(scratch);
+}

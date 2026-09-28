@@ -40,6 +40,8 @@ pub const EMBEDDED_DIRS: &[(&str, &[&str])] = &[
     ("dna/core/pond/realtime/nats", &["hl"]),
     ("dna/core/legs", &["hl"]),
     ("dna/ui", &["hl", "html"]),
+    ("dna/oidc", &["hl"]),
+    ("dna/oidc/serve", &["hl"]),
 ];
 
 /// The framing tag: a digest says which algorithm produced it, so a

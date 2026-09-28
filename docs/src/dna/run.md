@@ -507,10 +507,14 @@ since a person signs in. The vault entry holds the secret alone, with
 no trailing newline, and the token has to be ES256 for the head's
 client, as the stub issues it.
 
-**Local mode is OIDC too (GH #989).** `dna/face/start.sh` starts a stub
-identity provider (`dna/oidc`) on the loopback beside the head, under a
-key made for that launch (0600, never on a command line) and the client
-secret `hale dna init` drew into the vault, and you sign in through it as yourself: the subject `local-sub`,
+**Local mode is OIDC too (GH #989).** With a project, `dna/face/start.sh`
+runs a stub identity provider (`dna/oidc`) in the project's compose
+(`hale dna oidc up`, and `down` when the launcher stops). It runs under a
+key made for that launch and the client secret `hale dna init` drew into
+the vault. The container gets those two alone, in a private directory
+made for the launch and removed after it, never the vault. Local sign-in
+needs a project: `start.sh` without one refuses, and `hale dna new <name>`
+makes one. You sign in through it as yourself: the subject `local-sub`,
 mapped to `$USER`. Only the browser that opened the URL the head prints
 (it carries the head's launch token, 0600 in its state directory) may
 sign in, so another account on the machine cannot. An issuer on the
@@ -528,10 +532,10 @@ test fixture's mode, never a project's.
 `dna/api/project_service`: one loopback process the browser talks
 to, which serves the face, keeps a registry of your projects, and
 proxies the Record reads and commands to a per-project API child.
-The head listens on 8792, the API child's reads on 8793, the stub
-provider on 8794 and the API child's commands, its api binding's own
-HTTP transport, on 8795 (`--port`, `--api-port`, `--oidc-port`,
-`--commands-port`).
+The head listens on 8792, the API child's reads on 8793 and the API
+child's commands, its api binding's own HTTP transport, on 8795
+(`--port`, `--api-port`, `--commands-port`); the stub provider on the
+project's compose's own port.
 Given no project it starts detached, and the browser's Projects
 workspace is where you begin: create a project (`hale dna new`,
 run for you), initialize an existing checkout (`hale dna init`), or

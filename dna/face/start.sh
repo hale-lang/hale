@@ -7,7 +7,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
+Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
 Starts the face at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the
@@ -26,7 +26,6 @@ purpose and are re-adopted by the next head.
   --api-port PORT    Loopback port of the API child, 1..65535 (default: 8793).
   --commands-port PORT
                      Loopback port of the API child's commands, its api binding's HTTP transport, 1..65535 (default: 8795).
-  --oidc-port PORT   Loopback port of the stub OpenID provider, 1..65535 (default: 8794).
   --source-drafts    Enable Organization source preparation.
   --help            Show this help.
 
@@ -47,8 +46,9 @@ Existing service configuration is inherited:
   HALE_DNA_HEAD_STATE          The head's state directory
                                (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head serves under OIDC (GH #989): this starts the stub OpenID provider
-(dna/oidc) on the loopback, and you sign in through it as yourself — the
-subject local-sub, mapped to $USER. An attached project is configured for that
+(dna/oidc) in PROJECT's seed compose (`hale dna oidc up`), and you sign in
+through it as yourself — the subject local-sub, mapped to $USER. Local sign-in
+needs a project: `hale dna new <name>` makes one. An attached project is configured for that
 issuer (dna.principal, dna.oidc.issuer, dna.oidc.client, dna.oidc.member), and
 the head forwards your ID token to its API child, which verifies it. A project
 served under another issuer is refused at attach.
@@ -62,19 +62,17 @@ valid_path() { [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]]; }
 project=
 port=8792
 api_port=8793
-oidc_port=8794
 commands_port=8795
 api=${HALE_API_BIN:-}
 head=${HALE_HEAD_BIN:-}
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --port|--api|--head|--api-port|--oidc-port|--commands-port)
+    --port|--api|--head|--api-port|--commands-port)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --port) port=$2 ;;
         --api-port) api_port=$2 ;;
-        --oidc-port) oidc_port=$2 ;;
         --commands-port) commands_port=$2 ;;
         --api) api=$2 ;;
         --head) head=$2 ;;
@@ -88,12 +86,11 @@ while (($#)); do
 done
 [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || fail 'port must be 1..65535'
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((api_port <= 65535)) || fail 'api-port must be 1..65535'
-[[ "$oidc_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((oidc_port <= 65535)) || fail 'oidc-port must be 1..65535'
 [[ "$commands_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((commands_port <= 65535)) || fail 'commands-port must be 1..65535'
-((port != api_port && port != oidc_port && api_port != oidc_port)) || fail 'the head, the API child and the provider need different ports'
+((port != api_port)) || fail 'the head and the API child need different ports'
 # the API child's api binding serves its HTTP transport there (GH #1135),
 # and a port it cannot hold stops it at start
-((commands_port != port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
+((commands_port != port && commands_port != api_port)) || fail 'the API child'\''s commands need a port of their own'
 face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
@@ -119,7 +116,7 @@ fi
 build_dir=
 builds=()
 child=
-provider=
+oidc_compose=
 reflexes=
 cleanup() {
   local result=$?
@@ -135,9 +132,8 @@ cleanup() {
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
   fi
-  if [[ -n "$provider" ]]; then
-    kill -TERM "$provider" 2>/dev/null || true
-    wait "$provider" 2>/dev/null || true
+  if [[ -n "$oidc_compose" ]]; then
+    "$hale" dna oidc down "$oidc_compose" >/dev/null 2>&1 || true
   fi
   if [[ -n "$reflexes" ]]; then
     kill -TERM "$reflexes" 2>/dev/null || true
@@ -196,23 +192,21 @@ absolute_executable() {
 }
 # A binary handed in is checked before anything is built, so a wrong path
 # fails at once rather than after the builds.
-# GH #989: under OIDC the stub provider is a seed too, built beside the
-# others; a fixture's trusted-local session (HALE_DNA_TRUSTED_LOCAL=1)
-# starts none.
+# GH #989: under OIDC the stub provider is the project's seed compose's
+# (`hale dna oidc up`), so local sign-in needs a project; a fixture's
+# trusted-local session (HALE_DNA_TRUSTED_LOCAL=1) starts none.
 oidc_local=0
 [[ "${HALE_DNA_TRUSTED_LOCAL:-}" == 1 ]] || oidc_local=1
-if ((oidc_local)); then
-  command -v curl >/dev/null || fail 'curl is required to wait for the OpenID provider'
-  command -v openssl >/dev/null || fail 'openssl is required to make the OpenID provider its key'
+if ((oidc_local)) && [[ -z "$project" ]]; then
+  fail 'local sign-in needs a project: its seed compose runs the OpenID provider (`hale dna new <name>` makes one; then dna/face/start.sh <project>)'
 fi
 seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
-if ((oidc_local)); then seeds+=(dna/oidc/serve); fi
-# GH #988: the reflexes read a project's senses, so they are a seed when
-# a project is attached, beside the stub provider (a fixture's
-# trusted-local session starts neither)
-if ((oidc_local)) && [[ -n "$project" ]]; then seeds+=(dna/reflexes); fi
+# GH #988: the reflexes read a project's senses, so they are a seed under
+# OIDC, which needs a project (a fixture's trusted-local session starts
+# none)
+if ((oidc_local)); then seeds+=(dna/reflexes); fi
 if ((${#seeds[@]})); then
   build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
   build_seeds
@@ -221,36 +215,18 @@ if ((${#seeds[@]})); then
 fi
 
 # GH #989: the head's principal path is OIDC. Once every seed is built,
-# the stub provider serves on the loopback under a key and a secret made
-# for this launch, and the person running this signs in through it as
-# local-sub; it goes with the launcher (cleanup stops it on any exit).
+# the project's stub provider runs in its seed compose's `oidc` service,
+# under a key and the client's secret `hale dna oidc up` puts in a
+# per-launch directory the container alone mounts, and the person running
+# this signs in through it as local-sub; it goes down with the launcher
+# (cleanup, on any exit).
 if ((oidc_local)); then
-  oidc=$build_dir/bin/serve
-  # the provider's key, made for this launch and readable by you alone; the
-  # head pins its public half, since anyone on this machine could answer
-  # on the loopback port
-  key_file="$build_dir/oidc.key"
-  (umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out "$key_file" 2>/dev/null) || fail 'cannot make the provider its key'
-  pub() { openssl ec -in "$key_file" -pubout -outform DER 2>/dev/null; }
-  b64url() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
-  spki=$(pub | base64 -w0)
-  key_x=$(pub | tail -c 64 | head -c 32 | b64url)
-  key_y=$(pub | tail -c 32 | b64url)
-  [[ ${#key_x} == 43 && ${#key_y} == 43 && -n "$spki" ]] || fail 'cannot read the provider key'\''s public half'
-  # GH #989: the client's secret is the vault's `oidc-client-dna-local`,
-  # which the organism's bootstrap provisions (`hale dna init`, `upgrade`);
-  # the provider and the head each read it there, and nothing here draws,
-  # holds or passes it. None in the vault: the provider refuses to start.
-  env -u LOTUS_OBS HALE_DNA_OIDC_KEY_FILE="$key_file" HALE_DNA_OIDC_KEY_X="$key_x" HALE_DNA_OIDC_KEY_Y="$key_y" "$oidc" "$oidc_port" dna-local >&2 &
-  provider=$!
-  for _ in $(seq 1 100); do
-    curl -sf "http://127.0.0.1:$oidc_port/.well-known/openid-configuration" >/dev/null 2>&1 && break
-    kill -0 "$provider" 2>/dev/null || fail 'the OpenID provider exited before it listened (its client secret, oidc-client-dna-local, is provisioned by `hale dna init` or `hale dna upgrade` in a project)'
-    sleep 0.1
-  done
-  # the provider answering is ours: it publishes the key made above
-  curl -sf "http://127.0.0.1:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
-  export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
+  oidc_out=$("$hale" dna oidc up "$project") || fail 'the OpenID provider did not come up in the project'\''s compose (`hale dna oidc up`)'
+  oidc_compose=$project
+  HALE_DNA_OIDC_ISSUER=$(printf '%s\n' "$oidc_out" | sed -n 's/^HALE_DNA_OIDC_ISSUER=//p')
+  HALE_DNA_OIDC_KEY=$(printf '%s\n' "$oidc_out" | sed -n 's/^HALE_DNA_OIDC_KEY=//p')
+  [[ -n "$HALE_DNA_OIDC_ISSUER" && -n "$HALE_DNA_OIDC_KEY" ]] || fail 'hale dna oidc up named no issuer or key'
+  export HALE_DNA_OIDC_ISSUER HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_KEY HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
 fi
 
