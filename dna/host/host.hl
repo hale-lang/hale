@@ -879,10 +879,10 @@ main locus Host {
         if l.outcome == "landed" {
             self.readings = self.readings + 1;
             self.say("reading " + entity + " recorded");
-            if self.read_firing(r, entity) { self.ack_reading(m.reply); }
+            if self.answer_reading(r, entity) { self.ack_reading(m.reply); }
         } else if l.outcome == "duplicate" {
             self.say("reading " + entity + " is recorded already; refused as a duplicate");
-            if self.read_firing(r, entity) { self.ack_reading(m.reply); }
+            if self.answer_reading(r, entity) { self.ack_reading(m.reply); }
         } else if l.outcome == "waiting" {
             if !self.readings_waiting { self.say("readings wait in the stream: " + l.why); }
             self.readings_waiting = true;
@@ -890,17 +890,31 @@ main locus Host {
             self.say("reading " + entity + " was not recorded (it comes again): " + l.why);
         }
     }
-    // GH #988: the spine's read of a reflex's firing (dna/host/reflex.hl),
-    // before the firing is acknowledged: a second one for its target within
-    // the window becomes a concern, once a window. False when the concern
-    // was due and the record refused it: the firing is then left
-    // unacknowledged, to come again.
-    fn read_firing(r: Reading, entity: String) -> Bool {
+    // What the spine does with a reading it landed (or found landed), before
+    // its event is acknowledged: an application's concern goes into the
+    // record (GH #986); a reflex's firing is read with the others for its
+    // target, and a second one within the window becomes a concern, once a
+    // window (GH #988). False when a concern was due and the record refused
+    // it: the event is then left unacknowledged, to come again.
+    fn answer_reading(r: Reading, entity: String) -> Bool {
+        if r.event == CONCERN_EVENT { return self.read_concern(entity); }
         if r.app != REFLEX_APP || r.event != REFLEX_FIRED { return true; }
         let e = reflex_escalation(self.root, entity, "host", self.memory);
         if len(e.why) > 0 { self.say("reflexes: " + e.why + " (the firing comes again)"); return false; }
         if len(e.asked) > 0 {
             self.say("reflexes: " + e.asked + " put into the record");
+            let s = sync_record(self.root, self.memory);
+        }
+        return true;
+    }
+    // GH #986: an application's concern, put into the record once
+    // (dna/host/pulse.hl) before its event is acknowledged; one the record
+    // refused leaves the event unacknowledged, to come again
+    fn read_concern(entity: String) -> Bool {
+        let e = reading_concern(self.root, entity, "host", self.memory);
+        if len(e.why) > 0 { self.say("heart: " + e.why + " (the event comes again)"); return false; }
+        if len(e.asked) > 0 {
+            self.say("heart: " + e.asked + " put into the record");
             let s = sync_record(self.root, self.memory);
         }
         return true;

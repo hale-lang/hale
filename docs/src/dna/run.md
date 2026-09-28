@@ -197,7 +197,7 @@ the row again every 30 seconds until the answer is in the record:
 |---|---|---|
 | `ReviewVerdict` | `dna.review.verdict` | `review.verdict` (`hale dna review <id> <verdict>`, the page) |
 | `IntentOffered` | `dna.intent.offered` | `intent.requested` (`hale dna task create`, the page) |
-| `ConcernRaised` | `dna.concern.raised` | `concern.requested` (`hale dna concern raise`, a node's instances) |
+| `ConcernRaised` | `dna.concern.raised` | `concern.requested` (`hale dna concern raise`, an application's own `concern.raised` event) |
 | `PressureRaised` | `dna.pressure.raised` | `pressure.requested` (`hale dna pressure raise`, the page) |
 | `PracticeRequested` | `dna.practice.requested` | `practice.requested` (`hale dna practice propose`) |
 | `KnowledgeNodeRequested`, `…BindingRequested`, `…EdgeRequested` | `dna.knowledge.*.requested` | the face's knowledge commands |

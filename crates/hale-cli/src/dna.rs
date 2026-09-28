@@ -230,7 +230,10 @@ pub(crate) fn node_usage() -> &'static str {
      \n\
      The agent that expresses a fleet plan's instances on one machine,\n\
      from the record: it reconciles what the plan says this node runs\n\
-     against what is running here (GH #566 F5).\n"
+     against what is running here (GH #566 F5). With HALE_DNA_NATS_URL_APP\n\
+     and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it\n\
+     hands both to every instance, which says what it says onto the\n\
+     nerves itself (GH #986).\n"
 }
 
 /// `hale node <name> [--repo <clone>] …`: the node agent is the host's
@@ -257,35 +260,17 @@ pub fn node(args: &[String]) -> ExitCode {
         eprint!("{}", node_usage());
         return ExitCode::from(2);
     }
-    // GH #583 K4: the node listens for its instances' concerns on a
-    // socket of its own, an env-configured route. The host program binds
-    // `dna.concern.raised` to the nerves for the relay it publishes as a
-    // node under `run`/`dev` (GH #986); this listen route stands beside
-    // that binding, and it is the one LOTUS_BUS_CONFIG DNA still writes,
-    // until #987 has the application publish onto the nerves itself
-    let clone = repo.canonicalize().unwrap_or(repo.clone());
-    let node_dir = clone.join(".hale/node");
-    if let Err(e) = fs::create_dir_all(&node_dir) {
-        eprintln!("hale node: cannot create {}: {e}", node_dir.display());
-        return ExitCode::from(1);
+    // GH #986: the node's program is the host's; it binds nothing of its
+    // own and writes no bus route — an instance says what it says onto
+    // the nerves itself (GH #987), and the node hands it the credential
+    // it was started with. An instance that does imports pond's NATS
+    // client from vendor/dna, which a clone does not carry: materialized
+    // here, as `run` and `dev` do
+    if let Err(e) = vendor_if_absent(&repo) {
+        eprintln!("hale node: {e}");
+        return ExitCode::from(2);
     }
-    let sock = node_dir.join("concern.raised.sock");
-    let _ = fs::remove_file(&sock);
-    let conf = node_dir.join("node.bus.conf");
-    // relative, and the host execs with the clone as its working
-    // directory: a Unix address holds 108 bytes of path, and an ordinary
-    // project path spends most of them (the shakeout's finding 6)
-    if let Err(e) = fs::write(&conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : listen\n") {
-        eprintln!("hale node: cannot write {}: {e}", conf.display());
-        return ExitCode::from(1);
-    }
-    host_exec_env(
-        "node",
-        &repo,
-        &rest,
-        &[("LOTUS_BUS_CONFIG", conf.as_os_str())],
-        &[],
-    )
+    host_exec_env("node", &repo, &rest, &[], &[])
 }
 
 /// The `[project]` positional a verb takes: the first arg that is not a

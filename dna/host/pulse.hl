@@ -126,3 +126,46 @@ fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory
     }
     return Landing { outcome: "failed", why: "the organism's memory kept moving under it" };
 }
+
+// An application's concern (GH #986, #987): not a socket of the node's
+// and not a subject of DNA's, but one of its own events, `concern.raised`
+// on `<org>.app.<app>.concern.raised`, whose body names the concern's
+// `source`, `what` and `severity` beside its `id`. The heart lands it as
+// a reading first; then the spine puts it into the record as
+// `concern.requested`, entity its source, request the reading's entity,
+// and the relay carries that onto the nerves until the organization
+// answers — row first, relayed until answered, admitted once by that
+// request, whichever delivery reads it.
+const CONCERN_EVENT: String = "concern.raised";
+
+@unbounded
+fn reading_concern(root: String, entity: String, author: String, memory: dna::Memory) -> Escalation {
+    let p = open_projection(root, ".", "", memory);
+    let mut body = "";
+    let mut app = "";
+    let mut i = p.rows() - 1;
+    while i >= 0 && len(body) == 0 {
+        let e = p.row(i);
+        if e.kind == READING_KIND && e.entity == entity { body = std::json::find_string_field(e.body, "payload"); app = std::json::find_string_field(e.body, "app"); }
+        i = i - 1;
+    }
+    if len(body) == 0 { return Escalation { }; }
+    let mut j = p.rows() - 1;
+    while j >= 0 {
+        let e = p.row(j);
+        if e.kind == "concern.requested" && dna::request_named(e.body) == entity { return Escalation { }; }
+        j = j - 1;
+    }
+    let named = std::json::string_field(body, "source");
+    let source = if named.kind == "string" && len(named.text) > 0 { named.text } else { app };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request", entity);
+    b.string_field("source", source);
+    b.string_field("what", std::json::find_string_field(body, "what"));
+    b.int_field("severity", std::json::find_int_field(body, "severity"));
+    b.string_field("app", app);
+    b.end_object();
+    if !append_as(root, "concern.requested", source, b.result(), author, memory) { return Escalation { why: "the record refused the concern from " + source }; }
+    return Escalation { asked: "a concern from " + source + " (" + entity + ")" };
+}

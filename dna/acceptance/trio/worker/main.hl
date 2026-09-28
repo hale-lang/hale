@@ -4,21 +4,51 @@
 // The application side of the knowledge graph (GH #583 K4): the
 // worker observes a recurring condition — its mail backlog behind
 // fulfilment — and raises a CONCERN about it, once per observation
-// window, three times. It declares the fact itself: the same subject
-// and shape the organization listens on, with no import of the DNA.
-// The node it runs on routes the subject to its own socket
-// (LOTUS_BUS_CONFIG) and puts the concern into the record; the
-// organization proposes it as knowledge; the Board ratifies; the next
-// change to the trio is made with it in hand.
+// window, three times. A concern is one of its own events (GH #986,
+// #987): it declares it as its own topic, `concern.raised` under its
+// own subject `app.trio.`, and publishes it onto the nerves through
+// pond's NATS adapter with the application credential its node hands
+// it (HALE_DNA_NATS_URL_APP, under HALE_DNA_NATS_ORG). It imports
+// nothing of the DNA. The organism's heart lands it as a reading, and
+// the spine puts it into the record as a concern; the organization
+// proposes it as knowledge; the Board ratifies; the next change to the
+// trio is made with it in hand.
+
+import "vendor/dna/pond/realtime/nats" as nats;
 
 effect mail;
 
 type Fulfilment { order: Int = 0; }
 topic Fulfil { payload: Fulfilment; subject: "trio.fulfil"; }
 
-// A concern, as the organization's membrane defines it on the wire.
-type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
-topic WorkerConcerns { payload: Concern; subject: "dna.concern.raised"; }
+/// A concern, as the worker says it: its own id, what it is about.
+type Concern { id: String = ""; source: String = ""; what: String = ""; severity: Int = 0; }
+topic WorkerConcerns { payload: Concern; subject: "app.trio.concern.raised"; }
+
+type CodecError { kind: String = ""; }
+
+// A JSON string literal (a codec is pure: no builder locus).
+fn json_str(s: String) -> String {
+    return "\"" + std::str::replace(std::str::replace(s, "\\", "\\\\"), "\"", "\\\"") + "\"";
+}
+
+/// A concern on the wire: one JSON object.
+locus ConcernJson {
+    fn encode(c: Concern) -> Bytes fallible(CodecError) {
+        return std::bytes::from_string("{\"id\":" + json_str(c.id) + ",\"source\":" + json_str(c.source) + ",\"what\":" + json_str(c.what) + ",\"severity\":" + to_string(c.severity) + "}");
+    }
+    fn decode(b: Bytes) -> Concern fallible(CodecError) {
+        let t = std::str::from_bytes(b);
+        return Concern {
+            id: std::json::find_string_field(t, "id"),
+            source: std::json::find_string_field(t, "source"),
+            what: std::json::find_string_field(t, "what"),
+            severity: std::json::find_int_field(t, "severity")
+        };
+    }
+}
+
+fn env_or_empty(name: String) -> String { return if std::env::var_exists(name) { std::env::var(name) } else { "" }; }
 
 locus Mailer {
     params { sent: Int = 0; backlog: Int = 0; }
@@ -28,8 +58,19 @@ locus Mailer {
 }
 
 main locus TrioWorker {
-    params { mailer: Mailer = Mailer { }; raised: Int = 0; windows: Int = 0; }
+    params {
+        mailer: Mailer = Mailer { };
+        raised: Int = 0;
+        windows: Int = 0;
+        // the nerves its node handed it ("" url: it says nothing)
+        nerves: nats::NatsConn = nats::NatsConn { url: env_or_empty("HALE_DNA_NATS_URL_APP"), name: "trio-worker", subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", jetstream: true };
+    }
+    placement { nerves: pinned; }
     bus { publish Fulfil; publish WorkerConcerns; }
+    bindings { WorkerConcerns: nats::NatsAdapter { } codec(ConcernJson { }); }
+    on_failure(c: nats::NatsConn, err: ClosureViolation) {
+        eprintln("worker: the nerves did not take a concern: ", c.last_error);
+    }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);
@@ -40,9 +81,9 @@ main locus TrioWorker {
         while true {
             std::time::sleep(100ms);
             self.windows = self.windows + 1;
-            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 {
+            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 && len(self.nerves.url) > 0 {
                 self.raised = self.raised + 1;
-                WorkerConcerns <- Concern { source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+                WorkerConcerns <- Concern { id: "backlog-" + to_string(std::process::pid()) + "-" + to_string(self.raised), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
                 println("worker: concern raised (", self.raised, "/3)");
             }
         }

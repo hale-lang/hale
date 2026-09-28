@@ -7,7 +7,8 @@
 //! (`dna/acceptance/trio.fixture/tape`, its catalog beside it), keyless.
 //! This is the acceptance for every later change to the organization.
 //! GH #583 K4 — the learning scenario: the worker observes a recurring
-//! condition and raises a concern; the node puts it in the record; the
+//! condition and raises a concern, its own event on the nerves; the
+//! heart lands it and the spine puts it in the record; the
 //! organization proposes it; the Board ratifies the exact digest; the
 //! next change to the trio is made with it in hand, and the editor's
 //! evidence names the package.
@@ -99,6 +100,7 @@ struct Fixture {
     spine: String,     // memory under the record's spine role (K4; GH #985)
     nats_spine: String, // the nerves' spine URL (GH #986)
     nats_org: String,   // the organization's token on the nerves (GH #986)
+    nats_app: String,   // an application's credential, which a node hands its instances (GH #986)
 }
 
 impl Fixture {
@@ -112,7 +114,8 @@ impl Fixture {
             .env("HALE_DNA_TAPE_DIR", &self.tape)
             .env("HALE_DNA_MEMORY_DSN_SPINE", &self.spine)
             .env("HALE_DNA_NATS_URL_SPINE", &self.nats_spine)
-            .env("HALE_DNA_NATS_ORG", &self.nats_org);
+            .env("HALE_DNA_NATS_ORG", &self.nats_org)
+            .env("HALE_DNA_NATS_URL_APP", &self.nats_app);
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
@@ -189,7 +192,7 @@ fn bring_up() -> Fixture {
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new() };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new() };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
@@ -223,6 +226,7 @@ fn bring_up() -> Fixture {
     }
     f.nats_spine = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).unwrap_or("").to_string();
     f.nats_org = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).unwrap_or("").to_string();
+    f.nats_app = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_APP=")).unwrap_or("").to_string();
     f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {
@@ -262,13 +266,14 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let app = f.app.clone();
 
     // ---- 0. the learning scenario (K4): the worker on edge-2 observes
-    //         its mail backlog and raises a concern, three times; the
-    //         node puts each into the record; the host relays; the
+    //         its mail backlog and raises a concern, three times, as
+    //         its own event on the nerves; the heart lands each and the
+    //         spine puts it into the record; the host relays; the
     //         organization proposes it as knowledge for org/trio; the
     //         Board ratifies the exact digest; the service tails it
     //
     //         Each stage waits for ITS OWN condition (GH #795's rule):
-    //         the node putting three concerns into the record, the
+    //         the spine putting three concerns into the record, the
     //         organization answering each, and the proposal the third
     //         earns. One wait for the last of them reported every
     //         earlier stall as "no proposal", 240 seconds later.
@@ -298,8 +303,11 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let rows = journal(&app);
     let requested = rows.iter().filter(|(_, k, e, _)| k == "concern.requested" && e == "org/trio/worker").count();
     let raised = rows.iter().filter(|(_, k, e, _)| k == "concern.raised" && e == "org/trio/worker").count();
-    assert!(requested >= 3 && raised >= 3, "three concerns travelled from the node into the record and onto the nerves: requested {requested}, raised {raised}");
-    assert!(rows.iter().any(|(_, k, e, b)| k == "concern.requested" && e == "org/trio/worker" && b.contains("\"node\": \"edge-2\"")), "the node that heard it is named");
+    assert!(requested >= 3 && raised >= 3, "three concerns travelled from the worker's own events into the record and onto the nerves: requested {requested}, raised {raised}");
+    // GH #986: no socket of the node's carried it; each is the reading of
+    // the worker's own event, named as its request
+    assert!(rows.iter().any(|(_, k, e, b)| k == "concern.requested" && e == "org/trio/worker" && b.contains("\"request\": \"trio/concern.raised/backlog-") && b.contains("\"app\": \"trio\"")), "the concern is the worker's own event, landed by the heart");
+    assert!(rows.iter().any(|(_, k, e, _)| k == "reading.recorded" && e.starts_with("trio/concern.raised/backlog-")), "and its reading is in the record");
     let kprop = rows.iter().find(|(_, k, _, b)| k == "knowledge.proposed" && b.contains("\"author\": \"org/trio/worker\"")).expect("the proposal");
     let kdigest = kprop.2.clone();
     assert!(kprop.3.contains("\"class\": \"concern\"") && kprop.3.contains("\"target\": \"org/trio\""), "a concern by the tower rule, bound to the application: {}", kprop.3);
