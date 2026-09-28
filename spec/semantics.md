@@ -1984,8 +1984,8 @@ forwarder into `__api.frame`. Two synthesized loci on their own
 ids, the bound, stream forwarding) and one accepted child per
 connection (line reader, reply writer, watcher queue). All of it
 is typechecked like the author's code, and it shows in `hale
-topology` under `__api.*` subjects. The correlation store is the
-membrane's shape (#684): the request row exists before dispatch,
+topology` under `__api.*` subjects. The correlation store has the
+shape DNA's requests have (#684): the request row exists before dispatch,
 an answer is written once, and a request is admitted once.
 
 Transport surface:

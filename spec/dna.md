@@ -894,8 +894,7 @@ repository:
   the occurrence key is owed when spine nodes multiply.
 - **The optimize pass (GH #596 O).** The pass is an execution of
   `optimize-walk` (GH #995: **The workflow catalog**) and nothing
-  else: there is no `optimize_every_ms` and no `Dna.optimize()`. Its
-  cadence is a schedule (above) that the seeded operating practice
+  else. Its cadence is a schedule (above) that the seeded operating practice
   `operating/optimize-cadence` declares once the Board ratifies it —
   `{"id": "optimize", "every_ms": 86400000, "definition":
   "optimize-walk", "args": "{}", "convener": "position:leader"}` —
@@ -1241,8 +1240,8 @@ repository:
   permissions, with placeholder passwords until the vault (#989).
   `upgrade` writes it when it is missing, and says so when an older
   one's spine may not publish `<org>.head.>`.
-- **Liveness.** At start the host waits, as it waited for sockets, for
-  the organization to read its facts: its durable consumer has a pull
+- **Liveness.** At start the host waits for the organization to read
+  its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
   nerves (DNA_<ID>)`) or that it did not within 20 s; the facts wait in
   the stream either way. A restarted or rolled-back organization is
@@ -1327,9 +1326,8 @@ repository:
   connection drains on SIGTERM: an API that imports the core keeps the
   default action. The head holds its own connection and drains: its
   watcher stops and the server stops accepting, at once.
-- **There is no second transport** (GH #986). DNA writes no
-  `LOTUS_BUS_CONFIG`, binds no Unix socket and writes no route file:
-  every fact between the organism's parts travels over the nerves, and
+- **One transport: the nerves** (GH #986). Every fact between the
+  organism's parts travels over the nerves, and
   an application's concern is one of its own events (**The heart's
   events**; **The application side**). An application — an instance a
   node starts, the expression `dev` starts — inherits the application

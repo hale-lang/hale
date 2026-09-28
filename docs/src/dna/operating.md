@@ -363,7 +363,7 @@ rows. A project initialized before this has a `dna/nats.conf` whose
 spine may not publish `<org>.head.>`; `hale dna upgrade` says what to
 add.
 
-There is no other transport: no Unix socket, no route file. A fleet
+Every fact travels over the nerves. A fleet
 node hands each instance it starts the application credential and the
 organization's token it was started with (`HALE_DNA_NATS_URL_APP`,
 `HALE_DNA_NATS_ORG`, which `hale dna nerves migrate` prints), and an

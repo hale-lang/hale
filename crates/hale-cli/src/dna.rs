@@ -1514,7 +1514,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
     if main_text.contains("main locus Org") && main_text.contains("unix(") {
         out.push(format!(
-            "note    {}/main.hl binds its facts to unix sockets; the membrane is gone (GH #986) and they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
+            "note    {}/main.hl binds its facts to unix sockets, which DNA no longer serves (GH #986): they arrive over the nerves. Replace its `bindings` with the ones `hale dna init` writes today: `import \"vendor/dna/pond/realtime/nats\" as nats;`, the `nerves: nats::NatsConn` param, `placement {{ nerves: pinned; }}`, and each fact bound to `nats::NatsAdapter {{ }}`",
             ORG_SEED
         ));
     }

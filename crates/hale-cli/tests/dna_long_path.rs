@@ -41,8 +41,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orglong");
     // the shakeout's finding 6 was a 108-byte Unix socket address the
-    // membrane's client and server disagreed on relative vs absolute;
-    // the membrane is gone (GH #986), and nothing an organization binds
+    // old socket transport's client and server disagreed on relative vs
+    // absolute; that transport is gone (GH #986), and nothing an organization binds
     // any longer names a path of its own, so there is no ceiling left
     // to cross — this keeps only the regression that an ordinary,
     // not-short project path still works end to end
