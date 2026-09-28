@@ -266,7 +266,7 @@ Rules (CLAUDE.md has the reasons):
   cannot be removed.
 - Binary paths come from `harness::unique_bin`
   (`crates/hale-codegen/tests/support/harness.rs`), ports from
-  `harness::free_port()` / `free_udp_port()`.
+  `ports::free_port()` (`support/ports.rs`).
   `harness_paths_are_unique.rs` enforces this and bans
   `set_var(` / `remove_var(` in `hale-codegen/tests/*.rs` (sole
   exception `harness::set_build_env_var`) and in all `crates/*/src`.

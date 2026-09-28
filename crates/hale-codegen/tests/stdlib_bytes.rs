@@ -14,8 +14,8 @@
 //! - println on a Bytes value prints `<bytes len=N>` rather
 //!   than dumping potentially-binary content.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::Read;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;

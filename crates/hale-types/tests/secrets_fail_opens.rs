@@ -65,7 +65,7 @@ fn an_outside_write_to_a_sealed_param_is_rejected() {
 }
 
 #[test]
-fn an_outside_write_is_rejected_by_the_TARGET_not_the_rhs() {
+fn an_outside_write_is_rejected_by_the_target_not_the_rhs() {
     // Deliberately a clean RHS. `self.v.key = self.v.key;` would pass
     // this test on the pre-fix build, because the READ on the right
     // trips the expression-path check — the target would never be
@@ -271,7 +271,7 @@ fn a_direct_allocation_is_visible_to_attributed_alloc() {
 // ---------------------------------------------------------------
 
 #[test]
-fn require_sealed_sees_a_SEALED_locus_inside_a_module() {
+fn require_sealed_sees_a_sealed_locus_inside_a_module() {
     // The failing direction is the false POSITIVE, not the missed
     // violation: `sealed_loci_of` was top-level-only, so a sealed
     // locus inside a module read as unsealed and the claim reported

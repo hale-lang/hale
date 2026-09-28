@@ -30,8 +30,9 @@ another test's binary.
 That is fixed structurally: every test builds through
 `harness::unique_bin` (pid + process-local counter), and
 `harness_paths_are_unique.rs` fails the build if a new test
-rolls its own. Ports come from `harness::free_port()` rather
-than the hand-maintained 57xxx/47xxx registry. No test mutates
+rolls its own. Ports come from `ports::free_port()` (its own
+`support/ports.rs`, so a binary that never asks for one carries no
+dead helper) rather than the hand-maintained 57xxx/47xxx registry. No test mutates
 the process environment either — a build knob travels on
 `hale_codegen::BuildOptions` (`dump_ir`, `asan`, `no_bus_devirt`,
 `no_ownership_bubble`, `lto`) or, for a child, on `Command::env`,
