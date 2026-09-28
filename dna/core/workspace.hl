@@ -299,6 +299,11 @@ fn graph_ownership_of(lines: String) -> String {
 // starts are 512 apart, so one search would have to cross 512 bound
 // ports to reach another's answer.
 //
+// The process's own offset is a hash of its pid, not a multiple of it:
+// with `pid * 64`, two fixtures running at once whose pids were 8 apart
+// started one's index 1 where the other's index 2 started, both probes
+// found the port free, and the later bind of the two was refused.
+//
 // 30000..46999, the range the fixtures' own arithmetic chose: clear of
 // the fixed ports the OIDC fixtures bind. -1, with a line saying so,
 // when every candidate was in use.
@@ -308,7 +313,9 @@ fn graph_ownership_of(lines: String) -> String {
 // removes is the fixture that never looked.
 fn free_port(index: Int) -> Int {
     let span = 17000;
-    let start = (std::process::pid() * 64 + index * 512) % span;
+    let h = std::crypto::sha256(std::bytes::from_string("free_port:" + to_string(std::process::pid())));
+    let offset = (std::bytes::at(h, 0) or 0) * 256 + (std::bytes::at(h, 1) or 0);
+    let start = (offset + index * 512) % span;
     let mut i = 0;
     while i < 512 {
         let port = 30000 + (start + i) % span;
