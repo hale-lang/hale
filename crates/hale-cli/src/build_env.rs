@@ -64,6 +64,94 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
     o
 }
 
+/// The build-options half of the execution identity. One spelling,
+/// so `hale build` and `hale run` fingerprint the same options the
+/// same way (they did not: the build path never computed a digest
+/// at all — GH #476 Change 8 review).
+pub(crate) fn options_fingerprint(o: &BuildOptions) -> String {
+    let mut fp = format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        o.target,
+        o.target_cpu,
+        o.dev_profile,
+        o.debug.is_some()
+    );
+    // GH #904: the FFI surface is part of what the executable IS —
+    // two builds of one source that link different C are different
+    // programs. Appended only when non-empty, so every recording
+    // stamped before this (no `--link` / `--csrc`, which is every
+    // recording `hale run` could make) keeps the identity it
+    // carries.
+    if !o.link_libs.is_empty() {
+        fp.push_str(&format!(";link={}", o.link_libs.join(",")));
+    }
+    // GH #1106: an api binding is part of the program the binary is.
+    if let Some(api) = &o.api {
+        fp.push_str(&format!(";api={}", api));
+    }
+    // GH #1109: the role table is part of the binary too.
+    if let Some(t) = &o.api_roles {
+        fp.push_str(&format!(";roles={}", t));
+    }
+    if !o.csrc_files.is_empty() {
+        let files: Vec<String> = o
+            .csrc_files
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        fp.push_str(&format!(";csrc={}", files.join(",")));
+    }
+    // Every knob that changes the emitted binary, appended only when
+    // set so each identity stamped before them (none of them was in
+    // it: they were read from the environment inside codegen) keeps the
+    // string it had. Not here: what only narrates or times a build
+    // (`dump_ir*`, `di_trace`, `dispatch_trace`, `time_phases`), the
+    // C warnings (`cc_warnings`), which linker runs (`no_lld`), and
+    // where the cache lives (`cache_dir`).
+    if o.asan {
+        fp.push_str(";asan");
+    }
+    if o.tsan {
+        fp.push_str(";tsan");
+    }
+    if o.ubsan {
+        fp.push_str(";ubsan");
+    }
+    if let Some(l) = o.lto {
+        if l != LtoMode::Off {
+            fp.push_str(&format!(";lto={l:?}"));
+        }
+    }
+    if o.disable_prefetch {
+        fp.push_str(";no_prefetch");
+    }
+    if o.no_bus_devirt {
+        fp.push_str(";no_bus_devirt");
+    }
+    if o.no_ownership_bubble {
+        fp.push_str(";no_ownership_bubble");
+    }
+    if o.no_ts_shim {
+        fp.push_str(";no_ts_shim");
+    }
+    if let Some(p) = &o.ts_shim {
+        fp.push_str(&format!(";ts_shim={}", p.display()));
+    }
+    if let Some(z) = &o.zig {
+        fp.push_str(&format!(";zig={z}"));
+    }
+    if let Some(g) = &o.target_glibc {
+        fp.push_str(&format!(";glibc={g}"));
+    }
+    if let Some(p) = &o.target_sysroot {
+        fp.push_str(&format!(";sysroot={}", p.display()));
+    }
+    if let Some(p) = &o.openssl_prefix {
+        fp.push_str(&format!(";openssl={}", p.display()));
+    }
+    fp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +218,72 @@ mod tests {
         assert_eq!(o.target_sysroot, Some(PathBuf::from("/sys")));
         assert_eq!(o.ts_shim, Some(PathBuf::from("/a.a")));
         assert!(from(&[("HALE_ZIG", ""), ("HALE_TARGET_GLIBC", "")]).zig.is_none());
+    }
+
+    fn base() -> BuildOptions {
+        BuildOptions::new(PathBuf::from("/cache"))
+    }
+
+    /// Every identity stamped before the knobs were options was made
+    /// without them, so a default build must keep the string it had.
+    #[test]
+    fn a_default_builds_identity_is_what_it_always_was() {
+        assert_eq!(options_fingerprint(&base()), "target=Native;cpu=Native;dev=false;debug=false");
+    }
+
+    /// Toggling any knob that changes the emitted binary changes the
+    /// execution identity; each moves it to a string of its own.
+    #[test]
+    fn a_knob_that_changes_the_binary_changes_the_identity() {
+        let knobs: Vec<(&str, Box<dyn Fn(&mut BuildOptions)>)> = vec![
+            ("asan", Box::new(|o| o.asan = true)),
+            ("tsan", Box::new(|o| o.tsan = true)),
+            ("ubsan", Box::new(|o| o.ubsan = true)),
+            ("lto thin", Box::new(|o| o.lto = Some(LtoMode::Thin))),
+            ("lto full", Box::new(|o| o.lto = Some(LtoMode::Full))),
+            ("disable_prefetch", Box::new(|o| o.disable_prefetch = true)),
+            ("no_bus_devirt", Box::new(|o| o.no_bus_devirt = true)),
+            ("no_ownership_bubble", Box::new(|o| o.no_ownership_bubble = true)),
+            ("no_ts_shim", Box::new(|o| o.no_ts_shim = true)),
+            ("ts_shim", Box::new(|o| o.ts_shim = Some(PathBuf::from("/a.a")))),
+            ("zig", Box::new(|o| o.zig = Some("/opt/zig".into()))),
+            ("target_glibc", Box::new(|o| o.target_glibc = Some("2.35".into()))),
+            ("target_sysroot", Box::new(|o| o.target_sysroot = Some(PathBuf::from("/sys")))),
+            ("openssl_prefix", Box::new(|o| o.openssl_prefix = Some(PathBuf::from("/ssl")))),
+            ("dev_profile", Box::new(|o| o.dev_profile = true)),
+        ];
+        let plain = options_fingerprint(&base());
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, set) in &knobs {
+            let mut o = base();
+            set(&mut o);
+            let fp = options_fingerprint(&o);
+            assert_ne!(fp, plain, "{name} must change the execution identity");
+            assert!(seen.insert(fp), "{name} shares an identity with another knob");
+        }
+        let mut two = base();
+        two.target_glibc = Some("2.35".into());
+        let mut other = base();
+        other.target_glibc = Some("2.31".into());
+        assert_ne!(options_fingerprint(&two), options_fingerprint(&other), "the value is part of the identity");
+    }
+
+    /// What only narrates a build, times it, chooses its warnings or its
+    /// linker, or says where the cache is leaves the binary's identity
+    /// alone; so does an LTO of `off`, which is a build without LTO.
+    #[test]
+    fn a_knob_that_does_not_change_the_binary_leaves_the_identity() {
+        let plain = options_fingerprint(&base());
+        let mut o = base();
+        o.dump_ir_beside_output = true;
+        o.dump_ir = Some(PathBuf::from("/x.ll"));
+        o.di_trace = true;
+        o.dispatch_trace = true;
+        o.time_phases = true;
+        o.cc_warnings = true;
+        o.no_lld = true;
+        o.lto = Some(LtoMode::Off);
+        o.cache_dir = PathBuf::from("/somewhere/else");
+        assert_eq!(options_fingerprint(&o), plain);
     }
 }

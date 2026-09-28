@@ -1906,7 +1906,15 @@ the build options are the ones the compiling command was GIVEN
 2026-09-20, GH #904; `run` compiled with the defaults and
 fingerprinted the defaults), so a recording made under `hale run
 --dev` is admitted by `hale replay --dev` and by no default
-replay;
+replay. The build options include the environment's build knobs that
+change the binary (see *Build-time and toolchain environment*:
+`LOTUS_ASAN`, `LOTUS_TSAN`, `LOTUS_UBSAN`, `LOTUS_LTO`,
+`LOTUS_DISABLE_PREFETCH`, `LOTUS_NO_BUS_DEVIRT`,
+`LOTUS_NO_OWNERSHIP_BUBBLE`, `HALE_NO_TS_SHIM`, `HALE_TS_SHIM_A`,
+`HALE_ZIG`, `HALE_TARGET_GLIBC`, `HALE_TARGET_SYSROOT`,
+`LOTUS_OPENSSL_PREFIX`), so a recording made under one is admitted by
+no replay built without it; what only narrates or times a build, the
+warnings, the linker and the cache directory are not part of it;
 `shape_hash` is structural compatibility only, the secondary
 check. An unstamped recording is refused without
 `--allow-unverified-model`. Stated residue: the digest cannot see
