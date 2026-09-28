@@ -932,13 +932,12 @@ main locus Host {
         std::metrics::counter(self.senses.registry, "model_calls_total", dna::part_labels("spine")).add(std::math::int_to_float(self.relay.called));
         self.relay.called = 0;
     }
-    // `~/.config/hale-dna/<project>-<record>.env`: NAME=value lines, one per
-    // credential, as `hale dna secret set` wrote them ("" when none).
     // GH #617: a missing credential surfaces at once — on the board and
     // in `status` — instead of on a task hours later. The catalog names
     // the credentials its hosted backends read; the body is short of one
-    // when NONE of them is set here or in the secrets file. Rows only
-    // name the variables.
+    // when NONE of them is in its environment or its slot of the vault
+    // (GH #989: `model-<NAME>`, which `hale dna secret set` fills). Rows
+    // only name the variables.
     fn check_credentials() {
         let names = catalog_credentials(self.root);
         if len(names) == 0 { return; }

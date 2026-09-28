@@ -54,8 +54,8 @@ fn status_of(r: dna::RunResult) -> String {
 
 // An ID token for `subject` from the stub's own endpoint, signed under the
 // key the head pinned.
-fn id_token(issuer: String, subject: String) -> String {
-    let r = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=" + subject + "&client_id=dna-local&client_secret=dna-local-secret\n" + issuer + "/token");
+fn id_token(issuer: String, subject: String, client_secret: String) -> String {
+    let r = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=" + subject + "&client_id=dna-local&client_secret=" + client_secret + "\n" + issuer + "/token");
     return std::json::find_string_field(r.stdout, "id_token");
 }
 
@@ -71,7 +71,9 @@ fn main() {
     let secret = dna::hex(std::os::getrandom(16) or b"");
     std::io::fs::mkdir(root + "/vault") or discard;
     std::io::fs::write_file(root + "/vault/oidc-service-voice-api", secret) or discard;
-    std::io::fs::write_file(root + "/vault/oidc-client-dna-local", dna::hex(std::os::getrandom(16) or b"")) or discard;
+    // the head's client, as the bootstrap draws it into the vault
+    let client_secret = dna::hex(std::os::getrandom(16) or b"");
+    std::io::fs::write_file(root + "/vault/oidc-client-dna-local", client_secret) or discard;
     std::io::fs::write_file(root + "/stub.pem", oidc::STUB_KEY) or discard;
     let chmod = dna::run_tool("chmod\n0600\n" + root + "/stub.pem");
     let port = dna::free_port(9);
@@ -118,14 +120,14 @@ fn main() {
     let own = call("GET", f.url() + "/api/hale/v1/head", token, "", "");
     std::test::assert_eq_str(status_of(own), "401", "the head's own routes take no bearer: " + own.stdout);
     // ---- a token whose subject the record maps as no service
-    let unmapped = call("GET", practices, id_token(issuer, "zed-sub"), "", "");
+    let unmapped = call("GET", practices, id_token(issuer, "zed-sub", client_secret), "", "");
     std::test::assert_eq_str(status_of(unmapped), "403", "a subject the record maps as no service reads nothing: " + unmapped.stdout);
     // ---- a person's ID token as a bearer: a person signs in, and a token
     // that cannot be told from a service's never acts as them — nor as a
     // subject the record maps both ways
-    let member = call("GET", practices, id_token(issuer, "local-sub"), "", "");
+    let member = call("GET", practices, id_token(issuer, "local-sub", client_secret), "", "");
     std::test::assert(status_of(member) == "403" && std::str::contains(member.stdout, "a person signs in"), "a person's token is no service's bearer: " + member.stdout);
-    let both = call("GET", practices, id_token(issuer, "dual-sub"), "", "");
+    let both = call("GET", practices, id_token(issuer, "dual-sub", client_secret), "", "");
     std::test::assert_eq_str(status_of(both), "403", "a subject mapped both ways reads nothing: " + both.stdout);
     // ---- writes its role does not grant: refused at the socket, a gated
     // command at its gate and one any person may ask (a task) because a
