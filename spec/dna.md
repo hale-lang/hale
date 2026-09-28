@@ -4632,3 +4632,86 @@ Review's diff is the edited seed's; the deploy row names the instances
 it reaches), pressure raised from services' typed metrics (`hale dna
 pressure raise` is the spelling; nothing raises it for a node), and
 the organization as an instance of its own plan.
+
+## Environment
+
+Every `HALE_DNA_*` variable the DNA reads, and the few others its
+programs read (`HALE_API_CONTRACT_ROOT`). The host, the CLI and the
+programs they start pass most of these to each other: a variable the CLI
+sets for a child is listed under the process that reads it. Variables
+that name a role's memory or nerves are never inherited by a process
+that is not that role; the harness strips them from everything it starts
+(see *Memory* and *The senses and the reflexes*).
+`crates/hale-cli/tests/env_knobs_are_documented.rs` fails if a variable
+the tree names is missing here or in the runtime's tables
+(`runtime.md`), or a row names one the tree no longer does.
+
+A boolean is on for any value but empty or `0` unless its row says
+otherwise.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `HALE_DNA_DISCOVER=off` | discover | `off` makes `init`'s discovery (harnesses on PATH, local model servers) find nothing; for fixtures. The api head passes it on to the `init` it runs. |
+| `HALE_DNA_TOOLCHAIN=<path>` | the running `hale` | The toolchain binary the host and the processes it starts use; `hale dna` sets it to the binary it is. It is part of a seed's build fingerprint. |
+| `HALE_DNA_GENOME=<dir>` | unset | The record root the organization takes its genome from; `hale dna` and the host set it for the organization they start, and the model adapters read it at birth like a credential names its source. |
+| `HALE_DNA_GENOME_POLL=<s>` | 300 | How often the host polls the record's remote for a changed genome, to restart the organization on it. |
+| `HALE_DNA_NO_BUILD_CACHE` | off | Turns the content-fingerprint seed build cache off, so every seed is built. |
+| `HALE_DNA_FORGE=<kind>` | inferred | Names the forge (`github`, the file forge) instead of inferring it from `github:` in the record's profile or the remote. |
+| `HALE_DNA_TRANSPORT=<kind>` | `ssh` | `local` runs every infrastructure script on this machine instead of over ssh; for fixtures. |
+| `HALE_DNA_TRANSPORT_HOME=<dir>` | unset | With `local`, the body's home directory. |
+| `HALE_DNA_GIT_TIMEOUT=<s>` | 8 | Seconds a record `fetch`, `push` or `ls-remote` may take before it is killed. |
+| `HALE_DNA_NODE=<name>` | `<hostname>:<pid>` | This node's name in its claims (GH #1026). |
+| `HALE_DNA_OWNER=<org>` | unnamed | The organization this body is, for the ownership graph. |
+| `HALE_DNA_LEASE=<name>` | unset | The lease a body holds; set by the body for the processes it starts. |
+| `HALE_DNA_LEASE_TOKEN=<n>` | unset | The lease's fencing token; set with `HALE_DNA_LEASE`. |
+| `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the compose Postgres | A Postgres of your own instead of `dna/compose.yaml`'s: the owner role that migrates memory and creates the record's roles. Read by `memory migrate`, `dev`, `show` and the fixtures that migrate or drop a record. |
+| `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
+| `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
+| `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
+| `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
+| `HALE_DNA_NATS_URL_OWNER=<url>` | the compose NATS | The owner user's URL: it creates the organization's stream (`nerves migrate`, `dev`). |
+| `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine. |
+| `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
+| `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
+| `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
+| `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
+| `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
+| `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |
+| `HALE_DNA_SENSES_HOST=<addr>` | `0.0.0.0` | The address a part's scrape endpoint listens on. |
+| `HALE_DNA_REFLEX_TICK_MS=<ms>` | 5000 | How often the reflexes read the store. |
+| `HALE_DNA_REFLEX_WINDOW_SECS=<s>` | 600 | How close two firings for one target are a pattern, not an accident. |
+| `HALE_DNA_ORGANIZATION_LAUNCH=<attempt>` | unset | Set by the host on the organization process it starts for a workflow attempt: which attempt launched it. |
+| `HALE_DNA_RESTART_FOR=<mutation>` | unset | Set by the host when it restarts an expression on a Mutation's request; the expression journals `expression.restarted` for it (GH #529 D6). |
+| `HALE_DNA_EXPRESSION=<name>` | unset | The expression that was restarted; set with `HALE_DNA_RESTART_FOR`. |
+| `HALE_DNA_DESIGN_SUFFIX=<text>` | unset | Appended to the design practice `hale dna new` seeds, so a fixture can exercise `upgrade`'s supersession against real record history. |
+| `HALE_DNA_INSTANCE=<id>` | unset | Set by a node on each instance it starts: which instance of its shape the process is. |
+| `HALE_DNA_BODY=<mark>` | unset | The body's mark: the host puts it in the environment of the processes it starts as a body (`body_mark`: holder, lease token, pid), and the body fence finds them by it. |
+| `HALE_DNA_SCAN_NEEDLE=<mark>` | unset | Set by the body fence's scan on a probe process: the mark it looks for in every other process's environment (`ps -E`) to find the body's processes. |
+| `HALE_DNA_SCAN_PROBE=yes` | unset | Set on a probe process by the fence's environment scan, which checks that this operating system shows one process another's environment before relying on `HALE_DNA_BODY`. |
+| `HALE_VERSION=v<pin>` | unset | Not read by the DNA: the host sets it for hale-lang.org's `install.sh` when it installs the toolchain version a body is pinned to. |
+| `HALE_DNA_ONESHOT` | off | A `hale dna run` application returns after the ping instead of staying up. |
+| `HALE_DNA_API=<url>` | `http://127.0.0.1:8793` | The head API a leg's verbs (`hale dna work …`) talk to when `--api` is not given. |
+| `HALE_DNA_ID_TOKEN=<token>` | unset | The bearer token a leg presents to the head; sent only over `https://` or loopback, never plain http off this machine. |
+| `HALE_DNA_HEAD_STATE=<dir>` | `${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` | The project head's state directory (its launch token and key). |
+| `HALE_DNA_COMMAND_POLICY=<path>` | unset | The explicit authority policy the native command lanes and the governance verbs require; with none, they refuse. |
+| `HALE_DNA_KNOWLEDGE_COMMAND_POLICY=<path>` | empty policy | The policy file for Knowledge commands. |
+| `HALE_DNA_ORGANIZATION_POLICY=<path>` | unset | An optional, independent policy for organization-source proposals and Review writes; configuring evidence reads does not enable them. |
+| `HALE_DNA_TASK_POLICY=<path>` | unset | The policy for task administration commands. |
+| `HALE_DNA_ORG_DRAFTS=1` | off | Lets the api accept organization-source drafts (`1` only). |
+| `HALE_DNA_OIDC_ISSUER=<url>` | unset | The project head's OIDC issuer; plain http is accepted on this machine only. A project head needs the four `HALE_DNA_OIDC_*` below or it refuses to start. |
+| `HALE_DNA_OIDC_CLIENT=<id>` | unset | The head's client id at the issuer. |
+| `HALE_DNA_OIDC_MEMBER=<subject>=<member>` | unset | Which member a subject is. |
+| `HALE_DNA_OIDC_KEY=<pin>` | unset | The pin of the issuer's signing key. |
+| `HALE_DNA_OIDC_SECRET=<secret>` | unset | The stub issuer's (`hale dna oidc serve`, and `ui`) client secret, sixteen characters or more. |
+| `HALE_DNA_OIDC_KEY_FILE=<path>` | unset | The stub issuer's private signing key. |
+| `HALE_DNA_OIDC_KEY_X=<x>` | unset | The x coordinate of the stub issuer's public key. |
+| `HALE_DNA_OIDC_KEY_Y=<y>` | unset | The y coordinate of the stub issuer's public key. |
+| `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
+| `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
+| `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
+| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
+| `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
+| `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
+| `HALE_API_CONTRACT_ROOT=<dir>` | `dna/api/contract/v1` | The directory the api contract check reads the contract from. |
+| `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
+| `HALE_HEAD_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt head (project service) binary to launch, as `--head` does. |

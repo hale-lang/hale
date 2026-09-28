@@ -10,12 +10,16 @@
 //!     `BuildOptions` fields, and the toolchain's own knobs;
 //!   * `spec/runtime.md`, "Diagnostic + tuning env vars": what the C
 //!     runtime, the standard library and the api binding read at run
-//!     time.
+//!     time;
+//!   * `spec/dna.md`, "Environment": the DNA's, read by `dna/` and iris
+//!     programs and by `hale dna`.
 //!
 //! What counts as "the tree names it", by grep, like
 //! `dna_fixture_ports_are_free`: a string literal that is exactly the
 //! name, in shipped source (`crates/*/src`, `build.rs`, the runtime C,
-//! the stdlib's `.hl`), or the name as a word in `scripts/*.sh`. Not
+//! the stdlib's `.hl`, the DNA's and iris's `.hl`) or assigned inside
+//! one (`"LOTUS_OBS=1\nHALE_BIN="`), or the name as a word in
+//! `scripts/*.sh`. Not
 //! counted: tests, fixtures and examples, comment lines, and the
 //! compile-time variables a build script hands to `env!` (they are
 //! not knobs). A knob nobody documents fails here; the fix is a row,
@@ -32,13 +36,11 @@ fn repo() -> PathBuf {
 const TABLES: &[(&str, &str)] = &[
     ("spec/runtime.md", "Build-time and toolchain environment"),
     ("spec/runtime.md", "Diagnostic + tuning env vars"),
+    ("spec/dna.md", "Environment"),
 ];
 
 /// Source roots that belong to the layers `TABLES` covers.
-const SOURCE_ROOTS: &[&str] = &["crates", "scripts"];
-
-/// Name prefixes whose layer has no table yet (the DNA's, next).
-const NOT_YET_TABLED: &[&str] = &["HALE_DNA_"];
+const SOURCE_ROOTS: &[&str] = &["crates", "scripts", "dna", "iris"];
 
 const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git", "fixtures", "vendor", "tests", "acceptance", "examples"];
 
@@ -49,14 +51,21 @@ fn is_name_char(c: char) -> bool {
     c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'
 }
 
+/// Does a name start at byte `at`? Not when it is the tail of a longer
+/// identifier, but yes after a literal backslash-n, which ends a line of
+/// the env file a string spells (`"...\nHALE_X="`): its `n` is not part
+/// of the name.
+fn starts_a_name(text: &str, at: usize) -> bool {
+    text[..at].ends_with("\\n") || !text[..at].chars().next_back().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// The knob names in one cell or line: `LOTUS_`/`HALE_` followed by
 /// name characters, not part of a longer identifier.
 fn names_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for prefix in ["LOTUS_", "HALE_"] {
         for (at, _) in text.match_indices(prefix) {
-            let before = text[..at].chars().next_back();
-            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            if !starts_a_name(text, at) {
                 continue;
             }
             let name: String = text[at..].chars().take_while(|c| is_name_char(*c)).collect();
@@ -82,6 +91,26 @@ fn quoted_names_in(line: &str) -> Vec<String> {
             && !names_in(&name).is_empty()
         {
             out.push(name);
+        }
+    }
+    out
+}
+
+/// A name assigned inside a string: the `NAME=value` of an env file, an
+/// `env NAME=value` argv, a `FOO=1 cmd` shell line
+/// (`"LOTUS_OBS=1\nHALE_BIN=" + hale`).
+fn assigned_names_in(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for n in names_in(line) {
+        let mut from = 0;
+        while let Some(at) = line[from..].find(&n) {
+            let start = from + at;
+            let end = start + n.len();
+            if starts_a_name(line, start) && line[end..].starts_with('=') && !line[end..].starts_with("==") {
+                out.push(n.clone());
+                break;
+            }
+            from = end;
         }
     }
     out
@@ -126,7 +155,10 @@ fn scanned() -> BTreeMap<String, BTreeSet<String>> {
                 if COMPILE_TIME.iter().any(|c| line.contains(c)) {
                     continue;
                 }
-                let names = if script { names_in(line) } else { quoted_names_in(line) };
+                let mut names = if script { names_in(line) } else { quoted_names_in(line) };
+                if !script && line.contains('"') {
+                    names.extend(assigned_names_in(line));
+                }
                 for n in names {
                     found.entry(n).or_default().insert(rel.clone());
                 }
@@ -168,7 +200,6 @@ fn every_variable_the_tree_names_is_in_a_table() {
     let missing: Vec<String> = scanned()
         .into_iter()
         .filter(|(n, _)| !tables.contains_key(n))
-        .filter(|(n, _)| !NOT_YET_TABLED.iter().any(|p| n.starts_with(p)))
         .map(|(n, files)| format!("{n}  (named in {})", files.iter().take(3).cloned().collect::<Vec<_>>().join(", ")))
         .collect();
     assert!(
@@ -204,4 +235,6 @@ fn the_scan_is_not_vacuous() {
     assert!(names_in("`LOTUS_LTO`, `HALE_TIME`").len() == 2);
     assert!(names_in("SOME_HALE_X and LOTUS_ alone").is_empty(), "a longer identifier or a bare prefix is not a knob");
     assert_eq!(quoted_names_in("f(\"HALE_X\", \"HALE_Y z\", \"NOTHALE_Z\", \"HALE_P_\")"), vec!["HALE_X".to_string()]);
+    assert_eq!(assigned_names_in("e = \"LOTUS_OBS=1\\nHALE_BIN=\" + h"), vec!["LOTUS_OBS".to_string(), "HALE_BIN".to_string()]);
+    assert!(assigned_names_in("if HALE_X == 1 { \"A_HALE_Y=2\" }").is_empty(), "a comparison and a longer identifier are not assignments");
 }

@@ -154,6 +154,10 @@ nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
 `HostedCredential` sources it names. Git config: `dna.remote` (default
 `origin`), `dna.github` (`owner/repo`), `dna.github.board` (logins).
 
+Every `HALE_DNA_*` variable, with its default and effect, is tabled in
+the spec's [Environment](https://github.com/hale-lang/hale/blob/main/spec/dna.md#environment)
+section; a test fails when one is missing from it.
+
 Memory ([Operating](./operating.md#memory)):
 `HALE_DNA_MEMORY_DSN_OWNER`, the schema owner's DSN, used only to
 apply the schema (`memory migrate`, `dev`, `upgrade`, and a
