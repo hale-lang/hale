@@ -3383,8 +3383,10 @@ fn stdlib_bus_tainted_namespaces(
 ///
 /// Every "don't know" answers NOT fresh, preserving the old
 /// program-lifetime behavior rather than risking a double dissolve.
-/// GH #383 — for EVERY free fn, the local binding names it hands back
-/// via `return <ident>;` (or a tail ident).
+/// GH #383 — for EVERY free fn, the local bindings it hands back via
+/// `return <ident>;` (or a tail ident), each resolved to the `let` in
+/// scope where the return spells it (GH #1140: an inner `let` that
+/// shadows the name is another binding, reclaimed like any other).
 ///
 /// Distinct from `compute_fresh_locus_factories` and needed
 /// separately: a fn that does NOT qualify as a clean factory can
@@ -3394,59 +3396,23 @@ fn stdlib_bus_tainted_namespaces(
 /// scoped dissolve fired on the binding the fn hands back and the
 /// caller received a dissolved locus (reads came back as zeros).
 ///
-/// Conservative by construction: a name in this set merely
-/// suppresses a dissolve, which is the old leak — never a
-/// double-free.
+/// Conservative by construction: membership merely suppresses a
+/// dissolve, which is the old leak — never a double-free.
 fn compute_returned_bindings(
     program: &Program,
-) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
-    use std::collections::{BTreeMap, BTreeSet};
+) -> std::collections::BTreeMap<String, crate::ownership::ReturnedBindings> {
+    use crate::ownership::returned_bindings;
+    use std::collections::BTreeMap;
 
-    fn walk(b: &Block, out: &mut BTreeSet<String>) {
-        for s in &b.stmts {
-            match s {
-                Stmt::Return(Some(Expr::Ident(i)), _) => {
-                    out.insert(i.name.clone());
-                }
-                Stmt::While { body, .. } | Stmt::For { body, .. } => {
-                    walk(body, out)
-                }
-                Stmt::If(i) => {
-                    walk(&i.then_block, out);
-                    let mut cur = i.else_block.as_deref();
-                    while let Some(eb) = cur {
-                        match eb {
-                            ElseBranch::Else(bb) => {
-                                walk(bb, out);
-                                cur = None;
-                            }
-                            ElseBranch::ElseIf(ei) => {
-                                walk(&ei.then_block, out);
-                                cur = ei.else_block.as_deref();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(Expr::Ident(i)) = b.tail.as_deref() {
-            out.insert(i.name.clone());
-        }
-    }
-
-    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut m: BTreeMap<String, crate::ownership::ReturnedBindings> =
+        BTreeMap::new();
     // GH #884: module nesting flattened — the fn and the mode this
     // keys by are lowered whatever their brace depth, so the facts
     // they are looked up under have to be computed at that depth too.
     for item in hale_syntax::ast::flat_decls(&program.items) {
         match item {
             TopDecl::Fn(f) => {
-                let mut set = BTreeSet::new();
-                walk(&f.body, &mut set);
-                if !set.is_empty() {
-                    m.insert(f.name.name.clone(), set);
-                }
+                m.insert(f.name.name.clone(), returned_bindings(&f.body));
             }
             // A `mode` is the third shape that legitimately returns a
             // locus (alongside a free fn) — it IS the locus-valued
@@ -3466,14 +3432,10 @@ fn compute_returned_bindings(
                             ModeKind::Harmonic => "harmonic",
                             ModeKind::Resolution => "resolution",
                         };
-                        let mut set = BTreeSet::new();
-                        walk(&md.body, &mut set);
-                        if !set.is_empty() {
-                            m.insert(
-                                format!("{}.{}", l.name.name, mode_name),
-                                set,
-                            );
-                        }
+                        m.insert(
+                            format!("{}.{}", l.name.name, mode_name),
+                            returned_bindings(&md.body),
+                        );
                     }
                 }
             }
@@ -5252,7 +5214,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// of those transfers to the caller, so this frame must not
     /// dissolve them. See `compute_returned_bindings`.
     pub(crate) returned_bindings:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+        std::collections::BTreeMap<String, crate::ownership::ReturnedBindings>,
     /// Downstream handoff (free-fn locus rebinding): fn name -> the
     /// local bindings that appear on either side of a bare-local
     /// `=`. A moved value has two names; frame-scoped reclamation
@@ -19090,7 +19052,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .current_fn
                         .map(|f| f.get_name().to_string_lossy().to_string())
                         .and_then(|fname| self.returned_bindings.get(&fname))
-                        .map(|set| set.contains(&name.name))
+                        .map(|rb| rb.let_is_returned(name))
                         .unwrap_or(false);
                 if binding_is_returned {
                     if let Some(slot) = self.current_method_caller_arena {
@@ -19220,10 +19182,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let is_my_returned_binding = self
                             .current_fn
                             .map(|f| f.get_name().to_string_lossy().to_string())
-                            .and_then(|fname| {
-                                self.returned_bindings.get(&fname).cloned()
-                            })
-                            .map(|set| set.contains(&name.name))
+                            .and_then(|fname| self.returned_bindings.get(&fname))
+                            .map(|rb| rb.let_is_returned(name))
                             .unwrap_or(false);
                         // Downstream handoff (free-fn locus
                         // rebinding): a binding that participates in
