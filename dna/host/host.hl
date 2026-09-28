@@ -437,7 +437,11 @@ fn build_cache_touch(entry: String, hit: String) -> Bool {
 // failed start rebuilds — the behaviour without a cache at all.
 fn build_cache_keep(entry: String, work: String, cache: String) {
     let after = to_string(BUILD_CACHE_KEEP + 1);
-    let r = dna::run_tool("sh\n-c\nmv -T -- \"$1\" \"$2\" 2>/dev/null || rm -rf -- \"$1\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -rf -- \"./$x\"; done\nsh\n" + work + "\n" + entry + "\n" + cache);
+    // POSIX only (macOS's mv has no -T): an entry that is already there wins and the
+    // private copy goes; otherwise the directory is renamed onto the missing name. A
+    // second host racing between the test and the rename would nest its copy inside
+    // the entry, so the nested copy is removed too.
+    let r = dna::run_tool("sh\n-c\nif [ -e \"$2\" ]; then rm -rf -- \"$1\"; else mv -- \"$1\" \"$2\" 2>/dev/null || rm -rf -- \"$1\"; fi; rm -rf -- \"$2/$(basename \"$1\")\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -rf -- \"./$x\"; done\nsh\n" + work + "\n" + entry + "\n" + cache);
 }
 
 // The outcome of a seed build: the binary's path, or "" and why not.

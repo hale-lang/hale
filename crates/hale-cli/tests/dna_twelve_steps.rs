@@ -253,7 +253,12 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(still_up, "the restarted organism is up");
     assert!(ok10, "the applied genome still checks: {after}");
     // the application binary carries none of the organization (GH #566 F2)
-    let bin = std::fs::read(app.join("orgtwelve")).expect("the application binary");
+    // Builds go out of the tree now (`-o`): build the application seed where
+    // this test can read it, the way the host builds it.
+    let built = d.join("orgtwelve-application");
+    let (okb, outb) = hale(&["build", ".", "-o", built.to_str().unwrap()], &app);
+    assert!(okb, "the application builds: {outb}");
+    let bin = std::fs::read(&built).expect("the application binary");
     let needle = b"vendor_dna";
     assert!(!bin.windows(needle.len()).any(|w| w == needle), "the application binary contains DNA symbols");
     assert!(ok11 && tests_after.contains("1 passed, 0 failed"), "and its tests pass: {tests_after}");
