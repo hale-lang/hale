@@ -65,9 +65,9 @@ main locus App {
         // the record says who left, and to whom their work goes
         let r1 = self.one.journal.append(self.one.journal.revision(), "person.retired", "noor", "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}");
         let r2 = self.one.journal.append(self.one.journal.revision(), "person.retired", "lee", "{\"by\": \"riley\", \"to\": \"\", \"transferred\": 0}");
-        std::test::assert(self.one.retired("noor").retired && self.one.retired("noor").successor == "dev", "noor retired, to dev");
-        std::test::assert(self.one.retired("lee").retired && len(self.one.retired("lee").successor) == 0, "lee retired, no successor");
-        std::test::assert(!self.one.retired("mara").retired, "mara works here");
+        std::test::assert(dna::retirement(self.one.journal, "noor").retired && dna::retirement(self.one.journal, "noor").successor == "dev", "noor retired, to dev");
+        std::test::assert(dna::retirement(self.one.journal, "lee").retired && len(dna::retirement(self.one.journal, "lee").successor) == 0, "lee retired, no successor");
+        std::test::assert(!dna::retirement(self.one.journal, "mara").retired, "mara works here");
         // the successor is followed to someone who works here
         std::test::assert_eq_str(self.one.admissible("noor"), "dev", "noor's work goes to dev while dev works here");
         std::test::assert_eq_str(self.one.admissible("lee"), "", "lee's work is unassigned");

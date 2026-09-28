@@ -835,49 +835,6 @@ locus Dna {
     // organization's. Returns the digest. The tower rule decides the
     // class of the binding (goal / concern / initiative) from who
     // proposes and where it binds; a lateral proposal is refused.
-    @unbounded
-    fn governance_event(kind: String, entity: String) -> Event {
-        let mut i = 0;
-        while i < self.journal.revision() {
-            let e = self.journal.read(i);
-            if e.kind == kind && e.entity == entity { return e; }
-            i = i + 1;
-        }
-        return Event { };
-    }
-    fn governance_same(kind: String, existing: String, body: String) -> Bool {
-        if kind == "knowledge.proposed" {
-            // The timestamp is observation metadata; every document field is
-            // bound by its digest and must agree on an interrupted replay.
-            return native_json_string(existing, "digest") == native_json_string(body, "digest")
-                && native_json_string(existing, "review_id") == native_json_string(body, "review_id")
-                && native_json_string(existing, "kind") == native_json_string(body, "kind")
-                && native_json_string(existing, "author") == native_json_string(body, "author")
-                && native_json_string(existing, "target") == native_json_string(body, "target")
-                && native_json_string(existing, "class") == native_json_string(body, "class")
-                && native_json_string(existing, "name") == native_json_string(body, "name")
-                && native_json_string(existing, "supersedes") == native_json_string(body, "supersedes");
-        }
-        return existing == body;
-    }
-    @unbounded
-    fn governance_once(kind: String, entity: String, body: String) -> Bool {
-        let mut tries = 0;
-        while tries < 20 {
-            let moved = self.journal.refresh();
-            let revision = self.journal.revision();
-            let existing = self.governance_event(kind, entity);
-            if len(existing.kind) > 0 { return self.governance_same(kind, existing.body, body); }
-            let appended = self.journal.append_exact(revision, kind, entity, body);
-            if appended.ok { return true; }
-            let refreshed = self.journal.refresh();
-            let recovered = self.governance_event(kind, entity);
-            if len(recovered.kind) > 0 { return self.governance_same(kind, recovered.body, body); }
-            if appended.error != "stale_revision" { return false; }
-            tries = tries + 1;
-        }
-        return false;
-    }
     // GH #1089: what a Review requires, routed once and recorded. Opening
     // it (`open`), the organization asks memory's graph for the route its
     // definition names — change-deliver the route of the paths its
@@ -893,7 +850,7 @@ locus Dna {
     // opens on its claimed authority alone.
     @unbounded
     fn review_routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool) -> RouteRequirement {
-        let row = self.routed_row(review_id);
+        let row = routed_row(self.journal, review_id);
         let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
         if len(row) > 0 && !again { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
         if !open { return RouteRequirement { }; }
@@ -910,7 +867,7 @@ locus Dna {
             if !x.ok { return RouteRequirement { recorded: false }; }
             return need;
         }
-        if !self.governance_once("review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
+        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
         return need;
     }
     // The fallback: a Review on it is decided by its own required
@@ -918,21 +875,8 @@ locus Dna {
     @unbounded
     fn route_fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
         if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
-        if !self.governance_once("review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
+        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
         return RouteRequirement { };
-    }
-    // The body of the latest `review.routed` row for `review_id`, "" when
-    // none: a re-routing supersedes the one before it.
-    @unbounded
-    fn routed_row(review_id: String) -> String {
-        let mut out = "";
-        let mut i = 0;
-        while i < self.journal.revision() {
-            let e = self.journal.read(i);
-            if e.kind == "review.routed" && e.entity == review_id { out = e.body; }
-            i = i + 1;
-        }
-        return out;
     }
     // GH #1089: an open routed Review's holders routed again when who holds
     // its positions changed — a hold ratified, a holder retired — so a
@@ -967,7 +911,7 @@ locus Dna {
             let nl = std::str::index_of(rest, "\n");
             let id = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            let row = self.routed_row(id);
+            let row = routed_row(self.journal, id);
             let signers = native_json_string(row, "signers");
             let now_held = signers_held_now(data, signers);
             if now_held == signers { continue; }
@@ -993,7 +937,7 @@ locus Dna {
             self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
             if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
             told = told + e.entity + "\n";
-            ReviewRouted <- ReviewRouting { review_id: e.entity, signers: native_json_string(self.routed_row(e.entity), "signers") };
+            ReviewRouted <- ReviewRouting { review_id: e.entity, signers: native_json_string(routed_row(self.journal, e.entity), "signers") };
         }
     }
     @unbounded
@@ -1005,7 +949,7 @@ locus Dna {
             if (self.knowledge_reviews.get(i) or "") == review_id { return true; }
             i = i + 1;
         }
-        let settlement = self.governance_event("review.settled", review_id);
+        let settlement = first_row(self.journal, "review.settled", review_id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
         let need = self.review_routing(review_id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
@@ -1044,7 +988,7 @@ locus Dna {
         if len(i.supersedes) > 0 { b.string_field("supersedes", i.supersedes); }
         b.int_field("at", std::time::now());
         b.end_object();
-        if !self.governance_once("knowledge.proposed", digest, b.result()) { return ""; }
+        if !append_once(self.journal, "knowledge.proposed", digest, b.result()) { return ""; }
         let question = "ratify " + i.kind + " `" + i.text + "` as a " + class + " for " + target + "?";
         let q = std::json::Builder { };
         q.begin_object();
@@ -1057,7 +1001,7 @@ locus Dna {
         q.string_field("target", target);
         q.string_field("class", class);
         q.end_object();
-        if !self.governance_once("review.requested", "review:" + review_id, q.result()) { return ""; }
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
         if !self.ensure_knowledge_review(review_id) { return ""; }
         self.board.notify("knowledge", "board needed for " + review_id + ": " + question);
         return digest;
@@ -1087,7 +1031,7 @@ locus Dna {
         while i < self.journal.revision() {
             let e = self.journal.read(i);
             if e.kind == "knowledge.ratified" {
-                let proposal = self.governance_event("knowledge.proposed", e.entity);
+                let proposal = first_row(self.journal, "knowledge.proposed", e.entity);
                 if native_json_string(proposal.body, "supersedes") == digest { return e.entity; }
             }
             i = i + 1;
@@ -1107,9 +1051,9 @@ locus Dna {
         let edge = edge_codec.request_of(self.journal, review_id);
         if edge_codec.valid(edge) {
             if edge.candidate_digest != native_json_string(decision, "subject_digest") || outcome != native_json_string(decision, "verdict") || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return; }
-            if !self.governance_once("review.settled", review_id, outcome + " by " + reviewer) { return; }
+            if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
             let comment = native_json_string(decision, "comment");
-            if len(comment) > 0 && !self.governance_once("review.reasoned", review_id, comment) { return; }
+            if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
             let resumed = self.resume_edge_result(review_id, outcome, reviewer, command_id);
             return;
         }
@@ -1117,17 +1061,17 @@ locus Dna {
         let binding = binding_codec.request_of(self.journal, review_id);
         if binding_codec.valid(binding) {
             if binding.candidate_digest != native_json_string(decision, "subject_digest") || outcome != native_json_string(decision, "verdict") || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return; }
-            if !self.governance_once("review.settled", review_id, outcome + " by " + reviewer) { return; }
+            if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
             let comment = native_json_string(decision, "comment");
-            if len(comment) > 0 && !self.governance_once("review.reasoned", review_id, comment) { return; }
+            if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
             let resumed = self.resume_binding_result(review_id, outcome, reviewer, command_id);
             return;
         }
         if len(req) == 0 || native_json_string(req, "subject_digest") != native_json_string(decision, "subject_digest") { return; }
         if (outcome != "approve" && outcome != "reject" && outcome != "revise") || outcome != native_json_string(decision, "verdict") { return; }
-        if !self.governance_once("review.settled", review_id, outcome + " by " + reviewer) { return; }
+        if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
         let comment = native_json_string(decision, "comment");
-        if len(comment) > 0 && !self.governance_once("review.reasoned", review_id, comment) { return; }
+        if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
         // GH #995: a decision by command is ratified as every decision is,
         // by the practice-ratify execution it admits
         self.ratify_through(review_id);
@@ -1147,7 +1091,7 @@ locus Dna {
         while tries < 20 {
             let moved = self.journal.refresh();
             let revision = self.journal.revision();
-            let settled = self.governance_event("review.settled", review_id);
+            let settled = first_row(self.journal, "review.settled", review_id);
             if settled.body != outcome + " by " + reviewer { return false; }
             if self.knowledge_ratified(digest) {
                 if outcome != "approve" { return false; }
@@ -1159,10 +1103,10 @@ locus Dna {
                 rb.string_field("review_id", review_id);
                 rb.string_field("decided_by", reviewer);
                 rb.end_object();
-                return self.governance_once("knowledge.retired", old, rb.result());
+                return append_once(self.journal, "knowledge.retired", old, rb.result());
             }
-            if len(self.governance_event("knowledge.refused", digest).kind) > 0 { return true; }
-            if len(self.governance_event("knowledge.declined", digest).kind) > 0 { return outcome != "approve"; }
+            if len(first_row(self.journal, "knowledge.refused", digest).kind) > 0 { return true; }
+            if len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 { return outcome != "approve"; }
             let gone = if len(old) > 0 { self.replacing_digest(old) } else { "" };
             let refused = outcome == "approve" && len(old) > 0 && (len(gone) > 0 || !self.knowledge_ratified(old));
             let b = std::json::Builder { };
@@ -1187,7 +1131,7 @@ locus Dna {
             let appended = self.journal.append_exact(revision, kind, digest, b.result());
             if !appended.ok {
                 let refreshed = self.journal.refresh();
-                if appended.error != "stale_revision" && len(self.governance_event(kind, digest).kind) == 0 { return false; }
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, digest).kind) == 0 { return false; }
             }
             tries = tries + 1;
         }
@@ -1226,8 +1170,8 @@ locus Dna {
         // same pinned candidate, and a candidate or a base that moved
         // in the meantime is refused as ever.
         if r.reapproval {
-            let d = self.disposition_of(r.review_id);
-            if len(self.request_of(r.review_id)) == 0 { return; }
+            let d = mutation_disposition(self.journal, r.review_id);
+            if len(mutation_review_request(self.journal, r.review_id)) == 0 { return; }
             // approved again after it already applied: nothing to do, and
             // the record answers so a waiting `hale dna review` hears it
             if d == "applied" || d == "retained" {
@@ -1280,8 +1224,8 @@ locus Dna {
         // GH #529 D5: a mutation's approval applies exactly the reviewed
         // candidate; a rejection or revision leaves genome and expression
         // untouched and keeps the Mutation in lineage.
-        if self.request_of(r.review_id) == "" { return; }
-        let d = self.disposition_of(r.review_id);
+        if mutation_review_request(self.journal, r.review_id) == "" { return; }
+        let d = mutation_disposition(self.journal, r.review_id);
         let live = d == "applied" || d == "retained";
         if r.outcome == "approve" {
             // post-review: it was applied under the grant; the human concurs
@@ -1360,35 +1304,6 @@ locus Dna {
         }
         return out;
     }
-    // The `review.requested` body of a mutation's Review, "" for any
-    // other (the purpose Review, an unknown id).
-    @unbounded
-    fn request_of(review_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        let mut out = "";
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"mutation_id\"") { out = e.body; }
-            i = i + 1;
-        }
-        return out;
-    }
-    // The last `mutation.<disposition>` recorded for an id.
-    @unbounded
-    fn disposition_of(mutation_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        let mut out = "";
-        while i < n {
-            let e = self.journal.read(i);
-            if e.entity == mutation_id && std::str::contains(e.kind, "mutation.") && e.kind != "mutation.worktree" && e.kind != "mutation.candidate" {
-                out = e.kind[9..len(e.kind)];
-            }
-            i = i + 1;
-        }
-        return out;
-    }
     // Apply exactly the reviewed candidate (GH #529 D5): the Review
     // must have settled approve, the worktree's head must still be the
     // commit the reviewer looked at (a candidate that moved after the
@@ -1398,7 +1313,7 @@ locus Dna {
     // commits twice. Then the host is asked to rebuild and restart.
     @unbounded
     fn apply_reviewed(mutation_id: String, now: Int) -> String {
-        let req = self.request_of(mutation_id);
+        let req = mutation_review_request(self.journal, mutation_id);
         if req == "" { return "refused: no mutation review " + mutation_id; }
         if len(native_json_string(req, "organization_source_request_id")) > 0 { return self.apply_organization_source(mutation_id, now); }
         let reviewed = std::json::find_string_field(req, "subject_digest");
@@ -1461,7 +1376,7 @@ locus Dna {
         if r.replayed { return "applied (replayed)"; }
         self.applied = self.applied + 1;
         self.restarts_requested = self.restarts_requested + 1;
-        let req = self.request_of(mutation_id);
+        let req = mutation_review_request(self.journal, mutation_id);
         let fitness = std::json::find_string_field(req, "fitness_signals");
         let seed = std::json::find_string_field(req, "seed");
         // GH #566 F4: a deployment gateway expresses the candidate itself
@@ -1482,7 +1397,7 @@ locus Dna {
     // post-review rejection.
     @unbounded
     fn rollback_to_base(mutation_id: String, why: String, now: Int) {
-        let req = self.request_of(mutation_id);
+        let req = mutation_review_request(self.journal, mutation_id);
         let base = std::json::find_string_field(req, "base_commit");
         let lease = self.gateway.take(mutation_id, "dna", now);
         let r = self.gateway.rollback(self.journal, mutation_id, base, lease.token, now);
@@ -1520,9 +1435,9 @@ locus Dna {
     @unbounded
     fn on_observed(o: Observation) {
         let x = self.journal.append(self.journal.revision(), "expression.observed", o.mutation_id, o.outcome + " " + o.model_hash + " " + o.detail);
-        if self.disposition_of(o.mutation_id) != "applied" { return; }
+        if mutation_disposition(self.journal, o.mutation_id) != "applied" { return; }
         let now = std::time::now();
-        let req = self.request_of(o.mutation_id);
+        let req = mutation_review_request(self.journal, o.mutation_id);
         // step 11: the originating pressure, re-measured against the
         // fitness signals the proposal declared — what the window saw
         let p = self.journal.append(self.journal.revision(), "pressure.remeasured", o.mutation_id,
@@ -1662,7 +1577,7 @@ locus Dna {
     // The definition an occurrence of `s` binds: the catalog's newest.
     fn definition_of(s: Schedule) -> WorkflowDef { return self.catalog.definition(s.definition, self.catalog.latest(s.definition)); }
     // Whether an execution is still open: admitted, and not settled.
-    fn execution_open(task: String) -> Bool { return len(task) > 0 && !self.has_row("workflow.settled", task); }
+    fn execution_open(task: String) -> Bool { return len(task) > 0 && !row_exists(self.journal, "workflow.settled", task); }
     // Occurrence `t` of `s`, under its definition's concurrency: admitted,
     // or, while the last execution is open, skipped (a row naming it) —
     // or admitted beside it, where the definition overlaps.
@@ -1775,10 +1690,10 @@ locus Dna {
             k = k + 1;
         }
         if len(ids) == 0 {
-            if self.has_row("graph.edge", edge) { let r = self.journal.append(self.journal.revision(), "graph.retired", edge, "{}"); }
+            if row_exists(self.journal, "graph.edge", edge) { let r = self.journal.append(self.journal.revision(), "graph.retired", edge, "{}"); }
             return;
         }
-        if !self.has_row("graph.node", node) {
+        if !row_exists(self.journal, "graph.node", node) {
             let nb = std::json::Builder { };
             nb.begin_object();
             nb.string_field("kind", "definition");
@@ -2126,7 +2041,7 @@ locus Dna {
             tries = tries + 1;
             let moved = self.journal.refresh();
             let rev = self.journal.revision();
-            if self.has_row("case.admitted", case_id) { let x = self.ensure_case_rows(case_id); return; }
+            if row_exists(self.journal, "case.admitted", case_id) { let x = self.ensure_case_rows(case_id); return; }
             let terms = self.handoff_terms(assignee_named, obligation);
             let body = self.case_body(c, case_id, terms, obligation, by, narrative);
             let a = self.journal.append_exact(rev, "case.admitted", case_id, body);
@@ -2194,11 +2109,11 @@ locus Dna {
         let work = std::json::find_string_field(adm, "work_id");
         // the tooling of the day reads a Task from its birth: the handed
         // row follows the born row, or waits for the next completion
-        if !self.has_row("task.born", case_id) {
+        if !row_exists(self.journal, "task.born", case_id) {
             let x = self.journal.append(self.journal.revision(), "task.born", case_id, work + ": " + std::json::find_string_field(adm, "objective"));
             if !x.ok { self.hold_rows(case_id, "task.born", x.error); return false; }
         }
-        if self.has_row("task.handed", case_id) || self.has_row("task.transfer_requested", case_id) { self.release_rows(case_id); return true; }
+        if row_exists(self.journal, "task.handed", case_id) || row_exists(self.journal, "task.transfer_requested", case_id) { self.release_rows(case_id); return true; }
         let assignee = std::json::find_string_field(adm, "assignee");
         let theirs = std::json::find_string_field(adm, "to");
         let transfer = len(theirs) > 0;
@@ -2268,7 +2183,7 @@ locus Dna {
     // in force for the obligation now, whether it closes only with
     // evidence, and which owner the assignee belongs to.
     fn handoff_terms(assignee_named: String, obligation: String) -> Handoff {
-        let gone = self.retired(assignee_named);
+        let gone = retirement(self.journal, assignee_named);
         let assignee = if gone.retired { self.admissible(assignee_named) } else { assignee_named };
         let practice = if len(obligation) > 0 { self.practice_in_force("acceptance/" + obligation) } else { "" };
         let practice_text = if len(practice) > 0 { std::json::find_string_field(self.verification.receipts.read(practice[7..len(practice)]), "text") } else { "" };
@@ -2324,7 +2239,7 @@ locus Dna {
         if len(adm) == 0 { return false; }
         if std::json::find_string_field(adm, "owner") != self.ownership.me { return false; }
         let attempt = std::json::find_string_field(adm, "attempt_id");
-        if len(attempt) == 0 || self.has_row("attempt.outcome", attempt) { return false; }
+        if len(attempt) == 0 || row_exists(self.journal, "attempt.outcome", attempt) { return false; }
         let c = case_completion(self.journal, case_id, adm);
         if c.valid {
             let how = "case " + case_id + " " + c.how + " by " + c.by
@@ -2405,8 +2320,8 @@ locus Dna {
     // its candidate is prepared for review, failed when preparation failed,
     // no disposition while it is in flight.
     fn prepared_result(mutation_id: String) -> WorkResult {
-        let d = self.disposition_of(mutation_id);
-        let prepared = len(self.request_of(mutation_id)) > 0 || d == "release" || d == "applied" || d == "retained";
+        let d = mutation_disposition(self.journal, mutation_id);
+        let prepared = len(mutation_review_request(self.journal, mutation_id)) > 0 || d == "release" || d == "applied" || d == "retained";
         if prepared { return WorkResult { disposition: "done", result: mutation_id + ": candidate prepared (" + d + ")", narrative: "candidate prepared for review" }; }
         if d == "failed" || d == "deny" || d == "refused" { return WorkResult { disposition: "failed", result: mutation_id + ": " + d, narrative: "preparation failed: " + self.row_body_of("mutation." + d, mutation_id) }; }
         return WorkResult { };
@@ -2432,7 +2347,7 @@ locus Dna {
             self.report(e, "failed", mutation_id + ": " + verdict, "the candidate was " + (if verdict == "revise" { "sent back" } else { "rejected" }));
             return true;
         }
-        let d = self.disposition_of(mutation_id);
+        let d = mutation_disposition(self.journal, mutation_id);
         if d == "applied" || d == "retained" {
             self.report(e, "done", mutation_id + ": " + d, "the candidate was approved and applied");
             return true;
@@ -2541,7 +2456,7 @@ locus Dna {
         let now = if a.at > 0 { a.at } else { std::time::now() };
         let mut why = "";
         if recorded_attempt_outcome(self.journal, a.attempt_id, self.journal.revision()).ok { why = "attempt " + a.attempt_id + " is settled; no spend is admitted for it"; }
-        else if !self.has_row("effect.relayed", execution_key(a.attempt_id)) { why = "attempt " + a.attempt_id + " was never relayed to a leg; the organism performs it"; }
+        else if !row_exists(self.journal, "effect.relayed", execution_key(a.attempt_id)) { why = "attempt " + a.attempt_id + " was never relayed to a leg; the organism performs it"; }
         else if !claim.present { why = "attempt " + a.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != a.holder || claim.token != a.token { why = "the lease on attempt " + a.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + a.holder + "'s at token " + to_string(a.token) + ": stale"; }
         else if claim.expires <= now { why = "the lease on attempt " + a.attempt_id + " expired at " + to_string(claim.expires); }
@@ -2597,7 +2512,7 @@ locus Dna {
         let mut why = "";
         // only an attempt the leg relay answered is a leg's (GH #1158): one
         // the editor or a person holds settles on their word, never a leg's
-        if !self.has_row("effect.relayed", execution_key(s.attempt_id)) { why = "attempt " + s.attempt_id + " was never relayed to a leg; the organism performs it (" + self.work.identity_of(adm.value.performer_kind) + ")"; }
+        if !row_exists(self.journal, "effect.relayed", execution_key(s.attempt_id)) { why = "attempt " + s.attempt_id + " was never relayed to a leg; the organism performs it (" + self.work.identity_of(adm.value.performer_kind) + ")"; }
         else if !claim.present { why = "attempt " + s.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != s.holder || claim.token != s.token { why = "the lease on attempt " + s.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + s.holder + "'s at token " + to_string(s.token) + ": stale"; }
         else if claim.expires <= now { why = "the lease on attempt " + s.attempt_id + " expired at " + to_string(claim.expires) + "; " + s.holder + " settles nothing on it"; }
@@ -2676,7 +2591,7 @@ locus Dna {
         let r = AttemptReport { scope: scope, attempt_id: attempt_id, result: result };
         AttemptReported <- r;
         let moved = self.journal.refresh();
-        if !self.has_row("attempt.outcome", attempt_id) && !self.reported(attempt_id) { self.pending_reports.push(r); }
+        if !row_exists(self.journal, "attempt.outcome", attempt_id) && !self.reported(attempt_id) { self.pending_reports.push(r); }
     }
     // Whether a report for the attempt is kept, its outcome not yet seen.
     @unbounded
@@ -2695,7 +2610,7 @@ locus Dna {
         let mut i = 0;
         while i < self.pending_reports.len() {
             let r = self.pending_reports.get(i) or AttemptReport { };
-            if len(r.attempt_id) > 0 && self.has_row("attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
+            if len(r.attempt_id) > 0 && row_exists(self.journal, "attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
             i = i + 1;
         }
     }
@@ -2710,7 +2625,7 @@ locus Dna {
         while i < self.pending_reports.len() {
             let r = self.pending_reports.get(i) or AttemptReport { };
             if len(r.attempt_id) > 0 {
-                if self.has_row("attempt.outcome", r.attempt_id) {
+                if row_exists(self.journal, "attempt.outcome", r.attempt_id) {
                     self.pending_reports.set(i, AttemptReport { }) or discard;
                 } else {
                     self.reports_retried = self.reports_retried + 1;
@@ -2957,20 +2872,6 @@ locus Dna {
         let e = self.journal.read(at);
         return e.kind == kind && e.entity == entity && e.body == document;
     }
-    // GH #604 rule 5: whether `who` retired, and to whom their work goes.
-    @unbounded
-    fn retired(who: String) -> RetiredPerson {
-        if len(who) == 0 { return RetiredPerson { }; }
-        let n = self.journal.revision();
-        let mut out = RetiredPerson { };
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: native_json_string(e.body, "to") }; }
-            i = i + 1;
-        }
-        return out;
-    }
     // Who receives work planned for `who`: `who` while they work here,
     // else their successor's successor, and so on, to the first person
     // not retired; "" (unassigned) when the chain ends in a retirement
@@ -2985,7 +2886,7 @@ locus Dna {
         let n = self.journal.revision();
         let mut hops = 0;
         while len(at) > 0 && hops <= n {
-            let r = self.retired(at);
+            let r = retirement(self.journal, at);
             if !r.retired { return at; }
             at = r.successor;
             hops = hops + 1;
@@ -3121,7 +3022,7 @@ locus Dna {
         // GH #682: a request relayed again after a lost publish is answered once
         if self.answered_request(r.request_id) { return; }
         if len(r.name) == 0 || len(r.text) == 0 {
-            let x = self.governance_once("practice.refused", r.request_id, "a practice has a name and a text");
+            let x = append_once(self.journal, "practice.refused", r.request_id, "a practice has a name and a text");
             return;
         }
         // The Body has actually received this request over the nerves.
@@ -3137,7 +3038,7 @@ locus Dna {
             started.string_field("because", r.because);
             started.string_field("supersedes", r.supersedes);
             started.end_object();
-            if !self.governance_once("practice.started", r.request_id, started.result()) { return; }
+            if !append_once(self.journal, "practice.started", r.request_id, started.result()) { return; }
         }
         let digest = self.propose_knowledge(Idea { id: "practice:" + r.name, kind: "practice", text: r.text, author: "org", name: r.name, supersedes: r.supersedes, provenance: "proposed by " + r.by }, "org");
         if len(digest) == 0 {
@@ -3154,7 +3055,7 @@ locus Dna {
         b.string_field("because", r.because);
         b.string_field("supersedes", r.supersedes);
         b.end_object();
-        if !self.governance_once("practice.proposed", r.request_id, b.result()) { return; }
+        if !append_once(self.journal, "practice.proposed", r.request_id, b.result()) { return; }
         self.board.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
     }
     // GH #1143: a schedule asked of the organization, declared or refused,
@@ -3164,7 +3065,7 @@ locus Dna {
     fn on_schedule_requested(r: ScheduleRequest) {
         let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
-        if len(self.governance_event("schedule.answered", r.request_id).kind) > 0 { return; }
+        if len(first_row(self.journal, "schedule.answered", r.request_id).kind) > 0 { return; }
         let denied = self.schedule_authority(r.by, r.convener);
         let why = if len(denied) > 0 { denied } else { self.schedule(Schedule { id: r.schedule, every_ms: r.every_ms, cron: r.cron, definition: r.definition, args: if len(r.args) > 0 { r.args } else { "{}" }, convener: r.convener }) };
         let b = std::json::Builder { };
@@ -3174,7 +3075,7 @@ locus Dna {
         b.string_field("why", why);
         b.string_field("by", r.by);
         b.end_object();
-        let x = self.governance_once("schedule.answered", r.request_id, b.result());
+        let x = append_once(self.journal, "schedule.answered", r.request_id, b.result());
     }
     // Why `by` may not declare a schedule convened by `convener`, "" when
     // they may: they hold the Board, or the convener itself, as memory's
@@ -3203,7 +3104,7 @@ locus Dna {
     fn on_hold_requested(r: HoldRequest) {
         let moved = self.journal.refresh();
         if len(r.request_id) == 0 { return; }
-        if len(self.governance_event("hold.proposed", r.request_id).kind) > 0 || len(self.governance_event("hold.refused", r.request_id).kind) > 0 { return; }
+        if len(first_row(self.journal, "hold.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "hold.refused", r.request_id).kind) > 0 { return; }
         // GH #1123: a position, or an organization a person joins
         let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else if std::str::starts_with(r.position, "organization:") { r.position[13..len(r.position)] } else { "" };
         let nested = std::str::starts_with(r.position, "organization:") && std::str::starts_with(r.holder, "organization:");
@@ -3212,7 +3113,7 @@ locus Dna {
             rb.begin_object();
             rb.string_field("why", "a hold names a position (`position:<name>`) or an organization (`organization:<name>`), a holder with no `|` — a person, or an organization holding a position — and who asks");
             rb.end_object();
-            let x = self.governance_once("hold.refused", r.request_id, rb.result());
+            let x = append_once(self.journal, "hold.refused", r.request_id, rb.result());
             return;
         }
         let edge = std::json::Builder { };
@@ -3258,7 +3159,7 @@ locus Dna {
         b.string_field("name", name + " held by " + r.holder);
         b.int_field("at", std::time::now());
         b.end_object();
-        if !self.governance_once("knowledge.proposed", digest, b.result()) { return; }
+        if !append_once(self.journal, "knowledge.proposed", digest, b.result()) { return; }
         let q = std::json::Builder { };
         q.begin_object();
         q.string_field("question", question);
@@ -3272,7 +3173,7 @@ locus Dna {
         q.string_field("group", "holds");
         q.string_field("name", name + " held by " + r.holder);
         q.end_object();
-        if !self.governance_once("review.requested", "review:" + review_id, q.result()) { return; }
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return; }
         if !self.ensure_knowledge_review(review_id) { return; }
         let a = std::json::Builder { };
         a.begin_object();
@@ -3282,7 +3183,7 @@ locus Dna {
         a.string_field("holder", r.holder);
         a.string_field("by", r.by);
         a.end_object();
-        if !self.governance_once("hold.proposed", r.request_id, a.result()) { return; }
+        if !append_once(self.journal, "hold.proposed", r.request_id, a.result()) { return; }
         self.board.notify("holds", r.by + " proposes " + r.holder + " for " + name + ": the Board's to ratify as " + review_id);
     }
     // A generic knowledge command carries the exact native document it means
@@ -3295,31 +3196,31 @@ locus Dna {
         // The command admission layer rejects it before recording a request.
         if !codec.valid(r) { return; }
         let moved = self.journal.refresh();
-        let proposed = self.governance_event("knowledge.node.proposed", r.request_id);
-        let refused = self.governance_event("knowledge.node.refused", r.request_id);
+        let proposed = first_row(self.journal, "knowledge.node.proposed", r.request_id);
+        let refused = first_row(self.journal, "knowledge.node.refused", r.request_id);
         if len(proposed.kind) > 0 || len(refused.kind) > 0 { return; }
-        let started = self.governance_event("knowledge.node.started", r.request_id);
+        let started = first_row(self.journal, "knowledge.node.started", r.request_id);
         if len(started.kind) > 0 && started.body != codec.started(r) { return; }
         self.bind_owner();
         // A different owner's request remains for that owner's Body. Neither
         // a delivery nor a restored started row grants cross-owner authority.
         if !self.ownership.admits(r.author) || !self.ownership.admits(r.target) { return; }
         if digest_of(codec.document(r)) != r.candidate_digest {
-            let x = self.governance_once("knowledge.node.refused", r.request_id, codec.refused(r, "candidate digest does not match the exact native knowledge document"));
+            let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "candidate digest does not match the exact native knowledge document"));
             return;
         }
         if classify_binding(r.author, r.target) == "lateral" {
-            let x = self.governance_once("knowledge.node.refused", r.request_id, codec.refused(r, "lateral knowledge binding is not permitted"));
+            let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "lateral knowledge binding is not permitted"));
             return;
         }
-        if !self.governance_once("knowledge.node.started", r.request_id, codec.started(r)) { return; }
+        if !append_once(self.journal, "knowledge.node.started", r.request_id, codec.started(r)) { return; }
         let digest = self.propose_knowledge(Idea {
             id: r.request_id, kind: r.kind, name: r.name, text: r.text,
             author: r.author, supersedes: r.supersedes, provenance: "proposed by " + r.by
         }, r.target);
         // An unavailable receipt or append is pending work, not a refusal.
         if digest != r.candidate_digest { return; }
-        if !self.governance_once("knowledge.node.proposed", r.request_id, codec.proposed(r)) { return; }
+        if !append_once(self.journal, "knowledge.node.proposed", r.request_id, codec.proposed(r)) { return; }
         self.board.notify("knowledge", r.by + " proposes " + r.kind + ": the Board's to ratify as " + knowledge_review_id(digest));
     }
     @unbounded
@@ -3328,7 +3229,7 @@ locus Dna {
         let mut i = 0;
         while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
-        let settlement = self.governance_event("review.settled", id);
+        let settlement = first_row(self.journal, "review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
@@ -3344,32 +3245,32 @@ locus Dna {
         if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return; }
         let incoming = codec.fact(self.journal, "knowledge.binding.requested", r.request_id, self.journal.revision());
         if incoming.kind != "knowledge.binding.requested" || codec.started(codec.decode(incoming.body)) != codec.started(r) { return; }
-        if len(self.governance_event("knowledge.binding.proposed", r.request_id).kind) > 0 || len(self.governance_event("knowledge.binding.refused", r.request_id).kind) > 0 { return; }
-        let started = self.governance_event("knowledge.binding.started", r.request_id);
+        if len(first_row(self.journal, "knowledge.binding.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "knowledge.binding.refused", r.request_id).kind) > 0 { return; }
+        let started = first_row(self.journal, "knowledge.binding.started", r.request_id);
         if len(started.kind) > 0 && started.body != codec.started(r) { return; }
         self.bind_owner();
         if !self.ownership.admits(r.author) || !self.ownership.admits(r.target) { return; }
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
         let lateral = classify_binding(r.author, r.target) == "lateral";
         if wrong_digest || lateral {
-            let refused = self.governance_once("knowledge.binding.refused", r.request_id, codec.refused(r,
+            let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r,
                 if wrong_digest { "candidate_mismatch" } else { "lateral_binding" },
                 if wrong_digest { "The exact binding candidate digest does not match." } else { "Lateral knowledge binding is not permitted." }));
             return;
         }
-        if !self.governance_once("knowledge.binding.started", r.request_id, codec.started(r)) { return; }
+        if !append_once(self.journal, "knowledge.binding.started", r.request_id, codec.started(r)) { return; }
         if !codec.visible(self.journal, self.binding_policy_syntax, r.idea_id, self.journal.revision()) || !codec.visible(self.journal, self.binding_policy_syntax, r.candidate_digest, self.journal.revision()) { return; }
         let subject = codec.subject(self.journal, self.verification.receipts, r.idea_id);
         if !subject.ok { return; }
         if !subject.ratified || (r.operation == "dna.knowledge.binding.bind" && !subject.active) {
-            let refused = self.governance_once("knowledge.binding.refused", r.request_id, codec.refused(r, "subject_inactive", "The binding subject is no longer eligible."));
+            let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r, "subject_inactive", "The binding subject is no longer eligible."));
             return;
         }
         let doc = codec.document(r); let raw = self.verification.receipts.store(doc);
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.verification.receipts.read(raw) != doc { return; }
         let id = codec.review_id(r.candidate_digest);
-        if !self.governance_once("review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_binding_review(r) { return; }
-        if !self.governance_once("knowledge.binding.proposed", r.request_id, codec.proposed(r)) { return; }
+        if !append_once(self.journal, "review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_binding_review(r) { return; }
+        if !append_once(self.journal, "knowledge.binding.proposed", r.request_id, codec.proposed(r)) { return; }
         self.board.notify("knowledge", r.by + " proposes a binding change: the Board's to decide as " + id);
     }
     @unbounded
@@ -3391,7 +3292,7 @@ locus Dna {
             if !codec.visible(self.journal, self.binding_policy_syntax, r.idea_id, revision) || !codec.visible(self.journal, self.binding_policy_syntax, r.candidate_digest, revision) { return false; }
             let doc = self.verification.receipts.read(r.candidate_digest[7..len(r.candidate_digest)]);
             if doc != codec.document(r) { return false; }
-            if self.governance_event("review.settled", review_id).body != outcome + " by " + reviewer || self.governance_event("knowledge.binding.proposed", r.request_id).body != codec.proposed(r) { return false; }
+            if first_row(self.journal, "review.settled", review_id).body != outcome + " by " + reviewer || first_row(self.journal, "knowledge.binding.proposed", r.request_id).body != codec.proposed(r) { return false; }
             let basis = codec.basis(self.journal, self.verification.receipts, r, revision);
             let subject = codec.subject(self.journal, self.verification.receipts, r.idea_id);
             if !basis.ok || !subject.ok { return false; }
@@ -3402,7 +3303,7 @@ locus Dna {
             let appended = self.journal.append_exact(revision, kind, r.request_id, body);
             if !appended.ok {
                 let refreshed = self.journal.refresh();
-                if appended.error != "stale_revision" && len(self.governance_event(kind, r.request_id).kind) == 0 { return false; }
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, r.request_id).kind) == 0 { return false; }
             }
             tries = tries + 1;
         }
@@ -3414,7 +3315,7 @@ locus Dna {
         let mut i = 0;
         while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
-        let settlement = self.governance_event("review.settled", id);
+        let settlement = first_row(self.journal, "review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
         let need = self.review_routing(id, "practice-ratify", "", len(settlement.kind) == 0, true);
         if !need.recorded { return false; }
@@ -3430,8 +3331,8 @@ locus Dna {
         if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return; }
         let incoming = codec.fact(self.journal, "knowledge.edge.requested", r.request_id, self.journal.revision());
         if incoming.kind != "knowledge.edge.requested" || codec.started(codec.decode(incoming.body)) != codec.started(r) { return; }
-        if len(self.governance_event("knowledge.edge.proposed", r.request_id).kind) > 0 || len(self.governance_event("knowledge.edge.refused", r.request_id).kind) > 0 { return; }
-        let started = self.governance_event("knowledge.edge.started", r.request_id);
+        if len(first_row(self.journal, "knowledge.edge.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "knowledge.edge.refused", r.request_id).kind) > 0 { return; }
+        let started = first_row(self.journal, "knowledge.edge.started", r.request_id);
         if len(started.kind) > 0 && started.body != codec.started(r) { return; }
         self.bind_owner();
         let endpoints = codec.endpoints(self.journal, self.verification.receipts, r, self.journal.revision());
@@ -3439,23 +3340,23 @@ locus Dna {
             || !self.ownership.admits(endpoints.to_author) || !self.ownership.admits(endpoints.to_target) { return; }
         let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
         if wrong_digest {
-            let refused = self.governance_once("knowledge.edge.refused", r.request_id, codec.refused(r,
+            let refused = append_once(self.journal, "knowledge.edge.refused", r.request_id, codec.refused(r,
                 "candidate_mismatch", "The exact relationship candidate digest does not match."));
             return;
         }
-        if !self.governance_once("knowledge.edge.started", r.request_id, codec.started(r)) { return; }
+        if !append_once(self.journal, "knowledge.edge.started", r.request_id, codec.started(r)) { return; }
         if !codec.visible(self.journal, self.binding_policy_syntax, r, self.journal.revision()) { return; }
         let subject = codec.endpoints(self.journal, self.verification.receipts, r, self.journal.revision());
         if !subject.ok { return; }
         if !subject.ratified || (r.operation == "dna.knowledge.edge.link" && !subject.active) {
-            let refused = self.governance_once("knowledge.edge.refused", r.request_id, codec.refused(r, "subject_inactive", "The relationship endpoints are no longer eligible."));
+            let refused = append_once(self.journal, "knowledge.edge.refused", r.request_id, codec.refused(r, "subject_inactive", "The relationship endpoints are no longer eligible."));
             return;
         }
         let doc = codec.document(r); let raw = self.verification.receipts.store(doc);
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.verification.receipts.read(raw) != doc { return; }
         let id = codec.review_id(r.candidate_digest);
-        if !self.governance_once("review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_edge_review(r) { return; }
-        if !self.governance_once("knowledge.edge.proposed", r.request_id, codec.proposed(r)) { return; }
+        if !append_once(self.journal, "review.requested", "review:" + id, codec.review_request(r)) || !self.ensure_edge_review(r) { return; }
+        if !append_once(self.journal, "knowledge.edge.proposed", r.request_id, codec.proposed(r)) { return; }
         self.board.notify("knowledge", r.by + " proposes a relationship change: the Board's to decide as " + id);
     }
     @unbounded
@@ -3479,7 +3380,7 @@ locus Dna {
             if !codec.visible(self.journal, self.binding_policy_syntax, r, revision) { return false; }
             let doc = self.verification.receipts.read(r.candidate_digest[7..len(r.candidate_digest)]);
             if doc != codec.document(r) { return false; }
-            if self.governance_event("review.settled", review_id).body != outcome + " by " + reviewer || self.governance_event("knowledge.edge.proposed", r.request_id).body != codec.proposed(r) { return false; }
+            if first_row(self.journal, "review.settled", review_id).body != outcome + " by " + reviewer || first_row(self.journal, "knowledge.edge.proposed", r.request_id).body != codec.proposed(r) { return false; }
             let basis = codec.basis(self.journal, self.verification.receipts, self.edge_facts, r, revision);
             let subject = codec.endpoints(self.journal, self.verification.receipts, r, self.journal.revision());
             if !basis.ok || !subject.ok { return false; }
@@ -3490,7 +3391,7 @@ locus Dna {
             let appended = self.journal.append_exact(revision, kind, r.request_id, body);
             if !appended.ok {
                 let refreshed = self.journal.refresh();
-                if appended.error != "stale_revision" && len(self.governance_event(kind, r.request_id).kind) == 0 { return false; }
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, r.request_id).kind) == 0 { return false; }
             }
             tries = tries + 1;
         }
@@ -3594,17 +3495,17 @@ locus Dna {
     @unbounded
     fn resume_organization_source_verdict(command_id: String) -> Bool {
         let decision = review_command_decision(self.journal, command_id);
-        let id = native_json_string(decision, "review_id"); let req = self.request_of(id);
+        let id = native_json_string(decision, "review_id"); let req = mutation_review_request(self.journal, id);
         let request_id = native_json_string(req, "organization_source_request_id");
         if len(request_id) == 0 { return false; }
         let r = self.organization_source_request(request_id); let v = self.organization_source_verdict(r, command_id);
         if len(v.command_id) == 0 { return true; }
-        if !self.governance_once("review.settled", id, v.verdict + " by " + v.reviewer) { return true; }
-        if len(v.comment) > 0 && !self.governance_once("review.reasoned", id, v.comment) { return true; }
+        if !append_once(self.journal, "review.settled", id, v.verdict + " by " + v.reviewer) { return true; }
+        if len(v.comment) > 0 && !append_once(self.journal, "review.reasoned", id, v.comment) { return true; }
         if v.verdict == "approve" { let result = self.apply_reviewed(id, std::time::now()); return true; }
         // The fixed user candidate remains reachable for inspection; revise
         // records the native outcome and never starts a model rewrite.
-        let recorded = self.governance_once("mutation." + (if v.verdict == "revise" { "revise" } else { "rejected" }), id,
+        let recorded = append_once(self.journal, "mutation." + (if v.verdict == "revise" { "revise" } else { "rejected" }), id,
             "review " + v.verdict + " by " + v.reviewer + "; genome and expression untouched");
         return true;
     }
@@ -3612,7 +3513,7 @@ locus Dna {
         if code != "invalid_command" && code != "forbidden" && code != "stale_subject" && code != "organization_worktree_invalid"
             && code != "organization_candidate_invalid" && code != "organization_snapshot_unsupported" && code != "organization_deployment_unsupported" { return "pending: " + code; }
         let codec = OrganizationSourceRequestCodec { };
-        let saved = self.governance_once("mutation.refused", codec.mutation_id(r), codec.apply_refused(r, command_id, candidate, code));
+        let saved = append_once(self.journal, "mutation.refused", codec.mutation_id(r), codec.apply_refused(r, command_id, candidate, code));
         return if saved { "refused: " + code } else { "pending: application refusal acknowledgment" };
     }
     // This is the prepared-source branch of the existing apply_reviewed gate.
@@ -3621,7 +3522,7 @@ locus Dna {
     // again; a successful replay repairs the missing restart handoff.
     @unbounded
     fn apply_organization_source(id: String, now: Int) -> String {
-        let codec = OrganizationSourceRequestCodec { }; let req = self.request_of(id);
+        let codec = OrganizationSourceRequestCodec { }; let req = mutation_review_request(self.journal, id);
         let r = self.organization_source_request(native_json_string(req, "organization_source_request_id"));
         if !codec.valid(r) || codec.mutation_id(r) != id { return "pending: exact prepared source unavailable"; }
         let mut v = Verdict { }; let mut i = 0;
@@ -3682,8 +3583,8 @@ locus Dna {
             let fixed = self.journal.append_exact(self.journal.revision(), "effect.result", key, "ok (exact prepared source application recovered)");
             if !fixed.ok { return "pending: application result acknowledgment"; }
         }
-        if !self.governance_once("mutation.applied", id, candidate) { return "pending: application acknowledgment"; }
-        if !self.governance_once("expression.restart_requested", id, handoff) { return "pending: restart handoff acknowledgment"; }
+        if !append_once(self.journal, "mutation.applied", id, candidate) { return "pending: application acknowledgment"; }
+        if !append_once(self.journal, "expression.restart_requested", id, handoff) { return "pending: restart handoff acknowledgment"; }
         return "applied";
     }
     fn organization_source_refusal(r: OrganizationSourceRequest, stage: String, check: OrganizationSourceCheck) -> Bool {
@@ -3692,14 +3593,14 @@ locus Dna {
         if check.code != "invalid_command" && check.code != "forbidden" && check.code != "stale_subject"
             && check.code != "organization_worktree_invalid" && check.code != "organization_candidate_invalid" && check.code != "organization_snapshot_unsupported" { return false; }
         let codec = OrganizationSourceRequestCodec { };
-        return self.governance_once("organization.source.refused", r.request_id, codec.refused(r, stage, check.code, check.detail));
+        return append_once(self.journal, "organization.source.refused", r.request_id, codec.refused(r, stage, check.code, check.detail));
     }
     @unbounded
     fn on_organization_source_requested(t: OrganizationSourceTrigger) {
         let refreshed = self.journal.refresh(); let codec = OrganizationSourceRequestCodec { };
         let r = codec.admitted(self.journal, self.organization_source_facts, t.request_id);
         if !codec.valid(r) || !self.organization_source_owner(r) { return; }
-        if !self.governance_once("organization.source.started", r.request_id, codec.started(r)) { return; }
+        if !append_once(self.journal, "organization.source.started", r.request_id, codec.started(r)) { return; }
         let resumed = self.resume_organization_source(r.request_id, std::time::now());
     }
     fn organization_source_verified(m: Mutation, report: VerificationReport) -> Bool {
@@ -3738,14 +3639,14 @@ locus Dna {
         if len(reviewed.kind) > 0 {
             let candidate = native_json_string(reviewed.body, "candidate_commit");
             if !self.ensure_organization_source_review(r, candidate) { return false; }
-            return self.governance_once("organization.source.proposed", request_id, codec.proposed(r, candidate));
+            return append_once(self.journal, "organization.source.proposed", request_id, codec.proposed(r, candidate));
         }
         let current = self.organization_source_inputs.current(r);
         if !current.ok { let refused = self.organization_source_refusal(r, "source", current); return false; }
         if !self.review_policy.blocking("organization") {
-            let refused = self.governance_once("organization.source.refused", request_id, codec.refused(r, "review", "blocking_review_required", "Prepared Organization source requires blocking native Review.")); return false;
+            let refused = append_once(self.journal, "organization.source.refused", request_id, codec.refused(r, "review", "blocking_review_required", "Prepared Organization source requires blocking native Review.")); return false;
         }
-        if !self.governance_once("mutation.proposed", id, "prepared organization source " + request_id + " at " + r.source_head) { return false; }
+        if !append_once(self.journal, "mutation.proposed", id, "prepared organization source " + request_id + " at " + r.source_head) { return false; }
         let lease = self.gateway.take(id, "dna", now);
         let opened = self.gateway.open(self.journal, id, r.source_head, lease.token, now);
         if !opened.ok { return false; }
@@ -3790,7 +3691,7 @@ locus Dna {
         let report = self.verification.verify(self.journal, m, checked.base_topology);
         if !self.organization_source_verified(m, report) { return false; }
         if !report.evidence.check_clean || !report.evidence.fleet_clean {
-            return self.governance_once("organization.source.failed", request_id, codec.failed(r, "verification", "candidate_verification_failed", "The exact Organization candidate failed native verification."));
+            return append_once(self.journal, "organization.source.failed", request_id, codec.failed(r, "verification", "candidate_verification_failed", "The exact Organization candidate failed native verification."));
         }
         let after = self.organization_source_inputs.candidate(r, worktree, candidate);
         if !after.ok { let refused = self.organization_source_refusal(r, "candidate", after); return false; }
@@ -3798,7 +3699,7 @@ locus Dna {
         if !destination.ok { let refused = self.organization_source_refusal(r, "source", destination); return false; }
         let disposition = self.review_mutation_mode(m, report, r.by, r);
         if disposition != "review" || !self.ensure_organization_source_review(r, candidate) { return false; }
-        return self.governance_once("organization.source.proposed", request_id, codec.proposed(r, candidate));
+        return append_once(self.journal, "organization.source.proposed", request_id, codec.proposed(r, candidate));
     }
     // Resume only work this Body already received, never new incoming Record
     // requests. The host owns trust verification and trigger redelivery.
@@ -3939,7 +3840,7 @@ locus Dna {
         // an optimizer — the body writes the row, so the asker is in its body.
         // A node that takes an ask over from one that died does not offer it
         // a second time.
-        if !self.has_row("intent.offered", i.id) {
+        if !row_exists(self.journal, "intent.offered", i.id) {
             let offered_body = if i.from == "" { i.outcome } else { i.outcome + " (from " + i.from + ")" };
             let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, offered_body);
             if !born.ok { return "refused: journal " + born.error; }
@@ -4109,7 +4010,7 @@ locus Dna {
             let e = self.journal.read(i);
             if e.kind == "workflow.admitted" && owned_by(self.ownership.me, e.entity) {
                 let a = decode_admission(e.body);
-                if a.ok && len(a.value.parent_task) == 0 && (!self.has_row("workflow.settled", e.entity) || !self.drained(e.entity)) { self.start_execution(e.entity); }
+                if a.ok && len(a.value.parent_task) == 0 && (!row_exists(self.journal, "workflow.settled", e.entity) || !self.drained(e.entity)) { self.start_execution(e.entity); }
             }
             i = i + 1;
         }
@@ -4141,11 +4042,11 @@ locus Dna {
             let e = self.journal.read(i);
             if e.kind == "attempt.admitted" {
                 let a = decode_attempt(e.body);
-                if a.ok && std::str::contains(tasks, " " + a.value.task_id + " ") && !self.has_row("work.settled", a.value.work_id) { return false; }
+                if a.ok && std::str::contains(tasks, " " + a.value.task_id + " ") && !row_exists(self.journal, "work.settled", a.value.work_id) { return false; }
             }
             // an admitted descendant is a responsibility of its own until it
             // settles — before its first attempt, or after its last Work did
-            if e.kind == "workflow.admitted" && e.entity != root && std::str::contains(tasks, " " + e.entity + " ") && !self.has_row("workflow.settled", e.entity) { return false; }
+            if e.kind == "workflow.admitted" && e.entity != root && std::str::contains(tasks, " " + e.entity + " ") && !row_exists(self.journal, "workflow.settled", e.entity) { return false; }
             i = i + 1;
         }
         return true;
@@ -4206,7 +4107,7 @@ locus Dna {
     // Perform one step; whether its outcome was reported.
     @unbounded
     fn perform_step(s: StepAsk) -> Bool {
-        if self.has_row("attempt.outcome", s.attempt_id) || self.reported(s.attempt_id) { return true; }
+        if row_exists(self.journal, "attempt.outcome", s.attempt_id) || self.reported(s.attempt_id) { return true; }
         let task = s.request.task_id;
         let adm = self.recorded_admission(task);
         if !adm.ok { return self.step_report(s, step_failed("no admission for task " + task)); }
@@ -4289,7 +4190,7 @@ locus Dna {
         if len(digest) == 0 { return step_failed("practice-ratify names no proposal"); }
         let review_id = knowledge_review_id(digest);
         if key == "ratify" {
-            let settled = self.governance_event("review.settled", review_id);
+            let settled = first_row(self.journal, "review.settled", review_id);
             let outcome = verdict_outcome(settled.body);
             if len(outcome) == 0 { return step_waits(); }
             let by = verdict_by(settled.body);
@@ -4309,8 +4210,8 @@ locus Dna {
                 if len(why) > 0 { return step_done(digest, "ratified by " + by + "; its schedule was refused (" + why + ")"); }
                 return step_done(digest, "ratified by " + by);
             }
-            if outcome != "approve" && len(self.governance_event("knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
-            let refused = self.governance_event("knowledge.refused", digest);
+            if outcome != "approve" && len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 { return step_failed("declined: " + settled.body); }
+            let refused = first_row(self.journal, "knowledge.refused", digest);
             if len(refused.kind) > 0 { return step_failed("not ratified: " + std::json::find_string_field(refused.body, "why")); }
             return step_waits();
         }
@@ -4318,7 +4219,7 @@ locus Dna {
         // binding: the package for the target at memory's head, and whether
         // it carries the proposal — the row it was fenced to
         if key == "hat" {
-            let read = self.governance_event("practice.read", digest);
+            let read = first_row(self.journal, "practice.read", digest);
             if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
             // no memory named: the hat is memory's to read, and nothing will
             // come to wait for — the chain ends saying so. Memory named but
@@ -4330,7 +4231,7 @@ locus Dna {
             // behind the record's knowledge, the step waits and is performed
             // again at the tick
             if !self.memory_ready { return step_waits(); }
-            let target = std::json::find_string_field(self.governance_event("knowledge.proposed", digest).body, "target");
+            let target = std::json::find_string_field(first_row(self.journal, "knowledge.proposed", digest).body, "target");
             let pkg = self.knowledge_client.package_for(target, "");
             if len(pkg.error) > 0 { return step_waits(); }
             let b = std::json::Builder { };
@@ -4343,7 +4244,7 @@ locus Dna {
             b.bool_field("included", std::str::contains(" " + pkg.included + " ", " " + digest + " "));
             b.string_field("task", task);
             b.end_object();
-            if !self.governance_once("practice.read", digest, b.result()) { return step_waits(); }
+            if !append_once(self.journal, "practice.read", digest, b.result()) { return step_waits(); }
             return step_done(pkg.digest, "the hat for " + target + " at row " + to_string(pkg.revision));
         }
         return step_failed("practice-ratify has no step `" + key + "`");
@@ -4813,7 +4714,7 @@ locus Dna {
             if native_json_string(accepted.body, "owner") != me || native_json_string(accepted.body, "from") != from || native_json_string(accepted.body, "assignee") != assignee { return false; }
             // Acceptance pins this recipient. A retirement cannot silently
             // replace it with a successor or another owner's member.
-            if self.retired(assignee).retired || self.ownership.owner_of_person(assignee) != me || self.ownership.owner_of_person(by) != me { return false; }
+            if retirement(self.journal, assignee).retired || self.ownership.owner_of_person(assignee) != me || self.ownership.owner_of_person(by) != me { return false; }
             let hb = std::json::Builder { };
             hb.begin_object();
             hb.string_field("work", "");
@@ -5426,7 +5327,7 @@ locus Dna {
         let d = self.boundary.assess(m.change_class, r.magnitude, r.evidence);
         let name = disposition_name(d);
         if prepared {
-            if !self.governance_once("mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit) { return "pending"; }
+            if !append_once(self.journal, "mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit) { return "pending"; }
         } else { let x = self.journal.append(self.journal.revision(), "mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit); }
         // Outside the grant nobody below the Board decides (escalate);
         // inside it, the policy names the authority.
@@ -5484,7 +5385,7 @@ locus Dna {
         }
         b.end_object();
         if prepared {
-            if !self.governance_once("review.requested", "review:" + m.id, b.result()) || !self.ensure_organization_source_review(source, m.candidate_commit) { return "pending"; }
+            if !append_once(self.journal, "review.requested", "review:" + m.id, b.result()) || !self.ensure_organization_source_review(source, m.candidate_commit) { return "pending"; }
         } else { let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result()); }
         self.board.notify("review", (if len(need.signers) > 0 { "signers " + approver_owners(need.signers) } else { authority }) + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
         // GH #583 M1, #1131: a model-backed position decides only on a spend
@@ -5581,7 +5482,7 @@ locus Dna {
                     // the same locus under the same rules (the fourth
                     // review round's finding 3: with no Review, the
                     // second approval met nothing at all).
-                    let d = self.disposition_of(id);
+                    let d = mutation_disposition(self.journal, id);
                     if d != "applied" && d != "retained" && d != "rejected" && d != "rolled_back" {
                         let need = self.review_routing(id, "change-deliver", "", false, true);
                         Review {
@@ -5653,7 +5554,7 @@ locus Dna {
                     severity = concern_severity(o.body);
                 }
                 if o.kind == "concern.proposed" && o.entity == source { proposed = true; }
-                if o.kind == "workflow.admitted" && std::json::find_string_field(o.body, "definition") == "concern-escalate" && std::json::find_string_field(std::json::find_string_field(o.body, "inputs"), "source") == source && !self.has_row("workflow.settled", o.entity) { open = true; }
+                if o.kind == "workflow.admitted" && std::json::find_string_field(o.body, "definition") == "concern-escalate" && std::json::find_string_field(std::json::find_string_field(o.body, "inputs"), "source") == source && !row_exists(self.journal, "workflow.settled", o.entity) { open = true; }
                 k = k + 1;
             }
             if seen >= self.concern_threshold && !proposed && !open {
@@ -5692,7 +5593,7 @@ locus Dna {
                     if effect_family(key) == "apply" {
                         let cand = effect_subject(key);
                         let head = self.gateway.head();
-                        let req = self.request_of(e.body);
+                        let req = mutation_review_request(self.journal, e.body);
                         if len(native_json_string(req, "organization_source_request_id")) == 0 {
                             verdict = if head == cand { "ok (reconciled after a restart: the genome is at the candidate)" } else { "unknown (reconciled after a restart: the genome is at " + head + ", not the candidate)" };
                         }
@@ -5788,7 +5689,7 @@ locus Dna {
             // its first: its request row (card 14) — or, from before that
             // row, its proposal, when no request names it. The summary row
             // is compatibility: its absence is not the absence of progress.
-            let first = e.kind == "mutation.requested" || (e.kind == "mutation.proposed" && !self.has_row("mutation.requested", e.entity));
+            let first = e.kind == "mutation.requested" || (e.kind == "mutation.proposed" && !row_exists(self.journal, "mutation.requested", e.entity));
             if first {
                 // Exact prepared source has its own resumable stages. Only a
                 // proven admitted request and prior matching started pin can
@@ -5869,16 +5770,6 @@ locus Dna {
         b.string_field("holder", me);
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "claim.released", key, b.result());
-    }
-    fn has_row(kind: String, entity: String) -> Bool {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == kind && e.entity == entity { return true; }
-            i = i + 1;
-        }
-        return false;
     }
     fn status() -> String {
         let b = std::json::Builder { };
