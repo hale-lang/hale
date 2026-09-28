@@ -422,9 +422,33 @@ fn __metrics_render_type_line(ns: String, name: String, kind: String) -> String 
     return "# TYPE " + __metrics_full_name(ns, name) + " " + kind + "\n";
 }
 
+// A sample's value as the exposition carries it, exactly. `to_string`
+// on a Float is %g — six significant digits — so a gauge of epoch
+// seconds (1790558458) read as 1.79056e+09 and a counter past 999999
+// was rounded. An integral value below 2^53 is its integer; any other
+// is fixed-point to nine decimals with its trailing zeros cut, and one
+// too small for that keeps its exponent form rather than read as 0; NaN
+// and the infinities are the exposition's own spellings.
+fn __metrics_format_value(v: Float) -> String {
+    if std::math::is_nan(v) { return "NaN"; }
+    if v == std::math::inf() { return "+Inf"; }
+    if v == 0.0 - std::math::inf() { return "-Inf"; }
+    if v < 9007199254740992.0 && v > -9007199254740992.0 {
+        let whole = std::math::trunc(v);
+        if std::math::int_to_float(whole) == v { return to_string(whole); }
+    }
+    let fixed = f"{v:.9}";
+    let mut end = len(fixed);
+    while end > 0 && fixed[(end - 1)..end] == "0" { end = end - 1; }
+    if end > 0 && fixed[(end - 1)..end] == "." { end = end - 1; }
+    let cut = fixed[0..end];
+    if cut == "0" || cut == "-0" { return to_string(v); }
+    return cut;
+}
+
 fn __metrics_render_sample(ns: String, name: String, labels: String, value: Float) -> String {
     return __metrics_full_name(ns, name) + __metrics_render_labels(labels)
-        + " " + to_string(value) + "\n";
+        + " " + __metrics_format_value(value) + "\n";
 }
 
 fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> String {
@@ -434,7 +458,7 @@ fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> Strin
     let b = std::bytes::BytesBuilder { initial_cap: 1024 };
     let mut i = 0;
     while i < nb {
-        let bound = to_string(at(h.bounds, i) or 0.0);
+        let bound = __metrics_format_value(at(h.bounds, i) or 0.0);
         let cnt = at(h.counts, i) or 0;
         let lab = __metrics_render_labels_le(h.labels, bound);
         b.append(std::bytes::from_string(full + "_bucket" + lab + " " + to_string(cnt) + "\n"));
@@ -446,7 +470,7 @@ fn __metrics_render_histogram(ns: String, h: __StdMetricsHistogramData) -> Strin
         b.append(std::bytes::from_string(full + "_bucket" + lab_inf + " " + to_string(inf_cnt) + "\n"));
     }
     let lab_total = __metrics_render_labels(h.labels);
-    b.append(std::bytes::from_string(full + "_sum" + lab_total + " " + to_string(h.sum) + "\n"));
+    b.append(std::bytes::from_string(full + "_sum" + lab_total + " " + __metrics_format_value(h.sum) + "\n"));
     b.append(std::bytes::from_string(full + "_count" + lab_total + " " + to_string(h.count) + "\n"));
     return std::str::from_bytes(b.finish());
 }

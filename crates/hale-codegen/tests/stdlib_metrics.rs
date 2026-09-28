@@ -80,6 +80,49 @@ fn registry_renders_counter_gauge_histogram() {
 }
 
 #[test]
+fn render_keeps_every_digit() {
+    // GH #988: a sample rendered through `to_string(Float)` kept six
+    // significant digits, so a gauge of epoch seconds read 1.79056e+09 and
+    // a counter past 999999 was rounded. Every value is exact now.
+    let src = r#"
+        fn main() {
+            let reg = std::metrics::Registry { namespace: "app" };
+            std::metrics::gauge(reg, "since", std::metrics::labels_empty()).set(std::math::int_to_float(1790558458));
+            std::metrics::counter(reg, "big", std::metrics::labels_empty()).add(1234567.0);
+            std::metrics::gauge(reg, "frac", std::metrics::labels_empty()).set(std::math::int_to_float(1790558458) + 0.25);
+            std::metrics::gauge(reg, "small", std::metrics::labels_empty()).set(0.005);
+            std::metrics::gauge(reg, "neg", std::metrics::labels_empty()).set(-3.75);
+            std::metrics::gauge(reg, "missing", std::metrics::labels_empty()).set(std::math::nan());
+            std::metrics::gauge(reg, "tiny", std::metrics::labels_empty()).set(0.0000000001);
+            let lat = std::metrics::histogram(reg, "wait", "0.25 5000000.0", std::metrics::labels_empty());
+            lat.observe(2500000.0);
+            print(reg.render());
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_metrics_digits_{}", std::process::id()));
+    build_executable(&program, &bin).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "exit: {:?}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for want in [
+        "app_since 1790558458\n",
+        "app_big 1234567\n",
+        "app_frac 1790558458.25\n",
+        "app_small 0.005\n",
+        "app_neg -3.75\n",
+        "app_missing NaN\n",
+        "app_tiny 1e-10\n",
+        "app_wait_bucket{le=\"5000000\"} 1\n",
+        "app_wait_sum 2500000\n",
+    ] {
+        assert!(text.contains(want), "want {want:?} in:\n{text}");
+    }
+    assert!(!text.contains("e+"), "no sample in exponent form:\n{text}");
+}
+
+#[test]
 fn endpoint_scrapes_through_server_over_tcp() {
     let port = pick_free_port();
     let src = format!(
