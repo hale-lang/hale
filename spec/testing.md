@@ -199,6 +199,19 @@ tests by suffix (`_test.hl`) regardless of location.
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` runs
 Layer 3's single-language half.
 
+`hale test` builds every test binary into one **private per-run
+scratch directory** — a fresh directory under the temp directory,
+mode 0700, created so that a name someone else already holds is
+refused, not adopted — and removes it, with the objects codegen wrote
+beside each binary, when the run ends on any path: all pass, a failure,
+a test that does not compile. Nothing is written next to the sources.
+`hale run`, `hale replay` and `hale bench` build the same way, into a
+directory of their own. A binary that is to be kept is `hale build -o
+<path>` (spec/projects.md). This replaces predictable names in the
+shared temp directory (`hale_test_<pid>_<n>_<hash>`, `hale_run_<hash>`,
+`hale_replay_<hash>`, `hale_bench_<hash>`); a tool that looked for one
+of those paths while a test ran no longer finds it.
+
 `hale test` compiles and runs its files **in parallel**: up to N at
 once, N being `-j N` / `--jobs N` if given, else `HALE_TEST_JOBS`,
 else the number of available cores; `-j 1` runs them one after

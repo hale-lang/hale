@@ -2079,6 +2079,7 @@ fn run_bench_file(
     fs::write(&tmp_src, &augmented)
         .map_err(|e| format!("write driver: {}", e))?;
 
+    let bench_scratch = RunScratch::new("bench")?;
     let compile = (|| -> Result<PathBuf, String> {
         let (prog, renames, sources, file_bases, ctx) =
             match parse_with_imports(&tmp_src) {
@@ -2116,11 +2117,7 @@ fn run_bench_file(
             .into_iter()
             .map(|(base, p, len)| (base, relabel(p), len))
             .collect();
-        let mut bin = std::env::temp_dir();
-        let mut h = DefaultHasher::new();
-        h.write(entry.display().to_string().as_bytes());
-        h.write_u32(std::process::id());
-        bin.push(format!("hale_bench_{:016x}", h.finish()));
+        let bin = bench_scratch.path("bench");
         let options = collect_ffi_from_imports(
             &ctx.imports,
             &ctx.entry_dir,
@@ -2140,7 +2137,6 @@ fn run_bench_file(
     let out = std::process::Command::new(&bin)
         .output()
         .map_err(|e| format!("run: {}", e));
-    let _ = fs::remove_file(&bin);
     let out = out?;
     if !out.status.success() {
         return Err(format!(
@@ -7205,6 +7201,70 @@ fn wait_passing_signals(
     status
 }
 
+/// A private directory for what one `hale run` / `test` / `replay` /
+/// `bench` compiles: the binary, the object files codegen writes
+/// beside it, a replay's status and verification files. Made under
+/// the temp directory with mode 0700 and a name nobody else can have
+/// picked (`create_dir` fails on an existing path, symlink included,
+/// and the name is retried), and removed with everything in it when
+/// the guard drops — on every return, not only the one that
+/// remembered to `remove_file`.
+///
+/// It replaces `temp_dir()/hale_run_<hash>` and its siblings: a name
+/// derived from the program, in a directory every user of the box
+/// can write to, is a path another process can pre-create or race.
+struct RunScratch {
+    dir: PathBuf,
+}
+
+impl RunScratch {
+    fn new(tag: &str) -> Result<RunScratch, String> {
+        use std::os::unix::fs::DirBuilderExt;
+        static NONCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let base = std::env::temp_dir();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let mut last = None;
+        for _ in 0..32 {
+            let n = NONCE.fetch_add(1, Ordering::Relaxed);
+            let dir = base.join(format!(
+                "hale-{tag}-{}-{n}-{stamp:08x}",
+                std::process::id()
+            ));
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => return Ok(RunScratch { dir }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last = Some(e);
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "cannot make a scratch directory under {}: {e}",
+                        base.display()
+                    ));
+                }
+            }
+        }
+        Err(format!(
+            "cannot make a scratch directory under {}: {}",
+            base.display(),
+            last.map(|e| e.to_string()).unwrap_or_default()
+        ))
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+}
+
+impl Drop for RunScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 pub(crate) fn dies_with_us(cmd: &mut std::process::Command) {
     #[cfg(target_os = "linux")]
     {
@@ -7255,11 +7315,14 @@ fn compile_and_exec(
     // said.
     options: hale_codegen::BuildOptions,
 ) -> ExitCode {
-    let mut bin = std::env::temp_dir();
-    let mut h = DefaultHasher::new();
-    h.write_usize(program.items.len());
-    h.write_u32(std::process::id());
-    bin.push(format!("hale_run_{:016x}", h.finish()));
+    let scratch = match RunScratch::new("run") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hale run: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let bin = scratch.path("program");
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
         exec_digest: Some(exec_digest),
@@ -7284,7 +7347,6 @@ fn compile_and_exec(
     // that cannot see its output end — GH #905.
     dies_with_us(&mut cmd);
     let status = wait_passing_signals(&mut cmd);
-    let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {
             // GH #577: a program killed by a signal says so — a segfault
@@ -7485,7 +7547,10 @@ fn collect_test_files(target: &Path, out: &mut Vec<PathBuf>) -> Result<(), Strin
 /// the `Err` message. Mirrors `run_program`'s single-file pipeline
 /// (parse_with_imports → check_bundle_opts → build) but stops at
 /// the binary so the caller can `.output()`-capture the run.
-fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
+fn compile_test_binary(
+    entry: &Path,
+    scratch: &RunScratch,
+) -> Result<PathBuf, String> {
     let (program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
         Ok(x) => x,
         Err(errors) => {
@@ -7526,15 +7591,9 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     static TEST_BIN_NONCE: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
     let nonce = TEST_BIN_NONCE.fetch_add(1, Ordering::Relaxed);
-    let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
-    bin.push(format!(
-        "hale_test_{}_{}_{:016x}",
-        std::process::id(),
-        nonce,
-        h.finish()
-    ));
+    let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
     // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
     // pond FRICTION "hale test cannot link @ffi libs"): a test that
     // imports an FFI-bearing lib (sqlite et al.) needs the lib's
@@ -7597,9 +7656,30 @@ const TEST_WORKER_STACK: usize = 256 << 20;
 /// `jobs == 1` runs on the calling thread, one file after another —
 /// exactly the loop this replaced.
 fn run_test_files(files: &[PathBuf], jobs: usize) -> Vec<TestOutcome> {
+    // One private directory for the whole run: every test binary, and
+    // the objects codegen writes beside it, live in it and go with it
+    // when it drops — after the last worker is done, on every path out.
+    let scratch = match RunScratch::new("test") {
+        Ok(s) => s,
+        Err(e) => {
+            return files
+                .iter()
+                .map(|f| TestOutcome {
+                    file: f.to_path_buf(),
+                    passed: false,
+                    message: Some(e.clone()),
+                    elapsed_ms: 0,
+                })
+                .collect();
+        }
+    };
+    let scratch = &scratch;
     let jobs = jobs.min(files.len()).max(1);
     if jobs == 1 {
-        return files.iter().map(|f| run_one_test_file(f)).collect();
+        return files
+            .iter()
+            .map(|f| run_one_test_file(f, scratch))
+            .collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<TestOutcome>>> =
@@ -7612,7 +7692,7 @@ fn run_test_files(files: &[PathBuf], jobs: usize) -> Vec<TestOutcome> {
                 .spawn_scoped(s, || loop {
                     let idx = next.fetch_add(1, Ordering::Relaxed);
                     let Some(f) = files.get(idx) else { break };
-                    let outcome = run_one_test_file(f);
+                    let outcome = run_one_test_file(f, scratch);
                     *slots[idx].lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(outcome);
                 })
@@ -7697,9 +7777,9 @@ fn sweep_dead_test_vaults(root: &Path) {
 
 /// Compile and run one `_test.hl` file and judge it by the
 /// `spec/testing.md` contract.
-fn run_one_test_file(f: &Path) -> TestOutcome {
+fn run_one_test_file(f: &Path, scratch: &RunScratch) -> TestOutcome {
     let start = std::time::Instant::now();
-    let (passed, message) = match compile_test_binary(f) {
+    let (passed, message) = match compile_test_binary(f, scratch) {
         Err(diag) => (false, Some(diag)),
         Ok(bin) => {
             let mut cmd = std::process::Command::new(&bin);
@@ -8390,11 +8470,14 @@ fn run_replay(args: &[String]) -> ExitCode {
         .canonicalize()
         .unwrap_or_else(|_| rec_path.clone());
 
-    let mut bin = std::env::temp_dir();
-    let mut h = DefaultHasher::new();
-    h.write_usize(program.items.len());
-    h.write_u32(std::process::id());
-    bin.push(format!("hale_replay_{:016x}", h.finish()));
+    let scratch = match RunScratch::new("replay") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hale replay: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let bin = scratch.path("program");
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
         exec_digest: Some(digest),
@@ -8409,27 +8492,14 @@ fn run_replay(args: &[String]) -> ExitCode {
     }
 
     let verify_path = if diff {
-        let mut v = std::env::temp_dir();
-        v.push(format!(
-            "hale_replay_verify_{}_{:016x}.halerec",
-            std::process::id(),
-            model_hash
-        ));
-        let _ = std::fs::remove_file(&v);
-        Some(v)
+        Some(scratch.path("verify.halerec"))
     } else {
         None
     };
 
-    let mut status_path = std::env::temp_dir();
-    status_path.push(format!(
-        "hale_replay_status_{}_{:016x}",
-        std::process::id(),
-        model_hash
-    ));
-    let _ = std::fs::remove_file(&status_path);
+    let status_path = scratch.path("status");
     // Pre-create 0600 so the child's fopen("w") inherits restrictive
-    // permissions rather than racing a predictable /tmp name.
+    // permissions whoever else can list the scratch directory.
     {
         use std::os::unix::fs::OpenOptionsExt;
         let _ = std::fs::OpenOptions::new()
@@ -8508,7 +8578,6 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let status = cmd.status();
-    let _ = std::fs::remove_file(&bin);
     let code = match status {
         Ok(s) => s.code().unwrap_or(1).clamp(0, 255) as u8,
         Err(e) => {
