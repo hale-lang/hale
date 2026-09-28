@@ -63,7 +63,7 @@ locus Cases {
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
     }
     // The binding's own HTTP transport (GH #1135): one line of the api
-    // wire per POST under a bearer, one port past the reads; in a
+    // wire per POST under a bearer, on the port the launcher gave it; in a
     // fixture's trusted-local session the bearer is the head's launch
     // token, which names the head's own account. The face this head
     // serves relays its session's line there under that token, past the
@@ -71,7 +71,7 @@ locus Cases {
     fn forwarding() {
         // with the shell: the launch token opens it
         let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.prepare_web(); f.start();
-        let path = "http://127.0.0.1:" + to_string(f.port + 1) + "/";
+        let path = "http://127.0.0.1:" + to_string(f.commands_port) + "/";
         let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
         let described = bearer(path, "{\"describe\":true}", token);
         std::test::assert_eq_int(described.status, 200, described.body);

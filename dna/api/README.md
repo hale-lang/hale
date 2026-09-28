@@ -361,7 +361,12 @@ session may send is its describe slice.
 
 **HTTP is the binding's own transport** (GH #1135; `bearer.hl`). The
 head's entry names it — `http("127.0.0.1", self.http_port, principals:
-self.bearer)`, one port past the reads — and no program forwards a line.
+self.bearer)`, on the port its launcher gives it in
+`HALE_DNA_COMMANDS_PORT` (never derived from the reads' port; unset, the
+head serves no HTTP transport, `api.http` is `""` and a relayed command
+answers 503 `commands_unavailable`) — and no program forwards a line.
+The project head gives its API child the port `start.sh --commands-port`
+names (8795 by default); a fixture takes one from its free-port helper.
 `POST` there takes one line of the same wire (`{"call": "PracticePropose",
 "payload": {...}}`, `{"describe": true}`, `{"call": "CommandLookup", ...}`
 for recovery) under `Authorization: Bearer <token>`, and answers the

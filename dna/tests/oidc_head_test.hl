@@ -108,8 +108,10 @@ main locus App {
 
         // ---- the head, under OIDC: discovery and the JWKS read at start
         let port = dna::free_port(81);
+        // GH #1135: the binding's HTTP transport, a free port of its own
+        let commands_port = dna::free_port(82);
         let api = "http://127.0.0.1:" + to_string(port);
-        let argv = "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + repo + "\n" + head_binary() + "\n" + to_string(port);
+        let argv = "sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_COMMANDS_PORT=" + to_string(commands_port) + " HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" && unset HALE_DNA_TRUSTED_LOCAL HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE && exec \"$2\" \"$1\" \"$3\" >\"$1/.hale/head.log\" 2>&1\nsh\n" + repo + "\n" + head_binary() + "\n" + to_string(port);
         let child = std::process::spawn(argv) or std::process::Child { };
         self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
@@ -127,7 +129,7 @@ main locus App {
         }
         std::test::assert(up, "the head came up: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
         let head_row = git.head("journal").id;
-        let commands = "http://127.0.0.1:" + to_string(port + 1) + "/";
+        let commands = "http://127.0.0.1:" + to_string(commands_port) + "/";
         // the claim's name, as the head describes it to alice
         let alice_token = oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", 600);
         let described = post(commands, "{\"describe\":true}", alice_token);

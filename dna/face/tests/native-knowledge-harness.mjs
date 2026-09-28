@@ -22,7 +22,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, memoryOwner, launchToken } from './environment.mjs';
 import { seatRecord } from './record-seats.mjs';
-import { headPort, wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
+import { freePort, wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
 
 const webroot = fileURLToPath(new URL('../web', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -62,7 +62,9 @@ export async function startKnowledgeService(options = {}) {
   // The actor holds a seat: a Knowledge change is gated `position`.
   seatRecord(root, env, actor, options.seats || ['editor']);
   const refs = JSON.parse(await readFile(resolve(root, 'fixture.json'), 'utf8'));
-  const apiPort = options.port || await headPort();
+  const apiPort = options.port || await freePort();
+  // GH #1135: the api binding's HTTP transport takes a port of its own
+  env.HALE_DNA_COMMANDS_PORT = String(await freePort());
   const origin = `http://127.0.0.1:${apiPort}`;
   const apiPath = `/api/hale/v1/applications/${refs.application}`;
   const policyPath = resolve(root, 'knowledge-authority.json');

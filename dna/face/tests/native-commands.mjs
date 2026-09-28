@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
-import { headPort, settle, wireLine } from './command-wire.mjs';
+import { freePort, settle, wireLine } from './command-wire.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 import { scaffoldProject, hostReady, organizationReady, hostChildren, running, headMemory } from './native-command-harness.mjs';
 
@@ -211,8 +211,10 @@ function actAs(name, seat) {
 async function stopHost(kill = false) { await stop(host, kill); await reapHostChildren(); }
 async function startApi(name = 'alice') {
   actor = name; actAs(name, name !== 'mallory');
-  const port = await headPort(); origin = `http://127.0.0.1:${port}`;
-  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn });
+  const port = await freePort(); origin = `http://127.0.0.1:${port}`;
+  // GH #1135: the api binding's HTTP transport takes a port of its own
+  const commandsPort = await freePort();
+  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMANDS_PORT: String(commandsPort) });
   await until('command API startup', async () => {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }
     catch (error) { if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET') return null; throw error; }

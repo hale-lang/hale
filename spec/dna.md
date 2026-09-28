@@ -1036,7 +1036,10 @@ repository:
   `Authorization: Bearer`, checked the same way without a nonce
   (`bearer_refusal`). A command reaches the head's api binding over the
   binding's own HTTP transport (GH #1135; `spec/semantics.md` § "The
-  HTTP transport"), one port past the head's reads, as a POSTed line of
+  HTTP transport"), on the port the head's launcher gives it
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
+  given, none served, and a relayed command is `commands_unavailable`),
+  as a POSTed line of
   the wire under the caller's bearer; no program forwards a line. The
   head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
   token as above and names the principal `oidc:<subject>`; the

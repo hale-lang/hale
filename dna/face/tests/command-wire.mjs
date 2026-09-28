@@ -161,23 +161,13 @@ export function settle(status, json) {
   return { status, code: '', reply: json.value, receipt: receiptView(json.value.receipt) };
 }
 
-// A loopback port for a head whose successor is free too: the head's api
-// binding serves its HTTP transport one port past the reads (GH #1135),
-// and a port it cannot hold stops the head at start.
-export async function headPort() {
-  const listen = port => new Promise(resolve => {
-    const server = net.createServer();
-    server.once('error', () => resolve(null));
-    server.listen(port, '127.0.0.1', () => resolve(server));
-  });
-  const close = server => new Promise(resolve => server.close(resolve));
-  for (let attempt = 0; attempt < 64; attempt += 1) {
-    const first = await listen(0);
-    if (!first) continue;
-    const port = first.address().port;
-    const next = port < 65535 ? await listen(port + 1) : null;
-    await close(first);
-    if (next) { await close(next); return port; }
-  }
-  throw new Error('no loopback port with a free successor for the head');
+// A free loopback port, bound and closed. A head's reads and its api
+// binding's commands (GH #1135, `HALE_DNA_COMMANDS_PORT`) each take one
+// of their own; neither is derived from the other.
+export async function freePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
 }

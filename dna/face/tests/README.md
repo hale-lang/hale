@@ -161,12 +161,12 @@ role}` with the `CommandReply` (`ok`, `code`, `application_id`, `head`,
 `revision`, the typed `receipt`) as `value`, or `{ok:false, refusal}`. A
 recorded-but-unsettled command is a 200 whose `receipt.state` says so; a
 provider's refusal is `value.ok:false` with its `code`. `/capabilities` names the
-route as `api.http` (in every session, OIDC included); what this session may send is the
+route as `api.http` (`""` when the head has no commands port); what this session may send is the
 `{"describe": true}` slice, fetched once after the capabilities, and a command is
 offered exactly when its call is in it. The describe line is a read, so lanes
 that watch for writes use `command-wire.mjs`'s `isWrite` (a lookup is a read
-too). A head's port comes from `headPort()`, which leaves its successor free for
-the binding's transport.
+too). A head's reads and its binding's commands (`HALE_DNA_COMMANDS_PORT`) each
+take a port of their own from `freePort()`; neither is derived from the other.
 
 The session's caller is the launch token's account, the head's own uid, which
 the record maps to a person

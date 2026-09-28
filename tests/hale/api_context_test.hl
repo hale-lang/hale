@@ -258,4 +258,23 @@ fn main() {
     q.stop();
     std::io::fs::unlink(sock2) or discard;
     std::io::fs::unlink(src2) or discard;
+
+    // The port the entry names is held by someone else: the program does
+    // not start without its transport — a relay would otherwise hand a
+    // bearer to whoever holds the port — and says which port it is.
+    let mut held_port = 30000 + (std::process::pid() * 13 + 7) % 17000;
+    let mut holder = std::io::tcp::__listen_socket("127.0.0.1", held_port);
+    while holder < 0 { held_port = held_port + 1; holder = std::io::tcp::__listen_socket("127.0.0.1", held_port); }
+    let sock3 = "/tmp/hale-ctx-" + tag + "-c.sock";
+    let src3 = std::io::fs::mktemp("/tmp/hale-1108c-", ".hl") or "";
+    std::io::fs::write_file(src3, app_source(sock3, held_port, true)) or discard;
+    let built3 = run_tool(hale + "\nbuild\n" + src3);
+    std::test::assert_eq_int(built3.code, 0, "the app builds: " + built3.stderr);
+    let refused = run_tool("timeout\n20\n" + src3[0..(len(src3) - 3)]);
+    std::io::tcp::__close_fd(holder);
+    std::test::assert(refused.code != 0 && refused.code != 124, "a held transport port stops the program at start: exit " + to_string(refused.code));
+    std::test::assert(std::str::contains(refused.stderr, "could not listen on 127.0.0.1:" + to_string(held_port)), "and it names the port: " + refused.stderr);
+    std::io::fs::unlink(sock3) or discard;
+    std::io::fs::unlink(src3) or discard;
+    std::io::fs::unlink(src3[0..(len(src3) - 3)]) or discard;
 }

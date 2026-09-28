@@ -447,6 +447,10 @@ test fixture's mode, never a project's.
 `dna/api/project_service`: one loopback process the browser talks
 to, which serves the face, keeps a registry of your projects, and
 proxies the Record reads and commands to a per-project API child.
+The head listens on 8792, the API child's reads on 8793, the stub
+provider on 8794 and the API child's commands, its api binding's own
+HTTP transport, on 8795 (`--port`, `--api-port`, `--oidc-port`,
+`--commands-port`).
 Given no project it starts detached, and the browser's Projects
 workspace is where you begin: create a project (`hale dna new`,
 run for you), initialize an existing checkout (`hale dna init`), or

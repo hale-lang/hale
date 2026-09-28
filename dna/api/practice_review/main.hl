@@ -41,7 +41,8 @@ main locus PracticeReviewHead {
 
 // The head, up: the reads over HTTP with the socket named in its
 // capabilities, the commands on the socket and on the binding's own HTTP
-// transport (GH #1135), one port past the reads. Under OIDC
+// transport (GH #1135), on the port its launcher gives it
+// (`HALE_DNA_COMMANDS_PORT`). Under OIDC
 // (GH #989) a caller is a verified ID token's subject — a bearer, or the
 // session a sign-in set — and its person; trusted-local is a fixture's
 // mode (HALE_DNA_TRUSTED_LOCAL=1) alone.
@@ -56,12 +57,12 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
         println("hale dna api: http://127.0.0.1:", port, " (OIDC: ", auth.issuer, "; composed command provider)");
         PracticeReviewHead {
             root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
-            http_port: api::commands_port(port), bearer: api::OidcBearer { auth: api::oidc_ui(record, port, "hale dna practice-review api") },
+            http_port: api::commands_port(), bearer: api::OidcBearer { auth: api::oidc_ui(record, port, "hale dna practice-review api") },
             commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
             srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
                 root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
                 definitions: definitions, knowledge: api::LocalKnowledge { root: root },
-                people: commands, socket: socket, commands_port: api::commands_port(port), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
+                people: commands, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
                 command_origin: "http://127.0.0.1:" + to_string(port), mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root }
             } }
         };
@@ -80,12 +81,12 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
     println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
     PracticeReviewHead {
         root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
-        http_port: api::commands_port(port), bearer: api::LaunchBearer { token: token },
+        http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
         commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
         srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
             root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
             definitions: definitions, knowledge: api::LocalKnowledge { root: root },
-            people: commands, socket: socket, commands_port: api::commands_port(port), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
+            people: commands, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
             command_origin: "http://127.0.0.1:" + to_string(port), local_name: user, token: token
         } }
     };

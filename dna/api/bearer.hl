@@ -47,9 +47,17 @@ locus LaunchBearer {
     fn refused() -> String { return "not this head's launch token"; }
 }
 
-// The port the binding's HTTP transport listens on: the one after the
-// head's reads (the project head proxies `…/commands` there).
-fn commands_port(port: Int) -> Int { return port + 1; }
+// The port the head's api binding serves its HTTP transport on, as the
+// launcher gives it (`HALE_DNA_COMMANDS_PORT`) — never derived from the
+// reads' port: a port is chosen where every other port is, by the
+// launcher or a fixture's free-port helper. 0 when it is not given (or
+// is not a port): the head then serves no HTTP transport, and a relayed
+// command is refused as unavailable.
+fn commands_port() -> Int {
+    let n = std::str::parse_int(std::env::var("HALE_DNA_COMMANDS_PORT")) or 0;
+    if n < 1 || n > 65535 { return 0; }
+    return n;
+}
 
 // The binding waits up to 30 s for a handler's reply; a relay waits a
 // little longer, so the binding's own 504 is the one the caller sees.
@@ -76,6 +84,7 @@ fn command_guard(req: std::http::Request, origin: String) -> String {
 // no principal of its own.
 fn relay_command(req: std::http::Request, port: Int, bearer: String) -> std::http::Response {
     let http = Http { };
+    if port <= 0 { return http.error(503, "commands_unavailable", "this head serves no commands over HTTP: its launcher gave it no HALE_DNA_COMMANDS_PORT", false); }
     let headers = "Content-Type: application/json\r\nAuthorization: Bearer " + bearer + "\r\nContent-Length: " + to_string(len(req.body)) + "\r\n";
     let up = exchange(port, "POST", req.path, headers, req.body, COMMAND_RELAY_TIMEOUT_NS);
     if !up.ok {

@@ -319,13 +319,9 @@ fn free_port(index: Int) -> Int {
     let mut i = 0;
     while i < 512 {
         let port = 30000 + (start + i) % span;
-        // and its successor: a head serves its api binding's HTTP
-        // transport one port past its reads (GH #1135)
         let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
-        let next = if fd >= 0 { std::io::tcp::__listen_socket("127.0.0.1", port + 1) } else { -1 };
-        if fd >= 0 { std::io::tcp::__close_fd(fd); }
-        if next >= 0 {
-            std::io::tcp::__close_fd(next);
+        if fd >= 0 {
+            std::io::tcp::__close_fd(fd);
             return port;
         }
         i = i + 1;

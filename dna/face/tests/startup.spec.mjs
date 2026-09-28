@@ -6,6 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { isolatedEnvironment, boundedNative } from './environment.mjs';
+import { freePort } from './command-wire.mjs';
 
 const execute = promisify(execFile), face = fileURLToPath(new URL('../', import.meta.url));
 const launcher = path.join(face, 'start.sh');
@@ -74,8 +75,9 @@ const test = base.extend({
         // The head's API child listens on its own port and outlives the head
         // by design: each launch gets a port of its own, and the teardown
         // stops every child the head recorded.
-        const apiPort = await port();
-        const options = [root, '--port', String(chosenPort), '--api-port', String(apiPort), ...(drafts ? ['--source-drafts'] : [])];
+        // and its api binding's commands one of their own (GH #1135)
+        const apiPort = await port(), commandsPort = await port();
+        const options = [root, '--port', String(chosenPort), '--api-port', String(apiPort), '--commands-port', String(commandsPort), ...(drafts ? ['--source-drafts'] : [])];
         const childEnv = { ...env, ...extraEnv }; delete childEnv.HALE_API_BIN; delete childEnv.HALE_HEAD_BIN;
         // The head keeps a registry and receipts under the state directory:
         // every launch here gets its own, never the operator's.

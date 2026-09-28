@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
-import { headPort, settle } from './command-wire.mjs';
+import { freePort, settle } from './command-wire.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
@@ -159,7 +159,7 @@ export async function startService(options = {}) {
   const apiEnvironmentKeys = ['HALE_DNA_ORG_DRAFTS', 'HALE_DNA_MEMORY_DSN_HEAD', 'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_BIN', 'XDG_CACHE_HOME'];
   for (const key of Object.keys(apiEnv)) assert(apiEnvironmentKeys.includes(key), `Unsupported explicit API environment setting: ${key}`);
   const owned = new Set(), processLog = [], requestLog = [];
-  let sequence = 0, host, api, dependencies, application = '', practice = '', origin = '', stopped = false, headDsn = '';
+  let sequence = 0, host, api, dependencies, application = '', practice = '', origin = '', commandsPort = 0, stopped = false, headDsn = '';
   let currentActor = principal;
   // The launch token each API start mints (GH #989), and the pages the lane
   // drives: each gets the session cookie of every launch.
@@ -258,14 +258,14 @@ export async function startService(options = {}) {
     : [501, 503].includes(result.status) && (result.json.error?.retryable === true || ['record_unavailable', 'commands_unavailable'].includes(result.json.error?.code));
   const read = suffix => wait('native source read', () => get(suffix), result => !transient(result));
   // One line of the api wire to the head's binding, on its own HTTP
-  // transport one port past the reads, under the launch token — the head's
-  // own account, as a tool presents it (GH #1135).
+  // transport at the port this lane gave it, under the launch token — the
+  // head's own account, as a tool presents it (GH #1135).
   function line(value) {
     healthy();
     const body = JSON.stringify(value);
     return new Promise((resolve, reject) => {
       const entry = { method: 'POST', path: 'binding:' + (value.call || 'describe') }; requestLog.push(entry);
-      const request = http.request({ host: '127.0.0.1', port: Number(new URL(origin).port) + 1, path: '/', method: 'POST', agent: false,
+      const request = http.request({ host: '127.0.0.1', port: commandsPort, path: '/', method: 'POST', agent: false,
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
         const chunks = [];
         response.on('data', chunk => chunks.push(chunk));
@@ -359,7 +359,7 @@ export async function startService(options = {}) {
     // only a running organization routes again; a paused one is waited on
     // by the case that paused it
     if (host && alive(host) && !host.paused) await wait(`routes naming ${actor}`, () => routesName(actor), Boolean, 30_000);
-    api = launch(`api-${actor}`, apiBinary, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMAND_POLICY: policy });
+    api = launch(`api-${actor}`, apiBinary, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_COMMANDS_PORT: String(commandsPort), HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMAND_POLICY: policy });
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }
       catch (error) { if (['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) return null; throw error; }
@@ -435,8 +435,10 @@ export async function startService(options = {}) {
     save('authority.json', { format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: principal, authority: 'board', practice_propose: true, review_verdict: true, recover: true }] });
     let port = options.port;
     if (port === undefined) {
-      port = await headPort();
+      port = await freePort();
     }
+    // GH #1135: the api binding's HTTP transport takes a port of its own
+    commandsPort = options.commandsPort ?? await freePort();
     assert(Number.isInteger(port) && port > 0 && port < 65536, 'Expected a valid loopback port');
     origin = `http://127.0.0.1:${port}`;
     // Optional same-Record services join this fixture's bounded process owner.
