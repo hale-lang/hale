@@ -81,7 +81,20 @@ const M_WORKED: Int = 2; // 0 idle · 1 worked · 2 budget-exhausted (behind)
 const M_CLAIMS_N: Int = 3; // ClaimVec rows in use (vec has no clear)
 const M_GROUPS_N: Int = 4; // GroupVec rows in use
 const M_RSS_LOG: Int = 5; // last rss_note() timestamp (ns)
-const META_CELLS: Int = 6;
+const M_LOCI_FREE: Int = 6; // rows on the live-locus free stack
+const M_LOCI_RING: Int = 7; // next row a full live-locus table overwrites
+const M_LOCI_EVICTED: Int = 8; // births that overwrote a live row
+const META_CELLS: Int = 9;
+
+// The live-locus table's bound (GH #578). A process that births loci
+// and never reports their dissolve (or births them faster than the
+// table can show) would otherwise grow the table without end: past
+// MAX_LOCI live rows, a birth overwrites the table in slot order and
+// is counted as `loci_evicted` in /snapshot. Every event reaches its
+// row through LocusIndex, never a scan: a scan copied every row into
+// the cycle's region per event, O(rows) per event and O(rows^2) per
+// cycle — how an organism's fuse-hl reached 10 GB.
+const MAX_LOCI: Int = 8192;
 
 // ---- rows ----
 
@@ -90,7 +103,10 @@ const META_CELLS: Int = 6;
 // the field and said nothing — which is NOT the same as
 // "0000000000000000", an emitter that positively has no model.
 type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; model: String = ""; process_key: String = ""; started: String = ""; }
-type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
+// btype: the locus type's manifest id in its segment; the name is read
+// from the segment when shown, so a row holds no string and rewriting it
+// (a bump, an eviction) leaves nothing behind in App's region
+type LocusRow { seg: Int = -1; inst: Int = 0; btype: Int = -1; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
 type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
 type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
 type EdgeRow { topic: Int = -1; from_seg: Int = -1; to_seg: Int = -1; matched: Int = 0; lat_sum: Int = 0; lat_max: Int = 0; }
@@ -107,6 +123,7 @@ type GroupRow { gname: String = ""; member: String = ""; }
 // unattributed (a real event whose locus the record didn't carry).
 type WitRow { topic: Int = -1; seg: Int = -1; tname: String = ""; kind: Int = 0; count: Int = 0; }
 type SnapEntry { key: String = ""; val: String = ""; }
+type LocusSlot { key: Int = -1; slot: Int = -1; }
 type FdEntry { key: String = ""; fd: Int = -1; }
 
 @form(vec)
@@ -139,6 +156,9 @@ locus WitVec { capacity { heap items of WitRow; } }
 locus SnapMap { capacity { pool entries of SnapEntry indexed_by key; } }
 @form(hashmap, sync = serialized)
 locus FdMap { capacity { pool entries of FdEntry indexed_by key; } }
+// (seg, inst) -> its LocusVec row: the live-locus table's index
+@form(hashmap)
+locus LocusIndex { capacity { pool entries of LocusSlot indexed_by key; } }
 
 // ---- http handler (io pool) ----
 
@@ -203,6 +223,37 @@ locus FuseHandler {
 }
 
 // ---- json helpers ----
+
+// (seg, inst) as one Int: an Int-keyed index churns without growth, a
+// String-keyed one does not (measured: 15 MB over 5M set/remove pairs)
+fn locus_key(si: Int, inst: Int) -> Int {
+    return si * 4294967296 + inst;
+}
+
+// The snapshot padded with trailing spaces (JSON allows them) to a size
+// class: the least of 2^k, 1.25*2^k, 1.5*2^k, 1.75*2^k that holds it, at
+// least 4 KiB. The latest snapshot lives in SnapMap and is replaced 10
+// times a second; the arena reuses a replaced block only for a value
+// that fits it, and a snapshot's counters and ids only grow, so every
+// unpadded replacement allocated afresh and kept the old block: RSS rose
+// ~1 MB/s under load (GH #578). Classes make the next snapshot fit the
+// last one's block; a class boundary crossed strands one block, and the
+// classes are few (four per doubling).
+fn size_classed(snap: String) -> String {
+    let n = len(snap);
+    let mut base = 4096;
+    while base * 2 <= n { base = base * 2; }
+    let mut class = base;
+    if class < n { class = base + base / 4; }
+    if class < n { class = base + base / 2; }
+    if class < n { class = base + base * 3 / 4; }
+    if class < n { class = base * 2; }
+    let b = std::str::builder_new();
+    std::str::builder_append(b, snap);
+    let mut pad = class - n;
+    while pad > 0 { std::str::builder_append(b, " "); pad = pad - 1; }
+    return std::str::builder_finish(b);
+}
 
 fn basename(p: String) -> String {
     let mut i = std::str::index_of(p, "/");
@@ -277,6 +328,8 @@ locus Cycle {
         evbuf: Bytes;
         snaps: SnapMap;
         fds: FdMap;
+        lidx: LocusIndex;
+        lfree: IntVec;
         claims: ClaimVec;
         gmembers: GroupVec;
         wits: WitVec;
@@ -408,46 +461,70 @@ locus Cycle {
 
     // ---- locus + edge tables ----
 
-    fn locus_upsert(si: Int, inst: Int, tname: String, parent: Int, alive: Int) {
-        let mut i = 0;
-        let mut slot = -1;
-        let mut dead_slot = -1;
-        while i < self.loci.len() {
-            let l = self.loci.get(i) or LocusRow { };
-            if l.seg == si {
-                if l.inst == inst { slot = i; i = self.loci.len(); }
-            }
-            if slot < 0 {
-                if l.alive == 0 { dead_slot = i; }
-            }
-            i = i + 1;
-        }
+    fn locus_slot(si: Int, inst: Int) -> Int {
+        let e = self.lidx.get(locus_key(si, inst)) or LocusSlot { };
+        return e.slot;
+    }
+
+    fn free_push(slot: Int) {
+        let n = self.meta.get(M_LOCI_FREE) or 0;
+        if n < self.lfree.len() { self.lfree.set(n, slot) or discard; }
+        else { self.lfree.push(slot); }
+        self.meta.set(M_LOCI_FREE, n + 1) or discard;
+    }
+
+    fn free_pop() -> Int {
+        let n = self.meta.get(M_LOCI_FREE) or 0;
+        if n == 0 { return -1; }
+        self.meta.set(M_LOCI_FREE, n - 1) or discard;
+        return self.lfree.get(n - 1) or - 1;
+    }
+
+    // A known row is rewritten; a dissolve frees its row for the next
+    // birth. A new birth takes a freed row, else a new one while the
+    // table is under MAX_LOCI, else overwrites the next row in slot order
+    // (the free stack is empty then, so every row is live).
+    fn locus_upsert(si: Int, inst: Int, btype: Int, parent: Int, alive: Int) {
+        let key = locus_key(si, inst);
+        let row = LocusRow { seg: si, inst: inst, btype: btype, parent: parent, alive: alive };
+        let slot = self.locus_slot(si, inst);
         if slot >= 0 {
-            self.loci.set(slot, LocusRow {
-                seg: si, inst: inst, tname: tname, parent: parent, alive: alive
-            }) or discard;
-        } else {
-            if alive == 1 {
-                let row = LocusRow {
-                    seg: si, inst: inst, tname: tname, parent: parent, alive: 1
-                };
-                if dead_slot >= 0 { self.loci.set(dead_slot, row) or discard; }
-                else { self.loci.push(row); }
+            self.loci.set(slot, row) or discard;
+            if alive == 0 {
+                self.lidx.remove(key) or discard;
+                self.free_push(slot);
             }
+            return;
         }
+        if alive == 0 { return; }
+        let mut target = self.free_pop();
+        if target < 0 {
+            if self.loci.len() < MAX_LOCI {
+                self.loci.push(row);
+                self.lidx.set(LocusSlot { key: key, slot: self.loci.len() - 1 });
+                return;
+            }
+            target = self.meta.get(M_LOCI_RING) or 0;
+            self.meta.set(M_LOCI_RING, (target + 1) % MAX_LOCI) or discard;
+            self.meta.set(M_LOCI_EVICTED, (self.meta.get(M_LOCI_EVICTED) or 0) + 1) or discard;
+            let old = self.loci.get(target) or LocusRow { };
+            self.lidx.remove(locus_key(old.seg, old.inst)) or discard;
+        }
+        self.loci.set(target, row) or discard;
+        self.lidx.set(LocusSlot { key: key, slot: target });
+    }
+
+    // A row's type name, read from its segment's manifest.
+    fn type_name(si: Int, btype: Int) -> String {
+        if btype < 0 { return ""; }
+        let g = self.segs.get(si) or SegRow { };
+        return fz::fz_name(g.h, MK_LOCUS_TYPE, btype);
     }
 
     fn locus_row(si: Int, inst: Int) -> LocusRow {
-        let mut i = 0;
-        let mut out = LocusRow { };
-        while i < self.loci.len() {
-            let l = self.loci.get(i) or LocusRow { };
-            if l.seg == si {
-                if l.inst == inst { out = l; i = self.loci.len(); }
-            }
-            i = i + 1;
-        }
-        return out;
+        let slot = self.locus_slot(si, inst);
+        if slot < 0 { return LocusRow { }; }
+        return self.loci.get(slot) or LocusRow { };
     }
 
     fn edge_bump(ti: Int, from_seg: Int, to_seg: Int, lat: Int) {
@@ -551,20 +628,12 @@ locus Cycle {
     // ---- event pump ----
 
     fn locus_bump(si: Int, inst: Int, is_pub: Bool) {
-        let mut i = 0;
-        while i < self.loci.len() {
-            let l = self.loci.get(i) or LocusRow { };
-            if l.seg == si {
-                if l.inst == inst {
-                    let mut lm = l;
-                    if is_pub { lm.pub = lm.pub + 1; }
-                    else { lm.dlv = lm.dlv + 1; }
-                    self.loci.set(i, lm) or discard;
-                    i = self.loci.len();
-                }
-            }
-            i = i + 1;
-        }
+        let slot = self.locus_slot(si, inst);
+        if slot < 0 { return; }
+        let mut lm = self.loci.get(slot) or LocusRow { };
+        if is_pub { lm.pub = lm.pub + 1; }
+        else { lm.dlv = lm.dlv + 1; }
+        self.loci.set(slot, lm) or discard;
     }
 
     // ---- law ingestion (artifact -> claims/groups/lawmeta) ----
@@ -740,7 +809,8 @@ locus Cycle {
         let mut tname = "?";
         if inst > 0 {
             let l = self.locus_row(si, inst);
-            if l.tname != "" { tname = l.tname; }
+            let named = self.type_name(si, l.btype);
+            if named != "" { tname = named; }
         }
         let mut i = 0;
         while i < self.wits.len() {
@@ -790,13 +860,12 @@ locus Cycle {
         if k == EK_LOCUS_BIRTH {
             let btype = (w1 >> 32) & 1048575;
             let bparent = w1 & 4294967295;
-            let tname = fz::fz_name(g.h, MK_LOCUS_TYPE, btype);
-            self.locus_upsert(si, id, tname, bparent, 1);
+            self.locus_upsert(si, id, btype, bparent, 1);
         }
         if k == EK_LOCUS_DISSOLVE {
             let l = self.locus_row(si, id);
-            self.locus_upsert(si, id, l.tname, l.parent, 0);
-            self.tail_push("pid " + g.pid + ": " + l.tname + "#" + id
+            self.locus_upsert(si, id, l.btype, l.parent, 0);
+            self.tail_push("pid " + g.pid + ": " + self.type_name(si, l.btype) + "#" + id
                     + " dissolved (reason " + w1 + ")");
         }
         if k == EK_RESTART {
@@ -924,22 +993,25 @@ locus Cycle {
                 + ",\"records\":" + fz::fz_counter(g.h, 0, CG_RECORDS_TOTAL)
                 + ",\"overruns\":" + fz::fz_overruns(g.h)
                 + ",\"restarts\":" + g.restarts + ",\"loci\":[";
+            // up to MAX_LOCI rows: appended to a builder, never `s = s + …`,
+            // which copies the whole string per row
+            let lb = std::str::builder_new();
             let mut li = 0;
             let mut nl = 0;
             while li < self.loci.len() {
                 let l = self.loci.get(li) or LocusRow { };
                 if l.seg == i {
                     if l.alive == 1 {
-                        if nl > 0 { s = s + ","; }
-                        s = s + "{\"id\":" + l.inst + ",\"type\":\"" + jstr(l.tname)
-                            + "\",\"parent\":" + l.parent
-                            + ",\"pub\":" + l.pub + ",\"dlv\":" + l.dlv + "}";
+                        if nl > 0 { std::str::builder_append(lb, ","); }
+                        std::str::builder_append(lb, "{\"id\":" + l.inst + ",\"type\":\"" + jstr(if l.btype >= 0 { fz::fz_name(g.h, MK_LOCUS_TYPE, l.btype) } else { "" })
+                                + "\",\"parent\":" + l.parent
+                                + ",\"pub\":" + l.pub + ",\"dlv\":" + l.dlv + "}");
                         nl = nl + 1;
                     }
                 }
                 li = li + 1;
             }
-            s = s + "]}";
+            s = s + std::str::builder_finish(lb) + "]}";
             i = i + 1;
         }
         s = s + "],\"topics\":[";
@@ -1001,7 +1073,7 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "]" + self.law_json() + self.diff_json() + "}";
+        s = s + "],\"loci_evicted\":" + (self.meta.get(M_LOCI_EVICTED) or 0) + self.law_json() + self.diff_json() + "}";
         return s;
     }
 
@@ -1325,7 +1397,8 @@ locus Cycle {
         let pages = std::str::parse_int(std::str::substring(rest, 0, sp2)) or 0;
         println("fuse-hl: rss " + (pages * 4096 / 1048576) + "MB, segs "
                 + self.segs.len() + ", topics " + self.topics.len()
-                + ", loci " + self.loci.len() + ", edges " + self.edges.len());
+                + ", loci " + self.loci.len() + " (" + (self.meta.get(M_LOCI_EVICTED) or 0)
+                + " evicted), edges " + self.edges.len());
     }
 
     fn drop_sse(slot: Int) {
@@ -1349,7 +1422,7 @@ locus Cycle {
         if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); }
         self.drain_rings();
         if self.do_snap {
-            let snap = self.snapshot();
+            let snap = size_classed(self.snapshot());
             self.snaps.set(SnapEntry { key: "snap", val: snap });
             self.pump_sse(snap);
             self.rss_note(self.now);
@@ -1372,6 +1445,8 @@ main locus App {
         evbuf: Bytes;
         snaps: SnapMap;
         fds: FdMap;
+        lidx: LocusIndex = LocusIndex { };
+        lfree: IntVec = IntVec { };
         claims: ClaimVec = ClaimVec { };
         gmembers: GroupVec = GroupVec { };
         wits: WitVec = WitVec { };
@@ -1424,6 +1499,7 @@ main locus App {
                 tail: self.tail, meta: self.meta, evbuf: self.evbuf,
                 snaps: self.snaps,
                 fds: self.fds,
+                lidx: self.lidx, lfree: self.lfree,
                 claims: self.claims, gmembers: self.gmembers,
                 wits: self.wits, lawmeta: self.lawmeta,
                 art_path: self.art_path, diff_path: self.diff_path,

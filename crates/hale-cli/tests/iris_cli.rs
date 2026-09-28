@@ -34,6 +34,17 @@ fn hale(cache: &PathBuf, args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// GH #578: `fuse-hl` exited 1 "silently" on loaded CI shards — it was
+/// killed by a signal, and `hale iris` turned that into status 1 without
+/// a word. `hale iris` now names the signal; a log that does is a failure
+/// here even when a retried attempt went on to pass, the way the startup
+/// spec fails a drain that ran out its grace.
+fn assert_no_signal_death(log: &str) {
+    if let Some(line) = log.lines().find(|l| l.contains("was killed by signal")) {
+        panic!("fuse-hl died (GH #578): {line}\n{log}");
+    }
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -72,7 +83,10 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
         let deadline = Instant::now() + Duration::from_secs(240);
         loop {
             if let Ok(Some(st)) = child.try_wait() {
-                last = format!("hale iris exited {st} before serving on {port}:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+                let said = std::fs::read_to_string(&log).unwrap_or_default();
+                // a death is the failure, not a reason to retry (GH #578)
+                assert_no_signal_death(&said);
+                last = format!("hale iris exited {st} before serving on {port}:\n{said}");
                 break;
             }
             let said = std::fs::read_to_string(&log).unwrap_or_default();
@@ -245,6 +259,9 @@ fn iris_diff_pair_rides_into_the_snapshot() {
             break;
         }
     }
+    for a in &attempts {
+        assert_no_signal_death(a);
+    }
     if !attempts.is_empty() {
         // a retried attempt is evidence for GH #578 even when a later one passed
         eprintln!("iris_diff_pair: retried after a server died before the diff loaded:\n{}", attempts.join("\n"));
@@ -265,4 +282,116 @@ fn iris_diff_pair_rides_into_the_snapshot() {
     assert_eq!(added, vec!["Late"]);
     // the B side became the law artifact
     assert_eq!(v["law"]["digest"], "verified", "{}", v["law"]);
+}
+
+/// An observed program that births loci it keeps, far past the
+/// live-locus table's bound: a million in about twenty seconds.
+const CHURN: &str = "locus Kid { params { n: Int = 0; } }\nlocus Kids {\n    params { }\n    accept(c: Kid) { }\n    fn add(n: Int) { Kid { n: n }; }\n}\nmain locus App {\n    params { kids: Kids = Kids { }; }\n    run() {\n        let mut i = 0;\n        while i < 1000000 && !self.draining {\n            self.kids.add(i);\n            i = i + 1;\n            if i % 100 == 0 { std::time::sleep(1ms); }\n        }\n        while !self.draining { std::time::sleep(100ms); }\n    }\n}\nfn main() { App { }; }\n";
+
+fn rss_kb(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The `fuse-hl` `hale iris` (pid `parent`) runs.
+fn fuse_hl_of(parent: u32) -> Option<u32> {
+    for e in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = e.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        // pid (comm) state ppid …
+        let Some(close) = stat.rfind(')') else { continue };
+        let comm = stat.get(stat.find('(').unwrap_or(0) + 1..close).unwrap_or("");
+        let ppid: u32 = stat[close + 1..].split_whitespace().nth(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+        if ppid == parent && comm == "fuse-hl" {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+fn snapshot(port: u16) -> Option<serde_json::Value> {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+    s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n").ok()?;
+    let mut buf = String::new();
+    let _ = s.read_to_string(&mut buf);
+    serde_json::from_str(&buf[buf.find("{\"ts\"")?..]).ok()
+}
+
+/// GH #578 / the #1192 Deferred line: fuse-hl on a live organism grew to
+/// 10 GB. Every event scanned the live-locus table (copying each row),
+/// the table had no bound, the snapshot grew past each replaced block,
+/// and every `/snapshot` answer stayed in the HTTP server's region.
+/// Under a program churning a million loci, the table holds at its bound
+/// and the process stays flat across requests.
+#[test]
+#[cfg(target_os = "linux")]
+fn fuse_hl_stays_flat_under_locus_churn_and_requests() {
+    let cache = cache_root();
+    let seed = cache.join("churn");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::write(seed.join("main.hl"), CHURN).unwrap();
+    let (ok, _, err) = hale(&cache, &["build", &seed.join("main.hl").to_string_lossy()]);
+    assert!(ok, "the churn program builds: {err}");
+    let (mut iris, port) = spawn_iris(&cache, &[]);
+    let runtime = cache.join(format!("iris-{port}-runtime"));
+    let mut churn = Command::new(seed.join("main"))
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("LOTUS_OBS", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the churn program");
+    let fuse = fuse_hl_of(iris.id()).expect("hale iris runs fuse-hl");
+    // the table fills, then evicts
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut evicting = false;
+    while Instant::now() < deadline && !evicting {
+        evicting = snapshot(port).map(|v| v["loci_evicted"].as_u64().unwrap_or(0) > 0).unwrap_or(false);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let warm = rss_kb(fuse);
+    let mut rows = 0;
+    for _ in 0..200 {
+        if let Some(v) = snapshot(port) {
+            rows = v["processes"].as_array().map(|p| p.iter().map(|x| x["loci"].as_array().map(|l| l.len()).unwrap_or(0)).sum()).unwrap_or(0);
+            assert!(rows <= 8192, "the live-locus table holds at its bound: {rows} rows");
+        }
+    }
+    let after = rss_kb(fuse);
+    let _ = churn.kill();
+    let _ = churn.wait();
+    let _ = iris.kill();
+    let _ = iris.wait();
+    let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+    assert_no_signal_death(&log);
+    assert!(evicting, "the churn never filled the table:\n{log}");
+    assert_eq!(rows, 8192, "a full table shows its bound");
+    assert!(
+        after <= warm + 32 * 1024,
+        "fuse-hl grew {} KB over 200 snapshots under churn ({warm} KB to {after} KB)\n{log}",
+        after.saturating_sub(warm)
+    );
+}
+
+/// GH #578: every way `fuse-hl` ends says why. A child killed by a signal
+/// has no exit code; `hale iris` used to turn that into status 1 without
+/// a word. It now names the signal and exits as a shell would.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_killed_observer_names_the_signal() {
+    let cache = cache_root();
+    let (mut iris, port) = spawn_iris(&cache, &[]);
+    let fuse = fuse_hl_of(iris.id()).expect("hale iris runs fuse-hl");
+    // this test's own fuse-hl, by its pid
+    let _ = Command::new("kill").args(["-KILL", &fuse.to_string()]).status();
+    let status = iris.wait().expect("hale iris exits");
+    let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+    assert_eq!(status.code(), Some(128 + 9), "exits as a shell would: {log}");
+    assert!(log.contains("hale iris: fuse-hl was killed by signal 9 (SIGKILL"), "and says so: {log}");
 }

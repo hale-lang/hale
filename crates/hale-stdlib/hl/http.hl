@@ -485,6 +485,23 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
     std::http::write_response(s, resp);
 }
 
+// One connection's work, in a child of the Server (GH #578). The
+// Server's run() never returns, so what a connection allocated in it —
+// the reassembled request, the parsed Request, the handler's Response
+// and its body — stayed in run()'s region for the life of the process:
+// every response leaked its size (a 450 KB body grew RSS 450 KB a
+// request). Born per connection, dissolved when it is served, the child
+// takes that work's region with it.
+locus __StdHttpServerConn {
+    params {
+        conn_fd: Int = -1;
+        handler: std::http::Handler;
+    }
+    birth() {
+        __http_handle_one_conn(self.conn_fd, self.handler);
+    }
+}
+
 /// The HTTP/1.1 server: binds host:port, accepts, reassembles
 /// each request (multi-segment safe, 1 MiB cap, 5s recv
 /// timeout), dispatches to `handler`, writes the response,
@@ -558,7 +575,7 @@ locus __StdHttpServer {
             if conn < 0 {
                 break;
             }
-            __http_handle_one_conn(conn, self.handler);
+            __StdHttpServerConn { conn_fd: conn, handler: self.handler };
             accepted = accepted + 1;
         }
     }
