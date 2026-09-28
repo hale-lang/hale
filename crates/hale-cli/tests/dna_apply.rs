@@ -9,6 +9,8 @@
 //! the Mutation and dissolves its worktree. `git log` gains exactly the
 //! candidate; the organism is still up afterwards.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -19,7 +21,7 @@ use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -116,7 +118,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
 
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let log = d.join("dev.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)

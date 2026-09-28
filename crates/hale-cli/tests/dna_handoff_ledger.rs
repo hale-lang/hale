@@ -6,6 +6,8 @@
 //! accepts it in its record, and the firm's `handoff sync` reads the
 //! acceptance back and settles the task — in the ledger.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -13,7 +15,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
         c.env(k, v);
@@ -88,7 +90,7 @@ fn head_dsn(app: &Path) -> String {
 /// The spine: `hale dna dev` with the owner's DSN (it migrates and runs
 /// the host under the spine's role), which adopts and admits.
 fn spine(app: &Path, d: &Path) -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_hale"))
+    vault::hale()
         .args(["dna", "dev", ".", "--no-iris"])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

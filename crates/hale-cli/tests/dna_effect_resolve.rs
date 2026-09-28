@@ -4,11 +4,12 @@
 //! value fell into the positionals and every resolve was refused as
 //! "outcome ok|failed" whatever was given.
 
+#[path = "support/vault.rs"]
+mod vault;
 use std::path::Path;
-use std::process::Command;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

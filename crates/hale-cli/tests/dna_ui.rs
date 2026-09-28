@@ -4,6 +4,8 @@
 //! form becomes a `review.verdict` row in the record, as the CLI's
 //! would.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::io::{Read, Write};
@@ -63,7 +65,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     std::fs::create_dir_all(&d).unwrap();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        let out = vault::hale().args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", &cache).output().expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
@@ -84,7 +86,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     assert!(ok && out.contains("m1: review"), "driver:\n{out}");
     // the surface, with no organization anywhere
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-    let mut ui = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut ui = vault::hale()
         .args(["dna", "ui", ".", "--port", &port.to_string()])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

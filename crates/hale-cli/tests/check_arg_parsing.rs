@@ -22,7 +22,8 @@
 //! dispatched subcommand is listed, and each command's flag block
 //! sits under the command it belongs to.
 
-use std::process::Command;
+#[path = "support/vault.rs"]
+mod vault;
 
 fn write_tmp(tag: &str, src: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -35,7 +36,7 @@ fn write_tmp(tag: &str, src: &str) -> std::path::PathBuf {
 }
 
 fn hale(args: &[&std::ffi::OsStr]) -> (String, i32) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .output()
         .expect("run hale");
@@ -57,7 +58,7 @@ fn hale(args: &[&std::ffi::OsStr]) -> (String, i32) {
 fn hale_in_scratch(tag: &str, args: &[&std::ffi::OsStr]) -> (String, i32) {
     let dir = scratch_dir(tag);
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .current_dir(&dir)
         .args(args)
         .output()

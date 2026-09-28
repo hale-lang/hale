@@ -8,6 +8,8 @@
 //! digest is refused by the Review; the maintainer's verdict on the
 //! exact candidate settles it.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -15,7 +17,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -123,7 +125,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let nats_spine = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_URL_SPINE=")).expect("the spine's URL").to_string();
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let log = d.join("run.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)

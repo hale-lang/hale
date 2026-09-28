@@ -11,12 +11,14 @@
 //! regression that a long, ordinary project path still works end to
 //! end — the organization still starts and hears an ask from it.
 
+#[path = "support/vault.rs"]
+mod vault;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
@@ -52,7 +54,7 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let log = d.join("run.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
