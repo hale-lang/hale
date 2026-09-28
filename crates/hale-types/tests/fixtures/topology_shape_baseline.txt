@@ -1087,6 +1087,7 @@ crates/hale-codegen/tests/serializer_shape.rs#0 17b3339626ecd662
 crates/hale-codegen/tests/sha1_base64.rs#0 865d341109268295
 crates/hale-codegen/tests/sha1_base64.rs#1 865d341109268295
 crates/hale-codegen/tests/sha1_base64.rs#2 865d341109268295
+crates/hale-codegen/tests/shadow_return_binding.rs#0 42ac5824bb5c4e47
 crates/hale-codegen/tests/shm_ring_layout_codegen.rs#1 5ff26f708d1054b9
 crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#0 5d70771a8fa601af
 crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#1 f15ab865b1eda303

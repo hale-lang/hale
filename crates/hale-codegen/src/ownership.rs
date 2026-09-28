@@ -104,9 +104,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ElseBranch, Expr, FnDecl, IfStmt, LValueSeg, LocusDecl,
+    Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg, LocusDecl,
     LocusMember, MatchArmBody, MatchStmt, ModuleDecl, NodeId,
-    OrDisposition, Param, ParamInit, Program, QualifiedName, Stmt,
+    OrDisposition, Param, ParamInit, Pattern, Program, QualifiedName,
+    RecoveryModifier, Stmt,
     StructInit, TopDecl, TypeExpr,
 };
 use hale_syntax::Span;
@@ -501,48 +502,468 @@ impl Decision {
 struct SavedFrame {
     decl: String,
     slots: BTreeMap<String, SlotId>,
-    returned: BTreeSet<String>,
+    returned: ReturnedBindings,
 }
 
-/// The names a body hands back with a bare `return x;` — the shape
-/// `compute_returned_bindings` recognises, and the reason lowering
-/// does not let the binding own the value.
-fn collect_returned_names(b: &Block, out: &mut BTreeSet<String>) {
-    for s in &b.stmts {
-        collect_returned_names_stmt(s, out);
-    }
-    if let Some(Expr::Ident(i)) = b.tail.as_deref() {
-        out.insert(i.name.clone());
-    }
+// ===================================================================
+// Bindings, not names (GH #1140)
+// ===================================================================
+
+/// A binding's identity: its declaring identifier's span, in the
+/// process-wide coordinates multi-file builds shift spans into. Two
+/// `let`s that spell one name are two bindings — an inner shadow is an
+/// ordinary fresh value its frame reclaims, whatever the fn returns.
+pub(crate) type BindingKey = (u32, u32);
+
+fn binding_key(i: &Ident) -> Option<BindingKey> {
+    (i.span.end.0 > i.span.start.0).then_some((i.span.start.0, i.span.end.0))
 }
 
-fn collect_returned_names_stmt(s: &Stmt, out: &mut BTreeSet<String>) {
-    match s {
-        Stmt::Return(Some(Expr::Ident(i)), _) => {
-            out.insert(i.name.clone());
+/// What a name spelled at one point of a body resolves to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Resolved {
+    /// A `let` (or tuple `let`) of the body, by its key.
+    Let(BindingKey),
+    /// A binding that is no keyed `let`: a `for` variable, a match
+    /// pattern, a `shm_write` binding, a declaration with no span.
+    Other,
+    /// Nothing in the body's scopes: a param, a const, a global.
+    Outside,
+}
+
+/// Which bindings a body hands back, each resolved to its declaration
+/// (see [`body_bindings`]). Owned, so a walk that mutates the body can
+/// hold it.
+///
+/// Every uncertainty answers "handed back", which suppresses a reclaim
+/// (the old leak) and never adds one: a binding the walk could not key,
+/// a use it could not resolve, a key two declarations share all answer
+/// by name against every name a return spelled — the old rule, whole.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct ReturnedBindings {
+    /// The keyed `let`s handed back, directly or through the value of
+    /// another handed-back binding.
+    decls: BTreeSet<BindingKey>,
+    /// Every name a return (or a counted block tail) spells as a value
+    /// arm, however it resolved: the by-name answer, for what the walk
+    /// cannot resolve.
+    all_names: BTreeSet<String>,
+    /// The names among those that resolve to no keyed `let` — a `for`
+    /// variable, a pattern, a param. A keyed `let` spelled the same is
+    /// counted too: such a binding can hold the `let`'s value (an
+    /// element of an array the `let` went into), which no name says.
+    nonlet_names: BTreeSet<String>,
+    /// `let`s declared under a key of their own.
+    keyed: BTreeSet<BindingKey>,
+    /// What each use (every identifier the walk met) names, by the
+    /// use's own span.
+    uses: BTreeMap<BindingKey, Resolved>,
+}
+
+impl ReturnedBindings {
+    fn key_is_returned(&self, k: BindingKey, name: &str) -> bool {
+        self.decls.contains(&k) || self.nonlet_names.contains(name)
+    }
+
+    /// Whether the `let` declaring `name` is one the body hands back.
+    pub(crate) fn let_is_returned(&self, name: &Ident) -> bool {
+        match binding_key(name) {
+            Some(k) if self.keyed.contains(&k) => {
+                self.key_is_returned(k, &name.name)
+            }
+            _ => self.all_names.contains(&name.name),
         }
-        Stmt::If(i) => collect_returned_names_if(i, out),
-        Stmt::Match(m) => {
-            for a in &m.arms {
-                if let MatchArmBody::Block(b) = &a.body {
-                    collect_returned_names(b, out);
+    }
+
+    /// Whether a bare `=` writing `head` writes a binding the body
+    /// hands back.
+    pub(crate) fn assign_is_returned(&self, head: &Ident) -> bool {
+        match binding_key(head).and_then(|u| self.uses.get(&u)) {
+            Some(Resolved::Let(k)) if self.keyed.contains(k) => {
+                self.key_is_returned(*k, &head.name)
+            }
+            _ => self.all_names.contains(&head.name),
+        }
+    }
+}
+
+/// A body's bindings as the fresh-factory walk reads them.
+#[derive(Default)]
+struct BodyBindings<'e> {
+    returned: ReturnedBindings,
+    /// Each keyed `let`'s right-hand side.
+    lets: BTreeMap<BindingKey, &'e Expr>,
+    /// Every value the body hands back: each `return <e>;`, wherever it
+    /// stands, and each counted block tail.
+    returns: Vec<&'e Expr>,
+    /// Keyed `let`s some `=` writes, and each such write's value.
+    assigned: BTreeSet<BindingKey>,
+    writes: Vec<(BindingKey, &'e Expr)>,
+    /// Names written by an `=` that resolves to no keyed `let`.
+    assigned_names: BTreeSet<String>,
+    /// How often each key was declared; a key declared twice keys
+    /// nothing.
+    declared: BTreeMap<BindingKey, u32>,
+}
+
+impl<'e> BodyBindings<'e> {
+    /// The keyed `let` a name spelled at `use_site` resolves to.
+    fn let_at(&self, use_site: &Ident) -> Option<BindingKey> {
+        match binding_key(use_site).and_then(|u| self.returned.uses.get(&u)) {
+            Some(Resolved::Let(k)) if self.returned.keyed.contains(k) => {
+                Some(*k)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether some bare `=` may write the binding `use_site` names.
+    fn is_assigned(&self, use_site: &Ident, k: BindingKey) -> bool {
+        self.assigned.contains(&k)
+            || self.assigned_names.contains(&use_site.name)
+    }
+
+    /// Count `e`'s value arms as handed back: a name among them is the
+    /// binding it resolves to.
+    fn hand_back(&mut self, e: &'e Expr) {
+        let mut arms = Vec::new();
+        return_arms(e, &mut arms);
+        for a in arms {
+            if let Expr::Ident(i) = a {
+                self.returned.all_names.insert(i.name.clone());
+                match self.let_at(i) {
+                    Some(k) => {
+                        self.returned.decls.insert(k);
+                    }
+                    None => {
+                        self.returned.nonlet_names.insert(i.name.clone());
+                    }
                 }
             }
         }
-        Stmt::While { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::ShmWrite { body, .. }
-        | Stmt::Block(body) => collect_returned_names(body, out),
-        _ => {}
     }
 }
 
-fn collect_returned_names_if(i: &IfStmt, out: &mut BTreeSet<String>) {
-    collect_returned_names(&i.then_block, out);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => collect_returned_names(b, out),
-        Some(ElseBranch::ElseIf(n)) => collect_returned_names_if(n, out),
-        None => {}
+/// The GH #1140 walk: every statement and expression of a body, blocks
+/// as scopes, in order, so a name resolves to the declaration in scope
+/// where it is spelled. The matches are exhaustive on purpose: a new
+/// statement or expression form must say how it binds and what it
+/// hands back before this compiles.
+struct ScopeWalk<'e> {
+    frames: Vec<Vec<(&'e str, Resolved)>>,
+    out: BodyBindings<'e>,
+}
+
+/// Resolve a body's bindings.
+fn body_bindings(b: &Block) -> BodyBindings<'_> {
+    let mut w = ScopeWalk { frames: Vec::new(), out: BodyBindings::default() };
+    w.block(b, true);
+    let mut out = w.out;
+    let twice: Vec<BindingKey> = out
+        .declared
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(k, _)| *k)
+        .collect();
+    for k in twice {
+        out.returned.keyed.remove(&k);
+        out.lets.remove(&k);
+    }
+    // What the body hands back...
+    let returns = out.returns.clone();
+    for e in returns {
+        out.hand_back(e);
+    }
+    // ...and what flows into it: a handed-back binding's `let` value
+    // and every `=` into it hand back the bindings among their arms
+    // (`let y = if c { let r = make(); r } else { … }; return y;`).
+    loop {
+        let before = out.returned.decls.len() + out.returned.nonlet_names.len();
+        let flows: Vec<&Expr> = out
+            .lets
+            .iter()
+            .filter(|(k, _)| out.returned.decls.contains(k))
+            .map(|(_, e)| *e)
+            .chain(
+                out.writes
+                    .iter()
+                    .filter(|(k, _)| out.returned.decls.contains(k))
+                    .map(|(_, e)| *e),
+            )
+            .collect();
+        for e in flows {
+            out.hand_back(e);
+        }
+        if out.returned.decls.len() + out.returned.nonlet_names.len() == before {
+            break;
+        }
+    }
+    out
+}
+
+/// The bindings a body hands back (see [`ReturnedBindings`]).
+pub(crate) fn returned_bindings(b: &Block) -> ReturnedBindings {
+    body_bindings(b).returned
+}
+
+impl<'e> ScopeWalk<'e> {
+    fn lookup(&self, name: &str) -> Resolved {
+        for frame in self.frames.iter().rev() {
+            for (n, r) in frame.iter().rev() {
+                if *n == name {
+                    return *r;
+                }
+            }
+        }
+        Resolved::Outside
+    }
+
+    fn declare(&mut self, name: &'e Ident, r: Resolved) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.push((name.name.as_str(), r));
+        }
+    }
+
+    fn declare_let(&mut self, name: &'e Ident, rhs: Option<&'e Expr>) {
+        match binding_key(name) {
+            Some(k) => {
+                *self.out.declared.entry(k).or_insert(0) += 1;
+                self.out.returned.keyed.insert(k);
+                if let Some(e) = rhs {
+                    self.out.lets.insert(k, e);
+                }
+                self.declare(name, Resolved::Let(k));
+            }
+            None => self.declare(name, Resolved::Other),
+        }
+    }
+
+    fn note_use(&mut self, i: &Ident) -> Resolved {
+        let r = self.lookup(&i.name);
+        if let Some(u) = binding_key(i) {
+            // two uses one span spells (a desugaring's copy) that resolve
+            // apart resolve to neither: the answer falls back by name
+            let slot = self.out.returned.uses.entry(u).or_insert(r);
+            if *slot != r {
+                *slot = Resolved::Other;
+            }
+        }
+        r
+    }
+
+    /// A block as a scope. A statement-level block's tail counts as
+    /// handed back (`counted`), the shape the name walk always read; an
+    /// expression block's tail is its expression's value.
+    fn block(&mut self, b: &'e Block, counted: bool) {
+        self.frames.push(Vec::new());
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = b.tail.as_deref() {
+            self.expr(t);
+            if counted {
+                self.out.returns.push(t);
+            }
+        }
+        self.frames.pop();
+    }
+
+    fn if_chain(&mut self, i: &'e IfStmt, counted: bool) {
+        self.expr(&i.cond);
+        self.block(&i.then_block, counted);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b, counted),
+            Some(ElseBranch::ElseIf(n)) => self.if_chain(n, counted),
+            None => {}
+        }
+    }
+
+    fn match_arms(&mut self, m: &'e MatchStmt, counted: bool) {
+        self.expr(&m.scrutinee);
+        for a in &m.arms {
+            self.frames.push(Vec::new());
+            self.pattern(&a.pattern);
+            if let Some(g) = &a.guard {
+                self.expr(g);
+            }
+            match &a.body {
+                MatchArmBody::Block(b) => self.block(b, counted),
+                MatchArmBody::Expr(x) => self.expr(x),
+            }
+            self.frames.pop();
+        }
+    }
+
+    fn pattern(&mut self, p: &'e Pattern) {
+        match p {
+            Pattern::Binding(i) => self.declare(i, Resolved::Other),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                for a in args {
+                    self.pattern(a);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
+    fn or_disposition(&mut self, d: &'e OrDisposition) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                self.expr(e)
+            }
+            OrDisposition::Raise(_)
+            | OrDisposition::Discard(_)
+            | OrDisposition::Wait(_) => {}
+        }
+    }
+
+    fn stmt(&mut self, s: &'e Stmt) {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                self.expr(value);
+                self.declare_let(name, Some(value));
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                self.expr(value);
+                for n in names {
+                    self.declare_let(n, None);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                for seg in &target.tail {
+                    match seg {
+                        LValueSeg::Index(ix) => self.expr(ix),
+                        LValueSeg::Field(_) => {}
+                    }
+                }
+                self.expr(value);
+                match self.note_use(&target.head) {
+                    Resolved::Let(k) => {
+                        self.out.assigned.insert(k);
+                        if target.tail.is_empty() {
+                            self.out.writes.push((k, value));
+                        }
+                    }
+                    _ => {
+                        self.out
+                            .assigned_names
+                            .insert(target.head.name.clone());
+                    }
+                }
+            }
+            Stmt::Return(value, _) => {
+                if let Some(e) = value {
+                    self.expr(e);
+                    self.out.returns.push(e);
+                }
+            }
+            Stmt::If(i) => self.if_chain(i, true),
+            Stmt::Match(m) => self.match_arms(m, true),
+            Stmt::For { name, iter, body, .. } => {
+                self.expr(iter);
+                self.frames.push(Vec::new());
+                self.declare(name, Resolved::Other);
+                self.block(body, true);
+                self.frames.pop();
+            }
+            Stmt::ShmWrite { max, binding, body, .. } => {
+                self.expr(max);
+                self.frames.push(Vec::new());
+                self.declare(binding, Resolved::Other);
+                self.block(body, true);
+                self.frames.pop();
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body, true);
+            }
+            Stmt::Block(body) => self.block(body, true),
+            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                match modifier {
+                    Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) => {
+                        self.expr(e)
+                    }
+                    None => {}
+                }
+            }
+            Stmt::Violate { payload, .. } => {
+                if let Some(p) = payload {
+                    self.expr(p);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(d) = or_disposition {
+                    self.or_disposition(d);
+                }
+            }
+            Stmt::Expr(e) => self.expr(e),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => {}
+        }
+    }
+
+    fn expr(&mut self, e: &'e Expr) {
+        match e {
+            Expr::Ident(i) => {
+                self.note_use(i);
+            }
+            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+                self.expr(receiver)
+            }
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(v, _) | Expr::Array(v, _) => {
+                for x in v {
+                    self.expr(x);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Block(b) => self.block(b, false),
+            Expr::If(i) => self.if_chain(i, false),
+            Expr::Match(m) => self.match_arms(m, false),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                self.or_disposition(disposition);
+            }
+        }
     }
 }
 
@@ -573,10 +994,11 @@ struct Resolver {
     scopes: Vec<ScopeId>,
     /// Binding name -> slot, within the frame being walked.
     slots: BTreeMap<String, SlotId>,
-    /// Names this frame hands back with a bare `return x;`. The
-    /// binding does not own those — the caller does, which is the
-    /// carve-out `binding_escapes_this_frame` makes in lowering.
-    returned: BTreeSet<String>,
+    /// The bindings this frame hands back with a bare `return x;`,
+    /// resolved by declaration (GH #1140). The binding does not own
+    /// those — the caller does, the carve-out lowering makes as
+    /// `is_my_returned_binding` over the same resolution.
+    returned: ReturnedBindings,
     /// The declaration being walked, for reporting.
     decl: String,
     /// The locus whose literal / params block is being walked, for the
@@ -651,7 +1073,7 @@ pub fn resolve_owners(
         slots: BTreeMap::new(),
         decl: String::new(),
         owner_locus: String::new(),
-        returned: BTreeSet::new(),
+        returned: ReturnedBindings::default(),
     };
     r.walk_decls(&mut program.items, "");
     r.table.numbered = r.next_id;
@@ -996,13 +1418,15 @@ fn extend_fresh_factories(
             let Some(l) = declared_ret_locus(f, loci, renames) else {
                 continue;
             };
-            let mut rets: Vec<&Expr> = Vec::new();
-            collect_returns(&f.body, &mut rets);
-            if rets.is_empty() {
+            // Every value the fn hands back, wherever the `return`
+            // stands — inside an expression block too (GH #1140) — and
+            // each binding resolved where the return spells it.
+            let bindings = body_bindings(&f.body);
+            if bindings.returns.is_empty() {
                 continue;
             }
             let mut arms: Vec<&Expr> = Vec::new();
-            for r in &rets {
+            for r in &bindings.returns {
                 return_arms(r, &mut arms);
             }
             if arms.is_empty() {
@@ -1012,15 +1436,15 @@ fn extend_fresh_factories(
             // same program as `return <carrier>;` and has to be the
             // same answer (spec/semantics.md "Dissolve timing rules"
             // — the `let`-named and inline spellings are one
-            // program). The name is resolved through the fn's own
-            // `let`s, once, and only when it is bound exactly once and
-            // never re-assigned; anything else leaves the fn out of
-            // the set, which is the old leak and never a double free.
-            let lets = collect_lets(&f.body);
-            let assigned = assigned_names(&f.body);
-            let all_fresh = arms.iter().all(|a| {
-                arm_is_fresh(a, &l, &out, renames, &lets, &assigned, 0)
-            });
+            // program). The name is resolved to the binding in scope
+            // where the return spells it (GH #1140: an inner `let`
+            // shadowing the name is another binding), and only when
+            // that binding is never re-assigned; anything else leaves
+            // the fn out of the set, which is the old leak and never a
+            // double free.
+            let all_fresh = arms
+                .iter()
+                .all(|a| arm_is_fresh(a, &l, &out, renames, &bindings, 0));
             if all_fresh {
                 out.insert(f.name.name.clone(), l);
                 added = true;
@@ -1036,17 +1460,16 @@ fn extend_fresh_factories(
 /// Is this return arm a value the fn freshly built?
 ///
 /// A literal of the declared locus, a call to a fn already proven to
-/// build one, or a NAME bound once to either — including through a
+/// build one, or a name whose binding — the `let` in scope where it is
+/// spelled, never re-assigned — holds either, including through a
 /// carrier, which is the `let t = if c { make(1) } else { make2(1) };
 /// return t;` spelling of the same program.
-#[allow(clippy::too_many_arguments)]
 fn arm_is_fresh(
     a: &Expr,
     l: &str,
     known: &BTreeMap<String, String>,
     renames: &[(Vec<String>, String)],
-    lets: &[(String, &Expr)],
-    assigned: &BTreeSet<String>,
+    bindings: &BodyBindings<'_>,
     depth: u32,
 ) -> bool {
     if depth > 4 {
@@ -1067,108 +1490,24 @@ fn arm_is_fresh(
             .map(|cl| cl == l)
             .unwrap_or(false),
         Expr::Ident(i) => {
-            if assigned.contains(&i.name) {
+            let Some(k) = bindings.let_at(i) else {
+                return false;
+            };
+            if bindings.is_assigned(i, k) {
                 return false;
             }
-            let bound: Vec<&(String, &Expr)> =
-                lets.iter().filter(|(n, _)| *n == i.name).collect();
-            if bound.len() != 1 {
+            let Some(rhs) = bindings.lets.get(&k) else {
                 return false;
-            }
+            };
             let mut inner = Vec::new();
-            return_arms(bound[0].1, &mut inner);
+            return_arms(rhs, &mut inner);
             !inner.is_empty()
                 && inner.iter().all(|x| {
-                    arm_is_fresh(
-                        x,
-                        l,
-                        known,
-                        renames,
-                        lets,
-                        assigned,
-                        depth + 1,
-                    )
+                    arm_is_fresh(x, l, known, renames, bindings, depth + 1)
                 })
         }
         _ => false,
     }
-}
-
-/// Every `let` in a body, as `(name, RHS)`. A name bound twice is
-/// listed twice, which [`arm_is_fresh`] treats as unresolvable.
-fn collect_lets(b: &Block) -> Vec<(String, &Expr)> {
-    let mut out = Vec::new();
-    fn go<'e>(b: &'e Block, out: &mut Vec<(String, &'e Expr)>) {
-        for s in &b.stmts {
-            match s {
-                Stmt::Let { name, value, .. } => {
-                    out.push((name.name.clone(), value))
-                }
-                Stmt::If(i) => go_if(i, out),
-                Stmt::Match(m) => {
-                    for a in &m.arms {
-                        if let MatchArmBody::Block(bb) = &a.body {
-                            go(bb, out);
-                        }
-                    }
-                }
-                Stmt::While { body, .. }
-                | Stmt::For { body, .. }
-                | Stmt::ShmWrite { body, .. }
-                | Stmt::Block(body) => go(body, out),
-                _ => {}
-            }
-        }
-    }
-    fn go_if<'e>(i: &'e IfStmt, out: &mut Vec<(String, &'e Expr)>) {
-        go(&i.then_block, out);
-        match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => go(b, out),
-            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
-            None => {}
-        }
-    }
-    go(b, &mut out);
-    out
-}
-
-/// Names a body re-assigns with a bare `=`. A binding that moves
-/// between names can be reached through two of them, so it is never
-/// the fn's own fresh value.
-fn assigned_names(b: &Block) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    fn go(b: &Block, out: &mut BTreeSet<String>) {
-        for s in &b.stmts {
-            match s {
-                Stmt::Assign { target, .. } => {
-                    out.insert(target.head.name.clone());
-                }
-                Stmt::If(i) => go_if(i, out),
-                Stmt::Match(m) => {
-                    for a in &m.arms {
-                        if let MatchArmBody::Block(bb) = &a.body {
-                            go(bb, out);
-                        }
-                    }
-                }
-                Stmt::While { body, .. }
-                | Stmt::For { body, .. }
-                | Stmt::ShmWrite { body, .. }
-                | Stmt::Block(body) => go(body, out),
-                _ => {}
-            }
-        }
-    }
-    fn go_if(i: &IfStmt, out: &mut BTreeSet<String>) {
-        go(&i.then_block, out);
-        match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => go(b, out),
-            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
-            None => {}
-        }
-    }
-    go(b, &mut out);
-    out
 }
 
 fn collect_fns<'a>(items: &'a [TopDecl], out: &mut Vec<&'a FnDecl>) {
@@ -1202,44 +1541,6 @@ fn declared_ret_locus(
             }
         }
         _ => None,
-    }
-}
-
-fn collect_returns<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
-    for s in &b.stmts {
-        collect_returns_stmt(s, out);
-    }
-    if let Some(t) = &b.tail {
-        out.push(t);
-    }
-}
-
-fn collect_returns_stmt<'e>(s: &'e Stmt, out: &mut Vec<&'e Expr>) {
-    match s {
-        Stmt::Return(Some(e), _) => out.push(e),
-        Stmt::If(i) => collect_returns_if(i, out),
-        Stmt::Match(m) => {
-            for a in &m.arms {
-                match &a.body {
-                    MatchArmBody::Expr(_) => {}
-                    MatchArmBody::Block(b) => collect_returns(b, out),
-                }
-            }
-        }
-        Stmt::While { body, .. }
-        | Stmt::For { body, .. }
-        | Stmt::ShmWrite { body, .. } => collect_returns(body, out),
-        Stmt::Block(b) => collect_returns(b, out),
-        _ => {}
-    }
-}
-
-fn collect_returns_if<'e>(i: &'e IfStmt, out: &mut Vec<&'e Expr>) {
-    collect_returns(&i.then_block, out);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => collect_returns(b, out),
-        Some(ElseBranch::ElseIf(n)) => collect_returns_if(n, out),
-        None => {}
     }
 }
 
@@ -1739,7 +2040,7 @@ impl Resolver {
     fn walk_stmt(&mut self, s: &mut Stmt) {
         match s {
             Stmt::Let { name, value, .. } => {
-                let d = if self.returned.contains(&name.name) {
+                let d = if self.returned.let_is_returned(name) {
                     Decision::Caller
                 } else {
                     Decision::Binding(self.slot_for(&name.name))
@@ -1760,6 +2061,8 @@ impl Resolver {
             Stmt::Assign { target, value, .. } => {
                 let bare = target.tail.is_empty();
                 let head = target.head.name.clone();
+                let head_is_returned =
+                    bare && self.returned.assign_is_returned(&target.head);
                 for seg in target.tail.iter_mut() {
                     if let LValueSeg::Index(ix) = seg {
                         self.assign(
@@ -1779,7 +2082,7 @@ impl Resolver {
                     // reclaimed locus — found by
                     // `freefn_locus_rebind.rs` when GH #921 A3
                     // commit 6 made lowering read this decision.
-                    let d = if self.returned.contains(&head) {
+                    let d = if head_is_returned {
                         Decision::Caller
                     } else {
                         Decision::Binding(self.slot_for(&head))
@@ -1913,11 +2216,11 @@ impl Resolver {
         SavedFrame { decl, slots, returned }
     }
 
-    /// The same, for a body: the names it hands back with a bare
-    /// `return x;` are collected first, so a `let` can see them.
+    /// The same, for a body: the bindings it hands back with a bare
+    /// `return x;` are resolved first, so a `let` can see them.
     fn open_body_frame(&mut self, decl: &str, body: &Block) -> SavedFrame {
         let saved = self.open_frame(decl);
-        collect_returned_names(body, &mut self.returned);
+        self.returned = returned_bindings(body);
         saved
     }
 
