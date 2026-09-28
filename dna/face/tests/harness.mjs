@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
 import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
-import { freePort } from './command-wire.mjs';
+import { freePorts, commandsAnnounced } from './command-wire.mjs';
 
 // An organization fixture's ownership (GH #1123): acme holds the
 // organization, partner holds support; alice is acme's, bob partner's.
@@ -182,16 +182,19 @@ export const test = base.extend({
       }
       let origin;
       for (let attempt = 0; attempt < 3 && !origin; attempt++) {
-        const port = await freePort();
+        // the reads and the head's api binding each take a port of their own
+        // (GH #1135), chosen together so they are never the same one
+        const [port, commandsPort] = await freePorts(2);
         const candidate = `http://127.0.0.1:${port}`;
         const bounded = boundedNative(api, [root, String(port), path.join(face, 'web')], { lock: false });
         // the head's api binding takes a port of its own (GH #1135)
         child = spawn(bounded.command, bounded.args, {
-          env: { ...env, HALE_DNA_COMMANDS_PORT: String(await freePort()) }, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...env, HALE_DNA_COMMANDS_PORT: String(commandsPort) }, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
         });
         let spawnError;
         child.once('error', error => { spawnError = error; });
-        const capture = chunk => { log = (log + chunk).slice(-262_144); };
+        let announced = '';
+        const capture = chunk => { log = (log + chunk).slice(-262_144); announced = (announced + chunk).slice(-65_536); };
         child.stdout.on('data', capture);
         child.stderr.on('data', capture);
         const deadline = Date.now() + 10_000;
@@ -201,7 +204,9 @@ export const test = base.extend({
             const payload = await response.json();
             // A response from another process occupying the released probe
             // port is never accepted as this fixture's readiness.
-            if (response.ok && payload.source.record_id === data.application && child.exitCode === null) {
+            // and ready only once this process has said its commands port
+            // answers: a head whose transport could not hold it never says so
+            if (response.ok && payload.source.record_id === data.application && child.exitCode === null && commandsAnnounced(announced, commandsPort)) {
               origin = candidate;
               break;
             }

@@ -22,7 +22,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, memoryOwner, launchToken } from './environment.mjs';
 import { seatRecord } from './record-seats.mjs';
-import { freePort, wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
+import { freePorts, commandsAnnounced, wireLine, knowledgeLookupLine, settleKnowledge } from './command-wire.mjs';
 
 const webroot = fileURLToPath(new URL('../web', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -62,9 +62,13 @@ export async function startKnowledgeService(options = {}) {
   // The actor holds a seat: a Knowledge change is gated `position`.
   seatRecord(root, env, actor, options.seats || ['editor']);
   const refs = JSON.parse(await readFile(resolve(root, 'fixture.json'), 'utf8'));
-  const apiPort = options.port || await freePort();
-  // GH #1135: the api binding's HTTP transport takes a port of its own
-  env.HALE_DNA_COMMANDS_PORT = String(await freePort());
+  // GH #1135: the reads and the api binding's HTTP transport each take a
+  // port of their own, chosen together so they are never the same one
+  const [freeReads, freeCommands] = await freePorts(2);
+  const apiPort = options.port || freeReads;
+  let commandsPort = freeCommands;
+  while (commandsPort === apiPort) [commandsPort] = await freePorts(1);
+  env.HALE_DNA_COMMANDS_PORT = String(commandsPort);
   const origin = `http://127.0.0.1:${apiPort}`;
   const apiPath = `/api/hale/v1/applications/${refs.application}`;
   const policyPath = resolve(root, 'knowledge-authority.json');
@@ -105,17 +109,21 @@ export async function startKnowledgeService(options = {}) {
   };
   process.once('exit', emergency);
   const processes = () => history.map(({ role, child }) => ({ role, pid: child.pid, exitCode: child.exitCode, signal: child.signalCode, live: child.exitCode === null && !child.signalCode }));
-  async function launch(role, binary, args, ready) {
+  // Ready when `ready` says so and, for a head, once this launch has said
+  // its commands port answers (`commandsPort`; 0 for none): the role's log
+  // spans every launch, so a restart reads only its own output for that.
+  async function launch(role, binary, args, ready, commandsPort = 0) {
+    let output = '';
     const bounded = boundedNative(binary, args, { lock: false });
     const child = spawn(bounded.command, bounded.args, { env, cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     history.push({ role, child });
     apiChild = child;
     let failure;
     child.once('error', error => { failure = error; });
-    for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { logs[role] = (logs[role] + bytes).slice(-262_144); });
+    for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { logs[role] = (logs[role] + bytes).slice(-262_144); output = (output + bytes).slice(-65_536); });
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline && child.exitCode === null && !child.signalCode && !failure) {
-      try { if (await ready()) return; } catch { /* wait only for this owned process */ }
+      try { if (commandsAnnounced(output, commandsPort) && await ready()) return; } catch { /* wait only for this owned process */ }
       await delay(30);
     }
     throw new Error(`${role} failed readiness: ${failure || logs[role]}`);
@@ -125,7 +133,7 @@ export async function startKnowledgeService(options = {}) {
     await launch('api', api, [root, String(apiPort), options.webroot || webroot], async () => {
       const response = await fetch(`${origin}/api/hale/v1/applications`, { signal: AbortSignal.timeout(500) });
       return response.ok;
-    });
+    }, commandsPort);
     token = await launchToken(root);
     for (const page of pages) await authorize(page);
   }

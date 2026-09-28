@@ -161,13 +161,32 @@ export function settle(status, json) {
   return { status, code: '', reply: json.value, receipt: receiptView(json.value.receipt) };
 }
 
-// A free loopback port, bound and closed. A head's reads and its api
-// binding's commands (GH #1135, `HALE_DNA_COMMANDS_PORT`) each take one
-// of their own; neither is derived from the other.
-export async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const port = server.address().port;
-  await new Promise(resolve => server.close(resolve));
-  return port;
+// Free loopback ports, `count` of them, distinct: every probe is held open
+// until all are chosen, then all are closed. Two probes bound and closed one
+// after the other can be handed the same port, and a head given it for its
+// reads and for its api binding's commands (GH #1135,
+// `HALE_DNA_COMMANDS_PORT`) could hold only one of them.
+export async function freePorts(count) {
+  const servers = [];
+  try {
+    for (let i = 0; i < count; i++) {
+      const server = net.createServer();
+      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+      servers.push(server);
+    }
+    return servers.map(server => server.address().port);
+  } finally {
+    await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+  }
+}
+
+// One free loopback port, bound and closed.
+export async function freePort() { return (await freePorts(1))[0]; }
+
+// Whether a head's output announces its api binding's commands transport on
+// `port`: printed once that listener is bound, so a first POST there never
+// finds it closed, and a head whose transport could not hold the port never
+// prints it (the read API's shape, #1220). No port, nothing to wait for.
+export function commandsAnnounced(output, port) {
+  return !port || output.includes(`hale dna api: commands http://127.0.0.1:${port}/`);
 }
