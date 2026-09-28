@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { seatRecord, unseatRecord } from './record-seats.mjs';
-import { freePort, settle, wireLine } from './command-wire.mjs';
+import { freePorts, commandsAnnounced, settle, wireLine } from './command-wire.mjs';
 
 export const nativeTaskEnvironmentPresent = () => Boolean(process.env.HALE_NATIVE_TASK_API && process.env.HALE_NATIVE_TASK_SEED);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -48,9 +48,9 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const authorityFile = path.join(evidence, 'authority.json'), taskFile = path.join(evidence, 'task-policy.json');
   fs.writeFileSync(authorityFile, JSON.stringify({ format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: actor, authority: 'board', practice_propose: false, review_verdict: false, recover: true }] }));
   fs.writeFileSync(taskFile, JSON.stringify(taskPolicy(application, actor)));
-  const port = await freePort();
-  // GH #1135: the api binding's HTTP transport takes a port of its own
-  const commandsPort = await freePort();
+  // GH #1135: the reads and the api binding's HTTP transport each take a
+  // port of their own, chosen together so they are never the same one
+  const [port, commandsPort] = await freePorts(2);
   const origin = `http://127.0.0.1:${port}`, prefix = `/api/hale/v1/applications/${application}`;
   const processes = [], requests = []; let api, stopped = false, sequence = 0;
   // Each API start mints a launch token (GH #989): every POST carries it, and
@@ -86,7 +86,8 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
     child.once('error', error => { item.error = error; record.error = error.message; });
     for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => { log.write(chunk); item.output = (item.output + chunk).slice(-8192); }); api = item;
     const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) { try { const result = await read(prefix + '/capabilities'); if (result.status === 200) { assert.equal(result.json.data.principal.name, actor); token = await launchToken(root); for (const page of pages) await authorize(page); return result.json.data; } } catch (error) { if (!['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) throw error; } await delay(50); }
+    // ready once the head has said its commands port answers, and reads
+    while (Date.now() < deadline) { try { const result = commandsAnnounced(item.output, commandsPort) ? await read(prefix + '/capabilities') : { status: 0 }; if (result.status === 200) { assert.equal(result.json.data.principal.name, actor); token = await launchToken(root); for (const page of pages) await authorize(page); return result.json.data; } } catch (error) { if (!['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) throw error; } await delay(50); }
     throw new Error('Native Task API startup timed out: ' + item.output);
   }
   function exportEvidence() {

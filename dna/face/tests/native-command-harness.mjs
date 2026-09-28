@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
-import { freePort, settle } from './command-wire.mjs';
+import { freePorts, commandsAnnounced, settle } from './command-wire.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
@@ -363,7 +363,8 @@ export async function startService(options = {}) {
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }
       catch (error) { if (['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) return null; throw error; }
-    }, response => response?.status === 200 && response.json.source?.record_id === application);
+      // ready once the head has said its commands port answers, too
+    }, response => response?.status === 200 && response.json.source?.record_id === application && commandsAnnounced(api.output, commandsPort));
     token = await launchToken(root);
     for (const page of pages) await authorize(page);
     const capabilities = await read(apiPath() + '/capabilities');
@@ -433,12 +434,12 @@ export async function startService(options = {}) {
     const ready = await startHost(); practice = ready.practice_id;
     assert.equal(practice, ready.bootstrap_digest);
     save('authority.json', { format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: principal, authority: 'board', practice_propose: true, review_verdict: true, recover: true }] });
-    let port = options.port;
-    if (port === undefined) {
-      port = await freePort();
-    }
-    // GH #1135: the api binding's HTTP transport takes a port of its own
-    commandsPort = options.commandsPort ?? await freePort();
+    // GH #1135: the reads and the api binding's HTTP transport each take a
+    // port of their own, chosen together so they are never the same one
+    const [freeReads, freeCommands] = await freePorts(2);
+    let port = options.port ?? freeReads;
+    commandsPort = options.commandsPort ?? freeCommands;
+    while (commandsPort === port) [commandsPort] = await freePorts(1);
     assert(Number.isInteger(port) && port > 0 && port < 65536, 'Expected a valid loopback port');
     origin = `http://127.0.0.1:${port}`;
     // Optional same-Record services join this fixture's bounded process owner.
