@@ -1,0 +1,162 @@
+// dna/tests/heart_reading_test.hl — an application's event becomes a
+// reading row, once (GH #987).
+//
+// The heart's one hookup to DNA is its events: dna/tests/heart, a
+// stand-in for voice's api, declares its usage event as its own topic
+// under its own subject and publishes it through pond's NATS adapter,
+// importing nothing of DNA. A running organism's host reads it through
+// the organization's durable `heart` and lands it as `reading.recorded`,
+// entity `voice/usage.recorded/<id>`, before anything acts on it. The same
+// id published again — a replay — is refused as a duplicate; the same id
+// under another event is a reading of its own; a body whose `id` is not a
+// string, or that names none, is not a reading at all. Without a NATS
+// server (HALE_DNA_NATS_URL_OWNER), nothing here is exercised.
+
+import "../core" as dna;
+import "../core/pond/realtime/nats" as nats;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// Run `argv` (newline-separated) in `dir`: discovery and hosted models off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// The value of `NAME=` on its own line of `text`.
+fn line_value(text: String, name: String) -> String {
+    let at = std::str::index_of(text, name + "=");
+    if at < 0 { return ""; }
+    let rest = text[(at + len(name) + 1)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
+fn host_log(app: String) -> String { return std::io::fs::read_file(app + "/host.log") or ""; }
+
+// Whether the host's log comes to say `text` within `secs`.
+@unbounded
+fn logged(app: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(host_log(app), text) { return true; }
+        std::time::sleep(250ms);
+    }
+    return false;
+}
+
+// The record's `reading.recorded` rows for `entity`, and the last one's body.
+@unbounded
+fn readings(repo: String, entity: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "reading.recorded" && e.entity == entity { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+@unbounded
+fn reading_body(repo: String, entity: String) -> String {
+    let j = dna::GitJournal { repo: repo };
+    let mut body = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "reading.recorded" && e.entity == entity { body = e.body; }
+        i = i + 1;
+    }
+    return body;
+}
+
+main locus App {
+    run() {
+        let scratch = dna::scratch_root("heart");
+        dna::reap_on_exit(scratch);
+        let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
+        if len(nats_owner) == 0 {
+            eprintln("heart_reading_test: not exercised (HALE_DNA_NATS_URL_OWNER is not set)");
+            dna::scratch_done(scratch);
+            return;
+        }
+        // the heart: its own program, built from its own seed
+        let heart_seed = source() + "/dna/tests/heart";
+        let built = dna::run_tool(toolchain() + "\nbuild\n" + heart_seed);
+        std::test::assert_eq_int(built.code, 0, "the heart builds (HALE_DNA_SOURCE names the repository): " + built.stderr);
+        let heart = heart_seed + "/heart";
+
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbeating");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/beating";
+        let g1 = in_dir(a, "git\nconfig\nuser.name\norganism-host");
+        let g2 = in_dir(a, "git\nconfig\nuser.email\nhost@dna");
+        let g3 = in_dir(a, "git\nadd\n-A");
+        let g4 = in_dir(a, "git\ncommit\n-q\n-m\nthe app");
+
+        // the organization's stream, and what the spine and an application
+        // connect with
+        let nerves = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$1\" dna nerves migrate\nsh\n" + toolchain() + "\n" + nats_owner);
+        let spine = line_value(nerves.stdout, "HALE_DNA_NATS_URL_SPINE");
+        let app_url = line_value(nerves.stdout, "HALE_DNA_NATS_URL_APP");
+        let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
+        std::test::assert(nerves.code == 0 && len(spine) > 0 && len(app_url) > 0 && len(org) > 0, "the nerves' stream is in place: " + nerves.stdout + nerves.stderr);
+
+        let started = in_dir(a, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+        let host_pid = dna::trim_nl(started.stdout);
+        let up = logged(a, "the organization reads its facts from the nerves", 300) && logged(a, "hale dna run: genome ", 60);
+        std::test::assert(up, "the organization came up and reads its facts from the nerves: " + host_log(a));
+
+        // ---- one usage event: a reading row
+        let id = "u" + to_string(std::process::pid());
+        let entity = "voice/usage.recorded/" + id;
+        let once = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
+        std::test::assert(std::str::contains(once.stdout, "heart: usage " + id + " published"), "the stream took the heart's event: " + once.stdout + once.stderr);
+        std::test::assert(logged(a, "reading " + entity + " recorded", 60), "the host recorded it as a reading: " + host_log(a));
+        std::test::assert_eq_int(readings(a, entity), 1, "one reading row, in the record's routing");
+        let body = reading_body(a, entity);
+        std::test::assert(std::json::find_string_field(body, "app") == "voice" && std::json::find_string_field(body, "event") == "usage.recorded" && std::json::find_string_field(body, "subject") == org + ".app.voice.usage.recorded", "the row names the application, the event and the subject: " + body);
+        let payload = std::json::find_string_field(body, "payload");
+        std::test::assert(std::json::find_string_field(payload, "id") == id && std::json::find_int_field(payload, "output_tokens") == 34, "and keeps what the event said: " + payload);
+
+        // ---- the same id again: refused, still one row
+        let again = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n" + id);
+        std::test::assert(std::str::contains(again.stdout, "published"), "the replay reached the stream: " + again.stdout + again.stderr);
+        std::test::assert(logged(a, "reading " + entity + " is recorded already; refused as a duplicate", 60), "the host refused the replay: " + host_log(a));
+        std::test::assert_eq_int(readings(a, entity), 1, "a replayed event lands no second row");
+
+        // ---- an event that names no id: not a reading
+        let anonymous = dna::run_tool(heart + "\n" + app_url + "\n" + org + ".\n-");
+        std::test::assert(std::str::contains(anonymous.stdout, "published"), "the anonymous event reached the stream: " + anonymous.stdout + anonymous.stderr);
+        std::test::assert(logged(a, "the heart's " + org + ".app.voice.usage.recorded is not a reading: the body names no string `id`", 60), "the host refused it: " + host_log(a));
+
+        // ---- raw, as any holder of the application's credential could
+        // publish: an `id` that is not a string is no id, and the same id
+        // under another event is a reading of its own
+        let c = nats::NatsClient { url: app_url, name: "heart-raw", timeout: 2s };
+        std::test::assert(c.open(), "the fixture reaches the nerves as the application: " + c.last_error);
+        let n1 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": null, \"why\": \"nothing\"}")) or nats::PubAck { };
+        let n2 = nats::js_publish(c, org + ".app.voice.request.failed", std::bytes::from_string("{\"id\": \"" + id + "\", \"why\": \"no capacity\"}")) or nats::PubAck { };
+        c.close();
+        std::test::assert(logged(a, "the heart's " + org + ".app.voice.request.failed is not a reading: the body names no string `id`", 60), "a null id is no id: " + host_log(a));
+        let failed = "voice/request.failed/" + id;
+        std::test::assert(logged(a, "reading " + failed + " recorded", 60), "the same id under another event is its own reading: " + host_log(a));
+        std::test::assert_eq_int(readings(a, failed), 1, "one row for it");
+        std::test::assert_eq_int(readings(a, entity), 1, "and the usage reading is still one");
+
+        let k1 = dna::run_tool("kill\n" + host_pid);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);
+        dna::scratch_done(scratch);
+    }
+}
+
+fn main() { App { }; }

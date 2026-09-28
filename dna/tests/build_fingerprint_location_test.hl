@@ -1,0 +1,75 @@
+// dna/tests/build_fingerprint_location_test.hl — the organism build
+// cache's fingerprint is of the PROJECT, not of where it happens to
+// sit (GH #1147 follow-up: CI time at the cause).
+//
+// `Host::build_fingerprint` baked the raw, absolute `seed_dir` into
+// the hash it returns — but every fixture's own organism lives under
+// a uniquely-named scratch root (`dna::scratch_root`), so two
+// otherwise byte-identical organisms NEVER shared a cache entry: the
+// fingerprint always differed on the one thing that should not have
+// mattered. `input_digests` already relativizes every FILE path
+// against the root for exactly this reason; `seed_dir` itself did
+// not follow the same rule. This fixture proves the fix directly
+// against `Host`'s own fingerprint function — fast, and with no
+// organism actually started (no memory, no nerves) — rather than
+// through an end-to-end organism boot.
+
+import "../core" as dna;
+import "../host" as host;
+
+fn hale_bin() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// A minimal but real seed: `hale inputs` (which `build_fingerprint`
+// reads through) needs a project `hale inputs` can actually resolve.
+fn write_minimal_seed(root: String, greeting: String) {
+    dna::run_tool("mkdir\n-p\n" + root + "/app");
+    std::io::fs::write_file(root + "/hale.toml", "[deps]\n") or discard;
+    std::io::fs::write_file(root + "/app/main.hl", "fn main() { println(\"" + greeting + "\"); }\n") or discard;
+}
+
+fn main() {
+    let hale = hale_bin();
+    let a = dna::scratch_root("fingerprint-loc-a");
+    let b = dna::scratch_root("fingerprint-loc-b");
+    write_minimal_seed(a, "hi");
+    write_minimal_seed(b, "hi");
+
+    let ka = host::build_fingerprint(hale, a, a + "/app");
+    let kb = host::build_fingerprint(hale, b, b + "/app");
+    std::test::assert(len(ka) > 0, "fingerprint over a computed: " + ka);
+    std::test::assert(len(kb) > 0, "fingerprint over b computed: " + kb);
+    std::test::assert_eq_str(
+        ka, kb,
+        "byte-identical seeds under two DIFFERENT scratch roots must share one fingerprint — this is the whole cache's ability to share a build across organisms, and different absolute paths alone must never defeat it");
+
+    // The negative control: real content differences still change the
+    // key, so the fix is not accidentally hashing nothing.
+    write_minimal_seed(b, "a different program entirely");
+    let kb2 = host::build_fingerprint(hale, b, b + "/app");
+    std::test::assert(kb2 != ka, "different seed content must still change the fingerprint");
+
+    // The default project's own app IS its root — `Host::seed_dir()`
+    // returns `self.root` unchanged when `self.seed` is "." or "",
+    // so `seed_dir` equals the root exactly with no trailing content
+    // for a prefix strip to find. A dedicated case: two DIFFERENT
+    // roots, each built as its own app-at-root, byte-identical
+    // content, must still share one fingerprint.
+    let c = dna::scratch_root("fingerprint-loc-c");
+    let d = dna::scratch_root("fingerprint-loc-d");
+    std::io::fs::write_file(c + "/hale.toml", "[deps]\n") or discard;
+    std::io::fs::write_file(c + "/main.hl", "fn main() { println(\"root\"); }\n") or discard;
+    std::io::fs::write_file(d + "/hale.toml", "[deps]\n") or discard;
+    std::io::fs::write_file(d + "/main.hl", "fn main() { println(\"root\"); }\n") or discard;
+    let kc = host::build_fingerprint(hale, c, c);
+    let kd = host::build_fingerprint(hale, d, d);
+    std::test::assert(len(kc) > 0, "fingerprint over c (app-at-root) computed: " + kc);
+    std::test::assert_eq_str(kc, kd, "the app-is-the-root case shares one fingerprint too");
+    dna::scratch_done(c);
+    dna::scratch_done(d);
+
+    dna::scratch_done(a);
+    dna::scratch_done(b);
+}

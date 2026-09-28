@@ -226,6 +226,54 @@ start it again with a fresh connection. Over a shared record every
 owner's facts travel in a space of their own, so each organization
 hears only its owner's.
 
+### The heart's events
+
+The application is the heart: what the organism exists to keep
+beating. Its one hookup to DNA is its events. It declares each one the
+way a Hale program declares any topic, under a subject of its own,
+`app.<app>.<event>`, and binds it to pond's NATS adapter with a codec
+that writes one JSON object carrying an `id` the application chooses:
+
+```hale,fragment
+import "vendor/pond/realtime/nats" as nats;
+
+type Usage { id: String = ""; project: String = ""; output_tokens: Int = 0; }
+topic UsageRecorded { payload: Usage; subject: "app.voice.usage.recorded"; }
+
+main locus Api {
+    params { nerves: nats::NatsConn = nats::NatsConn { }; }
+    placement { nerves: pinned; }
+    bindings { UsageRecorded: nats::NatsAdapter { } codec(UsageJson { }); }
+    // ...
+}
+```
+
+It imports nothing of DNA. It connects as the `app` user
+(`HALE_DNA_NATS_URL_APP`, which `hale dna nerves migrate` prints), with
+the organization's token and a dot (`HALE_DNA_NATS_ORG`) as its
+connection's `subject_prefix`, and `jetstream: true`, so the
+organization's stream acknowledges each event. Today you hand it those
+two yourself: neither `dev` nor a node passes them to the application
+it starts. The host reads every application's events through one
+durable, `heart`, and records each as a `reading.recorded` row,
+`<app>/<event>/<id>`, before anything acts on it:
+
+```text
+hale dna run: reading voice/usage.recorded/resp_01j8z3q4v7m2k9x0 recorded
+```
+
+A reading is a signal, never a fact: nothing acts on one yet. The event
+is acknowledged to the stream only once its row has landed, so a host
+that stops first loses nothing, and the event comes again. The same
+event and id arriving again is refused (`recorded already; refused as
+a duplicate`). A body that is not a JSON object with a string `id` (as
+`std::json::valid_object` admits one: at most 64 top-level members,
+unique keys) is not a reading at all, and the host says why. Whatever the organism does
+to the application goes the other way: through the API the application
+exposes, from a leg.
+`dna/tests/heart` is the smallest application that does this, and
+`dna/tests/heart_reading_test.hl` runs it against a live organism.
+
 ## The nodes
 
 A node is the host's counterpart on a machine that runs instances.

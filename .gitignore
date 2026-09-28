@@ -94,6 +94,7 @@ dna/host/host
 # compiled fixture is never a source (a 6.6 MB `dna/tests/apply_test`
 # and a 6 MB `upstream-repro/repro3` were committed by accident).
 dna/tests/*_test
+dna/tests/heart/heart
 tests/hale/*_test
 iris/**/upstream-repro/repro[0-9]*
 !iris/**/upstream-repro/*.hl

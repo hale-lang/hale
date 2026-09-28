@@ -650,6 +650,18 @@ jobs:
           HALE_DNA_DISCOVER: "off"
         run: scripts/warm-dna-cache.sh ./target/release/hale
 
+      - name: Warm the DNA fixture organisms' build cache
+        # `Host::build_seed` caches dna/org and a project's app seed by
+        # content fingerprint, shared across every organism with the
+        # same sources — but with no job-scoped warm, four fixtures on
+        # four parallel slice processes each raced a COLD cache on
+        # their first organism, all paying the same ~4s build at once.
+        # This starts one throwaway organism (no memory/nerves this
+        # job did not already bring up for the slices) long enough for
+        # both builds to land, so every fixture after it is a hit
+        # instead of a miss.
+        run: scripts/warm-dna-fixtures-cache.sh ./target/release/hale
+
       - *toolchain-save
 
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)

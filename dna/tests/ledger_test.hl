@@ -99,6 +99,12 @@ main locus App {
             std::test::assert_eq_int(self.pg.revision(), 2, "pq: and this side now sees what moved it");
             let again = self.pg.append(2, "grant.reserved", "op1", "10");
             std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
+            // GH #987: an application's reading is the ledger's — memory's
+            // insert function reads the routing table — and lands at the
+            // revision it was decided at, as the host appends it
+            let reading = self.pg.append_exact(self.pg.revision(), "reading.recorded", "voice/usage.recorded/r1", "{\"app\": \"voice\"}");
+            std::test::assert(reading.ok, "pq: a reading lands in the ledger: " + self.pg.last_error());
+            std::test::assert_eq_str(dna::memory_of("reading.recorded"), "ledger", "and the routing table says it is the ledger's");
             self.pgl = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
             lease_contract(self.pgl, "pq leases");
             // the database drops a store's connection (a restart, a failover,
