@@ -19,7 +19,7 @@ const form = (page, title) => page.getByRole('form', { name: title, exact: true 
 const saved = page => page.evaluate(prefix => Object.entries(localStorage).filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value: JSON.parse(value) })), STORAGE);
 
 function script(options = {}) {
-  const s = { active: false, apiState: 'ready', body: 'stopped', busy: '', github: '', board: [], secrets: [], connections: [], recent: [], mode: 'succeeded', lookupsUntilSettled: 0, extraKey: false, unavailable: [], receipts: new Map(), posts: [], gets: [], requests: [], registered: options.active === true, ...options };
+  const s = { active: false, apiState: 'ready', body: 'stopped', busy: '', github: '', board: [], secrets: [], connections: [], recent: [], mode: 'succeeded', lookupsUntilSettled: 0, heldStream: false, streams: [], extraKey: false, unavailable: [], receipts: new Map(), posts: [], gets: [], requests: [], registered: options.active === true, ...options };
   s.operations = OPERATIONS.map(name => ({ name, version: '1', available: !s.unavailable.includes(name) && (s.active || HEAD_SCOPED.has(name)), reason_code: s.unavailable.includes(name) ? 'body_running' : s.active || HEAD_SCOPED.has(name) ? '' : 'detached' }));
   return s;
 }
@@ -91,6 +91,9 @@ const test = base.extend({
       // the head's push (GH #986): one `changed`, then the stream ends and
       // the browser reconnects after `retry` — a head whose state moves
       // all the time, which is what following a receipt needs of it
+      // `heldStream`: one stream that stays open and pushes only when the
+      // test says (`host.push()`), as the real head does when its state moves
+      if (url.pathname === '/api/hale/v1/head/events' && s.heldStream) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('retry: 60000\n\n'); s.streams.push(res); return; }
       if (url.pathname === '/api/hale/v1/head/events') { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('retry: 100\n\nevent: changed\ndata: 1\n\n'); return; }
       if (url.pathname === '/api/hale/v1/head/logs') return send(200, envelope(s, { name: url.searchParams.get('run') ? 'run ' + url.searchParams.get('run') : 'child ' + url.searchParams.get('child'), offset: Number(url.searchParams.get('offset') || 0), next_offset: 46, text: 'hale dna sync: no remote: the record is local\n', complete: true }));
       if (url.pathname === '/api/hale/v1/head/commands') {
@@ -112,7 +115,8 @@ const test = base.extend({
       }
       return error(404, 'not_found', 'outside this scripted head');
     });
-    try { await use({ ...host, script: options => { s = script(options); return s; }, state: () => s }); } finally { await host.close(); }
+    const push = () => { for (const stream of s.streams) stream.write('event: changed\ndata: 1\n\n'); };
+    try { await use({ ...host, script: options => { s = script(options); return s; }, state: () => s, push }); } finally { for (const stream of s.streams) stream.end(); await host.close(); }
   }
 });
 async function mount(page, host, options = {}) {
@@ -347,6 +351,84 @@ test('Projects: a succeeded verb is observed through the head, the preview submi
   expect(host.state().posts).toHaveLength(4);
 });
 
+test('Projects: one lookup is in flight at a time, so a settled receipt is never undone and its observation follows it', async ({ page, host }) => {
+  // The head's stream reconnects every 100 ms here and fires `open` and
+  // `changed` on each connection; each is a reason to look the receipt up.
+  // Two lookups in flight answer in either order, and an older answer
+  // landing after the settled one replaced it — abandoning the re-read of
+  // the head that follows a settle, so the observation could stay pending.
+  await mount(page, host, { active: true, lookupsUntilSettled: 3 });
+  await page.evaluate(() => {
+    window.panelHistory = [];
+    new MutationObserver(() => {
+      const panel = document.getElementById('projects-request');
+      if (panel?.dataset.state) window.panelHistory.push(panel.dataset.state + '/' + panel.dataset.observation);
+    }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-state', 'data-observation'] });
+  });
+  // The first lookup's answer is held for 1.5 s, a dozen of the stream's
+  // reconnects: a second lookup started meanwhile is an overlap.
+  let lookups = 0, inFlight = false, overlapping = 0;
+  await page.route(url => url.pathname === '/api/hale/v1/head/commands' && url.searchParams.has('request_id'), async route => {
+    if (inFlight) overlapping += 1;
+    inFlight = true;
+    lookups += 1;
+    const response = await route.fetch();
+    if (lookups === 1) await new Promise(resolve => setTimeout(resolve, 1500));
+    inFlight = false;
+    await route.fulfill({ response });
+  });
+  await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
+  await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed', { timeout: 10_000 });
+  expect(overlapping, 'a lookup started while another was in flight').toBe(0);
+  const history = await page.evaluate(() => window.panelHistory);
+  const settledAt = history.findIndex(entry => entry.startsWith('succeeded/'));
+  expect(settledAt, history.join(' ')).toBeGreaterThanOrEqual(0);
+  expect(history.slice(settledAt).every(entry => entry.startsWith('succeeded/')), 'the settled state never went back: ' + history.join(' ')).toBe(true);
+  expect(host.state().posts).toHaveLength(1);
+});
+
+test('Projects: a push that arrives while a lookup is in flight is not lost: one more lookup runs when the first answers', async ({ page, host }) => {
+  // The real head holds one stream open and pushes only when its state
+  // moves. A push that lands while a lookup is in flight is the only
+  // wakeup there will be; the page must not drop it.
+  host.script({ active: true, lookupsUntilSettled: 2, heldStream: true });
+  // the page's pushes, counted by a listener that runs in the same
+  // dispatch just before the page's own
+  await page.addInitScript(() => {
+    const Base = window.EventSource;
+    window.pushes = 0;
+    window.EventSource = class extends Base { constructor(...args) { super(...args); this.addEventListener('changed', () => { window.pushes += 1; }); } };
+  });
+  await page.goto(host.origin);
+  await page.evaluate(() => { window.controller = window.FaceProjects.mount(document.querySelector('main'), {}); });
+  await expect(workspace(page)).toBeVisible();
+  let lookups = 0, inFlight = false, overlapping = 0, heldNow, release;
+  const firstHeld = new Promise(resolve => { heldNow = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  await page.route(url => url.pathname === '/api/hale/v1/head/commands' && url.searchParams.has('request_id'), async route => {
+    if (inFlight) overlapping += 1;
+    inFlight = true;
+    lookups += 1;
+    const response = await route.fetch();
+    if (lookups === 1) { heldNow(); await gate; }
+    inFlight = false;
+    await route.fulfill({ response });
+  });
+  await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
+  await expect(request(page)).toHaveAttribute('data-state', 'running');
+  host.push();
+  await firstHeld;
+  // the second push, while the first lookup is held: the only wakeup
+  host.push();
+  await expect.poll(() => page.evaluate(() => window.pushes)).toBe(2);
+  release();
+  await expect(request(page)).toHaveAttribute('data-state', 'succeeded', { timeout: 10_000 });
+  await expect(request(page)).toHaveAttribute('data-observation', 'observed', { timeout: 10_000 });
+  expect(lookups).toBe(2);
+  expect(overlapping).toBe(0);
+});
+
 test('Projects: a saved identity is restored as a lookup, never a POST; a lost response keeps its identity and is looked up until it settles', async ({ page, host }) => {
   await page.goto(host.origin);
   const s = host.script({ active: true });
@@ -379,11 +461,17 @@ test('Projects: a saved identity is restored as a lookup, never a POST; a lost r
   // The head records the POST; only its response is lost on the way back.
   // The uncertain moment in between is not asserted: the head's push makes
   // the browser look the identity up at once, so it may never be seen.
-  let reservedAtPost = null;
-  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { reservedAtPost = await saved(page); await route.fetch(); await route.abort('failed'); } else await route.continue(); });
+  // The route is removed only once its handler has aborted the response:
+  // unrouting while the handler is still between `fetch` and `abort` lets
+  // the browser's own request through, so the head records it twice and
+  // the page gets the answer that was meant to be lost.
+  let reservedAtPost = null, lostSettled;
+  const lostHandled = new Promise(resolve => { lostSettled = resolve; });
+  await page.route('**/api/hale/v1/head/commands', async route => { if (route.request().method() === 'POST') { try { reservedAtPost = await saved(page); await route.fetch(); await route.abort('failed'); } finally { lostSettled(); } } else await route.continue(); });
   await form(page, 'Sync record').getByRole('button', { name: 'Sync record', exact: true }).click();
-  await expect.poll(() => host.state().posts.length).toBe(1);
+  await lostHandled;
   await page.unroute('**/api/hale/v1/head/commands');
+  expect(host.state().posts).toHaveLength(1);
   const lost = host.state().posts[0].body.request_id;
   expect(reservedAtPost).toHaveLength(1);
   expect(reservedAtPost[0].value.request_id).toBe(lost);

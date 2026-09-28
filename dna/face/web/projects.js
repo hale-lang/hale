@@ -268,9 +268,19 @@
       request = { phase: "recovering", payload: { request_id: slot.request_id, operation: slot.operation, target: slot.target, arguments: {} }, receipt: null, error: "", observation: "pending", restored: true }; stage = "";
       void lookup();
     }
+    // One lookup in flight per request. The head's stream fires on every
+    // (re)connect and every push, so without this two lookups overlap, and
+    // their answers can land in either order. A reason to look that comes
+    // while one is in flight — a push, "Check status" — is kept, and one
+    // more lookup runs when the flight answers: the real head pushes only
+    // when its state moves, so that push may be the only wakeup.
     async function lookup() {
       if (!request || disposed) return;
-      const id = request.payload.request_id;
+      if (request.looking) { request.again = true; return; }
+      const current = request, id = request.payload.request_id;
+      // the bound counts lookups made, not stream events: one in flight
+      // skips the events that fire meanwhile
+      current.looking = true; current.polls = (current.polls || 0) + 1;
       try {
         const { value } = await exchange("GET", HEAD + "/commands?request_id=" + encodeURIComponent(id));
         if (disposed || !request || request.payload.request_id !== id) return;
@@ -280,12 +290,24 @@
       } catch (error) {
         if (disposed || !request || request.payload.request_id !== id) return;
         if (invalidating(error)) { onInvalidate(error); return; }
+        // a lookup that fails after the request settled leaves it settled
+        if (settled()) return;
         request.phase = "uncertain";
         request.error = error.status === 404 ? "No receipt was found for the saved request. It may still be arriving; check again before discarding its identity. Nothing is resubmitted." : error.status === 503 || error.status === 504 ? "The project service is unavailable. The saved request keeps its identity; check its status when the service answers." : error.message;
         render(); schedule();
+      } finally {
+        current.looking = false;
+        const again = current.again; current.again = false;
+        if (again && !disposed && request === current && !settled()) void lookup();
       }
     }
+    // A terminal receipt is final: a later answer for the same identity can
+    // only repeat it, and an older one must not undo it. Replacing it would
+    // also abandon the head's re-read that follows the settle, so the
+    // observation could wait on a re-read nothing is running any more.
+    function settled() { return Boolean(request?.receipt) && TERMINAL.has(request.receipt.state); }
     function accept(receipt) {
+      if (settled()) return;
       if (request.receipt?.state !== receipt.state) stage = "";
       request.receipt = receipt; request.error = ""; request.polls = 0;
       request.phase = TERMINAL.has(receipt.state) ? "terminal" : "following";
@@ -338,7 +360,7 @@
       if (disposed || document.hidden) return;
       const following = request?.phase === "following" || (request?.phase === "uncertain" && !request.receipt && (request.polls || 0) < 15);
       const starting = state?.data.state === "attached" && state.data.active.api.state === "starting";
-      if (following) { request.polls = (request.polls || 0) + 1; void lookup(); }
+      if (following) void lookup();
       if (starting) void readHead().then(() => { if (!disposed) render(); }).catch(() => {});
     }
     function schedule() {
@@ -407,6 +429,8 @@
           showProblems(form, [["", "The project service refused the request (" + error.code + "): " + error.message]]);
           return;
         }
+        // the POST's own answer lost after a lookup already settled it
+        if (settled()) return;
         request.phase = "uncertain"; request.error = "The request outcome is unavailable (" + error.code + "). Delivery may have occurred; its identity is retained and checked again, never resubmitted.";
         render(); schedule();
       }
