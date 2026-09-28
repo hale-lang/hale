@@ -99,19 +99,19 @@ main locus App {
         self.bare = dna::Dna {
             journal: dna::GitJournal { repo: app },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
-            vault: dna::MemoryVault { repo: app, dsn_env: "" },
+            evidence: dna::EvidenceStore { vault: dna::MemoryVault { repo: app, dsn_env: "" } },
             org_id: "bare"
         };
-        let d0 = self.bare.file_evidence(ledger, "customer", "mara");
+        let d0 = self.bare.evidence.file(ledger, "customer", "mara");
         std::test::assert_eq_str(d0, dna::digest_of(ledger), "the digest is the body's");
         std::test::assert_eq_int(self.rows(app, "receipt.withheld", d0), 1, "the record says the body was not kept");
         std::test::assert(std::str::contains(self.last(app, "receipt.withheld"), "\"class\": \"customer\""), "and its class: " + self.last(app, "receipt.withheld"));
         let git_receipts = dna::GitReceipts { repo: app };
         std::test::assert_eq_str(git_receipts.read(hex_of(d0)), "", "no git receipt holds it");
-        std::test::assert_eq_str(self.bare.evidence_class(d0), "customer", "the class is readable from the record");
-        let refused = self.hosted.complete(dna::ModelRequest { attempt_id: "vault/a0", role: "review", prompt: "summarise the evidence", context: "(protected)", data_class: self.bare.evidence_class(d0) });
+        std::test::assert_eq_str(self.bare.evidence.class_of(d0), "customer", "the class is readable from the record");
+        let refused = self.hosted.complete(dna::ModelRequest { attempt_id: "vault/a0", role: "review", prompt: "summarise the evidence", context: "(protected)", data_class: self.bare.evidence.class_of(d0) });
         std::test::assert(!refused.ok && std::str::contains(refused.refused, "data class customer"), "a hosted model refuses a request carrying the evidence's class: " + refused.refused);
-        let internal = self.bare.file_evidence("a note anyone in the record may read", "internal", "mara");
+        let internal = self.bare.evidence.file("a note anyone in the record may read", "internal", "mara");
         std::test::assert(len(git_receipts.read(hex_of(internal))) > 0, "an internal body is an ordinary git receipt");
 
         // ---- memory keeps it, and only there

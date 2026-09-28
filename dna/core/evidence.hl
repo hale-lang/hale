@@ -1,0 +1,175 @@
+// The organization's evidence (C3, family 1): filing a body by its class,
+// the retention holds on it, its redaction, the class the record gives a
+// digest, and a model call's prompt and context filed as receipts. It was
+// part of the assembly; as a locus of its own it holds only what it needs:
+// the vault that keeps protected bodies, and the journal and receipt store
+// the assembly lends it at birth. Everything it decides is a row in the
+// record, read back from the record (dna/core/record_rows.hl).
+locus EvidenceStore {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        receipts: Receipts = FileReceipts { }; // the verification's store, lent the same way
+        vault: MemoryVault = MemoryVault { }; // memory's keeper of protected bodies (GH #606)
+    }
+    fn bind(j: Journal, receipts: Receipts) {
+        self.journal = j;
+        self.receipts = receipts;
+    }
+    // GH #606: evidence by its class. A public or internal body is an
+    // ordinary git receipt. A customer or confidential body goes to the
+    // knowledge service alone, which names its digest and class in the
+    // record; when no service can keep it, the body is withheld — the
+    // record says so, with the class — and nothing holds it. The digest
+    // is answered either way, so evidence keeps its identity.
+    @unbounded
+    fn file(text: String, class: String, by: String) -> String {
+        // evidence the record says was redacted is not filed again, in git or
+        // in the knowledge service: its digest is answered, and no body is
+        // kept (#636)
+        let digest = digest_of(text);
+        let moved = self.journal.refresh();
+        if row_exists(self.journal, "receipt.redacted", digest) { return digest; }
+        if !protected_class(class) { return "sha256:" + self.receipts.store(text); }
+        let kept = if self.vault.ready() { self.vault.keep(text, class, by) } else { "" };
+        if kept != digest {
+            let why = if !self.vault.ready() { "no memory to keep protected evidence (HALE_DNA_MEMORY_DSN_SPINE; the receipt key is memory's, set at migration)" } else if len(kept) == 0 { self.vault.last_error } else { "memory kept it under another digest" };
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("class", class);
+            b.string_field("by", by);
+            b.string_field("why", why);
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "receipt.withheld", digest, b.result());
+        }
+        return digest;
+    }
+    // GH #606 part 2: retention. A hold stands until released and
+    // refuses redaction. A redaction removes the body — a git receipt's
+    // ref, or the knowledge service's copy of a protected body — and the
+    // record keeps the digest with a `receipt.redacted` row naming who,
+    // why and under what policy, so provenance survives the body and a
+    // reader knows it is gone rather than missing. "" when done, else why.
+    @unbounded
+    fn redact(digest: String, by: String, why: String, policy: String) -> String {
+        if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who, why and the policy"; }
+        let moved = self.journal.refresh();
+        let rev = self.journal.revision();
+        let hold = self.hold_of(digest);
+        if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
+        let class = self.class_of(digest);
+        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let kept_here = !protected_class(class) && len(self.receipts.read(hexd)) > 0;
+        let already = row_exists(self.journal, "receipt.redacted", digest);
+        if protected_class(class) && row_exists(self.journal, "receipt.classified", digest) {
+            // the service keeps the body: it records the redaction, then
+            // erases — and completes one recorded before an interrupted
+            // erasure, or answers that it is already redacted (the second
+            // review of #628)
+            return self.vault.erase(digest, by, why, policy);
+        }
+        if already && !kept_here { return digest + " is already redacted"; }
+        // the decision is in the record before a byte is erased, at the
+        // revision the hold was read at: a redaction the record cannot hold
+        // erases nothing (one recorded before a failed erase is completed)
+        if !already {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", by);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", if protected_class(class) { "none (withheld)" } else { self.receipts.kind() });
+            b.end_object();
+            let x = self.journal.append_exact(rev, "receipt.redacted", digest, b.result());
+            if !x.ok { return if x.error == "stale_revision" { "the record moved while redacting " + digest + "; nothing was erased, try again" } else { "the record refused the redaction: " + x.error + "; nothing was erased" }; }
+        }
+        if kept_here && !self.receipts.erase(hexd) { return "the redaction of " + digest + " is recorded, but the receipt store could not erase it; redacting again erases it"; }
+        return "";
+    }
+    fn hold(digest: String, by: String, why: String) -> String {
+        if len(by) == 0 || len(why) == 0 { return "a hold names who and why"; }
+        let moved = self.journal.refresh();
+        if len(self.hold_of(digest)) > 0 { return digest + " is already held"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "receipt.held", digest, b.result());
+        return if x.ok { "" } else { x.error };
+    }
+    fn release_hold(digest: String, by: String, why: String) -> String {
+        let moved = self.journal.refresh();
+        if len(self.hold_of(digest)) == 0 { return digest + " is not held"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "receipt.hold_released", digest, b.result());
+        return if x.ok { "" } else { x.error };
+    }
+    // "who: why" of a hold standing on `digest` ("" when none).
+    @unbounded
+    fn hold_of(digest: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.entity == digest && e.kind == "receipt.held" { out = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.hold_released" { out = ""; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The class the record gives a digest: `customer` or `confidential`
+    // when it was classified or withheld, `internal` otherwise. A request
+    // that puts the body in a prompt carries it, so a hosted model refuses.
+    @unbounded
+    fn class_of(digest: String) -> String {
+        let moved = self.journal.refresh();
+        let mut out = "internal";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.entity == digest && (e.kind == "receipt.classified" || e.kind == "receipt.withheld") { out = std::json::find_string_field(e.body, "class"); }
+            i = i + 1;
+        }
+        return out;
+    }
+    // GH #611: file a call's prompt and context as receipts in the
+    // record, under the digests its row names. Only a body that hashes to its digest is
+    // filed (a caller may supply `prompt_digest` for text it did not
+    // send), and a customer-class call files nothing: its digests are
+    // the whole of what the record keeps. Receipts are content-addressed,
+    // so a brief sent a hundred times is stored once.
+    fn call_bodies(ev: ModelEvidence) -> String {
+        if len(ev.prompt) == 0 && len(ev.context) == 0 { return "none"; }
+        if protected_class(ev.data_class) { return "withheld (data class " + ev.data_class + ")"; }
+        // The history reads the record's receipts (`refs/dna/receipts`),
+        // and a body belongs where the record is. An organism whose
+        // receipts are a local file store — a fixture, an embedded use
+        // with no record — keeps the digests only, and never writes a
+        // prompt into whatever directory it happens to run in.
+        if self.receipts.kind() != "git" { return "none (receipts are not the record's: " + self.receipts.kind() + ")"; }
+        let mut filed = 0;
+        let mut wanted = 0;
+        if len(ev.prompt) > 0 && digest_of(ev.prompt) == ev.prompt_digest {
+            wanted = wanted + 1;
+            if self.receipt_holds(ev.prompt) { filed = filed + 1; }
+        }
+        if len(ev.context) > 0 && digest_of(ev.context) == ev.context_digest {
+            wanted = wanted + 1;
+            if self.receipt_holds(ev.context) { filed = filed + 1; }
+        }
+        if wanted == 0 { return "none"; }
+        return if filed == wanted { "stored" } else { "not stored (the receipt store refused)" };
+    }
+    // A body is filed when the store gives it back. A file store whose
+    // directory is not there still names the digest it could not
+    // write, and the row must not say `stored` over nothing.
+    fn receipt_holds(text: String) -> Bool {
+        let d = self.receipts.store(text);
+        return len(d) > 0 && self.receipts.read(d) == text;
+    }
+}

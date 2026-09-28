@@ -1056,6 +1056,106 @@ fn only_the_record_and_the_genome_spell_git() {
     assert!(offenders.is_empty(), "git is spelled outside the record's implementation and the genome's files:\n{}", offenders.join("\n"));
 }
 
+/// C3, the assembly's split: each family carved out of `dna/core/assembly.hl`
+/// is a child locus in a file of its own, and the families share nothing
+/// mutable. A family's params are assigned in its own file alone: the
+/// assembly lends it what it needs at birth through the family's own
+/// `bind`, and nothing else in the organism's code writes into it, the
+/// assembly included. What one family needs of another is a row or a
+/// topic. A family is added here with the PR that carves it out.
+const FAMILIES: &[(&str, &str)] = &[("evidence", "dna/core/evidence.hl")];
+
+/// The params a family's file declares, by name: the lines of its first
+/// `params { … }` block.
+fn family_params(text: &str) -> Vec<String> {
+    let Some(open) = text.find("params {") else { return vec![] };
+    let body = &text[open + "params {".len()..];
+    let close = body.find("\n    }").unwrap_or(body.len());
+    body[..close]
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let name: String = l.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            (!name.is_empty() && l[name.len()..].trim_start().starts_with(':')).then_some(name)
+        })
+        .collect()
+}
+
+/// Whether `line` assigns through `path` (`self.evidence`, or
+/// `.evidence.vault`): `<path> =` or `<path>.<field> =`, the whole name,
+/// never a comparison.
+fn assigns_into(line: &str, path: &str) -> bool {
+    let mut from = 0;
+    while let Some(at) = line[from..].find(path) {
+        let rest = &line[from + at + path.len()..];
+        from += at + path.len();
+        if rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            continue;
+        }
+        let target = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_alphanumeric() || c == '_');
+        let t = target.trim_start();
+        if t.starts_with('=') && !t.starts_with("==") {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
+fn no_family_s_params_are_assigned_outside_it() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    let mut sources = Vec::new();
+    for dir in ["dna/core", "dna/host", "dna/operations", "dna/organization_runtime", "dna/api"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p.file_name().map_or(false, |n| n != "tests" && n != "pond") {
+                        stack.push(p);
+                    }
+                } else if p.extension().map_or(false, |x| x == "hl") {
+                    sources.push(p);
+                }
+            }
+        }
+    }
+    for (param, home) in FAMILIES {
+        let fields = family_params(&std::fs::read_to_string(root.join(home)).unwrap_or_else(|e| panic!("the family `{param}` lives in {home}: {e}")));
+        assert!(!fields.is_empty(), "{home} declares the family's params");
+        for p in &sources {
+            let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+            if rel == *home {
+                continue;
+            }
+            // the assembly holds the family as `self.<param>`; anything else
+            // reaches it through a Dna, and only its own params are its
+            let paths: Vec<String> =
+                if rel == "dna/core/assembly.hl" { vec![format!("self.{param}")] } else { fields.iter().map(|f| format!(".{param}.{f}")).collect() };
+            let text = std::fs::read_to_string(p).unwrap();
+            for (i, l) in text.lines().enumerate() {
+                if !l.trim_start().starts_with("//") && paths.iter().any(|path| assigns_into(l, path)) {
+                    offenders.push(format!("{rel}:{}: {}", i + 1, l.trim()));
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "a family's params are assigned outside its own file:\n{}", offenders.join("\n"));
+}
+
+#[test]
+fn the_family_guard_sees_an_assignment_and_not_a_comparison() {
+    assert!(assigns_into("        self.evidence.vault = MemoryVault { };", "self.evidence"));
+    assert!(assigns_into("        self.evidence = EvidenceStore { };", "self.evidence"));
+    assert!(assigns_into("self.core.evidence.journal=j;", ".evidence.journal"));
+    assert!(!assigns_into("        if self.evidence.hold_of(d) == \"\" { }", "self.evidence"));
+    assert!(!assigns_into("        let x = self.evidence.class_of(d);", "self.evidence"));
+    assert!(!assigns_into("        self.evidence_count = 1;", "self.evidence"));
+    assert!(!assigns_into("        self.evidence.bind(self.journal, self.verification.receipts);", "self.evidence"));
+    assert_eq!(family_params("locus X {\n    params {\n        journal: Journal = MemJournal { }; // lent\n        vault: MemoryVault = MemoryVault { };\n    }\n"), vec!["journal", "vault"]);
+}
+
 /// GH #647: a body's infrastructure and transport are implementations
 /// behind the core's interfaces. In the host, `ssh`, `systemctl`,
 /// `journalctl` and `docker compose` are invoked from exactly one file.
