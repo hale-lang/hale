@@ -57,8 +57,9 @@ fn main() {
     let pw_a = text_of(root_a + "/dna/postgres.secrets");
     let pw_b = text_of(root_b + "/dna/postgres.secrets");
     std::test::assert(len(pw_a) == 32 && len(pw_b) == 32 && pw_a != pw_b, "each seed's password is drawn, and its own");
-    let mode = in_dir(root_a, vault, "stat\n-c\n%a\ndna/postgres.secrets");
-    std::test::assert_eq_str(dna::trim_nl(mode.stdout), "600", "the password's file is yours alone");
+    std::test::assert_eq_str(dna::file_mode(root_a + "/dna/postgres.secrets"), "600", "the password's file is yours alone");
+    std::test::assert_eq_str(dna::file_mode(vault), "700", "and so is the vault");
+    std::test::assert_eq_str(dna::file_mode(vault + "/postgres-owner-" + a), "600", "and its entry");
     let ignored = in_dir(root_a, vault, "git\ncheck-ignore\n-q\ndna/postgres.secrets");
     std::test::assert_eq_int(ignored.code, 0, "and git ignores it");
     let listed = in_dir(root_a, vault, toolchain() + "\ndna\nsecrets\n.");

@@ -303,9 +303,8 @@ fn write_private(path: String, text: String) -> Bool {
     return (std::io::fs::file_size(path) or - 1) == len(text);
 }
 
-// The octal mode of `path` as `stat -c %a` prints it ("600"); "" when
-// the file is not there.
+// The octal mode of `path` ("600"); "" when the file is not there. The
+// core's `file_mode`, which asks stat as the platform spells it.
 fn mode_of(path: String) -> String {
-    let r = dna::run_tool("stat\n-c\n%a\n" + path);
-    return if r.code == 0 { dna::trim_nl(r.stdout) } else { "" };
+    return dna::file_mode(path);
 }

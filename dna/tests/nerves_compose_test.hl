@@ -74,8 +74,8 @@ main locus App {
         std::test::assert(len(spine_pw) == 32 && std::str::contains(matched.stdout, "present  " + dna::nerves_vault_name(org, "spine")) && !std::str::contains(matched.stdout, "MISSING  " + dna::nerves_vault_name(org, "spine")), "the bootstrap drew the spine's password into the vault and the secrets file: " + matched.stdout + matched.stderr);
         std::test::assert(!std::str::contains(matched.stdout, spine_pw), "and `hale dna secrets` names it, never shows it");
         std::test::assert(std::str::contains(conf, "password: $NATS_SPINE_PASSWORD") && std::str::contains(conf, "include ./nats.secrets.conf") && !std::str::contains(conf, spine_pw) && !std::str::contains(conf, "-dev\""), "the tracked conf names the password, never holds it: " + conf);
-        let mode = in_dir(self.app, "stat\n-c\n%a\ndna/nats.secrets.conf");
-        std::test::assert_eq_str(dna::trim_nl(mode.stdout), "600", "the secrets file is yours alone");
+        std::test::assert_eq_str(dna::file_mode(self.app + "/dna/nats.secrets.conf"), "600", "the secrets file is yours alone");
+        std::test::assert_eq_str(dna::file_mode(scratch + "/vault"), "700", "and so is the vault");
         let ignored = in_dir(self.app, "git\ncheck-ignore\n-q\ndna/nats.secrets.conf");
         std::test::assert_eq_int(ignored.code, 0, "and git ignores it");
         let c0 = in_dir(self.app, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the organization'");
