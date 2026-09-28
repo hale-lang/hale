@@ -9,7 +9,7 @@
 //! bytes `hale check --dump-api` emits, and `hale mcp --app` lists
 //! exactly the fixture's commands as tools. Regenerate deliberately:
 //!
-//!     HALE_REGEN_API_DESCRIPTION=1 cargo test -p hale-cli --test api_description
+//!     HALE_REGEN_API_DESCRIPTION=1 cargo test -p hale-cli --test tooling_services api_description::
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ fn check_baseline(name: &str, form: &[&str]) {
     assert!(
         got == want,
         "{} moved from its committed baseline. If that is intended, regenerate with \
-         HALE_REGEN_API_DESCRIPTION=1 cargo test -p hale-cli --test api_description\n--- got\n{}",
+         HALE_REGEN_API_DESCRIPTION=1 cargo test -p hale-cli --test tooling_services api_description::\n--- got\n{}",
         name,
         got
     );

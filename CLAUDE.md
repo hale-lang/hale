@@ -41,9 +41,23 @@ and the same guard file refuses a new `set_var` outside
 work, they are just slower and no longer buy anything:
 
 ```sh
-# one integration test in hale-codegen
-cargo test --release -p hale-codegen --test topic_phase2
+# one integration test file in hale-codegen: its area binary, then the file's module
+cargo test --release -p hale-codegen --test bus_topics topic_phase2::
 ```
+
+**Test files are built as area binaries.** `hale-codegen` and
+`hale-cli` list their test targets in `Cargo.toml` (`autotests =
+false`) instead of letting cargo find one binary per file: each
+`tests/<area>.rs` is a binary whose `#[path = "<file>.rs"] mod
+<file>;` lines pull the area's files in as modules, so the crate links
+once per area, not once per file (352 links became 39 for codegen).
+Files keep their paths and names; a test is `<file>::<fn>`. A new
+`tests/foo.rs` joins an area with one line in its root, or is its own
+`[[test]]` when it needs a process to itself (it mutates the
+environment, is a guard, or CI names it); `every_test_file_is_built`
+fails if a file is in neither, since an unlisted file would silently
+never run. Each file still includes `support/harness.rs` for itself,
+so `unique_bin` names carry the file's name inside an area binary.
 
 **`cargo test` has to agree with nextest.** CI runs the suite
 only through nextest, which gives every test its own process —

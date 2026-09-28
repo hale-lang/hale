@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Hale codegen targeting LLVM"
+# Test targets are listed below, not discovered (see `every_test_file_is_built`).
+autotests = false
 
 [dependencies]
 hale-model = { path = "../hale-model" }
@@ -28,3 +30,161 @@ dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
 libc = "0.2"
+
+# Each `tests/<name>.rs` below is one binary; the files an area root pulls in
+# with `#[path]` are its modules.
+[[test]]
+name = "async_io"
+path = "tests/async_io.rs"
+
+[[test]]
+name = "build"
+path = "tests/build.rs"
+
+[[test]]
+name = "bus_core"
+path = "tests/bus_core.rs"
+
+[[test]]
+name = "bus_topics"
+path = "tests/bus_topics.rs"
+
+[[test]]
+name = "bus_transport"
+path = "tests/bus_transport.rs"
+
+[[test]]
+name = "bytes_crypto"
+path = "tests/bytes_crypto.rs"
+
+[[test]]
+name = "bytes_pack_read"
+path = "tests/bytes_pack_read.rs"
+
+[[test]]
+name = "collections"
+path = "tests/collections.rs"
+
+[[test]]
+name = "corpus_check_build_agreement"
+path = "tests/corpus_check_build_agreement.rs"
+
+[[test]]
+name = "corpus_oracle"
+path = "tests/corpus_oracle.rs"
+
+[[test]]
+name = "cross_seed"
+path = "tests/cross_seed.rs"
+
+[[test]]
+name = "every_test_file_is_built"
+path = "tests/every_test_file_is_built.rs"
+
+[[test]]
+name = "form_hashmap_lockfree_tsan"
+path = "tests/form_hashmap_lockfree_tsan.rs"
+
+[[test]]
+name = "forms"
+path = "tests/forms.rs"
+
+[[test]]
+name = "harness_paths_are_unique"
+path = "tests/harness_paths_are_unique.rs"
+
+[[test]]
+name = "http"
+path = "tests/http.rs"
+
+[[test]]
+name = "language"
+path = "tests/language.rs"
+
+[[test]]
+name = "lifecycle_flow"
+path = "tests/lifecycle_flow.rs"
+
+[[test]]
+name = "lifecycle_locus"
+path = "tests/lifecycle_locus.rs"
+
+[[test]]
+name = "missing_ts_shim"
+path = "tests/missing_ts_shim.rs"
+
+[[test]]
+name = "numeric"
+path = "tests/numeric.rs"
+
+[[test]]
+name = "os_files"
+path = "tests/os_files.rs"
+
+[[test]]
+name = "os_process"
+path = "tests/os_process.rs"
+
+[[test]]
+name = "ownership_matrix"
+path = "tests/ownership_matrix.rs"
+
+[[test]]
+name = "ownership_owners"
+path = "tests/ownership_owners.rs"
+
+[[test]]
+name = "ownership_reclaim"
+path = "tests/ownership_reclaim.rs"
+
+[[test]]
+name = "replay_obs"
+path = "tests/replay_obs.rs"
+
+[[test]]
+name = "shm"
+path = "tests/shm.rs"
+
+[[test]]
+name = "shm_ring_layout"
+path = "tests/shm_ring_layout.rs"
+
+[[test]]
+name = "shm_ring_layout_producer"
+path = "tests/shm_ring_layout_producer.rs"
+
+[[test]]
+name = "stdlib_data"
+path = "tests/stdlib_data.rs"
+
+[[test]]
+name = "stdlib_net"
+path = "tests/stdlib_net.rs"
+
+[[test]]
+name = "stdlib_os"
+path = "tests/stdlib_os.rs"
+
+[[test]]
+name = "tcp_io"
+path = "tests/tcp_io.rs"
+
+[[test]]
+name = "text_parse"
+path = "tests/text_parse.rs"
+
+[[test]]
+name = "text_strings"
+path = "tests/text_strings.rs"
+
+[[test]]
+name = "tooling"
+path = "tests/tooling.rs"
+
+[[test]]
+name = "udp_serial"
+path = "tests/udp_serial.rs"
+
+[[test]]
+name = "wasm_ffi"
+path = "tests/wasm_ffi.rs"

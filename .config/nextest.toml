@@ -57,7 +57,7 @@ test-group = 'dna-fixtures'
 # UDP tests hardcode multicast groups (239.255.x) + ports; two running
 # concurrently cross-talk / collide on the group:port pair (the #178
 # loopback flake class). Serialize them against each other.
-filter = 'binary(bus_udp_transport) | binary(udp_multicast) | binary(udp_p4_source_and_timeout) | binary(udp_primitives)'
+filter = 'binary(udp_serial)'
 test-group = 'serial-udp'
 
 [test-groups]
