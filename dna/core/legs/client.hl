@@ -113,6 +113,12 @@ locus Wire {
 // `source`; a reply that carries no receipt is the head's error code;
 // a refusal of the binding (`unknown`, `unauthorized`, `malformed`) is
 // the error, naming its kind.
+// Whether a head's answer decided nothing because its record moved under
+// it: asked again, it is answered.
+fn head_moved(error: String) -> Bool {
+    return std::str::starts_with(error, "snapshot_changed") || error == "command_busy" || std::str::starts_with(error, "command_busy:");
+}
+
 fn socket_reply(path: String, line: String) -> Reply {
     if len(line) == 0 { return Reply { status: 0, error: "the head's socket at " + path + " gave no answer" }; }
     if !std::json::find_bool_field(line, "ok") {
@@ -250,9 +256,24 @@ locus Head {
         self.attached = true;
         return true;
     }
-    // One call on a topic, the receipt as the verbs read it.
+    // One call on a topic, the receipt as the verbs read it. A head that
+    // read its record while another writer's row landed answers
+    // `snapshot_changed`, and one whose record kept moving through all of
+    // its reads answers `command_busy`: neither decided anything. The
+    // command is asked again for up to ten seconds, under the same request
+    // id, so it is the same act: one that landed meanwhile is found by it
+    // and answered with its receipt. A record several legs and the owner
+    // write moves often; the answer is never the leg's to give up on.
+    @unbounded
     fn call(request_id: String, topic: String, payload: String) -> Reply {
-        return socket_reply(self.socket, self.wire.call(request_id, topic, payload));
+        let mut r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
+        let mut tries = 0;
+        while !r.ok && head_moved(r.error) && tries < 50 {
+            std::time::sleep(200ms);
+            tries = tries + 1;
+            r = socket_reply(self.socket, self.wire.call(request_id, topic, payload));
+        }
+        return r;
     }
     // ---- the commands, each its topic's payload
     // `effect_class` is the performer's (GH #946): the claim is filtered on it
@@ -321,23 +342,8 @@ locus Head {
     }
     // The ask for the attempt's spend (GH #1131), under the lease: the
     // spine answers it with a row, which the ask's lookup reads back
-    // (`granted` with the allowance, or `refused` with why). A head that
-    // read its record while another leg's row landed answers
-    // `snapshot_changed`: asked again for up to ten seconds — the same
-    // request id, so the same act — since a record several legs and the
-    // owner write moves often.
-    @unbounded
+    // (`granted` with the allowance, or `refused` with why).
     fn allowance(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
-        let mut r = self.allowance_once(request_id, attempt_id, holder, token);
-        let mut tries = 0;
-        while !r.ok && std::str::starts_with(r.error, "snapshot_changed") && tries < 50 {
-            std::time::sleep(200ms);
-            tries = tries + 1;
-            r = self.allowance_once(request_id, attempt_id, holder, token);
-        }
-        return r;
-    }
-    fn allowance_once(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("request_id", request_id);

@@ -1946,6 +1946,17 @@ role (`HALE_DNA_MEMORY_DSN_HEAD`; memory's insert function is the gate,
 keyed by the request), and refuses the commands and the hat only when no
 memory is named to it.
 
+A command is one act per request id: sent again under the same id, a
+command that landed is found by it and answered with its receipt. A
+head answers `snapshot_changed` when its record moved while it read it,
+and `command_busy` when the record moved through every read it allows
+itself; neither decided anything, so a leg asks the same command again,
+under the same id, for up to ten seconds, whatever the command. A record
+several legs and the owner write moves often. Before this (2026-09-28),
+only the spend ask retried: two workers handing their outcomes back at
+once could see one answered `snapshot_changed`, and that leg gave its
+outcome up as unsettled with the lease kept, so it was never relayed.
+
 - **The hat** (`GET …/dna/context?id=<work>`; `dna/operations/context.hl`)
   is one Work's context as structure, never a prompt: the position's
   identity — the graph's `position:<name>` id, from the performer kind
