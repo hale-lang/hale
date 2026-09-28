@@ -8,12 +8,13 @@
 //! under a vault of its own (`HALE_VAULT_DIR`, made for the run and
 //! removed after it; `HALE_VAULT_ADDR` removed), which everything the
 //! fixture starts inherits; the first test here runs `hale test` over a
-//! fixture that provisions a secret and proves the vault it wrote was not
-//! the default one, under a home whose default vault stays empty. A Rust
-//! test that runs a vault-writing `hale dna` verb spawns `hale` through
-//! `support/vault.rs` (or names `HALE_VAULT_DIR` itself), and the second
-//! test holds every such file to that, and every test source to never
-//! clearing the override.
+//! fixture that runs `hale dna new`, and proves the organism's secrets
+//! went into that vault, and that the caller's vault, the cache's vault
+//! and `~/.config` were left as they were. A Rust test that runs a
+//! vault-writing `hale dna` verb spawns `hale` through `support/vault.rs`
+//! (or names `HALE_VAULT_DIR` itself), and the second test holds every
+//! such file to that, and every test source to never clearing the
+//! override.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,17 +23,35 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
-// A fixture that writes a secret where `std::secret` provisions one, and
-// says where that was (never the value).
+// A fixture that runs a vault-writing verb, `hale dna new` (whose init
+// provisions the organism's secrets), and says where they went (never a
+// value).
 const PROBE: &str = r#"fn main() {
     let dir = std::secret::vault_local_dir();
     std::test::assert(!std::env::var_exists("HALE_VAULT_ADDR"), "no real vault reaches a test");
     std::test::assert(std::env::var_exists("HALE_VAULT_DIR") && dir == std::env::var("HALE_VAULT_DIR"), "the vault is the run's own: " + dir);
-    std::test::assert(dir != std::env::var("XDG_CACHE_HOME") + "/hale/vault", "never the developer's: " + dir);
-    std::io::fs::write_file(dir + "/probe-entry", "x") or discard;
-    std::test::assert(std::secret::Credential { vault: "probe-entry" }.ready(), "and the secret reads back from it");
+    std::test::assert(dir != std::env::var("CALLER_VAULT") && dir != std::env::var("XDG_CACHE_HOME") + "/hale/vault", "never the caller's, never the developer's: " + dir);
+    let made = std::process::run("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna new probeorg\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN")) or raise;
+    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+    std::test::assert(std::secret::Credential { vault: "postgres-owner-probeorg" }.ready(), "and the organism's secrets went into it");
 }
 "#;
+
+// Every entry of a vault directory with its size and modification time.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .map(|es| {
+            es.flatten()
+                .map(|e| {
+                    let m = e.metadata().ok();
+                    format!("{:?} {:?} {:?}", e.file_name(), m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out
+}
 
 #[test]
 fn hale_test_runs_each_file_under_a_vault_of_its_own() {
@@ -41,20 +60,30 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     let home = d.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(d.join("probe_test.hl"), PROBE).unwrap();
+    // the toolchain cache the DNA tests share, warm, so the organism's
+    // host is not built from cold; its vault is the "developer's" here
+    let cache = std::env::temp_dir().join("hale-tests-iris-cache");
+    let before = listing(&cache.join("hale/vault"));
+    let caller_vault = home.join("caller-vault");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("test")
         .arg(d.join("probe_test.hl"))
         .current_dir(&d)
         .env("HOME", &home)
-        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_CACHE_HOME", &cache)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("PROBE_ROOT", &d)
+        .env("CALLER_VAULT", &caller_vault)
         // a caller's own vault and a real vault named: neither reaches the test
-        .env("HALE_VAULT_DIR", home.join(".cache/hale/vault"))
+        .env("HALE_VAULT_DIR", &caller_vault)
         .env("HALE_VAULT_ADDR", "http://127.0.0.1:9")
         .output()
         .expect("hale test");
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && said.contains("1 passed"), "the probe passes under hale test: {said}");
-    assert!(!home.join(".cache/hale/vault").exists(), "the home's vault was never written: {said}");
+    assert!(!caller_vault.exists(), "the caller's vault was never written: {said}");
+    assert_eq!(listing(&cache.join("hale/vault")), before, "the cache's own vault is untouched");
+    assert!(!home.join(".config").exists(), "nothing was written under ~/.config: {said}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
