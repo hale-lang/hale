@@ -30,23 +30,10 @@ locus FakeOpenAi {
 
 main locus App {
     params {
-        srv: std::http::Server = std::http::Server { port: 47391, handler: FakeOpenAi { } };
-        hosted: dna::OpenAiChat = dna::OpenAiChat {
-            name: "quick", model: "test-model",
-            endpoint: "http://127.0.0.1:47391/v1/chat/completions",
-            // any present env var stands in for the API key; the server only checks presence
-            credential: dna::HostedCredential { env_var: "HOME" },
-            max_tokens: 64
-        };
-        keyless: dna::OpenAiChat = dna::OpenAiChat {
-            name: "deep", model: "test-model",
-            endpoint: "http://127.0.0.1:47391/v1/chat/completions",
-            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3a" }
-        };
-        local: dna::LocalModel = dna::LocalModel {
-            name: "private", model: "local-model",
-            endpoint: "http://127.0.0.1:47391/local/v1/chat/completions"
-        };
+        srv: std::http::Server = std::http::Server { port: 1, handler: FakeOpenAi { } };
+        hosted: dna::OpenAiChat = dna::OpenAiChat { name: "quick", model: "test-model", max_tokens: 64 };
+        keyless: dna::OpenAiChat = dna::OpenAiChat { name: "deep", model: "test-model" };
+        local: dna::LocalModel = dna::LocalModel { name: "private", model: "local-model" };
         core: dna::Dna = dna::Dna { };
     }
     placement { srv: cooperative(pool = io); }
@@ -107,6 +94,28 @@ main locus App {
     }
 }
 
+// The fake endpoint's port is one `dna::free_port` bound, never a number
+// the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
-    App { };
+    let port = dna::free_port(90);
+    let base = "http://127.0.0.1:" + to_string(port);
+    App {
+        srv: std::http::Server { port: port, handler: FakeOpenAi { } },
+        hosted: dna::OpenAiChat {
+            name: "quick", model: "test-model",
+            endpoint: base + "/v1/chat/completions",
+            // any present env var stands in for the API key; the server only checks presence
+            credential: dna::HostedCredential { env_var: "HOME" },
+            max_tokens: 64
+        },
+        keyless: dna::OpenAiChat {
+            name: "deep", model: "test-model",
+            endpoint: base + "/v1/chat/completions",
+            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3a" }
+        },
+        local: dna::LocalModel {
+            name: "private", model: "local-model",
+            endpoint: base + "/local/v1/chat/completions"
+        }
+    };
 }

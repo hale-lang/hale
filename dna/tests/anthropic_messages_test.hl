@@ -47,31 +47,11 @@ locus FakeAnthropic {
 
 main locus App {
     params {
-        srv: std::http::Server = std::http::Server { port: 47392, handler: FakeAnthropic { } };
-        hosted: dna::AnthropicMessages = dna::AnthropicMessages {
-            name: "deep", model: "test-model",
-            endpoint: "http://127.0.0.1:47392/v1/messages",
-            // any present env var stands in for the API key; the server only checks presence
-            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" },
-            max_tokens: 64, temperature_milli: 200
-        };
-        keyless: dna::AnthropicMessages = dna::AnthropicMessages {
-            name: "deep", model: "test-model",
-            endpoint: "http://127.0.0.1:47392/v1/messages",
-            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3b", scheme: "x-api-key" }
-        };
-        overloaded: dna::AnthropicMessages = dna::AnthropicMessages {
-            name: "deep", model: "overloaded-model",
-            endpoint: "http://127.0.0.1:47392/v1/messages",
-            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" }
-        };
-        // a bearer credential on the Anthropic wire: the scheme is the
-        // credential's, and the endpoint refuses it
-        wrong_scheme: dna::AnthropicMessages = dna::AnthropicMessages {
-            name: "deep", model: "test-model",
-            endpoint: "http://127.0.0.1:47392/v1/messages",
-            credential: dna::HostedCredential { env_var: "HOME" }
-        };
+        srv: std::http::Server = std::http::Server { port: 1, handler: FakeAnthropic { } };
+        hosted: dna::AnthropicMessages = dna::AnthropicMessages { name: "deep", model: "test-model" };
+        keyless: dna::AnthropicMessages = dna::AnthropicMessages { name: "deep", model: "test-model" };
+        overloaded: dna::AnthropicMessages = dna::AnthropicMessages { name: "deep", model: "overloaded-model" };
+        wrong_scheme: dna::AnthropicMessages = dna::AnthropicMessages { name: "deep", model: "test-model" };
         core: dna::Dna = dna::Dna { };
     }
     placement { srv: cooperative(pool = io); }
@@ -130,6 +110,36 @@ main locus App {
     }
 }
 
+// The fake endpoint's port is one `dna::free_port` bound, never a number
+// the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
-    App { };
+    let port = dna::free_port(91);
+    let endpoint = "http://127.0.0.1:" + to_string(port) + "/v1/messages";
+    App {
+        srv: std::http::Server { port: port, handler: FakeAnthropic { } },
+        hosted: dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: endpoint,
+            // any present env var stands in for the API key; the server only checks presence
+            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" },
+            max_tokens: 64, temperature_milli: 200
+        },
+        keyless: dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: endpoint,
+            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3b", scheme: "x-api-key" }
+        },
+        overloaded: dna::AnthropicMessages {
+            name: "deep", model: "overloaded-model",
+            endpoint: endpoint,
+            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" }
+        },
+        // a bearer credential on the Anthropic wire: the scheme is the
+        // credential's, and the endpoint refuses it
+        wrong_scheme: dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: endpoint,
+            credential: dna::HostedCredential { env_var: "HOME" }
+        }
+    };
 }

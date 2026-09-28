@@ -362,11 +362,12 @@ jobs:
       # The compiler's identity and the host's, for the toolchain cache
       # below and the face's builds cache in face-browser. A cached output
       # is only as good as the compiler that made it: the toolchain cache's
-      # own directory name (`iris/<hash>`) hashes the version and the
-      # embedded DNA and iris sources but not codegen or the runtime, and a
-      # binary already there is exec'd without a staleness check, so a
-      # compiler change that left the key alone would run binaries the old
-      # compiler built.
+      # own directory name (`iris/<hash>`) hashes the version, the embedded
+      # DNA, iris and stdlib sources and the compiler's own source (front
+      # end, type checker, codegen and the runtime C), but not the C
+      # compiler, rustc or the registry crates, and a binary already there
+      # is exec'd without a staleness check, so a change to one of those
+      # that left the key alone would run binaries the old toolchain built.
       #
       # `id` is what the compiler binary was built from, as cargo itself
       # records it: every local file in `target/release/hale.d` (each

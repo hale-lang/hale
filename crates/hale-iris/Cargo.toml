@@ -6,3 +6,4 @@ description = "The iris observer's sources, embedded so `hale iris` ships in the
 
 [dependencies]
 hale-dna = { path = "../hale-dna" }
+hale-stdlib = { path = "../hale-stdlib" }

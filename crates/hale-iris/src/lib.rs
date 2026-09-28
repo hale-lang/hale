@@ -71,10 +71,27 @@ pub const INSPECT_BIN: &str = "iris/inspect/inspect";
 /// The web root fuse-hl serves.
 pub const WEBROOT: &str = "iris/render/web";
 
-/// FNV-1a over the compiler version and every embedded byte. Two
-/// toolchains with the same iris sources and the same compiler share
-/// a cache; anything else rebuilds.
+/// FNV-1a over what the cached binaries were built from: the crate
+/// version, the compiler's own source (`HALE_COMPILER_SRC_HASH`, from
+/// `build.rs`: front end, type checker, codegen and the runtime C), the
+/// embedded stdlib, and every embedded iris and DNA byte. A change to
+/// any of them rebuilds; two toolchains that agree on all of them share
+/// a cache.
 pub fn toolchain_hash() -> u64 {
+    toolchain_hash_of(
+        env!("CARGO_PKG_VERSION"),
+        env!("HALE_COMPILER_SRC_HASH"),
+        hale_stdlib::AP_FILES.iter().copied(),
+        all_files(),
+    )
+}
+
+fn toolchain_hash_of<'a, 'b>(
+    version: &str,
+    compiler: &str,
+    stdlib: impl Iterator<Item = (&'a str, &'a str)>,
+    files: impl Iterator<Item = (&'b str, &'b str)>,
+) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |bytes: &[u8]| {
         for b in bytes {
@@ -82,8 +99,18 @@ pub fn toolchain_hash() -> u64 {
             h = h.wrapping_mul(0x100_0000_01b3);
         }
     };
-    eat(env!("CARGO_PKG_VERSION").as_bytes());
-    for (path, content) in all_files() {
+    eat(version.as_bytes());
+    eat(&[0]);
+    eat(compiler.as_bytes());
+    eat(&[0]);
+    for (path, content) in stdlib {
+        eat(b"std/");
+        eat(path.as_bytes());
+        eat(&[0]);
+        eat(content.as_bytes());
+        eat(&[0]);
+    }
+    for (path, content) in files {
         eat(path.as_bytes());
         eat(&[0]);
         eat(content.as_bytes());
@@ -166,6 +193,43 @@ mod tests {
             assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(), content, "{path} is whole");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn hash_with(compiler: &str, stdlib: &[(&str, &str)]) -> u64 {
+        toolchain_hash_of("0.0.0", compiler, stdlib.iter().copied(), all_files())
+    }
+
+    /// A stdlib edit that leaves the version alone must still move the
+    /// key: the cached host was compiled against the old stdlib.
+    #[test]
+    fn a_stdlib_byte_change_moves_the_key() {
+        let base: Vec<(&str, &str)> = hale_stdlib::AP_FILES.to_vec();
+        let same = hash_with("c", &base);
+        assert_eq!(same, hash_with("c", &base), "the key is deterministic");
+        let edited = format!("{} ", base[0].1);
+        let mut changed = base.clone();
+        changed[0].1 = &edited;
+        assert_ne!(same, hash_with("c", &changed), "one appended byte in one stdlib file");
+        let mut renamed = base.clone();
+        renamed[0].0 = "renamed.hl";
+        assert_ne!(same, hash_with("c", &renamed), "a stdlib file's name is part of the key");
+        assert_ne!(same, hash_with("c", &base[1..]), "a stdlib file dropped");
+    }
+
+    /// The compiler's own source moves the key too (codegen, the
+    /// runtime C): the cached host is a binary it produced.
+    #[test]
+    fn a_compiler_change_moves_the_key() {
+        let std: Vec<(&str, &str)> = hale_stdlib::AP_FILES.to_vec();
+        assert_ne!(hash_with("0000000000000001", &std), hash_with("0000000000000002", &std));
+        let built = env!("HALE_COMPILER_SRC_HASH");
+        assert_eq!(built.len(), 16, "a 64-bit hex id from build.rs: {built}");
+        assert!(built.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            toolchain_hash(),
+            toolchain_hash_of(env!("CARGO_PKG_VERSION"), built, std.iter().copied(), all_files()),
+            "the shipped key is composed of exactly these inputs"
+        );
     }
 
     #[test]

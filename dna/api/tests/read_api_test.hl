@@ -581,7 +581,7 @@ fn main() {
     std::test::assert_eq_int(made.code, 0, "temporary suite root: " + made.stderr);
     let root = dna::trim_nl(made.stdout);
     fixture::reap_and_remove_on_exit(root);
-    let port = fixture::free_port(997);
+    let port = dna::free_port(997);
     let url = "http://127.0.0.1:" + to_string(port);
     App { root: root, issuer_url: url, server: std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: url, client: "dna-api-tests", secret: "fake-secret", subject: "alice-sub" } } };
 }

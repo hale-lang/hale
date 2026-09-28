@@ -50,20 +50,6 @@ locus Json {
     }
 }
 
-// Bind-probe alternate PID-derived candidates and release the selected port.
-// The service must then prove its own successful startup before tests use it.
-fn free_port(salt: Int) -> Int {
-    let mut i = 0;
-    while i < 256 {
-        let port = 30000 + (std::process::pid() + salt + i) % 25000;
-        let fd = std::io::tcp::__listen_socket("127.0.0.1", port);
-        if fd >= 0 { std::io::tcp::__close_fd(fd); return port; }
-        i = i + 1;
-    }
-    std::test::assert(false, "could not reserve a local fixture port");
-    return 0;
-}
-
 fn curl(method: String, url: String, cookie: String, body: String) -> HttpResponse {
     let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n5\n--include\n--path-as-is\n--request\n" + method;
     if len(cookie) > 0 { argv = argv + "\n--header\nCookie: " + cookie; }
@@ -128,7 +114,7 @@ locus Fixture {
         let record = dna::GitRecord { repo: self.root };
         self.identity = record.identity();
         self.prefix = APPLICATIONS + "/" + self.identity;
-        if self.port == 0 { self.port = free_port(37); }
+        if self.port == 0 { self.port = dna::free_port(37); }
     }
     dissolve() {
         self.stop();
