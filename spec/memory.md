@@ -1525,6 +1525,50 @@ same-arena memcpy and the subregion lifecycle is mostly
 overhead for cleanup hooks — the optimization still skips
 both, just with a smaller per-call cost being avoided.
 
+**Scratch-local free fns (GH #1148).** The escape analysis the
+routing above waits for exists for one narrow class, and that
+class allocates into its own subregion again. A free fn is
+*scratch-local* when nothing it allocates can be reachable after
+it returns except its return value:
+
+- its signature is not fallible, `@ffi` or `@export`, has no
+  generics, and every parameter and the return (if any) is a
+  by-value scalar (`Int`, `Uint`, `Float`, `Bool`, `Duration`) or
+  a `String` — nothing that can carry a pointer to a longer-lived
+  structure in or out;
+- its body holds no struct or locus literal, no method call, no
+  publish and no `self`; it assigns only bare locals; and it calls
+  only other scratch-local fns (by name, by import path, or by a
+  `std::` path naming a Hale-source stdlib fn, which is held to
+  the same rule), the value builtins (`len`, `to_string`, `min`,
+  `max`, `abs`, `Int`, `Float`, `print`/`println` and their
+  `e`-forms), or runtime primitives under `std::str`, `std::math`,
+  `std::json`, `std::crypto` and `std::env`.
+
+The class is a greatest fixpoint over the call graph
+(`compute_scratch_local_free_fns`). Its body allocates into the
+per-call subregion; the epilogue deep-copies the return value
+into `__caller_arena` and destroys the subregion, so everything
+else the call made is reclaimed at return. Every other free fn
+keeps the caller-arena routing.
+
+The case it closes: a helper that walks a String by re-slicing a
+loop-carried local (`rest = rest[(nl + 1)..len(rest)]`) makes one
+suffix copy per iteration. In the caller's arena those copies
+lived until the caller's scope ended, so a method asking such a
+helper for each line of an N-line text in turn held O(N³) bytes
+of garbage at once; a downstream handoff's API head scanning a
+~600-row record exhausted its 512 MiB address-space bound inside
+one command. In the fn's own subregion the garbage lives for one
+call.
+
+Why a Hale-source stdlib fn is not waved through by its
+namespace: `std::str::bytes_view` returns a struct carrying its
+argument, deep-copied into the calling fn's arena. In the
+caller's arena the copy of a String already living there is
+skipped (`lotus_str_clone`'s same-arena passthrough); in a fresh
+subregion it is a real copy of the whole text per call.
+
 This delivers the spec's "every free function has its own
 implicit locus" memory boundary at the codegen substrate.
 Bound handles in free fn bodies still attach to the enclosing
