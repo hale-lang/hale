@@ -450,6 +450,9 @@ crates/hale-codegen/tests/deferred_slot_per_iteration.rs#0 eac6c288815baa44
 crates/hale-codegen/tests/deferred_slot_per_iteration.rs#10 f1400473ef11e19d
 crates/hale-codegen/tests/drain_elision.rs#0 8dbd2b3a0de2ee5b
 crates/hale-codegen/tests/drain_elision.rs#1 e9b3a90b0626e56f
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#0 ba8576b3a6a69d7f
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#1 13f189cff0982ac7
+crates/hale-codegen/tests/drain_grace_names_the_wait.rs#2 f93ba90ecbf2502e
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
 crates/hale-codegen/tests/dump_pool_residency.rs#1 7d5cf57defcf548e
 crates/hale-codegen/tests/duration_scalar_arith.rs#0 1da3ae7aef880cc6

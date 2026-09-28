@@ -35242,8 +35242,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_drain_observer_add")
             .expect("lotus_drain_observer_add declared");
+        let name = self
+            .builder
+            .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
+            .map_err(e)?
+            .as_pointer_value();
         self.builder
-            .build_call(add, &[i64_t.const_int(delta as u64, true).into()], "drain.observer.add")
+            .build_call(
+                add,
+                &[i64_t.const_int(delta as u64, true).into(), name.into()],
+                "drain.observer.add",
+            )
             .map_err(e)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);

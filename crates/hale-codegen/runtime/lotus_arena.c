@@ -378,8 +378,12 @@ typedef struct lotus_arena {
      * already). */
     size_t               chunk_byte_total;
     size_t               chunk_byte_cap;
-    /* Human-readable name for the cap diagnostic. NULL means use
-     * the generic message. */
+    /* Human-readable name for the arena in diagnostics: the cap
+     * message, the out-of-memory report, the chunk-attach log. Set on
+     * the bus payload arena, the recpool slab, and every arena made
+     * through a `lotus_arena_create_labeled*` entry (codegen passes
+     * the locus's name, a global string literal that outlives the
+     * arena). NULL means use the generic message. */
     const char          *cap_diag_name;
     /* 2026-05-26 substrate-race fix: mutex protecting the
      * sub-region tracker (`free_list`, `free_count`, `free_cap`,
@@ -1741,6 +1745,7 @@ lotus_arena_t *lotus_arena_create(void) {
  * literal so this is automatic. */
 lotus_arena_t *lotus_arena_create_labeled(const char *label) {
     lotus_arena_t *a = lotus_arena_alloc_struct();
+    if (a) a->cap_diag_name = label;
     lotus_arena_residency_register(a, label);
     return a;
 }
@@ -1759,6 +1764,7 @@ lotus_arena_t *lotus_arena_create_labeled_on_node(
 {
     lotus_arena_t *a = lotus_arena_alloc_struct();
     if (!a) return NULL;
+    a->cap_diag_name = label;
     if (node >= 0) a->numa_node = node;
     lotus_arena_residency_register(a, label);
     return a;
@@ -1795,6 +1801,7 @@ lotus_arena_t *lotus_arena_create_labeled_sized(
 {
     lotus_arena_t *a = lotus_arena_alloc_struct();
     if (!a) return NULL;
+    a->cap_diag_name = label;
     size_t def = a->default_chunk_size;  /* env-resolved */
     size_t hint = initial_chunk_bytes;
     if (hint >= 4096 && hint <= def && (hint & (hint - 1)) == 0) {
@@ -8085,6 +8092,13 @@ typedef struct lotus_coop_pool {
     /* Worker pthread; set once start_all has run. */
     pthread_t         worker;
     int               worker_started;
+    /* The name of the locus whose cell the worker is running right now
+     * (NULL between cells, and while a coro is parked): what the drain
+     * grace's report names when a worker is still mid-iteration. Written
+     * by the worker around every handler, read once by the drain watcher
+     * as the process is about to end; a label is a string literal, so a
+     * stale read is harmless. "" when the cell's locus has no name. */
+    const char *volatile running_label;
     /* F.35 Slice 1: async_io state. Dormant when `async_io_enabled`
      * is 0 — pool runs the classic blocking-syscall worker loop.
      * When non-zero, `epoll_fd` is open and the worker uses the
@@ -8300,7 +8314,21 @@ lotus_coop_pool_t *lotus_coop_pool_current(void);
  * Two-tier inline/heap payload, identical to the mailbox dispatch. Used by
  * the classic drain (the async drain runs the handler on a coro stack and
  * frees the payload after the coro completes, so it can't use this). */
-static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
+/* The name a locus's arena carries (see `cap_diag_name`), for the drain
+ * grace's report. `self_ptr` is a live locus (it is about to run a
+ * handler, which reads it), whose slot 0 is its `__arena` by
+ * construction. */
+static const char *lotus_locus_label(void *self_ptr) {
+    if (!self_ptr) return "";
+    for (const lotus_arena_t *a = *(lotus_arena_t *const *)self_ptr; a;
+         a = a->parent) {
+        if (a->cap_diag_name) return a->cap_diag_name;
+    }
+    return "";
+}
+
+static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
+                                          lotus_bus_cell_t *cell) {
     /* Wire cell? Deserialize into the subscriber's arena HERE, on
      * its owner thread (bug 3, downstream handoff 2026-07-15). */
     if (!lotus_bus_cell_materialize(cell)) return;
@@ -8311,7 +8339,9 @@ static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
             : (void *)cell->payload_inline;
     }
     lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
+    p->running_label = lotus_locus_label(cell->self_ptr);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
+    p->running_label = NULL;
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
 }
@@ -8467,7 +8497,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
         if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
             lotus_coop_pool_wake_producers(p);  /* freed a slot */
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_coop_pool_dispatch_cell(&cell);
+            lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
         }
         if (p->overflow_head) {
@@ -8477,7 +8507,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
             cell = node->cell;
             free(node);
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_coop_pool_dispatch_cell(&cell);
+            lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
         }
         /* GH #296 Phase 4: queue empty but cells held out of order —
@@ -8486,7 +8516,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
          * delivery may only exist in the pending buffer). */
         if (replaying && t_rp_pending_len > 0) {
             if (lotus_replay_gate_idle(&cell)) {
-                lotus_coop_pool_dispatch_cell(&cell);
+                lotus_coop_pool_dispatch_cell(p, &cell);
                 return 1;
             }
             struct timespec ts = {0, 200 * 1000};
@@ -8510,7 +8540,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
             pthread_mutex_unlock(&p->lock);
             lotus_coop_pool_wake_producers(p);
             if (replaying && !lotus_replay_gate_cell(&cell)) continue;
-            lotus_coop_pool_dispatch_cell(&cell);
+            lotus_coop_pool_dispatch_cell(p, &cell);
             return 1;
         }
         if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
@@ -9132,8 +9162,10 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         }
         lotus_bus_note_consume(cell_copy->self_ptr,
                                cell_copy->rec_pub_id);
+        p->running_label = lotus_locus_label(cell_copy->self_ptr);
         ((lotus_handler_fn)cell_copy->handler)(
             cell_copy->self_ptr, payload_ptr);
+        p->running_label = NULL;
         if (cell_copy->payload_heap) free(cell_copy->payload_heap);
         if (cell_copy->payload_region)
             lotus_arena_destroy(cell_copy->payload_region);
@@ -9142,7 +9174,9 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
     c->rec_pub_id = cell_copy->rec_pub_id;
     c->birth_ord = ord;
     g_current_coro_tls = c;
+    p->running_label = lotus_locus_label(c->self_ptr);
     swapcontext(&p->drain_ctx, &c->ctx);
+    p->running_label = NULL;
     g_current_coro_tls = NULL;
     lotus_current_caller_arena = NULL;   /* drain baseline */
     if (c->done) lotus_coro_release(p, c);
@@ -9181,7 +9215,9 @@ static void lotus_async_resume_coro(lotus_coop_pool_t *p,
                                    : LOTUS_REC_ASYNC_RESUME,
                          c->birth_ord);
     g_current_coro_tls = c;
+    p->running_label = lotus_locus_label(c->self_ptr);
     swapcontext(&p->drain_ctx, &c->ctx);
+    p->running_label = NULL;
     g_current_coro_tls = NULL;
     lotus_current_caller_arena = NULL;
     if (c->done) lotus_coro_release(p, c);
@@ -9528,7 +9564,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             /* Resume the coro. Returns here when it parks again or
              * the handler returns. */
             g_current_coro_tls = c;
+            p->running_label = lotus_locus_label(c->self_ptr);
             swapcontext(&p->drain_ctx, &c->ctx);
+            p->running_label = NULL;
             g_current_coro_tls = NULL;
             /* The coro left the caller-arena TLS pointing at its own
              * arena; the drain loop runs outside any locus, so reset to
@@ -9581,7 +9619,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             lotus_async_rec_step(LOTUS_REC_ASYNC_EXPIRE,
                                  expired->birth_ord);
             g_current_coro_tls = expired;
+            p->running_label = lotus_locus_label(expired->self_ptr);
             swapcontext(&p->drain_ctx, &expired->ctx);
+            p->running_label = NULL;
             g_current_coro_tls = NULL;
             lotus_current_caller_arena = NULL;   /* drain baseline — see above */
             if (expired->done) {
@@ -9725,8 +9765,85 @@ static void lotus_drain_on_signal(int sig) {
 static int64_t g_drain_observers = 0;
 static int64_t g_drain_mode = 0;   /* 1: counted observers; 2: always */
 
-void lotus_drain_observer_add(int64_t delta) {
+/* The same live instances by locus name, so the grace's report can say
+ * WHICH ones a drain is still waiting on (codegen passes the locus's
+ * name, a string literal). A fixed table, filled without a lock: a slot
+ * is claimed once by a compare-and-swap on its name and never released,
+ * and each count moves atomically. A program with more distinct
+ * draining-aware loci than slots still counts them all in
+ * g_drain_observers; the report just cannot name the overflow. */
+#define LOTUS_DRAIN_NAMES_MAX 128
+static struct {
+    const char *label;   /* accessed with __atomic builtins only */
+    int64_t     live;
+} g_drain_names[LOTUS_DRAIN_NAMES_MAX];
+
+static void lotus_drain_name_count(const char *label, int64_t delta) {
+    if (!label) return;
+    for (size_t i = 0; i < LOTUS_DRAIN_NAMES_MAX; i++) {
+        const char *cur = __atomic_load_n(&g_drain_names[i].label, __ATOMIC_ACQUIRE);
+        if (!cur) {
+            const char *none = NULL;
+            if (__atomic_compare_exchange_n(&g_drain_names[i].label, &none, label,
+                                            0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                cur = label;
+            } else {
+                cur = none;   /* another thread claimed it: whose is it? */
+            }
+        }
+        if (cur == label || (cur && strcmp(cur, label) == 0)) {
+            __atomic_add_fetch(&g_drain_names[i].live, delta, __ATOMIC_RELAXED);
+            return;
+        }
+    }
+}
+
+void lotus_drain_observer_add(int64_t delta, const char *label) {
     __atomic_add_fetch(&g_drain_observers, delta, __ATOMIC_RELEASE);
+    lotus_drain_name_count(label, delta);
+}
+
+/* What the drain is still waiting on, as one line's worth of text: each
+ * cooperative pool with its mode, whether a worker is mid-iteration (and
+ * on which locus) and how many cells queue behind it, then the live loci
+ * that read `draining` and so can end it. Composed into `buf` with
+ * snprintf only; appends stop at `cap`. Called once, by the watcher, when
+ * the grace expires and the process is about to end. */
+static size_t lotus_drain_waiting_on(char *buf, size_t cap) {
+    size_t n = 0;
+#define LOTUS_APPEND(...) do { \
+        if (n < cap) { \
+            int w = snprintf(buf + n, cap - n, __VA_ARGS__); \
+            if (w > 0) n += ((size_t)w < cap - n) ? (size_t)w : cap - n - 1; \
+        } \
+    } while (0)
+    int any_pool = 0;
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        lotus_coop_pool_t *p = g_coop_pools[i];
+        if (!p || !p->worker_started) continue;
+        const char *mid = p->running_label;
+        size_t queued = lotus_mpsc_ring_size_approx(&p->ring);
+        LOTUS_APPEND("%spool `%s` (%s): %s, %zu queued", any_pool ? "; " : "",
+                     p->name, p->async_io_enabled ? "async_io" : "blocking",
+                     mid ? "a worker is mid-iteration" : "its worker is idle",
+                     queued);
+        if (mid) LOTUS_APPEND(" in locus `%s`", mid[0] ? mid : "(unnamed)");
+        any_pool = 1;
+    }
+    if (!any_pool) LOTUS_APPEND("no cooperative pool");
+    LOTUS_APPEND("; live loci that read draining:");
+    int any_locus = 0;
+    for (size_t i = 0; i < LOTUS_DRAIN_NAMES_MAX; i++) {
+        const char *l = __atomic_load_n(&g_drain_names[i].label, __ATOMIC_ACQUIRE);
+        if (!l) break;
+        int64_t live = __atomic_load_n(&g_drain_names[i].live, __ATOMIC_RELAXED);
+        if (live <= 0) continue;
+        LOTUS_APPEND("%s `%s` x%lld", any_locus ? "," : "", l, (long long)live);
+        any_locus = 1;
+    }
+    if (!any_locus) LOTUS_APPEND(" none named");
+#undef LOTUS_APPEND
+    return n;
 }
 
 static void *lotus_drain_watcher(void *arg) {
@@ -9761,12 +9878,20 @@ static void *lotus_drain_watcher(void *arg) {
         (time_t)(grace_ms / 1000), (long)((grace_ms % 1000) * 1000000)
     };
     while (nanosleep(&ts, &ts) < 0 && errno == EINTR) {}
+    /* One line, and it says what the drain was still waiting on: the
+     * pools and whether a worker was mid-iteration, and the loci that
+     * could have ended it. Nothing else changes: the process ends as
+     * it always did. */
+    char waiting[768];
+    waiting[0] = '\0';
+    (void)lotus_drain_waiting_on(waiting, sizeof waiting);
     dprintf(2,
             "lotus: the drain begun by signal %d did not finish within "
             "%lld ms (a run() that never reads self.draining?); "
+            "still waiting on: %s; "
             "ending as the signal's default action would "
             "(LOTUS_DRAIN_GRACE_MS sets the grace)\n",
-            (int)g_drain_signal, (long long)grace_ms);
+            (int)g_drain_signal, (long long)grace_ms, waiting);
     lotus_drain_die_by((int)g_drain_signal);
     _exit(128 + (int)g_drain_signal);
     return NULL;
@@ -9802,7 +9927,9 @@ void lotus_drain_signals_install(int64_t observes_drain) {
 void lotus_drain_signals_install(int64_t observes_drain) {
     (void)observes_drain;
 }
-void lotus_drain_observer_add(int64_t delta) { (void)delta; }
+void lotus_drain_observer_add(int64_t delta, const char *label) {
+    (void)delta; (void)label;
+}
 #endif /* __wasm__ */
 
 static void *lotus_coop_pool_worker(void *arg) {

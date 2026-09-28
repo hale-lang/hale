@@ -2371,9 +2371,14 @@ for replay-under-a-different-plan) is the next milestone.
   `self.draining` read loads, beside the locus's own
   `__drain_requested`), wakes every `async_io` pool so timed parks
   that began before the drain expire, and then waits out the grace
-  (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the signal's
-  default action is restored and the signal re-raised, so the
-  process dies by it. A second signal does the same at once.
+  (`LOTUS_DRAIN_GRACE_MS`, default 5000); past it the watcher
+  prints one line — the signal, and what the drain was still waiting
+  on (each started cooperative pool: its mode, whether its worker is
+  mid-iteration and in which locus, its queued cells; the live
+  instances that read `draining`, by locus name) — restores the
+  signal's default action and re-raises the signal, so the process
+  dies by it. The pool's `running_label` and the instance names are
+  kept for that line alone; nothing else reads them. A second signal does the same at once.
   Installed by the main prelude only in a program that reads
   `draining`; caught with `SA_RESTART`, never blocked, so spawned
   subprocesses keep the default disposition.

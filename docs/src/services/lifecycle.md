@@ -441,7 +441,10 @@ already running when the signal came is cut short; a `sleep` in your
 `drain()` or `dissolve()` that paces a final flush gets its full
 time. A `run()` that never checks the flag cannot be stopped this
 way; the runtime gives the drain five seconds (`LOTUS_DRAIN_GRACE_MS`)
-and then lets the signal end the process as it normally would, and a
+and then lets the signal end the process as it normally would — after
+printing one line that names what it was still waiting on: the pool
+and the locus a worker was inside, and the loci that read the flag and
+had not ended — and a
 second Ctrl-C ends it at once. The drain only happens while something
 live can answer it: if no locus that checks the flag has been built —
 say the only `!self.draining` loop is in a package you import but

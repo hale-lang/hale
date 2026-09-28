@@ -747,8 +747,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_failure_await", await_ty, None);
-        // GH #1077: the live count of instances that can answer a drain.
-        let obs_ty = void_t.fn_type(&[self.context.i64_type().into()], false);
+        // GH #1077: the live count of instances that can answer a drain,
+        // and by locus name (the second argument) so the drain grace's
+        // report can name the ones still alive.
+        let obs_ty = void_t.fn_type(
+            &[
+                self.context.i64_type().into(),
+                self.context.ptr_type(inkwell::AddressSpace::default()).into(),
+            ],
+            false,
+        );
         self.module
             .add_function("lotus_drain_observer_add", obs_ty, None);
         self.module.add_global(

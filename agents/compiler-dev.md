@@ -282,6 +282,30 @@ Rules (CLAUDE.md has the reasons):
   (`HALE_REGEN_CLAIM_DIAGS=1`, `HALE_REGEN_LAW_ROWS=1`,
   `HALE_REGEN_TOPOLOGY_BASELINE=1`) and the effects baseline. Read
   the diff before regenerating.
+- **Before you push a new test** (one that embeds a `.hl` program in a
+  Rust string, or a new `tests/*.rs` file — the file's programs count
+  too): the corpus is pinned, so the new programs move baselines that
+  CI's `quick` job checks and a local run of your own test never
+  touches. Run these four, in `hale-types` and `hale-cli`, before the
+  push:
+
+  ```text
+  HALE_REGEN_TOPOLOGY_BASELINE=1 cargo test --release -p hale-types --test topology_projection
+  cargo test --release -p hale-types --test artifact_law_projection
+  cargo test --release -p hale-types --test claim_diags_snapshot
+  cargo test --release -p hale-cli --test effects_baseline_gate
+  ```
+
+  The first regenerates `topology_shape_baseline.txt`: read `git diff`
+  and confirm it is additions for your file only (one line per embedded
+  program), then commit it with the test. The other three run WITHOUT
+  regeneration and must pass; if one moves, your program changed a law
+  row, a claim diagnostic or an effect, which is a finding to read, not
+  a baseline to refresh. Separately, a new `tests/*.rs` in `hale-codegen`
+  or `hale-cli` must join a binary: a `[[test]]` entry in that crate's
+  `Cargo.toml`, or a `#[path = "<file>.rs"] mod <file>;` line in the
+  area root it belongs to (`every_test_file_is_built` fails otherwise,
+  and an unlisted file would never run; GH #1205).
 - New keyword: `hale-syntax/src/keywords.rs`, then
   `UPDATE_KEYWORDS=1 cargo test -p hale-syntax --test keyword_sync`.
 - Never delete a test to make it pass; if the spec changed, update it
