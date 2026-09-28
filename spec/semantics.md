@@ -1294,8 +1294,11 @@ as `std::http::Server` included. Every handler takes the same
 error type, so the failing child's own locus type is what selects
 one: an `Alpha`'s failure runs the `Alpha` handler and only it,
 whatever order the handlers are declared in. A child whose type
-has no handler on its parent gets the default. If two handlers
-name the same child type, the first declared is the one that runs.
+has no handler on its parent gets the default. A second handler
+for a child type that already has one is an error: the first
+declared is the one a failing child reaches, so the second could
+never run, and `hale check` refuses it where it stands, pointing at
+the first.
 
 **Which locus is the parent.** A child locus held in a param
 field is supervised by the locus that holds it, whichever way

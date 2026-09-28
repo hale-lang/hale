@@ -223,3 +223,71 @@ fn main() { L { }; }
         msgs
     );
 }
+
+/// A failing child is routed to its parent's `on_failure` by the child's
+/// locus type, and the first handler declared for that type runs. A
+/// second handler for the same type can never run — whatever its error
+/// param or body says — so it is refused where it stands, and the note
+/// points at the handler that runs.
+#[test]
+fn a_second_on_failure_for_one_child_type_is_refused() {
+    let src = r#"
+locus Child {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    on_failure(c: Child, err: ClosureViolation) {
+        restart (c);
+    }
+    on_failure(c: Child, err: ClosureViolation) {
+        quarantine (c);
+    }
+}
+fn main() { Parent { }; }
+"#;
+    let prog = parse_source(src).expect("parse failed");
+    let diags: Vec<_> = check_program(&prog)
+        .into_iter()
+        .filter(|d| d.message.contains("already has an `on_failure` for `Child`"))
+        .collect();
+    assert_eq!(diags.len(), 1, "one refusal, at the second handler");
+    let d = &diags[0];
+    assert!(d.is_error(), "an error, not a warning: {}", d.message);
+    assert!(d.message.contains("can never run"), "{}", d.message);
+    // located at the second handler, pointing at the first
+    let second = src.rfind("on_failure(c: Child").unwrap();
+    let first = src.find("on_failure(c: Child").unwrap();
+    assert_eq!(d.span.start.as_usize(), second, "at the handler that never runs");
+    assert!(
+        d.related.iter().any(|r| r.span.start.as_usize() == first && r.label.contains("runs")),
+        "the note names the handler that runs: {:?}",
+        d.related
+    );
+}
+
+/// Handlers for different child types are each the one that runs for
+/// their type.
+#[test]
+fn on_failure_handlers_for_different_child_types_are_clean() {
+    let src = r#"
+locus Alpha {
+    params { n: Int = 0; }
+}
+locus Zeta {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { a: Alpha = Alpha { }; z: Zeta = Zeta { }; }
+    on_failure(c: Zeta, err: ClosureViolation) {
+        restart (c);
+    }
+    on_failure(c: Alpha, err: ClosureViolation) {
+        quarantine (c);
+    }
+}
+fn main() { Parent { }; }
+"#;
+    let msgs = check(src);
+    assert!(msgs.iter().all(|m| !m.contains("on_failure")), "{:?}", msgs);
+}

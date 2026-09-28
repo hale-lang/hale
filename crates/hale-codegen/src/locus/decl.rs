@@ -1830,9 +1830,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     // declaration order (the body pass pairs them back
                     // up the same way). The child's locus type is what
                     // selects one at routing time
-                    // (`LocusInfo::failure_handler_for`); two handlers
-                    // for the SAME child type are check-clean, and the
-                    // first declared is the one that runs.
+                    // (`LocusInfo::failure_handler_for`). A second handler
+                    // for the SAME child type is refused by `hale check`
+                    // (it could never run: the first declared is the one
+                    // routing picks).
                     //
                     // Sig: void(parent_self, child_self, violation).
                     // The first handler keeps the plain

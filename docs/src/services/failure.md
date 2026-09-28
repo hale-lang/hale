@@ -76,6 +76,12 @@ main locus App {
 }
 ```
 
+One handler per type, and only one: a second `on_failure` for a
+type that already has one could never run — the first is the one a
+failing child reaches — so `hale check` refuses it and points at
+the first. Everything a failure of that type needs goes in the one
+handler.
+
 The parent is the locus that holds the child in a field. It
 does not matter whether the child's literal is the field's
 default or is written in the parent's literal where the parent

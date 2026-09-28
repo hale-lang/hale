@@ -9919,9 +9919,42 @@ impl<'a> Checker<'a> {
         for member in &decl.members {
             self.check_locus_member(member);
         }
+        self.check_duplicate_failure_handlers(decl);
         self.generic_params = prev_generics;
 
         self.current_locus = prev;
+    }
+
+    /// A failing child is routed to the parent's `on_failure` by the
+    /// child's locus type alone, and the first handler declared for
+    /// that type is the one that runs. A second handler for the same
+    /// type can never run, whatever its body or its error param says,
+    /// so it is refused where it stands, pointing at the first.
+    fn check_duplicate_failure_handlers(&mut self, decl: &LocusDecl) {
+        let mut first: Vec<(String, Span)> = Vec::new();
+        for member in &decl.members {
+            let LocusMember::Failure(fd) = member else { continue };
+            let Some(child) = fd.params.first() else { continue };
+            let child_ty = resolve_type_expr(&child.ty, self.known);
+            if matches!(child_ty, Ty::Unknown) {
+                continue;
+            }
+            let key = child_ty.display();
+            if let Some((_, at)) = first.iter().find(|(k, _)| *k == key) {
+                self.diags.push(
+                    Diag::ty(
+                        fd.span,
+                        format!(
+                            "locus `{}` already has an `on_failure` for `{}`: a failing child reaches the first handler declared for its type, so this one can never run. Handle every failure of a `{}` in the one handler",
+                            decl.name.name, key, key
+                        ),
+                    )
+                    .with_related(*at, "the handler that runs"),
+                );
+            } else {
+                first.push((key, fd.span));
+            }
+        }
     }
 
     /// F.31: validate a `placement { field: spec; }` block on

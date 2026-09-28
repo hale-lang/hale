@@ -456,23 +456,29 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 11): supervision handlers sharing (locus, child) keep
-/// AUTHORED order under the legacy stable sort — not the model's
-/// canonical error-type order. ZTrouble is authored before ATrouble.
+/// P1 (round 11) pinned that handlers sharing (locus, child) keep
+/// AUTHORED order under the legacy stable sort. Such ties no longer
+/// check: a child is routed by its type to the first handler declared
+/// for it, so a second handler for the same type never runs and `hale
+/// check` refuses it (tests/violate.rs). What a check-clean program
+/// has is one handler per child type, and the rows sort by locus, then
+/// child — not authored order: Zeta's handler is authored first, and
+/// Alpha's row still leads. The model's projection agrees.
 #[test]
-fn supervision_ties_keep_authored_order() {
+fn supervision_rows_sort_by_locus_then_child() {
     let src = r#"
-type ZTrouble { n: Int = 0; }
-type ATrouble { n: Int = 0; }
-locus Child {
+locus Alpha {
+    params { n: Int = 0; }
+}
+locus Zeta {
     params { n: Int = 0; }
 }
 locus Parent {
-    params { c: Child = Child { }; }
-    on_failure(c: Child, err: ZTrouble) {
+    params { a: Alpha = Alpha { }; z: Zeta = Zeta { }; }
+    on_failure(c: Zeta, err: ClosureViolation) {
         restart (c);
     }
-    on_failure(c: Child, err: ATrouble) {
+    on_failure(c: Alpha, err: ClosureViolation) {
         quarantine (c);
     }
 }
@@ -484,11 +490,11 @@ fn main() { App { }; }
 "#;
     let legacy =
         assert_projection_matches(src, "supervision authored order");
-    let z = legacy.find("\"err\": \"ZTrouble\"").expect("Z row");
-    let a = legacy.find("\"err\": \"ATrouble\"").expect("A row");
+    let a = legacy.find("\"child\": \"Alpha\"").expect("Alpha's row");
+    let z = legacy.find("\"child\": \"Zeta\"").expect("Zeta's row");
     assert!(
-        z < a,
-        "authored order (Z first) survives the stable sort:\n{}",
+        a < z,
+        "rows sort by child, not authored order (Zeta was written first):\n{}",
         legacy
     );
 }
@@ -777,23 +783,28 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 14): duplicate-signature handlers — identical
-/// (locus, child, error_type) — are check-clean, and the legacy
-/// artifact serializes one row PER DECLARATION. The model's
-/// canonical key includes the authored ordinal so both rows exist,
-/// and the projection renders both in authored order.
+/// P1 (round 14) pinned that two handlers with one signature — the same
+/// (locus, child, error type) — were check-clean and projected one row
+/// each. A child is routed by its type to the first handler declared for
+/// it, so the second never runs, and `hale check` now refuses it
+/// (tests/violate.rs). What remains to pin is that a program which
+/// checks clean projects every handler it declares: one row per child
+/// type.
 #[test]
-fn duplicate_signature_supervision_rows_both_survive() {
+fn every_declared_supervision_handler_is_a_row() {
     let src = r#"
 locus Child {
     params { n: Int = 0; }
 }
+locus Spare {
+    params { n: Int = 0; }
+}
 locus Parent {
-    params { c: Child = Child { }; }
+    params { c: Child = Child { }; s: Spare = Spare { }; }
     on_failure(c: Child, err: ClosureViolation) {
         restart (c);
     }
-    on_failure(c: Child, err: ClosureViolation) {
+    on_failure(c: Spare, err: ClosureViolation) {
         quarantine (c);
     }
 }
@@ -803,19 +814,26 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let errors: Vec<String> = hale_types::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect();
+    assert!(errors.is_empty(), "the fixture checks clean: {errors:?}");
     let legacy = assert_projection_matches(
         src,
-        "duplicate-signature supervision",
+        "every declared supervision handler",
     );
     let restart = legacy
         .find("\"ops\": [\"restart\"]")
-        .expect("first handler row");
+        .expect("Child's row");
     let quarantine = legacy
         .find("\"ops\": [\"quarantine\"]")
-        .expect("second handler row");
+        .expect("Spare's row");
     assert!(
         restart < quarantine,
-        "both rows, authored order:\n{}",
+        "both rows, Child's before Spare's:\n{}",
         legacy
     );
 }
