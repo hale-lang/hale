@@ -44,6 +44,7 @@ pub mod topology_projection;
 pub mod model_graph;
 pub mod verdict;
 pub mod secret_reveal;
+pub mod stdlib_names;
 pub mod stdlib_bodies;
 pub mod stdlib_surface;
 pub mod ownership_graph;
