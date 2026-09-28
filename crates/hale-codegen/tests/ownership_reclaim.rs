@@ -1,4 +1,4 @@
-//! The `ownership_reclaim` integration-test binary: 21 test files of this area, kept
+//! The `ownership_reclaim` integration-test binary: 22 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -39,6 +39,8 @@ mod reclamation_spine;
 mod release_reclaims_flow;
 #[path = "release_two_parents.rs"]
 mod release_two_parents;
+#[path = "resident_transfer.rs"]
+mod resident_transfer;
 #[path = "shadow_return_binding.rs"]
 mod shadow_return_binding;
 #[path = "sink_polymorphism.rs"]

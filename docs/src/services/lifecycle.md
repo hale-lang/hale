@@ -264,6 +264,14 @@ site. The one allowance is a handle the holder reads only in
 `birth()`: it copies what it needs while the handle is live, and
 never touches it again.
 
+This is what a bus handler hands a child that stays. A String, a row or
+a payload field is copied into the child's own storage as it is stored,
+so the child can read it long after the handler returned. A
+`@form(vec)` the handler built is a locus: handed to the child by name
+it is a borrow, `hale check` refuses it at the argument, and the shape
+that works is the child copying the rows into a `@form(vec)` of its own
+in `birth()`.
+
 **How the field is declared doesn't change the answer.** A param
 typed by an `interface` the child satisfies, or by a
 `perspective(P)` it serves, holds an owned child on the same terms

@@ -23,11 +23,16 @@
 //! caller recurses, to a bounded depth. Nothing else is refused: a
 //! chain the walk cannot follow is left alone, never guessed at.
 //!
+//! GH #712's container case is this table's `let` row: a `@form` value a
+//! handler built is a locus, handed by name it is a borrow, and a
+//! resident the handler's frame does not own is refused with the
+//! handler's own remedy (copy in `birth()`). The value-shaped data a
+//! handler hands over — Strings, rows, a payload's fields — is copied
+//! into the holder's arena at the store and is not a borrow at all
+//! (`resident_transfer.rs` pins both sides).
+//!
 //! What this pass does not do: thread domains (a borrow across pools;
-//! the per-instance pool inference is codegen's) and the data case of
-//! GH #712 (a container a handler built, handed to a resident's
-//! `@form` field), which needs the field kinds this walk does not
-//! model. Both are named in the issue.
+//! the per-instance pool inference is codegen's).
 //!
 //! GH #1048 extends the table to a handle a **method keeps**: a
 //! parameter of a locus-carrying type that the method's body stores into
@@ -1315,8 +1320,17 @@ impl<'a> Walk<'a> {
                 self.diags,
                 format!(
                     "`{}` is a `let` of {} — reclaimed when its scope ends — and the \
-                     literal is `self`'s (a field, or an accepted child), which lives on.",
-                    name, where_
+                     literal is `self`'s (a field, or an accepted child), which lives on.{}",
+                    name,
+                    where_,
+                    if ctx.is_handler {
+                        " A container a bus handler builds belongs to that dispatch \
+                         (GH #712): a resident that must keep its rows copies them in its \
+                         own `birth()` — cloning the Strings, rebuilding the rows — into \
+                         storage it owns."
+                    } else {
+                        ""
+                    }
                 ),
             ),
             (Source::Owned { name, .. }, Holder::Caller) => refuse(

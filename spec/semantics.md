@@ -736,7 +736,17 @@ to that dispatch and are reclaimed when the handler returns. A child
 born from the handler that must keep them copies them in its own
 `birth()` — cloning Strings, rebuilding rows — into storage it owns;
 holding the handler's pointers past the dispatch is a use after
-free, and the checker does not yet diagnose it (GH #712).
+free. The transfer rule is: **a value is copied at the store; a
+locus is borrowed, and a borrow must outlive its holder.** A String,
+a row or a payload's field handed to a resident is copied into the
+resident's own storage as it is stored, so the resident reads it after
+the handler has returned. A container that is a locus (a `@form(vec)`
+the handler built) handed to a resident by name is a borrow, and the
+checker refuses it at the argument, in `check`, `build`, `run` and
+`test` alike, naming this rule (GH #712, decided by the table under
+"A borrow outlives its holder"); the working shape is the copy in
+`birth()` above, which is sound because a borrow read only in
+`birth()` lives no longer than the instantiation.
 
 `release` has the same shape as `accept` — one typed child
 param — and the same fn signature `(parent_self, child_self)`.
@@ -1482,9 +1492,10 @@ chain the walk cannot follow is left alone, never guessed at. A
 borrow the holder reads only in `birth()` is birth-scoped and sound —
 the instantiation runs inside the frame that owns the handle — which
 is the shape a resident uses to copy what it was handed before the
-dispatch ends. Not decided here: a borrow across thread domains, and
-a container (not a locus) a handler built and handed to a resident's
-form-typed field; both are named in GH #730 and #712.
+dispatch ends. Not decided here: a borrow across thread domains
+(GH #730). A container a handler built and handed to a resident's
+form-typed field is the `let` row of this table (GH #712); the data
+it holds is copied at the store and is not a borrow.
 
 **A handle a method keeps is the same borrow (GH #1048).** A method
 *keeps* a parameter of a locus-carrying type when its body stores it
