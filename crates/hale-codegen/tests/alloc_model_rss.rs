@@ -19,11 +19,13 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_types::alloc_summary::{summarize_programs, SiteVerdict};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn model_has_unbounded_site(src: &str) -> bool {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -51,7 +53,7 @@ fn model_has_unbounded_site(src: &str) -> bool {
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_alloc_rss_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

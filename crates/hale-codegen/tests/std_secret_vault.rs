@@ -14,10 +14,12 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const SRC: &str = r#"
 fn main() {
@@ -30,7 +32,7 @@ fn main() {
 fn build() -> PathBuf {
     let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin("hale_test_secret_vault");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 
@@ -111,7 +113,7 @@ fn a_traversal_shaped_name_is_refused_not_escaped() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_secret_vault_traversal");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let dir = std::env::temp_dir().join(format!("hale-vault-traversal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -242,7 +244,7 @@ fn env_var_wins_over_vault() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_secret_vault_precedence");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let dir = std::env::temp_dir().join(format!("hale-vault-precedence-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

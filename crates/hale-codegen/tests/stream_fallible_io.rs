@@ -11,10 +11,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
@@ -42,7 +44,7 @@ fn build_and_run(
 ) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = unique_path(name);
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)

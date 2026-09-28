@@ -68,6 +68,10 @@ name = "effects_baseline_gate"
 path = "tests/effects_baseline_gate.rs"
 
 [[test]]
+name = "env_knobs_are_documented"
+path = "tests/env_knobs_are_documented.rs"
+
+[[test]]
 name = "every_test_file_is_built"
 path = "tests/every_test_file_is_built.rs"
 

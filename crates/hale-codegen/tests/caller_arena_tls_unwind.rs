@@ -33,13 +33,15 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable_with_imports;
+use hale_codegen::build_executable_with_options;
 use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const LIB_SRC: &str = r#"
 type Rec { version: Int; name: String; sql: String; }
@@ -129,7 +131,7 @@ fn factory_after_caught_cross_seed_failure_is_clean() {
     consumer.items.extend(lib_items);
 
     let bin = harness::unique_bin("caller_arena_tls_unwind");
-    build_executable_with_imports(&consumer, &bin, &renames)
+    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())
         .expect("build 2-seed probe");
 
     let out = Command::new(&bin).output().expect("run probe");

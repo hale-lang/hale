@@ -25,7 +25,7 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 /// A flood program parameterized by the per-payload body. An async_io
 /// subscriber (its run() parked forever on an accept — the server-loop
@@ -35,6 +35,8 @@ use hale_codegen::build_executable;
 /// materializes — the exact path that leaked.
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn flood_src(body_expr: &str, n: u32) -> String {
     format!(
@@ -96,7 +98,7 @@ fn flood_src(body_expr: &str, n: u32) -> String {
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_async_reclaim_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);

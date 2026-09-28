@@ -5,6 +5,8 @@
 //! relaying anything, once its lease has expired; `profile` reflects a
 //! hand-edited remote without any stored label.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -15,7 +17,7 @@ use std::time::{Duration, Instant};
 
 fn hale_in(args: &[&str], cwd: &Path) -> (bool, i32, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let out = vault::hale()
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -41,7 +43,7 @@ fn record(cwd: &Path) -> Vec<serde_json::Value> {
 /// `hale dna run` in the background, its stderr to a log; the log's path.
 fn run_host(app: &Path, log: &Path) -> std::process::Child {
     let _s = trace::Span::new("spawn", "hale dna run");
-    Command::new(env!("CARGO_BIN_EXE_hale"))
+    vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

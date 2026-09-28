@@ -1375,7 +1375,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_io_fs_read_bytes_fallible(args, scope)?,
             )),
             ["std", "io", "fs", "write_bytes"] => Ok(Some(
-                self.lower_std_io_fs_write_bytes_fallible(args, scope)?,
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_file")?,
+            )),
+            ["std", "io", "fs", "__write_private"] => Ok(Some(
+                self.lower_std_io_fs_write_bytes_fallible(args, scope, "lotus_fs_write_private")?,
             )),
             ["std", "io", "fs", "write_file"] => Ok(Some(
                 self.lower_std_io_fs_write_file_fallible(

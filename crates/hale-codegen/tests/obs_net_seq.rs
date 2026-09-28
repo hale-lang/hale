@@ -21,10 +21,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[path = "support/obs.rs"]
 mod obs;
@@ -33,7 +35,7 @@ use obs::{attach_observer, net_origin_seq, records, snapshot_shm};
 fn compile(tag: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_obsnet_{}_{}", tag, std::process::id()));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

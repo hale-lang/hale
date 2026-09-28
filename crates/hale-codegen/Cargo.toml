@@ -62,6 +62,10 @@ name = "bytes_pack_read"
 path = "tests/bytes_pack_read.rs"
 
 [[test]]
+name = "codegen_reads_no_environment"
+path = "tests/codegen_reads_no_environment.rs"
+
+[[test]]
 name = "collections"
 path = "tests/collections.rs"
 

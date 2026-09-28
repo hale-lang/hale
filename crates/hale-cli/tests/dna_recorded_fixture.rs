@@ -16,6 +16,8 @@
 //! Re-record (a key in the environment, the tape rewritten):
 //!   HALE_DNA_TAPE=record cargo test --release -p hale-cli --test dna_records dna_recorded_fixture::
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -314,7 +316,7 @@ struct Fixture {
 
 impl Fixture {
     fn cmd(&self, args: &[&str], cwd: &Path) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+        let mut c = vault::hale();
         c.args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

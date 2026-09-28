@@ -103,8 +103,10 @@ fn no_hand_rolled_binary_temp_paths() {
                 .filter(|v| !v.is_empty() && v.chars().all(|c| c.is_alphanumeric() || c == '_'))
                 .collect();
             temp_vars.iter().any(|v| {
-                text.contains(&format!("build_executable(&program, &{})", v))
-                    || text.contains(&format!("build_executable(&prog, &{})", v))
+                ["program", "prog"].iter().any(|p| {
+                    text.contains(&format!("build_executable_with_options(&{p}, &{v},"))
+                        || text.contains(&format!("build_executable(&{p}, &{v})"))
+                })
             })
         })
         .map(|(name, _)| name)
@@ -137,14 +139,11 @@ fn no_hand_rolled_binary_temp_paths() {
 /// it, and the repo supports both runners.
 ///
 /// Every one of those knobs is a `BuildOptions` field now, so the
-/// request travels with the build that wants it. `harness`'s
-/// `set_build_env_var` is the sole exception and the sole
-/// allow-listed caller — see its doc-comment for when a knob
-/// genuinely cannot reach `BuildOptions` (today: `HALE_NO_TS_SHIM`,
-/// read by a free function with no options in scope).
-///
-/// Note the scan covers `tests/*.rs` and not `tests/support/`, which
-/// is exactly the split wanted: the helper lives in `support/`.
+/// request travels with the build that wants it; codegen reads no
+/// environment variable at all (`codegen_reads_no_environment.rs`),
+/// so there is nothing a test could set that a build would read.
+/// (`support/sanitize.rs` READS the environment, to turn a sanitizer
+/// job's `LOTUS_ASAN=1` into options; reading is not what this bans.)
 #[test]
 fn no_test_mutates_the_process_environment() {
     // This file names the calls it bans, so it cannot scan itself.
@@ -169,11 +168,8 @@ fn no_test_mutates_the_process_environment() {
          tests as threads, so this is UB against every concurrent \
          `build_executable` — and it changes what a neighbouring test \
          compiles. Pass the knob through `hale_codegen::BuildOptions` \
-         instead (`dump_ir`, `asan`, `no_bus_devirt`, \
-         `no_ownership_bubble`, `lto`), or, for a child process, \
-         through `std::process::Command::env`. If the knob truly \
-         cannot reach `BuildOptions`, route it through \
-         `harness::set_build_env_var` and say in the call site why.",
+         instead (every build knob is a field there), or, for a child \
+         process, through `std::process::Command::env`.",
         offenders.len(),
         offenders
     );

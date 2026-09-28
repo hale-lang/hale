@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 // Memory's three DSNs never reach a spawned process by inheritance (GH
 // #985). The owner's goes only to a fixture program that migrates or drops
 // a record (`memoryOwner`, below), the head's only to an API a harness
@@ -8,8 +12,21 @@ export const MEMORY_DSNS = ['HALE_DNA_MEMORY_DSN_OWNER', 'HALE_DNA_MEMORY_DSN_SP
 // spine's), never to a browser fixture by inheritance.
 export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE', 'HALE_DNA_NATS_URL_HEAD', 'HALE_DNA_NATS_URL_APP', 'HALE_DNA_NATS_VAULT_APP', 'HALE_DNA_NATS_VAULT_REFLEXES', 'HALE_DNA_NATS_ORG'];
 
+// Every environment a fixture is handed carries a vault of its own
+// (`HALE_VAULT_DIR`, mode 700, removed when the process exits) and no real
+// vault: `hale dna new` provisions the organism's secrets, and a fixture's
+// never land in the developer's vault or read a secret held there.
+function fixtureVault() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hale-face-vault-'));
+  fs.chmodSync(dir, 0o700);
+  process.once('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+  return dir;
+}
+
 export function isolatedEnvironment() {
   const env = { ...process.env };
+  delete env.HALE_VAULT_ADDR;
+  env.HALE_VAULT_DIR = fixtureVault();
   for (const key of [
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
     'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',

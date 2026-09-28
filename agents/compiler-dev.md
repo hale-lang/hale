@@ -268,8 +268,8 @@ Rules (CLAUDE.md has the reasons):
   (`crates/hale-codegen/tests/support/harness.rs`), ports from
   `ports::free_port()` (`support/ports.rs`).
   `harness_paths_are_unique.rs` enforces this and bans
-  `set_var(` / `remove_var(` in `hale-codegen/tests/*.rs` (sole
-  exception `harness::set_build_env_var`) and in all `crates/*/src`.
+  `set_var(` / `remove_var(` in `hale-codegen/tests/*.rs` and in all
+  `crates/*/src`.
   Build knobs ride `hale_codegen::BuildOptions` (`dump_ir`, `asan`,
   `no_bus_devirt`, `no_ownership_bubble`, `lto`) or a child's
   `Command::env`.

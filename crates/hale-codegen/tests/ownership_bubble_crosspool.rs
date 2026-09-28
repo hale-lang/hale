@@ -23,10 +23,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_named(name: &str, src: &str) -> Result<std::path::PathBuf, String> {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -35,7 +37,7 @@ fn build_named(name: &str, src: &str) -> Result<std::path::PathBuf, String> {
         name,
         std::process::id()
     ));
-    build_executable(&program, &bin).map_err(|e| format!("{:?}", e))?;
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).map_err(|e| format!("{:?}", e))?;
     Ok(bin)
 }
 
@@ -55,7 +57,7 @@ fn build_named_no_bubble(
     ));
     let options = hale_codegen::BuildOptions {
         no_ownership_bubble: true,
-        ..Default::default()
+        ..build_opts::options()
     };
     hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
         .map_err(|e| format!("{:?}", e))?;

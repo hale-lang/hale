@@ -3,11 +3,13 @@
 //! `hale check --matrix`, builds, runs, and its tests pass; the
 //! app-wide law is ACTIVE because a fresh app has no holes.
 
+#[path = "support/vault.rs"]
+mod vault;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).output().expect("hale");
+    let out = vault::hale().args(args).current_dir(cwd).output().expect("hale");
     (
         out.status.success(),
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),

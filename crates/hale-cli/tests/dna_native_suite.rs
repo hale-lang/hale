@@ -124,16 +124,6 @@ fn slice_tag(slice: usize) -> String {
     format!("{}-slice{}-{}", std::process::id(), slice, now)
 }
 
-/// The slice's own vault (GH #989): every fixture's `hale dna init`
-/// provisions the organism's secrets, and a fixture's `secret set` fills
-/// a slot, so a slice that used the developer's vault would leave a
-/// throwaway organization's entries there — or a fixture's fake model
-/// key in the slot a real one belongs in. Removed when the slice ends,
-/// with its scratch roots.
-fn slice_vault(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("hale-dna-vault-{tag}"))
-}
-
 /// The DNA scratch root a command line or a working directory names, if
 /// it names one: the fixtures build their roots as
 /// `/tmp/dna-<what>-<pid>` and run their organisms from inside them, so
@@ -334,9 +324,6 @@ struct SliceScratch {
 impl Drop for SliceScratch {
     fn drop(&mut self) {
         let swept = sweep_scratch_roots(&self.tag, keep_scratch());
-        if !keep_scratch() {
-            let _ = std::fs::remove_dir_all(slice_vault(&self.tag));
-        }
         if !swept.is_empty() {
             eprintln!(
                 "dna slice: swept {} scratch root(s) no fixture reclaimed (HALE_DNA_KEEP_SCRATCH=1 keeps them):\n  {}",
@@ -539,7 +526,8 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     cmd.arg("test").arg("--json").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
     cmd.env("HALE_DNA_SOURCE", repo_root());
     cmd.env(SLICE_TAG, tag);
-    cmd.env("HALE_VAULT_DIR", slice_vault(tag)).env_remove("HALE_VAULT_ADDR");
+    // every fixture runs under a vault of its own: `hale test` makes one per
+    // test file (spec/testing.md)
     cmd.current_dir(std::env::temp_dir());
     if let Some(dsn) = dsn {
         cmd.env("HALE_DNA_MEMORY_DSN_OWNER", dsn);
@@ -860,9 +848,21 @@ fn dna_core_verifies_clean() {
         .expect("invoke hale verify dna/core");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The one finding allowed: the reveal rule's warning at a Postgres
+    // site that waits on `pq` taking a `Credential` (spec/semantics.md
+    // § "`@sealed` and a revealed secret"). Anything else fails.
+    let findings: Vec<&str> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|l| l.contains("warning:") || l.contains("error:"))
+        .collect();
+    let others: Vec<&&str> = findings
+        .iter()
+        .filter(|l| !(l.contains("warning:") && l.contains("Deferred: `pq` takes a `std::secret::Credential`")))
+        .collect();
     assert!(
-        out.status.success(),
-        "hale verify dna/core must report zero findings.\nstdout:\n{}\nstderr:\n{}",
+        others.is_empty() && (out.status.success() || !findings.is_empty()),
+        "hale verify dna/core must report zero findings but the pq deferral.\nstdout:\n{}\nstderr:\n{}",
         stdout,
         stderr
     );
@@ -949,6 +949,7 @@ fn dna_fixture_set_is_complete() {
             "legs_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",
+            "nats_connect_password_test.hl",
             "nerves_compose_test.hl",
             "nerves_fake_test.hl",
             "nerves_loss_test.hl",

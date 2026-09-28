@@ -13,15 +13,17 @@
 //! handle loci aren't in the type table), so codegen is the backstop.
 //! It now rejects the call by name instead of emitting invalid IR.
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_err(src: &str) -> Option<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale-stream-unaddr-{}", std::process::id()));
-    match build_executable(&program, &bin) {
+    match build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);
             None

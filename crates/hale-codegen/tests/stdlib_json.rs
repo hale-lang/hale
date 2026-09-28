@@ -2,15 +2,17 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_stdlib_json_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
@@ -205,7 +207,7 @@ fn escape_and_builder_stay_within_a_hard_memory_cap() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_json_scaling");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     // sh -c 'ulimit -v 524288; exec <bin>' under a 120 s wall bound.
     // The pre-fix binary segfaults here in ~1.6 s once the arena
     // cannot grow; the fixed one finishes in ~0.1 s.
@@ -340,7 +342,7 @@ fn valid_scans_a_megabyte_within_a_wall_bound() {
     // footprint and the difference was always 0 (GH #772).
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_json_valid_scaling");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     // ~10 ms per megabyte measured; 10 s is 1000x of headroom for the
     // linear form and far under what a per-character-slice scan needs.
     let output = Command::new("timeout")

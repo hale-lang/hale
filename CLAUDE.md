@@ -34,10 +34,17 @@ rolls its own. Ports come from `ports::free_port()` (its own
 `support/ports.rs`, so a binary that never asks for one carries no
 dead helper) rather than the hand-maintained 57xxx/47xxx registry. No test mutates
 the process environment either — a build knob travels on
-`hale_codegen::BuildOptions` (`dump_ir`, `asan`, `no_bus_devirt`,
-`no_ownership_bubble`, `lto`) or, for a child, on `Command::env`,
-and the same guard file refuses a new `set_var` outside
-`harness::set_build_env_var` (GH #843). Serial runs still
+`hale_codegen::BuildOptions` (every build knob is a field; codegen
+reads no environment variable, and `hale-cli`'s `build_env.rs` is the
+one function that turns the environment into those fields) or, for a
+child, on `Command::env`, and the same guard file refuses a new
+`set_var` anywhere (GH #843). A test builds with `build_opts::options()`
+(`support/build.rs`): `BuildOptions` has no `Default`, because the
+runtime-object cache is the caller's to choose, and a test's is its
+checkout's `CARGO_TARGET_TMPDIR` — content-addressed, so the run's
+processes share it safely and it stays warm from run to run (a directory
+per test would recompile the runtime's C, about 3 s, in every test
+process). Serial runs still
 work, they are just slower and no longer buy anything:
 
 ```sh
@@ -114,10 +121,11 @@ carrying its own `HALE_DNA_SUITE_TAG` when the slice ends, however
 it ends, and never a root it did not stamp. To look at what a
 fixture built, run it under `HALE_DNA_KEEP_SCRATCH=1`: both the
 fixture and the sweep leave everything where it is, and the
-fixture says where.
+fixture says where. The fixture's vault is `hale test`'s, one per
+file; add `HALE_TEST_KEEP_VAULT=1` to keep that too.
 
 ```sh
-HALE_DNA_KEEP_SCRATCH=1 hale test dna/tests/<name>_test.hl
+HALE_DNA_KEEP_SCRATCH=1 HALE_TEST_KEEP_VAULT=1 hale test dna/tests/<name>_test.hl
 ```
 
 The repo also tests the language *in* the language:

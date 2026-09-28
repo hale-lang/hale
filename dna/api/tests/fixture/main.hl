@@ -137,6 +137,11 @@ locus Fixture {
     fn refs() -> String { return self.git("show-ref"); }
     fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
     fn log() -> String { return std::io::fs::read_file(self.root + "/api.log") or ""; }
+    // Whether the API announced its commands transport on this fixture's
+    // port (no port, no transport to wait for).
+    fn commands_announced() -> Bool {
+        return self.commands_port == 0 || std::str::contains(self.log(), "hale dna api: commands http://127.0.0.1:" + to_string(self.commands_port) + "/");
+    }
     fn prepare_web() {
         self.web_requested = true;
         self.webroot = self.root + "/web";
@@ -156,6 +161,9 @@ locus Fixture {
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
         let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_VAULT_DIR=\"$1/vault\" HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMANDS_PORT=" + to_string(self.commands_port) + " && unset HALE_VAULT_ADDR && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
+        // the previous run's log goes first: its commands announcement
+        // would read as this run's before the new shell truncates the file
+        std::io::fs::unlink(self.root + "/api.log") or discard;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
@@ -175,13 +183,17 @@ locus Fixture {
         self.api.pid = -1;
         std::test::assert(std::str::contains(self.log(), message), "startup diagnostic: " + self.log());
     }
+    // Spawns the API and waits until both of its ports are up: the reads'
+    // server answers, and the process has announced the binding's commands
+    // transport on this fixture's port — printed once that listener is
+    // bound, so a first POST there never finds the port closed.
     fn start() {
         self.spawn();
         let deadline = std::time::now() + 20;
         while std::time::now() < deadline {
             let state = std::process::try_wait(self.api) or - 1;
             std::test::assert_eq_int(state, -2, "API exited before listening: " + self.log());
-            let response = self.http("GET", APPLICATIONS, "", "");
+            let response = if self.commands_announced() { self.http("GET", APPLICATIONS, "", "") } else { HttpResponse { } };
             if response.status > 0 {
                 let still_running = std::process::try_wait(self.api) or - 1;
                 std::test::assert_eq_int(still_running, -2, "the owned API is still running");
@@ -194,7 +206,7 @@ locus Fixture {
             }
             std::time::sleep(25ms);
         }
-        std::test::assert(false, "API did not become reachable: " + self.log());
+        std::test::assert(false, "API did not become reachable (the reads answering, the commands transport announced on " + to_string(self.commands_port) + "): " + self.log());
     }
     fn stop() {
         std::process::kill(self.api) or discard;

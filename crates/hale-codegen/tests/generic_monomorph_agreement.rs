@@ -25,12 +25,14 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// What a shape is supposed to do at BOTH layers.
 enum Expect {
@@ -51,7 +53,7 @@ fn agree(tag: &str, src: &str, expect: &Expect) {
     let messages: Vec<String> =
         diags.iter().map(|d| d.message.clone()).collect();
     let bin = harness::unique_bin(&format!("hale_test_genmono_{tag}"));
-    let built = build_executable(&program, &bin);
+    let built = build_executable_with_options(&program, &bin, &[], &build_opts::options());
     // The invariant, stated once and independent of the row: a
     // program the checker passes must build, and a program it
     // refuses must not build.

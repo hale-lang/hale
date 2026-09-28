@@ -28,10 +28,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[path = "support/obs.rs"]
 mod obs;
@@ -86,7 +88,7 @@ const PAIR: &str = r#"
 fn intra_tree_publish_registers_counts_and_attributes() {
     let program = hale_syntax::parse_source(PAIR).expect("parse");
     let bin = harness::unique_bin("hale_test_obs_intra_tree");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let child = Command::new(&bin)
         .env("LOTUS_OBS", "1")

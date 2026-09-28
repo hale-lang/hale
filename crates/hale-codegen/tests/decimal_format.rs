@@ -6,10 +6,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[test]
 fn format_renders_fixed_places_with_half_up_rounding() {
@@ -25,7 +27,7 @@ fn format_renders_fixed_places_with_half_up_rounding() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_decimal_format");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success());

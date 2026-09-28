@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+mod build_env;
 mod fleet;
 mod dna;
 mod iris;
@@ -7303,6 +7304,31 @@ fn compile_and_exec(
     }
 }
 
+/// GH #476 Change 8: everything the BUILD needs from the canonical
+/// model, from ONE derivation — the dispatch plan's digest (folded
+/// into the execution identity below) and the canonical entity ids
+/// codegen stamps into the observation manifest.
+///
+/// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
+/// harness's control arm) makes codegen emit the empty plan — every subject dynamic — so
+/// the identity folded into the exec digest must be the EMPTY
+/// plan's, not the model's. Otherwise the control arm and the live
+/// arm would share a build identity while running different
+/// lowerings, and a recording taken under one would be admitted
+/// against the other.
+fn model_identity(
+    bundle: &hale_types::Bundle<'_>,
+    options: &hale_codegen::BuildOptions,
+) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
+    let model = hale_types::model_builder::derive_application_model(bundle);
+    let plan_digest = if options.no_bus_devirt {
+        hale_model::dispatch_plan::DispatchPlan::default().digest()
+    } else {
+        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
+    };
+    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
+}
+
 /// GH #296: build-manifest identity — a FRAMED SHA-256 over the
 /// build inputs this binary can see:
 ///
@@ -7319,73 +7345,6 @@ fn compile_and_exec(
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
-/// GH #476 Change 8: everything the BUILD needs from the canonical
-/// model, from ONE derivation — the dispatch plan's digest (folded
-/// into the execution identity below) and the canonical entity ids
-/// codegen stamps into the observation manifest.
-///
-/// `LOTUS_NO_BUS_DEVIRT=1` (the differential harness's control arm)
-/// makes codegen emit the empty plan — every subject dynamic — so
-/// the identity folded into the exec digest must be the EMPTY
-/// plan's, not the model's. Otherwise the control arm and the live
-/// arm would share a build identity while running different
-/// lowerings, and a recording taken under one would be admitted
-/// against the other.
-/// The build-options half of the execution identity. One spelling,
-/// so `hale build` and `hale run` fingerprint the same options the
-/// same way (they did not: the build path never computed a digest
-/// at all — GH #476 Change 8 review).
-fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
-    let mut fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        o.target,
-        o.target_cpu,
-        o.dev_profile,
-        o.debug.is_some()
-    );
-    // GH #904: the FFI surface is part of what the executable IS —
-    // two builds of one source that link different C are different
-    // programs. Appended only when non-empty, so every recording
-    // stamped before this (no `--link` / `--csrc`, which is every
-    // recording `hale run` could make) keeps the identity it
-    // carries.
-    if !o.link_libs.is_empty() {
-        fp.push_str(&format!(";link={}", o.link_libs.join(",")));
-    }
-    // GH #1106: an api binding is part of the program the binary is.
-    if let Some(api) = &o.api {
-        fp.push_str(&format!(";api={}", api));
-    }
-    // GH #1109: the role table is part of the binary too.
-    if let Some(t) = &o.api_roles {
-        fp.push_str(&format!(";roles={}", t));
-    }
-    if !o.csrc_files.is_empty() {
-        let files: Vec<String> = o
-            .csrc_files
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-        fp.push_str(&format!(";csrc={}", files.join(",")));
-    }
-    fp
-}
-
-fn model_identity(
-    bundle: &hale_types::Bundle<'_>,
-) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
-    let model = hale_types::model_builder::derive_application_model(bundle);
-    let plan_digest = if std::env::var("LOTUS_NO_BUS_DEVIRT")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false)
-    {
-        hale_model::dispatch_plan::DispatchPlan::default().digest()
-    } else {
-        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
-    };
-    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
-}
-
 fn exec_digest(
     sources: &BTreeMap<PathBuf, String>,
     entry: &Path,
@@ -7663,6 +7622,70 @@ fn run_test_files(files: &[PathBuf], jobs: usize) -> Vec<TestOutcome> {
         .collect()
 }
 
+/// A fresh vault directory for one test file's run (mode 700), under
+/// `<tmp>/hale-test-vaults-<uid>/<pid>-<n>`: this user's root, this
+/// process, a counter, so parallel files never share one. The root is
+/// refused when it is not a directory this user owns (another user's, a
+/// planted symlink), so a test's secrets never go where someone else can
+/// reach them. The first call sweeps the vaults of processes that are
+/// gone (a run killed before it removed its own).
+fn test_vault_dir() -> Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(unix)]
+    let uid = unsafe { libc::getuid() };
+    #[cfg(not(unix))]
+    let uid = 0;
+    let root = std::env::temp_dir().join(format!("hale-test-vaults-{uid}"));
+    let _ = std::fs::create_dir(&root);
+    let meta = std::fs::symlink_metadata(&root).map_err(|e| format!("test vault root {}: {e}", root.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if !meta.is_dir() || meta.uid() != uid {
+            return Err(format!("test vault root {} is not a directory of this user's", root.display()));
+        }
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("test vault root {}: {e}", root.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    if n == 0 {
+        sweep_dead_test_vaults(&root);
+    }
+    let dir = root.join(format!("{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).map_err(|e| format!("test vault {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("test vault {}: {e}", dir.display()))?;
+    }
+    Ok(dir)
+}
+
+/// Remove each `<pid>` / `<pid>-<n>` vault under `root` whose process
+/// no longer runs. The Rust tests' `support/vault.rs` keeps its vaults
+/// under the same root, one per test module and process, and sweeps them
+/// the same way.
+fn sweep_dead_test_vaults(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(pid) = name.split('-').next().unwrap_or("").parse::<i32>() else { continue };
+        #[cfg(unix)]
+        let gone = pid > 0
+            && unsafe { libc::kill(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        #[cfg(not(unix))]
+        let gone = false;
+        if gone {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Compile and run one `_test.hl` file and judge it by the
 /// `spec/testing.md` contract.
 fn run_one_test_file(f: &Path) -> TestOutcome {
@@ -7680,8 +7703,33 @@ fn run_one_test_file(f: &Path) -> TestOutcome {
                     cmd.env("HALE_BIN", me);
                 }
             }
+            // Each test file runs with a vault of its own, made empty for
+            // the run and removed after it: a test that provisions a secret,
+            // or a fixture that runs `hale dna init` (which draws the
+            // organism's), never writes into the developer's vault, and no
+            // test reaches a real vault (`HALE_VAULT_ADDR`). Everything the
+            // test starts inherits it.
+            // `HALE_TEST_KEEP_VAULT=1` keeps it, and says where.
+            let vault = match test_vault_dir() {
+                Ok(v) => v,
+                Err(why) => {
+                    let _ = std::fs::remove_file(&bin);
+                    return TestOutcome {
+                        file: f.to_path_buf(),
+                        passed: false,
+                        message: Some(format!("no vault for the test: {why}")),
+                        elapsed_ms: start.elapsed().as_millis(),
+                    };
+                }
+            };
+            cmd.env("HALE_VAULT_DIR", &vault).env_remove("HALE_VAULT_ADDR");
             let output = cmd.output();
             let _ = std::fs::remove_file(&bin);
+            if std::env::var("HALE_TEST_KEEP_VAULT").is_ok_and(|v| v == "1") {
+                eprintln!("hale test: {}'s vault is kept at {}", f.display(), vault.display());
+            } else {
+                let _ = std::fs::remove_dir_all(&vault);
+            }
             match output {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -8133,8 +8181,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp = options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let options_fp = build_env::options_fingerprint(&build_options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &build_options);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
@@ -8620,8 +8668,8 @@ fn run_program(
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let options_fp = options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity(&bundle);
+        let options_fp = build_env::options_fingerprint(&options);
+        let (plan_digest, obs_ids) = model_identity(&bundle, &options);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
@@ -8805,8 +8853,8 @@ fn run_program(
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let options_fp = options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let options_fp = build_env::options_fingerprint(&options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
@@ -9112,7 +9160,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // plan's digest — held here and folded into the execution
     // identity once the options are FINAL (below), since the
     // fingerprint covers options that are still being set.
-    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
     options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
@@ -9285,7 +9333,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     options.exec_digest = Some(exec_digest(
         &sources,
         target,
-        &options_fingerprint(&options),
+        &build_env::options_fingerprint(&options),
         plan_digest,
     ));
     match hale_codegen::build_executable_with_options(
@@ -9345,7 +9393,7 @@ fn collect_ffi_from_imports(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
 ) -> hale_codegen::BuildOptions {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     let mut seen_dirs: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
     for imp in imports {
@@ -9450,12 +9498,11 @@ fn parse_build_options(
     cmd: &str,
     args: &[String],
 ) -> Result<hale_codegen::BuildOptions, String> {
-    let mut opts = hale_codegen::BuildOptions::default();
+    let mut opts = build_env::build_options_from_env();
     // #8 dev profile: `HALE_DEV=1` is the environment spelling of
     // `--dev` below. Read here, with the flag, so every command that
     // compiles honors it identically (GH #904; `run` honored
     // neither).
-    opts.dev_profile = std::env::var("HALE_DEV").is_ok();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {

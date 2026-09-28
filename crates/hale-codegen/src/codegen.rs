@@ -563,7 +563,7 @@ impl std::error::Error for CodegenError {}
 /// runtime. Stage 2 will populate this from `hale.toml [ffi]`
 /// sections of imported libs; Stage 1 wires it through the CLI's
 /// `--link` and `--csrc` flags.
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct BuildOptions {
     /// GH #1106: `--api <path>` binds the program's API to a Unix
     /// socket with the dev defaults, as if the main locus spelled
@@ -623,39 +623,131 @@ pub struct BuildOptions {
     /// callers leave it empty and every row reads 0 as before.
     pub obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
 
-    // === GH #843: build knobs that used to be TEST-ONLY env vars ===
+    // === Every build knob, as a field (GH #843) ===
     //
-    // Each of the five below is read from `LOTUS_*` when the option
-    // is left at its default, so the CLI and the shell keep the
-    // exact behavior they had. What changed is that a *test* asking
-    // for one no longer has to mutate the process environment:
-    // `std::env::set_var` is global to the process and is UB when
-    // another thread reads the environment concurrently, which under
-    // `cargo test` (libtest runs tests as threads in ONE process) is
-    // every other codegen test building at the same time.
-    /// Write the PRE-optimization LLVM IR to this path.
-    ///
-    /// Default `None` falls back to `LOTUS_DUMP_IR` being set in the
-    /// environment, which dumps to `output_path.with_extension("ll")`
-    /// — the CLI/shell spelling. The IR-shape tests pass the path.
+    // Codegen reads no environment variable: what used to be a
+    // `LOTUS_*` / `HALE_*` read inside it is a field here, and the
+    // ONE place that turns the process environment into these fields
+    // is `build_options_from_env` in hale-cli. A *test* asking for a
+    // knob sets the field on its own `BuildOptions` and never mutates
+    // the process environment: `std::env::set_var` is global to the
+    // process and is UB when another thread reads the environment
+    // concurrently, which under `cargo test` (libtest runs tests as
+    // threads in ONE process) is every other codegen test building at
+    // the same time. The environment names in the comments below are
+    // the spellings the CLI reads.
+    /// Write the PRE-optimization LLVM IR to this path. The IR-shape
+    /// tests pass the path.
     pub dump_ir: Option<std::path::PathBuf>,
+    /// Write it to `output_path.with_extension("ll")` when `dump_ir`
+    /// names no path (`LOTUS_DUMP_IR` set, the CLI/shell spelling).
+    pub dump_ir_beside_output: bool,
     /// Force the all-dynamic bus lowering: the devirtualization plans
-    /// come out empty. The differential harness's control arm.
-    /// OR-ed with `LOTUS_NO_BUS_DEVIRT`.
+    /// come out empty. The differential harness's control arm
+    /// (`LOTUS_NO_BUS_DEVIRT`).
     pub no_bus_devirt: bool,
     /// Force the pre-#2 ownership lowering: both bubble plans and the
     /// forwarding sets come out empty, so the build declares no
-    /// threading fields and stitches nothing. OR-ed with
-    /// `LOTUS_NO_OWNERSHIP_BUBBLE`.
+    /// threading fields and stitches nothing (`LOTUS_NO_OWNERSHIP_BUBBLE`).
     pub no_ownership_bubble: bool,
     /// Build with AddressSanitizer and skip the O3 module pipeline,
-    /// so a leak/UAF report carries accurate frames. OR-ed with
-    /// `LOTUS_ASAN`.
+    /// so a leak/UAF report carries accurate frames (`LOTUS_ASAN`).
     pub asan: bool,
-    /// LTO flavor. `None` reads `LOTUS_LTO`; see [`LtoMode::parse`]
-    /// for the spellings. Ignored under any sanitizer and on wasm32,
-    /// exactly as the env spelling is.
+    /// Build with ThreadSanitizer (`LOTUS_TSAN`).
+    pub tsan: bool,
+    /// Build with address+undefined-behavior sanitizers, aborting on
+    /// the first UB (`LOTUS_UBSAN`).
+    pub ubsan: bool,
+    /// LTO flavor (`LOTUS_LTO`, parsed with [`LtoMode::parse`]); `None`
+    /// is off. Ignored under any sanitizer and on wasm32.
     pub lto: Option<LtoMode>,
+    /// Compile the runtime without its prefetch hints
+    /// (`LOTUS_DISABLE_PREFETCH`).
+    pub disable_prefetch: bool,
+    /// Narrate debug-location decisions on stderr (`LOTUS_DI_TRACE`).
+    pub di_trace: bool,
+    /// Print the bus dispatch plan's flavor per subject on stderr
+    /// (`HALE_DISPATCH_TRACE`).
+    pub dispatch_trace: bool,
+    /// Print per-phase wall times on stderr (`HALE_TIME`).
+    pub time_phases: bool,
+    /// Let the runtime's C warnings through instead of `-w`
+    /// (`HALE_CC_WARNINGS`).
+    pub cc_warnings: bool,
+    /// Link with the default linker even when `ld.lld` is on PATH
+    /// (`HALE_NO_LLD`).
+    pub no_lld: bool,
+    /// Behave as if `libhale_ts_shim.a` was never built
+    /// (`HALE_NO_TS_SHIM`): the regression tests' way to reach the
+    /// "shim missing" path without deleting an artifact others share.
+    pub no_ts_shim: bool,
+    /// The tree-sitter shim staticlib to link, ahead of the places
+    /// codegen looks (`HALE_TS_SHIM_A`).
+    pub ts_shim: Option<std::path::PathBuf>,
+    /// The `zig` binary a cross build links with (`HALE_ZIG`); `None`
+    /// is `zig` on PATH.
+    pub zig: Option<String>,
+    /// The glibc a cross build's binary asks for (`HALE_TARGET_GLIBC`);
+    /// `None` is 2.31.
+    pub target_glibc: Option<String>,
+    /// The sysroot a cross build finds OpenSSL, zlib and the shim in
+    /// (`HALE_TARGET_SYSROOT`); `None` is `<cache>/sysroot/<triple>`.
+    pub target_sysroot: Option<std::path::PathBuf>,
+    /// Where compiled runtime objects are cached. REQUIRED, and there is
+    /// no default: the runtime's C is compiled once per flag set and the
+    /// objects are content-addressed, written by a unique temp name and
+    /// renamed into place, so any number of builds and processes can
+    /// share one directory safely, but only the caller knows which one
+    /// is theirs. The CLI uses `$XDG_CACHE_HOME/hale/runtime` (else
+    /// `~/.cache/hale/runtime`); a test uses its checkout's
+    /// `CARGO_TARGET_TMPDIR`. A fixed path in the system temp dir shared
+    /// by everyone is what this refuses to guess.
+    pub cache_dir: std::path::PathBuf,
+    /// A Homebrew OpenSSL prefix for the macOS link
+    /// (`LOTUS_OPENSSL_PREFIX`, then `OPENSSL_ROOT_DIR`).
+    pub openssl_prefix: Option<std::path::PathBuf>,
+}
+
+impl BuildOptions {
+    /// The default build, caching runtime objects in `cache_dir`. There
+    /// is no `Default`: a caller chooses where the cache lives.
+    pub fn new(cache_dir: std::path::PathBuf) -> BuildOptions {
+        BuildOptions {
+            cache_dir,
+            api: Default::default(),
+            env: Default::default(),
+            api_roles: Default::default(),
+            dev_profile: Default::default(),
+            link_libs: Default::default(),
+            csrc_files: Default::default(),
+            target: Default::default(),
+            target_cpu: Default::default(),
+            debug: Default::default(),
+            model_hash: Default::default(),
+            exec_digest: Default::default(),
+            obs_entity_ids: Default::default(),
+            dump_ir: Default::default(),
+            dump_ir_beside_output: Default::default(),
+            no_bus_devirt: Default::default(),
+            no_ownership_bubble: Default::default(),
+            asan: Default::default(),
+            tsan: Default::default(),
+            ubsan: Default::default(),
+            lto: Default::default(),
+            disable_prefetch: Default::default(),
+            di_trace: Default::default(),
+            dispatch_trace: Default::default(),
+            time_phases: Default::default(),
+            cc_warnings: Default::default(),
+            no_lld: Default::default(),
+            no_ts_shim: Default::default(),
+            ts_shim: Default::default(),
+            zig: Default::default(),
+            target_glibc: Default::default(),
+            target_sysroot: Default::default(),
+            openssl_prefix: Default::default(),
+        }
+    }
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -738,14 +830,8 @@ pub enum TargetCpu {
     X86_64V3,
 }
 
-/// Read a `LOTUS_*` boolean build flag from the environment.
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false)
-}
-
-/// Which LTO flavor `LOTUS_LTO` selects.
+/// Which LTO flavor a build asks for (`BuildOptions::lto`; the CLI
+/// spells it `LOTUS_LTO`).
 ///
 /// `1` / `true` / `full` -> full (monolithic) LTO: every module is
 /// merged into one and optimized together. Best cross-module
@@ -764,7 +850,7 @@ pub enum LtoMode {
 }
 
 impl LtoMode {
-    /// The spellings `LOTUS_LTO` (and `BuildOptions::lto`) accept.
+    /// The spellings `LOTUS_LTO` accepts (the CLI parses it with this).
     /// Anything unrecognized — including the empty string an unset
     /// variable produces — is [`LtoMode::Off`], never an error and
     /// never a silent upgrade to some flavor.
@@ -777,24 +863,17 @@ impl LtoMode {
     }
 }
 
-fn lto_mode() -> LtoMode {
-    LtoMode::parse(std::env::var("LOTUS_LTO").unwrap_or_default().as_str())
-}
-
 /// One-shot probe: is `ld.lld` on PATH? The non-LTO link uses it
 /// when present — the default bfd link spends ~120 ms scanning the
 /// ~27 MB tree-sitter shim staticlib on every build (measured
 /// 148 ms bfd vs 26 ms lld on the same link line, 2026-07-18);
 /// lld is the single biggest dev-loop latency lever. Linux-only
 /// (macOS's system ld64 is fine and ld64.lld is not a drop-in).
-/// HALE_NO_LLD=1 forces the default linker for debugging.
-fn lld_available() -> bool {
+/// `BuildOptions::no_lld` forces the default linker for debugging.
+fn lld_on_path() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        if env_flag("HALE_NO_LLD") {
-            return false;
-        }
         Command::new("ld.lld")
             .arg("--version")
             .stdout(std::process::Stdio::null())
@@ -805,22 +884,10 @@ fn lld_available() -> bool {
     })
 }
 
-/// Where compiled+cached runtime objects live (per user, persistent).
-fn runtime_cache_dir() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
-        if !x.is_empty() {
-            return PathBuf::from(x).join("hale").join("runtime");
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home)
-                .join(".cache")
-                .join("hale")
-                .join("runtime");
-        }
-    }
-    std::env::temp_dir().join("hale-runtime-cache")
+/// Where compiled+cached runtime objects live: `BuildOptions::cache_dir`,
+/// which the caller chose.
+fn runtime_cache_dir(options: &BuildOptions) -> PathBuf {
+    options.cache_dir.clone()
 }
 
 /// Compile (or reuse a cached) runtime translation unit to a `.o`,
@@ -837,19 +904,15 @@ fn runtime_cache_dir() -> PathBuf {
 /// `-lcrypto`. On Linux OpenSSL is on the default include/lib path and this
 /// returns `None` (no flags added — the build stays byte-identical).
 ///
-/// Resolution order: `$LOTUS_OPENSSL_PREFIX`, then `$OPENSSL_ROOT_DIR`
-/// (the CMake convention), then the standard brew keg locations for
-/// Apple Silicon and Intel. Returns the prefix whose
-/// `include/openssl/ssl.h` exists.
+/// Resolution order: `BuildOptions::openssl_prefix` (the CLI fills it
+/// from `$LOTUS_OPENSSL_PREFIX`, then `$OPENSSL_ROOT_DIR`, the CMake
+/// convention), then the standard brew keg locations for Apple Silicon
+/// and Intel. Returns the prefix whose `include/openssl/ssl.h` exists.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn macos_openssl_prefix() -> Option<PathBuf> {
-    for var in ["LOTUS_OPENSSL_PREFIX", "OPENSSL_ROOT_DIR"] {
-        if let Ok(p) = std::env::var(var) {
-            if !p.is_empty()
-                && Path::new(&p).join("include/openssl/ssl.h").exists()
-            {
-                return Some(PathBuf::from(p));
-            }
+fn macos_openssl_prefix(options: &BuildOptions) -> Option<PathBuf> {
+    if let Some(p) = &options.openssl_prefix {
+        if p.join("include/openssl/ssl.h").exists() {
+            return Some(p.clone());
         }
     }
     for cand in [
@@ -866,11 +929,12 @@ fn macos_openssl_prefix() -> Option<PathBuf> {
 }
 
 fn compile_cached_runtime_object(
+    options: &BuildOptions,
     source: &str,
     stem: &str,
     cflags: &[String],
 ) -> Result<PathBuf, CodegenError> {
-    compile_cached_runtime_object_with(&["clang".to_string()], "", source, stem, cflags)
+    compile_cached_runtime_object_with(options, &["clang".to_string()], "", source, stem, cflags)
 }
 
 /// [`compile_cached_runtime_object`] with the C compiler spelled out:
@@ -881,6 +945,7 @@ fn compile_cached_runtime_object(
 /// different release of one, is a different object, and one for a
 /// different machine when the compiler targets one.
 fn compile_cached_runtime_object_with(
+    options: &BuildOptions,
     cc: &[String],
     cc_version: &str,
     source: &str,
@@ -905,7 +970,7 @@ fn compile_cached_runtime_object_with(
     }
     let key = h.finish();
 
-    let dir = runtime_cache_dir();
+    let dir = runtime_cache_dir(options);
     let _ = std::fs::create_dir_all(&dir);
     let obj = dir.join(format!("lotus-rt-{stem}-{key:016x}.o"));
     if obj.exists() {
@@ -963,51 +1028,31 @@ fn compile_cached_runtime_object_with(
     }
 }
 
-/// Compile `program` to an executable at `output_path`. Uses
-/// `clang` to link the object file produced by LLVM. Equivalent
-/// to `build_executable_with_imports(program, output_path, &[])`;
-/// callers with no cross-seed imports should use this entry point.
-pub fn build_executable(
-    program: &Program,
-    output_path: &Path,
-) -> Result<(), CodegenError> {
-    build_executable_with_imports(program, output_path, &[])
-}
-
-/// v1.x-IMPORT: variant of `build_executable` that accepts a
-/// per-build path-rename table for cross-seed imports. The caller
-/// (the CLI) resolves any `import "lib/X" as foo;` declarations,
-/// mangles each imported sub-program, merges the mangled decls
-/// into `program`, and passes the per-build table here. Each
-/// entry maps a segment vector (`["foo", "Bar"]`) to the mangled
-/// symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
+/// Compile `program` to an executable at `output_path`, linking it with
+/// `clang`. The one entry point: what to build with (the cache directory
+/// the caller chose, the link surface for `@ffi("c")` consumers the CLI's
+/// `--link` and `--csrc` flags carry, every other knob) is in `options`,
+/// and `BuildOptions::new` takes the cache directory, so there is no way
+/// to build without choosing one.
+///
+/// `import_renames` is the per-build path-rename table for cross-seed
+/// imports (v1.x-IMPORT). The caller (the CLI) resolves any
+/// `import "lib/X" as foo;` declarations, mangles each imported
+/// sub-program, merges the mangled decls into `program`, and passes the
+/// table here. Each entry maps a segment vector (`["foo", "Bar"]`) to the
+/// mangled symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
 /// this table after the static stdlib table when resolving
-/// qualified-name paths.
-pub fn build_executable_with_imports(
-    program: &Program,
-    output_path: &Path,
-    import_renames: &[(Vec<String>, String)],
-) -> Result<(), CodegenError> {
-    build_executable_with_options(
-        program,
-        output_path,
-        import_renames,
-        &BuildOptions::default(),
-    )
-}
-
-/// Stage-1 FFI entry point. Accepts a `BuildOptions` that carries
-/// the link surface for `@ffi("c")` consumers. The CLI's `--link`
-/// and `--csrc` flags route here.
+/// qualified-name paths. A caller with no imports passes `&[]`.
 pub fn build_executable_with_options(
     program: &Program,
     output_path: &Path,
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
-    // #8 (2026-07-02): HALE_TIME=1 prints per-phase wall times to
-    // stderr — the profiling surface the incremental design reads.
-    let time_phases = std::env::var("HALE_TIME").is_ok();
+    // #8 (2026-07-02): `BuildOptions::time_phases` (the CLI's
+    // `HALE_TIME`) prints per-phase wall times to stderr — the
+    // profiling surface the incremental design reads.
+    let time_phases = options.time_phases;
     let t_start = std::time::Instant::now();
     let mut t_last = t_start;
     let phase = |name: &str, t_last: &mut std::time::Instant| {
@@ -1233,7 +1278,7 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<String, u32>,
         std::collections::BTreeSet<String>,
         std::collections::BTreeMap<String, Vec<(String, String)>>,
-    ) = if options.no_bus_devirt || env_flag("LOTUS_NO_BUS_DEVIRT") {
+    ) = if options.no_bus_devirt {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeSet::new(),
@@ -1284,7 +1329,7 @@ pub fn build_executable_with_options(
             &gates,
             &std::collections::BTreeMap::new(),
         );
-        if env_flag("HALE_DISPATCH_TRACE") {
+        if options.dispatch_trace {
             for s in &plan.subjects {
                 eprintln!(
                     "[hale-dispatch] {} {}",
@@ -1365,7 +1410,7 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<(String, String), String>,
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         std::collections::BTreeMap<(String, String), String>,
-    ) = if options.no_ownership_bubble || env_flag("LOTUS_NO_OWNERSHIP_BUBBLE")
+    ) = if options.no_ownership_bubble
     {
         (
             std::collections::BTreeMap::new(),
@@ -1685,6 +1730,7 @@ pub fn build_executable_with_options(
         bus_inert,
         di: None,
         di_loc_stack: Vec::new(),
+        di_trace: options.di_trace,
         di_current_loc: None,
         di_current_pos: None,
         di_pending_params: Vec::new(),
@@ -1859,9 +1905,9 @@ pub fn build_executable_with_options(
     // overflow class in the pack readers / ring framing) aborts and is
     // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
     // unaffected; used to validate the foreign-ring boundary hardening.
-    let lotus_tsan = env_flag("LOTUS_TSAN");
-    let lotus_asan = options.asan || env_flag("LOTUS_ASAN");
-    let lotus_ubsan = env_flag("LOTUS_UBSAN");
+    let lotus_tsan = options.tsan;
+    let lotus_asan = options.asan;
+    let lotus_ubsan = options.ubsan;
     // LOTUS_LTO: opt-in LTO build. `thin` selects ThinLTO, `1`/`full`
     // selects monolithic LTO. The Hale module is emitted as
     // plain LLVM bitcode and the lotus C runtime TUs are compiled with
@@ -1895,7 +1941,7 @@ pub fn build_executable_with_options(
     // non-zero count (32) under off/thin/full. The whole example corpus
     // also runs byte-identical under thin (85/86; the one diff,
     // 20-pinned-core, is nondeterministic against itself).
-    let requested_lto = options.lto.unwrap_or_else(lto_mode);
+    let requested_lto = options.lto.unwrap_or_default();
     let sanitized = lotus_tsan || lotus_ubsan || lotus_asan;
     // A sanitizer runtime is the host's; the Hale module above was
     // already instrumented for one, so a cross build under a sanitizer
@@ -1930,7 +1976,7 @@ pub fn build_executable_with_options(
     // `output_path.with_extension("ll")`.
     let ir_dump: Option<PathBuf> = match &options.dump_ir {
         Some(p) => Some(p.clone()),
-        None if std::env::var("LOTUS_DUMP_IR").is_ok() => {
+        None if options.dump_ir_beside_output => {
             Some(output_path.with_extension("ll"))
         }
         None => None,
@@ -2102,7 +2148,7 @@ pub fn build_executable_with_options(
         obj_path.clone()
     };
 
-    let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
+    let prefetch_disabled = options.disable_prefetch;
     // GH #970: a foreign native target ends here, at a relocatable
     // object for its own triple — the stage wasm stood at before its
     // runtime was ported. Everything below compiles the lotus runtime
@@ -2182,7 +2228,7 @@ pub fn build_executable_with_options(
     // developer escape hatch is set (compiler devs working on the
     // runtime itself export HALE_CC_WARNINGS=1; it's part of the
     // content-addressed cache key like every other flag).
-    if !env_flag("HALE_CC_WARNINGS") {
+    if !options.cc_warnings {
         rt_cflags.push("-w".into());
     }
     if lotus_tsan {
@@ -2281,7 +2327,7 @@ pub fn build_executable_with_options(
     // compiled lotus_tls.c TU can find <openssl/ssl.h>. No-op on Linux
     // (OpenSSL is on the default include path; the helper returns None).
     if target_spec.is_macos() {
-        if let Some(prefix) = macos_openssl_prefix() {
+        if let Some(prefix) = macos_openssl_prefix(options) {
             rt_cflags.push(format!("-I{}/include", prefix.display()));
         }
     }
@@ -2292,10 +2338,11 @@ pub fn build_executable_with_options(
     // ride along with main builds. shm_ring (Form K5): own TU, dead-
     // stripped by the linker when unreferenced.
     let arena_o =
-        compile_cached_runtime_object(RUNTIME_C_SOURCE, "arena", &rt_cflags)?;
+        compile_cached_runtime_object(options, RUNTIME_C_SOURCE, "arena", &rt_cflags)?;
     let tls_o =
-        compile_cached_runtime_object(RUNTIME_TLS_C_SOURCE, "tls", &rt_cflags)?;
+        compile_cached_runtime_object(options, RUNTIME_TLS_C_SOURCE, "tls", &rt_cflags)?;
     let shm_ring_o = compile_cached_runtime_object(
+        options,
         RUNTIME_SHM_RING_C_SOURCE,
         "shm_ring",
         &rt_cflags,
@@ -2305,6 +2352,7 @@ pub fn build_executable_with_options(
     // up the zlib dep; zstd is dlopen'd at runtime so no link-time
     // libzstd dependency exists at all.
     let compress_o = compile_cached_runtime_object(
+        options,
         RUNTIME_COMPRESS_C_SOURCE,
         "compress",
         &rt_cflags,
@@ -2313,6 +2361,7 @@ pub fn build_executable_with_options(
     // probes in lotus_arena.c are weak-guarded so helper binaries
     // that compile the arena TU alone still link.
     let obs_o = compile_cached_runtime_object(
+        options,
         RUNTIME_OBS_C_SOURCE,
         "obs",
         &rt_cflags,
@@ -2329,7 +2378,7 @@ pub fn build_executable_with_options(
     // size cost but acceptable for v0; if it becomes painful, a
     // future flag can gate the link on `std::ts` actually being
     // referenced by the user program.
-    let ts_shim_path = locate_ts_shim_staticlib();
+    let ts_shim_path = locate_ts_shim_staticlib(options);
     // GH #808: without the staticlib, every surviving `lotus_ts_*`
     // reference is an undefined symbol — and `ld.lld: undefined
     // symbol: lotus_ts_parse_go` reads as a bug in the user's
@@ -2379,7 +2428,7 @@ pub fn build_executable_with_options(
         clang.arg("-O2");
         // Non-LTO: prefer lld when installed (see lld_available).
         // The LTO branch above already requires lld.
-        if !target_spec.is_macos() && lld_available() {
+        if !target_spec.is_macos() && !options.no_lld && lld_on_path() {
             clang.arg("-fuse-ld=lld");
         }
     }
@@ -2417,7 +2466,7 @@ pub fn build_executable_with_options(
     // dynamic link — distro OpenSSL is a stable system dep.
     let mut linked_static_ssl = false;
     if target_spec.is_macos() {
-        if let Some(prefix) = macos_openssl_prefix() {
+        if let Some(prefix) = macos_openssl_prefix(options) {
             let ssl_a = prefix.join("lib").join("libssl.a");
             let crypto_a = prefix.join("lib").join("libcrypto.a");
             if ssl_a.exists() && crypto_a.exists() {
@@ -2668,12 +2717,14 @@ const RUNTIME_WASM_POSIX_H: &str =
 /// The C compiler a cross build compiles and links with (GH #970):
 /// `zig cc -target <zig triple>.<glibc>`. zig ships a libc for every
 /// Linux target, so no sysroot has to carry one, and its own lld links
-/// ELF from any host. `HALE_ZIG` names the binary when it is not on
-/// PATH; `HALE_TARGET_GLIBC` picks the glibc the emitted binary asks
+/// ELF from any host. `BuildOptions::zig` (`HALE_ZIG`) names the binary
+/// when it is not on PATH; `target_glibc` (`HALE_TARGET_GLIBC`) picks
+/// the glibc the emitted binary asks
 /// for, default 2.31 — old enough for the LTS distributions in service,
 /// and the same pin `scripts/target-sysroot.sh` uses.
 fn cross_cc(
     target: &crate::target::TargetSpec,
+    options: &BuildOptions,
 ) -> Result<(Vec<String>, String), CodegenError> {
     let zig_target = target.zig_target().ok_or_else(|| {
         CodegenError::Link(format!(
@@ -2681,8 +2732,9 @@ fn cross_cc(
             target.triple
         ))
     })?;
-    let zig = std::env::var("HALE_ZIG")
-        .ok()
+    let zig = options
+        .zig
+        .clone()
         .filter(|z| !z.is_empty())
         .unwrap_or_else(|| "zig".to_string());
     let version = Command::new(&zig)
@@ -2703,8 +2755,9 @@ fn cross_cc(
     let spelled = if target.is_musl() {
         zig_target.to_string()
     } else {
-        let glibc = std::env::var("HALE_TARGET_GLIBC")
-            .ok()
+        let glibc = options
+            .target_glibc
+            .clone()
             .filter(|g| !g.is_empty())
             .unwrap_or_else(|| "2.31".to_string());
         format!("{zig_target}.{glibc}")
@@ -2720,13 +2773,16 @@ fn cross_cc(
 /// shim, as `scripts/target-sysroot.sh` lays them out. `HALE_TARGET_SYSROOT`
 /// names one explicitly; otherwise `<cache>/hale/sysroot/<triple>`,
 /// beside the runtime object cache.
-fn target_sysroot(target: &crate::target::TargetSpec) -> Result<PathBuf, CodegenError> {
-    let explicit = std::env::var("HALE_TARGET_SYSROOT")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from);
+fn target_sysroot(
+    target: &crate::target::TargetSpec,
+    options: &BuildOptions,
+) -> Result<PathBuf, CodegenError> {
+    let explicit = options
+        .target_sysroot
+        .clone()
+        .filter(|p| !p.as_os_str().is_empty());
     let dir = explicit.clone().unwrap_or_else(|| {
-        runtime_cache_dir()
+        runtime_cache_dir(options)
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."))
@@ -2761,14 +2817,14 @@ fn target_sysroot(target: &crate::target::TargetSpec) -> Result<PathBuf, Codegen
 fn locate_cross_ts_shim(
     target: &crate::target::TargetSpec,
     sysroot: &Path,
+    options: &BuildOptions,
 ) -> Option<PathBuf> {
-    if env_flag("HALE_NO_TS_SHIM") {
+    if options.no_ts_shim {
         return None;
     }
-    if let Ok(p) = std::env::var("HALE_TS_SHIM_A") {
-        let pb = PathBuf::from(p);
+    if let Some(pb) = &options.ts_shim {
         if pb.exists() {
-            return Some(pb);
+            return Some(pb.clone());
         }
     }
     let in_sysroot = sysroot.join("lib").join("libhale_ts_shim.a");
@@ -2812,11 +2868,11 @@ fn link_cross(
     options: &BuildOptions,
     prefetch_disabled: bool,
 ) -> Result<(), CodegenError> {
-    let (cc, cc_version) = cross_cc(target)?;
-    let sysroot = target_sysroot(target)?;
+    let (cc, cc_version) = cross_cc(target, options)?;
+    let sysroot = target_sysroot(target, options)?;
 
     let mut rt_cflags: Vec<String> = vec!["-g".into()];
-    if !env_flag("HALE_CC_WARNINGS") {
+    if !options.cc_warnings {
         rt_cflags.push("-w".into());
     }
     rt_cflags.push("-O2".into());
@@ -2838,11 +2894,11 @@ fn link_cross(
         (RUNTIME_OBS_C_SOURCE, "obs"),
     ] {
         rt_objs.push(compile_cached_runtime_object_with(
-            &cc, &cc_version, source, stem, &rt_cflags,
+            options, &cc, &cc_version, source, stem, &rt_cflags,
         )?);
     }
 
-    let ts_shim = locate_cross_ts_shim(target, &sysroot);
+    let ts_shim = locate_cross_ts_shim(target, &sysroot, options);
     if ts_shim.is_none() && module_references_ts_shim(module) {
         return Err(CodegenError::MissingTsShim(
             format!(
@@ -3234,19 +3290,18 @@ fn module_references_ts_shim(module: &inkwell::module::Module<'_>) -> bool {
 ///      stable.sh` is what places it here.
 ///   3. Workspace `target/release/`
 ///   4. Workspace `target/debug/`
-fn locate_ts_shim_staticlib() -> Option<PathBuf> {
+fn locate_ts_shim_staticlib(options: &BuildOptions) -> Option<PathBuf> {
     // GH #808: test-only override — force the "staticlib was never
     // built" path so the regression tests can assert both halves of
     // the fix (math links without the shim; `std::ts` gets a located
     // refusal) without deleting a build artifact other tests share.
-    // Same shape as LOTUS_NO_BUS_DEVIRT / LOTUS_NO_OWNERSHIP_BUBBLE.
-    if env_flag("HALE_NO_TS_SHIM") {
+    // Same shape as `no_bus_devirt` / `no_ownership_bubble`.
+    if options.no_ts_shim {
         return None;
     }
-    if let Ok(p) = std::env::var("HALE_TS_SHIM_A") {
-        let pb = PathBuf::from(p);
+    if let Some(pb) = &options.ts_shim {
         if pb.exists() {
-            return Some(pb);
+            return Some(pb.clone());
         }
     }
     // bin/hale publish ships the staticlib next to itself —
@@ -5289,6 +5344,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// generic monomorph body) unsets instead, so a location can
     /// never attach to instructions of a function whose subprogram
     /// it doesn't belong to (an LLVM verifier error).
+    /// `BuildOptions::di_trace`: narrate debug-location decisions.
+    di_trace: bool,
     di_loc_stack: Vec<(
         inkwell::values::FunctionValue<'ctx>,
         Option<inkwell::debug_info::DILocation<'ctx>>,
@@ -18160,7 +18217,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return false;
         }
         let Some((file_idx, line, col)) = self.di_locate(span) else {
-            if std::env::var("LOTUS_DI_TRACE").is_ok() {
+            if self.di_trace {
                 eprintln!(
                     "di: unmapped span {}..{} in fn {}",
                     span.start.0, span.end.0, fn_name
@@ -18235,7 +18292,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 );
             }
         }
-        if std::env::var("LOTUS_DI_TRACE").is_ok() {
+        if self.di_trace {
             eprintln!("di: SET {} line {} col {}", fn_name, line, col);
         }
         self.di_loc_stack.push((func, prev, prev_pos));

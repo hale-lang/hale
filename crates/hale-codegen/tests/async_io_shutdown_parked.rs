@@ -17,10 +17,12 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[test]
 fn program_with_coro_parked_at_shutdown_exits_cleanly() {
@@ -48,7 +50,7 @@ fn program_with_coro_parked_at_shutdown_exits_cleanly() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_async_io_shutdown_parked");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let mut child = Command::new(&bin).spawn().expect("spawn");
     let deadline = Instant::now() + Duration::from_secs(8);

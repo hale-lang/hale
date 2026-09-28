@@ -23,13 +23,15 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable_with_imports;
+use hale_codegen::build_executable_with_options;
 use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -121,7 +123,7 @@ fn or_on_path_callee_for_imported_fallible_fn() {
         "hale_or_on_path_callee_{}",
         std::process::id()
     ));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer");
@@ -162,7 +164,7 @@ fn cross_seed_form_vec_split_across_two_files() {
         "hale_cross_seed_form_vec_multi_{}",
         std::process::id()
     ));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -196,7 +198,7 @@ fn cross_seed_topic_subscribe_and_publish() {
     consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!("hale_cross_seed_topic_{}", std::process::id()));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run");
@@ -255,7 +257,7 @@ fn three_file_lib_exposes_decls_from_every_file() {
     );
 
     let bin = harness::unique_bin(&format!("hale_three_file_lib_{}", std::process::id()));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run");
@@ -301,7 +303,7 @@ fn cross_seed_non_fallible_free_fn_call_in_expr_and_stmt_positions() {
         "hale_cross_seed_nonfallible_{}",
         std::process::id()
     ));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer");
@@ -365,7 +367,7 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
         "hale_cross_seed_imports_{}",
         std::process::id()
     ));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
 
     let out = Command::new(&bin).output().expect("run consumer binary");
@@ -429,7 +431,7 @@ fn method_name_shadowed_by_top_level_fn_resolves() {
     consumer.items.extend(lib_prog.items);
 
     let bin = harness::unique_bin(&format!("hale_p1_method_shadow_{}", std::process::id()));
-    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(
@@ -492,7 +494,7 @@ fn library_enum_match_and_perspective_serves_survive_import() {
     consumer_prog.items.extend(lib_items);
 
     let bin = harness::unique_bin(&format!("hale_cross_seed_enum_persp_{}", std::process::id()));
-    build_executable_with_imports(&consumer_prog, &bin, &renames)
+    build_executable_with_options(&consumer_prog, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -554,7 +556,7 @@ fn perspective_contract_method_shadowed_by_top_level_fn_resolves() {
     consumer.imports.clear();
     consumer.items.extend(lib_prog.items);
     let bin = harness::unique_bin(&format!("hale_persp_method_shadow_{}", std::process::id()));
-    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -601,7 +603,7 @@ fn bus_handler_name_shadowed_by_top_level_fn_resolves() {
     consumer.imports.clear();
     consumer.items.extend(lib_prog.items);
     let bin = harness::unique_bin(&format!("hale_handler_shadow_{}", std::process::id()));
-    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options()).expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -666,7 +668,7 @@ fn an_imported_alias_can_be_spelled_in_a_literal() {
         "hale_imported_alias_literal_{}",
         std::process::id()
     ));
-    build_executable_with_imports(&consumer, &bin, &renames)
+    build_executable_with_options(&consumer, &bin, &renames, &build_opts::options())
         .expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

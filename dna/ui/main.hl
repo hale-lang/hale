@@ -97,16 +97,20 @@ type Session {
 locus Sessions { capacity { heap rows of Session; } }
 
 // The client's secret (GH #989): the vault's `oidc-client-<client>`, which
-// the organism's bootstrap provisions; read on the one line that builds
-// the token request and nowhere else — no field, no environment.
+// the organism's bootstrap provisions; revealed in the one statement that
+// sends the token request and nowhere else — no field, no environment, no
+// `let` (spec/semantics.md § "@sealed").
 @sealed locus CodeExchange {
     fn vault_of(client: String) -> String { return "oidc-client-" + client; }
     fn ready(client: String) -> Bool { return std::secret::Credential { vault: self.vault_of(client) }.ready(); }
     // The ID token the endpoint answers the code with, or "".
     fn id_token(token_url: String, code: String, redirect_uri: String, client: String) -> String {
-        let body = "grant_type=authorization_code&code=" + dna::url_encode(code) + "&redirect_uri=" + dna::url_encode(redirect_uri)
-            + "&client_id=" + dna::url_encode(client) + "&client_secret=" + dna::url_encode(std::secret::Credential { vault: self.vault_of(client) }.reveal_text());
-        let resp = std::http::post(token_url, std::bytes::from_string(body), "application/x-www-form-urlencoded") or token_failed(err);
+        let resp = std::http::post(
+            token_url,
+            std::bytes::from_string("grant_type=authorization_code&code=" + dna::url_encode(code) + "&redirect_uri=" + dna::url_encode(redirect_uri)
+                    + "&client_id=" + dna::url_encode(client) + "&client_secret=" + dna::url_encode(std::secret::Credential { vault: self.vault_of(client) }.reveal_text())),
+            "application/x-www-form-urlencoded"
+        ) or token_failed(err);
         if resp.status != 200 { return ""; }
         return std::json::find_string_field(std::str::from_bytes(resp.body), "id_token");
     }

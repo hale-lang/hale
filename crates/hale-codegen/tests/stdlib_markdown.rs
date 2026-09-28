@@ -7,10 +7,12 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn render(source_md: &str) -> String {
     // Each test compiles a tiny Hale program that calls
@@ -33,7 +35,7 @@ fn render(source_md: &str) -> String {
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("stdlib_markdown");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(

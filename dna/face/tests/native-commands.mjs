@@ -39,7 +39,7 @@ const inherited = isolatedEnvironment();
 // observation, model, signing, OIDC, or native service configuration is forwarded.
 const childEnv = Object.fromEntries([
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'GIT_CONFIG_NOSYSTEM',
-  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER',
+  'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT', 'HALE_DNA_DISCOVER', 'HALE_VAULT_DIR',
 ].filter(key => inherited[key] !== undefined).map(key => [key, inherited[key]]));
 const owned = new Set();
 const processes = [];

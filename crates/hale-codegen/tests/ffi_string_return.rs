@@ -19,6 +19,8 @@ use hale_codegen::{build_executable_with_options, BuildOptions};
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_with_csrc(name: &str, hale_src: &str, csrc_body: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(hale_src).expect("parse");
@@ -30,7 +32,7 @@ fn build_with_csrc(name: &str, hale_src: &str, csrc_body: &str) -> std::path::Pa
     let options = BuildOptions {
         link_libs: Vec::new(),
         csrc_files: vec![csrc_path.clone()],
-        ..Default::default()
+        ..build_opts::options()
     };
     build_executable_with_options(&program, &bin, &[], &options).expect("build");
     let _ = std::fs::remove_file(&csrc_path);

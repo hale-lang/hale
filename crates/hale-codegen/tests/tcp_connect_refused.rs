@@ -9,17 +9,19 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/ports.rs"]
 mod ports;
 
 fn run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();

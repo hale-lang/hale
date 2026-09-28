@@ -36,17 +36,19 @@
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Compile `src` and run it under `LOTUS_ARENA_RESIDENCY=1`.
 /// Returns `(stdout, live_arena_count)`.
 fn run(name: &str, src: &str) -> (String, usize) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_gh871_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()

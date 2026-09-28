@@ -9,6 +9,8 @@
 //! three concerns from one path become a proposal bound to its parent,
 //! the Board's to ratify. K3: structure, signals and ranking, from memory.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -19,7 +21,7 @@ use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
     let _s = trace::Span::new("hale", args.join(" "));
-    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    let mut c = vault::hale();
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
@@ -138,7 +140,7 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     let (ok, migrated) = hale(&["dna", "memory", "migrate"], &app, &[]);
     assert!(ok, "{migrated}");
     let head = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).expect("the head's DSN").to_string();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "dev", ".", "--no-iris"])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))

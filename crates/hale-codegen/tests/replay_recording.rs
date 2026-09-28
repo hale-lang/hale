@@ -24,10 +24,12 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 #[path = "support/obs.rs"]
 mod obs;
@@ -50,7 +52,7 @@ fn is_public_bus(ring: u32, w0: u64, want: u32) -> bool {
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_rec_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

@@ -37,10 +37,12 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 /// Generous enough for a loaded CI box, tight enough that a
 /// `pthread_join` on a serve thread nothing ever interrupts trips it
@@ -50,7 +52,7 @@ const DEADLINE: Duration = Duration::from_secs(30);
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_gh893_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

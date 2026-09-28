@@ -2,6 +2,8 @@
 //! nerves (Track C, PR 26; GH #986). The host relays and reads; the
 //! organism decides; the Journal is the record both consult.
 
+#[path = "support/vault.rs"]
+mod vault;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -9,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).output().expect("hale");
+    let out = vault::hale().args(args).current_dir(cwd).output().expect("hale");
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
@@ -62,7 +64,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let nats_org = migrated.lines().find_map(|l| l.strip_prefix("HALE_DNA_NATS_ORG=")).expect("the organization's token").to_string();
     // the organism, unobserved
     let log = d.join("run.stderr");
-    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+    let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
@@ -95,7 +97,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     }
     let env_cache = |c: &mut Command| { c.env("XDG_CACHE_HOME", &cache); };
     let run = |args: &[&str]| -> (bool, String) {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+        let mut c = vault::hale();
         c.args(args).current_dir(&app);
         env_cache(&mut c);
         let out = c.output().unwrap();

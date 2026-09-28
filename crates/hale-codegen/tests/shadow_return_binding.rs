@@ -38,10 +38,12 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 struct Run {
     stdout: String,
@@ -60,7 +62,7 @@ fn run(name: &str, src: &str) -> Run {
         "the checker refused it: {errors:?}\n{src}"
     );
     let bin = harness::unique_bin(name);
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin)
         .env("LOTUS_ARENA_RESIDENCY", "1")
         .output()

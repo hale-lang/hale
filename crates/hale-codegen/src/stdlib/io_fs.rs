@@ -34,6 +34,7 @@ pub(crate) trait IoFsStdlib<'ctx> {
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
+        runtime: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_fs_file_size_fallible(
         &mut self,
@@ -333,10 +334,16 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
     /// content via strlen, truncating at the first NUL. Reuses
     /// `lotus_fs_write_file` (already buf+len at the C level) with
     /// the blob's data/len.
+    ///
+    /// `std::io::fs::__write_private(path, b)` lowers here too, through
+    /// `lotus_fs_write_private`: the same buf+len write into a new 0600
+    /// file in a directory the process owns (`std::secret`'s
+    /// `Credential.write_private`).
     fn lower_std_io_fs_write_bytes_fallible(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
+        runtime: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         if args.len() != 2 {
             return Err(CodegenError::Unsupported(format!(
@@ -383,8 +390,8 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
             .expect("returns i64");
         let write_fn = self
             .module
-            .get_function("lotus_fs_write_file")
-            .expect("lotus_fs_write_file declared");
+            .get_function(runtime)
+            .expect("fs write runtime declared");
         let ret = self
             .builder
             .build_call(

@@ -26,25 +26,29 @@
 //! `dissolve()` calls at every level of the tree, not one. They are
 //! stdout counts rather than a sanitizer verdict so the test bites
 //! without one — but the same programs also run under
-//! `LOTUS_ASAN=1` (`build_executable` reads the flag at codegen
-//! time), where the 31 unreclaimed arenas are what LeakSanitizer
+//! `LOTUS_ASAN=1` (`support/sanitize.rs` turns the flag into
+//! `BuildOptions`), where the 31 unreclaimed arenas are what LeakSanitizer
 //! reports and a leak turns every `status.success()` here red. Note
 //! GH #816: the chunk pool masks USE-AFTER-FREE from ASan, not
 //! leaks — LSan does see these.
 
 use std::process::Command;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
+#[path = "support/sanitize.rs"]
+mod sanitize;
 
 /// Compile `src`, run it, return its stdout. Asserts a clean exit —
 /// which under `LOTUS_ASAN=1` is also the leak oracle.
 fn run(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("gh815_{}", name));
-    build_executable(&program, &bin).expect("build");
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &sanitize::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -393,7 +397,7 @@ fn codegen_refuses_a_pinned_locus_lowered_inside_a_loop() {
     let src = pinned_in_loop_src("App { };");
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("gh826_pinned_loop");
-    let err = build_executable(&program, &bin)
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
         .expect_err("a pinned locus in a loop must not build");
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();

@@ -5,11 +5,13 @@
 //! wrap with zero copies, on the raw `{ptr,len}` BytesMut window that
 //! `writable()` / `readable()` hand out.
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 use std::process::Command;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     build_and_run_argv(name, src, &[])
@@ -18,7 +20,7 @@ fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_mirror_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&out.stdout).to_string(), out.status)

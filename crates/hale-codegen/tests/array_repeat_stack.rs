@@ -22,10 +22,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn unique_path(tag: &str, ext: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -52,7 +54,7 @@ fn dump_ir(src: &str, tag: &str) -> String {
 fn build_and_run(src: &str, tag: &str) -> (String, std::process::ExitStatus) {
     let bin = unique_path(tag, "bin");
     let program = hale_syntax::parse_source(src).expect("parse");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (

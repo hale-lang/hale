@@ -7,10 +7,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is `crates/hale-codegen`; the example
@@ -29,7 +31,7 @@ fn examples_dir() -> PathBuf {
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("lotus_test_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (String::from_utf8_lossy(&output.stdout).to_string(), output.status)
@@ -351,7 +353,7 @@ fn mutable_counter_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_06_mutable_counter");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
 
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
@@ -385,7 +387,7 @@ fn build_time_sleep_blocks_for_at_least_requested_duration() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("lotus_test_time_sleep");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let start = Instant::now();
     let output = Command::new(&bin).output().expect("run");
@@ -429,7 +431,7 @@ fn build_time_sleep_in_loop_accumulates() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("lotus_test_time_sleep_loop");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
 
     let start = Instant::now();
     let output = Command::new(&bin).output().expect("run");
@@ -573,7 +575,7 @@ fn control_flow_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_07_control_flow");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -598,7 +600,7 @@ fn monotonic_sleep_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_08_monotonic_sleep");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let start = Instant::now();
     let output = Command::new(&bin_path).output().expect("run");
     let elapsed = start.elapsed();
@@ -742,7 +744,7 @@ fn locus_with_run_canonical_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_01_ticker");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let start = Instant::now();
     let output = Command::new(&bin_path).output().expect("run");
     let elapsed = start.elapsed();
@@ -865,7 +867,7 @@ fn parent_child_canonical_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_02_parent_child");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -928,7 +930,7 @@ fn stateful_locus_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_10_stateful_locus");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -950,7 +952,7 @@ fn functions_example_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_09_functions");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
     let output = Command::new(&bin_path).output().expect("run");
     let _ = std::fs::remove_file(&bin_path);
 
@@ -979,7 +981,7 @@ fn hello_world_builds_and_runs() {
     let mut bin_path = temp_dir.clone();
     bin_path.push("lotus_test_hello_world");
 
-    build_executable(&program, &bin_path).expect("build");
+    build_executable_with_options(&program, &bin_path, &[], &build_opts::options()).expect("build");
 
     let output = Command::new(&bin_path)
         .output()

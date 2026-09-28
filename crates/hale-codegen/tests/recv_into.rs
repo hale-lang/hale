@@ -7,10 +7,12 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn pick_free_port() -> u16 {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
@@ -22,7 +24,7 @@ fn pick_free_port() -> u16 {
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_recv_into_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

@@ -19,6 +19,8 @@
 
 use std::process::Command;
 
+#[path = "support/build.rs"]
+mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
 
@@ -81,7 +83,7 @@ fn main() {{
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_scratch_local_residency");
-    hale_codegen::build_executable(&program, &bin).expect("build");
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let (stdout, stderr, ok) = run(&bin);
     assert!(ok, "stdout={stdout:?} stderr={stderr:?}");
     let field = |key: &str| -> &str {

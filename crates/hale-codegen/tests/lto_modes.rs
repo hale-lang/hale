@@ -10,6 +10,8 @@ use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 const SRC: &str = r#"
     fn main() {
@@ -32,7 +34,7 @@ fn builds_under(var: Option<&str>, name: &str) -> bool {
     let bin = harness::unique_bin(name);
     let options = BuildOptions {
         lto: Some(LtoMode::parse(var.unwrap_or(""))),
-        ..Default::default()
+        ..build_opts::options()
     };
     let ok =
         build_executable_with_options(&program, &bin, &[], &options).is_ok();

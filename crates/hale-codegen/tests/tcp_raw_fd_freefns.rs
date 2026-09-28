@@ -22,10 +22,12 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
@@ -39,7 +41,7 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
         name,
         std::process::id()
     ));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     bin
 }
 

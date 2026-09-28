@@ -29,10 +29,12 @@
 //! embedder that bypasses it must be refused here rather than emit a
 //! program whose stated placement quietly does nothing.
 
-use hale_codegen::build_executable;
+use hale_codegen::build_executable_with_options;
 
 #[path = "support/harness.rs"]
 mod harness;
+#[path = "support/build.rs"]
+mod build_opts;
 
 fn app(default: &str, extra_fn: &str) -> String {
     format!(
@@ -67,7 +69,7 @@ fn factory_default_under_a_placement_entry_is_refused() {
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_factory_890");
-    let err = build_executable(&program, &bin)
+    let err = build_executable_with_options(&program, &bin, &[], &build_opts::options())
         .expect_err("a dropped placement must not build");
     let _ = std::fs::remove_file(&bin);
     let msg = err.to_string();
@@ -85,7 +87,7 @@ fn locus_literal_default_under_a_placement_entry_still_builds() {
     let src = app("Worker { }", "");
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_literal_890");
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = std::process::Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero exit");
@@ -153,7 +155,7 @@ fn a_placement_entry_does_not_reach_a_later_instantiation() {
     .concat();
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_slot_scope_921");
-    let built = build_executable(&program, &bin);
+    let built = build_executable_with_options(&program, &bin, &[], &build_opts::options());
     assert!(
         built.is_ok(),
         "a placement entry on an earlier field must not pin a later \
