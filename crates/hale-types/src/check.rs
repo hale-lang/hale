@@ -9934,7 +9934,18 @@ impl<'a> Checker<'a> {
         let mut first: Vec<(String, Span)> = Vec::new();
         for member in &decl.members {
             let LocusMember::Failure(fd) = member else { continue };
-            let Some(child) = fd.params.first() else { continue };
+            // a handler the signature rules already refuse takes no
+            // slot: it is not the one that runs
+            if fd.params.len() != 2 {
+                continue;
+            }
+            // the same test the signature rule refuses by
+            let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
+            let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
+            if !is_violation && !matches!(err_ty, Ty::Unknown) {
+                continue;
+            }
+            let child = &fd.params[0];
             let child_ty = resolve_type_expr(&child.ty, self.known);
             if matches!(child_ty, Ty::Unknown) {
                 continue;

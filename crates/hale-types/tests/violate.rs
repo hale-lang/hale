@@ -291,3 +291,24 @@ fn main() { Parent { }; }
     let msgs = check(src);
     assert!(msgs.iter().all(|m| !m.contains("on_failure")), "{:?}", msgs);
 }
+
+/// A handler the signature rules already refuse is not the one that
+/// runs, so it takes no slot: the well-formed handler after it is not
+/// reported as a duplicate.
+#[test]
+fn a_malformed_handler_does_not_make_the_next_a_duplicate() {
+    let src = r#"
+locus Kid {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { k: Kid = Kid { }; }
+    on_failure(x: Kid) { }
+    on_failure(x: Kid, err: ClosureViolation) { }
+}
+fn main() { Parent { }; }
+"#;
+    let msgs = check(src);
+    assert!(msgs.iter().any(|m| m.contains("takes exactly two params")), "the arity error stands: {:?}", msgs);
+    assert!(msgs.iter().all(|m| !m.contains("already has an `on_failure`")), "{:?}", msgs);
+}

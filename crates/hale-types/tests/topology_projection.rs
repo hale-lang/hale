@@ -488,6 +488,11 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    assert!(
+        hale_types::check_program(&program).iter().all(|d| !d.is_error()),
+        "the fixture checks clean"
+    );
     let legacy =
         assert_projection_matches(src, "supervision authored order");
     let a = legacy.find("\"child\": \"Alpha\"").expect("Alpha's row");

@@ -55,11 +55,8 @@ The parent is the supervisor. It decides policy per child type:
 locus Bank {
     accept(a: Account) { }
 
-    on_failure(a: Account, err: Error) {
-        match err {
-            Error::ClosureViolation(v) -> { quarantine(a); },
-            _                          -> { bubble(err); },
-        }
+    on_failure(a: Account, err: ClosureViolation) {
+        quarantine(a);
     }
 }
 ```
