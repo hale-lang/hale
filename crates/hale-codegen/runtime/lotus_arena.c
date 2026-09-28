@@ -1715,9 +1715,21 @@ static void lotus_arena_init_struct(lotus_arena_t *a) {
     a->subregion_lock = LOTUS_SUBREGION_MUTEX_INIT;
 }
 
-static lotus_arena_t *lotus_arena_alloc_struct(void) {
+/* `caller` is the address of the public entry point's own call site, so
+ * an arena that cannot be made is reported against whoever asked for it
+ * (see the out-of-memory note at `lotus_arena_oom`, which is defined
+ * below; the forward declaration keeps this constructor above it). */
+__attribute__((noinline, cold, noreturn))
+static void lotus_arena_oom(const char *what, const lotus_arena_t *a,
+                            size_t size, size_t align, size_t chunk,
+                            void *caller);
+
+static lotus_arena_t *lotus_arena_alloc_struct(void *caller) {
     lotus_arena_t *a = (lotus_arena_t *)malloc(sizeof(lotus_arena_t));
-    if (!a) return NULL;
+    if (!a) {
+        lotus_arena_oom("an arena could not be created", NULL,
+                        sizeof(lotus_arena_t), 0, 0, caller);
+    }
     lotus_arena_init_struct(a);
     return a;
 }
@@ -1726,7 +1738,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
 
 LOTUS_HOT_ALIGN
 lotus_arena_t *lotus_arena_create(void) {
-    lotus_arena_t *a = lotus_arena_alloc_struct();
+    lotus_arena_t *a = lotus_arena_alloc_struct(__builtin_return_address(0));
     /* Top-level arenas (no parent) are the long-lived residency
      * targets — locus __arenas, g_bus_payload_arena, anything
      * not bounded by a method's exit. Register them so the
@@ -1744,8 +1756,8 @@ lotus_arena_t *lotus_arena_create(void) {
  * pointer must outlive the arena; codegen passes a global string
  * literal so this is automatic. */
 lotus_arena_t *lotus_arena_create_labeled(const char *label) {
-    lotus_arena_t *a = lotus_arena_alloc_struct();
-    if (a) a->cap_diag_name = label;
+    lotus_arena_t *a = lotus_arena_alloc_struct(__builtin_return_address(0));
+    a->cap_diag_name = label;
     lotus_arena_residency_register(a, label);
     return a;
 }
@@ -1762,8 +1774,7 @@ lotus_arena_t *lotus_arena_create_labeled(const char *label) {
 lotus_arena_t *lotus_arena_create_labeled_on_node(
     const char *label, int node)
 {
-    lotus_arena_t *a = lotus_arena_alloc_struct();
-    if (!a) return NULL;
+    lotus_arena_t *a = lotus_arena_alloc_struct(__builtin_return_address(0));
     a->cap_diag_name = label;
     if (node >= 0) a->numa_node = node;
     lotus_arena_residency_register(a, label);
@@ -1799,8 +1810,7 @@ lotus_arena_t *lotus_arena_create_labeled_on_node(
 lotus_arena_t *lotus_arena_create_labeled_sized(
     const char *label, size_t initial_chunk_bytes)
 {
-    lotus_arena_t *a = lotus_arena_alloc_struct();
-    if (!a) return NULL;
+    lotus_arena_t *a = lotus_arena_alloc_struct(__builtin_return_address(0));
     a->cap_diag_name = label;
     size_t def = a->default_chunk_size;  /* env-resolved */
     size_t hint = initial_chunk_bytes;
@@ -2247,7 +2257,7 @@ void lotus_child_struct_release(void *owner_self, void *child,
 LOTUS_HOT_ALIGN
 lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
     if (!parent) return lotus_arena_create();
-    lotus_arena_t *a = lotus_arena_alloc_struct();
+    lotus_arena_t *a = lotus_arena_alloc_struct(__builtin_return_address(0));
     if (!a) return NULL;
     a->parent = parent;
     /* Topology arena-on-node (2026-07-05): a sub-region holds its
@@ -2275,6 +2285,73 @@ lotus_arena_t *lotus_arena_create_subregion(lotus_arena_t *parent) {
     if (mt) pthread_mutex_unlock(&parent->subregion_lock);
     return a;
 }
+
+/* ---- out of memory: fail at the failing call -------------------------
+ *
+ * The OS refusing a chunk (malloc or mmap returning NULL: RLIMIT_AS, a
+ * cgroup limit, an exhausted box) used to come back from
+ * `lotus_arena_alloc` as NULL, and nothing downstream expects NULL from
+ * an allocator: the process died later, in a memcpy or a store, as a
+ * SIGSEGV whose backtrace blames code that did nothing wrong (GH #1208
+ * found a head "crashing in the JSON reader" under a memory limit).
+ * Now it stops here, at the call that met it, and says which: the arena
+ * (by the name it was created with, and its address), the size the
+ * failing call asked for, the chunk it needed, what the arena already
+ * holds, and the address the call came from.
+ *
+ * NULLs that are part of a contract are NOT this: a `fixed_size` slab
+ * that is full and an arena at its `chunk_byte_cap` return NULL to
+ * callers that route it. Only the OS refusing memory lands here.
+ *
+ * The report is composed on the stack and written with write(2): a
+ * process that has just been refused memory cannot count on malloc
+ * for its last words. */
+static const char *lotus_arena_oom_name(const lotus_arena_t *a) {
+    for (const lotus_arena_t *cur = a; cur; cur = cur->parent) {
+        if (cur->cap_diag_name) return cur->cap_diag_name;
+    }
+    return "(unnamed arena)";
+}
+
+__attribute__((noinline, cold, noreturn))
+static void lotus_arena_oom(const char *what, const lotus_arena_t *a,
+                            size_t size, size_t align, size_t chunk,
+                            void *caller)
+{
+#ifndef __wasm__
+    char buf[640];
+    int n = snprintf(buf, sizeof buf,
+        "lotus: out of memory: %s: arena %s (%p) could not be given "
+        "memory for a request of %zu bytes (align %zu, needs a chunk of "
+        "%zu bytes); it already holds %zu bytes in chunks; requested "
+        "by the call at %p\n",
+        what, lotus_arena_oom_name(a), (const void *)a, size, align,
+        chunk, a ? a->chunk_byte_total : (size_t)0, caller);
+    if (n > 0) {
+        size_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;
+        ssize_t w = write(2, buf, len);
+        (void)w;
+    }
+#if defined(__GLIBC__)
+    /* `binary(symbol+0xoff) [0xaddr]` — backtrace_symbols_fd writes
+     * straight to the fd and allocates nothing. */
+    void *frames[1] = { caller };
+    backtrace_symbols_fd(frames, 1, 2);
+#endif
+    abort();
+#else
+    (void)what; (void)a; (void)size; (void)align; (void)chunk; (void)caller;
+    __builtin_trap();
+#endif
+}
+
+/* Set on the cold path where the OS refused a chunk, read by the public
+ * `lotus_arena_alloc` only when it is about to return NULL: the size of
+ * the chunk that was refused (never 0 for a refusal). It is how the
+ * wrapper, which alone knows its caller's address, tells "the OS said
+ * no" from the contract NULLs above without the fast path paying for
+ * the caller's address on every allocation. */
+static __thread size_t lotus_arena_refused_chunk;
 
 /* Compute the offset within `c` that yields a pointer aligned to
  * `align` for the request at `c->used`. The chunk's data region
@@ -2368,7 +2445,10 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
             return NULL;
         }
         lotus_arena_chunk_t *fresh = lotus_arena_new_chunk_for(a, cap);
-        if (!fresh) return NULL;
+        if (!fresh) {
+            lotus_arena_refused_chunk = cap;
+            return NULL;
+        }
         a->chunk_byte_total += fresh->cap;
         fresh->next = c;
         a->head = fresh;
@@ -2398,13 +2478,23 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
  * 32-bit but the declared param stays 64-bit). WASM plan. */
 LOTUS_HOT_ALIGN
 void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
+    void *p;
     if (a && a->shared_concurrent) {
         pthread_mutex_lock(&a->subregion_lock);
-        void *p = lotus_arena_alloc_nolock(a, size, align);
+        p = lotus_arena_alloc_nolock(a, size, align);
         pthread_mutex_unlock(&a->subregion_lock);
-        return p;
+    } else {
+        p = lotus_arena_alloc_nolock(a, size, align);
     }
-    return lotus_arena_alloc_nolock(a, size, align);
+    /* NULL is rare and mostly contractual (see the out-of-memory note
+     * above); only a chunk the OS refused is fatal, and it stops HERE
+     * — this function's return address is the allocation's caller. */
+    if (__builtin_expect(p == NULL, 0) && lotus_arena_refused_chunk) {
+        lotus_arena_oom("a chunk was refused", a, (size_t)size,
+                        (size_t)align, lotus_arena_refused_chunk,
+                        __builtin_return_address(0));
+    }
+    return p;
 }
 
 /* Mark an arena as concurrently reachable: serializes the bump
