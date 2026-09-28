@@ -961,6 +961,7 @@ fn dna_fixture_set_is_complete() {
             "legs_test.hl",
             "mutation_review_test.hl",
             "native_json_test.hl",
+            "nats_connect_password_test.hl",
             "nerves_compose_test.hl",
             "nerves_fake_test.hl",
             "nerves_loss_test.hl",

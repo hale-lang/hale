@@ -13,7 +13,7 @@ import "../core" as dna;
 // this one call. An argv element is any co-resident user's to read from
 // /proc/<pid>/cmdline, and nothing here reveals the token into a value at
 // all (spec/semantics.md § "@sealed"): the sealed `Credential` writes it
-// into a file only this user can read — created 0600 by open(2), in a
+// into a file only this user can read — created 0600 by openat(2), in a
 // fresh `mktemp -d` directory (0700, outside any work tree) —
 // and `gh` reads it from there through `GH_TOKEN="$(cat …)"`, so the token
 // lives only in `gh`'s own environment. The script unlinks the file as
@@ -21,19 +21,23 @@ import "../core" as dna;
 // provisioned is not a refusal: `gh`'s own ambient login (a developer's
 // `gh auth login`, a CI runner's token) is what every deployment already
 // had, and vaulting the forge token is opt-in until one is provisioned.
+// A token provisioned but not deliverable IS a refusal: the call fails
+// rather than run as whoever `gh` happens to be logged in as.
 fn gh(args: String) -> dna::RunResult {
     let token = std::secret::Credential { vault: "forge-token" };
     if !token.ready() {
         return dna::run_tool("gh\n" + args);
     }
+    // a token is provisioned: it is the identity, or nothing runs —
+    // never `gh`'s ambient login in its place
     let made = dna::run_tool("mktemp\n-d\n-t\nhale-gh-XXXXXX");
     let dir = dna::trim_nl(made.stdout);
     if made.code != 0 || len(dir) == 0 {
-        return dna::run_tool("gh\n" + args);
+        return dna::RunResult { code: 1, stderr: "the forge token is provisioned but no private directory could be made for it (mktemp -d: " + dna::trim_nl(made.stderr) + ")" };
     }
     if !token.write_private(dir + "/token") {
         dna::run_tool("rm\n-rf\n" + dir);
-        return dna::run_tool("gh\n" + args);
+        return dna::RunResult { code: 1, stderr: "the forge token is provisioned but could not be written for gh: " + dir + " must be this user's own, private (0700) and outside any git work tree" };
     }
     let result = dna::run_tool("sh\n-c\nGH_TOKEN=\"$(cat \"$1\")\"; rm -f \"$1\"; export GH_TOKEN; shift; exec gh \"$@\"\nsh\n" + dir + "/token\n" + args);
     dna::run_tool("rm\n-rf\n" + dir);

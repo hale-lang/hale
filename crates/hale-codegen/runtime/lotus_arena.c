@@ -15478,13 +15478,16 @@ int lotus_fs_write_file(const char *path,
  * `GH_TOKEN=$(cat …)`), so the secret never crosses an argv or an
  * environment this process builds.
  *
- * The directory `path` is in must be the effective user's own, with no
- * world access and no group write (EACCES otherwise), and must not sit
- * in a git work tree — no `.git` entry in it or any ancestor (EPERM),
- * so the file cannot be committed. The file is created with mode 0600
- * by open(2) itself — O_CREAT|O_EXCL|O_NOFOLLOW, never chmod after —
- * and must not exist yet (EEXIST). Returns 0, or -1 with errno set; a
- * partial write unlinks the file. */
+ * The directory `path` is in must be the effective user's own and
+ * private — no group or world access (EACCES otherwise), not itself a
+ * symlink (ELOOP) — and must not sit in a git work tree: no `.git`
+ * entry in it or any ancestor (EPERM), so the file cannot be committed.
+ * The file is created with mode 0600 by openat(2) itself —
+ * O_CREAT|O_EXCL|O_NOFOLLOW, never chmod after — and must not exist yet
+ * (EEXIST, a symlink included). Every check and the create go through
+ * one descriptor of the directory. Returns 0, or -1 with errno set; a
+ * partial write unlinks the file. Removing it after the tool has read
+ * it is the caller's. */
 #ifdef __wasm__
 /* wasm has no owner, mode or work tree to check: refuse, never write
  * (its libc has no ENOSYS) */
@@ -15498,6 +15501,11 @@ int lotus_fs_write_private(const char *path,
     return -1;
 }
 #else
+#ifdef O_PATH
+#define LOTUS_WALK_FLAGS (O_PATH | O_DIRECTORY | O_CLOEXEC)
+#else
+#define LOTUS_WALK_FLAGS (O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+#endif
 int lotus_fs_write_private(const char *path,
                            const void *buf,
                            uint64_t len) {
@@ -15505,78 +15513,88 @@ int lotus_fs_write_private(const char *path,
         errno = EINVAL;
         return -1;
     }
-    size_t plen = strlen(path);
-    char *dir = (char *)malloc(plen + 1);
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    if (!*base || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    size_t dlen = !slash ? 1 : (slash == path ? 1 : (size_t)(slash - path));
+    char *dir = (char *)malloc(dlen + 1);
     if (!dir) {
         errno = ENOMEM;
         return -1;
     }
-    memcpy(dir, path, plen + 1);
-    char *slash = strrchr(dir, '/');
     if (!slash) {
         dir[0] = '.';
-        dir[1] = '\0';
-    } else if (slash == dir) {
-        dir[1] = '\0';
     } else {
-        *slash = '\0';
+        memcpy(dir, path, dlen);
+    }
+    dir[dlen] = '\0';
+    /* Every check and the create go through this one descriptor of the
+     * directory, so no component of the path can be swapped between
+     * them: the directory itself may not be a symlink (O_NOFOLLOW), and
+     * the file is made relative to it (openat). */
+    int dfd;
+    do {
+        dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    } while (dfd < 0 && errno == EINTR);
+    free(dir);
+    if (dfd < 0) {
+        return -1;
     }
     struct stat st;
-    if (stat(dir, &st) != 0) {
+    if (fstat(dfd, &st) != 0) {
         int saved = errno;
-        free(dir);
+        close(dfd);
         errno = saved;
         return -1;
     }
-    if (!S_ISDIR(st.st_mode)) {
-        free(dir);
-        errno = ENOTDIR;
-        return -1;
-    }
-    if (st.st_uid != geteuid() || (st.st_mode & (S_IRWXO | S_IWGRP)) != 0) {
-        free(dir);
+    /* the effective user's own, and private: no group or world access */
+    if (st.st_uid != geteuid() || (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        close(dfd);
         errno = EACCES;
         return -1;
     }
-    /* no `.git` in the directory or any ancestor */
-    char *real = realpath(dir, NULL);
-    free(dir);
-    if (!real) {
-        return -1;
-    }
-    size_t rlen = strlen(real);
-    char *probe = (char *)malloc(rlen + 6);
-    if (!probe) {
-        free(real);
-        errno = ENOMEM;
+    /* no `.git` in the directory or any ancestor, walked up through
+     * `..` from the descriptor until `..` is the directory itself */
+    int cur = openat(dfd, ".", LOTUS_WALK_FLAGS);
+    if (cur < 0) {
+        int saved = errno;
+        close(dfd);
+        errno = saved;
         return -1;
     }
     for (;;) {
-        struct stat gs;
-        size_t n = strlen(real);
-        int at_root = (n == 1 && real[0] == '/');
-        /* `<dir>/.git`, or `/.git` at the root */
-        memcpy(probe, real, n);
-        memcpy(probe + (at_root ? 1 : n), at_root ? ".git" : "/.git", at_root ? 5 : 6);
-        if (lstat(probe, &gs) == 0) {
-            free(probe);
-            free(real);
+        struct stat gs, here, up;
+        if (fstatat(cur, ".git", &gs, AT_SYMLINK_NOFOLLOW) == 0) {
+            close(cur);
+            close(dfd);
             errno = EPERM;
             return -1;
         }
-        if (at_root) break;
-        char *up = strrchr(real, '/');
-        if (!up) break;
-        if (up == real) {
-            real[1] = '\0';
-        } else {
-            *up = '\0';
+        int parent = openat(cur, "..", LOTUS_WALK_FLAGS);
+        if (parent < 0 || fstat(cur, &here) != 0 || fstat(parent, &up) != 0) {
+            int saved = errno;
+            if (parent >= 0) close(parent);
+            close(cur);
+            close(dfd);
+            errno = saved;
+            return -1;
         }
+        close(cur);
+        cur = parent;
+        if (up.st_dev == here.st_dev && up.st_ino == here.st_ino) break;
     }
-    free(probe);
-    free(real);
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    close(cur);
+    int fd;
+    do {
+        fd = openat(dfd, base, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    } while (fd < 0 && errno == EINTR);
     if (fd < 0) {
+        int saved = errno;
+        close(dfd);
+        errno = saved;
         return -1;
     }
     const char *p = (const char *)buf;
@@ -15589,18 +15607,21 @@ int lotus_fs_write_private(const char *path,
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
-        int saved = errno;
+        int saved = w == 0 ? EIO : errno;
         close(fd);
-        unlink(path);
+        unlinkat(dfd, base, 0);
+        close(dfd);
         errno = saved;
         return -1;
     }
     if (close(fd) != 0) {
         int saved = errno;
-        unlink(path);
+        unlinkat(dfd, base, 0);
+        close(dfd);
         errno = saved;
         return -1;
     }
+    close(dfd);
     return 0;
 }
 #endif /* __wasm__ */

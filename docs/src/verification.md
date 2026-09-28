@@ -363,12 +363,17 @@ a token or password, plus a `fingerprint()` for logs, and `reveal()` /
 `reveal_text()` for when a plain credential has to leave as text to be
 usable at all. `Signer`'s key never does. A reveal is held to the one
 use it exists for: it is called in a locus method, and its value is
-consumed in the same statement by a wire write, a comparison or a
-`@secret` parameter — never bound to a `let`, stored, returned or handed
-to `std::process`. `hale check` (and `build`) refuses anything else and
-says where the value went. A tool that reads a secret from a file gets
-it through `write_private(path)`, which writes a new 0600 file on the
-sealed side with nothing revealed.
+consumed in the same statement by a wire write's payload (the body or
+headers, never the URL), a comparison of the whole value or a `@secret`
+parameter — never bound to a `let` or a `match` pattern, stored,
+returned, used to decide a branch or handed to `std::process`. Compare
+with `matches`: it is constant-time, and `==` is not; comparing a slice
+of the secret is refused, because each answer gives away part of it.
+`hale check` (and `build`) refuses anything else and says where the
+value went. A tool that reads a secret from a file gets it through
+`write_private(path)`, which writes a new 0600 file in a private
+directory on the sealed side with nothing revealed; what the tool, or
+your own code, reads back from that file is beyond the check.
 
 When the source is encoded — many venues issue an HMAC secret in
 base64 — name the encoding with `decode:` (`Signer { env_var: "…",

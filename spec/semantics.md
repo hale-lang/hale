@@ -995,24 +995,45 @@ reveal to that one use, on the path `hale check`, `build`, `run` and
 `test` share. **A revealed secret is consumed in the statement that
 reveals it:**
 
-- A reveal is called in a **locus method**, never a free fn.
-- Its value reaches a **consumer** within the same statement: a wire
-  write (`std::io::tcp::send_fd`, `std::io::tls::send_bytes`,
-  `std::io::udp::send`, `std::http::post` / `request`,
-  `std::io::tcp::Stream.send` / `send_bytes`, `std::http::Client.post` /
-  `request`), a comparison (`==`, `!=`, a `match` on it,
-  `Credential.matches`), or a parameter declared **`@secret`**.
-- On the way it passes only through composition that cannot keep it:
-  `+` and the other operators, an `if` or `match` arm, a record, tuple
-  or array literal that is itself handed on, and a call whose result
-  carries it on — a stdlib fn the registry classes `PURE`, or a free fn
-  the checker proves transparent (every call it makes is to such a fn,
-  and it calls no method, builds no locus, and sends, stores and prints
-  nothing).
-- It is **never** bound to a `let`, assigned, stored in a field or a
-  locus literal, returned, raised, published, printed, iterated, or
+- A reveal is called in a **locus method** (a fn, lifecycle method,
+  mode or `on_failure` of a locus), never a free fn, a constant, a param
+  default or any other place.
+- Its value reaches a **consumer** within the same statement:
+  - the **payload** of a wire write: the data argument of
+    `std::io::tcp::send_fd`, `std::io::tls::send_bytes`,
+    `std::io::udp::send`, `std::io::tcp::Stream.send` / `send_bytes`;
+    the body or content type of `std::http::post` /
+    `std::http::Client.post`; the `headers` or `body` of a
+    `std::http::ClientRequest { … }` literal handed to
+    `std::http::request` / `Client.request`. A descriptor, host, port,
+    URL or method is not the wire's: an `HttpError` repeats the host
+    back, so a secret there is refused;
+  - a **comparison of the whole value**: `==`, `!=`, a `match` whose
+    patterns bind nothing, `Credential.matches`. Taken apart or combined
+    first (`t[0..1] == c`, `t < "m"`), a comparison answers a question
+    about part of the secret, one call at a time, and is refused.
+    `Credential.matches` compares in constant time; `==` does not;
+  - a parameter declared **`@secret`**.
+- On the way to a wire write it passes only through composition that
+  cannot keep it: `+` and the other operators, an `if` or `match` arm, a
+  record, tuple or array literal that is itself handed on, and a call
+  whose result carries it on — a stdlib fn on the checker's list of
+  value fns (a positive list: a `PURE` effect class says nothing of an
+  out-parameter, and `std::str::builder_append` is pure and keeps what
+  it is handed), `len` or `to_string`, or a free fn the checker proves
+  transparent (every call it makes is to such a fn, or writes a builder
+  it made itself; it calls no method or fn value, builds no locus,
+  assigns only its own locals, and sends, stores and prints nothing).
+- It is **never** bound to a `let` or a `match` pattern, assigned,
+  stored in a field, a param default or a locus literal, returned,
+  raised, published, printed, iterated, used to decide a branch, or
   handed to anything in `std::process` (an argv, an environment, a
   child's stdin).
+
+The check fails closed: a receiver whose type it cannot see (a pattern
+binding, a call's result, an alias) is taken to be a `Credential`, a
+call it cannot follow keeps what it is handed, and a reveal outside the
+bodies it walks (a contract, a closure, a claims block) is refused.
 
 ```hale
 // the header line is the wire write: one statement
@@ -1036,15 +1057,22 @@ like any other composition, and binding it is refused the same way.
 
 For a tool that reads a secret from a file rather than a wire,
 `Credential.write_private(path)` writes it on the sealed side, with
-nothing revealed: `path` is a new file, created mode 0600 by `open(2)`
-itself, in a directory the user owns with no world access and no group
-write, outside any git work tree (`spec/stdlib.md` § `std::secret`).
+nothing revealed: `path` is a new file, created mode 0600 by `openat(2)`
+itself, in a directory the effective user owns with no group or world
+access, outside any git work tree (`spec/stdlib.md` § `std::secret`).
+The rule follows a value, not a file: once written, the file is the
+tool's to read, and a program that reads it back itself holds the secret
+in the open. Making the private directory, handing the path to the tool
+and removing both afterwards are the caller's.
 
 Four sites wait on one change, `pq` taking a `Credential` for the
 Postgres DSN and its SCRAM exchange: `dna::role_password`,
 `dna::ReferenceInfrastructure.knowledge_database`, `pq::salted_password`
-and `pq::compute_client_final` are allowed by qualified name, each with
-a warning naming that deferral. Any other site is refused.
+and `pq::compute_client_final` are allowed by qualified name **and by
+the body that was reviewed** — the checker pins each declaration's
+text, wherever the seed is and under whatever alias it is imported — each
+finding in them a warning naming that deferral. A fifth site, or one of
+the four with anything changed in its body, is refused.
 
 ## Capacity slot lifecycle and dispatch (F.22)
 

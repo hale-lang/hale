@@ -2,11 +2,12 @@
 //! § "`@sealed` and a revealed secret").
 //!
 //! `std::secret::Credential.reveal()` / `reveal_text()` may be called only
-//! in a locus method, and the value must reach a wire write, a comparison
-//! or a `@secret` parameter in the same statement, through composition
-//! that cannot keep it. A `@secret` parameter is held to the same inside
-//! its fn. Four Postgres sites are allowed by qualified name until `pq`
-//! takes a `Credential`; a fifth is refused.
+//! in a locus method, and the value must reach a wire write's payload, a
+//! comparison of the whole value or a `@secret` parameter in the same
+//! statement, through composition that cannot keep it. A `@secret`
+//! parameter is held to the same inside its fn. Four Postgres sites are
+//! allowed by qualified name and pinned body until `pq` takes a
+//! `Credential`; a fifth, or one of the four changed, is refused.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,7 +72,7 @@ fn a_reveal_that_outlives_its_statement_is_refused() {
 fn a_reveal_in_a_free_fn_is_refused() {
     let src = "fn token() -> Int {\n    let n = len(std::secret::Credential { vault: \"t\" }.reveal_text());\n    return n;\n}\nfn main() { let n = token(); }\n";
     let (ok, out) = one(src, "free_fn");
-    assert!(!ok && out.contains("may be called only in a locus method, and `token` is a free fn"), "{out}");
+    assert!(!ok && out.contains("may be called only in a locus method, and the free fn `token` is not one"), "{out}");
 }
 
 #[test]
@@ -83,6 +84,8 @@ fn a_reveal_consumed_in_its_statement_is_accepted() {
         ("http_post_pure_fn", "let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };"),
         // compared
         ("compare", "if self.token.reveal_text() == other { self.last = \"same\"; }"),
+        // a match whose patterns bind nothing compares the whole value
+        ("match_literals", "match self.token.reveal_text() { \"a\" -> { self.last = \"a\"; }, _ -> { self.last = \"other\"; } }"),
         ("matches", "if self.token.matches(std::bytes::from_string(other)) { self.last = \"same\"; }"),
         // straight onto a socket
         ("tcp", "std::io::tcp::send_fd(3, self.token.reveal()) or discard;"),
@@ -104,23 +107,90 @@ fn a_secret_parameter_is_a_consumer_its_body_is_held_to() {
     // its own fn — the marker is no hole
     let returned = "fn line(@secret pass: String) -> String { return \"PASS \" + pass; }\nfn main() { let l = line(\"x\"); }\n";
     let (ok, out) = one(returned, "secret_returned");
-    assert!(!ok && out.contains("the `@secret` parameter `pass` of `line`") && out.contains("here it is returned"), "{out}");
+    assert!(!ok && out.contains("the `@secret` parameter `pass` of the free fn `line`") && out.contains("here it is returned"), "{out}");
     // a derivation is not a consumer: a derived key is password-equivalent
     let derived = "fn key(@secret pass: String) -> Bytes {\n    let k = std::crypto::sha256(std::bytes::from_string(pass));\n    return k;\n}\nfn main() { let k = key(\"x\"); }\n";
     let (ok, out) = one(derived, "secret_derived");
     assert!(!ok && out.contains("is bound to `k`"), "{out}");
 }
 
+/// Each bypass the review of PR #1216 ran end to end (`hale check` said
+/// `ok`, the program printed the secret), each refused where it is.
 #[test]
-fn the_postgres_sites_are_allowed_by_name_and_a_fifth_is_refused() {
-    let site = "fn role_password(role: String) -> String {\n    return std::secret::Credential { vault: role }.reveal_text();\n}\n";
-    // the named site: a warning naming the deferral
-    let (ok, out) = check(&[("dna/core/memory_schema.hl", site)], "pq_named");
+fn the_reviewed_bypasses_are_refused() {
+    let in_method = [
+        // a pattern binds the revealed value
+        ("match_binds", "match self.token.reveal_text() { s -> { self.last = s; } }", "is bound to `s` by a `match` pattern"),
+        // a pattern binding is a value the pass does not type: revealing
+        // through it counts
+        ("match_rebinds_receiver", "self.last = match self.token { c -> c.reveal_text() };", "is stored in a field of `self`"),
+        // an ordering is an oracle, not a comparison
+        ("ordered", "if self.token.reveal_text() < \"m\" { self.last = \"low\"; }", "decides a branch"),
+        // a comparison of a part answers a question about that part
+        ("compared_part", "let hit = self.token.reveal_text()[0..1] == other;", "is compared after it is taken apart"),
+        ("matched_part", "match self.token.reveal_text()[0..1] { \"a\" -> { self.last = \"a\"; }, _ -> { } }", "is compared after it is taken apart"),
+        // a pure stdlib fn with an out-parameter keeps its argument
+        ("out_param", "if stash(std::str::builder_new(), self.token.reveal_text()) { self.last = \"kept\"; }", "reaches `stash`"),
+        // a locus param's insides outlive the call
+        ("param_field", "if put(Holder { }, self.token.reveal_text()) { self.last = \"kept\"; }", "reaches `put`"),
+        // a fn value is a call the pass cannot follow
+        ("fn_value", "if apply(keep, self.token.reveal_text()) { self.last = \"kept\"; }", "reaches `apply`"),
+        // the URL is not the wire's: an error repeats the host back
+        ("post_url", "let r = std::http::post(self.token.reveal_text() + \"://x/\", b\"\", \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };", "is argument 1 of `std::http::post`, which is not its payload"),
+        // the `::` method spelling is the same reveal
+        ("path2", "let t = self.token::reveal_text();", "is bound to `t`"),
+    ];
+    let helpers = "locus Holder { params { s: String = \"\"; } }\n\
+                   fn stash(sb: Bytes, s: String) -> Bool { std::str::builder_append(sb, s); return true; }\n\
+                   fn put(h: Holder, s: String) -> Bool { h.s = s; return true; }\n\
+                   fn keep(s: String) -> Bool { return len(s) > 0; }\n\
+                   fn apply(f: fn(String) -> Bool, s: String) -> Bool { return f(s); }\n";
+    for (tag, stmt, why) in in_method {
+        let (ok, out) = one(&method(stmt, helpers), &format!("bypass_{tag}"));
+        assert!(!ok && out.contains(why), "{tag}: {out}");
+    }
+    // members the walk used to skip: a param default, `on_failure`
+    let default = "locus Api {\n    params { t: String = std::secret::Credential { vault: \"api\" }.reveal_text(); }\n}\nfn main() { let a = Api { }; }\n";
+    let (ok, out) = one(default, "bypass_param_default");
+    assert!(!ok && out.contains("is the default of `t`, which the locus keeps"), "{out}");
+    let failure = "locus Child { params { n: Int = 0; } }\nlocus Api {\n    params { token: std::secret::Credential = std::secret::Credential { vault: \"api\" }; seen: String = \"\"; c: Child = Child { }; }\n    on_failure(c: Child, err: ClosureViolation) { self.seen = self.token.reveal_text(); }\n}\nfn main() { let a = Api { }; }\n";
+    let (ok, out) = one(failure, "bypass_on_failure");
+    assert!(!ok && out.contains("is stored in a field of `self`"), "{out}");
+    // an alias names the same credential
+    let alias = "type Cred = std::secret::Credential;\nlocus Api {\n    params { token: Cred = std::secret::Credential { vault: \"api\" }; last: String = \"\"; }\n    fn go() { self.last = self.token.reveal_text(); }\n}\nfn main() { let a = Api { }; }\n";
+    let (ok, out) = one(alias, "bypass_alias");
+    assert!(!ok && out.contains("is stored in a field of `self`"), "{out}");
+}
+
+/// `role_password` as `dna/core/memory_schema.hl` declares it.
+fn real_role_password() -> String {
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/memory_schema.hl")).unwrap();
+    let at = src.find("fn role_password(").expect("dna/core declares role_password");
+    let end = at + src[at..].find("\n}\n").expect("its end") + 3;
+    format!("fn role_vault_name(role: String) -> String {{ return \"postgres-\" + role; }}\n\n{}", &src[at..end])
+}
+
+#[test]
+fn the_postgres_sites_are_allowed_by_name_and_body_and_a_fifth_is_refused() {
+    let site = real_role_password();
+    // the named site, as reviewed: a warning naming the deferral
+    let (ok, out) = check(&[("dna/core/memory_schema.hl", &site)], "pq_named");
     assert!(
         ok && out.contains("warning:") && out.contains("allowed here by name, in `dna::role_password`") && out.contains("Deferred: `pq` takes a `std::secret::Credential`"),
         "{out}"
     );
-    // the same fn anywhere else is a fifth site: refused
-    let (ok, out) = check(&[("dna/core/other.hl", site)], "pq_fifth");
+    // the same name with anything added to its body: refused, the pin named
+    let changed = site.replace("    return std::secret::Credential", "    println(role);\n    return std::secret::Credential");
+    assert_ne!(changed, site, "the edit applies");
+    let (ok, out) = check(&[("dna/core/memory_schema.hl", &changed)], "pq_changed");
+    assert!(!ok && out.contains("is allowed by name only with the body that was reviewed, and this one has changed"), "{out}");
+    // the same body under another name is a fifth site: refused
+    let fifth = site.replace("fn role_password(", "fn admin_password(");
+    let (ok, out) = check(&[("dna/core/memory_schema.hl", &fifth)], "pq_fifth");
     assert!(!ok && out.contains("may be called only in a locus method") && !out.contains("allowed here by name"), "{out}");
+    // an imported seed's own `memory_schema.hl` gets no pass for its name
+    let copy = "fn role_password(role: String) -> String {\n    return std::secret::Credential { vault: role }.reveal_text();\n}\n";
+    let app = "import \"../lib\" as evil;\nfn main() { println(evil::role_password(\"x\")); }\n";
+    let (ok, out) = check(&[("app/main.hl", app), ("lib/memory_schema.hl", copy)], "pq_imported_copy");
+    assert!(!ok && out.contains("this one has changed"), "{out}");
 }
