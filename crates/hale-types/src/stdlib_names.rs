@@ -16,13 +16,6 @@ use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::error::{Diag, SpanOrigin};
 use hale_syntax::Span;
 
-/// Types and loci share one namespace, fns and constants another.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Space {
-    Type,
-    Value,
-}
-
 /// A declaration's text without its positions (`Pos(12)`) or the
 /// ownership pre-pass's numbering (`NodeId(7)`): two declarations with the
 /// same text compare equal wherever they sit.
@@ -43,16 +36,20 @@ fn shape(d: &TopDecl) -> String {
     text
 }
 
-fn declared<'p>(items: &'p [TopDecl], out: &mut Vec<(Space, String, Span, &'static str, &'p TopDecl)>) {
+/// Every top-level declaration, the kinds the program's own duplicate
+/// rule covers (resolve.rs, "duplicate top-level name"): one namespace.
+fn declared<'p>(items: &'p [TopDecl], out: &mut Vec<(String, Span, &'static str, &'p TopDecl)>) {
     for item in items {
         match item {
             TopDecl::Module(m) => declared(&m.items, out),
-            TopDecl::Locus(l) => out.push((Space::Type, l.name.name.clone(), l.name.span, "locus", item)),
-            TopDecl::Type(t) => out.push((Space::Type, t.name.name.clone(), t.name.span, "type", item)),
-            TopDecl::Interface(i) => out.push((Space::Type, i.name.name.clone(), i.name.span, "interface", item)),
-            TopDecl::Perspective(p) => out.push((Space::Type, p.name.name.clone(), p.name.span, "perspective", item)),
-            TopDecl::Fn(f) => out.push((Space::Value, f.name.name.clone(), f.name.span, "fn", item)),
-            TopDecl::Const(c) => out.push((Space::Value, c.name.name.clone(), c.name.span, "constant", item)),
+            TopDecl::Locus(l) => out.push((l.name.name.clone(), l.name.span, "locus", item)),
+            TopDecl::Type(t) => out.push((t.name.name.clone(), t.name.span, "type", item)),
+            TopDecl::Interface(i) => out.push((i.name.name.clone(), i.name.span, "interface", item)),
+            TopDecl::Perspective(p) => out.push((p.name.name.clone(), p.name.span, "perspective", item)),
+            TopDecl::Fn(f) => out.push((f.name.name.clone(), f.name.span, "fn", item)),
+            TopDecl::Const(c) => out.push((c.name.name.clone(), c.name.span, "constant", item)),
+            TopDecl::Topic(t) => out.push((t.name.name.clone(), t.name.span, "topic", item)),
+            TopDecl::RingLayout(r) => out.push((r.name.name.clone(), r.name.span, "ring layout", item)),
             _ => {}
         }
     }
@@ -74,9 +71,9 @@ pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> 
     let mut std_decls = Vec::new();
     declared(&std_prog.items, &mut std_decls);
     let mut diags = Vec::new();
-    let mut first: BTreeMap<(Space, String), (Span, &'static str, &TopDecl)> = BTreeMap::new();
-    for (space, name, span, kind, decl) in std_decls {
-        match first.get(&(space, name.clone())) {
+    let mut first: BTreeMap<String, (Span, &'static str, &TopDecl)> = BTreeMap::new();
+    for (name, span, kind, decl) in std_decls {
+        match first.get(&name) {
             Some((at, _, _)) => diags.push(Diag {
                 origin: SpanOrigin::Stdlib,
                 ..Diag::ty(
@@ -88,15 +85,15 @@ pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> 
                 .with_stdlib_related(*at, "the earlier declaration")
             }),
             None => {
-                first.insert((space, name), (span, kind, decl));
+                first.insert(name, (span, kind, decl));
             }
         }
     }
     for program in programs.values() {
         let mut mine = Vec::new();
         declared(&program.items, &mut mine);
-        for (space, name, span, kind, decl) in mine {
-            if let Some((at, std_kind, std_decl)) = first.get(&(space, name.clone())) {
+        for (name, span, kind, decl) in mine {
+            if let Some((at, std_kind, std_decl)) = first.get(&name) {
                 // the stdlib's own seed, checked as a program (the corpus
                 // harvests them): the same declaration, not a second one
                 if shape(decl) == shape(std_decl) {
@@ -106,7 +103,7 @@ pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> 
                     Diag::ty(
                         span,
                         format!(
-                            "`{name}` is the name of a stdlib {std_kind}, and the stdlib's names are merged into every program: this {kind} cannot share it. Rename it"
+                            "this {kind}'s name is the stdlib's internal name for its {std_kind} `{name}`, and the stdlib's declarations are merged into every program under those names: the two cannot share one. Rename this {kind}"
                         ),
                     )
                     .with_stdlib_related(*at, "the stdlib's declaration"),

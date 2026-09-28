@@ -45,7 +45,7 @@ fn a_program_locus_named_like_a_stdlib_locus_is_refused() {
     let prog = parse_source(src).expect("parse");
     let diags: Vec<_> = check_program(&prog)
         .into_iter()
-        .filter(|d| d.message.contains("is the name of a stdlib locus"))
+        .filter(|d| d.message.contains("is the stdlib's internal name for its locus `__StdHttpConn`"))
         .collect();
     assert_eq!(diags.len(), 1, "one refusal");
     let d = &diags[0];
@@ -72,5 +72,32 @@ fn the_stdlibs_own_declaration_and_ordinary_names_are_clean() {
     programs.insert("std_seed.hl".to_string(), &same);
     programs.insert("app.hl".to_string(), &mine);
     let diags = name_diags(&std_prog, &programs);
+    assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+/// One namespace, as the program's own duplicate rule has: a fn may not
+/// take a stdlib locus's name either, and a declaration nested in a
+/// `module { }` is a top-level declaration.
+#[test]
+fn a_fn_or_a_module_nested_decl_reusing_a_stdlib_name_is_refused() {
+    for (what, src) in [
+        ("a fn", "fn __StdHttpConn() -> Int { return 1; }\nfn main() { print(__StdHttpConn()); }\n"),
+        ("a module-nested locus", "module m {\n    locus __StdHttpConn { params { n: Int = 0; } }\n}\nfn main() { print(1); }\n"),
+    ] {
+        let prog = parse_source(src).expect("parse");
+        let refused = check_program(&prog)
+            .into_iter()
+            .any(|d| d.is_error() && d.message.contains("is the stdlib's internal name for its locus `__StdHttpConn`"));
+        assert!(refused, "{what} is refused");
+    }
+}
+
+/// The invariant behind the rule's stdlib half: the stdlib that ships
+/// declares each name once. A duplicate would fail every program's check
+/// with a diagnostic located in the stdlib, so it is caught here first.
+#[test]
+fn the_bundled_stdlib_declares_each_name_once() {
+    let std_prog = hale_types::stdlib_bodies::program().expect("the bundled stdlib parses");
+    let diags = name_diags(std_prog, &BTreeMap::new());
     assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
 }
