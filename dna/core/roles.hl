@@ -16,6 +16,11 @@
 //     nothing whatever the mapping says.
 //   - a person is known while the record holds no `person.retired` row
 //     for them.
+//   - a SERVICE — a program with no person behind it, presenting a token
+//     of the issuer's `client_credentials` grant — is mapped by `git
+//     config --local --add dna.oidc.service "<subject>=<service>"`. It
+//     is never a person: it holds no position and no role, so every
+//     gated command refuses it; what it may do is read (`service`).
 //   - a `holds` edge is live from its `graph.edge` row — or from the
 //     ratification of the graph proposal that carries it (`hale dna
 //     fill`) — until a `graph.retired` row names the edge, its position
@@ -38,6 +43,7 @@ locus RecordRoles {
         root: String = "."; // the record; given where the source is built
         mapping: String = ""; // `uid:<n>=<person>` per line (fixtures); "" = the record's own `git config --local dna.unix.member`, re-read when the record moves
         oidc: String = ""; // GH #989: `<subject>=<person>` per line (fixtures); "" = the record's `git config --local dna.oidc.member`
+        services: String = ""; // `<subject>=<service>` per line: the record's `git config --local dna.oidc.service`, re-read when the record moves
         memory: Bool = false; // a fixture's record: the rows `remember` was given, never git
         rows: EventRows = EventRows { };
         git: GitJournal = GitJournal { };
@@ -90,6 +96,8 @@ locus RecordRoles {
             let o = self.git.record.git("config\n--local\n--get-all\ndna.oidc.member");
             self.oidc = if o.code == 0 { o.stdout } else { "" };
         }
+        let sv = self.git.record.git("config\n--local\n--get-all\ndna.oidc.service");
+        self.services = if sv.code == 0 { sv.stdout } else { "" };
         let t = self.git.record.git("config\n--get\ndna.trust");
         self.local_trust = trim_nl(if t.code == 0 { t.stdout } else { "" }) == "local";
     }
@@ -139,6 +147,21 @@ locus RecordRoles {
         let person = self.person_named(p);
         if len(person) == 0 || self.seats.is_retired(person) { return ""; }
         return person;
+    }
+    // The service a verified subject is, by the record's
+    // `dna.oidc.service` ("" when it maps none). A subject the record
+    // maps to a person is that person, never a service.
+    fn service(subject: String) -> String {
+        self.scan();
+        if len(member_of(self.oidc, subject)) > 0 { return ""; }
+        return member_of(self.services, subject);
+    }
+    // Whether the record maps `subject` as a service at all, whatever else
+    // it maps it to: a subject mapped both ways is refused, never read as
+    // either.
+    fn service_mapped(subject: String) -> Bool {
+        self.scan();
+        return len(member_of(self.services, subject)) > 0;
     }
     // Who `p` names before retirement is asked: a line the head's own
     // transport forwarded under a verified OIDC subject (`via` =

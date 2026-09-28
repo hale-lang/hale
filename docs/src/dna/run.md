@@ -405,6 +405,26 @@ as `Authorization: Bearer <token>`, and its commands are recorded in
 the name its subject maps to. The head speaks plain HTTP; put TLS in
 front of it.
 
+**A service reads through the head.** A program with no person behind
+it — an application that enforces the limits a project ratified —
+gets its own token from the issuer with the `client_credentials`
+grant, under its own client id and a secret kept in the vault, and
+presents it as `Authorization: Bearer <token>` on the project's API
+routes. Map it in the record, beside your members:
+
+```text
+git config --local --add dna.oidc.service "voice-api=voice"
+```
+
+It reads the project's read routes under its own name (`service:voice`,
+never a person's), gets no session and no cookie, and asks nothing: any
+command or lookup it sends is refused, since a command is a person's
+and a service holds no position. A subject is a person or a service,
+never both; a person's ID token is refused as a bearer at the head,
+since a person signs in. The vault entry holds the secret alone, with
+no trailing newline, and the token has to be ES256 for the head's
+client, as the stub issues it.
+
 **Local mode is OIDC too (GH #989).** `dna/face/start.sh` starts a stub
 identity provider (`dna/oidc`) on the loopback beside the head, under a
 key and a client secret made for that launch (0600, never on a command

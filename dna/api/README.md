@@ -379,7 +379,12 @@ never forwarded into. Under OIDC (GH #989) the forwarder marks the line
 `via: oidc:<subject>` for the verified caller — a bearer ID token, or
 the session a sign-in set — the roles map that subject by
 `dna.oidc.member`, and the receipt carries `principal_mode: oidc`, the
-person and `principal_positions`. A fixture's trusted-local session
+person and `principal_positions`. A bearer whose subject the record maps
+by `dna.oidc.service` instead (a service's `client_credentials` token)
+reads as the principal `service:<service>` and asks nothing: its line
+is forwarded like any other, and the binding refuses an issuer's
+subject that maps to no person (`forbidden`) before any command or
+lookup, gated or not. A subject mapped both ways is refused. A fixture's trusted-local session
 (`HALE_DNA_TRUSTED_LOCAL=1`, and nowhere else) is the launch token:
 minted per launch into `<root>/.hale/dna/head.token` (0600) and printed
 in the head's URL; the shell at `/` and every POST carry it (the

@@ -1,0 +1,144 @@
+// dna/api/project_service/tests/head_service_test.hl — a service reads
+// through the head (the service principal).
+//
+// A service is a program with no person behind it: an application that
+// reads a project's ratified practices through the head, as voice's api
+// reads its limits. It signs in with the issuer's `client_credentials`
+// grant under its own client id, its secret the vault's (`std::secret`'s
+// `vault:` source), and presents the token as a bearer. The stub provider
+// runs as its own process here, so the vault it reads is this fixture's
+// directory. The head serves under OIDC; the attached project's record
+// maps the service's subject by `dna.oidc.service`. The service reads the
+// practices, ratified; with no token, or a token whose subject the record
+// maps as no service, it reads nothing; a command it POSTs is refused at
+// the socket's gate, since a service holds no position; and the head
+// never sets it a cookie.
+
+import "./fixture" as fixture;
+import "../../../core" as dna;
+import "../../../oidc" as oidc;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+// The stub provider's program, built from a copy of its sources in the
+// fixture's root: the checkout's own directory is never written.
+fn stub_binary(root: String) -> String {
+    let dir = root + "/oidc";
+    let copied = dna::run_tool("sh\n-c\nmkdir -p \"$2/serve\" && cp \"$1/dna/oidc/stub.hl\" \"$2/\" && cp \"$1/dna/oidc/serve/main.hl\" \"$2/serve/\"\nsh\n" + source() + "\n" + dir);
+    std::test::assert_eq_int(copied.code, 0, "the stub's sources copied: " + copied.stderr);
+    let built = dna::run_tool(toolchain() + "\nbuild\n" + dir + "/serve");
+    std::test::assert_eq_int(built.code, 0, "the stub provider builds: " + built.stdout + built.stderr);
+    return dir + "/serve/serve";
+}
+
+// `curl` against the head: the status on the last line; `bearer` "" sends none.
+fn call(method: String, url: String, bearer: String, origin: String, body: String) -> dna::RunResult {
+    let auth = if len(bearer) > 0 { "-H\nAuthorization: Bearer " + bearer + "\n" } else { "" };
+    let post = if method == "POST" { "-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + origin + "\n--data-binary\n" + body + "\n" } else { "" };
+    return dna::run_tool("curl\n-s\n-D\n-\n-w\n\\n%{http_code}\n-X\n" + method + "\n" + auth + post + url);
+}
+fn status_of(r: dna::RunResult) -> String {
+    let t = dna::trim_nl(r.stdout);
+    let mut i = len(t) - 1;
+    while i >= 0 && t[i..(i + 1)] != "\n" { i = i - 1; }
+    return t[(i + 1)..len(t)];
+}
+
+// An ID token for `subject` from the stub's own endpoint, signed under the
+// key the head pinned.
+fn id_token(issuer: String, subject: String) -> String {
+    let r = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=" + subject + "&client_id=dna-local&client_secret=dna-local-secret\n" + issuer + "/token");
+    return std::json::find_string_field(r.stdout, "id_token");
+}
+
+// A service's token from the stub's token endpoint ("" when refused).
+fn service_token(issuer: String, id: String, secret: String) -> String {
+    let r = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=client_credentials&client_id=" + id + "&client_secret=" + secret + "\n" + issuer + "/token");
+    return std::json::find_string_field(r.stdout, "access_token");
+}
+
+fn main() {
+    let root = dna::scratch_root("head-service");
+    // the stub, on its own: its vault is this fixture's directory
+    let secret = dna::hex(std::os::getrandom(16) or b"");
+    std::io::fs::mkdir(root + "/vault") or discard;
+    std::io::fs::write_file(root + "/vault/oidc-service-voice-api", secret) or discard;
+    std::io::fs::write_file(root + "/stub.pem", oidc::STUB_KEY) or discard;
+    let chmod = dna::run_tool("chmod\n0600\n" + root + "/stub.pem");
+    let port = dna::free_port(9);
+    let issuer = "http://127.0.0.1:" + to_string(port);
+    let stub_argv = "env\n-u\nHALE_VAULT_ADDR\nHALE_VAULT_DIR=" + root + "/vault\nHALE_DNA_OIDC_SECRET=dna-local-secret\nHALE_DNA_OIDC_KEY_FILE=" + root + "/stub.pem\nHALE_DNA_OIDC_KEY_X=" + oidc::STUB_X + "\nHALE_DNA_OIDC_KEY_Y=" + oidc::STUB_Y + "\nHALE_DNA_OIDC_SERVICES=voice-api\n" + stub_binary(root) + "\n" + to_string(port) + "\ndna-local";
+    let stub = std::process::spawn(stub_argv) or std::process::Child { };
+    std::test::assert(stub.pid > 0, "the stub provider spawned");
+    // it goes with this process, however this process ends
+    let watched = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; kill \"$2\" 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + to_string(stub.pid));
+    let mut waited = 0;
+    while waited < 100 && dna::run_tool("curl\n-s\n-f\n-o\n/dev/null\n" + issuer + "/.well-known/openid-configuration").code != 0 { std::time::sleep(100ms); waited = waited + 1; }
+
+    // ---- the service's token: its own client and the vault's secret
+    let token = service_token(issuer, "voice-api", secret);
+    std::test::assert(len(token) > 0, "the stub issues the service a token for its vault secret");
+    std::test::assert_eq_str(service_token(issuer, "voice-api", "not-the-secret"), "", "and none for another secret");
+    std::test::assert_eq_str(service_token(issuer, "stranger", secret), "", "or for a client it does not know");
+    std::test::assert_eq_str(dna::id_token_claims(token).sub, "voice-api", "its subject is its client id");
+
+    // ---- the head under OIDC, the project attached at start, the service mapped
+    std::io::fs::mkdir(root + "/head") or discard;
+    let f = fixture::HeadFixture { root: root + "/head", oidc_env: "HALE_DNA_OIDC_ISSUER=" + issuer + "\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_MEMBER=local-sub=tester\nHALE_DNA_OIDC_KEY=" + oidc::STUB_SPKI };
+    let mapped = dna::run_tool("git\n-C\n" + f.project + "\nconfig\n--local\n--add\ndna.oidc.service\nvoice-api=voice");
+    std::test::assert_eq_int(mapped.code, 0, "the record maps the service");
+    // a subject mapped both ways, as a person and as a service
+    let dual = dna::run_tool("sh\n-c\ngit -C \"$1\" config --local --add dna.oidc.member dual-sub=dana && git -C \"$1\" config --local --add dna.oidc.service dual-sub=dual\nsh\n" + f.project);
+    std::test::assert_eq_int(dual.code, 0, "the record maps dual-sub both ways");
+    let idea = dna::Idea { kind: "practice", name: "operating/limits/personal", text: "requests_per_minute: 60", author: "org", provenance: "proposed" };
+    let digest = "sha256:" + dna::GitReceipts { repo: f.project }.store(dna::knowledge_document(idea, "org"));
+    let proposed = f.journal.append(f.journal.revision(), "knowledge.proposed", digest, "{\"digest\":\"" + digest + "\",\"review_id\":\"" + dna::knowledge_review_id(digest) + "\",\"kind\":\"practice\",\"author\":\"org\",\"target\":\"org\",\"class\":\"goal\",\"name\":\"operating/limits/personal\"}");
+    let ratified = f.journal.append(f.journal.revision(), "knowledge.ratified", digest, "{\"class\":\"goal\"}");
+    std::test::assert(proposed.ok && ratified.ok, "a practice proposed and ratified");
+    f.start_with_project(f.project, 0);
+    let practices = f.url() + "/api/hale/v1/applications/" + f.identity + "/dna/practices";
+
+    // ---- the service reads, as the record maps it, and gets no session
+    let read = call("GET", practices, token, "", "");
+    std::test::assert(status_of(read) == "200" && std::str::contains(read.stdout, "\"state\": \"ratified\"") && std::str::contains(read.stdout, "operating/limits/personal"), "the service reads the practices, ratified: " + read.stdout);
+    std::test::assert(!(std::str::contains(read.stdout, "Set-Cookie") || std::str::contains(read.stdout, "set-cookie")), "and the head sets it no cookie: " + read.stdout);
+    // ---- no token: nothing
+    let bare = call("GET", practices, "", "", "");
+    std::test::assert_eq_str(status_of(bare), "401", "no token reads nothing: " + bare.stdout);
+    // ---- a bearer on the head's own routes: a service's is for the project's API only
+    let own = call("GET", f.url() + "/api/hale/v1/head", token, "", "");
+    std::test::assert_eq_str(status_of(own), "401", "the head's own routes take no bearer: " + own.stdout);
+    // ---- a token whose subject the record maps as no service
+    let unmapped = call("GET", practices, id_token(issuer, "zed-sub"), "", "");
+    std::test::assert_eq_str(status_of(unmapped), "403", "a subject the record maps as no service reads nothing: " + unmapped.stdout);
+    // ---- a person's ID token as a bearer: a person signs in, and a token
+    // that cannot be told from a service's never acts as them — nor as a
+    // subject the record maps both ways
+    let member = call("GET", practices, id_token(issuer, "local-sub"), "", "");
+    std::test::assert(status_of(member) == "403" && std::str::contains(member.stdout, "a person signs in"), "a person's token is no service's bearer: " + member.stdout);
+    let both = call("GET", practices, id_token(issuer, "dual-sub"), "", "");
+    std::test::assert_eq_str(status_of(both), "403", "a subject mapped both ways reads nothing: " + both.stdout);
+    // ---- writes its role does not grant: refused at the socket, a gated
+    // command at its gate and one any person may ask (a task) because a
+    // service is no person; nothing lands
+    let commands = f.url() + "/api/hale/v1/applications/" + f.identity + "/commands";
+    let before = f.journal.revision();
+    let proposal = call("POST", commands, token, f.url(), "{\"call\":\"PracticePropose\",\"payload\":{\"request_id\":\"svc-1\",\"subject_digest\":\"" + digest + "\",\"text\":\"requests_per_minute: 6000\",\"rationale\":\"more\"}}");
+    std::test::assert(status_of(proposal) != "200" && std::str::contains(proposal.stdout, "\"via\":\"oidc:voice-api\""), "a practice the service proposes is refused at the gate: " + proposal.stdout);
+    let task = call("POST", commands, token, f.url(), "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"svc-2\",\"record_head\":\"" + dna::GitRecord { repo: f.project }.head("journal").id + "\",\"outcome\":\"ship it\",\"to\":\"org\"}}");
+    std::test::assert(std::str::contains(task.stdout, "\"ok\":false,\"code\":\"forbidden\""), "a task the service asks is refused, a service being no person: " + task.stdout);
+    let moved = f.journal.refresh();
+    std::test::assert_eq_int(f.journal.revision(), before, "and nothing landed in the record");
+
+    f.stop();
+    std::process::kill(stub) or discard;
+    dna::scratch_done(root);
+}

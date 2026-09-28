@@ -82,11 +82,15 @@ locus KnowledgeAdmission {
         let person = self.roles.person(ctx.caller);
         return CommandContext { root: self.root, source: source, principal_mode: "local", principal_name: if len(person) > 0 { person } else { ctx.caller.name } };
     }
+    // As CommandAdmission's: an issuer's subject that maps to no person
+    // (a service) asks nothing and looks nothing up.
+    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
     fn refused(code: String) -> KnowledgeReply { return KnowledgeReply { code: code }; }
     fn reply(result: ops::KnowledgeResult) -> KnowledgeReply {
         return KnowledgeReply { ok: result.ok, code: result.code, application_id: result.application_id, head: result.head, revision: result.revision, receipt: result.receipt };
     }
     fn submit(ctx: std::api::Context, command: ops::KnowledgeCommand) -> KnowledgeReply {
+        if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
         let mut c = command;
@@ -123,6 +127,7 @@ locus KnowledgeAdmission {
     // own recovery grant.
     fn lookup(l: KnowledgeRecovery, ctx: std::api::Context) -> KnowledgeReply {
         if !self.wire.bounded(l.request_id, 128, true, false) { return self.refused("invalid_query"); }
+        if self.personless(ctx) { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
         if !self.provider.supported() { return self.refused("commands_unsupported"); }
