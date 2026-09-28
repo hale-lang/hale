@@ -132,7 +132,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid --request-id --diff --every --cron --definition --args --convener ");
     if (verb == "practice" || verb == "verdict") && has_flag(a, "--request-id") && len(flag(a, "--request-id")) == 0 {
         eprintln("hale dna: --request-id requires a nonempty value");
         std::process::exit(1);
@@ -268,8 +268,8 @@ fn main() {
         if word(a, 0) == "file" { ans = receipt_file_verb(root, word(a, 1), flag(a, "--class"), flag(a, "--as"), memory); }
         else { ans = receipt_verb(root, word(a, 0), word(a, 1), flag(a, "--to"), flag(a, "--purpose"), flag(a, "--as"), flag(a, "--why"), flag(a, "--policy"), memory); }
     } else if verb == "schedule" {
-        // GH #610: the schedules, and pause/resume as rows
-        ans = schedule_verb(root, word(a, 0), word(a, 1), flag(a, "--as"), memory);
+        // GH #610, #1143: the schedules, declare, and pause/resume as rows
+        ans = schedule_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--every"), flag(a, "--cron"), flag(a, "--definition"), flag(a, "--args"), flag(a, "--convener"), memory);
     } else if verb == "secret" {
         ans = secret_verb(root, word(a, 0), word(a, 1), flag(a, "--body"), flag(a, "--as"), memory);
     } else if verb == "profile" {

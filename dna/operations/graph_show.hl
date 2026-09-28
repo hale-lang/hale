@@ -21,11 +21,13 @@
 //
 // The process model: one line per contract, from its consumers (the
 // parties outside the repository first) to its servers, over its
-// transport, with its carriers after; then what each deployment runs.
+// transport, with its carriers after; then what each deployment runs, and
+// what each position convenes on a cadence (GH #1143).
 //
 //   callers, ui, node  --HTTP: openapi.yaml-->  api
 //   api  --NATS: protocol.yaml-->  node  (carried by nats)
 //   compose runs { postgres, nats, api, brain, node }
+//   leader convenes optimize-walk every 1d
 
 // The org chart, from `graph_perspective("org")`.
 @unbounded
@@ -104,6 +106,12 @@ fn show_processes(json: String) -> String {
     while !r.done {
         out = out + dna::show_name(std::json::find_string_field(r.element, "deployment")) + " runs { " + dna::show_list(dna::show_strings(std::json::find_field_raw(r.element, "processes")), true) + " }\n";
         r = std::json::array_next(r);
+    }
+    // GH #1143: the rhythms
+    let mut c = std::json::array_first(std::json::find_field_raw(json, "convenes"));
+    while !c.done {
+        out = out + dna::show_name(std::json::find_string_field(c.element, "position")) + " convenes " + dna::show_name(std::json::find_string_field(c.element, "definition")) + " " + std::json::find_string_field(c.element, "cadence") + "\n";
+        c = std::json::array_next(c);
     }
     return out;
 }

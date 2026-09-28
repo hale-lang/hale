@@ -822,8 +822,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    protected evidence (customer, confidential): kept in memory alone, sealed there;");
     eprintln!("                                    disclosure and every read are rows in the reader's name (--as <who>)");
     eprintln!("       hale dna schedule [pause <id> | resume <id>]");
-    eprintln!("                                    the schedules the org chart declared (an ask on an interval or a cron), as the");
-    eprintln!("                                    record has them; pause and resume are rows in your name (--as <who>)");
+    eprintln!("                                    the schedules the record declares (a definition on an interval or a cron, and who");
+    eprintln!("                                    convenes it) and their occurrences; pause and resume are rows in your name (--as <who>)");
+    eprintln!("       hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]");
+    eprintln!("                                    a schedule asked of the organization, which declares it or refuses it; an occurrence");
+    eprintln!("                                    is an execution of the definition (GH #1143)");
     eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
     eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
@@ -1414,8 +1417,24 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ));
         }
     }
-    // the generated main.hl's owners map line goes with it
+    // GH #1143: the optimize pass is a schedule; the generated field and
+    // the loop's monotonic tick an older main.hl carries are rewritten to
+    // what the generator writes now, and a hand-edited one is named
     let main_path = org_dir.join("main.hl");
+    if let Ok(main_text) = fs::read_to_string(&main_path) {
+        let mut next = main_text.clone();
+        for (old, new) in SCHEDULE_MAIN_HL {
+            next = next.replace(old, new);
+        }
+        if next != main_text {
+            fs::write(&main_path, &next).map_err(|e| format!("write {}: {e}", main_path.display()))?;
+            out.push(format!("rewrote {} (the optimize pass is a schedule: `optimize_every_ms` goes, and the loop ticks on the wall clock)", main_path.display()));
+        }
+        if next.contains("optimize_every_ms") || next.contains("request_tick(std::time::monotonic_ns()") {
+            out.push(format!("note    {}: `optimize_every_ms` no longer builds and a monotonic tick names no occurrence; delete the field, tick with `std::time::nanos(std::time::current()) / 1000000`, and declare a cadence other than the seeded one with `hale dna schedule declare` (GH #1143)", main_path.display()));
+        }
+    }
+    // the generated main.hl's owners map line goes with it
     if let Ok(main_text) = fs::read_to_string(&main_path) {
         if main_text.contains(OWNERS_MAIN_HL) {
             fs::write(&main_path, main_text.replace(OWNERS_MAIN_HL, "")).map_err(|e| format!("write {}: {e}", main_path.display()))?;
@@ -2349,10 +2368,9 @@ main locus Org {{
             // baseline catalog and the project's own, in workflows.hl.
             catalog: workflows(),
             // GH #596 L: an ask is planned by the leader before it becomes a Mutation
-            planned: true,
-            // GH #596 O: the optimize pass — the leader walks the machinery
-            // on this cadence, in milliseconds; 0 is never. The Board's to set.
-            optimize_every_ms: 0
+            // (the optimize pass occurs on the cadence a ratified practice
+            // declares, `operating/optimize-cadence`: GH #1143)
+            planned: true
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
         // tier, reading the source diff and the semantic diff; every
@@ -2414,12 +2432,12 @@ main locus Org {{
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
-        // GH #596 O: the substrate's cadence — the optimize pass fires
-        // every `optimize_every_ms` on the substrate above (0 = never).
-        // Queue it with incoming work so a journal refresh completes
+        // GH #1143: the schedules the record declares occur on this tick,
+        // on the wall clock in milliseconds (an occurrence is named by its
+        // time). Queue it with incoming work so a journal refresh completes
         // before a task handler can read or append its cached view. A
         // SIGTERM (the host stopping it) ends it: the runtime drains.
-        while !self.draining {{ std::time::sleep(100ms); self.core.request_tick(std::time::monotonic_ns() / 1000000); }}
+        while !self.draining {{ std::time::sleep(100ms); self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }}
     }}
 }}
 
@@ -2760,7 +2778,7 @@ fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usiz
     let path = dna_dir.join(format!("design.{}.jsonl", std::process::id()));
     let mut text = String::new();
     for p in family {
-        text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p)}).to_string());
+        text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p), "schedule": p.schedule}).to_string());
         text.push('\n');
     }
     fs::write(&path, text).map_err(|e| e.to_string())?;
@@ -2779,6 +2797,21 @@ fn design_upgrade(root: &Path, family: &[SeededPractice]) -> Result<(usize, usiz
 // ---------------------------------------------------------------
 // GH #596: the leader's charter, and the toolchain's design
 // ---------------------------------------------------------------
+
+/// GH #1143: what an older generator wrote in `main.hl` for the optimize
+/// cadence and the loop's clock, and what it writes now; `upgrade` takes
+/// each exact old text to its new one.
+const SCHEDULE_MAIN_HL: [(&str, &str); 3] = [
+    (
+        "            planned: true,\n            // GH #596 O: the optimize pass — the leader walks the machinery\n            // on this cadence, in milliseconds; 0 is never. The Board's to set.\n            optimize_every_ms: 0\n",
+        "            // (the optimize pass occurs on the cadence a ratified practice\n            // declares, `operating/optimize-cadence`: GH #1143)\n            planned: true\n",
+    ),
+    (
+        "        // GH #596 O: the substrate's cadence — the optimize pass fires\n        // every `optimize_every_ms` on the substrate above (0 = never).\n        // Queue it with incoming work so a journal refresh completes\n",
+        "        // GH #1143: the schedules the record declares occur on this tick,\n        // on the wall clock in milliseconds (an occurrence is named by its\n        // time). Queue it with incoming work so a journal refresh completes\n",
+    ),
+    ("self.core.request_tick(std::time::monotonic_ns() / 1000000); }", "self.core.request_tick(std::time::nanos(std::time::current()) / 1000000); }"),
+];
 
 /// The generated `main.hl`'s owners map field before GH #1123, which
 /// `upgrade` takes out.
@@ -2830,20 +2863,24 @@ fn charter() -> String {{
 struct SeededPractice {
     name: &'static str,
     text: &'static str,
+    /// GH #1143: a schedule the practice declares once the Board ratifies
+    /// it — `{id, every_ms | cron, definition, args, convener}` as JSON —
+    /// or "" for none.
+    schedule: &'static str,
 }
 
 /// The design: how a DNA organization works, as practices bound to
 /// `org` — brained's structural knowledge adapted to DNA. Proposed at
 /// `init`, one Board Review each; never ratified by the toolchain.
 const DESIGN: &[SeededPractice] = &[
-    SeededPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it." },
-    SeededPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history." },
-    SeededPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes." },
-    SeededPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect." },
-    SeededPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean." },
-    SeededPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored." },
-    SeededPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity." },
-    SeededPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic." },
+    SeededPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it.", schedule: "" },
+    SeededPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history.", schedule: "" },
+    SeededPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes.", schedule: "" },
+    SeededPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect.", schedule: "" },
+    SeededPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean.", schedule: "" },
+    SeededPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored.", schedule: "" },
+    SeededPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity.", schedule: "" },
+    SeededPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic.", schedule: "" },
 ];
 
 /// The operating practices (GH #994): how the organism runs, which is what
@@ -2852,12 +2889,13 @@ const DESIGN: &[SeededPractice] = &[
 /// each, superseded on `upgrade` the same way; never ratified by the
 /// toolchain.
 const OPERATING: &[SeededPractice] = &[
-    SeededPractice { name: "operating/one-store-per-step", text: "a workflow step writes to exactly one store, by that store's one writer, and the next step reads what the previous one made durable. The record numbers the steps. A step whose subject moved is refused and asked again on the new subject; nothing is half-written. There is no distributed transaction anywhere, and a plan that needs one is wrong." },
-    SeededPractice { name: "operating/row-first", text: "every live signal is a record row before it is sent. An event names a row by id, is delivered at least once, and is consumed idempotently by that id. A message never admits anything. An event from outside (the heart) is a signal, not a fact: it becomes a row before anything acts on it." },
-    SeededPractice { name: "operating/readings-never-act", text: "a reading from the senses never acts. It is kept for a window; what matters crosses into the record as a pressure or concern row, and that row is what a workflow answers to. The organism never believes the heart is healthy without the heart's own pulse." },
-    SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records." },
-    SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record." },
-    SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism." },
+    SeededPractice { name: "operating/one-store-per-step", text: "a workflow step writes to exactly one store, by that store's one writer, and the next step reads what the previous one made durable. The record numbers the steps. A step whose subject moved is refused and asked again on the new subject; nothing is half-written. There is no distributed transaction anywhere, and a plan that needs one is wrong.", schedule: "" },
+    SeededPractice { name: "operating/row-first", text: "every live signal is a record row before it is sent. An event names a row by id, is delivered at least once, and is consumed idempotently by that id. A message never admits anything. An event from outside (the heart) is a signal, not a fact: it becomes a row before anything acts on it.", schedule: "" },
+    SeededPractice { name: "operating/readings-never-act", text: "a reading from the senses never acts. It is kept for a window; what matters crosses into the record as a pressure or concern row, and that row is what a workflow answers to. The organism never believes the heart is healthy without the heart's own pulse.", schedule: "" },
+    SeededPractice { name: "operating/legs-hold-nothing", text: "a leg holds nothing between tasks. The hat is read per task, the credential fetched per task, the result settled per task. A leg that remembers is a bug, and a leg that cannot settle within its lease is a violation its owner records.", schedule: "" },
+    SeededPractice { name: "operating/deploy-settles-on-pulse", text: "a deploy is settled on the heart's own first event, or rolled back. A rollback restores the source revision, never the work already done in the world, and is a new step in the record.", schedule: "" },
+    SeededPractice { name: "operating/the-forge-decides", text: "what merges is decided at the forge, by people, and comes back as a verdict row once. The forge is truth for humans; the record is truth for the organism.", schedule: "" },
+    SeededPractice { name: "operating/optimize-cadence", text: "walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.", schedule: r#"{"id": "optimize", "every_ms": 86400000, "definition": "optimize-walk", "args": "{}", "convener": "position:leader"}"# },
 ];
 
 /// Every seeded family, by the name the Board lists it under.

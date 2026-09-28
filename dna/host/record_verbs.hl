@@ -263,7 +263,7 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
             if len(name) == 0 { continue; }
             names.set(DigestName { digest: digest, name: name });
             let cur = states.get(name) or DesignState { name: name };
-            states.set(DesignState { name: name, latest_text: std::json::find_string_field(doc.text, "text"), latest: digest, active: cur.active });
+            states.set(DesignState { name: name, latest_text: design_terms(std::json::find_string_field(doc.text, "text"), std::json::find_string_field(doc.text, "schedule")), latest: digest, active: cur.active });
         } else if kind == "knowledge.ratified" {
             decided = decided + entity + "\n";
             ratified = ratified + entity + "\n";
@@ -309,9 +309,13 @@ fn design_in_record(root: String, states: DesignStates) -> Bool {
 
 // The practice's document, byte for byte as the toolchain has always
 // filed it (compact, keys in order): its digest is the Review's name.
-fn design_document(name: String, text: String, toolchain: String, supersedes: String) -> String {
+// What a seeded practice states: its text, and the schedule it declares
+// once ratified (GH #1143) — a change to either is a new revision.
+fn design_terms(text: String, schedule: String) -> String { return if len(schedule) > 0 { text + "\n\nschedule: " + schedule } else { text }; }
+
+fn design_document(name: String, text: String, toolchain: String, supersedes: String, schedule: String) -> String {
     let q = std::json::Builder { };
-    return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+    return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + (if len(schedule) > 0 { "\"schedule\":" + q.quote(schedule) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
 }
 
 // A seeded practice's family: the part of its name before the slash
@@ -324,8 +328,8 @@ fn seeded_family(name: String) -> String {
 // Propose one practice: its receipt, a `knowledge.proposed` row and a
 // Review of its own, grouped by its family for the listing. The review
 // id, "" when the record refused.
-fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String, memory: dna::Memory) -> String {
-    let raw = rec(root).keep(design_document(name, text, toolchain, supersedes));
+fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String, schedule: String, memory: dna::Memory) -> String {
+    let raw = rec(root).keep(design_document(name, text, toolchain, supersedes, schedule));
     if len(raw) == 0 { return ""; }
     let digest = "sha256:" + raw;
     let review_id = "k:" + raw[0..12];
@@ -423,11 +427,12 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
         if len(dna::trim_nl(line)) == 0 { continue; }
         let name = std::json::find_string_field(line, "name");
         let text = std::json::find_string_field(line, "text");
+        let schedule = std::json::find_string_field(line, "schedule");
         let st = states.get(name) or DesignState { };
-        if len(st.name) > 0 && st.latest_text == text && !st.refused { continue; }
+        if len(st.name) > 0 && st.latest_text == design_terms(text, schedule) && !st.refused { continue; }
         if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
         let old = st.active;
-        if len(propose_design(root, name, text, toolchain, old, memory)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
+        if len(propose_design(root, name, text, toolchain, old, schedule, memory)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
         proposed = proposed + 1;
         if len(old) > 0 { superseding = superseding + 1; }
     }

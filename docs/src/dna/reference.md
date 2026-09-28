@@ -26,8 +26,9 @@ hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([le
                              or as /capabilities names it), the peer's credentials the principal
 hale dna definitions [project] [--json]
                              the workflow catalog (dna/org/workflows.hl): every definition with its
-                             revision, each step with the one store it writes, and what is refused at
-                             admission for a part not built
+                             revision, each step with the one store it writes, how it occurs on a
+                             schedule where that is not the default (`occurs: skip while open,
+                             takes objective`), and what is refused at admission for a part not built
 hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
                              dna/compose.yaml) and print the record's spine and head DSNs
@@ -83,7 +84,8 @@ hale dna route [--json] (<path>… | --diff <range>)
                              from there)
 hale dna show org|processes [--json] [project]
                              the graph's two perspectives, read from memory under the head's role:
-                             the org chart, the process model; `--json` is the query's answer
+                             the org chart, the process model (and what each position convenes on a
+                             cadence); `--json` is the query's answer
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
 hale dna ledger [status | rows | adopt | abandon --why <w>]
                              the operational memory: where the day's work lives, the ledger as JSON
@@ -111,9 +113,14 @@ hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classe
 hale dna disconnect <n> --why <why> [--by <who>]
 hale dna handoff [<n> task <id> | <n> receipt <digest> [--note …] [--as <who>] | accept <id> [--note …] [--as <who>] | sync]
                              a hold refuses redaction; a redaction removes the body, keeps the digest
-hale dna schedule [pause <id> | resume <id>]
-                             the schedules the org chart declared, as the record has them;
-                             pause and resume are rows in your name
+hale dna schedule [pause <id> | resume <id>] [--as <who>]
+                             the schedules the record declares (definition, cadence, convener) and
+                             their occurrences, skips and misses; pause and resume are rows in your name
+hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id>
+                             --convener <position> [--args <json>] [--as <who>]
+                             a schedule asked of the organization, declared or refused with the reason:
+                             each occurrence is one execution of the definition, `sched:<id>@<time>`;
+                             --args names every input the definition takes (GH #1143)
 hale dna secret set <NAME> [--body <user@host>]
                              a credential from stdin into ~/.config/hale-dna/<project>-<record>.env there or
                              here; `secret rotate <NAME>`; the record gets `secret.rotated` only
@@ -208,7 +215,7 @@ sequence either way — see [The record](./record.md).
 | `responsibility.proposed` | record | `locus:X` | an inferred one-line responsibility, `ratified: false` |
 | `law.deferred` | record | a clause | why `init` could not certify it |
 | `intent.requested` | ledger | the intent id | an ask from a clone with no organization: outcome, from, to |
-| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, a schedule, an optimizer) / the refusal |
+| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, an optimizer) / the refusal |
 | `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
 | `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
 | `ledger.adopting` / `ledger.adopted` | record | `ledger` | a head's ask to adopt (`routing`, `by`), and a node's adoption: `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
@@ -249,7 +256,7 @@ sequence either way — see [The record](./record.md).
 | `node.started` / `node.build_failed` | record | the node's holder | the genome it runs, by `sha` / a genome that did not check or build: its `sha` and `why`, the node staying on the last that did |
 | `nerves.lost` | record | the node's holder | its connection to the nerves collapsed (`why`: a publish the stream did not acknowledge in time); the node stops and exits 75 for its unit to start it again, and the next relays every unanswered request |
 | `observation.requested` / `observation.refused` | record | the mutation | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it |
-| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>`, `optimize/<window>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
+| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
 | `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
 | `expression.deployed` | record | `m<n>` | what a deployment gateway expressed, and its judgement |
@@ -299,8 +306,9 @@ sequence either way — see [The record](./record.md).
 | `body.provisioned` | record | `<user>@<host>` | a machine made able to run it: dir, toolchain, knowledge (`compose` or `dsn`), by |
 | `body.credential_missing` / `body.credential_present` | ledger | `model` | whether the model's key is set where the body runs: any_of, holder |
 | `secret.rotated` | record | the variable's name | a credential set or rotated: where (`local` or the body), by — never the value |
-| `schedule.declared` / `schedule.refused` | ledger | the schedule id | a schedule the org chart declares, or why it would not be admitted (a bad cron, a grant it exceeds) |
-| `schedule.fired` / `schedule.skipped` | ledger | the schedule id | the Task it made (`task`), or why it did not fire — the last one is still open |
+| `schedule.requested` / `schedule.answered` | ledger | the request id | a schedule asked of the organization by `hale dna schedule declare` / its answer: `declared`, `why` |
+| `schedule.declared` / `schedule.refused` | ledger | the schedule id | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`) / why it was not declared (a bad cron, a definition not in the catalog, args missing an input, a convener that cannot reach it; `hole` when nobody holds the convener), or why an occurrence was not admitted (`occurrence`, `why`) |
+| `schedule.skipped` / `schedule.missed` | ledger | the schedule id | an occurrence not run because the last execution is still open (`occurrence`, `task`) / occurrences that passed while the organization was down (`first`, `last`, `count`, `why`) |
 | `schedule.paused` / `schedule.resumed` | ledger | the schedule id | paused and resumed by hand, in your name |
 | `budget.exhausted` | ledger | `budget` | the window's model allowance is spent: what was spent, of what, and when the window turns |
 | `model.called` | ledger | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |

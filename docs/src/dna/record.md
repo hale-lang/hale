@@ -176,7 +176,7 @@ lost.
 The record is one of three memories. The Structure is the codebase;
 the record is how the organism changed and was allowed to; the
 **ledger** is what it did today — intents, tasks, decisions, bills,
-money reserved and settled, schedules fired, concerns, effect claims,
+money reserved and settled, schedules and what each occurrence did, concerns, effect claims,
 liveness — in memory, Postgres, in the record's own schema. Every row
 kind has exactly one home (`dna::memory_of`), and the organism's
 routing version is a fact of its record, never a build's opinion.

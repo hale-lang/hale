@@ -41,35 +41,66 @@ it. [The workflow](./workflow.md) has the shapes and the promises.
 
 ## On a schedule
 
-Some asks recur: reconcile the books every night, export the week on
-Monday morning. The org chart declares them in its `birth()`, and
-they take the same road as anything you ask by hand — planned by the
-leader, handed or proposed, reviewed:
+Some work recurs: reconcile the books every night, export the week on
+Monday morning. A schedule says *when* a workflow runs and *who
+convenes it* — nothing else. It points at a definition in the catalog
+([The workflow](./workflow.md)), never at a sentence to ask, and each
+occurrence is one execution of that definition, admitted like any
+other.
 
-```hale,fragment
-birth() {
-    let why = self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", ask: "reconcile the day's records" });
-    let w2 = self.core.schedule(dna::Schedule { id: "weekly", cron: "0 9 * * 1", ask: "export last week's ledger" });
-}
+You ask the organization for one, and it declares it or tells you why
+not:
+
+```text
+$ hale dna schedule declare nightly --cron "0 2 * * *" --definition ask-edit --convener editor --args '{"objective": "reconcile the records of the day"}'
+schedule nightly declared: ask-edit on cron `0 2 * * *` (UTC), convened by position:editor
 ```
 
 A cron is five fields (minute, hour, day of month, month, day of
-week) in UTC, and a malformed one is refused when it is declared, not
-at two in the morning. `every_ms` names an interval instead. A
-schedule never fires while the last Task it fired is still open; the
-skip is a row you can read. `hale dna schedule` lists them, and
-`hale dna schedule pause nightly` / `resume nightly` are rows in your
-name that the organization reads at its next tick:
+week) in UTC; `--every 90s` (or `ms`, `m`, `h`, `d`) names an interval
+instead. The declaration is refused, with the reason, when the cron is
+malformed, the definition is not in the catalog or would be refused,
+the `--args` do not name every input the definition takes (`ask-edit`
+and `ask-person` take `objective`), or the convener cannot reach what
+the definition writes. The organization's own positions, `leader` and
+`editor`, always can; any other position convenes through whoever
+holds it. A position nobody holds convenes nothing, and the refusal
+says so and names the fix: `hale dna fill <position> <holder>`.
+
+A practice can carry a schedule too, and ratifying the practice
+declares it. That is how the optimize pass gets its cadence: the
+seeded practice `operating/optimize-cadence` declares an `optimize`
+schedule that runs `optimize-walk` once a day, convened by the leader,
+who walks the machinery; the Board decided the cadence by ratifying it.
+
+Each occurrence is named by its time — the interval's step, or the
+cron's minute — so an occurrence asked twice, or asked again after a
+restart, is still one execution. If the organization was down when
+occurrences were due, they are not run late: one `schedule.missed` row
+says how many passed. What happens while the last execution is still
+open is the definition's: by default the new occurrence is skipped,
+and the skip is a row you can read; a definition can say `overlap` to
+run beside it instead.
+
+Declaring one yourself is the Board's, or the convener's holder's:
+once memory knows who holds the Board, someone who holds neither is
+answered no.
+
+`hale dna schedule` lists them, and `hale dna schedule pause nightly`
+/ `resume nightly` are rows in your name that the organization reads
+at its next tick. A paused schedule's occurrences pass unrun and
+unmissed; a resume goes on from the next one:
 
 ```text
 $ hale dna schedule
 schedules: 2
-  nightly [live] cron `0 2 * * *` (UTC) — ask: reconcile the day's records · fired 3, skipped 1 · last task t9
-  weekly [paused] cron `0 9 * * 1` (UTC) — ask: export last week's ledger · fired 1, skipped 0 · last task t4
+  nightly [live] cron `0 2 * * *` (UTC) — ask-edit, convened by position:editor · occurred 3, skipped 1, missed 0 · last t9
+  optimize [paused] every 86400000ms — optimize-walk, convened by position:leader · occurred 1, skipped 0, missed 2 · last t4
 ```
 
-The optimize pass is a schedule too: `optimize_every_ms` on the org
-chart declares one named `optimize`.
+Declaring a schedule also puts it in the graph: `hale dna show
+processes` ends with a line per rhythm, `leader convenes optimize-walk
+every 1d`.
 
 ## Review
 

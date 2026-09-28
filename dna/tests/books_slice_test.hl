@@ -265,7 +265,7 @@ main locus App {
         let org = std::io::fs::read_file(org_path) or "";
         let leader_models = "models: leader_models(),";
         let editor = "editor: dna::SourceEditor { name: \"editor\", models: editor_models() },";
-        std::test::assert(std::str::contains(org, leader_models) && std::str::contains(org, editor) && std::str::contains(org, "optimize_every_ms: 0"), "the generated organization wires its leader, its editor and its cadence");
+        std::test::assert(std::str::contains(org, leader_models) && std::str::contains(org, editor) && !std::str::contains(org, "optimize_every_ms"), "the generated organization wires its leader and its editor; its cadence is a schedule, not a field (GH #1143)");
         let scripted_leader = "models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", rules_file: \".hale/dna/books-rules.txt\" }, deep: dna::FakeModel { name: \"deep\", rules_file: \".hale/dna/books-rules.txt\" } },";
         let scripted_editor = "editor: dna::SourceEditor { name: \"editor\", models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", answer_file: \".hale/dna/intake-v2.hl\", answer_role: \"edit\" }, deep: dna::FakeModel { name: \"deep\", answer: \"receipts_requested +\" } } },";
         std::io::fs::write_file(org_path, std::str::replace(std::str::replace(org, leader_models, scripted_leader), editor, scripted_editor)) or discard;
@@ -358,19 +358,19 @@ main locus App {
         let r1001 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1001.txt\n--as\nmara"));
         let offline = dna_cli(app, "task\ndone\n" + c1001 + "\n--as\nmara\n--evidence\n" + r1001 + "\n--note\nthe rail receipt came by post");
         std::test::assert(std::str::contains(offline, "task " + c1001 + " done by mara: the rail receipt came by post — evidence " + r1001 + " linked"), "completed while the organism is stopped: " + offline);
-        // the Board sets the optimize cadence while it is down: a reviewed commit to the Genome
-        let org2 = std::io::fs::read_file(org_path) or "";
-        std::io::fs::write_file(org_path, std::str::replace(org2, "optimize_every_ms: 0", "optimize_every_ms: 3000")) or discard;
-        let g8 = in_dir(app, "git\ncommit\n-q\n-am\nthe Board sets the optimize cadence");
         let claimed = dna_cli(app, "body\nclaim\n--force\n--as\nriley");
-        // the cadence the Board just set is the restart's own signal: an
-        // `org.reviewed` this run did not have yet means the restarted
-        // organism has replayed the record and is cycling, which is what
-        // the state and the "nothing was replanned" checks below need to
-        // have happened — a fixed sleep guessed at it (GH #795)
         let reviewed_before = count(app, "org.reviewed", "", "");
         dev = start_dev(app);
         std::test::assert(organism_up(app, ADOPT), "back up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+        // the Board sets the optimize cadence (GH #1143): a schedule of
+        // optimize-walk, asked of the organization through the store. Its
+        // first pass is the restart's own signal: an `org.reviewed` this run
+        // did not have yet means the restarted organism has replayed the
+        // record and is cycling, which is what the state and the "nothing
+        // was replanned" checks below need to have happened — a fixed sleep
+        // guessed at it (GH #795)
+        let cadence = dna_cli(app, "schedule\ndeclare\noptimize\n--every\n3s\n--definition\noptimize-walk\n--convener\nleader\n--as\nriley");
+        std::test::assert(std::str::contains(cadence, "schedule optimize declared: optimize-walk every 3s, convened by position:leader"), "the organization declares the cadence: " + cadence);
         std::test::assert(wait_rows(app, "org.reviewed", "", "", reviewed_before + 1, ADOPT), "the restarted organism replayed the record and took up the cadence the Board set: " + journal(app));
         let status = dna_cli(app, "status");
         std::test::assert(std::str::contains(status, c1001 + " [done]") && std::str::contains(status, "— evidence " + r1001), "the offline completion is honoured: " + status);

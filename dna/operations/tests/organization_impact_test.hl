@@ -42,7 +42,7 @@ locus ImpactCases {
     }
     fn future(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
-        if mode == "schedule" { self.append(j, "schedule.declared", "s1", dna::schedule_json(dna::Schedule { id: "s1", every_ms: 1000, ask: "later" })); self.append(j, "schedule.paused", "s1", "by operator"); }
+        if mode == "schedule" { self.append(j, "schedule.declared", "s1", dna::schedule_json(dna::Schedule { id: "s1", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"later\"}", convener: "position:leader" })); self.append(j, "schedule.paused", "s1", "by operator"); }
         else if mode == "split" { self.append(j, "ledger.adopted", "app", "{\"routing\":1}"); self.append(j, "ledger.abandoned", "app", "{}"); }
         else if mode == "unknown" { self.append(j, "spend.reserved", "spend", "{}"); }
         else {

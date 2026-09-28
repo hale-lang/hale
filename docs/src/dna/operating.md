@@ -244,8 +244,9 @@ claim back once the plan's admission is recorded; a node that finds
 the ask claimed leaves it (`planning elsewhere: <holder> holds
 plan/<intent>`), and is offered it again with the host's relay. A node
 that dies holding a claim leaves it to expire — five minutes for a
-plan — and the next node offered the ask plans it. The optimize pass
-claims its window the same way, so one node runs it per window. A node
+plan — and the next node offered the ask plans it. The optimize pass takes
+no claim: it is a scheduled occurrence, and an occurrence asked twice
+is one execution. A node
 is named in its claims by the body's holder (`HALE_DNA_NODE`, which the
 host sets). The record shows each claim a node acted on and its return:
 

@@ -84,6 +84,7 @@ type WorkflowAsk {
     inputs_ref: String = "";
     from: String = "";
     to: String = ""; // the position it is for ("" = the organization); its owner admits it (GH #664)
+    convener: String = ""; // the position that convened it: a schedule's occurrence (GH #1143)
 }
 
 // ---- the facts --------------------------------------------------------
@@ -103,6 +104,7 @@ type AdmittedWorkflow {
     // arrives twice — relayed again, retried after a lost answer — is one
     // execution, found by this
     request: String = "";
+    convener: String = ""; // the position that convened it, for a schedule's occurrence (GH #1143)
     recipe: String = ""; // the bound expansion (card 04's nodes), encoded
     limits: AdmissionLimits = AdmissionLimits { };
     works: Int = 0;
@@ -381,6 +383,7 @@ fn encode_admission(a: AdmittedWorkflow) -> String {
     b.string_field("inputs", a.inputs);
     b.string_field("inputs_ref", a.inputs_ref);
     b.string_field("request", a.request);
+    if len(a.convener) > 0 { b.string_field("convener", a.convener); }
     // the recipe is a document of its own, nested as one: written as an
     // escaped string it would be escaped and unescaped character by
     // character, which is quadratic in its size, and a bound tree of a few
@@ -429,6 +432,7 @@ fn decode_admission(text: String) -> DecodedAdmission {
             inputs: std::json::find_string_field(text, "inputs"),
             inputs_ref: std::json::find_string_field(text, "inputs_ref"),
             request: std::json::find_string_field(text, "request"),
+            convener: std::json::find_string_field(text, "convener"),
             recipe: recipe,
             limits: limits_of(text),
             works: std::json::find_int_field(text, "works"),

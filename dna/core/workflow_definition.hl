@@ -47,7 +47,15 @@ type WorkflowDef {
     steps: Int = 0;
     title: String = "";
     stores: String = ""; // one word per step: the store it writes
+    // GH #1143: how the definition occurs when a schedule points at it —
+    // `concurrency` (skip | overlap) while an execution of it is open, and
+    // `takes`, the input names an occurrence's arguments carry
+    concurrency: String = "skip";
+    takes: String = "";
 }
+
+// GH #1143: the occurrence policies a definition may name.
+const WORKFLOW_CONCURRENCY: String = "skip overlap";
 
 // The stores a step may write (GH #995; the parts of #990).
 const WORKFLOW_STORES: String = "record forge genome heart graph nerves memory vault host";
@@ -410,6 +418,26 @@ locus WorkflowCatalog {
         if self.has(id, revision) { return "workflow " + definition_name(id, revision) + " is already defined"; }
         self.workflows.push(WorkflowDef { id: id, revision: revision, steps: step_words(stores), title: title, stores: std::str::trim(stores) });
         return "";
+    }
+    // GH #1143: how `id` at `revision` occurs when a schedule points at it:
+    // its concurrency while an execution is open, and the input names it
+    // takes (space-separated).
+    // "" when set, else why not.
+    @unbounded
+    fn occurs(id: String, revision: Int, concurrency: String, takes: String) -> String {
+        if !word_in(concurrency, WORKFLOW_CONCURRENCY) { return "workflow " + definition_name(id, revision) + ": concurrency is one of " + WORKFLOW_CONCURRENCY + ", not `" + concurrency + "`"; }
+        let mut i = 0;
+        while i < self.workflows.len() {
+            let mut w = self.workflows.get(i) or WorkflowDef { };
+            if w.id == id && w.revision == revision {
+                w.concurrency = concurrency;
+                w.takes = std::str::trim(takes);
+                self.workflows.set(i, w) or discard;
+                return "";
+            }
+            i = i + 1;
+        }
+        return "no workflow " + definition_name(id, revision) + " to set how it occurs";
     }
     // A leaf member: `work` is the content of its Work request; its ids
     // are assigned at expansion. `attempts` is the retry allowance it binds.
@@ -944,7 +972,7 @@ locus WorkflowCatalog {
     fn encode() -> String {
         let b = std::json::Builder { };
         b.begin_object();
-        b.string_field("format", "dna.workflow-definitions/2");
+        b.string_field("format", "dna.workflow-definitions/3");
         b.begin_array_field("workflows");
         let mut i = 0;
         while i < self.workflows.len() {
@@ -955,6 +983,8 @@ locus WorkflowCatalog {
             b.int_field("steps", w.steps);
             b.string_field("stores", w.stores);
             b.string_field("title", w.title);
+            b.string_field("concurrency", w.concurrency);
+            b.string_field("takes", w.takes);
             b.end_object();
             i = i + 1;
         }
@@ -991,7 +1021,7 @@ locus WorkflowCatalog {
     // when read, else why not; nothing is added when it is refused.
     @unbounded
     fn decode(text: String) -> String {
-        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/2" {
+        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/3" {
             return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
         }
         // the same rule the recipe reads under: a document that was cut off
@@ -1011,6 +1041,9 @@ locus WorkflowCatalog {
             if self.has(did, drev) { return "workflow " + dname + " is already defined"; }
             if std::str::contains(incoming, "\n" + dname + "\n") { return "the document defines workflow " + dname + " twice"; }
             if step_words(std::json::find_string_field(e, "stores")) != std::json::find_int_field(e, "steps") { return "workflow " + dname + " names " + to_string(std::json::find_int_field(e, "steps")) + " steps and a store for " + to_string(step_words(std::json::find_string_field(e, "stores"))); }
+            // an absent concurrency is the default, skip
+            let concurrency = if len(std::json::find_string_field(e, "concurrency")) > 0 { std::json::find_string_field(e, "concurrency") } else { "skip" };
+            if !word_in(concurrency, WORKFLOW_CONCURRENCY) { return "workflow " + dname + ": concurrency is one of " + WORKFLOW_CONCURRENCY; }
             incoming = incoming + dname + "\n";
             it = std::json::array_next(it);
         }
@@ -1022,7 +1055,9 @@ locus WorkflowCatalog {
                 revision: std::json::find_int_field(e, "revision"),
                 steps: std::json::find_int_field(e, "steps"),
                 title: std::json::find_string_field(e, "title"),
-                stores: std::json::find_string_field(e, "stores")
+                stores: std::json::find_string_field(e, "stores"),
+                concurrency: if len(std::json::find_string_field(e, "concurrency")) > 0 { std::json::find_string_field(e, "concurrency") } else { "skip" },
+                takes: std::json::find_string_field(e, "takes")
             });
             it = std::json::array_next(it);
         }
@@ -1092,6 +1127,9 @@ fn define_baseline(c: WorkflowCatalog) {
     // person's on the second attempt
     let jd = c.define("ask-judge", 1, "record", "an ask: a judgment, an assessment handed back");
     let jl = c.leaf("ask-judge", 1, 0, "j", WorkRequest { requires: "judgment", output_contract: "Assessment" }, 2);
+    // GH #1143: a scheduled ask names its objective
+    let ao = c.occurs("ask-edit", 1, "skip", "objective");
+    let po = c.occurs("ask-person", 1, "skip", "objective");
 
     let t = c.define("ask-triage", 1, "record record record", "an ask, triaged: what it is, then planned or split");
     organism_leaf(c, "ask-triage", 0, "offered", "the intent offered");
@@ -1154,6 +1192,8 @@ fn definitions_listing(c: WorkflowCatalog) -> String {
             out = out + "  " + to_string(s) + ". " + c.step_key(w.id, w.revision, s) + "  " + (if len(store) > 0 { store } else { word }) + "\n";
             s = s + 1;
         }
+        // how it occurs on a schedule, where it says more than the default
+        if w.concurrency != "skip" || len(w.takes) > 0 { out = out + "  occurs: " + w.concurrency + " while open" + (if len(w.takes) > 0 { ", takes " + w.takes } else { "" }) + "\n"; }
         let newest = c.latest(w.id);
         if newest > w.revision { out = out + "  superseded by " + definition_name(w.id, newest) + ": a Task born under this revision finishes under it\n"; }
         // what an admission would refuse it for, as it would: the preflight

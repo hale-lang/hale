@@ -488,26 +488,28 @@ type MutationProposal {
     check_output: String = ""; // the toolchain's diagnostics when !check_clean
 }
 
-// GH #610: a schedule — an ask fired on an interval or a cron, in the
-// organism's own name, taking the ordinary road (planned, proposed,
-// reviewed). `action` is `ask` (the default) or `optimize` (the
-// optimize pass, which is a schedule and no longer a special case).
+// GH #1143: a schedule is when, which definition, and who convenes it —
+// nothing else. An occurrence is an execution of `definition`, admitted
+// with the ask id `sched:<id>@<t>` for the occurrence time `t` the
+// cadence names (wall milliseconds: an interval's step from the epoch, a
+// cron's minute), so the same occurrence asked twice is one execution.
+// The definition owns what happens, and its concurrency while an
+// execution is open. Declared by ratification (`schedule.declared`), and
+// paused and resumed the same way; a missed occurrence is a row.
 type Schedule {
     id: String = "";
-    every_ms: Int = 0; // an interval, on the organism's millisecond clock
+    every_ms: Int = 0; // an interval, in milliseconds
     cron: String = ""; // or a cron expression (minute hour day-of-month month day-of-week), UTC
-    ask: String = ""; // the intent text
-    requires: String = "edit"; // routed as this kind of Work; "" births a Task and routes nothing
-    action: String = "ask";
-    // state, kept by the organism
-    armed: Bool = false; // the first tick places `last_ms`
-    last_at: Int = 0; // wall seconds of the last fire, from the record
-    last_ms: Int = 0;
-    last_minute: Int = 0;
-    task: String = ""; // the last Task it fired
-    fired: Int = 0;
+    definition: String = ""; // the catalog definition an occurrence executes
+    args: String = "{}"; // its arguments, a JSON object naming what the definition takes
+    convener: String = ""; // the position that convenes it (`position:<name>`)
+    // state, from the record
+    from: Int = 0; // the occurrence the declaration was made at: nothing before it is due
+    last_occurrence: Int = 0; // the last occurrence evaluated: admitted, skipped, refused or missed
+    task: String = ""; // the last execution an occurrence admitted
+    fired: Int = 0; // occurrences admitted
     paused: Bool = false;
-    pending_intent: String = ""; // an occurrence claimed in the record and not yet admitted (a restart admits it once)
+    last_minute: Int = 0; // a cron is evaluated once per minute
 }
 
 // GH #604 rule 5: whether a person retired, and the successor their

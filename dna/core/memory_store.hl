@@ -180,8 +180,9 @@ fn graph_org_sql() -> String {
 }
 
 // GH #1085, the process model: the processes, every `meets` with its
-// transport and the parties outside the graph, and every `runs` — an edge
-// whose anchor was retired is not shown.
+// transport and the parties outside the graph, every `runs`, and (GH
+// #1143) what each position convenes on a cadence — an edge whose anchor
+// was retired is not shown.
 fn graph_processes_sql() -> String {
     return "SELECT json_build_object("
         + "'processes', coalesce((SELECT json_agg(json_build_object('id', n.id, 'name', n.name) ORDER BY n.seq, n.id) FROM graph_nodes n WHERE n.kind = 'process'), '[]'::json), "
@@ -192,7 +193,11 @@ fn graph_processes_sql() -> String {
         + "'carriers', " + graph_members_sql("carrier") + ", "
         + "'outside', coalesce(e.body::json -> 'outside', '[]'::json)) ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'meets' AND " + graph_member_sql("contract") + " <> ''), '[]'::json), "
         + "'runs', coalesce((SELECT json_agg(json_build_object('deployment', " + graph_member_sql("deployment") + ", "
-        + "'processes', " + graph_members_sql("process") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'runs' AND " + graph_member_sql("deployment") + " <> ''), '[]'::json))";
+        + "'processes', " + graph_members_sql("process") + ") ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'runs' AND " + graph_member_sql("deployment") + " <> ''), '[]'::json), "
+        + "'convenes', coalesce((SELECT json_agg(json_build_object('position', " + graph_member_sql("position") + ", "
+        + "'definition', " + graph_member_sql("definition") + ", "
+        + "'cadence', coalesce(e.body::json ->> 'cadence', ''), "
+        + "'schedule', coalesce(e.body::json ->> 'schedule', '')) ORDER BY e.seq, e.id) FROM graph_edges e WHERE e.kind = 'convenes' AND " + graph_member_sql("position") + " <> ''), '[]'::json))";
 }
 
 // GH #1087, what review routing reads: the nodes a path can name (seeds,

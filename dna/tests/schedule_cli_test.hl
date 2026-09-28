@@ -1,10 +1,11 @@
-// GH #610 — schedules through the CLI, over a real project's git
+// GH #610, #1143 — schedules through the CLI, over a real project's git
 // record. The organization declares its schedules (here this fixture
-// does, in-process, as the org chart's `birth()` would); `hale dna
-// schedule` lists them as the record has them; pause and resume are
-// rows in the caller's name; and the organism honours those rows at
-// its next tick — a schedule paused from the CLI does not fire, and
-// fires once resumed. A malformed cron never reaches the list.
+// does, in-process, as a ratified practice would); `hale dna schedule`
+// lists them as the record has them — the definition, who convenes it,
+// its occurrences; pause and resume are rows in the caller's name; and
+// the organism honours those rows at its next tick — a schedule paused
+// from the CLI does not occur, and occurs once resumed. A malformed cron
+// never reaches the list.
 
 import "../core" as dna;
 
@@ -50,16 +51,29 @@ main locus App {
     params {
         core: dna::Dna = dna::Dna { };
     }
+    // Executions admitted for occurrences of `id`.
     @unbounded
     fn fired(id: String) -> Int {
         let mut n = 0;
         let mut i = 0;
         while i < self.core.journal.revision() {
             let e = self.core.journal.read(i);
-            if e.kind == "schedule.fired" && e.entity == id { n = n + 1; }
+            if e.kind == "workflow.admitted" && std::str::starts_with(dna::native_json_string(e.body, "request"), "sched:" + id + "@") { n = n + 1; }
             i = i + 1;
         }
         return n;
+    }
+    // The occurrence `id` was declared at.
+    @unbounded
+    fn from(id: String) -> Int {
+        let mut out = 0;
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            let e = self.core.journal.read(i);
+            if e.kind == "schedule.declared" && e.entity == id { out = std::json::find_int_field(e.body, "from"); }
+            i = i + 1;
+        }
+        return out;
     }
     run() {
         let scratch = dna::scratch_root("schedcli");
@@ -76,16 +90,16 @@ main locus App {
         std::test::assert(std::str::contains(unknown, "no schedule `nightly` is declared in the record"), "an unknown schedule is refused: " + unknown);
 
         // the organization declares them over the project's record
-        self.core = dna::Dna { journal: dna::GitJournal { repo: app }, org_id: "cli" };
-        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", ask: "reconcile the day's records", requires: "" }), "", "a nightly cron is declared");
-        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "weekly", every_ms: 1000, ask: "export last week's ledger", requires: "" }), "", "an interval is declared");
-        let broken = self.core.schedule(dna::Schedule { id: "broken", cron: "0 25 * * *", ask: "never" });
+        self.core = dna::Dna { journal: dna::GitJournal { repo: app }, org_id: "cli", planned: true };
+        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", definition: "ask-person", args: "{\"objective\": \"reconcile the day's records\"}", convener: "position:leader" }), "", "a nightly cron is declared");
+        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "weekly", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"export last week's ledger\"}", convener: "position:leader" }), "", "an interval is declared");
+        let broken = self.core.schedule(dna::Schedule { id: "broken", cron: "0 25 * * *", definition: "ask-person", args: "{\"objective\": \"never\"}", convener: "position:leader" });
         std::test::assert(std::str::contains(broken, "cron `0 25 * * *`: `25` is outside 0-23 in hour"), "a malformed cron is refused at declaration: " + broken);
 
         let list = dna_cli(app, "schedule");
         std::test::assert(std::str::contains(list, "schedules: 2\n"), "two schedules, from the record: " + list);
-        std::test::assert(std::str::contains(list, "nightly [live] cron `0 2 * * *` (UTC) — ask: reconcile the day's records · fired 0, skipped 0"), "the cron: " + list);
-        std::test::assert(std::str::contains(list, "weekly [live] every 1000ms — ask: export last week's ledger · fired 0, skipped 0"), "the interval: " + list);
+        std::test::assert(std::str::contains(list, "nightly [live] cron `0 2 * * *` (UTC) — ask-person, convened by position:leader · occurred 0, skipped 0, missed 0"), "the cron: " + list);
+        std::test::assert(std::str::contains(list, "weekly [live] every 1000ms — ask-person, convened by position:leader · occurred 0, skipped 0, missed 0"), "the interval: " + list);
         std::test::assert(!std::str::contains(list, "broken ["), "a refused declaration is not a schedule: " + list);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"schedule.refused\"\t\"entity\": \"broken\""), 1, "the refusal is a row");
 
@@ -99,10 +113,11 @@ main locus App {
         std::test::assert(std::str::contains(list2, "weekly [paused]") && std::str::contains(list2, "nightly [live]"), "the list shows it: " + list2);
 
         // the organism reads the row at its tick: past the interval, nothing fires
-        self.core.tick(0);
-        self.core.tick(1500);
-        self.core.tick(3000);
-        std::test::assert_eq_int(self.fired("weekly"), 0, "a schedule paused from the CLI never fires");
+        let moved0 = self.core.journal.refresh();
+        let t0 = self.from("weekly");
+        self.core.tick(t0 + 1000);
+        self.core.tick(t0 + 2000);
+        std::test::assert_eq_int(self.fired("weekly"), 0, "a schedule paused from the CLI never occurs");
 
         let not_paused = dna_cli(app, "schedule\nresume\nnightly");
         std::test::assert(std::str::contains(not_paused, "is not paused"), "resuming a live schedule is refused: " + not_paused);
@@ -114,12 +129,12 @@ main locus App {
         // tick; read it now rather than wait
         let moved = self.core.journal.refresh();
         std::test::assert(moved, "the CLI's rows moved the ref");
-        self.core.tick(4500);
-        std::test::assert_eq_int(self.fired("weekly"), 1, "resumed, it fires at its next interval");
+        self.core.tick(t0 + 3000);
+        std::test::assert_eq_int(self.fired("weekly"), 1, "resumed, it occurs at its next interval");
 
         // and the CLI reads the fire back from the record
         let list3 = dna_cli(app, "schedule");
-        std::test::assert(std::str::contains(list3, "weekly [live] every 1000ms — ask: export last week's ledger · fired 1, skipped 0 · last task t"), "the fire is in the list: " + list3);
+        std::test::assert(std::str::contains(list3, "weekly [live] every 1000ms — ask-person, convened by position:leader · occurred 1, skipped 0, missed 0 · last t"), "the occurrence is in the list: " + list3);
 
         let bad_sub = dna_cli(app, "schedule\nstop\nweekly");
         std::test::assert(std::str::contains(bad_sub, "schedule pause <id>"), "an unknown subcommand says what exists: " + bad_sub);

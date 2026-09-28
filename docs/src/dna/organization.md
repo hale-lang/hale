@@ -82,21 +82,31 @@ that word (`workflow.admitted`, its inputs), and the Mutation carries
 the class it named. A plan only splits and classifies; it never widens
 what you asked.
 
-On a cadence you set, the Leader walks the machinery rather than the
-work: it reads the record's signals — asks it could not plan, concerns
+On a cadence the Board ratifies, the Leader walks the machinery rather
+than the work: it reads the record's signals — asks it could not plan, concerns
 piling up, grants that contracted, verdicts refused, rollbacks — and
 either proposes one small change to the organization, which enters as
 an ordinary ask for you to decide, or records that the state is clean.
 It never proposes a large restructure unprompted, and never creates
-work for the sake of activity.
+work for the sake of activity. The pass is an execution of the
+`optimize-walk` workflow, and its cadence is a schedule: the seeded
+practice `operating/optimize-cadence` declares one a day, convened by
+the Board, once the Board ratifies it (see
+[On a schedule](./working.md#on-a-schedule)). A different cadence is an
+amendment to that practice. The org chart no longer sets one:
+`optimize_every_ms` is gone, so remove it from an older
+`dna/org/main.hl`.
 
 The live organization's loop calls
-`self.core.request_tick(std::time::monotonic_ns() / 1000000)`.
+`self.core.request_tick(std::time::nanos(std::time::current()) / 1000000)`:
+the wall clock in milliseconds, because a schedule's occurrences are
+named by wall time.
 This queues cadence processing with incoming work, so a task cannot enter
 while a journal refresh is rebuilding its cached view. After upgrading an
 older project, replace `self.core.tick(` with `self.core.request_tick(` in
-`dna/org/main.hl`'s loop; keep the same millisecond clock. `hale dna upgrade`
-reports this change but leaves your organization's source for you to edit.
+`dna/org/main.hl`'s loop, and pass it the wall clock above rather than
+`std::time::monotonic_ns()`. `hale dna upgrade` reports the `tick` change
+but leaves your organization's source for you to edit.
 Synchronous `tick` remains available for isolated callers or code already
 running in the owner's handler. Organizations in the same process use
 distinct `org_id` values for cadence and plan routing.

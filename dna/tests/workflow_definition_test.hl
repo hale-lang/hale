@@ -258,16 +258,16 @@ main locus App {
         std::test::assert(fresh.member_at(0).objective == "line one\nline \"two\"\t\\end" && fresh.workflow_at(0).title == "a \"title\" with\\slashes", "unchanged");
         std::test::assert(std::str::contains(fresh.decode(qtext), "quoted@1 is already defined") && fresh.workflow_count() == 1 && fresh.member_count() == 1, "reading the same document twice is refused and adds nothing");
         // a document that defines one revision twice is refused whole
-        let twice_doc = "{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"same\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"one\"}, {\"id\": \"same\", \"revision\": 1, \"steps\": 2, \"stores\": \"record record\", \"title\": \"two\"}], \"members\": []}";
+        let twice_doc = "{\"format\": \"dna.workflow-definitions/3\", \"workflows\": [{\"id\": \"same\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"one\"}, {\"id\": \"same\", \"revision\": 1, \"steps\": 2, \"stores\": \"record record\", \"title\": \"two\"}], \"members\": []}";
         let twice_cat = dna::WorkflowCatalog { };
         std::test::assert(std::str::contains(twice_cat.decode(twice_doc), "the document defines workflow same@1 twice"), "a document cannot define one revision twice");
         std::test::assert_eq_int(twice_cat.workflow_count(), 0, "and nothing of it was added");
-        let bad_id_doc = "{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"x@1|y\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": []}";
+        let bad_id_doc = "{\"format\": \"dna.workflow-definitions/3\", \"workflows\": [{\"id\": \"x@1|y\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": []}";
         std::test::assert(std::str::contains(twice_cat.decode(bad_id_doc), "a workflow definition id is") && twice_cat.workflow_count() == 0, "nor carry an id outside the grammar");
         std::test::assert(std::str::contains(fresh.decode("{\"format\": \"something else\"}"), "not a workflow definition document"), "another document is refused");
         // a member of a kind the builder never writes, from a document
         let odd = dna::WorkflowCatalog { };
-        std::test::assert_eq_str(odd.decode("{\"format\": \"dna.workflow-definitions/2\", \"workflows\": [{\"id\": \"odd\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": [{\"workflow\": \"odd\", \"revision\": 1, \"step\": 0, \"key\": \"k\", \"kind\": \"loop\", \"attempts\": 1}]}"), "", "a hand-written document reads");
+        std::test::assert_eq_str(odd.decode("{\"format\": \"dna.workflow-definitions/3\", \"workflows\": [{\"id\": \"odd\", \"revision\": 1, \"steps\": 1, \"stores\": \"record\", \"title\": \"\"}], \"members\": [{\"workflow\": \"odd\", \"revision\": 1, \"step\": 0, \"key\": \"k\", \"kind\": \"loop\", \"attempts\": 1}]}"), "", "a hand-written document reads");
         let ox = odd.expand("t10", "odd", 1, lim);
         std::test::assert(!ox.ok && std::str::contains(ox.why, "a member is a leaf or a child, not `loop`") && odd.bound_count() == 0, "an unknown member kind is refused: " + ox.why);
     }

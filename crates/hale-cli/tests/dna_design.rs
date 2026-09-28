@@ -252,7 +252,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "designed"], &d);
     assert!(ok, "{out}");
-    assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (6 practice(s) proposed"), "{out}");
+    assert!(out.contains("charter.hl") && out.contains("seeded  design (8 practice(s) proposed") && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("designed");
     assert!(app.join("dna/org/charter.hl").is_file(), "the charter is written beside the purpose");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
@@ -266,10 +266,10 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert_eq!(ids.len(), 8, "{list}");
     // the operating family is its own set (GH #994), undecided throughout
     // this test: its practices stay proposals and never reach a package
-    assert!(list.contains("operating — 6 seeded practice(s), each its own Review"), "{list}");
-    assert_eq!(family_ids(&list, "operating").len(), 6, "{list}");
+    assert!(list.contains("operating — 7 seeded practice(s), each its own Review"), "{list}");
+    assert_eq!(family_ids(&list, "operating").len(), 7, "{list}");
     let rows = journal(&app);
-    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 15, "fifteen proposals: the purpose (GH #995), eight design, six operating");
+    assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.proposed").count(), 16, "sixteen proposals: the purpose (GH #995), eight design, seven operating");
     assert_eq!(rows.iter().filter(|r| r.0 == "knowledge.ratified").count(), 0, "nothing ratified by the toolchain");
     let digest_of = |id: &str| -> String {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))
@@ -474,13 +474,13 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "operated"], &d);
-    assert!(ok && out.contains("seeded  operating (6 practice(s) proposed"), "{out}");
+    assert!(ok && out.contains("seeded  operating (7 practice(s) proposed"), "{out}");
     let app: PathBuf = d.join("operated");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
 
     let (ok, list) = hale(&["dna", "review"], &app);
-    assert!(ok && family_ids(&list, "operating").len() == 6, "six operating Reviews, under their own heading:\n{list}");
+    assert!(ok && family_ids(&list, "operating").len() == 7, "seven operating Reviews, under their own heading:\n{list}");
     let review_of = |name: &str| -> String {
         journal(&app)
             .iter()
@@ -500,8 +500,8 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     let (ok, a) = hale(&["dna", "review", &row_first, "approve", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
     let (ok, rest) = hale(&["dna", "review", "operating", "reject", "--as", "riley", "--authority", "board"], &app);
-    assert!(ok && rest.matches("settled: reject by riley").count() == 5, "the five still pending, each its own verdict:\n{rest}");
-    finish(&app, &mut host, "one operating practice ratified and five declined", |rows| has_row(rows, "knowledge.ratified", &old) && count_of(rows, "knowledge.declined") >= 5);
+    assert!(ok && rest.matches("settled: reject by riley").count() == 6, "the six still pending, each its own verdict:\n{rest}");
+    finish(&app, &mut host, "one operating practice ratified and six declined", |rows| has_row(rows, "knowledge.ratified", &old) && count_of(rows, "knowledge.declined") >= 6);
     let (included, ctx) = package(&app);
     assert_eq!(included, vec![old.clone()], "the ratified operating practice is the package, the design being undecided: {ctx}");
 
@@ -509,7 +509,7 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
     // the declined ones are proposed afresh, the pending design waits
     let (ok, up) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a later toolchain)")]);
     assert!(ok, "{up}");
-    assert!(up.contains("operating  6 practice(s) proposed (1 superseding an earlier version)"), "{up}");
+    assert!(up.contains("operating  7 practice(s) proposed (1 superseding an earlier version)"), "{up}");
     assert!(up.contains("design  8 practice(s) changed but wait"), "{up}");
     let later = review_of("operating/row-first");
     assert_ne!(later, row_first, "a new Review for the changed text");
