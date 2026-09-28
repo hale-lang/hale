@@ -103,6 +103,8 @@ fn concern_near(p: Projection, f: Firing) -> Bool {
 type Escalation {
     asked: String = "";
     why: String = "";
+    // `why` is final: the event is acknowledged, and nothing is recorded
+    refused: Bool = false;
 }
 
 fn reflex_concern(root: String, f: Firing, request: String, what: String, author: String, memory: dna::Memory) -> Bool {

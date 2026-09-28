@@ -330,18 +330,25 @@ and a vector out, when one is worth its cost.
 A **concern** is a child's signal about the part above it. An
 application raises one as one of its own events: it declares the
 concern as its own topic, under its own subject (`app.<app>.`), with a
-JSON codec, and publishes it onto the nerves through pond's NATS
-adapter with the application credential its node hands it. It imports
-nothing of the DNA:
+JSON codec, and publishes it onto the nerves through pond's
+publish-only adapter, `NatsPublisher`, with the application credential
+its node hands it. That adapter takes nothing in, so the fleet's law
+can still be proven over the application. It imports nothing of the
+DNA:
 
 ```hale,fragment
 import "vendor/dna/pond/realtime/nats" as nats;
 
 type Concern { id: String = ""; source: String = ""; what: String = ""; severity: Int = 0; }
 topic WorkerConcerns { payload: Concern; subject: "app.trio.concern.raised"; }
-// … bound to nats::NatsAdapter { } codec(ConcernJson { }) in its main locus
-WorkerConcerns <- Concern { id: "backlog-1", source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+// … bound to nats::NatsPublisher { url: …, subject_prefix: … } codec(ConcernJson { }) in its main locus
+WorkerConcerns <- Concern { id: "backlog-" + to_string(std::time::nanos(std::time::current())), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
 ```
+
+An `id` is that concern's alone (a repeat is refused as a replay), and
+the `source` names one of the application's own parts: `org/trio/worker`
+is the trio's. A concern whose source is not the application's is
+refused.
 
 The heart lands it as a reading; the spine puts it into the record as
 `concern.requested`, once for that event's id; the host relays it onto

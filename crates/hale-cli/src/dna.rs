@@ -265,8 +265,9 @@ pub fn node(args: &[String]) -> ExitCode {
     // the nerves itself (GH #987), and the node hands it the credential
     // it was started with. An instance that does imports pond's NATS
     // client from vendor/dna, which a clone does not carry: materialized
-    // here, as `run` and `dev` do
-    if let Err(e) = vendor_if_absent(&repo) {
+    // here for this toolchain, whatever the clone is (only what changed
+    // is written)
+    if let Err(e) = materialize_vendor(&repo) {
         eprintln!("hale node: {e}");
         return ExitCode::from(2);
     }
@@ -425,7 +426,10 @@ pub fn run(args: &[String]) -> ExitCode {
             // owner's URL, and the host is handed the spine's URL and the
             // organization's token — never the owner's, nor the head's
             let nerves: Vec<(String, String)> = match nerves_migrate(&dir) {
-                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE").collect(),
+                // GH #986: and the application credential, which the host's
+                // application inherits (started without the spine's, the
+                // owner's and the head's) to say its own events
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP").collect(),
                 Ok(NervesPlan::NoServer(why)) => {
                     eprintln!("hale dna dev: {why}");
                     Vec::new()

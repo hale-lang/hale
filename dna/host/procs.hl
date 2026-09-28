@@ -16,12 +16,26 @@ type Proc {
 }
 
 // `argv` newline-separated; `envs` as `NAME=value` lines; cwd = `cwd`.
-fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
+fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc { return start_env(dir, name, cwd, envs, argv, ""); }
+
+// An application — an instance a node starts, the expression `dev` starts
+// — holds no credential of the organism's: the spine's, the owner's, the
+// head's and the reflexes' are taken out of what it inherits. What it
+// keeps of the nerves is the application credential and the
+// organization's token (HALE_DNA_NATS_URL_APP, HALE_DNA_NATS_ORG), which
+// it inherits, never on a command line (GH #986).
+const APPLICATION_UNSET: String = "HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_HEAD HALE_DNA_NATS_URL_REFLEXES HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_HEAD";
+fn start_application(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
+    return start_env(dir, name, cwd, envs, argv, "-u " + std::str::replace(APPLICATION_UNSET, " ", " -u ") + " ");
+}
+
+// `unset`: `env`'s `-u NAME` options, which go before the assignments.
+fn start_env(dir: String, name: String, cwd: String, envs: String, argv: String, unset: String) -> Proc {
     std::io::fs::mkdir(dir) or discard;
     std::io::fs::unlink(dir + "/" + name + ".exit") or discard;
     std::io::fs::unlink(dir + "/" + name + ".pid") or discard;
     // the inner shell: run the program, record its pid, wait, record its code
-    let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
+    let script = "cd " + shq(cwd) + " && exec env " + unset + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
     // a session of its own: what it starts stays in it, however it is
     // regrouped or reparented, and `kill_tree` stops the whole session
     // (GH #970)

@@ -7,9 +7,10 @@
 // window, three times. A concern is one of its own events (GH #986,
 // #987): it declares it as its own topic, `concern.raised` under its
 // own subject `app.trio.`, and publishes it onto the nerves through
-// pond's NATS adapter with the application credential its node hands
-// it (HALE_DNA_NATS_URL_APP, under HALE_DNA_NATS_ORG). It imports
-// nothing of the DNA. The organism's heart lands it as a reading, and
+// pond's publish-only adapter (`NatsPublisher`: it dispatches nothing
+// into the worker, so the fleet's law stays provable over it) with the
+// application credential its node hands it (HALE_DNA_NATS_URL_APP,
+// under HALE_DNA_NATS_ORG). It imports nothing of the DNA. The organism's heart lands it as a reading, and
 // the spine puts it into the record as a concern; the organization
 // proposes it as knowledge; the Board ratifies; the next change to the
 // trio is made with it in hand.
@@ -62,15 +63,10 @@ main locus TrioWorker {
         mailer: Mailer = Mailer { };
         raised: Int = 0;
         windows: Int = 0;
-        // the nerves its node handed it ("" url: it says nothing)
-        nerves: nats::NatsConn = nats::NatsConn { url: env_or_empty("HALE_DNA_NATS_URL_APP"), name: "trio-worker", subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", jetstream: true };
     }
-    placement { nerves: pinned; }
     bus { publish Fulfil; publish WorkerConcerns; }
-    bindings { WorkerConcerns: nats::NatsAdapter { } codec(ConcernJson { }); }
-    on_failure(c: nats::NatsConn, err: ClosureViolation) {
-        eprintln("worker: the nerves did not take a concern: ", c.last_error);
-    }
+    // the nerves its node handed it (no url: it says nothing)
+    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker" } codec(ConcernJson { }); }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);
@@ -81,9 +77,10 @@ main locus TrioWorker {
         while true {
             std::time::sleep(100ms);
             self.windows = self.windows + 1;
-            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 && len(self.nerves.url) > 0 {
+            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 && std::env::var_exists("HALE_DNA_NATS_URL_APP") {
                 self.raised = self.raised + 1;
-                WorkerConcerns <- Concern { id: "backlog-" + to_string(std::process::pid()) + "-" + to_string(self.raised), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+                // an id is this concern's alone: a repeat is a replay
+                WorkerConcerns <- Concern { id: "backlog-" + to_string(std::time::nanos(std::time::current())) + "-" + to_string(self.raised), source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
                 println("worker: concern raised (", self.raised, "/3)");
             }
         }

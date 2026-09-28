@@ -262,7 +262,9 @@ durable, `heart`, and records each as a `reading.recorded` row,
 hale dna run: reading voice/usage.recorded/resp_01j8z3q4v7m2k9x0 recorded
 ```
 
-A reading is a signal, never a fact: nothing acts on one yet. The event
+A reading is a signal, never a fact: it acts on nothing itself, and
+what the spine does with one (an application's concern, a reflex's
+firing) is a row of its own. The event
 is acknowledged to the stream only once its row has landed, so a host
 that stops first loses nothing, and the event comes again. The same
 event and id arriving again is refused (`recorded already; refused as

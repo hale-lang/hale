@@ -897,7 +897,7 @@ main locus Host {
     // window (GH #988). False when a concern was due and the record refused
     // it: the event is then left unacknowledged, to come again.
     fn answer_reading(r: Reading, entity: String) -> Bool {
-        if r.event == CONCERN_EVENT { return self.read_concern(entity); }
+        if r.event == CONCERN_EVENT { return self.read_concern(r, entity); }
         if r.app != REFLEX_APP || r.event != REFLEX_FIRED { return true; }
         let e = reflex_escalation(self.root, entity, "host", self.memory);
         if len(e.why) > 0 { self.say("reflexes: " + e.why + " (the firing comes again)"); return false; }
@@ -910,8 +910,9 @@ main locus Host {
     // GH #986: an application's concern, put into the record once
     // (dna/host/pulse.hl) before its event is acknowledged; one the record
     // refused leaves the event unacknowledged, to come again
-    fn read_concern(entity: String) -> Bool {
-        let e = reading_concern(self.root, entity, "host", self.memory);
+    fn read_concern(r: Reading, entity: String) -> Bool {
+        let e = reading_concern(self.root, entity, r, "host", self.memory);
+        if e.refused { self.say("heart: " + e.why); return true; }
         if len(e.why) > 0 { self.say("heart: " + e.why + " (the event comes again)"); return false; }
         if len(e.asked) > 0 {
             self.say("heart: " + e.asked + " put into the record");
@@ -1708,7 +1709,7 @@ main locus Host {
         let expression = (if rollback { "rollback " } else { "" }) + shape + " build " + self.sha12(bin);
         if self.app.pid > 0 { stop_proc(self.app); }
         if !self.body_assert("the expression again") { self.stop_body(3); }
-        self.app = start(self.dna_dir, "app", self.root, self.child_envs(id, expression), bin);
+        self.app = start_application(self.dna_dir, "app", self.root, self.child_envs(id, expression), bin);
         self.app_log = 0;
         let pw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
         self.app_gone_reported = false;
@@ -1914,7 +1915,7 @@ main locus Host {
                 self.stop_org();
                 self.quit(3);
             }
-            self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
+            self.app = start_application(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
             if self.app.pid <= 0 { self.say("cannot start " + bin); self.stop_org(); self.quit(1); }
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");

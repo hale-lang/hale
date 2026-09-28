@@ -137,10 +137,12 @@ locus Node {
                         // GH #986, #987: an instance says what it says onto the
                         // nerves itself, as the application it is — the heart
                         // lands it — with the application credential and the
-                        // organization's token this node was started with.
-                        // There is no socket and no bus route of DNA's.
-                        let envs = "LOTUS_OBS=1\nHALE_BIN=" + hale + "\nHALE_DNA_NODE=" + self.name + "\nHALE_DNA_INSTANCE=" + id + "\nHALE_DNA_EXPRESSION=" + shape + " build " + build_digest + app_nerves_env();
-                        let p = start(self.node_dir, id, self.root, envs, bin);
+                        // organization's token this node was started with,
+                        // which it inherits; every other credential of the
+                        // organism is taken out of what it inherits
+                        // (start_application). No socket, no bus route.
+                        let envs = "LOTUS_OBS=1\nHALE_BIN=" + hale + "\nHALE_DNA_NODE=" + self.name + "\nHALE_DNA_INSTANCE=" + id + "\nHALE_DNA_EXPRESSION=" + shape + " build " + build_digest;
+                        let p = start_application(self.node_dir, id, self.root, envs, bin);
                         if p.pid <= 0 { self.say("instance " + id + ": cannot start " + bin); return false; }
                         let b = std::json::Builder { };
                         b.begin_object();
@@ -300,14 +302,4 @@ fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
         nerves: nats::NatsConn { url: "", name: "dna-node-none", run_for_ms: 1 },
         senses: dna::Senses { part: "node", port: dna::senses_port_of("node") }
     };
-}
-
-// What a node hands each instance of the nerves (GH #986): the
-// application credential and the organization's token, when it was
-// started with them ("" otherwise: the instance then says nothing).
-fn app_nerves_env() -> String {
-    let url = dna::env_or_empty(dna::NATS_APP_URL_ENV);
-    let org = dna::nerves_org();
-    if len(url) == 0 || len(org) == 0 { return ""; }
-    return "\n" + dna::NATS_APP_URL_ENV + "=" + url + "\n" + dna::NATS_ORG_ENV + "=" + org;
 }
