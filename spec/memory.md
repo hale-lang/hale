@@ -937,6 +937,22 @@ program leaking into the payload arena, not the fix; the fix is
 per-subscriber arena routing for m70 + `__caller_arena` threading
 for the stdlib primitives that land here.
 
+**The operating system refusing memory is not a NULL.** The two
+NULLs above are contracts: a `fixed_size` cell that is full, and an
+arena at its byte cap, are answers the caller is written to route.
+`malloc` or `mmap` refusing a chunk (an address-space or cgroup limit, an
+exhausted machine) is neither, and nothing downstream is written to
+take NULL from an allocator: it used to surface later, as a SIGSEGV in a
+`memcpy` or a store that had done nothing wrong. `lotus_arena_alloc`
+now aborts at the failing call. It writes one line to stderr with
+`write(2)` (composed on the stack; a process just refused memory cannot
+count on `malloc`) naming the arena by the name it was created with
+(the locus, for a locus arena), its address, the size the call asked
+for, the chunk it needed, the bytes the arena already holds, and the
+address the call came from — on glibc followed by that address resolved
+to `binary(symbol+offset)`. An arena that cannot be created is reported
+the same way. The process ends with SIGABRT.
+
 **Phase-3 Task 11 intra-process bus per-subscriber routing
 (2026-05-20).** Extends Task 9's per-sub arena pattern to the
 intra-process `<-` path. Previously `lotus_bus_dispatch` enqueued

@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "arena_oom_is_loud.rs"]
+mod arena_oom_is_loud;
 #[path = "birth_order_trap.rs"]
 mod birth_order_trap;
 #[path = "closure_resets_per_epoch.rs"]
