@@ -138,7 +138,9 @@ locus ReferenceInfrastructure {
         let mut adopted = dna::run_tool(adopt);
         while adopted.code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; adopted = dna::run_tool(adopt); }
         if adopted.code != 0 { return dna::Database { why: "the compose database did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
-        return dna::Database { present: true, dsn: "postgres://dna:" + owner.reveal_text() + "@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
+        // the owner's DSN names the vault entry, never the password: the
+        // connection presents it in its handshake
+        return dna::Database { present: true, dsn: "postgres://dna@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable&vault=" + postgres_owner_vault(seed) };
     }
     // Compose's `service`, restarted when it is up (GH #989: a server that
     // reads a secrets file rereads it); "" when it was not up or restarted,

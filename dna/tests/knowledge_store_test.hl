@@ -171,6 +171,12 @@ locus App {
         let d2 = dna::parse_dsn("postgresql://localhost/dna");
         std::test::assert(d2.ok && d2.user == "postgres" && d2.host == "localhost" && d2.port == 5432 && d2.database == "dna" && d2.sslmode == "prefer", "a bare DSN");
         std::test::assert(!dna::parse_dsn("mysql://x").ok, "not postgres");
+        // GH #989: a role's DSN names the vault entry holding its password,
+        // never the password, and reads back the same
+        let role_text = dna::dsn_text(dna::role_dsn(d, "dna_x_spine"));
+        std::test::assert(!std::str::contains(role_text, "s3cret") && std::str::starts_with(role_text, "postgres://dna_x_spine@db.example:5480/") && std::str::contains(role_text, "&vault=postgres-dna_x_spine"), "a role's DSN carries no password, only its vault entry: " + role_text);
+        let back = dna::parse_dsn(role_text);
+        std::test::assert(back.ok && back.user == "dna_x_spine" && len(back.password) == 0 && back.vault == "postgres-dna_x_spine" && back.sslmode == "require" && back.port == 5480, "and reads back the same: " + role_text);
 
         // the owner's DSN applies the schema; the store opens as the
         // record's spine role (GH #985). The store is scoped by the

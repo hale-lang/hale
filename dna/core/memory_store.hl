@@ -1006,7 +1006,11 @@ locus Pq {
 // ---- the DSN ------------------------------------------------------------
 //
 // `postgres://user:password@host:port/database?sslmode=…`, the shape
-// every tool prints. The password never leaves the connection's params.
+// every tool prints. A DSN of the organism's own (a role memory's
+// migration made, the seed's compose database's owner) carries no password:
+// it names the vault entry that holds it, `&vault=<name>`, and the
+// connection presents it from there in its handshake (GH #989). A password
+// in an operator's DSN never leaves the connection's params.
 
 type Dsn {
     ok: Bool = false;
@@ -1016,6 +1020,7 @@ type Dsn {
     port: Int = 5432;
     database: String = "postgres";
     sslmode: String = "prefer";
+    vault: String = ""; // the vault entry holding the password, when the DSN names one
     why: String = "";
 }
 
@@ -1034,6 +1039,12 @@ fn parse_dsn(s: String) -> Dsn {
             let v = query[(m + 8)..len(query)];
             let amp = std::str::index_of(v, "&");
             d.sslmode = if amp < 0 { v } else { v[0..amp] };
+        }
+        let vq = std::str::index_of(query, "vault=");
+        if vq >= 0 {
+            let v = query[(vq + 6)..len(query)];
+            let amp = std::str::index_of(v, "&");
+            d.vault = if amp < 0 { v } else { v[0..amp] };
         }
     }
     let at = std::str::index_of(rest, "@");
@@ -1056,7 +1067,7 @@ fn parse_dsn(s: String) -> Dsn {
 // (`Pq { conn: pq_conn(d) }`), since a locus is structure, not a
 // value a factory hands back into a field.
 fn pq_conn(d: Dsn) -> pq::PgConn {
-    return pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, database: d.database, sslmode: d.sslmode };
+    return pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, vault: d.vault, database: d.database, sslmode: d.sslmode };
 }
 
 // The schema a record's projections live in (GH #613): `dna_<identity>`,
