@@ -9,7 +9,7 @@ main locus Body {
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
-            membrane: dna::Board { who: "board" },
+            board: dna::Board { who: "board" },
             binding_policy_syntax: ops::OrganizationJson { },
             edge_facts: ops::StrictKnowledgeDirectEdgeFacts { }
         };

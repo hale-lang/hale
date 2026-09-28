@@ -61,7 +61,7 @@ fn main() {
             }
         },
         review_policy: dna::OrgPolicy { },
-        membrane: dna::Board { who: "board" },
+        board: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary {
             child: "orgapply",
             grant: dna::Grant { child: "orgapply", classes: "docs refactor", max_magnitude: 4, review: "pre" }

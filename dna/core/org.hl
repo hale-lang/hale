@@ -6,7 +6,7 @@
 // the gateways, the verification and the Reviews; positions decide
 // through typed facts on the bus, never by reaching into it.
 //
-// The Board is in assembly.hl (it is the membrane's human side). Here:
+// The Board is in assembly.hl (the organism's human side). Here:
 // the Leader — the model-backed position that holds the project's
 // grant and decides the Reviews inside it. Its verdicts are model
 // calls with evidence (`model.called`), its authority is `leader`, and
@@ -127,7 +127,7 @@ locus Leader {
     // what was asked. A model answer that names no kind and no class
     // leaves the defaults standing (an appendage, class `application`,
     // the ask's own target), and the record says the answer did not
-    // parse. One plan per ask; bounded by the Tasks the membrane admits.
+    // parse. One plan per ask; bounded by the Tasks the Board admits.
     @unbounded
     fn on_plan(req: PlanRequest) {
         let brief = self.brief(req.objective);

@@ -4,7 +4,7 @@
 // every child replaceable through interface substitution: a fake
 // journal, a human-first router, a post-review policy, a deployment
 // that refuses. Model routing returns data, never a locus; intent
-// enters through the membrane; a staged mutation stops at stage.
+// enters through the Board; a staged mutation stops at stage.
 // Construction, genome (policy), law (the app's claims) and durable
 // state (the journal) stay four different things.
 
@@ -50,9 +50,9 @@ main locus App {
         std::test::assert(std::str::contains(s0, "\"review_policy\": \"post-review-refactors\""), "assembled review policy: " + s0);
         std::test::assert(std::str::contains(s0, "\"deployment\": \"none\""), "assembled deployment: " + s0);
 
-        // intent through the membrane -> durable task -> journal events on the FAKE journal
+        // intent through the Board -> durable task -> journal events on the FAKE journal
         let refused = self.dna.ask(dna::Intent { id: "i0", outcome: "" });
-        std::test::assert_eq_str(refused, "refused: empty intent", "the membrane gates intent");
+        std::test::assert_eq_str(refused, "refused: empty intent", "the Board gates intent");
         let t = self.dna.ask(dna::Intent { id: "i1", outcome: "answer the audit", from: "human" });
         std::test::assert_eq_str(t, "t1", "task minted");
         // the refusal is journaled too (GH #528: `hale dna task create` reads the answer back from the Journal)
@@ -73,13 +73,13 @@ main locus App {
         std::test::assert_eq_int(r.spent_micros, 56, "cost recorded: 5 + 50 + 1");
 
         // a mutation stops at stage: the grant would release a small
-        // refactor, the deployment refuses, the membrane is told
+        // refactor, the deployment refuses, the Board is told
         let d = self.dna.stage("refactor", "sha256:cand-1",
             dna::Magnitude { loci: 2 },
             dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, rollback_rehearsed: true, independent_reviews: 2 });
         std::test::assert_eq_str(d, "stage", "released by the grant, staged by the deployment");
         std::test::assert_eq_int(self.dna.deployment.applied(), 0, "nothing applied");
-        std::test::assert(self.dna.membrane.notifications() > 0, "membrane notified");
+        std::test::assert(self.dna.board.notifications() > 0, "the Board notified");
         // a law-touching change goes to review regardless
         let rv = self.dna.stage("refactor", "sha256:cand-2", dna::Magnitude { loci: 1, law_touched: true }, dna::Evidence { tests_pass: true });
         std::test::assert_eq_str(rv, "review", "law touched -> review");

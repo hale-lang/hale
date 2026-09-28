@@ -1,7 +1,7 @@
 // dna/tests/extensions_test.hl — GH #529 D7: intent to Mutation in
 // one process, and the four extension scenarios.
 //
-//   0. intent through the membrane is an admitted workflow whose edit
+//   0. intent through the Board is an admitted workflow whose edit
 //      leaf the assembly's editor performs: the Attempt locates the file
 //      under its grant, the pipeline runs to the Review, the verdict
 //      applies, and the root settles through the engine;

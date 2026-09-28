@@ -54,7 +54,7 @@ fn main() {
     let core = dna::Dna {
         journal: dna::GitJournal { repo: "." },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
-        membrane: dna::Board { who: "board" }
+        board: dna::Board { who: "board" }
     };
     // the Board's practice for the application: `org` is the root, the
     // application is `org/knowing`, so it is a goal that reaches every

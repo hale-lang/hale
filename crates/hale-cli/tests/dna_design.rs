@@ -217,7 +217,7 @@ main locus App {
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
     }
     bus { publish dna::ReviewVerdict; }

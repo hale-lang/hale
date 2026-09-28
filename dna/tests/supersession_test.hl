@@ -49,7 +49,7 @@ main locus App {
         self.dna = dna::Dna {
             journal: dna::GitJournal { repo: repo },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         // C is active
         let c = self.dna.propose_knowledge(dna::Idea { id: "c", kind: "practice", name: "design/principles", text: "minimal structure", author: "org/worker-supervisor" }, "org/worker-supervisor/worker");

@@ -68,7 +68,7 @@ fn body_once(repo: String, j: NodeStageJournal, delivered: dna::KnowledgeNodeReq
     let body = dna::Dna {
         journal: j,
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-        membrane: dna::Board { who: "board" }
+        board: dna::Board { who: "board" }
     };
     if len(delivered.request_id) > 0 { body.on_knowledge_node_requested(delivered); }
     body.reconcile_governance();
@@ -128,7 +128,7 @@ main locus App {
         let body = dna::Dna {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         let initial = request("node/initial", "propose", "idea", "An actual generic idea.", "");
         body.on_knowledge_node_requested(initial);
@@ -159,7 +159,7 @@ main locus App {
         let body = dna::Dna {
             journal: fresh,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         body.reconcile_governance();
         let old = dna::native_json_string(event(fresh, "knowledge.node.proposed", "node/revision").body, "supersedes");
@@ -181,7 +181,7 @@ main locus App {
         let body = dna::Dna {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" }
+            board: dna::Board { who: "board" }
         };
         let mut wrong = request("node/wrong-digest", "propose", "idea", "Exact candidate.", "");
         wrong.candidate_digest = dna::digest_of("another document");
@@ -209,7 +209,7 @@ main locus App {
         let owned = dna::Dna {
             journal: j,
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
-            membrane: dna::Board { who: "board" },
+            board: dna::Board { who: "board" },
             ownership: dna::Ownership { graph: dna::graph_ownership_of("position:org organization:north\nposition:org/team organization:south\n"), me: "south", me_env: "" }
         };
         let foreign = request("node/foreign", "propose", "idea", "Another owner's scope.", "");

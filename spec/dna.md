@@ -3461,7 +3461,7 @@ The organization's models are a catalog in source (GH #583 M1):
   is exhausted intent is refused (`intent.refused`: `budget
   exhausted (spent … of … micro-dollars this day in … call(s))`),
   `budget.exhausted` is journaled once per window (`detail`,
-  `spent_micros`, `allowance_micros`, `window`, `at`), the membrane is
+  `spent_micros`, `allowance_micros`, `window`, `at`), the Board is
   told, and a Review is not announced to the model-backed positions —
   it waits for the Board, which needs no model. A `ModelRouter` counts
   what its calls cost and has no allowance of its own.
@@ -3724,8 +3724,8 @@ The live half is memory's, projected from the record by the spine
   model that answers, whose plans take the defaults, and which spends
   nothing. The CLI fixtures set it.
 - **An ask is admitted as a workflow, in the one engine (card 18).**
-  `Dna.ask(Intent)` — intent through the membrane, an optimizer's —
-  passes the membrane's gate, the owner's (GH #664) and
+  `Dna.ask(Intent)` — intent through the Board, an optimizer's —
+  passes the Board's gate, the owner's (GH #664) and
   the budget's, journals `intent.offered`, and admits a workflow for
   it (`workflow.admitted`, the one positive discriminator, under the
   intent's id as the admission's identity — offered again it is the
@@ -4250,8 +4250,8 @@ The live half is memory's, projected from the record by the spine
 The assembly names what fills each role; `hale check` sees the wiring.
 
 - **Record** — `Journal`: `GitJournal` (the branch), `MemJournal` (tests).
-- **Membrane** — where humans see and decide: `Board` /
-  `LocalHumanMembrane`, reached over the nerves on one machine; the record
+- **Board** (the `board` field, a `Membrane`) — where humans see and
+  decide: `Board` / `LocalHumanMembrane`, reached over the nerves on one machine; the record
   itself across clones (`intent.requested`, `review.verdict` rows,
   relayed by the host); GitHub, mirrored by the host when `git config
   dna.github` names `owner/repo`: every pending mutation Review becomes
@@ -4273,7 +4273,7 @@ The assembly names what fills each role; `hale check` sees the wiring.
   `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
   `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
   behaviour, and `hale dna profile`'s `github:` line names which the
-  host found (`HALE_DNA_FORGE`, or `dna.github`). The membrane's pass
+  host found (`HALE_DNA_FORGE`, or `dna.github`). The forge's pass
   is written against the interface; the rows it appends (`github.pr`,
   `github.commented`, `review.verdict` keyed by the forge's key) do
   not change with the forge. Nothing in the core or the host spells

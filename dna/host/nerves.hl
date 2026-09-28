@@ -68,7 +68,7 @@ fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
 // Whether the organization is reading its facts: its durable consumer
 // has a pull outstanding (a connection that went away leaves none once
 // its pull expires). "" when it is; otherwise why not. The host asks
-// this where it used to look for the membrane's sockets.
+// this where it used to look for the old socket transport's sockets.
 fn nerves_listening(c: nats::NatsClient, org: String, owner: String) -> String {
     let info = nats::js_call(c, dna::nerves_info_subject_of(org, owner), "") or "";
     if len(info) == 0 { return c.last_error; }

@@ -40,7 +40,7 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     assert!(law.contains("editors_never_commit: forbid reaches(editors, effects(repo_write));"), "{law}");
     assert!(law.contains("editors_never_learn: forbid reaches(editors, knowledge);"), "{law}");
     let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
-    assert!(org.contains("leader: dna::Leader") && org.contains("membrane: dna::Board") && org.contains("adopt Org;"), "{org}");
+    assert!(org.contains("leader: dna::Leader") && org.contains("board: dna::Board") && org.contains("adopt Org;"), "{org}");
     let manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
     assert!(manifest.contains("no_base = true") && manifest.contains("[environments.org]") && manifest.contains("entrypoints = [\"dna/org\"]"), "{manifest}");
     let (ok, out) = hale(&["check", "--matrix", "."], &app);

@@ -11,7 +11,7 @@ main locus Org {
         core: dna::Dna = dna::Dna {
             journal: dna::GitJournal { repo: "." },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
-            membrane: dna::Board { },
+            board: dna::Board { },
             gateway: dna::MutationGateway {
                 leases: dna::GitLeases { repo: "." },
                 workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },

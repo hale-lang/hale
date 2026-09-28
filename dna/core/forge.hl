@@ -1,7 +1,7 @@
 // dna/core/forge.hl — a code-review host behind an interface (GH #648;
 // the boundary declared with #646 stage 0, #649).
 //
-// The GitHub membrane mirrors every pending mutation Review as a pull
+// GitHub, the Board's surface there, mirrors every pending mutation Review as a pull
 // request and every review on it as a verdict. This is the vocabulary of
 // a code-review host and nothing of GitHub's: `gh` is one implementation
 // (the host's `github_sync`, until #648 moves it behind this), a bare

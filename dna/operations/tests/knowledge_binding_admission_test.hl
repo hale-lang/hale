@@ -99,7 +99,7 @@ locus BindingAdmissionCases {
         let invalid = std::str::replace(codec.fact(context, c, BindingAuthority { }.authorize(context, c.operation, false, dna::MemJournal { }), f.binding), f.binding.candidate_digest, dna::digest_of("wrong"));
         std::test::assert(!codec.decode_fact(dna::Event { kind: "knowledge.binding.requested", entity: f.command_id, prev: c.record_head, body: invalid }).valid, "wrong native candidate cannot recover as canonical intent");
         let j = dna::GitJournal { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         body.on_knowledge_binding_requested(f.binding);
         let proposed = fresh.lookup(context, c.request_id);
         std::test::assert(proposed.ok && proposed.receipt.state == "succeeded" && proposed.receipt.binding.proposal_state == "created", "actual Body creates distinct binding candidate and Review");

@@ -1329,7 +1329,7 @@ fn deploy_verb(root: String, fleet: String, plan_rel: String, what: String, roll
     return answer("fleet.deploy #" + to_string(d.seq) + ": " + fleet + " at " + short(d.revision) + " touching " + (if len(d.touched) == 0 { "no instance (none has a node)" } else { d.touched }) + "\n");
 }
 
-// ---- the forge as a membrane (GH #648) -----------------------------------
+// ---- the forge as the Board's surface (GH #648) -------------------------
 //
 // One pass, written against `dna::Forge` and nothing of GitHub's: every
 // pending mutation Review without a review at the forge gets one; every

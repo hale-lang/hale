@@ -72,7 +72,7 @@ main locus App {
             },
             deployment: dna::ShellDeployment { command: script, seed: "." },
             review_policy: dna::OrgPolicy { },
-            membrane: dna::Board { },
+            board: dna::Board { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "application", max_magnitude: 40, review: "pre" } }
         };
         std::test::assert(std::str::contains(self.dna.status(), "\"deployment\": \"shell\""), self.dna.status());

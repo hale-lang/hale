@@ -84,7 +84,7 @@ fn main() {
             }
         },
         review_policy: dna::OrgPolicy { },
-        membrane: dna::Board { who: "board" },
+        board: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary { child: "fleetapp", grant: dna::Grant { child: "fleetapp", classes: "docs refactor", max_magnitude: 4, review: "pre" } }
     };
     println(core.mutate("t0", "docs", "document the entrypoint in main.hl", "main.hl", 1));

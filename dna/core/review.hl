@@ -181,7 +181,7 @@ locus Review {
         expose refused: Int;
         expose last_refusal: String;
     }
-    // GH #527 B6: a verdict crossing the membrane (a human at
+    // GH #527 B6: a verdict crossing the Board (a human at
     // `hale dna review` or the page) arrives on the typed channel, keyed to THIS
     // review, and goes through the same admission as a local one.
     // Nothing about authority or the TOCTOU pin is relaxed for a
@@ -334,7 +334,7 @@ locus Review {
             i = i + 1;
         }
     }
-    // GH #1161: the plain verdicts the record holds for it (the membrane's,
+    // GH #1161: the plain verdicts the record holds for it (the Board's,
     // the forge's), admitted again by the same rules, so a Review rebuilt
     // at a restart keeps the approvals it held while its gates' runs were
     // not in; a run observed later settles it on them. Nothing settles
@@ -376,7 +376,7 @@ locus Review {
     }
     // Why a verdict on this candidate is not admitted, "" when it is: the
     // digest it names, the reviewer's standing and independence from the
-    // author. One rule for the membrane, a command and a restart. A gate's
+    // author. One rule for the Board, a command and a restart. A gate's
     // run is no verdict's to cite: the host observes it (GH #1161).
     @unbounded
     fn refusal(v: Verdict) -> String {
@@ -468,7 +468,7 @@ locus Review {
         return "";
     }
     // Whether a verdict at a settled Review is the same approval again.
-    // Reached per verdict from the membrane handler, like `consider`:
+    // Reached per verdict from the Board's handler, like `consider`:
     // bounded by the reviewers of one candidate.
     @unbounded
     fn readmit(v: Verdict) -> Bool {
@@ -485,7 +485,7 @@ locus Review {
     }
     // A verdict is admitted only if it names THIS candidate, carries the
     // required authority, and is independent of the author. Reached
-    // per verdict from the membrane handler: bounded by the reviewers
+    // per verdict from the Board's handler: bounded by the reviewers
     // of one candidate.
     @unbounded
     fn consider(v: Verdict) -> Bool {
