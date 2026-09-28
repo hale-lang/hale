@@ -140,6 +140,17 @@ locus ReferenceInfrastructure {
         if adopted.code != 0 { return dna::Database { why: "the compose database did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
         return dna::Database { present: true, dsn: "postgres://dna:" + owner.reveal_text() + "@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
     }
+    // Compose's `service`, restarted when it is up (GH #989: a server that
+    // reads a secrets file rereads it); "" when it was not up or restarted,
+    // else why not.
+    fn restart_if_up(service: String) -> String {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return ""; }
+        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nps\n-q\n" + service);
+        if up.code != 0 || len(dna::trim_nl(up.stdout)) == 0 { return ""; }
+        let r = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nrestart\n" + service);
+        return if r.code == 0 { "" } else { "exit " + to_string(r.code) + ": " + dna::trim_nl(r.stderr) };
+    }
     // The nerves' server (GH #986), from dna/compose.yaml's `nerves`
     // service, brought up when it is not: its URL, without a user.
     fn nerves_server(project: String) -> dna::Database {

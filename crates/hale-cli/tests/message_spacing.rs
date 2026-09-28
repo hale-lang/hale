@@ -49,6 +49,12 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-cli/src/dna.rs",
+        "organism_secrets",
+        "the `note    <what>` outcome column of init's and upgrade's report, \
+         which this fn's lines join",
+    ),
+    (
+        "crates/hale-cli/src/dna.rs",
         "usage",
         "the `hale dna <verb>` table: verb column, then description",
     ),
