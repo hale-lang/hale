@@ -781,6 +781,11 @@ pub fn check_bundle_scoped(
     // relates one site to the runtime, which takes a user type, a
     // has-payload enum or `BytesView` and nothing else.
     check_bus_payload_carriable(bundle, top, &known, &mut diags);
+    // A revealed secret is consumed in its statement (spec/semantics.md
+    // § "@sealed"): `Credential.reveal()` only in a locus method, its
+    // value reaching a wire write, a comparison or a `@secret` parameter
+    // within the statement, and a `@secret` parameter held to the same.
+    diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames));
     diags
 }
 
