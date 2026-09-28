@@ -1372,8 +1372,10 @@ leaked.
 stored by name into a locus-carrying param field — `LocusRef`,
 `interface`, `perspective(P)` — is borrowed, never the holder's to
 reclaim, so what owns it must outlive the holder. Ownership is
-structural and reclamation a tree cascade, so `hale check` decides
-this from position, with no annotation:
+structural and reclamation a tree cascade, so the checker decides
+this from position, with no annotation — on the path `hale check`,
+`build`, `run` and `test` share, so a program `check` refuses never
+builds:
 
 | the handle comes from | holder owned by the frame | by `self` (a field, an accepted child) | by the caller (returned) |
 |---|---|---|---|
@@ -1393,6 +1395,56 @@ is the shape a resident uses to copy what it was handed before the
 dispatch ends. Not decided here: a borrow across thread domains, and
 a container (not a locus) a handler built and handed to a resident's
 form-typed field; both are named in GH #730 and #712.
+
+**A handle a method keeps is the same borrow (GH #1048).** A method
+*keeps* a parameter of a locus-carrying type when its body stores it
+into `self`: assigns it to a field, hands it (alone, or inside a
+record, a tuple or an array) to a mutator of a `@form` container of
+`self`'s (`push`, `set`, `insert`, `put`, `append`, …), or passes it to
+a method of a place under `self` that keeps it in turn. The checker
+reads that from the body — the stdlib's and an imported seed's
+included: `std::http::Router.add` keeps its handler and `use` its
+middleware. The argument at a call to such a method is a borrow the
+**receiver** holds, decided by the table above with the receiver as the
+holder, by the receiver's root binding:
+
+- a place under `self` (`self.router`) is `self`'s, and so is a place
+  under the child an `accept` receives;
+- a parameter is the caller's, and so is a binding the body hands back
+  — by `return r;`, a tail, or a record, tuple or array literal
+  carrying it out — resolved by binding, not by name, through `let`
+  aliases (`let r2 = r;`) either way;
+- any other binding is the frame's.
+
+A receiver's locus is known when its root binding holds a locus
+literal, a call to a free fn declared to return a locus, or an alias of
+either, and through the declared field types below it (`a.router`). A
+locus literal written as the argument is a temporary of the frame that
+builds it, so it counts as that frame's `let` — also where a parameter
+carries it into a keeping method, when the caller is asked:
+
+```hale
+fn build(dir: String) -> std::http::Router {
+    let r = std::http::Router { };
+    r.add("GET", "/x", Echo { s: dir });   // refused: r is returned
+    return r;
+}
+```
+
+The router would dispatch into a handler its building frame reclaimed.
+Within one frame the holder and the argument end together, except in a
+loop: a locus built in a loop body is reclaimed when the next iteration
+reuses its slot, so a literal or `let` inside a loop kept by a router
+declared outside it is refused; one inside an `if` block lives to the
+frame's end and is sound. A handler that is a field of the locus owning
+the router (`self.router.add("GET", "/x", self.echo)`) lives as long as
+the router and is sound. The birth-scoped exemption above does not
+apply to a kept handle: `birth()` can hand the router on to something
+that outlives it. A keeping method called on `self` itself
+(`self.observe(j)`) is a store into `self` spelled as a call, left where
+an assignment `self.observed = j` is left (GH #967). A call through a
+value this walk cannot type (an interface, a call's result used in
+place) is left alone.
 
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not

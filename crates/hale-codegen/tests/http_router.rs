@@ -117,15 +117,22 @@ fn router_serves_through_server_over_tcp() {
                 return std::http::Response {{ status: 200, body: "hi " + who }};
             }}
         }}
-        fn build_router() -> std::http::Router {{
-            let r = std::http::Router {{ }};
-            r.add("GET", "/hello/:name", Hello {{ }});
-            return r;
+        // GH #1048: the router keeps its handler as a borrow, so the
+        // handler is a field of the locus that owns the router
+        locus Routes {{
+            params {{
+                hello: Hello = Hello {{ }};
+                router: std::http::Router = std::http::Router {{ }};
+            }}
+            birth() {{ self.router.add("GET", "/hello/:name", self.hello); }}
+            fn handle(req: std::http::Request) -> std::http::Response {{
+                return self.router.dispatch(req);
+            }}
         }}
         fn main() {{
             std::http::Server {{
                 port: {port}, max_accepts: 2, ready_signal: "READY",
-                handler: build_router()
+                handler: Routes {{ }}
             }};
         }}
     "#
@@ -216,4 +223,105 @@ fn add_fn_registers_bare_fn_routes() {
     assert!(out.contains("r2=pong"), "plain fn route: {}", out);
     assert!(out.contains("r3=classic"), "locus routes coexist: {}", out);
     assert!(out.contains("r4=404"), "404 default intact: {}", out);
+}
+
+// ---- GH #1048: the handler outlives the router that keeps it ---------
+//
+// `Router.add` keeps its handler as a borrow, so the checker refuses a
+// handler literal from a frame the router outlives (that half is
+// `hale-cli`'s `check_borrow_lifetime`). These are the shapes it lets
+// through. The oracle that would see GH #1048's defect is the OUTPUT:
+// the handler's `String` param is built on the heap (a literal's static
+// bytes would hide it) and read back through the router after the
+// building frame is gone, so a reclaimed handler prints garbage. ASan
+// and residency are hygiene here, not the detector: the reclaimed
+// handler's bytes stay in memory the process still maps, so neither
+// reports the refused shapes either.
+
+/// Run `src` twice: under `LOTUS_ARENA_RESIDENCY=1`, and as an ASan
+/// build with chunk recycling off. Returns the first run's stdout.
+fn run_under_oracles(name: &str, src: &str) -> String {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_http_router_{}", name));
+    build_executable(&program, &bin).expect("build");
+    let out = Command::new(&bin).env("LOTUS_ARENA_RESIDENCY", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{name}: exit {:?}\n{stdout}\n{stderr}", out.status);
+    assert!(
+        stderr.contains("[arena_residency dump] 0 live arenas"),
+        "{name}: an arena outlived the program:\n{stderr}"
+    );
+    let asan = harness::unique_bin(&format!("hale_http_router_{}_asan", name));
+    harness::build_asan(&program, &asan);
+    let out = Command::new(&asan)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .env("ASAN_OPTIONS", "detect_leaks=0")
+        .output()
+        .expect("run the asan build");
+    let _ = std::fs::remove_file(&asan);
+    let asan_err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        out.status.success() && !asan_err.contains("ERROR: AddressSanitizer"),
+        "{name}: the sanitizer reported:\n{asan_err}"
+    );
+    stdout
+}
+
+const ECHO: &str = r#"
+    locus Echo {
+        params { s: String = ""; }
+        fn handle(ctx: std::http::Context) -> std::http::Response {
+            return std::http::Response { status: 200, body: "[" + self.s + "]" };
+        }
+    }
+"#;
+
+#[test]
+fn a_handler_field_of_the_routers_owner_outlives_the_building_frame() {
+    // the issue's third row, the sound way: the owner holds the handler
+    // as a field and fills the router in `birth()`; the owner is built
+    // in one fn and dispatched through from another
+    let src = format!(
+        r#"{ECHO}
+        locus Api {{
+            params {{ dir: String = ""; echo: Echo = Echo {{ }}; router: std::http::Router = std::http::Router {{ }}; }}
+            birth() {{
+                self.echo.s = self.dir + "/canned";
+                self.router.add("GET", "/x", self.echo);
+            }}
+            fn handle(req: std::http::Request) -> std::http::Response {{ return self.router.dispatch(req); }}
+        }}
+        fn serve(a: Api) -> String {{
+            let noise = std::str::repeat("z", 64);
+            return a.handle(std::http::Request {{ method: "GET", path: "/x" }}).body + " " + to_string(len(noise));
+        }}
+        fn main() {{
+            let a = Api {{ dir: std::str::upper("some") + "/dir" }};
+            println(serve(a));
+        }}
+        "#
+    );
+    let out = run_under_oracles("owner_field", &src);
+    assert!(out.contains("[SOME/dir/canned] 64"), "{out}");
+}
+
+#[test]
+fn a_router_built_and_used_in_one_frame_reads_its_handler() {
+    let src = format!(
+        r#"{ECHO}
+        fn main() {{
+            let r = std::http::Router {{ }};
+            r.add("GET", "/x", Echo {{ s: std::str::upper("d") + "/canned" }});
+            let h = Echo {{ s: std::str::upper("e") + "/let" }};
+            r.add("GET", "/y", h);
+            let noise = std::str::repeat("z", 64);
+            println(r.dispatch(std::http::Request {{ method: "GET", path: "/x" }}).body,
+                r.dispatch(std::http::Request {{ method: "GET", path: "/y" }}).body, " ", len(noise));
+        }}
+        "#
+    );
+    let out = run_under_oracles("one_frame", &src);
+    assert!(out.contains("[D/canned][E/let] 64"), "{out}");
 }
