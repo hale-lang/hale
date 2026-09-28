@@ -26,6 +26,18 @@ fn forward(f: fixture::Fixture, method: String, url: String, body: String, heade
     return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
 }
 
+// One POSTed line to the binding's HTTP transport under `token` ("" sends none).
+fn bearer(url: String, body: String, token: String) -> fixture::HttpResponse {
+    let auth = if len(token) > 0 { "\n--header\nAuthorization: Bearer " + token } else { "" };
+    let result = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n40\n--include\n--request\nPOST" + auth + "\n--data\n" + body + "\n" + url);
+    let split = std::str::index_of(result.stdout, "\r\n\r\n");
+    if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
+    let head = result.stdout[0..split];
+    let space = std::str::index_of(head, " ");
+    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
+    return fixture::HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+}
+
 locus Cases {
     params { root: String = ""; issuer_url: String = ""; schema: String = ""; json: fixture::Json = fixture::Json { }; }
     fn application_identity() {
@@ -50,41 +62,55 @@ locus Cases {
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
         self.json.eq(self.json.raw(data, "principal"), "mode", "local");
     }
-    // HTTP as a forwarding transport: one line of the api wire per POST,
-    // under the browser's CSRF headers, answered as the binding wrote it
-    // with the head's own principal marked `via: http-session`.
+    // The binding's own HTTP transport (GH #1135): one line of the api
+    // wire per POST under a bearer, on the port the launcher gave it; in a
+    // fixture's trusted-local session the bearer is the head's launch
+    // token, which names the head's own account. The face this head
+    // serves relays its session's line there under that token, past the
+    // CSRF guard a cookie needs; nothing adds a principal of its own.
     fn forwarding() {
         // with the shell: the launch token opens it
         let f = fixture::Fixture { root: self.root + "/fw", profiled_schema: self.schema }; f.standard(); f.prepare_web(); f.start();
-        let path = f.url() + f.prefix + "/commands";
-        let described = forward(f, "POST", path, "{\"describe\":true}", true);
+        let path = "http://127.0.0.1:" + to_string(f.commands_port) + "/";
+        let token = dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or "");
+        let described = bearer(path, "{\"describe\":true}", token);
         std::test::assert_eq_int(described.status, 200, described.body);
-        std::test::assert(std::str::contains(described.body, "\"ok\":true") && std::str::contains(described.body, "\"via\":\"http-session\"}") && std::str::contains(described.body, "\"name\":\"TaskCreate\""), "the slice, forwarded, under the marked principal: " + described.body);
-        let raised = forward(f, "POST", path, "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}", true);
+        std::test::assert(std::str::contains(described.body, "\"ok\":true") && std::str::contains(described.body, "\"mode\":\"bearer\"") && std::str::contains(described.body, "\"via\":\"http\"}") && std::str::contains(described.body, "\"name\":\"TaskCreate\""), "the slice, over the binding's HTTP transport, under the launch token's principal: " + described.body);
+        let raised = bearer(path, "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"ask-1\",\"record_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"outcome\":\"ship it\",\"to\":\"org\"}}", token);
         std::test::assert_eq_int(raised.status, 200, raised.body);
         std::test::assert(std::str::contains(raised.body, "\"code\":\"commands_unsupported\""), "the handler ran; the standalone head composes no provider: " + raised.body);
-        let gated = forward(f, "POST", path, "{\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}", true);
+        let gated = bearer(path, "{\"call\":\"PersonRetire\",\"payload\":{\"request_id\":\"p-1\",\"person\":\"x\",\"subject_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to\":\"\"}}", token);
         std::test::assert_eq_int(gated.status, 404, gated.body);
         std::test::assert(std::str::contains(gated.body, "\"kind\":\"unknown\""), "a closed gate is unknown to this principal, as on the socket: " + gated.body);
         // a Knowledge change is a gated topic like the rest; its recovery is not
-        let knowledge = forward(f, "POST", path, "{\"call\":\"KnowledgeEdgeLink\",\"payload\":{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}}", true);
+        let knowledge = bearer(path, "{\"call\":\"KnowledgeEdgeLink\",\"payload\":{\"request_id\":\"k-1\",\"record_head\":\"h\",\"target_id\":\"a\",\"from_id\":\"a\",\"to_id\":\"b\",\"rel\":\"r\",\"rationale\":\"why\"}}", token);
         std::test::assert(knowledge.status == 404 && std::str::contains(knowledge.body, "\"kind\":\"unknown\""), "a Knowledge change outside the slice is unknown: " + knowledge.body);
-        let recovered = forward(f, "POST", path, "{\"call\":\"KnowledgeLookup\",\"payload\":{\"request_id\":\"k-1\"}}", true);
+        let recovered = bearer(path, "{\"call\":\"KnowledgeLookup\",\"payload\":{\"request_id\":\"k-1\"}}", token);
         std::test::assert(recovered.status == 200 && std::str::contains(recovered.body, "\"code\":\"commands_unsupported\""), "a Knowledge lookup reaches its handler; no policy, no provider: " + recovered.body);
-        let old_route = forward(f, "POST", f.url() + f.prefix + "/dna/knowledge/commands", "{\"describe\":true}", true);
-        std::test::assert_eq_int(old_route.status, 405, "the Knowledge command route is gone: " + old_route.body);
-        let claimed = forward(f, "POST", path, "{\"describe\":true,\"via\":\"admin\"}", true);
-        std::test::assert_eq_int(claimed.status, 400, "a line that claims its own mark is refused: " + claimed.body);
-        let bare = forward(f, "POST", path, "{\"describe\":true}", false);
-        std::test::assert_eq_int(bare.status, 401, "without the launch token no mutation is taken: " + bare.body);
+        let looked = bearer(path, "{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":\"ask-1\"}}", token);
+        std::test::assert(looked.status == 200 && std::str::contains(looked.body, "\"ok\":true"), "a lookup is the CommandLookup call: " + looked.body);
+        let claimed = bearer(path, "{\"describe\":true,\"via\":\"admin\"}", token);
+        std::test::assert(claimed.status == 200 && !std::str::contains(claimed.body, "admin"), "a via in a line is no mark: " + claimed.body);
+        let bare = bearer(path, "{\"describe\":true}", "");
+        std::test::assert(bare.status == 401 && std::str::contains(bare.body, "\"kind\":\"unauthenticated\""), "without a bearer the transport takes nothing: " + bare.body);
+        let wrong = bearer(path, "{\"describe\":true}", "not-the-token");
+        std::test::assert(wrong.status == 401 && std::str::contains(wrong.body, "\"kind\":\"unauthenticated\""), "a token the head did not mint names nobody: " + wrong.body);
+        // the session's line, relayed: the same answer, the same principal
+        let relayed = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", true);
+        std::test::assert(relayed.status == 200 && std::str::contains(relayed.body, "\"mode\":\"bearer\"") && std::str::contains(relayed.body, "\"via\":\"http\"}") && std::str::contains(relayed.body, "\"name\":\"TaskCreate\""), "the session's line reaches the binding under the launch token: " + relayed.body);
+        let no_session = forward(f, "POST", f.url() + f.prefix + "/commands", "{\"describe\":true}", false);
+        std::test::assert_eq_int(no_session.status, 401, "without the session nothing is relayed: " + no_session.body);
+        let forged = dna::run_tool("curl\n-q\n--noproxy\n*\n--silent\n--max-time\n40\n--output\n/dev/null\n--write-out\n%{http_code}\n--header\nX-Hale-Token: " + token + "\n--header\nContent-Type: application/json\n--data\n{\"describe\":true}\n" + f.url() + f.prefix + "/commands");
+        std::test::assert_eq_str(forged.stdout, "403", "a session's line without the page's origin and marker is not relayed");
+        let lookup_get = forward(f, "GET", f.url() + f.prefix + "/commands?request_id=ask-1", "", false);
+        std::test::assert_eq_int(lookup_get.status, 405, "a lookup is a line, not a GET: " + lookup_get.body);
+        let old_knowledge = forward(f, "POST", f.url() + f.prefix + "/dna/knowledge/commands", "{\"describe\":true}", true);
+        std::test::assert_eq_int(old_knowledge.status, 405, "the Knowledge command route is gone: " + old_knowledge.body);
         let shell = f.http("GET", "/", "", "");
         std::test::assert_eq_int(shell.status, 401, "and the shell opens only with the token: status " + to_string(shell.status) + " " + shell.headers + " " + shell.body);
-        let opened = f.http("GET", "/?token=" + dna::trim_nl(std::io::fs::read_file(f.root + "/.hale/dna/head.token") or ""), "", "");
+        let opened = f.http("GET", "/?token=" + token, "", "");
         std::test::assert_eq_int(opened.status, 200, "the URL the head printed opens it: " + opened.body);
         std::test::assert(std::str::contains(dna::response_header(opened.headers, "Set-Cookie"), "dna_local="), "and sets the session cookie: " + opened.headers);
-        let looked = forward(f, "GET", path + "?request_id=ask-1", "", false);
-        std::test::assert_eq_int(looked.status, 200, looked.body);
-        std::test::assert(std::str::contains(looked.body, "\"via\":\"http-session\"}"), "a lookup is a forwarded CommandLookup: " + looked.body);
         f.stop();
     }
     fn native_unicode() {
@@ -182,8 +208,14 @@ locus Cases {
         let mut i = 0;
         while i < 4 {
             let mut j = 0;
-            // POST /commands is the forwarding transport: without the launch token it is refused, not unknown
-            while j < 3 { f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), if i == 0 && j == 2 { 401 } else { 405 }, "", "{\"as\":\"board\",\"verdict\":\"approve\"}"); j = j + 1; }
+            // the reads' server takes no command: `/commands` is the
+            // binding's (GH #1135), and a POST there is a session's line to
+            // relay, which without the launch token goes nowhere
+            while j < 3 {
+                let expected = if i == 0 && j == 2 { 401 } else { 405 };
+                f.error(dna::line_at(methods, i), f.prefix + dna::line_at(paths, j), expected, "", "{\"as\":\"board\",\"verdict\":\"approve\"}");
+                j = j + 1;
+            }
             i = i + 1;
         }
         f.error("POST", "/api/verdict", 405, "", "{\"as\":\"board\"}"); f.error("POST", "/api/task/create", 405, "", "{\"as\":\"board\"}");

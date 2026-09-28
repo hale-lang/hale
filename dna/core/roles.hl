@@ -38,6 +38,13 @@
 // record is re-read when it has moved, so a holder changes only by the
 // governed decision that wrote the row.
 
+// Whether the binding vouched for `p`: a socket peer the kernel named
+// (uid 0 or more), or a bearer the program's source named (GH #1135).
+fn authenticated(p: std::api::Principal) -> Bool {
+    if p.mode == "bearer" { return len(p.name) > 0; }
+    return p.uid >= 0;
+}
+
 locus RecordRoles {
     params {
         root: String = "."; // the record; given where the source is built
@@ -131,7 +138,7 @@ locus RecordRoles {
     // where the role has `_`.
     @unbounded
     fn holds(p: std::api::Principal, r: String) -> Bool {
-        if p.uid < 0 || len(r) == 0 { return false; }
+        if !authenticated(p) || len(r) == 0 { return false; }
         self.scan();
         let person = self.person_named(p);
         if len(person) == 0 || self.seats.is_retired(person) { return false; }
@@ -142,7 +149,7 @@ locus RecordRoles {
     // The person the record maps `p` to ("" when it maps nobody, or the
     // person was retired): who a command is recorded as coming from.
     fn person(p: std::api::Principal) -> String {
-        if p.uid < 0 { return ""; }
+        if !authenticated(p) { return ""; }
         self.scan();
         let person = self.person_named(p);
         if len(person) == 0 || self.seats.is_retired(person) { return ""; }
@@ -163,13 +170,24 @@ locus RecordRoles {
         self.scan();
         return len(member_of(self.services, subject)) > 0;
     }
-    // Who `p` names before retirement is asked: a line the head's own
-    // transport forwarded under a verified OIDC subject (`via` =
-    // `oidc:<sub>`, a mark the binding takes from the program's own uid
-    // only) is that subject's person by `dna.oidc.member`; any other peer
-    // is its account's by `dna.unix.member` (GH #989).
+    // Whether the record maps `subject` to a person by `dna.oidc.member`,
+    // whatever else it maps it to.
+    fn member_mapped(subject: String) -> Bool {
+        self.scan();
+        return len(member_of(self.oidc, subject)) > 0;
+    }
+    // Who `p` names before retirement is asked: a bearer the binding's
+    // HTTP transport verified as an OIDC subject (`oidc:<sub>`, GH #1135)
+    // is that subject's person by `dna.oidc.member` — unless the record
+    // also maps it as a service, which makes it neither: a service's token
+    // never acts as a person; any other principal is its account's by
+    // `dna.unix.member` (GH #989).
     fn person_named(p: std::api::Principal) -> String {
-        if std::str::starts_with(p.via, "oidc:") { return member_of(self.oidc, p.via[5..len(p.via)]); }
+        if std::str::starts_with(p.name, "oidc:") {
+            let subject = p.name[5..len(p.name)];
+            if len(member_of(self.services, subject)) > 0 { return ""; }
+            return member_of(self.oidc, subject);
+        }
         return member_of(self.mapping, p.name);
     }
     // The positions `p`'s person holds by the record's holds edges,

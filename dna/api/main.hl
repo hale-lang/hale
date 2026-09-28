@@ -114,8 +114,10 @@ locus Wire {
         b.begin_object_field("api");
         b.string_field("transport", "unix");
         b.string_field("socket", socket);
-        // the same wire, one line per POST, for the browser (mode local only)
-        b.string_field("http", if mode == "local" && len(socket) > 0 { API_PREFIX + "/" + source.identity + "/commands" } else { "" });
+        // the same wire, one line per POST, on the binding's own HTTP
+        // transport, relayed at this path (GH #1135) — when the launcher
+        // gave the head a commands port
+        b.string_field("http", if commands_port() > 0 { API_PREFIX + "/" + source.identity + "/commands" } else { "" });
         b.end_object();
         let wire = CommandWire { };
         if definitions && wire.origin_valid(command_origin) {
@@ -149,6 +151,7 @@ locus Api {
         knowledge: KnowledgeProvider = NoKnowledge { };
         people: PeopleProvider = NoPeople { };
         socket: String = ""; // where the commands are: the head's api binding
+        commands_port: Int = 0; // and its HTTP transport, which a session's command is relayed to
         token: String = ""; // the local session's launch token (see launch_token); "" = no local session
         organization_candidates: OrganizationCandidateWire = OrganizationCandidateWire { };
         organization_runtime: OrganizationRuntimeProvider = NoOrganizationRuntime { };
@@ -172,10 +175,12 @@ locus Api {
         // A command provider opens command submission. Draft POST is separate
         // read preparation and requires a real catalog plus a configured origin.
         // The commands are the api binding's (commands.hl,
-        // knowledge_commands.hl); over HTTP a record takes a draft and a
-        // line forwarded to that binding (forward.hl). Everything else is
-        // a read.
-        if req.method != "GET" && !(req.method == "POST" && (draft_path || commands_path)) { return http.error(405, "method_not_allowed", "this head takes commands on its api socket, or forwarded to it at /commands; reads are GET", false); }
+        // knowledge_commands.hl), on its socket and its own HTTP transport
+        // (GH #1135); over this server a record takes a draft, and the
+        // face it serves relays a command to that transport under its
+        // session (bearer.hl). Everything else is a read.
+        if commands_path && req.method != "POST" { return http.error(405, "method_not_allowed", "a command is one POSTed line of the api wire; a lookup is a `CommandLookup` call", false); }
+        if req.method != "GET" && !(req.method == "POST" && (draft_path || commands_path)) { return http.error(405, "method_not_allowed", "this head's commands are its api binding's, on its socket and its HTTP transport; reads are GET", false); }
         // The local session's trust (GH #989): the shell at `/` and every
         // POST carry the launch token — in the URL once, then the cookie it
         // sets, or the X-Hale-Token header a tool sends.
@@ -195,6 +200,14 @@ locus Api {
                 let sent = std::http::header(req, "X-Hale-Token");
                 if !token_matches(sent, self.token) && !token_matches(dna::cookie_value(std::http::header(req, "Cookie"), "dna_local"), self.token) { return http.error(401, "unauthenticated", "a mutation carries the launch token: the dna_local cookie the head's URL set, or X-Hale-Token", false); }
             }
+        }
+        // GH #1135: the local session's command, relayed to the binding
+        // under the launch token (the head's own account), past the CSRF
+        // guard its cookie needs
+        if commands_path && self.mode != "oidc" {
+            let guard = command_guard(req, self.command_origin);
+            if len(guard) > 0 { let wire = CommandWire { }; return wire.error(guard); }
+            return relay_command(req, self.commands_port, self.token);
         }
         // The optional shell is public and static, so Runtime inspection can
         // work without a DNA session. Every Record read still passes auth below.
@@ -225,7 +238,17 @@ locus Api {
                 subject = self.auth.session_subject(req);
                 if len(subject) == 0 { return self.unauthenticated("sign in at /auth/login, or present an ID token as a bearer"); }
             }
-            actor = self.roles.person(std::api::Principal { mode: "oidc", uid: 0, via: "oidc:" + subject });
+            // GH #1135: a command goes to the binding under the caller's
+            // own bearer, else its session's ID token past the CSRF guard;
+            // the binding maps and gates the subject itself
+            if commands_path {
+                let given = dna::bearer_token(std::http::header(req, "Authorization"));
+                if len(given) > 0 { return relay_command(req, self.commands_port, given); }
+                let guard = command_guard(req, self.command_origin);
+                if len(guard) > 0 { let wire = CommandWire { }; return wire.error(guard); }
+                return relay_command(req, self.commands_port, self.auth.session_token(req));
+            }
+            actor = self.roles.person(std::api::Principal { mode: "bearer", name: "oidc:" + subject });
             // a service's bearer (the issuer's `client_credentials` grant):
             // the service the record maps it to, which reads; its only
             // POST is a command, and the socket's gate decides that — a
@@ -234,17 +257,17 @@ locus Api {
             if bearer && self.roles.service_mapped(subject) {
                 // a subject mapped both ways is neither: a service's token
                 // would otherwise act as the person
-                if len(actor) > 0 { return http.error(403, "forbidden", "subject `" + subject + "` is mapped both as a person (`dna.oidc.member`) and as a service (`dna.oidc.service`); a subject is one or the other", false); }
+                if self.roles.member_mapped(subject) { return http.error(403, "forbidden", "subject `" + subject + "` is mapped both as a person (`dna.oidc.member`) and as a service (`dna.oidc.service`); a subject is one or the other", false); }
                 let service = self.roles.service(subject);
                 // its own principal, never a person's name
                 if len(service) > 0 { actor = "service:" + service; serviced = true; }
             }
             if len(actor) == 0 { return http.error(403, "forbidden", "subject `" + subject + "` maps to no person the record keeps (`git config --local --add dna.oidc.member \"" + subject + "=<person>\"`), or they retired, and to no service (`dna.oidc.service`)", false); }
-            if serviced && req.method != "GET" && !commands_path { return http.error(403, "forbidden", "service `" + actor + "` reads; a draft is a person's", false); }
+            if serviced && req.method != "GET" { return http.error(403, "forbidden", "service `" + actor + "` reads; a draft is a person's", false); }
         }
         if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
         let knowledge_path = std::str::contains(path, "/dna/knowledge/");
-        let query = if knowledge_path || draft_path || commands_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
+        let query = if knowledge_path || draft_path { Query { } } else if std::str::ends_with(path, "/dna/tasks") { http.task_query(raw_query) } else { http.query(raw_query) };
         if !query.ok { return http.error(400, "invalid_query", query.error, false); }
         let reader = SourceReader { root: self.root };
         let source = reader.read();
@@ -263,7 +286,6 @@ locus Api {
         if path == prefix + "/dna/reviews/candidate" { return self.review_candidate_read(command_context, query, raw_query); }
         if path == prefix + "/dna/organization/source-status" { let status = OrganizationStatusWire { }; return status.read(command_context, query, raw_query, self.organization_candidates, self.organization_runtime); }
         if path == prefix + "/dna/organization/source-impact" { let impact = OrganizationImpactWire { }; return impact.read(command_context, query, raw_query, self.organization_candidates); }
-        if path == prefix + "/commands" { return self.forward_command(req, raw_query, subject); }
         if path == prefix + "/dna/definitions/draft" {
             return self.definition_draft_handle(req, cut >= 0, command_context);
         }
@@ -338,38 +360,6 @@ locus Api {
         let proof = std::env::var("HALE_DNA_CHILD_PROOF");
         if len(proof) > 0 { r.headers = r.headers + (if len(r.headers) > 0 { "\r\n" } else { "" }) + "X-Hale-Child: " + dna::digest_of(proof); }
         return r;
-    }
-    // HTTP as a forwarding transport (forward.hl): the caller's line to
-    // the head's own socket, under the CSRF discipline every mutation
-    // here has. Under OIDC the line carries the verified subject
-    // (`oidc:<sub>`), which the binding's roles map to the person
-    // (GH #989); in a fixture's trusted-local session, the head's own.
-    fn forward_command(req: std::http::Request, query: String, subject: String) -> std::http::Response {
-        let http = Http { };
-        let wire = CommandWire { };
-        let via = if self.mode == "oidc" { "oidc:" + subject } else { "http-session" };
-        if self.mode == "oidc" && (len(subject) == 0 || len(via) > 64) { return http.error(403, "forbidden", "the caller's subject cannot be carried to the api socket (at most 59 characters)", false); }
-        if len(self.socket) == 0 { return http.error(503, "commands_unavailable", "the head has no api socket to forward to", false); }
-        let mut line = "";
-        if req.method == "GET" {
-            let id = wire.lookup_id(query);
-            if len(id) == 0 { return wire.error("invalid_query"); }
-            line = forwarded_line("{\"call\":\"CommandLookup\",\"payload\":{\"request_id\":" + dna::record_json_quote(id) + "}}", via);
-        } else {
-            if len(query) > 0 { return wire.error("invalid_query"); }
-            let guard = wire.guard(req, self.command_origin);
-            // a Knowledge node carries up to 8 KiB of text, so its line
-            // keeps the larger budget the node profile always had
-            let call = wire.text(req.body, "call");
-            let node = (call == "KnowledgeNodePropose" || call == "KnowledgeNodeRevise") && len(req.body) <= 98304;
-            if len(guard) > 0 && !(guard == "command_too_large" && node) { return wire.error(guard); }
-            line = forwarded_line(req.body, via);
-            if len(line) == 0 { return http.error(400, "invalid_command", "one JSON object of the api wire, without a \"via\"", false); }
-        }
-        let forward = Forward { socket: self.socket };
-        let receipt = forward.line(line);
-        if len(receipt) == 0 { return http.error(503, "commands_unavailable", "this head's api socket is not answering; nothing was forwarded", false); }
-        return http.response(forwarded_status(receipt), receipt);
     }
     fn definition_draft_handle(req: std::http::Request, has_query: Bool, context: CommandContext) -> std::http::Response {
         let http = Http { };
@@ -527,8 +517,10 @@ fn query_token(raw_query: String) -> String {
 
 // The name the local session acts under: the person `dna.unix.member`
 // maps this process's uid to, else `uid:<n>` — never $USER, which is a
-// name nothing vouched for. The forwarder records a command under the
-// same name, so a receipt matches the session `/capabilities` names.
+// name nothing vouched for. The binding's HTTP transport records a
+// command under the same name (the launch token is the head's own
+// account, bearer.hl), so a receipt matches the session `/capabilities`
+// names.
 fn local_person(root: String) -> String {
     let roles = dna::RecordRoles { root: root };
     let me = std::process::uid();
@@ -639,6 +631,9 @@ main locus Head {
         roles: dna::RecordRoles = dna::RecordRoles { };
         srv: std::http::Server;
         commands: Commands = Commands { };
+        // GH #1135: the binding's HTTP transport, and who its bearers are
+        http_port: Int = 0;
+        bearer: std::api::BearerSource = std::api::NoBearer { };
     }
     // The server off the main pool (a server born as a param on main's
     // pool would hold its birth thread before the binding is born), a
@@ -647,7 +642,7 @@ main locus Head {
     // dissolve removes the socket.
     placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
     bindings {
-        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles);
+        api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), http("127.0.0.1", self.http_port, principals: self.bearer);
     }
     run() {
         while !self.draining { std::time::sleep(100ms); }
@@ -730,7 +725,8 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         let auth = oidc_ui(record, port, "hale dna api");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session; ", command_label, ")");
         Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
-            srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root } } } };
+            http_port: commands_port(), bearer: OidcBearer { auth: oidc_ui(record, port, "hale dna api") },
+            srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, commands_port: commands_port(), web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root } } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -747,5 +743,6 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
     let token = launch_token(root + "/.hale/dna");
     println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; ", command_label, "; the token is in ", root, "/.hale/dna/head.token)");
     Head { root: root, socket: socket, roles: dna::RecordRoles { root: root }, commands: Commands { admission: CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
-        srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: user, token: token } } };
+        http_port: commands_port(), bearer: LaunchBearer { token: token },
+        srv: std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, commands_port: commands_port(), web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" }, definitions: definitions, knowledge: knowledge, people: people, socket: socket, organization_candidates: organization_candidates, organization_runtime: runtime, command_origin: command_origin, local_name: user, token: token } } };
 }

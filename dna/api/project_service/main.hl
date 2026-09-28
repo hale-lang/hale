@@ -214,7 +214,8 @@ fn main() {
     // issuer's keys are read now, once. A fixture's trusted-local session
     // (HALE_DNA_TRUSTED_LOCAL=1) is a launch token in the state directory,
     // printed in the head's URL.
-    let mut cfg = HeadConfig { port: port, api_port: api_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of() };
+    let commands_port = api::commands_port();
+    let mut cfg = HeadConfig { port: port, api_port: api_port, commands_port: commands_port, api_binary: api_binary, hale: hale, state_dir: state_dir, sources_dir: sources_dir_of() };
     let mut auth = ui::Ui { };
     if dna::trusted_local_fixture() {
         let user = std::env::var("USER");

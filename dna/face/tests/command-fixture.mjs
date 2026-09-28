@@ -105,6 +105,14 @@ export async function scriptedCommands(page, service, options = {}) {
     if (request.method() === 'POST') {
       const body = request.postDataJSON();
       if (body.describe === true) { script.describes += 1; return fulfill(200, describeLine(script.described(slice()))); }
+      if (body.call === 'CommandLookup') {
+        const id = body.payload?.request_id;
+        script.gets.push(id);
+        if (script.getMode === 'unavailable') return fulfill(503, routeError('commands_unavailable', 'the api binding did not answer; retain the request id for lookup'));
+        const original = script.posts.find(post => post.body.payload.request_id === id);
+        if (script.getMode === 'missing' || !original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
+        return fulfill(200, receipt(original.body));
+      }
       const principal = structuredClone(script.principal);
       // what the page saved before it sent, read from the page; only then
       // is the POST counted, so a test that waits on `posts` and then
@@ -118,11 +126,7 @@ export async function scriptedCommands(page, service, options = {}) {
       if (!slice().includes(body.call)) return fulfill(refusalStatus('unknown'), refusalLine('unknown', body.call));
       return fulfill(200, receipt(body, principal)).catch(() => {});
     }
-    script.gets.push(url.searchParams.get('request_id'));
-    if (script.getMode === 'unavailable') return fulfill(503, routeError('commands_unavailable', 'the api socket did not answer; retain the request id for lookup'));
-    const original = script.posts.find(post => post.body.payload.request_id === url.searchParams.get('request_id'));
-    if (script.getMode === 'missing' || !original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
-    return fulfill(200, receipt(original.body));
+    return fulfill(405, routeError('method_not_allowed', 'a command is one POSTed line of the api wire'));
   });
   return script;
 }

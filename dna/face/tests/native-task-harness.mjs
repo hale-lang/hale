@@ -5,13 +5,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
 import { seatRecord, unseatRecord } from './record-seats.mjs';
-import { settle, wireLine } from './command-wire.mjs';
+import { freePort, settle, wireLine } from './command-wire.mjs';
 
 export const nativeTaskEnvironmentPresent = () => Boolean(process.env.HALE_NATIVE_TASK_API && process.env.HALE_NATIVE_TASK_SEED);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -49,8 +48,9 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   const authorityFile = path.join(evidence, 'authority.json'), taskFile = path.join(evidence, 'task-policy.json');
   fs.writeFileSync(authorityFile, JSON.stringify({ format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: actor, authority: 'board', practice_propose: false, review_verdict: false, recover: true }] }));
   fs.writeFileSync(taskFile, JSON.stringify(taskPolicy(application, actor)));
-  const listener = net.createServer(); await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
-  const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const port = await freePort();
+  // GH #1135: the api binding's HTTP transport takes a port of its own
+  const commandsPort = await freePort();
   const origin = `http://127.0.0.1:${port}`, prefix = `/api/hale/v1/applications/${application}`;
   const processes = [], requests = []; let api, stopped = false, sequence = 0;
   // Each API start mints a launch token (GH #989): every POST carries it, and
@@ -80,7 +80,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   async function startAPI() {
     assert(!api); const bounded = boundedNative(binaries.api, [root, String(port), webroot], { lock: false });
     const filename = `${++sequence}-api.log`, log = fs.createWriteStream(path.join(evidence, filename));
-    const child = spawn(bounded.command, bounded.args, { cwd: root, env: { ...env, HALE_DNA_COMMAND_POLICY: authorityFile, HALE_DNA_TASK_POLICY: taskFile }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bounded.command, bounded.args, { cwd: root, env: { ...env, HALE_DNA_COMMAND_POLICY: authorityFile, HALE_DNA_TASK_POLICY: taskFile, HALE_DNA_COMMANDS_PORT: String(commandsPort) }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const record = { binary: binaries.api, pid: child.pid, log: filename }; processes.push(record);
     const item = { child, output: '', stopping: false, error: null }; item.closed = new Promise(resolve => { child.once('close', (code, termination) => { record.code = code; record.signal = termination; log.end(); resolve(); }); });
     child.once('error', error => { item.error = error; record.error = error.message; });
@@ -104,7 +104,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
       // One line of the head's wire (an envelope-shaped command is sent as
       // its call), settled to the receipt or the refusal it earned.
       post: async command => { const result = await send('POST', prefix + '/commands', command.call ? command : wireLine(command)); return { ...result, ...settle(result.status, result.json) }; },
-      lookup: async request_id => { const result = await read(prefix + '/commands?' + new URLSearchParams({ request_id })); return { ...result, ...settle(result.status, result.json) }; },
+      lookup: async request_id => { const result = await send('POST', prefix + '/commands', { call: 'CommandLookup', payload: { request_id } }); return { ...result, ...settle(result.status, result.json) }; },
       unseat: () => unseatRecord(root, env, actor, ['board']),
       command: (row, to, request_id) => ({ request_id, operation: 'dna.task.reassign', operation_version: '1', context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.task', id: row.id }, preconditions: { subject_digest: row.assignment_digest, principal: { mode: 'local', name: actor }, assignee: row.assignee }, arguments: { to } }),
       current: async (id = first.id) => { const response = await read(prefix + '/dna/tasks?id=' + encodeURIComponent(id)); assert.equal(response.status, 200, JSON.stringify(response)); return response.json.data.items[0]; },

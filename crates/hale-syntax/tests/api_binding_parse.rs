@@ -221,3 +221,30 @@ fn the_socket_path_may_be_an_expression_on_the_main_locus() {
     assert!(matches!(**receiver, hale_syntax::ast::Expr::KwSelf(_)));
     assert_eq!(name.name, "socket");
 }
+
+#[test]
+fn serve_names_main_params_after_the_transport() {
+    // GH #1137: `serve: [p, …]` follows the transport's parens.
+    let a = api_of("main locus App {\n    bindings { api: unix(\"/run/app.sock\", bound: 8, on_full: refuse), serve: [commands, knowledge]; }\n}\n");
+    let names: Vec<&str> = a.serve.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, vec!["commands", "knowledge"]);
+    let none = api_of("main locus App {\n    bindings { api: unix(\"/run/app.sock\", bound: 8, on_full: refuse); }\n}\n");
+    assert!(none.serve.is_empty(), "no clause, nothing named");
+}
+
+#[test]
+fn an_unknown_clause_after_the_transport_is_refused() {
+    let err = parse_source("main locus App {\n    bindings { api: unix(\"/s\", bound: 8, on_full: refuse), exports: [x]; }\n}\n").unwrap_err();
+    assert!(err.iter().any(|d| d.message.contains("unknown api clause `exports`")), "{:?}", err);
+}
+
+#[test]
+fn http_is_a_clause_with_host_port_and_principals() {
+    // GH #1135: the binding's HTTP transport follows the socket.
+    let a = api_of("main locus App {\n    bindings { api: unix(\"/s\", bound: 8, on_full: refuse), http(\"127.0.0.1\", 8793, principals: self.bearer), serve: [c]; }\n}\n");
+    let h = a.http.expect("an http transport");
+    assert!(h.principals.is_some());
+    assert_eq!(a.serve.len(), 1);
+    let err = parse_source("main locus App {\n    bindings { api: unix(\"/s\", bound: 8, on_full: refuse), http(\"h\", 1, token: x); }\n}\n").unwrap_err();
+    assert!(err.iter().any(|d| d.message.contains("unknown http kwarg `token`")), "{:?}", err);
+}

@@ -159,7 +159,7 @@ api binding, a unix socket. `/capabilities` says where it is,
 listener), and carries no write flags or command profiles; `read_only` is
 always true, since HTTP writes nothing itself. The socket's own description is the contract:
 `hale describe <socket>` lists the calls a caller holds, and
-`hale check --dump-api dna/api` (the head also forwards one line of that wire per `POST …/commands`, and a `GET …/commands?request_id=` as a `CommandLookup`, under the CSRF headers every mutation here carries, in the local session only — a forwarding transport until the binding grows an HTTP one, GH #1135; it is the wire's contract, not this file's) prints the full description.
+`hale check --dump-api dna/api` (the binding also answers that wire over HTTP, one line per `POST …/commands` with a bearer, `CommandLookup` included, GH #1135; it is the wire's contract, not this file's) prints the full description.
 
 | call name | subject | gate |
 |---|---|---|
@@ -243,7 +243,7 @@ gated topics on its api binding, like the record's other commands:
 `dna.commands.knowledge.edge.link` … `dna.commands.knowledge.binding.unbind`),
 and `KnowledgeLookup` (ungated, `dna.commands.knowledge.lookup`). Each answers a
 `KnowledgeReply` (`ok`, `code`, `application_id`, `head`, `revision`,
-`receipt`). The browser reaches them through the forwarded `POST …/commands`
+`receipt`). The browser reaches them through the binding's `POST …/commands`
 like every other command. Their contract is the binding's description,
 `hale check --dump-api dna/api`; the
 [API README](../../README.md#knowledge-commands) has the payloads and the

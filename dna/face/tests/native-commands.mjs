@@ -6,12 +6,11 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
-import { settle, wireLine } from './command-wire.mjs';
+import { freePort, settle, wireLine } from './command-wire.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
 import { scaffoldProject, hostReady, organizationReady, hostChildren, running, headMemory } from './native-command-harness.mjs';
 
@@ -128,13 +127,6 @@ async function stop(item, kill = false) {
 process.on('exit', () => { for (const item of owned) signal(item, 'SIGKILL'); });
 for (const name of ['SIGINT', 'SIGTERM']) process.on(name, () => { interrupted = `Interrupted by ${name}`; for (const item of owned) signal(item, 'SIGKILL'); });
 
-async function availablePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  const port = server.address().port;
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return port;
-}
 function httpRequest(method, suffix, value, { discard = false } = {}) {
   checkProcesses();
   const encoded = value === undefined ? undefined : Buffer.from(JSON.stringify(value), 'utf8');
@@ -188,6 +180,10 @@ function transientRead(result) {
 async function read(suffix) {
   return until('native source snapshot', () => httpRequest('GET', suffix), result => !transientRead(result));
 }
+// A recovery is a line of the wire too: `CommandLookup` (GH #1135).
+async function lookupLine(requestId) {
+  return until('native command lookup', () => httpRequest('POST', prefix() + '/commands', { call: 'CommandLookup', payload: { request_id: requestId } }), result => !transientRead(result));
+}
 // The host in place of the Body and the relay: it migrates memory and the
 // nerves, builds and runs the organization (the acceptance Body, placed as
 // the project's dna/org), and relays the record's requests on its tick.
@@ -215,8 +211,10 @@ function actAs(name, seat) {
 async function stopHost(kill = false) { await stop(host, kill); await reapHostChildren(); }
 async function startApi(name = 'alice') {
   actor = name; actAs(name, name !== 'mallory');
-  const port = await availablePort(); origin = `http://127.0.0.1:${port}`;
-  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn });
+  const port = await freePort(); origin = `http://127.0.0.1:${port}`;
+  // GH #1135: the api binding's HTTP transport takes a port of its own
+  const commandsPort = await freePort();
+  api = startNative(`api-${actor}`, binaries.api, [fixture, String(port), webroot], { HALE_DNA_COMMAND_POLICY: policyPath, HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMANDS_PORT: String(commandsPort) });
   await until('command API startup', async () => {
     try { return await httpRequest('GET', '/api/hale/v1/applications'); }
     catch (error) { if (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET') return null; throw error; }
@@ -293,7 +291,7 @@ async function submit(command) {
 }
 async function lookup(command, predicate) {
   const result = await until(`outcome ${command.request_id}`, async () => {
-    const response = await read(prefix() + '/commands?request_id=' + encodeURIComponent(command.request_id));
+    const response = await lookupLine(command.request_id);
     const settled = settle(response.status, response.json);
     assert.equal(settled.code, '', JSON.stringify(response));
     assert.equal(settled.reply.application_id, application);
@@ -355,7 +353,7 @@ async function approve(command, predecessor) {
 // binding's is its refusal kind; the provider's is the CommandReply code
 // under a 200.
 async function expectError(method, suffix, command, status, code) {
-  const response = method === 'GET' ? await read(suffix) : await httpRequest(method, suffix, wireLine(command));
+  const response = method === 'LOOKUP' ? await lookupLine(command) : await httpRequest(method, suffix, wireLine(command));
   const settled = settle(response.status, response.json);
   assert.equal(response.status, status, JSON.stringify(response));
   assert.equal(settled.code, code, JSON.stringify(response));
@@ -483,7 +481,7 @@ try {
   });
   await scenario('principal isolation survives API restart with both grants', async () => {
     await switchActor('bob');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'command_not_found');
+    await expectError('LOOKUP', prefix() + '/commands', 'replace-1', 200, 'command_not_found');
     const command = practice('replace-1', active, 'Bob has his own request identity.');
     const proposal = await created(command);
     assert.notEqual(proposal.command_id, firstProposal.command_id);
@@ -501,7 +499,7 @@ try {
     assert.equal(described.status, 200, JSON.stringify(described));
     assert.deepEqual(described.json.value.commands.map(entry => entry.name).sort(), ['CommandLookup', 'TaskCreate']);
     await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 404, 'unknown');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'forbidden');
+    await expectError('LOOKUP', prefix() + '/commands', 'replace-1', 200, 'forbidden');
     assert.equal(admission('unauthorized').length, 0);
   });
   await scenario('encoded HTTP cap and maximum decoded fields through native adoption', async () => {

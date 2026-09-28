@@ -79,7 +79,7 @@ conformance fixtures, before a UI advertises them.
 | `GET /applications/{app}/activity` | Scoped durable history with causal references and coverage |
 | `POST /applications/{app}/commands` | Submit one versioned, advertised domain operation |
 | `GET /applications/{app}/commands/{command_id}` | Recover the command and authoritative result |
-| `GET /applications/{app}/commands?request_id=…` | Recover when the original HTTP response, including command id, was lost |
+| `POST /applications/{app}/commands` `{"call": "CommandLookup"}` | Recover by `request_id` when the original HTTP response, including command id, was lost |
 | `GET /applications/{app}/events` | Authorized change notifications with resumable positions |
 
 DNA collection reads accept an optional native `id` query parameter for an

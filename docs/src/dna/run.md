@@ -450,13 +450,12 @@ The record's own commands (`dna/api`) are gated topics on this same
 socket: `owner` is the board, `reviewer` is `position:reviewer`, and
 `position` is any position the peer holds. `git config --local --add
 dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
-these gates can name. The face reaches the same gates over HTTP: the
-head forwards its `POST …/commands` line to its own socket marked
-`via: oidc:<subject>` for the caller whose ID token it verified, and the
-gates name the person `dna.oidc.member` maps that subject to (a
-fixture's trusted-local session marks it `via: http-session`, as the
-head's own uid). The binding takes the mark from the head's own process
-only. Revoking a mapping (`git config --local --unset`) takes
+these gates can name. The face reaches the same gates over the api
+binding's own HTTP transport: `POST …/commands` goes to it under the
+caller's bearer — the ID token you signed in with, or a service's
+token — and the gates name the person `dna.oidc.member` maps that
+subject to (a fixture's trusted-local session's launch token names the
+head's own account). Revoking a mapping (`git config --local --unset`) takes
 effect when the record next moves, since the source re-reads the
 mapping with the edges then.
 
@@ -512,6 +511,10 @@ test fixture's mode, never a project's.
 `dna/api/project_service`: one loopback process the browser talks
 to, which serves the face, keeps a registry of your projects, and
 proxies the Record reads and commands to a per-project API child.
+The head listens on 8792, the API child's reads on 8793, the stub
+provider on 8794 and the API child's commands, its api binding's own
+HTTP transport, on 8795 (`--port`, `--api-port`, `--oidc-port`,
+`--commands-port`).
 Given no project it starts detached, and the browser's Projects
 workspace is where you begin: create a project (`hale dna new`,
 run for you), initialize an existing checkout (`hale dna init`), or

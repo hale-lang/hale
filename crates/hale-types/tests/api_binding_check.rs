@@ -96,6 +96,28 @@ fn watch_bound_and_its_policy_go_together() {
     assert!(!msgs.iter().any(|m| m.contains("api binding")), "{:?}", msgs);
 }
 
+/// GH #1135: the HTTP transport's principals come from the program; a
+/// clause without a source would make every bearer nobody, so it is
+/// refused at the clause, and with one the entry checks clean.
+#[test]
+fn an_http_transport_needs_its_principals() {
+    let msgs = check(&program(
+        r#"api: unix("/tmp/t.sock", bound: 8, on_full: refuse), http("127.0.0.1", 9000);"#,
+        "",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains("`http(…)` needs `principals: <source>`")),
+        "{:?}",
+        msgs
+    );
+    let msgs = check(&program(
+        r#"api: unix("/tmp/t.sock", bound: 8, on_full: refuse), http("127.0.0.1", 9000, principals: std::api::NoBearer { });"#,
+        "",
+    ));
+    let api: Vec<&String> = msgs.iter().filter(|m| m.contains("api")).collect();
+    assert!(api.is_empty(), "{:?}", api);
+}
+
 #[test]
 fn two_replying_subscribers_are_ambiguous() {
     let msgs = check(&program(

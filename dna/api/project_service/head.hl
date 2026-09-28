@@ -33,6 +33,10 @@ const API_READY_STEPS: Int = 150;
 type HeadConfig {
     port: Int = 8792;
     api_port: Int = 8793;
+    // GH #1135: the API child's api binding serves its HTTP transport
+    // here, as the launcher gives it (`HALE_DNA_COMMANDS_PORT`); 0 =
+    // none, and a command through the head is unavailable
+    commands_port: Int = 0;
     api_binary: String = "";
     hale: String = "";
     state_dir: String = "";
@@ -99,6 +103,8 @@ fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
     if kind != "body" { out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n"; }
     out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
     if cfg.principal_mode == "local" { out = out + "HALE_DNA_TRUSTED_LOCAL=1\n"; }
+    // the API child's commands port is the head's to give, never inherited
+    if kind == "api" && cfg.commands_port > 0 { out = out + "HALE_DNA_COMMANDS_PORT=" + to_string(cfg.commands_port) + "\n"; }
     return out + policy_env(root);
 }
 
@@ -797,6 +803,30 @@ locus Head {
         // a service's own bearer (verified in `handle`), else the session's
         let given = dna::bearer_token(std::http::header(req, "Authorization"));
         let bearer = if self.cfg.principal_mode != "oidc" { "" } else if len(given) > 0 { given } else { self.auth.session_token(req) };
+        // GH #1135: a command is the child's api binding's, on its own HTTP
+        // transport at the commands port the head gave it — the same wire line, under the
+        // caller's bearer (in a fixture's trusted-local session, the child's
+        // launch token, which the binding names as the head's own account).
+        // Nobody forwards a line: the binding authenticates and gates it.
+        let cut = std::str::index_of(req.path, "?");
+        let bare = if cut < 0 { req.path } else { req.path[0..cut] };
+        if std::str::ends_with(bare, "/commands") {
+            if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed line of the api wire; a lookup is a `CommandLookup` call", false); }
+            // a session is an ambient credential: its line keeps the CSRF
+            // guard before it becomes a bearer; only an OIDC caller's own
+            // bearer is not asked (a local session's bearer is always the
+            // child's token the head substitutes)
+            if self.cfg.principal_mode != "oidc" || len(given) == 0 {
+                let guard = api::command_guard(req, head_origin(self.cfg));
+                if len(guard) > 0 { return self.command_error(guard); }
+            }
+            // the binding waits 30 s for a handler; the relay outlasts it
+            if self.cfg.commands_port <= 0 { return self.error(503, "commands_unavailable", "this head gives its API child no commands port (HALE_DNA_COMMANDS_PORT)", false); }
+            let port = self.cfg.commands_port;
+            let up = api::exchange(port, "POST", req.path, proxied_headers(req, port, head_origin(self.cfg), "", if self.cfg.principal_mode == "local" { child_token } else { bearer }), req.body, api::COMMAND_RELAY_TIMEOUT_NS);
+            if up.ok { self.api_ready_pid = child.pid; }
+            return proxied_response(up);
+        }
         let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }

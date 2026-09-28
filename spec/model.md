@@ -118,6 +118,8 @@ denotes.
 One slice of the model does have a wire form now, and it is
 deliberately a *form* slice: the **api description** an `api`
 binding serves and `hale check --dump-api` emits. It carries the
+loci the entry's `serve:` put on the surface (`"serve"`: each param
+and the locus it holds, as the author spells it; GH #1137), the
 program's commands (subscribed topics, with the wire subject, the
 payload type, the reply type and the key), reads (exposed members,
 as snapshots), streams (published topics) and the JSON Schema of

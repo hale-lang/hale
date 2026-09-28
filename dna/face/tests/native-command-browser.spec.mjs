@@ -2,7 +2,7 @@
 // The lost-reply case drops only transport after a real native POST completed.
 import { test as base, expect } from '@playwright/test';
 import { nativeCommandEnvironmentPresent, serviceFixtureTimeout, startService, attachEvidence } from './native-command-harness.mjs';
-import { isDescribe, isWrite, settle } from './command-wire.mjs';
+import { isDescribe, isWrite, lookupOf, settle } from './command-wire.mjs';
 
 const test = base.extend({
   service: [async ({}, use, testInfo) => {
@@ -57,7 +57,7 @@ async function send(page, service, label) {
 async function showOutcome(page, service, request, predicate) {
   const native = await service.waitCommand(request.receipt.request_id, predicate);
   await service.quiesce();
-  const response = page.waitForResponse(result => result.request().method() === 'GET' && new URL(result.url()).searchParams.get('request_id') === request.receipt.request_id);
+  const response = page.waitForResponse(result => lookupOf(result.request()) === request.receipt.request_id);
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();
   const result = await response;
   const settled = settle(result.status(), await result.json());
@@ -177,7 +177,7 @@ test('real native browser: a lost reply survives API/body restart and reload rec
   expect(service.origin).toBe(origin);
   const settled = await service.waitCommand(delivered.request_id, value => value.proposal?.state === 'created');
   await service.quiesce();
-  const response = page.waitForResponse(result => result.request().method() === 'GET' && new URL(result.url()).searchParams.get('request_id') === delivered.request_id);
+  const response = page.waitForResponse(result => lookupOf(result.request()) === delivered.request_id);
   await page.reload();
   expect((await response).status()).toBe(200);
   await expect(stage(page, 'Proposal')).toContainText('created');

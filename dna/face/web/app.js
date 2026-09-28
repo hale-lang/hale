@@ -138,8 +138,8 @@
   const TASK_OPERATION = "dna.task.reassign";
   const PERSON_OPERATION = "dna.person.retire";
   const TASK_CREATE_OPERATION = "dna.task.create";
-  // A record command is one line of the head's api wire, forwarded over
-  // HTTP to its socket: the operation's call and its flat payload. The head
+  // A record command is one line of the head's api wire, POSTed to its
+  // binding's HTTP transport: the operation's call and its flat payload. The head
   // supplies the context, the target's application and the principal.
   const COMMAND_CALLS = { [PRACTICE_OPERATION]: "PracticePropose", [REVIEW_OPERATION]: "ReviewVerdict", [ORGANIZATION_OPERATION]: "OrganizationPropose", [TASK_OPERATION]: "TaskReassign", [PERSON_OPERATION]: "PersonRetire", [TASK_CREATE_OPERATION]: "TaskCreate" };
   const COMMAND_LOOKUP = "CommandLookup";
@@ -194,7 +194,7 @@
     return closedObject(base, ORGANIZATION_BASE) && sourceCommit(base.source_head) && sourceDigest(base.module_digest) && sourceDigest(base.dependency_digest) && ["none", "committed_source", "local_vendor_snapshot"].includes(base.dependency_source) && commandID(base.record_head);
   }
   // The head's slice for this session: the call names its describe line
-  // lists (null when the head forwards no commands). A command is offered
+  // lists (null when the head offers no commands). A command is offered
   // exactly when its call is in the slice; the head gates and admits again.
   function commandSlice(capabilities) {
     return Array.isArray(capabilities?.command_slice) ? capabilities.command_slice : null;
@@ -258,7 +258,7 @@
     return p && practiceTextAvailable(p) && p.kind === "practice" && p.state === "ratified" && p.ratified === true && p.retired === false && p.declined === false && p.author === "org" && p.target === "org" && commandID(p.id) && p.id === p.digest;
   }
   function interventionReason(p) {
-    if (!commandCapability().supported) return "This head forwards no record commands to this session. Practice reads remain available.";
+    if (!commandCapability().supported) return "This head offers no record commands to this session. Practice reads remain available.";
     if (!commandCapability().allowed) return "Practice submission is unavailable for this connection or signed-in principal. Viewing an organization position does not grant authority.";
     if (intervention.blocked) return intervention.error;
     if (intervention.metadata) return "Check the saved request above before starting another proposal.";
@@ -458,7 +458,7 @@
     return { ...data, text: data.document, relationship: e };
   }
   function reviewInterventionReason(r) {
-    if (!reviewCapability().supported) return r?.organization_source ? "This head forwards no record commands to this session. The exact source comparison remains available." : "This head forwards no record commands to this session. Review reads remain available.";
+    if (!reviewCapability().supported) return r?.organization_source ? "This head offers no record commands to this session. The exact source comparison remains available." : "This head offers no record commands to this session. Review reads remain available.";
     if (!reviewCapability().allowed) return "Decision submission is unavailable for this connection or signed-in principal. Required authority is information, not a permission grant.";
     if (intervention.blocked) return intervention.error;
     if (intervention.metadata) return "Check the saved request above and explicitly dismiss it after completion before preparing another decision.";
@@ -480,7 +480,7 @@
   }
   function organizationProposalAccess() {
     const capability = commandCapability(state.capabilities, ORGANIZATION_OPERATION);
-    const reason = !capability.supported ? "This head forwards no record commands to this session. Validation and export remain available." : !capability.allowed ? "Organization publishing is unavailable for this connection or signed-in principal." : intervention.blocked ? intervention.error : intervention.metadata ? "Recover or dismiss the saved request before starting another proposal." : "Submit the exact checked source for native verification and Review.";
+    const reason = !capability.supported ? "This head offers no record commands to this session. Validation and export remain available." : !capability.allowed ? "Organization publishing is unavailable for this connection or signed-in principal." : intervention.blocked ? intervention.error : intervention.metadata ? "Recover or dismiss the saved request before starting another proposal." : "Submit the exact checked source for native verification and Review.";
     return { ...capability, allowed: capability.allowed && !intervention.blocked && !intervention.metadata, reason };
   }
   async function proposeOrganization(data, rationale) {
@@ -627,16 +627,17 @@
     assert(o.application_state === "refused" ? refusals.includes(o.application_reason_code) : o.application_state === "failed" ? o.application_reason_code === "native_apply_failed" : o.application_reason_code === "");
   }
   function commandPath(appId) { return API + "/" + encodeURIComponent(appId) + "/commands"; }
-  // One exchange with the head's forwarding route: a line of the api wire
-  // POSTed under the command headers, or a lookup by request id.
-  async function commandExchange(appId, method, line, signal, query = "") {
+  // One exchange with the api binding's HTTP transport, which the head
+  // serves at this path (GH #1135): a line of the api wire POSTed under the
+  // command headers; a lookup is the `CommandLookup` call.
+  async function commandExchange(appId, line, signal) {
     const pending = new AbortController();
     const cancel = () => pending.abort();
     signal.addEventListener("abort", cancel, { once: true });
     if (signal.aborted) cancel();
     const timeout = setTimeout(cancel, COMMAND_TIMEOUT_MS);
     try {
-      const response = await fetch(commandPath(appId) + query, { method, signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", ...(method === "POST" ? { "Content-Type": "application/json", "X-Hale-Command": "1" } : {}) }, ...(method === "POST" ? { body: JSON.stringify(line) } : {}) });
+      const response = await fetch(commandPath(appId), { method: "POST", signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", "Content-Type": "application/json", "X-Hale-Command": "1" }, body: JSON.stringify(line) });
       let body = null;
       try { body = await response.json(); } catch { body = null; }
       return { status: response.status, body };
@@ -646,31 +647,31 @@
     }
   }
   const REFUSAL_STATUS = { unauthenticated: 401, unauthorized: 403, unknown: 404, over_bound: 503 };
-  // The binding's receipt line, as the head forwarded it for this session:
-  // its answer or its refusal, under the head's own caller marked as
-  // forwarded. The HTTP status is the line's.
+  // The binding's receipt line for this session: its answer or its refusal,
+  // under the caller the binding's HTTP transport established for the
+  // session's bearer. The HTTP status is the line's.
   function isReceiptLine(body) { return body !== null && typeof body === "object" && !Array.isArray(body) && Object.hasOwn(body, "request_id") && typeof body.ok === "boolean"; }
   function validReceiptLine(body, status) {
     const optional = ["id", "role"].filter(key => Object.hasOwn(body, key));
     assert(closedObject(body, ["request_id", "ok", body.ok ? "value" : "refusal", "caller", ...optional]) && Number.isSafeInteger(body.request_id) && body.request_id >= 0);
     const c = body.caller;
-    assert(closedObject(c, ["mode", "name", "uid", "gid", "pid", "via"]) && c.mode === "unix" && commandID(c.name) && [c.uid, c.gid, c.pid].every(Number.isSafeInteger) && c.via === "http-session");
+    assert(closedObject(c, ["mode", "name", "uid", "gid", "pid", "via"]) && c.mode === "bearer" && unicodeText(c.name) && c.name.length > 0 && [c.uid, c.gid, c.pid].every(Number.isSafeInteger) && c.via === "http");
     assert(!Object.hasOwn(body, "role") || body.ok && commandID(body.role));
     assert(!Object.hasOwn(body, "id"), "The head answered a line this page did not send.");
     if (!body.ok) {
       const r = body.refusal;
       assert(closedObject(r, ["kind", "reason", ...(Object.hasOwn(r || {}, "role") ? ["role"] : [])]) && commandID(r.kind) && unicodeText(r.reason));
     }
-    assert(status === (body.ok ? 200 : REFUSAL_STATUS[body.refusal.kind] || 400), "The forwarded receipt and its HTTP status disagree.");
+    assert(status === (body.ok ? 200 : REFUSAL_STATUS[body.refusal.kind] || 400), "The receipt and its HTTP status disagree.");
     return body;
   }
   // The slice the head's describe line gives this session: the call names
-  // it may send. Absent when the head forwards no commands (an OIDC session,
-  // a head without a socket); reads never depend on it.
+  // it may send. Absent when the head offers no commands (a head without
+  // a binding); reads never depend on it.
   async function readCommandSlice(appId, capabilities, signal) {
     if (capabilities.api?.http !== commandPath(appId)) return null;
     try {
-      const { status, body } = await commandExchange(appId, "POST", { describe: true }, signal);
+      const { status, body } = await commandExchange(appId, { describe: true }, signal);
       if (!isReceiptLine(body)) return null;
       validReceiptLine(body, status);
       if (!body.ok) return null;
@@ -777,12 +778,11 @@
   // HTTP route used to answer it with.
   const REPLY_STATUS = { unauthenticated: 401, forbidden: 403, command_not_found: 404, commands_unavailable: 503, commands_unsupported: 503, command_context_changed: 409, stale_subject: 409, request_conflict: 409 };
   async function commandRequest(method, metadata, payload, signal) {
-    const line = method === "POST" ? { call: COMMAND_CALLS[metadata.operation], payload } : null;
-    const query = method === "GET" ? "?" + new URLSearchParams({ request_id: metadata.request_id }) : "";
-    const { status, body } = await commandExchange(metadata.application_id, method, line, signal, query);
+    const line = method === "POST" ? { call: COMMAND_CALLS[metadata.operation], payload } : { call: COMMAND_LOOKUP, payload: { request_id: metadata.request_id } };
+    const { status, body } = await commandExchange(metadata.application_id, line, signal);
     if (status === 401) throw new ReadError(401, "unauthenticated", "Sign in again to recover this request.");
-    // The route's own answer, not the binding's: no socket, or a request the
-    // head would not forward.
+    // The route's own answer, not the binding's: no binding answering, or
+    // a request the head would not relay.
     if (!isReceiptLine(body)) {
       const code = closedObject(body, ["api_version", "error"]) && body.api_version === "hale.v1" && commandID(body.error?.code) ? body.error.code : "command_unconfirmed";
       throw new ReadError(status >= 400 ? status : 502, code, "The request outcome could not be confirmed.");
@@ -1222,12 +1222,12 @@
     } else assert(r.state === "recorded");
     return { receipt: r, source };
   }
-  // One Knowledge exchange over the head's forwarding route: the
-  // operation's call (POST) or its recovery by request identity (GET),
-  // both a line of the api wire.
+  // One Knowledge exchange with the head's binding: the operation's call
+  // or its recovery by request identity, each a POSTed line of the api
+  // wire.
   async function knowledgeCommandRequest(method, metadata, payload, signal) {
     const line = method === "POST" ? { call: KNOWLEDGE_CALLS[knowledgeOperation(metadata)], payload } : { call: KNOWLEDGE_LOOKUP, payload: { request_id: metadata.request_id } };
-    const { status, body } = await commandExchange(metadata.application_id, "POST", line, signal);
+    const { status, body } = await commandExchange(metadata.application_id, line, signal);
     if (status === 401) throw new ReadError(401, "unauthenticated", "Sign in again to recover this Knowledge request.");
     if (!isReceiptLine(body)) {
       const known = closedObject(body, ["api_version", "error"]) && body.api_version === "hale.v1" && closedObject(body.error, ["code", "message", "retryable"]) && commandID(body.error.code) && unicodeText(body.error.message);

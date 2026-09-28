@@ -94,14 +94,17 @@ async function fixture(page, options = {}) {
     if (req.method() === 'POST') {
       const body = req.postDataJSON();
       if (body.describe) return fulfill(200, describeLine(slice()));
+      if (body.call === 'CommandLookup') {
+        const id = body.payload?.request_id; script.gets.push(id);
+        const original = script.posts.find(post => post.body.payload.request_id === id);
+        if (!original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
+        return fulfill(200, receipt(original.body));
+      }
       script.savedBeforeSend = await metadata(page); script.posts.push({ body, headers: req.headers() }); // counted once the page read is done, so a test's next navigation cannot destroy it
       if (script.postMode === 'lost') return route.abort('failed');
       return fulfill(200, receipt(body));
     }
-    const id = url.searchParams.get('request_id'); script.gets.push(id);
-    const original = script.posts.find(post => post.body.payload.request_id === id);
-    if (!original) return fulfill(200, receiptLine(refusedReply('command_not_found')));
-    return fulfill(200, receipt(original.body));
+    return fulfill(405, failure('method_not_allowed', 'a command is one POSTed line of the api wire'));
   });
   return script;
 }

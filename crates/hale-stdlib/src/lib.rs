@@ -344,6 +344,9 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // the stdlib's static-table implementation of it.
     (&["std", "api", "RoleSource"], "__StdApiRoleSource"),
     (&["std", "api", "StaticRoles"], "__StdApiStaticRoles"),
+    // GH #1135: who a bearer on the binding's HTTP transport is.
+    (&["std", "api", "BearerSource"], "__StdApiBearerSource"),
+    (&["std", "api", "NoBearer"], "__StdApiNoBearer"),
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // GH #989: the local vault directory, exported so a caller that

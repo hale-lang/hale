@@ -14166,6 +14166,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .collect();
         Ok(LocusDecl {
             imported: template.imported,
+            display: template.display.clone(),
             phase_effects: None,
             depends: None,
             supervised: false,

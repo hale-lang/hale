@@ -2,10 +2,11 @@
 //
 // A `Principal` is who is calling, established at the binding and
 // nowhere else: the mode says how (`local` for a publish inside the
-// program, `unix` for a peer on the api socket, later `bearer` for
-// an HTTP token), the name says who as that mode spells it (`local`,
-// `uid:1000`), and the three credentials are what a Unix socket's
-// kernel vouches for (-1 when the mode has none). The shape is the
+// program, `unix` for a peer on the api socket, `bearer` for a token on
+// the binding's HTTP transport), the name says who as that mode spells
+// it (`local`, `uid:1000`, whatever the program's `BearerSource`
+// answers), and the three credentials are what a Unix socket's kernel
+// vouches for (-1 when the mode has none). The shape is the
 // one DNA carried by hand as `principal_mode` / `principal_name`.
 //
 // A `Context` is what a handler that declares a second parameter
@@ -28,10 +29,10 @@ type __StdApiPrincipal {
     // for the connection (SO_PEERGROUPS on Linux; empty elsewhere),
     // comma-separated. Not on the receipt.
     groups: String = "";
-    // How the caller reached the binding when a transport of the
-    // program's own forwarded it (`"http-session"`): the wire's `via`,
-    // honoured only from the program's own uid; "" for the socket peer
-    // itself. On the receipt when set; `Context.via` carries it.
+    // GH #1135: the binding's transport the caller reached, set by the
+    // binding and never by the caller: "http" for its HTTP transport, ""
+    // for its socket. On the receipt when set; `Context.via` carries it
+    // ("api" for the socket).
     via: String = "";
 }
 
@@ -68,6 +69,31 @@ fn __api_local_context() -> std::api::Context {
 /// A membership source: the binding asks, the deployment answers.
 interface __StdApiRoleSource {
     fn holds(p: std::api::Principal, r: String) -> Bool;
+}
+
+// GH #1135: who a bearer token on the binding's HTTP transport is.
+//
+// The binding hands a request's `Authorization: Bearer <token>` to the
+// program's source (`http(…, principals: <source>)` on the entry) and
+// takes the principal it answers: `mode` is `bearer`, `name` says who as
+// the source spells it. A principal with an empty `name` is nobody: the
+// binding refuses the request as `unauthenticated`, gated or not. The
+// token goes no further than the source.
+
+/// A bearer source: the binding asks who a token is, and, when the
+/// answer is nobody, why (the refusal says so).
+interface __StdApiBearerSource {
+    fn principal(token: String) -> std::api::Principal;
+    fn refused() -> String;
+}
+
+/// The source an HTTP transport has when the entry names none: every
+/// token is nobody, so every request is refused.
+locus __StdApiNoBearer {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "the program names no bearer source"; }
 }
 
 /// The static table, from the environment's `roles` section. Its birth

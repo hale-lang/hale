@@ -1037,21 +1037,34 @@ repository:
   the issuer, the client among the audience, the expiry and the nonce.
   A caller that is not a browser presents its ID token as
   `Authorization: Bearer`, checked the same way without a nonce
-  (`bearer_refusal`). The head forwards a verified caller's command to
-  its own socket marked `via: oidc:<subject>` (a mark the binding takes
-  from the program's own process only — its uid and pid — and a body of
-  more than one line is refused, so no line arrives under the head's
-  mark but its own); the socket's roles map the subject
-  to its person by `dna.oidc.member` as they map a peer by
-  `dna.unix.member`, the gates are the same, and the receipt says
-  `principal_mode: oidc`, the person, and the positions they hold
-  (`principal_positions`). The face (`dna/api/project_service`) is
+  (`bearer_refusal`). A command reaches the head's api binding over the
+  binding's own HTTP transport (GH #1135; `spec/semantics.md` § "The
+  HTTP transport"), on the port the head's launcher gives it
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
+  given, none served, and a relayed command is `commands_unavailable`),
+  as a POSTed line of
+  the wire under the caller's bearer; no program forwards a line. The
+  head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
+  token as above and names the principal `oidc:<subject>`; the
+  binding's roles map that subject to its person by `dna.oidc.member` as
+  they map a socket peer by `dna.unix.member`, the gates are the same,
+  and the receipt says `principal_mode: oidc`, the person, and the
+  positions they hold (`principal_positions`). A fixture's
+  trusted-local head names its launch token the head's own account
+  (`LaunchBearer`, `uid:<n>`), the account its local session acts as. The face (`dna/api/project_service`) is
   itself a client of the issuer under `HALE_DNA_OIDC_ISSUER`,
   `_CLIENT` and `_MEMBER` (the `<subject>=<person>` who
   signs in there), configures a project it attaches for that issuer,
-  and forwards the session's ID token to the project's API child as
-  the bearer, which the child verifies itself; an OIDC child is ready
-  when it refuses an unauthenticated read carrying the digest of the
+  and hands the session's ID token to the project's API child as the
+  bearer — on the child's reads, and on `POST …/commands`, which it
+  proxies to the child's binding transport (a `GET` there is 405: a
+  lookup is the `CommandLookup` call) — and the child verifies it itself.
+  A child serving its own shell relays that shell's `POST …/commands`
+  the same way (its ID token under OIDC, the launch token in a
+  trusted-local session). Either relay keeps the CSRF guard a cookie
+  session needs — the exact `Origin`, `X-Hale-Command: 1`, JSON — before
+  the session becomes a bearer; a caller's own bearer is not asked.
+  An OIDC child is ready when it refuses an unauthenticated read carrying the digest of the
   proof the face gave it (`X-Hale-Child`), so a process squatting on the
   child's port is never handed a token. **An issuer on the loopback is
   anyone's who can bind its port**, so its key is pinned: a head under
@@ -1087,8 +1100,9 @@ repository:
   Bearer` on the project's API routes only (`/api/hale/v1/applications…`;
   on its own routes a bearer is 401), verifies it as it verifies an ID
   token, refuses a subject the attached project maps as no service
-  (403), forwards it to the child as the bearer, and never gives it a
-  session or a cookie. The child reads as the principal
+  (403), hands it to the child as the bearer (its commands reach the
+  binding's gates like a person's), and never gives it a session or a
+  cookie. The child reads as the principal
   `service:<service>`, never a person's name, so a read a person alone
   may make (a Review's exact candidate) is refused it; its only POST is
   a command, and a command or a lookup is a person's: the binding
@@ -4714,8 +4728,8 @@ that has not reached the record's head answers
 `knowledge_projection_unavailable` until the spine's tick applies it,
 and without the DSN Knowledge reads are unsupported
 (`knowledge_unsupported`). It admits Knowledge commands — the
-`Knowledge*` topics on its api binding, gated `position`, forwarded
-from HTTP like its other commands — into the
+`Knowledge*` topics on its api binding, gated `position`, reached over
+its HTTP transport like its other commands — into the
 record in the same process, under the explicit authority policy in the
 file `HALE_DNA_KNOWLEDGE_COMMAND_POLICY` names (`dna.knowledge-authority/1`,
 at most 64 KiB, decoded by `KnowledgePolicyCodec` in

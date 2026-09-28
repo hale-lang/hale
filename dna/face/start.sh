@@ -7,7 +7,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--oidc-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
+Usage: dna/face/start.sh [PROJECT] [--port PORT] [--api-port PORT] [--oidc-port PORT] [--commands-port PORT] [--api BINARY] [--head BINARY] [--source-drafts]
 
 Starts the face at http://127.0.0.1:8792 (or the chosen port). PROJECT is optional:
 given, it is attached at startup; without it the head starts detached and the
@@ -24,6 +24,8 @@ purpose and are re-adopted by the next head.
   --head BINARY      Use an already built project service.
   --port PORT        Loopback port of the head, 1..65535 (default: 8792).
   --api-port PORT    Loopback port of the API child, 1..65535 (default: 8793).
+  --commands-port PORT
+                     Loopback port of the API child's commands, its api binding's HTTP transport, 1..65535 (default: 8795).
   --oidc-port PORT   Loopback port of the stub OpenID provider, 1..65535 (default: 8794).
   --source-drafts    Enable Organization source preparation.
   --help            Show this help.
@@ -61,17 +63,19 @@ project=
 port=8792
 api_port=8793
 oidc_port=8794
+commands_port=8795
 api=${HALE_API_BIN:-}
 head=${HALE_HEAD_BIN:-}
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
-    --port|--api|--head|--api-port|--oidc-port)
+    --port|--api|--head|--api-port|--oidc-port|--commands-port)
       (($# >= 2)) || fail "$1 requires a value"
       case "$1" in
         --port) port=$2 ;;
         --api-port) api_port=$2 ;;
         --oidc-port) oidc_port=$2 ;;
+        --commands-port) commands_port=$2 ;;
         --api) api=$2 ;;
         --head) head=$2 ;;
       esac
@@ -85,7 +89,11 @@ done
 [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535)) || fail 'port must be 1..65535'
 [[ "$api_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((api_port <= 65535)) || fail 'api-port must be 1..65535'
 [[ "$oidc_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((oidc_port <= 65535)) || fail 'oidc-port must be 1..65535'
+[[ "$commands_port" =~ ^[1-9][0-9]{0,4}$ ]] && ((commands_port <= 65535)) || fail 'commands-port must be 1..65535'
 ((port != api_port && port != oidc_port && api_port != oidc_port)) || fail 'the head, the API child and the provider need different ports'
+# the API child's api binding serves its HTTP transport there (GH #1135),
+# and a port it cannot hold stops it at start
+((commands_port != port && commands_port != api_port && commands_port != oidc_port)) || fail 'the API child'\''s commands need a port of their own'
 face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
@@ -276,7 +284,7 @@ printf 'face: starting http://127.0.0.1:%s/\n' "$port"
 if [[ -n "$project" ]]; then printf 'face: project %s\n' "$project"; else printf 'face: no project attached; open the Projects workspace\n'; fi
 if [[ -n "${HALE_DNA_MEMORY_DSN_HEAD:-}" ]]; then printf 'face: Knowledge reads memory as the head (the DSN stays on the server)\n'; fi
 printf 'face: stop with Ctrl-C; the API child, a local body and running commands keep running and are re-adopted by the next head\n'
-env -u LOTUS_OBS "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
+env -u LOTUS_OBS HALE_DNA_COMMANDS_PORT="$commands_port" "$head" "$port" "$face/web" "$api" "$api_port" ${project:+"$project"} <&0 &
 child=$!
 if wait "$child"; then result=0; else result=$?; fi
 child=

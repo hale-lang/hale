@@ -15,13 +15,12 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner, nervesOwner } from './environment.mjs';
 import { mapPeer, seatRecord } from './record-seats.mjs';
-import { settle } from './command-wire.mjs';
+import { freePort, settle } from './command-wire.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const webrootDefault = fileURLToPath(new URL('../web/', import.meta.url));
@@ -160,7 +159,7 @@ export async function startService(options = {}) {
   const apiEnvironmentKeys = ['HALE_DNA_ORG_DRAFTS', 'HALE_DNA_MEMORY_DSN_HEAD', 'HALE_DNA_KNOWLEDGE_COMMAND_POLICY', 'HALE_BIN', 'XDG_CACHE_HOME'];
   for (const key of Object.keys(apiEnv)) assert(apiEnvironmentKeys.includes(key), `Unsupported explicit API environment setting: ${key}`);
   const owned = new Set(), processLog = [], requestLog = [];
-  let sequence = 0, host, api, dependencies, application = '', practice = '', origin = '', stopped = false, headDsn = '';
+  let sequence = 0, host, api, dependencies, application = '', practice = '', origin = '', commandsPort = 0, stopped = false, headDsn = '';
   let currentActor = principal;
   // The launch token each API start mints (GH #989), and the pages the lane
   // drives: each gets the session cookie of every launch.
@@ -258,6 +257,30 @@ export async function startService(options = {}) {
     ? result.json.error?.code === 'snapshot_changed' && result.json.error?.retryable === true
     : [501, 503].includes(result.status) && (result.json.error?.retryable === true || ['record_unavailable', 'commands_unavailable'].includes(result.json.error?.code));
   const read = suffix => wait('native source read', () => get(suffix), result => !transient(result));
+  // One line of the api wire to the head's binding, on its own HTTP
+  // transport at the port this lane gave it, under the launch token — the
+  // head's own account, as a tool presents it (GH #1135).
+  function line(value) {
+    healthy();
+    const body = JSON.stringify(value);
+    return new Promise((resolve, reject) => {
+      const entry = { method: 'POST', path: 'binding:' + (value.call || 'describe') }; requestLog.push(entry);
+      const request = http.request({ host: '127.0.0.1', port: commandsPort, path: '/', method: 'POST', agent: false,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => {
+          try { const json = JSON.parse(Buffer.concat(chunks).toString('utf8')); entry.status = response.statusCode; resolve({ status: response.statusCode, json }); }
+          catch (error) { reject(error); }
+        });
+        response.on('error', reject);
+      });
+      request.setTimeout(35_000, () => request.destroy(new Error(`Native line timed out: ${value.call}`)));
+      request.on('error', reject);
+      request.end(body);
+    });
+  }
+  const lookup = requestId => wait('native command lookup', () => line({ call: 'CommandLookup', payload: { request_id: requestId } }), result => !transient(result));
   const apiPath = () => `/api/hale/v1/applications/${encodeURIComponent(application)}`;
   // Quiet is a stable Record the head can read. The host projects memory on
   // its tick, and until it has projected the Record's head the head answers
@@ -336,7 +359,7 @@ export async function startService(options = {}) {
     // only a running organization routes again; a paused one is waited on
     // by the case that paused it
     if (host && alive(host) && !host.paused) await wait(`routes naming ${actor}`, () => routesName(actor), Boolean, 30_000);
-    api = launch(`api-${actor}`, apiBinary, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMAND_POLICY: policy });
+    api = launch(`api-${actor}`, apiBinary, [root, new URL(origin).port, options.webroot || webrootDefault], { ...apiEnv, HALE_DNA_COMMANDS_PORT: String(commandsPort), HALE_DNA_MEMORY_DSN_HEAD: headDsn, HALE_DNA_COMMAND_POLICY: policy });
     await wait('API startup', async () => {
       try { return await get('/api/hale/v1/applications'); }
       catch (error) { if (['ECONNREFUSED', 'ECONNRESET'].includes(error.code)) return null; throw error; }
@@ -412,10 +435,10 @@ export async function startService(options = {}) {
     save('authority.json', { format: 'dna.practice-review-authority/1', application_id: application, grants: [{ mode: 'local', name: principal, authority: 'board', practice_propose: true, review_verdict: true, recover: true }] });
     let port = options.port;
     if (port === undefined) {
-      const server = net.createServer();
-      await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-      port = server.address().port; await new Promise(resolve => server.close(resolve));
+      port = await freePort();
     }
+    // GH #1135: the api binding's HTTP transport takes a port of its own
+    commandsPort = options.commandsPort ?? await freePort();
     assert(Number.isInteger(port) && port > 0 && port < 65536, 'Expected a valid loopback port');
     origin = `http://127.0.0.1:${port}`;
     // Optional same-Record services join this fixture's bounded process owner.
@@ -434,7 +457,7 @@ export async function startService(options = {}) {
       // A page this lane drives: the session cookie now and after every restart.
       async attach(page) { pages.add(page); await authorize(page); },
       // live, not a snapshot: a lane that spreads this service still sees each launch's
-      token: () => token,
+      token: () => token, line, lookup,
       read, journal, quiesce, startHost, stopHost, startAPI, pauseDelivery, resumeDelivery, restart, stop, exportEvidence,
       processes: () => [...[...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })), ...hostChildren(root).filter(({ pid }) => running(pid)).map(({ name, pid }) => ({ name, pid, alive: true, paused: host?.paused ?? false }))],
       stopAPI: () => stopProcess(api),
@@ -452,11 +475,11 @@ export async function startService(options = {}) {
         // when the record keeps moving — on the real host it moves on the
         // host's tick — answering command_busy (or snapshot_changed from its
         // read). That is not the receipt: ask again until the deadline. A
-        // GET answered command_busy is the head's to fix (PR #1145, Deferred).
+        // lookup answered command_busy is the head's to fix (PR #1145, Deferred).
         let transient = '';
         try {
           return await wait(`command ${requestId}`, async () => {
-            const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
+            const response = await lookup(requestId);
             const settled = settle(response.status, response.json);
             if (['command_busy', 'snapshot_changed'].includes(settled.code)) { transient = settled.code; return null; }
             assert.equal(settled.code, '', JSON.stringify(response));

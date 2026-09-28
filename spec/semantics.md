@@ -1705,18 +1705,42 @@ main locus App {
 }
 ```
 
-Nothing else in the source changes. The entry binds **every topic
-some locus of the entrypoint's own seed subscribes** (a *command*),
-**every topic such a locus publishes** (a *stream*), and **every
-`expose` member of the main locus or of a param-default child of the
-seed's own whose type appears once among main's params** (a *read*,
-named `member` on main and `param.member` on the child). A locus that
-came in through `import` is not part of the surface, however much of
-it the entrypoint composes (GH #1104 piece 5): a library's internal
-bus is not the application's API, and a head importing its core must
-not serve the core's topics as commands. An imported *topic* a seed's
-own locus subscribes or publishes is served as any other, under its
-qualified name. An imported seed's `main locus` is not the entrypoint
+Nothing else in the source changes. **The surface is one rule
+(GH #1137): the loci of the entrypoint's own seed, plus the loci the
+entry names in `serve:`, and nothing else.** The entry binds **every
+topic such a locus subscribes** (a *command*), **every topic such a
+locus publishes** (a *stream*), and **every `expose` member of the
+main locus or of a param-default child of the seed's own whose type
+appears once among main's params** (a *read*, named `member` on main
+and `param.member` on the child). `serve: [p, …]` follows the
+transport and names params of the main locus whose type is a locus
+another seed declared:
+
+```hale
+bindings {
+    api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), serve: [commands];
+}
+```
+
+puts the locus `commands` holds (`api::Commands`) on the surface — its
+subscriptions are commands, its publishes streams, its gates gates, as
+if the seed had declared them; its `expose` members are not reads,
+which stay the seed's own. The binding serves a locus *type*: every
+instance of it subscribes, so a served type main also holds under
+another param is refused. A locus that came in through `import` and is not named
+is not part of the surface, however much of it the entrypoint holds
+or composes (GH #1104 piece 5): a library's internal bus is not the
+application's API, and a head holding its core's loci as params does
+not serve the core's topics as commands. Holding a locus never serves
+it; naming it does. A `serve:` name that is not a param of main, whose
+type is not a locus, whose locus is the seed's own (already on the
+surface), that names a locus twice or whose type main holds under
+another param too is an error at the name. The
+description carries what `serve:` named, `"serve": [{"param":
+"commands", "locus": "api::Commands"}]` (empty when nothing is), so
+`hale check --dump-api` shows a composer exactly what it serves. An
+imported *topic* a seed's own locus subscribes or publishes is served
+as any other, under its qualified name. An imported seed's `main locus` is not the entrypoint
 either: renamed with its seed, it does not count toward the one-main
 rule, and an `api:` entry it carries is inert — a composed head that
 imports the standalone head declares its own entry to get a socket. A subscription by literal subject
@@ -1834,33 +1858,53 @@ env-routed `LOTUS_BUS_CONFIG` transport delivered, which the program
 cannot tell apart. `local` is therefore never a statement of trust,
 only of provenance; a topic bound to a transport in `bindings { }`
 refuses a `Context` handler outright, since a cell from another
-process would reach it as `local`. A bearer token on HTTP is the
-third mode and waits for the HTTP transport; it is not spelled here
-until it exists. Every answer the binding writes, refusals included,
-carries the principal it established:
+process would reach it as `local`. A bearer token on the binding's
+HTTP transport is the third mode (`mode: "bearer"`), below. Every
+answer the binding writes, refusals included, carries the principal
+it established:
 
 ```text
 {"request_id": 7, "id": ..., "ok": true, "value": {...},
  "caller": {"mode": "unix", "name": "uid:1000", "uid": 1000, "gid": 1000, "pid": 4242}}
 ```
 
-**A forwarding transport (`via`).** A request line may carry `"via":
-"<mark>"` (1..64 bytes). The binding honours it only from the
-program's own process — a peer whose uid is the program's own
-(`std::process::uid()`) and whose pid is too (`std::process::pid()`)
-— and refuses the line as `malformed` from anyone else, another
-process of the same account included: the mark says how a transport of
-the program's own — an HTTP handler forwarding a browser's line to its
-own socket, say — received the request, and, for a head, whom it
-verified (GH #989), so nobody else may claim one. The mark rides on the principal (`Principal.via`), on every
-receipt for that line (`"caller": {..., "via": "http-session"}`), and
-reaches a `Context` handler as `ctx.via` in place of `api`. The
-principal stays the forwarding peer's own (the process's uid), never
-the bare local principal: the gate and the membership source decide
-exactly as for any socket peer. Until the binding has an HTTP
-transport of its own (GH #1135), HTTP is such a forwarding transport,
-written by the program; a bearer token stays the third mode that
-arrives with it.
+**The HTTP transport (GH #1135).** A clause after the socket,
+`http(host, port, principals: <source>)`, gives the binding a second
+transport of its own, and no program writes one:
+
+```hale
+bindings {
+    api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles),
+        http("127.0.0.1", self.http_port, principals: self.bearer);
+}
+```
+
+`host` and `port` are expressions the main locus evaluates as param
+defaults, as the socket path is. The binding listens there and takes
+one request per connection: a `POST` (any path) whose body is one line
+of the wire — `{"call"}`, `{"read"}` or `{"describe"}`; a watch is the
+socket's — under `Authorization: Bearer <token>`. It asks the program's
+`principals:` source, a locus satisfying `std::api::BearerSource`
+(`fn principal(token: String) -> Principal`, `fn refused() -> String`),
+who the token is. The principal is `mode: "bearer"`, its `name` the
+source's, and `via: "http"`. A token the source names nobody (an empty
+`name`), or a request with no bearer, is refused as `unauthenticated`
+with the source's reason, gated or not. From there the request is any
+socket peer's: the same surface, gates, bound, description, receipts
+and replies. The response carries the reply line as its body and the
+refusal's kind as its status: 200 answered, 401 `unauthenticated`,
+403 `unauthorized`, 404 `unknown`, 503 `over_bound`, 400 otherwise,
+405 for anything but a POST, and 504 when the program does not answer
+within 30 s. The whole request arrives within 10 s or is refused. A
+port the transport cannot hold stops the program at start: a live
+program always owns its port. An `http(…)` without `principals:` is an
+error at the clause, since every token would be nobody.
+
+`Principal.via` is set by the binding and never by a caller: `"http"`
+for the HTTP transport, empty for the socket. A `Context` handler reads
+the transport as `ctx.via`: `api` through the socket, `http` through
+the HTTP transport, `local` in-process. A request line carries no mark
+of how it arrived: a `"via"` in a line is not read.
 
 **Names on the wire.** A call, a read or a watch names an item as the
 description spells it; an item another seed declared is spelled
@@ -1942,7 +1986,8 @@ principal, `via: "local"`, request id 0, no role), built for that
 delivery in a subregion of the locus's own arena and released when
 the handler returns. Through the api binding the synthesized
 subscription passes the caller the binding established, `via:
-"api"`, the request id, and the authorizing role. A handler never asks whether it was reached
+"api"` through the socket or `"http"` through its HTTP transport, the
+request id, and the authorizing role. A handler never asks whether it was reached
 from outside; it reads `via`. `Context` and `Principal` are
 ordinary structs (`spec/stdlib.md` § `std::api`): constructible in
 a test, forwardable in a payload; provenance in `via` is what tells

@@ -238,8 +238,8 @@ distributable API belongs to the service deployment work.
 
 Knowledge changes are the head's gated topics on its api binding, like
 every other command the record takes ([Commands](#commands)) — over the
-binding, and forwarded over HTTP like the rest (`POST …/commands` with
-`{"call": "KnowledgeEdgeLink", "payload": {...}}`). There is no Knowledge
+binding, over the socket or its HTTP transport like the rest (`POST
+…/commands` with `{"call": "KnowledgeEdgeLink", "payload": {...}}`). There is no Knowledge
 command route. The head supplies the record, the principal and the
 target each operation implies; the operations' `KnowledgeCommandCodec`
 is the admissibility rule, checked before anything is admitted.
@@ -348,7 +348,8 @@ mapped person holds the named role. Every reply is a `CommandReply { ok, code, a
 revision, receipt }`, its receipt exactly what an HTTP command receipt
 used to carry. `CommandLookup { request_id }` is recovery, in place of
 the old `GET /commands?request_id=`. The HTTP head answers 405 to every
-mutation now, except a draft POST and the forwarding route below.
+other mutation now, except a draft POST: a `POST …/commands` is relayed
+to the binding's own HTTP transport, on its own port (below).
 `/capabilities` no longer carries `writes`, `knowledge_write` or any
 command profile, and `read_only` is always `true` (HTTP itself writes
 nothing); it carries `api{transport,socket,http}` instead, and what a
@@ -358,40 +359,34 @@ session may send is its describe slice.
 `call` on its topic, the reads (`/applications`, `/capabilities`,
 `/dna/context`) over HTTP, the socket's path from `api.socket`.
 
-**HTTP is a forwarding transport** (forward.hl; GH #1135 is the binding's
-own HTTP transport). The face is where humans decide, so its writes keep
-one path: `POST …/commands` takes one line of the same wire
-(`{"call": "PracticePropose", "payload": {...}}`, `{"describe": true}`)
-under the CSRF headers every mutation here carries (exact `Origin`,
-`Content-Type: application/json`, `X-Hale-Command: 1`), forwards it to
-the head's own socket with `"via": "http-session"` — a mark the binding
-honours only from the program's own uid — and answers the receipt as
-written, with the status the refusal kind earns (`unauthenticated` 401,
-`unauthorized` 403, `unknown` 404, `over_bound` 503, else 400). A line
-that already carries a `via` is refused. `GET …/commands?request_id=`
-forwards a `CommandLookup`. The principal is the head process's, mapped
-through `dna.unix.member` like any peer; rows record that person, and
-the local session `/capabilities` names is that same person (else
-`uid:<n>`, never `$USER`), so a forwarded receipt matches the session.
-The forwarder connects to its own socket only when this very process
-answers on it (peer pid), so a clone of the record sharing the path is
-never forwarded into. Under OIDC (GH #989) the forwarder marks the line
-`via: oidc:<subject>` for the verified caller — a bearer ID token, or
-the session a sign-in set — the roles map that subject by
-`dna.oidc.member`, and the receipt carries `principal_mode: oidc`, the
-person and `principal_positions`. A bearer whose subject the record maps
-by `dna.oidc.service` instead (a service's `client_credentials` token)
-reads as the principal `service:<service>` and asks nothing: its line
-is forwarded like any other, and the binding refuses an issuer's
-subject that maps to no person (`forbidden`) before any command or
-lookup, gated or not. A subject mapped both ways is refused. A fixture's trusted-local session
-(`HALE_DNA_TRUSTED_LOCAL=1`, and nowhere else) is the launch token:
-minted per launch into `<root>/.hale/dna/head.token` (0600) and printed
-in the head's URL; the shell at `/` and every POST carry it (the
-`dna_local` cookie the URL sets, or `X-Hale-Token`), and without it they
-are refused. Revoking a `dna.unix.member` or `dna.oidc.member` mapping
-takes effect when the record next moves. `/capabilities` names the route
-as `api.http`.
+**HTTP is the binding's own transport** (GH #1135; `bearer.hl`). The
+head's entry names it — `http("127.0.0.1", self.http_port, principals:
+self.bearer)`, on the port its launcher gives it in
+`HALE_DNA_COMMANDS_PORT` (never derived from the reads' port; unset, the
+head serves no HTTP transport, `api.http` is `""` and a relayed command
+answers 503 `commands_unavailable`) — and no program forwards a line.
+The project head gives its API child the port `start.sh --commands-port`
+names (8795 by default); a fixture takes one from its free-port helper.
+`POST` there takes one line of the same wire (`{"call": "PracticePropose",
+"payload": {...}}`, `{"describe": true}`, `{"call": "CommandLookup", ...}`
+for recovery) under `Authorization: Bearer <token>`, and answers the
+receipt as written, with the status the refusal kind earns
+(`unauthenticated` 401, `unauthorized` 403, `unknown` 404, `over_bound`
+503, else 400). A head that serves the face — the project head, or this
+head for the shell it serves itself — relays the face's `POST
+…/commands` there under the session's token as the bearer, after the
+CSRF guard a cookie needs (the exact `Origin`, `X-Hale-Command: 1`,
+JSON); a caller that presents its own bearer is not asked, having
+nothing a forged request could carry. A `GET` there is 405. Under OIDC the bearer
+source verifies the token and names the principal `oidc:<subject>`,
+which the roles map by `dna.oidc.member` — or by `dna.oidc.service` to a
+service, which holds no position and is refused every command — and the
+receipt carries `principal_mode: oidc`, the person and
+`principal_positions`. In a fixture's trusted-local session the bearer is
+the launch token, which names the head's own account, mapped through
+`dna.unix.member` like any peer; rows record that person, and the local
+session `/capabilities` names is that same person (else `uid:<n>`, never
+`$USER`). A line carries no mark of how it arrived.
 
 ## Practice and Review command providers
 

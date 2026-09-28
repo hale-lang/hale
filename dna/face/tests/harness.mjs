@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnvironment, boundedNative, memoryOwner, launchToken } from './environment.mjs';
 import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
+import { freePort } from './command-wire.mjs';
 
 // An organization fixture's ownership (GH #1123): acme holds the
 // organization, partner holds support; alice is acme's, bob partner's.
@@ -20,16 +21,6 @@ const executeNative = (command, args, options, limits) => {
 };
 const face = fileURLToPath(new URL('../', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function availablePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  const port = server.address().port;
-  await new Promise(resolve => server.close(resolve));
-  return port;
-}
 // A TCP relay between the API and memory's Postgres. It is how a test makes
 // memory stop answering the API and answer again on the same address — the
 // API's head DSN names the relay, never the database directly.
@@ -191,11 +182,12 @@ export const test = base.extend({
       }
       let origin;
       for (let attempt = 0; attempt < 3 && !origin; attempt++) {
-        const port = await availablePort();
+        const port = await freePort();
         const candidate = `http://127.0.0.1:${port}`;
         const bounded = boundedNative(api, [root, String(port), path.join(face, 'web')], { lock: false });
+        // the head's api binding takes a port of its own (GH #1135)
         child = spawn(bounded.command, bounded.args, {
-          env, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...env, HALE_DNA_COMMANDS_PORT: String(await freePort()) }, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
         });
         let spawnError;
         child.once('error', error => { spawnError = error; });

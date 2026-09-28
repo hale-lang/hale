@@ -727,6 +727,10 @@ pub struct LocusDecl {
     /// only: a library's internal bus is not the application's API,
     /// however much of it the entrypoint composes.
     pub imported: bool,
+    /// GH #1137: an imported locus's name as its importer spells it
+    /// (`api::Commands`), set with `imported`; the api description names
+    /// a served locus by it.
+    pub display: Option<String>,
     /// Phase 2: when set, this locus is the binary's entry point —
     /// `main locus App { ... }`. Carries `bindings { }`
     /// configuration for cross-process topics. Exactly one
@@ -1366,6 +1370,27 @@ pub struct ApiBinding {
     /// GH #1109: what a caller lacking the role gets — a receipt
     /// naming it (the default), or nothing.
     pub on_unauthorized: Option<(ApiUnauthorizedPolicy, Span)>,
+    /// GH #1137: `serve: [param, …]` — main's params whose loci the
+    /// entry puts on the surface although another seed declared them.
+    /// The surface is the entrypoint seed's own loci plus these, and
+    /// nothing else: holding a locus never serves its bus.
+    pub serve: Vec<Ident>,
+    /// GH #1135: `http(host, port, principals: <source>)` — the binding's
+    /// HTTP transport beside its socket.
+    pub http: Option<ApiHttp>,
+    pub span: Span,
+}
+
+/// GH #1135: the binding's HTTP transport. `host` and `port` are
+/// expressions the main locus evaluates as param defaults, like the
+/// socket path; `principals` is a locus satisfying
+/// `std::api::BearerSource` (absent: `std::api::NoBearer`, which
+/// refuses every token).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiHttp {
+    pub host: Expr,
+    pub port: Expr,
+    pub principals: Option<Expr>,
     pub span: Span,
 }
 

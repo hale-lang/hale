@@ -75,7 +75,7 @@ fn the_native_description_matches_its_baseline() {
     // The native form keeps the binding's own key order, never a
     // sorted re-serialization.
     let raw = describe(&[]);
-    assert!(raw.starts_with("{\"hale_api\":1,\"app\":\"Shop\",\"notes\":"), "{}", raw);
+    assert!(raw.starts_with("{\"hale_api\":1,\"app\":\"Shop\",\"serve\":[],\"notes\":"), "{}", raw);
     assert_eq!(d["commands"][1]["reply"], "Int");
     assert_eq!(names("reads"), ["billing.ledger", "ticks", "uptime"]);
     assert_eq!(names("streams"), ["Moved"]);
