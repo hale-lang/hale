@@ -20,8 +20,9 @@ one (GH #646).
 The routing table is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
-`report`, `lease`, `claim` and `reading` (an application's events,
-#987) families are the Ledger's, as are
+`report`, `lease`, `claim`, `reading` (an application's events,
+#987) and `reflex` (what a reflex made the body do, #988) families are
+the Ledger's, as are
 `concern.requested` / `.raised` / `.refused`, `grant.reserved` /
 `.released` / `.fenced` / `.reservation_refused` (money;
 `grant.refused` — a grant born wider than its ceiling — is authority
@@ -297,7 +298,7 @@ host's tick (**The spine**, below).
   knowledge store left in `public` from before stores were scoped
   (drop its tables or the database; the projection rebuilds from the
   record), and a schema a newer toolchain migrated.
-- **The version fence.** The schema version is 7 (GH #1026: 2 made the
+- **The version fence.** The schema version is 8 (GH #1026: 2 made the
   lease table `claims` and the graph's projection one transaction per
   record row — migrating a version-1 memory renames the table in place,
   its rows kept; 3 adds the Ledger's gate, `ledger_append`, with the
@@ -308,7 +309,7 @@ host's tick (**The spine**, below).
   edges, where it was a table the spine rewrote from the retired owners
   map, and moves no projection either; GH #987: 7 adds the `reading`
   family to the routing table the insert function reads, which moves
-  none. Each protocol move empties the
+  none; GH #988: 8 adds the `reflex` family the same way. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
   at none, naming both and `hale dna memory migrate` with the owner's
@@ -4199,6 +4200,100 @@ one arrangement of it:
 - **`hale dna fleet`** renders what the fleet expresses from the
   record: every instance of the plan, its node, whether it is up, the
   revision and model hash it last came up at, and the last deploy.
+
+## The senses and the reflexes
+
+The senses are the organism's perception, and the reflexes are its
+reactions that need no plan (GH #988). Both are their own parts: one
+telemetry store every part emits into, and a program beside it that
+reads it and says what fired onto the nerves. The spine records and
+routes; it never plans on a reading.
+
+- **Readings.** Every long-running part serves its readings as a
+  Prometheus scrape target (`std::metrics::Endpoint`), namespace `dna`.
+  It listens on the port its environment names in `HALE_DNA_SENSES_PORT`,
+  else the one the seed names for it: the spine (the node's host) on
+  9464, a node on 9465, the head on 9466 (`dna/core/senses.hl`). It binds
+  every interface, or `HALE_DNA_SENSES_HOST`, from a `dna::Senses` its
+  program's `main locus` holds on a cooperative pool of its own
+  (`senses`), whose shutdown ends the accept, so the part drains at
+  once. A port another process holds is the server's `listen_failed`,
+  which `Senses` absorbs, as the only handler it has: the part runs on,
+  unread, and says so.
+  - **Labels.** Every series carries `part=<name>`, and a node's `node`
+    as well. No label is per event, per task or per revision: a series
+    cannot be retired, so the set a part serves stays bounded by its
+    parts and instances. A task joins senses, spend and receipts
+    through its rows (a `model.called` row names its attempt, and the
+    attempt its task), not through a label.
+  - **Series.** `dna_pulse_seconds{part}` is each part's tick.
+    `dna_instance_up{part, node, instance}` is 1 while the instance
+    runs and 0 once it exited. `dna_instance_since_seconds{part, node,
+    instance}` says since when (a down transition writes its since
+    first, an up its state first, so no scrape pairs a new state with
+    an old since). `dna_model_calls_total{part}` counts the model calls
+    whose rows the spine announces landed (with its nerves up).
+  - A part never learns where its readings go.
+- **`hale node` runs as the host program's `main locus`** (`Host`, verb
+  `node`), the one place its `Senses` can be placed on a pool of its
+  own.
+  It is no spine: its nerves connection has no server and stops at
+  once, and it takes no application's events. It drains on SIGTERM.
+- **The store.** The seed's `dna/compose.yaml` has a `senses` service:
+  Prometheus, scraping what `dna/senses.yml` names over the host gateway
+  (`honor_labels`, so a part's own labels are the readings'), and keeping
+  what it scraped for its retention (`--storage.tsdb.retention.time`, a
+  week). Its port is the project's, in 93xx, on 127.0.0.1.
+  - `init` writes both files. `upgrade` writes `dna/senses.yml` when it
+    is missing, and says so when the compose file has no `senses`
+    service or `dna/nats.conf` no `reflexes` user.
+  - `hale dna senses up [dir]` brings the service up and prints
+    `HALE_DNA_SENSES_URL`, its read URL.
+  - `hale dna dev` runs it with the rest of compose, unless the
+    environment names its own memory or nerves (an owner's DSN or URL).
+  - A reading never acts.
+- **The reflexes** (`dna/reflexes`) are a program on the private-services
+  tier. They hold the store's read URL and a publish-only credential,
+  the `reflexes` user of the nerves (`HALE_DNA_NATS_URL_REFLEXES`, which
+  `hale dna nerves migrate` prints). That user may publish on
+  `<org>.app.reflexes.>` alone, and the `app` user is denied it, so no
+  application can speak as the reflexes. They hold nothing else: never
+  the record, memory or the vault. To the organism they are one more
+  application.
+  - **The rule.** One is built in, `instance.down`: an instance its node
+    reads `dna_instance_up` 0, asked of the store each tick. It fires
+    once per outage, `reflex.fired { id, rule, node, target, action:
+    "restart", since, fired_at }` on `<org>.app.reflexes.reflex.fired`.
+    The id names the outage (`instance.down:<node>:<instance>:<since>`,
+    each segment kept to the heart's id token).
+  - **The row.** The heart lands the firing as a reading row first,
+    `reading.recorded` `reflexes/reflex.fired/<id>` (**The heart's
+    events**), so a second publish of the same outage is refused as a
+    duplicate. They remember what they published only while it is down.
+  - **Launch.** The face's `start.sh` builds and starts them beside the
+    stub OpenID provider when a project is attached, with that project's
+    store and nerves, and stops them with the launcher. A store or
+    nerves that does not come up leaves the face running without them.
+- **The node acts on the row.** On its tick a node reads every firing
+  that names it and has no `reflex.acted` row yet. It restarts that one
+  instance at the latest deploy's revision, through the path a
+  `fleet.deploy` takes, touching no other instance and not marking the
+  deploy expressed. It then appends `reflex.acted` (entity: the firing's
+  id; `rule`, `target`, `action`, `outcome`, `node`), whatever the outcome
+  was: `restarted`, `already up`, or why not. A restart that did not take
+  becomes a concern as well (`concern.requested`, request
+  `reflex-failed:<id>`), not a quiet retry. A node restarts; any other
+  action is refused on the row.
+- **The spine's read.** The host that lands a firing, or finds it landed
+  already, reads the firings for its node and target. A second firing
+  within the window (`HALE_DNA_REFLEX_WINDOW_SECS`, 600 s) becomes a
+  concern: `concern.requested` (source `reflexes/<target>`, request
+  `reflex:<id>`). There is one such concern a window, however many
+  firings fall in it, and it lands before the firing is acknowledged; a
+  concern the record refuses leaves the firing unacknowledged, to come
+  again. The organization raises it, `concern.raised`, and that is what
+  a workflow answers to. Only the rule fires, only the node acts, and
+  both leave rows.
 
 ## The host is a Hale program
 

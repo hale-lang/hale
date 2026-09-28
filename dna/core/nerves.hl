@@ -42,12 +42,14 @@
 //          the node's host and the organization
 //   head   subscribes, publishes nothing (the face's push)
 //   spine  also reads <org>.app.> through `heart` (#987)
-//   app    publishes on <org>.app.<app>.> (#987)
+//   app    publishes on <org>.app.<app>.> (#987), never on the reflexes'
+//   reflexes  publishes on <org>.app.reflexes.> alone (#988)
 
 const NATS_OWNER_URL_ENV: String = "HALE_DNA_NATS_URL_OWNER";
 const NATS_SPINE_URL_ENV: String = "HALE_DNA_NATS_URL_SPINE";
 const NATS_HEAD_URL_ENV: String = "HALE_DNA_NATS_URL_HEAD";
 const NATS_APP_URL_ENV: String = "HALE_DNA_NATS_URL_APP";
+const NATS_REFLEXES_URL_ENV: String = "HALE_DNA_NATS_URL_REFLEXES";
 // The organization's token: `dev` hands it to the host, and the host to
 // the parts it starts.
 const NATS_ORG_ENV: String = "HALE_DNA_NATS_ORG";

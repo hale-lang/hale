@@ -274,6 +274,50 @@ exposes, from a leg.
 `dna/tests/heart` is the smallest application that does this, and
 `dna/tests/heart_reading_test.hl` runs it against a live organism.
 
+### The senses and the reflexes
+
+Every long-running part serves its readings for the senses to scrape:
+the host (the spine) on 9464, a node on 9465, the head on 9466, or on
+`HALE_DNA_SENSES_PORT`. Every series is labelled with its `part`, and a
+node's with the node:
+
+```text
+dna_instance_up{part="node",node="edge-1",instance="api-0"} 0
+dna_instance_since_seconds{part="node",node="edge-1",instance="api-0"} 1790558458
+dna_pulse_seconds{part="node"} 1790558460
+dna_model_calls_total{part="spine"} 2
+```
+
+No label is per event, per task or per revision, because a series, once
+served, is never retired. A task's model calls are found through its
+`model.called` rows.
+
+The store is Prometheus, the `senses` service of your `dna/compose.yaml`.
+It scrapes what `dna/senses.yml` names and keeps a week of it. `hale dna
+dev` brings it up with the rest of compose, and `hale dna senses up`
+brings it up on its own and prints its read URL. A part never learns
+the store's address, and a reading never acts.
+
+The reflexes (`dna/reflexes`) read the store. They hold its URL and the
+nerves' `reflexes` user, which may publish their firings and nothing
+else (no application's user may). The face's `start.sh` starts them
+when it attaches a project. Their one rule, `instance.down`, fires when
+a node reads an instance down. The firing is an application event,
+`reflex.fired` on `app.reflexes.reflex.fired`, and the heart lands it as
+a reading. The node it names restarts that instance and records
+`reflex.acted`:
+
+```text
+hale node edge-1: reflex instance.down:edge-1:api-0:1790558458 (instance.down on api-0): restarted
+```
+
+A second firing for the same instance within ten minutes
+(`HALE_DNA_REFLEX_WINDOW_SECS`) becomes a concern the organization
+raises, and so does a restart that did not take. An instance that keeps
+falling over is something a workflow answers to, not something the body
+keeps restarting quietly. `dna/tests/senses_reflex_test.hl` runs the
+whole loop on the seed's compose.
+
 ## The nodes
 
 A node is the host's counterpart on a machine that runs instances.

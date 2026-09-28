@@ -1,0 +1,71 @@
+// dna/core/senses.hl — the senses: every long-running part's readings
+// (GH #988).
+//
+// Emitting is every part's duty, in the language's own instrument:
+// `std::metrics`, served as a Prometheus scrape target on a port the
+// seed names. Every series carries `part=<name>` (a node's, `node` too),
+// and no label is per event, per task or per revision: the series a part
+// serves are bounded by its parts and instances, since a series cannot be
+// retired. A task joins senses, spend and receipts through its rows (the
+// `model.called` row names its attempt), not through a label. A part
+// never learns where its readings go: the store (the seed compose's
+// `senses` service) scrapes them, and only compose knows it.
+//
+// A reading never acts. The reflexes read the store and publish what
+// fires onto the nerves as an application; the spine records it, and
+// the node acts on the row.
+
+// The environment a part is told its port in; 0 serves nothing.
+const SENSES_PORT_ENV: String = "HALE_DNA_SENSES_PORT";
+// What each part serves on when its environment names no port: the
+// ports the seed's store scrapes (dna/senses.yml, written by `init`).
+const SENSES_PORT_SPINE: Int = 9464;
+const SENSES_PORT_NODE: Int = 9465;
+const SENSES_PORT_HEAD: Int = 9466;
+
+// The port `part` serves its readings on: the environment's, else the
+// seed's for that part.
+fn senses_port_of(part: String) -> Int {
+    if std::env::var_exists(SENSES_PORT_ENV) { return std::str::parse_int(std::env::var(SENSES_PORT_ENV)) or 0; }
+    if part == "spine" { return SENSES_PORT_SPINE; }
+    if part == "node" { return SENSES_PORT_NODE; }
+    if part == "head" { return SENSES_PORT_HEAD; }
+    return 0;
+}
+
+// Where a part's scrape endpoint listens: every interface (the store
+// reaches the parts over the host gateway), or HALE_DNA_SENSES_HOST.
+const SENSES_HOST_ENV: String = "HALE_DNA_SENSES_HOST";
+fn senses_host() -> String {
+    if std::env::var_exists(SENSES_HOST_ENV) { return std::env::var(SENSES_HOST_ENV); }
+    return "0.0.0.0";
+}
+
+// A part's readings and the server that answers the store's scrape.
+// The part's `main locus` holds one, placed on a cooperative pool of its
+// own — `placement { senses: cooperative(pool = senses); }` — and sets
+// its series in `registry` from its own loop (the registry is safe
+// across the two). The pool's shutdown ends the accept, so the part
+// drains at once. A port another process holds is this locus's
+// `listen_failed`, absorbed here, where it is the only handler: the part
+// runs on, unread, and says so.
+locus Senses {
+    params {
+        part: String = "";
+        port: Int = 0;
+        registry: std::metrics::Registry = std::metrics::Registry { namespace: "dna" };
+    }
+    on_failure(s: std::http::Server, err: ClosureViolation) {
+        eprintln("dna senses: the ", self.part, " cannot serve its readings on port ", to_string(self.port), "; it runs unread");
+    }
+    run() {
+        if self.port <= 0 { return; }
+        std::http::Server { host: senses_host(), port: self.port, handler: std::metrics::Endpoint { registry: self.registry } };
+    }
+}
+
+// The labels every series of `part` starts from.
+fn part_labels(part: String) -> std::metrics::Labels { return std::metrics::labels_one("part", part); }
+
+// Seconds since the epoch, as a gauge holds them: a part's pulse.
+fn senses_now() -> Float { return std::math::int_to_float(std::time::now()); }

@@ -222,6 +222,9 @@ fn main() {
         ans = nerves_migrate_verb(root);
     } else if verb == "nerves-drop" {
         ans = nerves_drop_verb(root);
+    } else if verb == "senses-up" {
+        // GH #988: the senses' store, compose's `senses` service brought up
+        ans = senses_up_verb(root);
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

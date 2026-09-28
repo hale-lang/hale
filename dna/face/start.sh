@@ -112,6 +112,7 @@ build_dir=
 builds=()
 child=
 provider=
+reflexes=
 cleanup() {
   local result=$?
   trap - EXIT INT TERM
@@ -129,6 +130,10 @@ cleanup() {
   if [[ -n "$provider" ]]; then
     kill -TERM "$provider" 2>/dev/null || true
     wait "$provider" 2>/dev/null || true
+  fi
+  if [[ -n "$reflexes" ]]; then
+    kill -TERM "$reflexes" 2>/dev/null || true
+    wait "$reflexes" 2>/dev/null || true
   fi
   if [[ -n "$build_dir" ]]; then rm -rf -- "$build_dir"; fi
   exit "$result"
@@ -200,6 +205,10 @@ seeds=()
 if [[ -z "$api" ]]; then seeds+=(dna/api/practice_review); else api=$(absolute_executable "$api" API); fi
 if [[ -z "$head" ]]; then seeds+=(dna/api/project_service); else head=$(absolute_executable "$head" head); fi
 if ((oidc_local)); then seeds+=(dna/oidc/serve); fi
+# GH #988: the reflexes read a project's senses, so they are a seed when
+# a project is attached, beside the stub provider (a fixture's
+# trusted-local session starts neither)
+if ((oidc_local)) && [[ -n "$project" ]]; then seeds+=(dna/reflexes); fi
 if ((${#seeds[@]})); then
   build_dir=$(mktemp -d "${TMPDIR:-/tmp}/hale-dna-head.XXXXXXXX")
   build_seeds
@@ -237,6 +246,27 @@ if ((oidc_local)); then
   curl -sf "http://127.0.0.1:$oidc_port/jwks" | grep -q "\"x\":\"$key_x\"" || fail "port $oidc_port answers, but not as this launch's provider"
   export HALE_DNA_OIDC_ISSUER="http://127.0.0.1:$oidc_port" HALE_DNA_OIDC_CLIENT=dna-local HALE_DNA_OIDC_SECRET=$secret HALE_DNA_OIDC_KEY=$spki HALE_DNA_OIDC_MEMBER="local-sub=${USER:?USER must name you}"
   printf 'face: signing in through %s as local-sub (%s)\n' "$HALE_DNA_OIDC_ISSUER" "$USER"
+fi
+
+# GH #988: the reflexes, on the private-services tier beside the project's
+# store: they hold the store's read URL and a publish-only credential on
+# the project's nerves (the `reflexes` user), nothing else, and go with
+# the launcher. A store or nerves that cannot come up leaves the face
+# running without them.
+if ((oidc_local)) && [[ -n "$project" ]]; then
+  # either verb fails when its service cannot come up; under `set -e`
+  # that must not end the launch, so each falls back to nothing
+  senses_url=$("$hale" dna senses up "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
+  roles=$("$hale" dna nerves migrate "$project" 2>/dev/null) || roles=
+  reflexes_url=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_URL_REFLEXES=//p')
+  org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
+  if [[ -n "$senses_url" && -n "$reflexes_url" && -n "$org" ]]; then
+    env -u LOTUS_OBS HALE_DNA_SENSES_URL="$senses_url" HALE_DNA_NATS_URL_REFLEXES="$reflexes_url" HALE_DNA_NATS_ORG="$org" "$build_dir/src/dna/reflexes/reflexes" >&2 &
+    reflexes=$!
+    printf 'face: reflexes reading %s\n' "$senses_url"
+  else
+    printf 'face: no reflexes: the project'\''s senses or nerves did not come up (`hale dna senses up`, `hale dna nerves migrate`)\n'
+  fi
 fi
 
 printf 'face: starting http://127.0.0.1:%s/\n' "$port"

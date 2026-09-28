@@ -1,0 +1,147 @@
+// The reflexes' firings, as the organism answers them (GH #988).
+//
+// The reflexes (dna/reflexes) read the senses and publish what fires as
+// an application: `reflex.fired` on `<org>.app.reflexes.reflex.fired`.
+// The heart lands each as a reading row first (dna/host/pulse.hl), entity
+// `reflexes/reflex.fired/<id>`; the id names the firing (its rule, its
+// target, since when), so a redelivery is refused as a duplicate. Two
+// things answer the row, each leaving a row of its own:
+//
+//   the node   restarts the instance a firing names, if it is this
+//              node's, and lands `reflex.acted` (entity: the firing's id)
+//   the spine  (the host that landed it) reads the firings: a second one
+//              for the same target within the window becomes a concern,
+//              `concern.requested`, which the organization raises
+//
+// A reading never acts: only the rule fires, only the node acts.
+
+const REFLEX_APP: String = "reflexes";
+const REFLEX_FIRED: String = "reflex.fired";
+const REFLEX_ACTED: String = "reflex.acted";
+// How close two firings for one target are a pattern, not an accident.
+const REFLEX_WINDOW_ENV: String = "HALE_DNA_REFLEX_WINDOW_SECS";
+const REFLEX_WINDOW_SECS: Int = 600;
+
+fn reflex_window_secs() -> Int {
+    if std::env::var_exists(REFLEX_WINDOW_ENV) { return std::str::parse_int(std::env::var(REFLEX_WINDOW_ENV)) or REFLEX_WINDOW_SECS; }
+    return REFLEX_WINDOW_SECS;
+}
+
+// What a firing's reading says.
+type Firing {
+    id: String = "";
+    rule: String = "";
+    node: String = "";
+    target: String = "";
+    action: String = "";
+    fired_at: Int = 0;
+}
+
+fn firing_prefix() -> String { return REFLEX_APP + "/" + REFLEX_FIRED + "/"; }
+
+// The firing a row is, or one with no id when it is not a firing.
+fn firing_of(e: dna::Event) -> Firing {
+    if e.kind != READING_KIND || !std::str::starts_with(e.entity, firing_prefix()) { return Firing { }; }
+    let payload = std::json::find_string_field(e.body, "payload");
+    return Firing {
+        id: e.entity[len(firing_prefix())..len(e.entity)],
+        rule: std::json::find_string_field(payload, "rule"),
+        node: std::json::find_string_field(payload, "node"),
+        target: std::json::find_string_field(payload, "target"),
+        action: std::json::find_string_field(payload, "action"),
+        fired_at: std::json::find_int_field(payload, "fired_at")
+    };
+}
+
+// Whether the firing `id` has its `reflex.acted` row.
+@unbounded
+fn reflex_acted(p: Projection, id: String) -> Bool {
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == REFLEX_ACTED && e.entity == id { return true; }
+        i = i - 1;
+    }
+    return false;
+}
+
+// The other firings for `f`'s target (on its node) within the window.
+@unbounded
+fn firings_near(p: Projection, f: Firing) -> Int {
+    let w = reflex_window_secs();
+    let mut n = 0;
+    let mut i = 0;
+    while i < p.rows() {
+        let o = firing_of(p.row(i));
+        if len(o.id) > 0 && o.id != f.id && o.node == f.node && o.target == f.target && o.fired_at - f.fired_at <= w && f.fired_at - o.fired_at <= w { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// Whether the reflexes already asked a concern for `f`'s target within
+// the window of it: one concern a window, however many firings.
+@unbounded
+fn concern_near(p: Projection, f: Firing) -> Bool {
+    let w = reflex_window_secs();
+    let source = REFLEX_APP + "/" + f.target;
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == "concern.requested" && e.entity == source && std::str::starts_with(dna::request_named(e.body), "reflex:") {
+            let at = std::json::find_int_field(e.body, "fired_at");
+            if at - f.fired_at <= w && f.fired_at - at <= w { return true; }
+        }
+        i = i - 1;
+    }
+    return false;
+}
+
+// What reading a firing came to: `asked` names the concern put into the
+// record ("" when none was due); `why` is set when one was due and the
+// record refused it, and the firing is then not acknowledged.
+type Escalation {
+    asked: String = "";
+    why: String = "";
+}
+
+fn reflex_concern(root: String, f: Firing, request: String, what: String, author: String, memory: dna::Memory) -> Bool {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request", request);
+    b.string_field("source", REFLEX_APP + "/" + f.target);
+    b.string_field("what", what);
+    b.int_field("severity", 2);
+    b.string_field("node", f.node);
+    b.int_field("fired_at", f.fired_at);
+    b.end_object();
+    return append_as(root, "concern.requested", REFLEX_APP + "/" + f.target, b.result(), author, memory);
+}
+
+// The spine's read of a firing it landed (or found landed already): a
+// second one for the same target within the window becomes a concern,
+// once a window.
+@unbounded
+fn reflex_escalation(root: String, entity: String, author: String, memory: dna::Memory) -> Escalation {
+    let p = open_projection(root, ".", "", memory);
+    let mut f = Firing { };
+    let mut i = p.rows() - 1;
+    while i >= 0 && len(f.id) == 0 {
+        let e = p.row(i);
+        if e.kind == READING_KIND && e.entity == entity { f = firing_of(e); }
+        i = i - 1;
+    }
+    if len(f.id) == 0 || firings_near(p, f) == 0 || concern_near(p, f) { return Escalation { }; }
+    let request = "reflex:" + f.id;
+    let what = f.target + " on " + f.node + " fired `" + f.rule + "` again within " + to_string(reflex_window_secs()) + "s";
+    if !reflex_concern(root, f, request, what, author, memory) { return Escalation { why: "the record refused the concern for " + f.target }; }
+    return Escalation { asked: "a concern for " + f.target + " (" + request + ")" };
+}
+
+// A restart the node could not make: a concern, not a retry. What the
+// node says of it.
+fn reflex_failed_concern(root: String, f: Firing, outcome: String, author: String, memory: dna::Memory) -> String {
+    let request = "reflex-failed:" + f.id;
+    if !reflex_concern(root, f, request, f.target + " on " + f.node + " was not restarted after `" + f.rule + "`: " + outcome, author, memory) { return "the record refused the concern for " + f.target + "'s failed restart"; }
+    return "a concern for " + f.target + "'s failed restart (" + request + ")";
+}

@@ -1,0 +1,172 @@
+// dna/reflexes — the reflexes (GH #988): reactions that need no plan.
+//
+// A program of the private-services tier, beside the store the senses
+// keep. It holds two things and nothing else: the store's read URL
+// (HALE_DNA_SENSES_URL) and a publish-only credential on its own subjects
+// (HALE_DNA_NATS_URL_REFLEXES — the `reflexes` user, which may publish on
+// `<org>.app.reflexes.>` and nothing else, and which no application's
+// user may publish on — under the organization's HALE_DNA_NATS_ORG). It
+// never holds the record, memory or the vault, and imports nothing of the
+// organism but pond's NATS client: to the organism it is one more
+// application, and the heart lands what it says as readings.
+//
+// One rule, built in: `instance.down` — an instance its node reports
+// down (`dna_instance_up == 0`). On each tick it asks the store; each
+// instance down fires once per outage, `reflex.fired { id, rule, node,
+// target, action: "restart", since, fired_at }` on
+// `<org>.app.reflexes.reflex.fired`. The id names the outage
+// (`instance.down:<node>:<instance>:<since>`), so a second publish of it
+// — a restart of this program, a redelivery — is refused by the heart as
+// a duplicate. A firing never acts: the node it names does, on the row.
+
+import "../core/pond/realtime/nats" as nats;
+
+const RULE: String = "instance.down";
+// the instances down, each with since when (its `since` gauge's value)
+const QUERY: String = "dna_instance_since_seconds and on(node, instance) (dna_instance_up == 0)";
+
+/// What fired.
+type Firing {
+    id: String = "";
+    rule: String = "";
+    node: String = "";
+    target: String = "";
+    action: String = "";
+    since: Int = 0;
+    fired_at: Int = 0;
+}
+
+topic ReflexFired { payload: Firing; subject: "app.reflexes.reflex.fired"; }
+
+type CodecError { kind: String = ""; }
+
+// A JSON string literal (a codec is pure: no builder locus).
+fn json_str(s: String) -> String {
+    return "\"" + std::str::replace(std::str::replace(s, "\\", "\\\\"), "\"", "\\\"") + "\"";
+}
+
+/// A firing on the wire: one JSON object, as the heart reads an event.
+locus FiringJson {
+    fn encode(f: Firing) -> Bytes fallible(CodecError) {
+        return std::bytes::from_string("{\"id\":" + json_str(f.id) + ",\"rule\":" + json_str(f.rule) + ",\"node\":" + json_str(f.node) + ",\"target\":" + json_str(f.target)
+                + ",\"action\":" + json_str(f.action) + ",\"since\":" + to_string(f.since) + ",\"fired_at\":" + to_string(f.fired_at) + "}");
+    }
+    fn decode(b: Bytes) -> Firing fallible(CodecError) {
+        let t = std::str::from_bytes(b);
+        return Firing {
+            id: std::json::find_string_field(t, "id"),
+            rule: std::json::find_string_field(t, "rule"),
+            node: std::json::find_string_field(t, "node"),
+            target: std::json::find_string_field(t, "target"),
+            action: std::json::find_string_field(t, "action"),
+            since: std::json::find_int_field(t, "since"),
+            fired_at: std::json::find_int_field(t, "fired_at")
+        };
+    }
+}
+
+// `s` for a URL's query: every byte but the unreserved ones percent-encoded.
+@unbounded
+fn query_escape(s: String) -> String {
+    let hex = "0123456789ABCDEF";
+    let v = std::str::bytes_view(s);
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let b = std::str::byte_at(v, i);
+        let c = s[i..(i + 1)];
+        let plain = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == "." || c == "~";
+        out = out + (if plain { c } else { "%" + hex[(b / 16)..(b / 16 + 1)] + hex[(b % 16)..(b % 16 + 1)] });
+        i = i + 1;
+    }
+    return out;
+}
+
+// `s` as a segment of a firing's id, which the heart reads as a token:
+// letters, digits and `-_.`, anything else `_`.
+@unbounded
+fn id_segment(s: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let keep = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "-" || c == "_" || c == ".";
+        out = out + (if keep { c } else { "_" });
+        i = i + 1;
+    }
+    return out;
+}
+
+fn env_or(name: String, fallback: String) -> String { return if std::env::var_exists(name) { std::env::var(name) } else { fallback }; }
+
+main locus Reflexes {
+    params {
+        store: String = "";
+        tick_ms: Int = 5000;
+        fired: String = "\n"; // the outages down now that this run published, one id a line
+        asked: Int = 0;
+        nerves: nats::NatsConn = nats::NatsConn { };
+    }
+    placement { nerves: pinned; }
+    bus { publish ReflexFired; }
+    bindings { ReflexFired: nats::NatsAdapter { } codec(FiringJson { }); }
+    // A firing the stream did not take: the reflexes cannot say anything,
+    // so they stop, for whoever started them to see.
+    on_failure(c: nats::NatsConn, err: ClosureViolation) {
+        eprintln("reflexes: the nerves did not take a firing: ", c.last_error);
+        std::process::exit(1);
+    }
+    // One pass of the rule over what the store holds now.
+    @unbounded
+    fn evaluate() {
+        let resp = std::http::get(self.store + "/api/v1/query?query=" + query_escape(QUERY)) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+        let body = std::str::from_bytes(resp.body);
+        if resp.status != 200 || std::json::find_string_field(body, "status") != "success" {
+            if self.asked == 0 { eprintln("reflexes: the store at ", self.store, " did not answer (", to_string(resp.status), ")"); }
+            self.asked = self.asked + 1;
+            return;
+        }
+        self.asked = self.asked + 1;
+        // what is published and still down: an outage that ended leaves the set
+        let mut still = "\n";
+        let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_field_raw(body, "data"), "result"));
+        while !it.done {
+            let metric = std::json::find_field_raw(it.element, "metric");
+            let target = std::json::find_string_field(metric, "instance");
+            let node = std::json::find_string_field(metric, "node");
+            let value = std::json::find_field_raw(it.element, "value");
+            let at = std::json::array_first(value);
+            let since_text = if at.done { "" } else { std::json::find_string_field("{\"v\":" + std::json::array_next(at).element + "}", "v") };
+            let since = std::math::float_to_int(std::str::parse_float(since_text) or 0.0);
+            let id = RULE + ":" + id_segment(node) + ":" + id_segment(target) + ":" + to_string(since);
+            if len(target) > 0 && len(node) > 0 && since > 0 {
+                if !std::str::contains(self.fired, "\n" + id + "\n") {
+                    ReflexFired <- Firing { id: id, rule: RULE, node: node, target: target, action: "restart", since: since, fired_at: std::time::now() };
+                    println("reflexes: ", RULE, " fired for ", target, " on ", node, " (", id, ")");
+                }
+                still = still + id + "\n";
+            }
+            it = std::json::array_next(it);
+        }
+        self.fired = still;
+    }
+    run() {
+        if len(self.store) == 0 { eprintln("reflexes: no store (HALE_DNA_SENSES_URL); nothing to read"); std::process::exit(2); }
+        println("reflexes: reading ", self.store, " every ", to_string(self.tick_ms), " ms; firing onto ", self.nerves.url);
+        while !self.draining {
+            self.evaluate();
+            std::time::sleep(self.tick_ms * 1ms);
+        }
+    }
+}
+
+fn main() {
+    let org = env_or("HALE_DNA_NATS_ORG", "");
+    let url = env_or("HALE_DNA_NATS_URL_REFLEXES", "");
+    if len(org) == 0 || len(url) == 0 { eprintln("reflexes: HALE_DNA_NATS_URL_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto"); std::process::exit(2); }
+    Reflexes {
+        store: env_or("HALE_DNA_SENSES_URL", ""),
+        tick_ms: std::str::parse_int(env_or("HALE_DNA_REFLEX_TICK_MS", "5000")) or 5000,
+        nerves: nats::NatsConn { url: url, name: "reflexes", subject_prefix: org + ".", jetstream: true }
+    };
+}

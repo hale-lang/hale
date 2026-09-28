@@ -38,8 +38,24 @@ locus Node {
         started_total: Int = 0;
         concerns_relayed: Int = 0; // concerns heard from instances and put into the record (GH #583 K4)
         memory: dna::Memory = dna::Memory { }; // this process's one handle (GH #985)
+        // GH #988: this node's readings — its pulse, and each instance up
+        // or down since when — in the registry the host program's pinned
+        // `senses` serves (the node runs as that program's `main locus`)
+        registry: std::metrics::Registry = std::metrics::Registry { namespace: "dna" };
     }
     birth() { self.memory.point(self.root, dna::own_dsn_env()); }
+    // An instance's readings: `dna_instance_up` 1 or 0, and since when it
+    // has been so (seconds since the epoch), labelled with this node and
+    // the instance — never its revision, which would leave one series per
+    // revision it ever ran (a series cannot be retired). A scrape between
+    // the two writes must not pair a new state with an old since: down
+    // writes its since first, up its state first.
+    fn read_instance(id: String, up: Bool) {
+        let l = std::metrics::labels_append(std::metrics::labels_append(dna::part_labels("node"), "node", self.name), "instance", id);
+        let state = std::metrics::gauge(self.registry, "instance_up", l);
+        let since = std::metrics::gauge(self.registry, "instance_since_seconds", l);
+        if up { state.set(1.0); since.set(dna::senses_now()); } else { since.set(dna::senses_now()); state.set(0.0); }
+    }
     fn index_of(id: String) -> Int {
         let mut i = 0;
         while i < self.instances.len() {
@@ -65,8 +81,11 @@ locus Node {
     // Express one deploy row: the revision checked out, every instance
     // of this node the deploy touches (or that is not up) rebuilt and
     // restarted at it. False when it must be retried next tick.
+    // `only`: a reflex's restart (GH #988) — that one instance of this node,
+    // if it is not up, started again at the deploy's revision; no other
+    // instance is touched, and the deploy is not marked expressed by it.
     @unbounded
-    fn express(deploy: dna::Event) -> Bool {
+    fn express(deploy: dna::Event, only: String) -> Bool {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
         let remote = record_remote(self.root);
@@ -93,14 +112,14 @@ locus Node {
             let id = std::json::find_string_field(it.element, "id");
             let node = std::json::find_string_field(it.element, "node");
             let seed = std::json::find_string_field(it.element, "seed");
-            if node == self.name {
+            if node == self.name && (len(only) == 0 || id == only) {
                 let idx = self.index_of(id);
                 let mut up = false;
                 if idx >= 0 {
                     let x = self.instances.get(idx) or Instance { };
                     up = x.revision == rev && alive(x.proc);
                 }
-                let wanted = std::str::contains(touched_sp, " " + id + " ");
+                let wanted = len(only) == 0 && std::str::contains(touched_sp, " " + id + " ");
                 if !(up && !wanted) {
                     if len(seed) == 0 {
                         self.say("instance " + id + " has no seed to build; skipped");
@@ -130,6 +149,7 @@ locus Node {
                         b.int_field("pid", p.pid);
                         b.end_object();
                         let ok = append_as(self.root, "instance.up", id, b.result(), self.author, self.memory);
+                        self.read_instance(id, true);
                         self.say("instance " + id + " up (pid " + to_string(p.pid) + ") at " + short(rev) + " as " + short(shape));
                         let fresh = Instance { id: id, revision: rev, proc: p };
                         if idx >= 0 { self.instances.set(idx, fresh) or discard; } else { self.instances.push(fresh); }
@@ -139,9 +159,9 @@ locus Node {
             }
             it = std::json::array_next(it);
         }
-        self.expressed_seq = deploy.seq;
+        if len(only) == 0 { self.expressed_seq = deploy.seq; }
         self.started_total = self.started_total + started;
-        self.say("fleet.deploy #" + to_string(deploy.seq) + " expressed (" + to_string(started) + " instance(s) started)");
+        self.say("fleet.deploy #" + to_string(deploy.seq) + (if len(only) > 0 { " restarted " + only + " (" } else { " expressed (" }) + to_string(started) + " instance(s) started)");
         let s = sync_record(self.root, self.memory);
         return true;
     }
@@ -163,6 +183,7 @@ locus Node {
                 b.int_field("code", code);
                 b.end_object();
                 let ok = append_as(self.root, "instance.exited", x.id, b.result(), self.author, self.memory);
+                self.read_instance(x.id, false);
                 std::io::fs::unlink(self.node_dir + "/" + x.id + ".pid") or discard;
                 self.instances.set(i, Instance { id: x.id, revision: x.revision, proc: Proc { pid: -1, dir: x.proc.dir, name: x.proc.name }, log_offset: x.log_offset }) or discard;
                 gone = true;
@@ -213,8 +234,58 @@ locus Node {
             i = i - 1;
         }
         if deploy.seq >= 0 && deploy.seq != self.expressed_seq {
-            let done = self.express(deploy);
+            let done = self.express(deploy, "");
         }
+        if deploy.seq >= 0 { self.act_on_reflexes(p, deploy); }
+        std::metrics::gauge(self.registry, "pulse_seconds", dna::part_labels("node")).set(dna::senses_now());
+    }
+    // GH #988: every firing of the reflexes (dna/host/reflex.hl) that names
+    // an instance of this node and has no `reflex.acted` row yet: the
+    // instance restarted at the deploy's revision, through express, and
+    // the row landed — the outcome whatever it was.
+    @unbounded
+    fn act_on_reflexes(p: Projection, deploy: dna::Event) {
+        let mut i = 0;
+        let mut acted = 0;
+        while i < p.rows() {
+            let f = firing_of(p.row(i));
+            if len(f.id) > 0 && f.node == self.name && !reflex_acted(p, f.id) {
+                let mut outcome = "";
+                let mut failed = false;
+                if f.action != "restart" {
+                    outcome = "refused: a node restarts; it does not `" + f.action + "`";
+                } else {
+                    let x = self.instances.get(self.index_of(f.target)) or Instance { };
+                    if self.index_of(f.target) >= 0 && alive(x.proc) {
+                        outcome = "already up";
+                    } else {
+                        let done = self.express(deploy, f.target);
+                        let y = self.instances.get(self.index_of(f.target)) or Instance { };
+                        failed = self.index_of(f.target) < 0 || !alive(y.proc);
+                        outcome = if !failed { "restarted" } else { "not restarted" + (if done { "" } else { "; the deploy could not be expressed" }) };
+                    }
+                }
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("rule", f.rule);
+                b.string_field("target", f.target);
+                b.string_field("action", f.action);
+                b.string_field("outcome", outcome);
+                b.string_field("node", self.name);
+                b.end_object();
+                if append_as(self.root, REFLEX_ACTED, f.id, b.result(), self.author, self.memory) {
+                    self.say("reflex " + f.id + " (" + f.rule + " on " + f.target + "): " + outcome);
+                    acted = acted + 1;
+                    // a restart that did not take is not the body's to try
+                    // again quietly: it becomes a concern
+                    if failed { self.say(reflex_failed_concern(self.root, f, outcome, self.author, self.memory)); }
+                } else {
+                    self.say("the record refused reflex.acted for " + f.id);
+                }
+            }
+            i = i + 1;
+        }
+        if acted > 0 { let s = sync_record(self.root, self.memory); }
     }
     // The route an instance gets: this node's concern socket (the shim
     // bound it for the node before the node started), role connect.
@@ -232,7 +303,9 @@ locus Node {
         let w = write_text(conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : connect\n") or false;
         return conf;
     }
-    run() {
+    // Where it keeps what is local; the program's `main locus` (the host
+    // program's, GH #988) then ticks it until the program drains.
+    fn begin() {
         self.node_dir = self.root + "/.hale/node/" + self.name;
         std::io::fs::mkdir(self.root + "/.hale") or discard;
         std::io::fs::mkdir(self.root + "/.hale/node") or discard;
@@ -240,10 +313,6 @@ locus Node {
         self.author = "node/" + self.name;
         let remote = record_remote(self.root);
         self.say("expressing from " + self.root + " (record via " + (if len(remote) == 0 { "no remote" } else { remote }) + ")");
-        while true {
-            self.tick();
-            std::time::sleep(self.tick_ms * 1ms);
-        }
     }
 }
 
@@ -257,5 +326,13 @@ fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
         eprintln("hale node ", name, ": ", root, " is not a git clone of the governed repository");
         std::process::exit(2);
     }
-    Node { name: name, root: root, fleet: fleet, tick_ms: if tick_ms < 100 { 100 } else { tick_ms } };
+    // GH #988: the node runs as the host program's `main locus`, so its
+    // readings are served on a pool of their own, as the spine's are. It
+    // is no spine: its nerves connection has no server and stops at once,
+    // and it takes no application's events (Host.on_reading)
+    Host {
+        verb: "node", root: root, fleet: fleet, node_name: name, node_tick: if tick_ms < 100 { 100 } else { tick_ms },
+        nerves: nats::NatsConn { url: "", name: "dna-node-none", run_for_ms: 1 },
+        senses: dna::Senses { part: "node", port: dna::senses_port_of("node") }
+    };
 }
