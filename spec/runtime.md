@@ -2765,6 +2765,7 @@ build.
 | `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from. | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
+| `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |
 | `HALE_WARM_SKIP_IRIS` | none | `scripts/warm-dna-cache.sh` skips building the observer (`1`), for jobs that never run `hale iris`. | off |
 
 ## Diagnostic + tuning env vars

@@ -245,7 +245,7 @@ fn add_fn_registers_bare_fn_routes() {
 fn run_under_oracles(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_http_router_{}", name));
-    build_executable(&program, &bin).expect("build");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options()).expect("build");
     let out = Command::new(&bin).env("LOTUS_ARENA_RESIDENCY", "1").output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
