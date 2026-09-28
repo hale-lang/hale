@@ -3,7 +3,11 @@
 // it for local mode: the client's secret in HALE_DNA_OIDC_SECRET, and the
 // key made for the launch — a PEM file (0600) named by
 // HALE_DNA_OIDC_KEY_FILE, its coordinates in HALE_DNA_OIDC_KEY_X and _Y
-// — never on argv. A fixture hosts `oidc::StubIssuer` in its own process.
+// — never on argv. HALE_DNA_OIDC_SERVICES names the service clients
+// (space-separated ids) it answers the `client_credentials` grant for,
+// each secret the vault's `oidc-service-<id>`. A fixture hosts
+// `oidc::StubIssuer` in its own process, or runs this one where the
+// vault's environment has to be its own.
 
 import ".." as oidc;
 
@@ -21,5 +25,5 @@ fn main() {
     let client = std::env::arg_or(2, "dna-local");
     let base = "http://127.0.0.1:" + to_string(port);
     println("hale dna oidc: ", base, " (stub provider; client ", client, ")");
-    std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: base, client: client, secret: secret, key: key, kid: "launch", x: x, y: y } };
+    std::http::Server { host: "127.0.0.1", port: port, handler: oidc::StubIssuer { base: base, client: client, secret: secret, key: key, kid: "launch", x: x, y: y, services: std::env::var("HALE_DNA_OIDC_SERVICES") } };
 }

@@ -794,7 +794,9 @@ locus Head {
         // GH #989: under OIDC the child verifies the session's own ID token,
         // forwarded as the bearer on every request
         let child_token = if self.cfg.principal_mode == "local" && req.method == "POST" { dna::trim_nl(std::io::fs::read_file(ctx.active_root + "/.hale/dna/head.token") or "") } else { "" };
-        let bearer = if self.cfg.principal_mode == "oidc" { self.auth.session_token(req) } else { "" };
+        // a service's own bearer (verified in `handle`), else the session's
+        let given = dna::bearer_token(std::http::header(req, "Authorization"));
+        let bearer = if self.cfg.principal_mode != "oidc" { "" } else if len(given) > 0 { given } else { self.auth.session_token(req) };
         let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
@@ -840,6 +842,24 @@ locus Head {
             if path == "/auth/logout" {
                 self.auth.end_session(req);
                 return ui::redirect("/auth/login", "dna_session=; Max-Age=0; Path=/");
+            }
+            // a service — a program with no person behind it — presents
+            // its token (the issuer's `client_credentials` grant) as a
+            // bearer, on the project's API routes only. It is verified as
+            // an ID token is (ES256 under the issuer's keys, the issuer,
+            // this client, unexpired), its subject must be a service the
+            // attached project's record maps (`dna.oidc.service`), and it
+            // is forwarded as the bearer: never a session, never a cookie
+            let service_route = path == APPLICATIONS_PREFIX || std::str::starts_with(path, APPLICATIONS_PREFIX + "/");
+            if len(std::http::header(req, "Authorization")) > 0 {
+                if !service_route { return self.error(401, "unauthenticated", "a bearer is a service's, on the project's API routes only; a person signs in at /auth/login", false); }
+                let subject = self.auth.bearer_subject(req);
+                if len(subject) == 0 { return self.error(401, "unauthenticated", "the bearer token is refused: " + self.auth.bearer_refused, false); }
+                let ctx = context_of(self.cfg);
+                if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
+                let services = dna::GitRecord { repo: ctx.active_root }.git("config\n--local\n--get-all\ndna.oidc.service");
+                if len(dna::member_of(if services.code == 0 { services.stdout } else { "" }, subject)) == 0 { return self.error(403, "forbidden", "subject `" + subject + "` is no service the attached project maps (`git config --local --add dna.oidc.service \"" + subject + "=<service>\"`)", false); }
+                return self.proxy(req);
             }
             let person = self.auth.session_name(req);
             if len(person) == 0 {

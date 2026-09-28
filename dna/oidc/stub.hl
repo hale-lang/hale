@@ -5,6 +5,13 @@
 // in whoever the `login_hint` names (else `STUB_SUBJECT`), and a token
 // endpoint that exchanges a code, or mints for a subject
 // (`grant_type=urn:hale:dna:stub`, `sub=`), under this client's secret.
+// A SERVICE — a program with no person behind it, such as an application
+// reading a project's practices through the head — asks with the OAuth
+// `client_credentials` grant under its own client id and secret: the
+// secret is the vault's (`std::secret`'s `vault:` source, the entry
+// `oidc-service-<id>`), read fresh at every ask and refused when the
+// vault has none, and the token names the service's client id as its
+// subject, for this issuer's relying party (`client`).
 // Every ID token is ES256 under the issuer's key: STUB_KEY, published
 // here, for a fixture; a key made for the launch, never on disk beyond a
 // 0600 file, where `dna/face/start.sh` runs it. A record pins the key of
@@ -110,6 +117,8 @@ locus StubIssuer {
         x: String = STUB_X;
         y: String = STUB_Y;
         ttl: Int = 28800; // a face session's eight hours: the head forwards the ID token it signed in with
+        services: String = ""; // the service clients' ids, space-separated; each secret is the vault's `oidc-service-<id>`
+        service_ttl: Int = 600; // a service asks again rather than holding a token long
         codes: IssuedCodes = IssuedCodes { };
         exchanges: Int = 0;
         refused_secrets: Int = 0;
@@ -163,6 +172,7 @@ locus StubIssuer {
             return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + redirect + "?code=" + code + "&state=" + state, body: "" };
         }
         if std::http::is_route(ctx, "POST", "/token") {
+            if form_field(req.body, "grant_type") == "client_credentials" { return self.service_token(form_field(req.body, "client_id"), form_field(req.body, "client_secret")); }
             if form_field(req.body, "client_secret") != self.secret || form_field(req.body, "client_id") != self.client {
                 self.refused_secrets = self.refused_secrets + 1;
                 return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
@@ -187,5 +197,25 @@ locus StubIssuer {
             return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_grant\"}" };
         }
         return std::http::Response { status: 404, body: "not found" };
+    }
+    // A service's token (the `client_credentials` grant): its id among
+    // `services`, its secret the vault's entry for it — no entry, no
+    // token. The subject is the service's client id; the audience is this
+    // issuer's relying party, as an ID token's is, so the head verifies it
+    // the same way.
+    fn service_token(id: String, secret: String) -> std::http::Response {
+        let entry = "oidc-service-" + id;
+        let known = len(id) > 0 && std::secret::vault_name_is_safe(entry) && std::str::contains(" " + self.services + " ", " " + id + " ");
+        if !known || len(secret) == 0 || !std::secret::Credential { vault: entry }.matches(std::bytes::from_string(secret)) {
+            self.refused_secrets = self.refused_secrets + 1;
+            return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("access_token", signed_id_token(self.key, self.kid, self.base, self.client, id, "", self.service_ttl));
+        b.string_field("token_type", "Bearer");
+        b.int_field("expires_in", self.service_ttl);
+        b.end_object();
+        return self.json(b);
     }
 }

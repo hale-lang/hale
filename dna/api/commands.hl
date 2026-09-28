@@ -395,8 +395,11 @@ locus CommandAdmission {
     // maps the peer to — or, for a line the head forwarded under a
     // verified OIDC subject, the person `dna.oidc.member` maps it to
     // (GH #989) — else `uid:<n>`, never $USER (only an ungated command
-    // reaches here unmapped). Rows say `local` for a local account the
-    // kernel vouched for, `oidc` for an issuer's subject.
+    // reaches here unmapped, and only from a local account the kernel
+    // vouched for: an issuer's subject that maps to no person — a
+    // service — is refused in `submit`, never named as the account the
+    // head runs under). Rows say `local` for a local account, `oidc` for
+    // an issuer's subject.
     fn context(ctx: std::api::Context) -> CommandContext {
         let source = self.reader.read();
         let person = self.roles.person(ctx.caller);
@@ -425,6 +428,9 @@ locus CommandAdmission {
         return self.codec.valid(native_context, native);
     }
     fn submit(ctx: std::api::Context, command: CommandRequest) -> CommandReply {
+        // a service reads, and asks nothing: a command, gated or not, is a
+        // person's (the store never records a subject as the head's account)
+        if std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0 { return self.refused("forbidden"); }
         let context = self.context(ctx);
         if !context.source.ok { return self.refused(context.source.code); }
         let mut request = command;

@@ -201,6 +201,7 @@ locus Api {
         if self.web.serves(path) { return self.web.response(path); }
         let mut actor = self.local_name;
         let mut subject = "";
+        let mut serviced = false;
         if self.mode == "oidc" {
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
@@ -225,7 +226,16 @@ locus Api {
                 if len(subject) == 0 { return self.unauthenticated("sign in at /auth/login, or present an ID token as a bearer"); }
             }
             actor = self.roles.person(std::api::Principal { mode: "oidc", uid: 0, via: "oidc:" + subject });
-            if len(actor) == 0 { return http.error(403, "forbidden", "subject `" + subject + "` maps to no person the record keeps (`git config --local --add dna.oidc.member \"" + subject + "=<person>\"`), or they retired", false); }
+            // a service's bearer (the issuer's `client_credentials` grant):
+            // the service the record maps it to, which reads; its only
+            // POST is a command, and the socket's gate decides that — a
+            // service holds no role
+            if len(actor) == 0 && len(std::http::header(req, "Authorization")) > 0 {
+                actor = self.roles.service(subject);
+                serviced = len(actor) > 0;
+            }
+            if len(actor) == 0 { return http.error(403, "forbidden", "subject `" + subject + "` maps to no person the record keeps (`git config --local --add dna.oidc.member \"" + subject + "=<person>\"`), or they retired, and to no service (`dna.oidc.service`)", false); }
+            if serviced && req.method != "GET" && !commands_path { return http.error(403, "forbidden", "service `" + actor + "` reads; a draft is a person's", false); }
         }
         if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
         let knowledge_path = std::str::contains(path, "/dna/knowledge/");

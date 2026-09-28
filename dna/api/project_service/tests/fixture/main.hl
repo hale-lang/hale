@@ -87,6 +87,10 @@ locus HeadFixture {
         port: Int = 0;
         api_port: Int = 0;
         identity: String = "";
+        // `VAR=value` per line: the head serves under OIDC with these
+        // (HALE_DNA_OIDC_ISSUER, _CLIENT, _MEMBER, _KEY) instead of a
+        // fixture's trusted-local session; "" = trusted-local
+        oidc_env: String = "";
         head: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-head-fixture" };
         json: Json = Json { };
@@ -158,8 +162,9 @@ locus HeadFixture {
         std::test::assert(len(api_bin) > 0 && std::io::fs::file_exists(api_bin), "build dna/api and set absolute HALE_API_BIN");
         let hale = std::env::var("HALE_BIN");
         std::test::assert(std::str::starts_with(hale, "/"), "HALE_BIN must be absolute");
-        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_DNA_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && unset LOTUS_OBS HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_ORG_DRAFTS && if [ -n \"$6\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$6\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
-        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + project_arg;
+        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_DNA_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && if [ -z \"$HALE_DNA_OIDC_ISSUER\" ]; then export HALE_DNA_TRUSTED_LOCAL=1; else unset HALE_DNA_TRUSTED_LOCAL; fi && unset LOTUS_OBS HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_ORG_DRAFTS && if [ -n \"$6\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$6\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
+        // under OIDC its settings ride on `env`, never the test's own environment
+        let argv = (if len(self.oidc_env) > 0 { "env\n" + dna::trim_nl(self.oidc_env) + "\n" } else { "" }) + "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + project_arg;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
@@ -205,7 +210,9 @@ locus HeadFixture {
                 else if state == -2 && !self.bound(since) { std::time::sleep(50ms); }
                 else {
                     std::test::assert_eq_int(state, -2, "the head exited before listening: " + self.log());
-                    let response = self.http("GET", HEAD, "", "");
+                    // under OIDC every head read asks for a session: the
+                    // banner, printed once it listens, is the readiness
+                    let response = if len(self.oidc_env) > 0 { HttpResponse { status: 200 } } else { self.http("GET", HEAD, "", "") };
                     if first && response.status > 0 {
                         std::test::assert_eq_int(response.status, 200, "head readiness: " + response.body);
                         up = true;
