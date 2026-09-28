@@ -52,7 +52,7 @@ locus PracticeReviewCommands {
             person: api::PersonRetirementOutcome { state: value.person.state, from: value.person.from, to: value.person.to, event_id: value.person.event_id, transferred: value.person.transferred },
             task_create: api::TaskCreateOutcome { intent_id: value.task_create.intent_id, intent_state: value.task_create.intent_state, task_id: value.task_create.task_id, event_id: value.task_create.event_id, kind: value.task_create.kind },
             attempt: api::AttemptCommandOutcome { state: value.attempt.state, attempt_id: value.attempt.attempt_id, work_id: value.attempt.work_id, task_id: value.attempt.task_id, performer_kind: value.attempt.performer_kind,
-                holder: value.attempt.holder, token: value.attempt.token, until: value.attempt.until, disposition: value.attempt.disposition, reason: value.attempt.reason, event_id: value.attempt.event_id }
+                holder: value.attempt.holder, token: value.attempt.token, until: value.attempt.until, disposition: value.attempt.disposition, reason: value.attempt.reason, event_id: value.attempt.event_id, allowance_micros: value.attempt.allowance_micros }
         };
     }
     fn result(context: api::CommandContext, value: ops::GovernanceResult) -> api::CommandResult {

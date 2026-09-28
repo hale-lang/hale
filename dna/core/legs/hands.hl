@@ -72,6 +72,35 @@ locus HeadLease {
         if state == "refused" { return HandResult { error: std::json::find_string_field(receipt, "reason") }; }
         return HandResult { ok: true, output: state };
     }
+    // The spend the attempt may make (GH #1131): asked of the spine under
+    // this lease, once — asked again it reads the same answer — and read
+    // back until the spine answers, within `wait` seconds. Granted: the
+    // allowance in micro-dollars (-1 when nothing bounds it). Refused, or
+    // no answer in time: why, and the performer makes no call.
+    @unbounded
+    fn allowance(wait: Int) -> HandResult {
+        if len(self.attempt) == 0 { return HandResult { error: "no lease is held, so no spend can be asked for" }; }
+        let head = Head { api: self.api };
+        if !head.attach() { return HandResult { error: head.error }; }
+        if len(head.allowance_topic) == 0 { return HandResult { error: "the head lists no `dna.commands.attempt.allowance`: its toolchain predates the budget gate (GH #1131)" }; }
+        let request = "work-allowance:" + self.attempt + ":" + to_string(self.token);
+        let asked = head.allowance(request, self.attempt, self.holder, self.token);
+        if !asked.ok { return HandResult { error: asked.error }; }
+        let deadline = std::time::now() + wait;
+        let mut reply = asked;
+        let mut outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt");
+        while std::json::find_string_field(outcome, "state") == "requested" && std::time::now() < deadline {
+            std::time::sleep(500ms);
+            reply = head.lookup(request);
+            // a record read while it moved is read again on the next turn
+            if !reply.ok && !std::str::starts_with(reply.error, "snapshot_changed") { return HandResult { error: reply.error }; }
+            if reply.ok { outcome = std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"); }
+        }
+        let state = std::json::find_string_field(outcome, "state");
+        if state == "granted" { return HandResult { ok: true, output: to_string(std::json::find_int_field(outcome, "allowance_micros")) }; }
+        if state == "requested" { return HandResult { error: "the spine did not answer the ask for attempt " + self.attempt + "'s spend within " + to_string(wait) + "s" }; }
+        return HandResult { error: std::json::find_string_field(outcome, "reason") };
+    }
 }
 
 // Git in scratch: a clone under a scratch root of the leg's own

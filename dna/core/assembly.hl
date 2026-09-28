@@ -198,6 +198,25 @@ locus StepAsks { capacity { heap rows of StepAsk; } }
 // what it wrote, or no disposition — it waits, and is performed again.
 type StepVerdict { disposition: String = ""; result: String = ""; narrative: String = ""; }
 
+// What a leg's reported calls spent (GH #1131): the calls made — a wait
+// row (`adapter: legs`) is none — and what they cost together.
+type LegSpend { calls: Int = 0; cost_micros: Int = 0; }
+@unbounded
+fn spend_of(calls: String) -> LegSpend {
+    let mut out = LegSpend { };
+    if len(calls) == 0 || !std::json::valid(calls) { return out; }
+    let mut it = std::json::array_first(calls);
+    let mut n = 0;
+    while !it.done && n < 256 {
+        if std::json::find_string_field(it.element, "adapter") != "legs" { out.calls = out.calls + 1; }
+        let c = std::json::find_int_field(it.element, "cost_micros");
+        out.cost_micros = out.cost_micros + (if c > 0 { c } else { 0 });
+        n = n + 1;
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
 fn step_done(result: String, narrative: String) -> StepVerdict { return StepVerdict { disposition: "done", result: result, narrative: narrative }; }
 fn step_failed(why: String) -> StepVerdict { return StepVerdict { disposition: "failed", narrative: why }; }
 fn step_waits() -> StepVerdict { return StepVerdict { }; }
@@ -506,6 +525,7 @@ locus Dna {
         subscribe KnowledgeEdgeRequested as on_knowledge_edge_requested;
         subscribe OrganizationSourceRequested as on_organization_source_requested;
         subscribe WorkSubmit as on_work_submit;
+        subscribe WorkAllowanceAsk as on_work_allowance;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
         publish ReviewRequested;
@@ -542,6 +562,7 @@ locus Dna {
         b.string_field("bodies", self.file_bodies(ev));
         b.bool_field("ok", ev.ok);
         b.string_field("refused", ev.refused);
+        b.int_field("waited_ms", ev.waited_ms);
         let now = std::time::now();
         b.int_field("at", now);
         b.end_object();
@@ -716,9 +737,10 @@ locus Dna {
         return len(d) > 0 && self.verification.receipts.read(d) == text;
     }
     // The window's allowance is spent: journaled once per window, the
-    // the Board told; the caller refuses or waits.
+    // the Board told; the caller refuses or waits. The one gate's answer
+    // to any spend at all (GH #1131).
     fn budget_exhausted(now: Int) -> Bool {
-        if !self.budget.exhausted(now) { return false; }
+        if self.budget.admit(0, now).ok { return false; }
         if self.budget.announce() {
             let b = std::json::Builder { };
             b.begin_object();
@@ -732,6 +754,79 @@ locus Dna {
             self.board.notify("budget", "exhausted: " + self.budget.describe(now) + "; model-backed work waits for the next window, Reviews wait for the Board");
         }
         return true;
+    }
+    // The one gate for a model call's spend, in process and out (GH #1131):
+    // the editor's attempt, the leader's Review and a leg's attempt are
+    // each admitted by `Budget.admit` before a call is made, the work's own
+    // ceiling bounding the allowance. A refusal is the same row wherever
+    // it is asked — `attempt.allowance_refused <entity> {why, …}` — and an
+    // exhausted window is announced once, as it always was. A leg's grant
+    // is a row too (it reads its answer at the head); in process the grant
+    // is the call going ahead. `request` names the ask a row answers ("" in
+    // process); `holder` and `token` are the lease's, when there is one.
+    fn spend_gate(entity: String, ceiling_micros: Int, request: String, holder: String, token: Int, now: Int) -> SpendAdmission {
+        let exhausted = self.budget_exhausted(now);
+        let a = self.budget.admit(ceiling_micros, now);
+        let b = std::json::Builder { };
+        b.begin_object();
+        if a.ok { b.int_field("allowance_micros", a.allowance_micros); } else { b.string_field("why", a.why); }
+        b.int_field("ceiling_micros", ceiling_micros);
+        b.int_field("spent_micros", self.budget.spent_micros);
+        b.int_field("window_micros", self.budget.policy.allowance_micros);
+        b.string_field("window", self.budget.policy.window);
+        if len(holder) > 0 { b.string_field("holder", holder); b.int_field("token", token); }
+        if len(request) > 0 { b.string_field("request", request); }
+        b.int_field("at", now);
+        b.end_object();
+        // a refusal in process is landed once a window for what it was for:
+        // a Review routed again on a spent window is refused by the row it has
+        if !a.ok && (len(request) > 0 || !self.refused_in_window(entity, now)) { let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", entity, b.result()); }
+        else if len(request) > 0 { let y = self.journal.append(self.journal.revision(), "attempt.allowance_granted", entity, b.result()); }
+        return a;
+    }
+    // Whether the gate refused a spend for `entity` in the window `now` is in.
+    @unbounded
+    fn refused_in_window(entity: String, now: Int) -> Bool {
+        let w = self.budget.window_of(now);
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.allowance_refused" && e.entity == entity && self.budget.window_of(std::json::find_int_field(e.body, "at")) == w { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // The spend a lease was granted (GH #1131): the latest
+    // `attempt.allowance_granted` on the attempt under this holder and
+    // token. Not present when none was asked.
+    @unbounded
+    fn granted_to(attempt_id: String, holder: String, token: Int) -> SpendAdmission {
+        let mut g = SpendAdmission { };
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.allowance_granted" && e.entity == attempt_id && std::json::find_string_field(e.body, "holder") == holder && std::json::find_int_field(e.body, "token") == token {
+                g = SpendAdmission { ok: true, allowance_micros: std::json::find_int_field(e.body, "allowance_micros") };
+            }
+            i = i + 1;
+        }
+        return g;
+    }
+    // Whether the spine answered this ask already (a relay after a lost
+    // publish is answered once).
+    @unbounded
+    fn allowance_answered(a: WorkAllowance) -> Bool {
+        if len(a.request) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if (e.kind == "attempt.allowance_granted" || e.kind == "attempt.allowance_refused") && e.entity == a.attempt_id && request_named(e.body) == a.request { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     // ---- knowledge (GH #583 K1): the record's half ------------------
     // A proposal enters the record as a receipt (its canonical document,
@@ -1916,6 +2011,11 @@ locus Dna {
         }
         let seen = self.mutation_of_attempt(e.attempt_id);
         if len(seen) > 0 { self.report_prepared(e, seen); return; }
+        // GH #1131: the editor's spend is admitted by the one gate a leg's is,
+        // the Work's own ceiling bounding it; refused, nothing is edited and
+        // the attempt is declined with the reason
+        let gate = self.spend_gate(e.attempt_id, req.cost_ceiling, "", "", 0, std::time::now());
+        if !gate.ok { self.report(e, "declined", "", "the budget gate admitted no spend for the editor: " + gate.why); return; }
         // card 18: an ask's leaf edits under the leader's word bound into
         // the admission — the class (an organism change is class
         // `organization`, the Board's), and the target when it names a
@@ -2418,11 +2518,53 @@ locus Dna {
                 retry_of: std::json::find_string_field(c, "retry_of"),
                 data_class: std::json::find_string_field(c, "data_class"),
                 ok: len(refused) == 0,
-                refused: refused
+                refused: refused,
+                waited_ms: std::json::find_int_field(c, "waited_ms")
             });
             n = n + 1;
             it = std::json::array_next(it);
         }
+    }
+    // A leg's ask for its attempt's spend (GH #1131), relayed from its
+    // `attempt.allowance_requested` row: the lease checked as an outcome's
+    // is — this holder, this token, live as of the head's admission — then
+    // the one gate, with the attempt's own cost ceiling. The answer is a
+    // row naming the request: granted with the allowance, or refused.
+    @unbounded
+    fn on_work_allowance(a: WorkAllowance) {
+        let moved = self.journal.refresh();
+        if len(a.attempt_id) == 0 { return; }
+        let adm = recorded_attempt_admission(self.journal, a.attempt_id, self.journal.revision());
+        if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
+        if self.allowance_answered(a) { return; }
+        let claim = self.recorded_claim(a.attempt_id);
+        let now = if a.at > 0 { a.at } else { std::time::now() };
+        let mut why = "";
+        if recorded_attempt_outcome(self.journal, a.attempt_id, self.journal.revision()).ok { why = "attempt " + a.attempt_id + " is settled; no spend is admitted for it"; }
+        else if !self.has_row("effect.relayed", execution_key(a.attempt_id)) { why = "attempt " + a.attempt_id + " was never relayed to a leg; the organism performs it"; }
+        else if !claim.present { why = "attempt " + a.attempt_id + " was never claimed by a leg"; }
+        else if claim.holder != a.holder || claim.token != a.token { why = "the lease on attempt " + a.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + a.holder + "'s at token " + to_string(a.token) + ": stale"; }
+        else if claim.expires <= now { why = "the lease on attempt " + a.attempt_id + " expired at " + to_string(claim.expires); }
+        else if self.claims.ready() {
+            // memory's claim fences the lease, as it does an outcome's
+            let live = self.claims.current(claim.key);
+            if !self.claims.reachable { why = "memory cannot be reached to fence the lease on attempt " + a.attempt_id; }
+            else if !live.present || live.holder != a.holder || live.token != a.token || live.expires <= now { why = "memory's claim on attempt " + a.attempt_id + " is not " + a.holder + "'s at token " + to_string(a.token) + " now: stale"; }
+        }
+        if len(why) > 0 {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("why", why);
+            b.string_field("holder", a.holder);
+            b.int_field("token", a.token);
+            b.string_field("request", a.request);
+            b.int_field("at", std::time::now());
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", a.attempt_id, b.result());
+            return;
+        }
+        let g = self.spend_gate(a.attempt_id, adm.value.request.cost_ceiling, a.request, a.holder, a.token, std::time::now());
+        if !g.ok { self.board.notify("attempt", "attempt " + a.attempt_id + ": no spend admitted for " + a.holder + ": " + g.why); }
     }
     // A leg's outcome for the attempt it claimed, relayed from its
     // `attempt.outcome_requested` row. The lease is checked here as the
@@ -2465,6 +2607,19 @@ locus Dna {
             else if !live.present || live.holder != s.holder || live.token != s.token || live.expires <= now { why = "memory's claim on attempt " + s.attempt_id + " is not " + s.holder + "'s at token " + to_string(s.token) + " now: stale"; }
         }
         if len(why) > 0 { self.refuse_submission(s, why); return; }
+        // GH #1131: what a leg's calls cost is within what the spine granted
+        // its lease — nothing, when it asked for nothing. Past it, the attempt
+        // settles failed, naming the overrun, so the Work's allowance of
+        // attempts bounds the repeats; the calls are journaled all the same,
+        // for what was spent is spent
+        let spent = spend_of(s.calls);
+        let mut overrun = "";
+        if spent.calls > 0 {
+            let g = self.granted_to(s.attempt_id, s.holder, s.token);
+            overrun = if !g.ok && spent.cost_micros > 0 { "overrun: the calls cost " + to_string(spent.cost_micros) + " micro-dollars with no spend admitted for the lease (`hale dna work allowance` before the first call)" }
+            else if g.ok && g.allowance_micros >= 0 && spent.cost_micros > g.allowance_micros { "overrun: the calls cost " + to_string(spent.cost_micros) + " micro-dollars, past the allowance of " + to_string(g.allowance_micros) + " granted to the lease" }
+            else { "" };
+        }
         let mut r = WorkResult {
             disposition: s.disposition, result: s.result, result_ref: s.result_ref, narrative: s.narrative, evidence: s.evidence_ref,
             performer: self.work.identity_of(adm.value.performer_kind), attempt_id: s.attempt_id,
@@ -2475,7 +2630,13 @@ locus Dna {
         // attempt in the gateway — committed, verified and put to its Review
         // as the editor's is — and the attempt settles on what that made:
         // done once the candidate is prepared, failed when it could not be
-        if adm.value.request.output_contract == "Patch" && s.disposition == "done" {
+        if len(overrun) > 0 {
+            r.disposition = "failed";
+            r.result = "";
+            r.result_ref = "";
+            r.narrative = overrun + " (the leg: " + s.narrative + ")";
+        }
+        if len(overrun) == 0 && adm.value.request.output_contract == "Patch" && s.disposition == "done" {
             let mut m = self.mutation_of_attempt(s.attempt_id);
             let mut interrupted = "interrupted before its candidate was prepared (the owner restarted)";
             if len(m) == 0 {
@@ -5326,10 +5487,12 @@ locus Dna {
             if !self.governance_once("review.requested", "review:" + m.id, b.result()) || !self.ensure_organization_source_review(source, m.candidate_commit) { return "pending"; }
         } else { let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result()); }
         self.board.notify("review", (if len(need.signers) > 0 { "signers " + approver_owners(need.signers) } else { authority }) + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
-        // GH #583 M1: a model-backed position decides only while there is
-        // budget; on an exhausted window the Review waits for the Board
-        // (`hale dna review`), which needs no model.
-        if !self.budget_exhausted(std::time::now()) {
+        // GH #583 M1, #1131: a model-backed position decides only on a spend
+        // the one gate admits; refused, the refusal is the row a leg's is
+        // (`attempt.allowance_refused review:<id>`) and the Review waits for
+        // the Board (`hale dna review`), which needs no model.
+        let gate = self.spend_gate("review:" + m.id, 0, "", "", 0, std::time::now());
+        if gate.ok {
             ReviewRequested <- ReviewRequest {
                 review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority, signers: need.signers,
                 mutation_id: m.id, change_class: m.change_class, seed: m.seed, disposition: name, base_commit: m.base_commit,

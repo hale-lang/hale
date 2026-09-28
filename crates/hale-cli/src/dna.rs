@@ -807,7 +807,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
     eprintln!("       hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,");
-    eprintln!("                                    renew, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
+    eprintln!("                                    renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);");
     eprintln!("                                    loop --parallel N is a worker: N children, each its own holder; loop --drain ends one");
     eprintln!("       hale dna definitions [project] [--json]");
     eprintln!("                                    the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store");
@@ -1549,6 +1549,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if main_text.contains("main locus Org") && main_text.contains("nats::NatsConn {") && !main_text.contains("credential:") {
         out.push(format!(
             "note    {}/main.hl's `nerves` connection presents no credential (GH #989): no URL carries a password now, so it cannot connect. Add `user: \"spine\", credential: std::secret::Credential {{ vault: dna::nerves_role_vault(\"spine\") }},` to its `nats::NatsConn`, as `hale dna init` writes it; an application's own connection takes `user: \"app\"` and the vault entry HALE_DNA_NATS_VAULT_APP names",
+            ORG_SEED
+        ));
+    }
+    if main_text.contains("main locus Org") && main_text.contains("bindings {") && !main_text.contains("dna::WorkAllowanceAsk") {
+        out.push(format!(
+            "note    {}/main.hl binds no `dna::WorkAllowanceAsk` (GH #1131): a leg asks the spine for its attempt's spend before its first model call, and the ask arrives over the nerves; unbound, a leg's attempt is declined with no answer. Add `dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};` to its `bindings`, as `hale dna init` writes today",
             ORG_SEED
         ));
     }
@@ -2577,6 +2583,7 @@ main locus Org {{
         dna::KnowledgeBindingRequested: nats::NatsAdapter {{ }};
         dna::KnowledgeEdgeRequested: nats::NatsAdapter {{ }};
         dna::WorkSubmit: nats::NatsAdapter {{ }};
+        dna::WorkAllowanceAsk: nats::NatsAdapter {{ }};
     }}
     // The nerves collapsed (a fact the stream would not take): this
     // organization stops, and the host that supervises it stops too and

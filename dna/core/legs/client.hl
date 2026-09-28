@@ -5,7 +5,8 @@
 // it knows it reads from the head — the record and the hat over HTTP,
 // which stay reads — and everything it does is a call on the head's
 // gated topics over its api socket (`dna.commands.*`, GH #1110): the
-// claim, the renewal, the outcome, the release, the friction, and the
+// claim, the renewal, the ask for its spend (GH #1131), the outcome, the
+// release, the friction, and the
 // lookup that reads a command back, each under a request id the leg
 // mints from what it asks, so a verb run twice is one act and the second
 // run reads the first's receipt. The socket authenticates: the principal
@@ -26,6 +27,7 @@ const CLAIM_SUBJECT: String = "dna.commands.attempt.claim";
 const RENEW_SUBJECT: String = "dna.commands.attempt.renew";
 const OUTCOME_SUBJECT: String = "dna.commands.attempt.outcome";
 const RELEASE_SUBJECT: String = "dna.commands.attempt.release";
+const ALLOWANCE_SUBJECT: String = "dna.commands.attempt.allowance";
 const FRICTION_SUBJECT: String = "dna.commands.friction.file";
 const LOOKUP_SUBJECT: String = "dna.commands.lookup";
 const SOCKET_WAIT: Int = 30; // seconds a verb waits on the socket for its answer
@@ -154,6 +156,7 @@ locus Head {
         renew_topic: String = "";
         outcome_topic: String = "";
         release_topic: String = "";
+        allowance_topic: String = "";
         friction_topic: String = "";
         lookup_topic: String = "";
     }
@@ -195,14 +198,28 @@ locus Head {
     // once per renewal of a lease held through a wait.
     @unbounded
     fn attach() -> Bool {
-        let apps = self.get("/api/hale/v1/applications");
+        // a read while another leg's row lands answers `snapshot_changed`:
+        // read again, for up to ten seconds
+        let mut apps = self.get("/api/hale/v1/applications");
+        let mut tries = 0;
+        while !apps.ok && std::str::starts_with(apps.error, "snapshot_changed") && tries < 50 {
+            std::time::sleep(200ms);
+            tries = tries + 1;
+            apps = self.get("/api/hale/v1/applications");
+        }
         if !apps.ok { self.error = apps.error; return false; }
         let source = std::json::find_field_raw(apps.body, "source");
         self.application = std::json::find_string_field(source, "record_id");
         self.record_head = std::json::find_string_field(source, "record_head");
         self.record_revision = std::json::find_string_field(source, "record_revision");
         if len(self.application) == 0 { self.error = "the head at " + self.api + " names no application"; return false; }
-        let caps = self.get(self.prefix() + "/capabilities");
+        let mut caps = self.get(self.prefix() + "/capabilities");
+        tries = 0;
+        while !caps.ok && std::str::starts_with(caps.error, "snapshot_changed") && tries < 50 {
+            std::time::sleep(200ms);
+            tries = tries + 1;
+            caps = self.get(self.prefix() + "/capabilities");
+        }
         if !caps.ok { self.error = caps.error; return false; }
         let data = std::json::find_field_raw(caps.body, "data");
         let principal = std::json::find_field_raw(data, "principal");
@@ -223,6 +240,7 @@ locus Head {
         self.renew_topic = topic_named(description, RENEW_SUBJECT);
         self.outcome_topic = topic_named(description, OUTCOME_SUBJECT);
         self.release_topic = topic_named(description, RELEASE_SUBJECT);
+        self.allowance_topic = topic_named(description, ALLOWANCE_SUBJECT);
         self.friction_topic = topic_named(description, FRICTION_SUBJECT);
         self.lookup_topic = topic_named(description, LOOKUP_SUBJECT);
         if len(self.claim_topic) == 0 {
@@ -300,6 +318,34 @@ locus Head {
         b.string_field("renderer", if worn { renderer } else { "" });
         b.end_object();
         return self.call(request_id, self.outcome_topic, b.result());
+    }
+    // The ask for the attempt's spend (GH #1131), under the lease: the
+    // spine answers it with a row, which the ask's lookup reads back
+    // (`granted` with the allowance, or `refused` with why). A head that
+    // read its record while another leg's row landed answers
+    // `snapshot_changed`: asked again for up to ten seconds — the same
+    // request id, so the same act — since a record several legs and the
+    // owner write moves often.
+    @unbounded
+    fn allowance(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
+        let mut r = self.allowance_once(request_id, attempt_id, holder, token);
+        let mut tries = 0;
+        while !r.ok && std::str::starts_with(r.error, "snapshot_changed") && tries < 50 {
+            std::time::sleep(200ms);
+            tries = tries + 1;
+            r = self.allowance_once(request_id, attempt_id, holder, token);
+        }
+        return r;
+    }
+    fn allowance_once(request_id: String, attempt_id: String, holder: String, token: Int) -> Reply {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("attempt_id", attempt_id);
+        b.string_field("holder", holder);
+        b.int_field("token", token);
+        b.end_object();
+        return self.call(request_id, self.allowance_topic, b.result());
     }
     fn friction(request_id: String, position: String, attempt_id: String, text: String) -> Reply {
         let b = std::json::Builder { };

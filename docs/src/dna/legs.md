@@ -186,7 +186,7 @@ $ hale dna history t2
 usage of t2: 1 call(s) · 0 in · 22 out · 10 µ$
        by position: position:agent 1 call(s) · 0 in · 22 out · 10 µ$
        by backend: fake/fake-1 1 call(s) · 0 in · 22 out · 10 µ$
-   63  model.called           t2/wf1/s0/j/a0    {"adapter": "legs-router", "backend": "fake", "reported_model": "fake-1", …}
+   63  model.called           t2/wf1/s0/j/a0    {"adapter": "fake", "backend": "fake", "reported_model": "fake-1", …}
    64  attempt.outcome        t2/wf1/s0/j/a0    {"disposition": "done", …}
    68  workflow.settled       t2                {"disposition": "done", …}
 $ hale dna status
@@ -266,6 +266,14 @@ attempt is another leg's to claim (under a new token); neither is
 admitted while an outcome under the lease awaits the owner. `friction`
 files what got in the way as a row nobody admits. `brief` answers in
 the same envelope as the rest (`verb`, `state`, and the `hat`).
+
+**`allowance`** asks the organization for the attempt's spend under
+the lease, and waits for its answer (`--wait`, 60 s): `granted`, with
+`allowance_micros` — what the attempt may cost, the smaller of the
+Work's cost ceiling and what the budget's window has left, -1 when
+neither bounds it — or `refused`, with why (the window is spent, the
+lease is stale). The model performer asks before its first call on its
+own; a harness of your own asks it too (below).
 
 **`run`** is one cycle through the project's performers: claim,
 brief, perform, submit, settle. `--performer` names the performer to
@@ -417,16 +425,39 @@ the model it reported, the input and output tokens as the backend
 reported them, the cost, the wall time, under the prompt and context
 digests, handed back with the outcome; the owner journals it as
 `model.called` rows on the attempt, so tokens per task hold out of
-process as they do in it. The prompt as sent is filed as the attempt's
-receipt when its class allows (`public`, `internal`).
+process as they do in it. The rows read as the organization's own: a
+call's `adapter` is the adapter that answered (`openai-chat`,
+`anthropic-messages`, `local`, `harness`, `fake`, `recorded`), exactly
+as when the editor or the leader makes the call in process.
+
+**The budget gate.** The organization's budget (`org_budget()` in
+`models.hl`) has one gate, and a leg goes through it as the editor and
+the leader do. Before its first call the model performer asks for the
+attempt's spend (`allowance`, above); the organization answers from the
+budget with a row — `attempt.allowance_granted`, or
+`attempt.allowance_refused` naming why. Refused, the leg makes no call
+and hands back `declined` with the reason. Granted, it makes no call
+whose cost is known before it is sent (a price per call, a recorded
+answer) and past what is left, nor any once its calls have spent the
+allowance; a cost learned only from the answer (a price per token) can
+cross it, and that call is made whole. The organization settles an
+attempt whose calls cost more than the lease was granted as `failed`,
+naming the overrun, so the Work's attempts bound the repeats, and
+journals the calls anyway. Nothing is
+reserved: legs granted against the same remainder can together overrun
+the window, by at most what they were granted plus one call each.
+
+The prompt as sent is filed as the attempt's receipt when its class
+allows (`public`, `internal`).
 
 A **rate-limited** call (HTTP 429, or a backend saying so) is backed
 off inside the attempt: up to `retries` (3) more tries, the first
 after `backoff_ms` (1000), each wait double the last. Before each
 wait the lease is renewed through the head for the wait and a margin,
 so the Work is not lost to another leg meanwhile, and each wait is a
-row of evidence of its own — `refused: rate limited, backed off
-1000ms: …; lease renewed` — so the attempt's cost in time sits in the
+row of evidence of its own — `adapter: legs`, `waited_ms`, `refused:
+rate limited, backed off 1000ms: …; lease renewed` — so the attempt's
+cost in time sits in the
 record beside its cost in tokens, and the narrative says what it
 waited. A call still refused after the retries is a `failed` outcome,
 with the reason.
@@ -440,9 +471,13 @@ and leader call them in process; they move when their stages land.
 
 A harness of your own plugs in with the verbs, and needs no performer
 in `work.hl`: `next` claims, `brief --render agent` is the prompt with
-the hands, the harness does the work, `submit --evidence-file
-calls.json` hands it back with its calls as evidence (the array of
-`model.called` bodies) and the digests the brief reported. Through
+the hands, `allowance` asks for the spend before the first model call
+(and the harness keeps its calls within what is granted), the harness
+does the work, `submit --evidence-file calls.json` hands it back with
+its calls as evidence (the array of `model.called` bodies, `adapter`
+naming what answered) and the digests the brief reported. Calls that
+cost more than was granted — anything, when nothing was asked — settle
+the attempt `failed`, naming the overrun. Through
 `hale mcp` the same verbs are one tool, `hale_dna_work`.
 
 ## Over the head's socket

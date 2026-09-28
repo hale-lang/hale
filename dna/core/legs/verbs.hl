@@ -4,6 +4,9 @@
 //   next      claim the next attempt for a position     (WorkClaim,  dna.attempt.claim)
 //   brief     the hat of a Work, or rendered            (the hat read; --render prompt|text|agent)
 //   renew     extend the lease held                     (WorkRenew,  dna.attempt.renew)
+//   allowance ask the spine for the attempt's spend     (WorkAllowanceAsk, dna.attempt.allowance)
+//             and wait for its answer (--wait, default 60s): granted with the
+//             allowance, or refused with why; ask before the first model call
 //   submit    hand the outcome back under the lease     (WorkSubmit, dna.attempt.outcome)
 //   settle    read whether the owner settled it         (WorkSettle, the command's lookup)
 //   release   give the lease back without an outcome    (WorkRelease, dna.attempt.release)
@@ -165,7 +168,7 @@ locus Leg {
     }
     fn usage(why: String) -> Int {
         eprintln("hale dna work: ", why);
-        eprintln("usage: hale dna work next|brief|renew|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
+        eprintln("usage: hale dna work next|brief|renew|allowance|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
         return 2;
     }
     fn fail(verb: String, error: String) -> Int { println(error_json(verb, error)); return 1; }
@@ -248,6 +251,22 @@ locus Leg {
         // renewal repeated is one act and the next one lands
         let request = flag_or(self.a, "--request-id", "work-renew:" + attempt + ":" + to_string(token) + ":" + to_string(int_flag(self.a, "--ttl", 600)) + ":" + to_string(int_flag(self.a, "--renewal", 1)));
         return self.done("renew", request, self.head.renew(request, attempt, self.holder, token, int_flag(self.a, "--ttl", 600)));
+    }
+    // ---- allowance: WorkAllowanceAsk (GH #1131) — asked once per lease, read
+    // back until the spine answers
+    fn allowance() -> Int {
+        if !self.lease_needed("allowance") { return self.usage("`allowance` names the lease: --attempt <id> --token <n> and --as position:<name>"); }
+        let attempt = flag(self.a, "--attempt"); let token = int_flag(self.a, "--token", -1);
+        let request = flag_or(self.a, "--request-id", "work-allowance:" + attempt + ":" + to_string(token));
+        let mut reply = self.head.allowance(request, attempt, self.holder, token);
+        let deadline = std::time::now() + int_flag(self.a, "--wait", 60);
+        while reply.ok && std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"), "state") == "requested" && std::time::now() < deadline {
+            std::time::sleep(500ms);
+            // a record read while it moved is read again on the next turn
+            let read = self.head.lookup(request);
+            if read.ok || !std::str::starts_with(read.error, "snapshot_changed") { reply = read; }
+        }
+        return self.done("allowance", request, reply);
     }
     // ---- submit: WorkSubmit
     fn receipts_json() -> String {
@@ -592,7 +611,7 @@ locus Leg {
         if (verb == "loop" || verb == "run") && len(flag(self.a, "--performer")) > 0 && flag(self.a, "--performer") != "person" && flag(self.a, "--performer") != "deterministic" && flag(self.a, "--performer") != "model" { return "--performer is person, deterministic or model"; }
         if (verb == "next" || verb == "friction" || verb == "run" || verb == "loop") && !is_position(position) { return "`" + verb + "` names the position it works as: --as position:<name> (the graph's id)"; }
         if len(position) > 0 && !is_position(position) { return "--as is a position: position:<name>"; }
-        if verb == "renew" || verb == "submit" || verb == "release" {
+        if verb == "renew" || verb == "submit" || verb == "release" || verb == "allowance" {
             if len(flag(self.a, "--attempt")) == 0 || len(flag(self.a, "--token")) == 0 || len(holder) == 0 { return "`" + verb + "` names the lease: --attempt <id> --token <n> and --as position:<name>"; }
         }
         if verb == "settle" && len(flag(self.a, "--attempt")) == 0 && len(flag(self.a, "--request-id")) == 0 { return "`settle` names the outcome: --attempt <id> --token <n>, or --request-id"; }
@@ -605,7 +624,7 @@ locus Leg {
         self.a = parse_args();
         if len(self.a.error) > 0 { return self.usage(self.a.error); }
         let verb = self.a.verb;
-        if verb != "next" && verb != "brief" && verb != "renew" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
+        if verb != "next" && verb != "brief" && verb != "renew" && verb != "allowance" && verb != "submit" && verb != "settle" && verb != "release" && verb != "friction" && verb != "run" && verb != "loop" { return self.usage(if len(verb) == 0 { "a verb is needed" } else { "no verb `" + verb + "`" }); }
         // no default effect class: a catalog with a performer that declares
         // none is refused before a claim or an outcome — the verbs that
         // carry a class — and nowhere else, so a leg rebuilt under a
@@ -626,6 +645,7 @@ locus Leg {
         if verb == "next" { return self.next(); }
         if verb == "brief" { return self.brief(); }
         if verb == "renew" { return self.renew(); }
+        if verb == "allowance" { return self.allowance(); }
         if verb == "submit" { return self.submit(); }
         if verb == "settle" { return self.settle(); }
         if verb == "release" { return self.releasing(); }

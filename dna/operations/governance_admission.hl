@@ -193,7 +193,7 @@ locus GovernanceCommands {
     }
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> GovernanceGrant {
         if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
-        if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" || operation == "dna.attempt.renew" || operation == "dna.attempt.release" || operation == "dna.friction.file" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
+        if operation == "dna.attempt.claim" || operation == "dna.attempt.outcome" || operation == "dna.attempt.renew" || operation == "dna.attempt.release" || operation == "dna.attempt.allowance" || operation == "dna.friction.file" { let attempts = AttemptCommandCodec { }; return attempts.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
         if operation == "dna.organization.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
@@ -327,7 +327,7 @@ locus GovernanceCommands {
         let mut i = 0;
         while i < rj.revision() {
             let e = rj.read(i);
-            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "friction.filed" {
+            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "attempt.allowance_requested" || e.kind == "friction.filed" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
@@ -407,9 +407,10 @@ locus GovernanceCommands {
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
-            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "friction.filed" {
+            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "attempt.allowance_requested" || e.kind == "friction.filed" {
                 // GH #946: a leg's claim or renewal, the outcome it handed back,
-                // the lease it gave back, or the friction a position filed
+                // the lease it gave back, its ask for spend (GH #1131), or the
+                // friction a position filed
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
@@ -749,6 +750,7 @@ locus GovernanceCommands {
                 if attempts.outcome_outstanding(rj, a, command.holder, command.token) {
                     if command.operation == "dna.attempt.outcome" { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
                     // the lease is spoken for until the owner answers: given back or renewed now, the relayed outcome would be refused as stale
+                    if command.operation == "dna.attempt.allowance" { return self.refusal(s, attempts.refused(context, command, "an outcome for attempt " + a + " is handed back under this lease and awaits the owner; no spend is asked for under it")); }
                     return self.refusal(s, attempts.refused(context, command, "an outcome for attempt " + a + " is handed back under this lease and awaits the owner; the lease is neither renewed nor given back until it answers"));
                 }
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());
@@ -765,6 +767,25 @@ locus GovernanceCommands {
                     let live = leases.current("attempt:" + a);
                     if !leases.reachable { return self.refusal(s, attempts.refused(context, command, "memory cannot be reached to fence the lease: " + leases.last_error)); }
                     if !live.present || live.holder != command.holder || live.token != command.token || (!marking && live.expires <= now) { return self.refusal(s, attempts.refused(context, command, "stale: memory's claim on attempt " + a + " is not " + command.holder + "'s at token " + to_string(command.token) + " now")); }
+                }
+                if command.operation == "dna.attempt.allowance" {
+                    // the ask for spend (GH #1131): a row under the lease checked
+                    // above, which a node relays to the owner; its answer is the
+                    // owner's row, read back on lookup
+                    let head = self.attempt_row_head(s, ledger, adopted);
+                    let fact = attempts.allowance_fact(context, command, grant, head, now);
+                    if fact == "" { return GovernanceResult { code: "invalid_command" }; }
+                    if !self.unchanged(s) { continue; }
+                    let landed = self.land_attempt_row(s, ledger, adopted, dna::Row { kind: "attempt.allowance_requested", entity: a, author: context.principal_name, body: fact }, id);
+                    if landed.ok {
+                        let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: if adopted { s.head } else { landed.id }, revision: if adopted { s.revision } else { s.revision + 1 } };
+                        let moved = rj.refresh();
+                        return self.result_attempt(after, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: attempts.fingerprint(context, command), context: context, command: command, sequence: rj.revision() - 1, event_id: landed.id, native_body: fact, entity: a });
+                    }
+                    if landed.error == "stale" { continue; }
+                    if adopted { return self.refusal(s, attempts.refused(context, command, "memory refused the row: " + landed.error)); }
+                    uncertain = true;
+                    continue;
                 }
                 if command.operation == "dna.attempt.renew" || command.operation == "dna.attempt.release" {
                     // the lease renewed — memory's claim taken again by its holder,

@@ -32,7 +32,10 @@ and the record's), `spend.reserved` / `.settled` / `.compensated`,
 workflow execution's own facts (`workflow.admitted` / `.refused` /
 `.ask_refused` / `.settled`, `step.registered` / `.activated` /
 `.completed` / `.failed`, `work.settled`, `attempt.admitted` /
-`.outcome`). Every other kind, and any
+`.outcome`), and a leg's rows on an attempt (`attempt.claimed`,
+`.outcome_requested` / `.outcome_refused`, `.allowance_requested` /
+`.allowance_granted` / `.allowance_refused`, `.unresolved`,
+`.released`). Every other kind, and any
 kind a build does not know, is the record's. **Routing is versioned and
 is a fact of the record**: version 0 is every kind in the record;
 version 1 is the table; an organism is on the version its last
@@ -1453,6 +1456,9 @@ record's.
 | `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the principal that took it (`principal_mode`, `principal_name`: whose outcome the lease admits), the attempt's task, work and performer kind, and the command that took it |
 | `attempt.outcome_requested` | ledger | the outcome a leg handed back under its lease: the disposition, the result (`result`, `result_ref`), the receipts it filed (`evidence_ref`), the calls it made (`calls`), the hat it wore (`hat_digest`, `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`) and the command (`request`); relayed until `attempt.outcome` or `attempt.outcome_refused` answers it |
 | `attempt.outcome_refused` | ledger | why the owner would not settle a leg's outcome (`why`, `holder`, `token`, `request`) |
+| `attempt.allowance_requested` | ledger | a leg's ask for its attempt's spend, under its lease (`holder`, `token`, `request`, `at`, and the command); relayed until `attempt.allowance_granted` or `attempt.allowance_refused` answers it (GH #1131) |
+| `attempt.allowance_granted` | ledger | the one gate admitted a leg's spend: what the attempt may cost (`allowance_micros`, -1 when nothing bounds it), the ceiling, the window's spend, the lease and the request |
+| `attempt.allowance_refused` | ledger | the one gate admitted no spend (`why`): on a leg's attempt (naming the request), the editor's attempt, or `review:<id>` for the leader's Review |
 | `attempt.released` | ledger | a leg gave its lease back without an outcome (`holder`, `token`, `why`, and the command); the attempt is another leg's to claim (GH #946) |
 | `friction.filed` | record | what got in a position's way (`position`, `attempt_id`, `text`, and the command), filed on the attempt it was met on, else on the position; nobody admits it, it is a fact (GH #946) |
 | `org.reviewed` | record | that pass's own answer |
@@ -2063,6 +2069,35 @@ memory is named to it.
   live — and asks it again once the lease expires with no outcome
   (`effect.redelivered`, once per
   lease), when a leg claims it anew.
+- **The spend (GH #1131).** Before its first model call a leg asks the
+  spine, which holds the one budget (**Models**), for its attempt's
+  spend: `dna.attempt.allowance` under its lease (the attempt, the
+  holder, the token), which the head admits as it admits a renewal —
+  the same checks — and writes as `attempt.allowance_requested`
+  (`holder`, `token`, `request`, `at`, and the command). A node relays
+  it onto the nerves (`WorkAllowanceAsk`, `dna.work.allowance`) until
+  the record answers it. The owner checks the lease as of the head's
+  admission (this holder, this token, live, the attempt relayed to a leg
+  and unsettled) and asks the one gate with the Work's own cost ceiling:
+  `attempt.allowance_granted` (`allowance_micros`, `ceiling_micros`,
+  `spent_micros`, `window_micros`, `window`, `holder`, `token`,
+  `request`, `at`) or `attempt.allowance_refused` (`why`, …), naming
+  the request. The ask reads back `requested` until then, `granted`
+  with `allowance_micros`, or `refused` with the reason. The model
+  performer asks before its first call and waits up to 60 s for the
+  answer; refused, or unanswered, it makes no call and hands back
+  `declined`, naming why; granted, it makes no call — a retry included
+  — whose cost is known before it is sent and is past what is left of
+  the allowance (`ModelBackend.price_micros`: a price per call, a
+  recorded answer; the attempt is declined), nor any once its calls have
+  spent it. A cost learned only from the answer (a price per token, a
+  harness's summary) can cross the allowance: that call is made whole,
+  so a leg passes its grant by at most one call. At settle the owner
+  takes an outcome whose calls cost more than the lease was granted —
+  anything, when it asked for nothing — as the attempt `failed`, naming
+  the overrun (no Patch Work's candidate is made from it), so the Work's
+  allowance of attempts bounds the repeats; the calls are journaled all
+  the same, for what was spent is spent.
 - **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
   vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
   `dna.attempt.claim` for a position (`--as position:<name>`, the
@@ -2070,7 +2105,10 @@ memory is named to it.
   in the leg, `text`, `prompt` or `agent`, recording the hat digest,
   the digest of what was rendered and the renderer's version
   (`legs-render/1`) — `renew` is `dna.attempt.renew` (the lease
-  extended, the token kept: another `attempt.claimed` row), `submit`
+  extended, the token kept: another `attempt.claimed` row),
+  `allowance` is `dna.attempt.allowance` read back until the spine
+  answers it (`--wait`, 60 s: what an external harness asks before its
+  first model call), `submit`
   is `dna.attempt.outcome`, `settle` that command read back, `release`
   is `dna.attempt.release` (`attempt.released`; the attempt is another
   leg's to claim), and `friction` is `dna.friction.file`
@@ -2098,9 +2136,10 @@ memory is named to it.
   (`legs::ModelPerformer`) is the catalog's router behind the
   performer interface, out of process, one task per run: the brief
   rendered as a prompt, the answer the result, and every call the
-  router answered handed back as evidence (backend, reported model,
-  tokens, cost, wall time under the prompt and context digests), which
-  the owner journals as `model.called` rows on the attempt; a
+  router answered handed back as evidence (the adapter that answered,
+  backend, reported model, tokens, cost, wall time under the prompt and
+  context digests), which the owner journals as `model.called` rows on
+  the attempt through the encoder its in-process calls take; a
   rate-limited call is backed off inside the attempt (bounded,
   doubling, the lease held) and each wait is a row of evidence of its
   own, so the attempt's cost in time is in the record beside its cost
@@ -3329,10 +3368,18 @@ within the bound is a failed Attempt with the last diagnostics.
 The organization's models are a catalog in source (GH #583 M1):
 `dna/org/models.hl`, generated by `init` and owned by the project.
 
-- **The seam.** `ModelBackend` (`identity`, `model_name`, `allows`,
-  `capacity_bytes`, `complete`) is what every adapter implements;
-  every call publishes `ModelCalled`, which the substrate journals as
-  `model.called` with the time of the call (`at`). **The prompt is a
+- **The seam.** `ModelBackend` (`identity`, `adapter`, `price_micros`,
+  `model_name`, `allows`, `capacity_bytes`, `complete`) is what every
+  adapter
+  implements; every call publishes `ModelCalled`, which the substrate
+  journals as `model.called` with the time of the call (`at`). **One
+  vocabulary (GH #1131):** a row's `adapter` is the adapter that
+  answered the call — `openai-chat`, `anthropic-messages`, `local`,
+  `harness`, `fake`, `recorded`; empty when the router permitted no
+  backend, so none answered — whether the call was made in process or
+  by a leg (the router records it, `last_adapter`); `legs` is only a
+  leg's wait row, a call that was not made (`refused` says why,
+  `waited_ms` for how long). **The prompt is a
   receipt (GH #611):** the evidence carries the prompt and the context
   as sent, and the substrate files each as a receipt in the record
   (`refs/dna/receipts`) under the `prompt_digest` / `context_digest`
@@ -3508,6 +3555,30 @@ The organization's models are a catalog in source (GH #583 M1):
   told, and a Review is not announced to the model-backed positions —
   it waits for the Board, which needs no model. A `ModelRouter` counts
   what its calls cost and has no allowance of its own.
+- **One gate for spend (GH #1131).** `Budget.admit(ceiling, now)` is
+  the gate every model-backed spend passes, in process and out: the
+  editor's attempt and the leader's Review are admitted by it before a
+  call is made, and a leg asks it for its attempt (**Legs**). It
+  refuses an exhausted window and otherwise admits the smaller of the
+  work's own cost ceiling and what the window has left (-1 when neither
+  bounds it: an unmetered budget, no ceiling). A refusal is the same row
+  wherever it is asked — `attempt.allowance_refused <entity>` (`why`,
+  `ceiling_micros`, `spent_micros`, `window_micros`, `window`, `at`) on
+  the editor's attempt, which is declined and edits nothing, on
+  `review:<id>` for the leader's Review, which waits for the Board, or on
+  a leg's attempt. Intent admission and the optimize pass ask it too
+  (their answers stay `intent.refused` and `optimize.refused`).
+  **Nothing is reserved, so the window can be overrun, by a bound:**
+  legs admitted against one remainder may together pass the window's
+  allowance by at most the sum of the allowances they were granted plus
+  one call each — a leg makes no call whose known price is past what is
+  left of its grant, nor any once its calls have spent it, and only a
+  call whose cost is learned from its answer can cross it; the owner
+  settles such an attempt failed, naming the overrun, and journals the
+  calls. In process the gate
+  admits the editor's attempt and the leader's Review whole: their calls
+  within are not held to an allowance, so their spend is bounded only by
+  the window being open when they are admitted.
 - **Tokens per task (GH #946).** The attempt id on a `model.called`
   row is the tag its cost is attributed by: `<ask>/plan` to the task
   born of the ask (the `task.born` row whose body starts `<ask>: `);

@@ -97,6 +97,19 @@ locus RecordedModel {
         if len(self.mode_env) > 0 && std::env::var_exists(self.mode_env) { self.mode = std::env::var(self.mode_env); }
     }
     fn identity() -> String { return self.inner.identity(); }
+    fn adapter() -> String { return "recorded"; }
+    // A recorded answer's cost is known before it is replayed; recording,
+    // the inner backend's price is the call's (GH #1131).
+    @unbounded
+    fn price_micros(req: ModelRequest) -> Int {
+        if self.mode == "record" { return self.inner.price_micros(req); }
+        let f = self.fields(req);
+        let base = self.key_of(f);
+        let n = occurrences(self.seen, base);
+        let key = if n == 0 { base } else { self.key_of(f + "occurrence=" + to_string(n) + "\n") };
+        let e = self.read_entry(key);
+        return if e.present { e.cost_micros } else { -1 };
+    }
     fn model_name() -> String { return self.inner.model_name(); }
     // Replay is permitted whatever the inner would say: an entry that
     // recorded a refusal replays the refusal, and a miss is refused.

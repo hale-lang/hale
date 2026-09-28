@@ -57,6 +57,14 @@ fn made_by_status(status: Int) -> Bool {
 
 interface ModelBackend {
     fn identity() -> String;
+    // The adapter that answers (GH #1131): the `adapter` its evidence
+    // carries, in process and from a leg alike.
+    fn adapter() -> String;
+    // What this call will cost, when that is known before it is sent (a
+    // price per call); -1 when it is learned only from the answer (a
+    // price per token, a harness's own summary). A leg declines a call
+    // whose known price is past what is left of its allowance (GH #1131).
+    fn price_micros(req: ModelRequest) -> Int;
     fn model_name() -> String;
     fn allows(data_class: String) -> Bool;
     fn capacity_bytes() -> Int;
@@ -161,6 +169,8 @@ locus FakeModel {
         return "";
     }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return "fake"; }
+    fn price_micros(req: ModelRequest) -> Int { return self.price_micros; }
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return !protected_class(data_class); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
@@ -227,6 +237,8 @@ locus LocalFakeModel {
         calls: Int = 0;
     }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return "fake"; }
+    fn price_micros(req: ModelRequest) -> Int { return self.price_micros; }
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
@@ -395,6 +407,8 @@ locus OpenAiChat {
     }
     bus { publish ModelCalled; }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return self.adapter; }
+    fn price_micros(req: ModelRequest) -> Int { return -1; }
     fn model_name() -> String { return self.model; }
     // A hosted model never sees customer data, and a backend without a
     // credential is not a permitted backend — the router refuses
@@ -518,6 +532,8 @@ locus AnthropicMessages {
     }
     bus { publish ModelCalled; }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return self.adapter; }
+    fn price_micros(req: ModelRequest) -> Int { return -1; }
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.credential.ready(); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
@@ -589,6 +605,8 @@ locus LocalModel {
     }
     bus { publish ModelCalled; }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return "local"; }
+    fn price_micros(req: ModelRequest) -> Int { return 0; }
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
@@ -685,6 +703,7 @@ locus ModelRouter {
         spent_micros: Int = 0; // what this router's calls cost, a counter; the org's allowance is the substrate's Budget (GH #583)
         calls: Int = 0;
         last_backend: String = "";
+        last_adapter: String = ""; // the adapter of the backend that answered last (GH #1131)
     }
     // Whether the backend this request would go to works in place (a
     // harness): the editor asks before it exports a worktree.
@@ -698,15 +717,32 @@ locus ModelRouter {
         if cls == "" { return false; }
         return self.quick.works_in_place();
     }
+    // What the call this request would make costs, when the backend it
+    // would go to knows before sending (GH #1131); -1 when the cost is
+    // learned only from the answer, or no backend is permitted.
+    fn price_micros(req: ModelRequest) -> Int {
+        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
+        if cls == "deep" { return self.deep.price_micros(req); }
+        if cls == "private" { return self.private.price_micros(req); }
+        if cls == "" { return -1; }
+        return self.quick.price_micros(req);
+    }
     // The router returns DATA. Which backend answered is recorded, not hidden.
     fn ask(req: ModelRequest) -> ModelResult {
         let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
         let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
         let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
+        // what answered is this call's, never the last one's
+        self.last_backend = "";
+        self.last_adapter = "";
         if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class, made: false }; }
         self.calls = self.calls + 1;
         self.last_backend = cls;
+        self.last_adapter = if cls == "deep" { self.deep.adapter() } else if cls == "private" { self.private.adapter() } else { self.quick.adapter() };
         let r = if cls == "deep" { self.deep.complete(req) }
         else if cls == "private" { self.private.complete(req) }
         else { self.quick.complete(req) };
@@ -881,6 +917,8 @@ locus HarnessModel {
         return self.genome + "\n" + extra;
     }
     fn identity() -> String { return self.name; }
+    fn adapter() -> String { return self.adapter; }
+    fn price_micros(req: ModelRequest) -> Int { return -1; }
     fn model_name() -> String { return if len(self.model) > 0 { self.command + " " + self.model } else { self.command }; }
     // A harness sends the prompt and whatever it reads to its own
     // hosted model: customer data never; and nothing without the binary.
