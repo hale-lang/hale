@@ -49,7 +49,7 @@ fn fast() -> dna::FakeModel {
     return dna::FakeModel { name: "quick", model: "quick-1", answer: "kind: person\nclass: docs\ntarget: \ncount: 1\nassignee: noor\nThis is a call to make, not a change to the software.", price_micros: 5 };
 }
 fn desk() -> dna::OpenAiChat {
-    return dna::OpenAiChat { name: "private", model: "gpt-4o", credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_9c1e" } };
+    return dna::OpenAiChat { name: "private", model: "gpt-4o", credential: dna::HostedCredential { key: "HALE_DNA_NO_SUCH_KEY_9c1e" } };
 }
 fn leader_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier() }; }
 fn editor_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier() }; }

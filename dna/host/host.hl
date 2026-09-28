@@ -946,10 +946,10 @@ main locus Host {
     }
     // GH #617: a missing credential surfaces at once — on the board and
     // in `status` — instead of on a task hours later. The catalog names
-    // the credentials its hosted backends read; the body is short of one
-    // when NONE of them is in its environment or its slot of the vault
-    // (GH #989: `model-<NAME>`, which `hale dna secret set` fills). Rows
-    // only name the variables.
+    // the credentials its hosted backends present; the body is short of one
+    // when NONE of them is in its slot of the vault (GH #989: `model-<NAME>`,
+    // which `hale dna secret set` fills, the one source a model key has).
+    // Rows only name the keys.
     fn check_credentials() {
         let names = catalog_credentials(self.root);
         if len(names) == 0 { return; }
@@ -959,15 +959,15 @@ main locus Host {
             let sp = std::str::index_of(rest, " ");
             let name = rest[0..sp];
             rest = rest[(sp + 1)..len(rest)];
-            if len(name) > 0 && (std::env::var_exists(name) || secret_present(model_key_vault(name))) { have = true; }
+            if len(name) > 0 && secret_present(model_key_vault(name)) { have = true; }
         }
         let p = open_projection(self.root, self.seed, self.toolchain, self.memory);
         let was_missing = len(credential_gap(p)) > 0;
         if !have && !was_missing {
-            self.say("no credential for the model: none of " + names + " is set here or in the vault's slot for it (`hale dna secret set <NAME>`); the board says so until one is");
+            self.say("no credential for the model: none of " + names + " is in its slot of the vault (`hale dna secret set <NAME>`); the board says so until one is");
             let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host", self.memory);
         }
-        if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is set"); }
+        if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is in the vault"); }
         if have && was_missing {
             self.say("the model's credential is present now");
             let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + owner_json(self.root) + "}", "host", self.memory);

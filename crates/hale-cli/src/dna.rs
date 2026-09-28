@@ -1829,10 +1829,10 @@ fn organism_secrets(root: &Path, rotate: bool) -> String {
 // the catalog (GH #583 M1)
 // ---------------------------------------------------------------
 
-/// What this machine has for models: keys in the environment, servers
-/// and harnesses on `PATH`. Nothing found is fine — the catalog is
-/// still written, every hosted backend simply is not permitted until a
-/// key is set, and every Review waits for the Board.
+/// What this machine has for models: keys in its vault, servers and
+/// harnesses on `PATH`. Nothing found is fine — the catalog is still
+/// written, every hosted backend simply is not permitted until its key is
+/// in the vault, and every Review waits for the Board.
 struct Discovery {
     openai: bool,
     anthropic: bool,
@@ -1846,6 +1846,24 @@ fn on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The local vault's directory, as `std::secret::vault_local_dir()` reads
+/// it: `HALE_VAULT_DIR`, else `$XDG_CACHE_HOME/hale/vault`, else
+/// `~/.cache/hale/vault`. None with a real vault (`HALE_VAULT_ADDR`), whose
+/// entries are read only where they are presented.
+fn vault_local_dir() -> Option<PathBuf> {
+    let set = |v: &str| std::env::var(v).ok().filter(|s| !s.is_empty());
+    if set("HALE_VAULT_ADDR").is_some() {
+        return None;
+    }
+    if let Some(d) = set("HALE_VAULT_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    if let Some(c) = set("XDG_CACHE_HOME") {
+        return Some(PathBuf::from(c).join("hale/vault"));
+    }
+    set("HOME").map(|h| PathBuf::from(h).join(".cache/hale/vault"))
+}
+
 fn discover() -> Discovery {
     // `HALE_DNA_DISCOVER=off`: find nothing. For fixtures, so that a
     // developer's machine — a key in the shell, `claude` on PATH — makes
@@ -1855,7 +1873,13 @@ fn discover() -> Discovery {
     if std::env::var("HALE_DNA_DISCOVER").map(|v| v == "off").unwrap_or(false) {
         return Discovery { openai: false, anthropic: false, ollama: None, harnesses: Vec::new() };
     }
-    let key = |v: &str| std::env::var(v).map(|s| !s.trim().is_empty()).unwrap_or(false);
+    // a model key is the vault's slot for it (GH #989: `model-<NAME>`, the
+    // one source a DNA credential has), never an environment variable
+    let key = |v: &str| {
+        vault_local_dir()
+            .map(|d| std::fs::read_to_string(d.join(format!("model-{v}"))).map(|s| !s.trim().is_empty()).unwrap_or(false))
+            .unwrap_or(false)
+    };
     let ollama = if on_path("ollama") {
         let first = Command::new("ollama")
             .arg("list")
@@ -1888,7 +1912,7 @@ struct Hosted {
     adapter: &'static str, // `dna::OpenAiChat` | `dna::AnthropicMessages`
     model: &'static str,
     endpoint: &'static str,
-    env_var: &'static str,
+    key: &'static str, // the model key's name: its vault slot is `model-<key>`
     scheme: &'static str, // `bearer` | `x-api-key`
     input_micros_per_1k: u32,
     output_micros_per_1k: u32,
@@ -1902,14 +1926,14 @@ impl Discovery {
     fn hosted(&self) -> (Hosted, Hosted, &'static str) {
         if self.anthropic {
             (
-                Hosted { adapter: "dna::AnthropicMessages", model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/messages", env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
-                Hosted { adapter: "dna::AnthropicMessages", model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/messages", env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
+                Hosted { adapter: "dna::AnthropicMessages", model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
+                Hosted { adapter: "dna::AnthropicMessages", model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/messages", key: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
                 "ANTHROPIC_API_KEY",
             )
         } else {
             (
-                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
-                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 150, output_micros_per_1k: 600 },
+                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
+                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", key: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 150, output_micros_per_1k: 600 },
                 "OPENAI_API_KEY",
             )
         }
@@ -1928,10 +1952,10 @@ impl Discovery {
     fn summary(&self) -> String {
         let mut parts = Vec::new();
         parts.push(match (self.anthropic, self.openai) {
-            (true, true) => "ANTHROPIC_API_KEY and OPENAI_API_KEY set (Anthropic chosen)".to_string(),
-            (true, false) => "ANTHROPIC_API_KEY set".to_string(),
-            (false, true) => "OPENAI_API_KEY set".to_string(),
-            (false, false) => "no API key in the environment".to_string(),
+            (true, true) => "ANTHROPIC_API_KEY and OPENAI_API_KEY in the vault (Anthropic chosen)".to_string(),
+            (true, false) => "ANTHROPIC_API_KEY in the vault".to_string(),
+            (false, true) => "OPENAI_API_KEY in the vault".to_string(),
+            (false, false) => "no model key in the vault (`hale dna secret set <NAME>`)".to_string(),
         });
         parts.push(match &self.ollama {
             Some(m) => format!("ollama on PATH ({m})"),
@@ -1953,7 +1977,7 @@ impl Discovery {
                 frontier.model,
                 fast.model,
                 key,
-                if self.anthropic || self.openai { "" } else { ", not set: hosted backends are not permitted until it is" },
+                if self.anthropic || self.openai { "" } else { ", not in the vault: hosted backends are not permitted until it is" },
                 desk,
                 if self.ollama.is_some() { "" } else { ", not found" }
             ),
@@ -2113,8 +2137,8 @@ fn harness() -> dna::HarnessModel {
     };
     let hosted = |name: &str, h: &Hosted| {
         format!(
-            "{} {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ env_var: \"{}\", scheme: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
-            h.adapter, h.model, h.endpoint, h.env_var, h.scheme, h.input_micros_per_1k, h.output_micros_per_1k
+            "{} {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ key: \"{}\", scheme: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
+            h.adapter, h.model, h.endpoint, h.key, h.scheme, h.input_micros_per_1k, h.output_micros_per_1k
         )
     };
     format!(

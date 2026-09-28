@@ -62,7 +62,7 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool, memory
     // pieces, and who runs it — never a stored label
     let now = std::time::now();
     let gap = credential_gap(p);
-    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n" + "genome:     " + genome_line(p) + "\n");
+    return answer(p.text() + "profile:    " + profile_name(root, memory) + "\n" + "body:       " + body_line(root, now, memory) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is in the vault where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root, memory) + "\n" + "genome:     " + genome_line(p) + "\n");
 }
 
 // GH #1026: the genome each node runs, from its last `node.started` row,
@@ -612,7 +612,7 @@ fn board_verb(p: Projection) -> Answer {
     if grant > 0 { out = out + "grant changes: " + to_string(grant) + "\n"; }
     // GH #617: a missing credential surfaces here at once, not on a task hours later
     let gap = credential_gap(p);
-    if len(gap) > 0 { out = out + "body: no credential for the model (none of " + gap + " is set where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there\n"; }
+    if len(gap) > 0 { out = out + "body: no credential for the model (none of " + gap + " is in the vault where the body runs); `hale dna secret set <NAME> [--body <user@host>]` puts one there\n"; }
     // GH #989: each secret the organism requires that the vault lacks (the
     // model's keys are the body's to report, above)
     out = out + secrets_board(p.root);
@@ -981,7 +981,7 @@ fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
 // where it uses it. The record gets `secret.rotated <NAME>` and nothing
 // else.
 
-fn env_var_name_ok(name: String) -> Bool {
+fn secret_name_ok(name: String) -> Bool {
     if len(name) == 0 { return false; }
     let mut i = 0;
     while i < len(name) {
@@ -998,7 +998,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     if len(no_head) > 0 { return fail(no_head); }
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
-    if !env_var_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not an environment variable name (A-Z, 0-9, _)"); }
+    if !secret_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not a secret's name (A-Z, 0-9, _)"); }
     // GH #989: a slot the organism requires, and no other name
     if name != "FORGE_TOKEN" && name != OIDC_CLIENT_SLOT && !std::str::contains(" " + catalog_credentials(root) + " ", " " + name + " ") { return fail("secret " + sub + ": `" + name + "` is no slot of the organism's (FORGE_TOKEN, OIDC_CLIENT_SECRET, or a credential dna/org/models.hl names: " + catalog_credentials(root) + "); `hale dna secrets` lists them"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
@@ -1026,16 +1026,16 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     return answer("secret " + sub + ": " + name + " is in its slot of the vault, " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A part reads it from the vault where it uses it\n");
 }
 
-// The model credentials the catalog names (`env_var: "X"` in
-// dna/org/models.hl), space-separated.
+// The model credentials the catalog names (`HostedCredential { key: "X" }`
+// in dna/org/models.hl), space-separated.
 fn catalog_credentials(root: String) -> String {
     let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
     let mut out = "";
     let mut rest = catalog;
     while true {
-        let at = std::str::index_of(rest, "env_var: \"");
+        let at = std::str::index_of(rest, "HostedCredential { key: \"");
         if at < 0 { break; }
-        let after = rest[(at + 10)..len(rest)];
+        let after = rest[(at + 25)..len(rest)];
         let q = std::str::index_of(after, "\"");
         if q < 0 { break; }
         let name = after[0..q];

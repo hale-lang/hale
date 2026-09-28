@@ -68,7 +68,7 @@ fn fast() -> dna::FakeModel {
     return dna::FakeModel { name: "quick", model: "quick-1", answer: "ready", price_micros: 5 };
 }
 fn desk() -> dna::OpenAiChat {
-    return dna::OpenAiChat { name: "private", model: "gpt-4o", credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_9c1e" } };
+    return dna::OpenAiChat { name: "private", model: "gpt-4o", credential: dna::HostedCredential { key: "HALE_DNA_NO_SUCH_KEY_9c1e" } };
 }
 fn leader_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier() }; }
 fn editor_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier() }; }
@@ -88,12 +88,12 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     let app = d.join("bare");
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).expect("init writes the catalog");
     assert!(out.contains("created ") && out.contains("dna/org/models.hl"), "{out}");
-    assert!(out.contains("models  found   no API key in the environment, no ollama on PATH"), "{out}");
-    assert!(out.contains("frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY, not set: hosted backends are not permitted until it is) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
+    assert!(out.contains("models  found   no model key in the vault (`hale dna secret set <NAME>`), no ollama on PATH"), "{out}");
+    assert!(out.contains("frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY, not in the vault: hosted backends are not permitted until it is) · desk = llama3 (ollama at 127.0.0.1:11434, not found)"), "{out}");
     assert!(out.contains("leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day"), "{out}");
     for needle in [
         "fn frontier() -> dna::OpenAiChat",
-        "model: \"gpt-4o\", endpoint: \"https://api.openai.com/v1/chat/completions\", credential: dna::HostedCredential { env_var: \"OPENAI_API_KEY\", scheme: \"bearer\" }",
+        "model: \"gpt-4o\", endpoint: \"https://api.openai.com/v1/chat/completions\", credential: dna::HostedCredential { key: \"OPENAI_API_KEY\", scheme: \"bearer\" }",
         "fn fast() -> dna::OpenAiChat",
         "fn desk() -> dna::LocalModel",
         "fn leader_models() -> dna::ModelRouter",
@@ -122,12 +122,16 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     // 2. an Anthropic key: the hosted backends speak the native Messages
     //    API, the key as x-api-key, with the strongest models
     let d2 = workdir("anthropic");
-    let (ok, out) = hale_env(&["dna", "new", "withkey"], &d2, &[("PATH", &bare_path()), ("ANTHROPIC_API_KEY", "sk-ant-test")], &["OPENAI_API_KEY"]);
+    // the key is the vault's (GH #989), in a vault of this case's own
+    let keyed = d2.join("vault");
+    std::fs::create_dir_all(&keyed).unwrap();
+    std::fs::write(keyed.join("model-ANTHROPIC_API_KEY"), "sk-ant-test").unwrap();
+    let (ok, out) = hale_env(&["dna", "new", "withkey"], &d2, &[("PATH", &bare_path()), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["OPENAI_API_KEY"]);
     assert!(ok, "{out}");
     let catalog = std::fs::read_to_string(d2.join("withkey/dna/org/models.hl")).unwrap();
-    assert!(out.contains("models  found   ANTHROPIC_API_KEY set, no ollama on PATH"), "{out}");
+    assert!(out.contains("models  found   ANTHROPIC_API_KEY in the vault, no ollama on PATH"), "{out}");
     assert!(out.contains("frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_API_KEY)"), "{out}");
-    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"deep\", model: \"claude-opus-5\", endpoint: \"https://api.anthropic.com/v1/messages\", credential: dna::HostedCredential { env_var: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" }, input_micros_per_1k: 15000, output_micros_per_1k: 75000 };"), "{catalog}");
+    assert!(catalog.contains("fn frontier() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"deep\", model: \"claude-opus-5\", endpoint: \"https://api.anthropic.com/v1/messages\", credential: dna::HostedCredential { key: \"ANTHROPIC_API_KEY\", scheme: \"x-api-key\" }, input_micros_per_1k: 15000, output_micros_per_1k: 75000 };"), "{catalog}");
     assert!(catalog.contains("fn fast() -> dna::AnthropicMessages {\n    return dna::AnthropicMessages { name: \"quick\", model: \"claude-haiku-4-5-20251001\""), "{catalog}");
     assert!(!catalog.contains("-> dna::OpenAiChat"), "no OpenAI backend when Anthropic is chosen:\n{catalog}");
     // and the organization checks and builds from it
@@ -164,7 +168,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     assert!(ok, "{out}");
     let app = d.join("harnessed");
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
-    assert!(out.contains("models  found   no API key in the environment, no ollama on PATH, claude on PATH"), "{out}");
+    assert!(out.contains("models  found   no model key in the vault (`hale dna secret set <NAME>`), no ollama on PATH, claude on PATH"), "{out}");
     assert!(out.contains("models  editor, agent, leader: quick = harness (claude), deep = harness (claude) · private = desk"), "{out}");
     assert!(catalog.contains("fn harness() -> dna::HarnessModel {\n    return dna::HarnessModel { name: \"quick\", command: \"claude\", confinement: dna::Bubblewrap { } };"), "{catalog}");
     assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: harness(), private: desk() };"), "{catalog}");
@@ -172,7 +176,11 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     assert!(catalog.contains("dna::probe(\"harness\", harness())"), "{catalog}");
     // with a key: the harness is the editor's quick tier, the frontier decides
     let d2 = workdir("harnessed-keyed");
-    let (ok, out) = hale_env(&["dna", "new", "keyed"], &d2, &[("PATH", &path), ("OPENAI_API_KEY", "sk-test")], &["ANTHROPIC_API_KEY"]);
+    // the key is the vault's (GH #989), in a vault of this case's own
+    let keyed = d2.join("vault");
+    std::fs::create_dir_all(&keyed).unwrap();
+    std::fs::write(keyed.join("model-OPENAI_API_KEY"), "sk-test").unwrap();
+    let (ok, out) = hale_env(&["dna", "new", "keyed"], &d2, &[("PATH", &path), ("HALE_VAULT_DIR", &keyed.to_string_lossy())], &["ANTHROPIC_API_KEY"]);
     assert!(ok, "{out}");
     let catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
     assert!(out.contains("models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk"), "{out}");
@@ -261,7 +269,7 @@ fn upgrade_gives_an_older_organization_a_catalog_and_says_what_to_point_at_it() 
     let (ok, out) = hale_env(&["dna", "upgrade"], &app, &[("PATH", &bare_path())], NO_KEYS);
     assert!(ok, "{out}");
     assert!(app.join("dna/org/models.hl").is_file(), "upgrade writes the catalog: {out}");
-    assert!(out.contains("created ") && out.contains("models  found   no API key"), "{out}");
+    assert!(out.contains("created ") && out.contains("models  found   no model key in the vault"), "{out}");
     assert!(out.contains("note    dna/org/main.hl wires its routers inline (dna::HostedModel is now dna::OpenAiChat); point each position at the catalog: `models: leader_models()`"), "{out}");
     // a second upgrade has nothing to add
     let (ok, out) = hale_env(&["dna", "upgrade"], &app, &[("PATH", &bare_path())], NO_KEYS);

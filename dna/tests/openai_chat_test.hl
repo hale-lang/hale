@@ -97,6 +97,9 @@ main locus App {
 // The fake endpoint's port is one `dna::free_port` bound, never a number
 // the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
+    // the model key is the vault's (GH #989): `hale test` gives this file a
+    // vault of its own, and its slot for the key is written here
+    std::io::fs::write_file(std::secret::vault_local_dir() + "/model-TEST_MODEL_KEY", "test-model-key") or discard;
     let port = dna::free_port(90);
     let base = "http://127.0.0.1:" + to_string(port);
     App {
@@ -104,14 +107,14 @@ fn main() {
         hosted: dna::OpenAiChat {
             name: "quick", model: "test-model",
             endpoint: base + "/v1/chat/completions",
-            // any present env var stands in for the API key; the server only checks presence
-            credential: dna::HostedCredential { env_var: "HOME" },
+            // the key is the vault's slot for it, written by main; the server only checks presence
+            credential: dna::HostedCredential { key: "TEST_MODEL_KEY" },
             max_tokens: 64
         },
         keyless: dna::OpenAiChat {
             name: "deep", model: "test-model",
             endpoint: base + "/v1/chat/completions",
-            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3a" }
+            credential: dna::HostedCredential { key: "HALE_DNA_NO_SUCH_KEY_7f3a" }
         },
         local: dna::LocalModel {
             name: "private", model: "local-model",

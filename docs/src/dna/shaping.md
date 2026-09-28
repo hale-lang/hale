@@ -83,8 +83,8 @@ budget is one policy. `init` wrote it from what your machine had
 position was given; `hale dna models` probes every backend it names.
 
 ```hale,fragment
-fn frontier() -> dna::OpenAiChat { return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }; }
-fn fast() -> dna::OpenAiChat { return dna::OpenAiChat { name: "quick", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 150, output_micros_per_1k: 600 }; }
+fn frontier() -> dna::OpenAiChat { return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { key: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }; }
+fn fast() -> dna::OpenAiChat { return dna::OpenAiChat { name: "quick", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { key: "OPENAI_API_KEY" }, input_micros_per_1k: 150, output_micros_per_1k: 600 }; }
 fn desk() -> dna::LocalModel { return dna::LocalModel { name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }; }
 
 fn leader_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() }; }
