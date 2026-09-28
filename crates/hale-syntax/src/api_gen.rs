@@ -1072,6 +1072,7 @@ pub fn inject_api_entry(program: &mut Program, path: &str) -> Result<(), String>
             on_watch_full: None,
             on_unauthorized: None,
             serve: Vec::new(),
+            http: None,
             span,
         };
         if let Some(LocusMember::Bindings(bb)) =
@@ -1135,7 +1136,7 @@ type __ApiReply { peer: Int; request_id: Int; client_id: String; ok: Bool; count
 topic __ApiReplyT { payload: __ApiReply; subject: "__api.reply"; keyed_by peer; }
 type __ApiFrame { subject: String; body: String; }
 topic __ApiFrameT { payload: __ApiFrame; subject: "__api.frame"; }
-type __ApiIngress { peer: Int; client_id: String; verb: String; subject: String; body: String; caller: std::api::Principal; }
+type __ApiIngress { peer: Int; client_id: String; verb: String; subject: String; body: String; caller: std::api::Principal; bearer: String = ""; }
 topic __ApiIngressT { payload: __ApiIngress; subject: "__api.ingress"; }
 
 fn __api_hex(b: Bytes) -> String {
@@ -1282,20 +1283,7 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
             self.refuse_here(self.caller, client_id, "unauthenticated", "the kernel would not say who the peer is");
             return;
         }
-        // `via`: a transport of the program's own — this very process,
-        // not merely its uid — forwarding a line says how it arrived and,
-        // for a head, who it verified; from anyone else, another process
-        // of the same account included, the mark is refused, never
-        // silently dropped.
-        let mut who = self.caller;
-        let via = std::json::string_field(t, "via");
-        if len(std::json::find_field_raw(t, "via")) > 0 {
-            if via.kind != "string" || self.caller.uid != std::process::uid() || self.caller.pid != std::process::pid() || len(via.text) == 0 || len(via.text) > 64 {
-                self.refuse_here(self.caller, client_id, "malformed", "\"via\" is set by the program's own transports only");
-                return;
-            }
-            who = std::api::Principal { mode: self.caller.mode, name: self.caller.name, uid: self.caller.uid, gid: self.caller.gid, pid: self.caller.pid, groups: self.caller.groups, via: via.text };
-        }
+        let who = self.caller;
         let call = std::json::string_field(t, "call");
         if call.kind == "string" {
             let body = std::json::find_field_raw(t, "payload");
@@ -1382,6 +1370,177 @@ fn peer_src(surface: &ApiSurface, drop_old: bool) -> String {
     b
 }
 
+/// GH #1135: the binding's HTTP transport. `__ApiHttp` listens on the
+/// entry's host and port and takes each connection as an `__ApiHttpPeer`,
+/// which reads one request: a POST whose body is one line of the wire
+/// (`{"call"}`, `{"read"}` or `{"describe"}`; a watch is the socket's)
+/// under `Authorization: Bearer <token>`. The peer publishes the request
+/// with its token; the binding asks the program's `BearerSource` who it is
+/// and serves it as any socket peer's, and the peer answers the reply line
+/// as the response, its status the refusal's kind — 200 answered, 401
+/// unauthenticated, 403 unauthorized, 404 unknown, 503 over the bound, 400
+/// otherwise — and closes the connection. No program writes this path.
+fn http_src() -> String {
+    r#"fn __api_http_header(head: String, name: String, lower: String) -> String {
+    let mut rest = head + "\r\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\r\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 2)..len(rest)];
+        if std::str::starts_with(line, name + ":") { return std::str::trim(line[(len(name) + 1)..len(line)]); }
+        if std::str::starts_with(line, lower + ":") { return std::str::trim(line[(len(lower) + 1)..len(line)]); }
+    }
+    return "";
+}
+fn __api_http_status(r: __ApiReply) -> Int {
+    if r.ok { return 200; }
+    let kind = std::json::find_string_field(std::json::find_field_raw("{" + r.body + "}", "refusal"), "kind");
+    if kind == "unauthenticated" { return 401; }
+    if kind == "unauthorized" { return 403; }
+    if kind == "unknown" { return 404; }
+    if kind == "over_bound" { return 503; }
+    return 400;
+}
+fn __api_http_reason(status: Int) -> String {
+    if status == 200 { return "OK"; }
+    if status == 401 { return "Unauthorized"; }
+    if status == 403 { return "Forbidden"; }
+    if status == 404 { return "Not Found"; }
+    if status == 405 { return "Method Not Allowed"; }
+    if status == 503 { return "Service Unavailable"; }
+    if status == 504 { return "Gateway Timeout"; }
+    return "Bad Request";
+}
+locus __ApiHttpPeer {
+    params {
+        peer: Int = 0;
+        fd: Int = -1;
+        answered: Bool = false;
+        stream: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+    }
+    bus {
+        subscribe __ApiReplyT as on_reply where key == self.peer;
+        publish __ApiIngressT;
+    }
+    birth() {
+        self.stream = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: true };
+        std::io::tcp::__set_recv_timeout_ns(self.fd, 5000000000);
+    }
+    @unbounded
+    run() {
+        let mut buf = "";
+        let mut head_end = -1;
+        let mut open = true;
+        while open && head_end < 0 && len(buf) < 65536 {
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 { open = false; } else { buf = buf + chunk; head_end = std::str::index_of(buf, "\r\n\r\n"); }
+        }
+        let nobody = std::api::Principal { mode: "bearer", name: "", via: "http" };
+        if head_end < 0 {
+            self.refuse_here(nobody, "", "malformed", "an HTTP request with its headers");
+            return;
+        }
+        let head = buf[0..head_end];
+        let mut body = buf[(head_end + 4)..len(buf)];
+        let want = std::str::parse_int(__api_http_header(head, "Content-Length", "content-length")) or 0;
+        while open && len(body) < want && len(body) < 1048576 {
+            let chunk = self.stream.recv(65536) or "";
+            if len(chunk) == 0 { open = false; } else { body = body + chunk; }
+        }
+        if !std::str::starts_with(head, "POST ") {
+            self.respond(405, "{\"ok\":false," + __api_refusal("malformed", "the api binding's HTTP transport takes one POSTed line of the wire") + "}");
+            return;
+        }
+        let auth = __api_http_header(head, "Authorization", "authorization");
+        let token = if std::str::starts_with(auth, "Bearer ") { std::str::trim(auth[7..len(auth)]) } else { "" };
+        if len(token) == 0 {
+            self.refuse_here(nobody, "", "unauthenticated", "a request carries `Authorization: Bearer <token>`");
+            return;
+        }
+        let t = std::str::trim(body);
+        if !std::json::valid_object(t) {
+            self.refuse_here(nobody, "", "malformed", "a request is one JSON object");
+            return;
+        }
+        let client_id = std::json::find_field_raw(t, "id");
+        let call = std::json::string_field(t, "call");
+        let rd = std::json::string_field(t, "read");
+        let d = std::json::find_field_raw(t, "describe");
+        if call.kind == "string" {
+            let payload = std::json::find_field_raw(t, "payload");
+            if len(payload) == 0 {
+                self.refuse_here(nobody, client_id, "malformed", "a call carries a \"payload\" object");
+                return;
+            }
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "call", subject: call.text, body: payload, caller: nobody, bearer: token };
+        } else if rd.kind == "string" {
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "read", subject: rd.text, body: "", caller: nobody, bearer: token };
+        } else if d == "true" || d == "\"full\"" {
+            __ApiIngressT <- __ApiIngress { peer: self.peer, client_id: client_id, verb: "describe", subject: if d == "true" { "" } else { "full" }, body: "", caller: nobody, bearer: token };
+        } else {
+            self.refuse_here(nobody, client_id, "malformed", "a request over HTTP is a \"call\", a \"read\" or a \"describe\" (a watch is the socket's)");
+            return;
+        }
+        let started = std::time::monotonic_ns();
+        while !self.answered && !self.draining && std::time::monotonic_ns() - started < 30000000000 {
+            std::time::sleep(5ms);
+        }
+        if !self.answered {
+            self.answered = true;
+            self.respond(504, "{\"ok\":false," + __api_refusal("timeout", "the program did not answer within 30 s") + "}");
+        }
+    }
+    fn on_reply(r: __ApiReply) {
+        if self.answered { return; }
+        self.answered = true;
+        self.respond(__api_http_status(r), __api_reply_line(r));
+    }
+    fn refuse_here(who: std::api::Principal, client_id: String, kind: String, reason: String) {
+        self.answered = true;
+        let r = __ApiReply { peer: self.peer, request_id: 0, client_id: client_id, ok: false, counted: false, body: __api_refusal(kind, reason), as_of: "", caller: who, role: "" };
+        self.respond(__api_http_status(r), __api_reply_line(r));
+    }
+    fn respond(status: Int, body: String) {
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __api_http_reason(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or discard;
+    }
+}
+locus __ApiHttp {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 0;
+        listen_fd: Int = -1;
+        next_peer: Int = 1000000000;
+    }
+    birth() {
+        if self.port <= 0 { return; }
+        self.listen_fd = std::io::tcp::__listen_socket(self.host, self.port);
+        if self.listen_fd < 0 {
+            eprintln("api: the api binding's HTTP transport could not listen on " + self.host + ":" + to_string(self.port) + "; the program runs without it");
+        }
+    }
+    @unbounded
+    run() {
+        if self.listen_fd < 0 { return; }
+        while !self.draining {
+            let conn = std::io::tcp::__accept_one(self.listen_fd);
+            if conn < 0 { break; }
+            let n = self.next_peer;
+            self.next_peer = n + 1;
+            __ApiHttpPeer { peer: n, fd: conn };
+        }
+    }
+    accept(c: __ApiHttpPeer) { }
+    release(c: __ApiHttpPeer) { }
+    dissolve() {
+        if self.listen_fd < 0 { return; }
+        std::io::tcp::__shutdown_listen_socket(self.listen_fd);
+        std::io::tcp::__close_fd(self.listen_fd);
+    }
+}
+"#
+    .to_string()
+}
+
 /// The Hale statements that gate one operation on `role` (none when
 /// ungated): the authorizing role lands in `cur_role`, or the caller
 /// is refused and the arm returns. A non-holder is told `unknown`, as
@@ -1413,14 +1572,14 @@ fn binding_src(surface: &ApiSurface, bound: i64, table: Option<&str>) -> String 
     // declares, so a table naming another is refused at birth.
     let known: Vec<&str> = surface.roles.iter().map(|r| r.name.as_str()).collect();
     b.push_str(&format!(
-        "        roles: std::api::RoleSource = std::api::StaticRoles {{ table: {}, known: {} }};\n",
+        "        roles: std::api::RoleSource = std::api::StaticRoles {{ table: {}, known: {} }};\n        principals: std::api::BearerSource = std::api::NoBearer {{ }};\n",
         q(table.unwrap_or("")),
         q(&known.join(" "))
     ));
     let drop = matches!(surface.binding.on_unauthorized, Some((ApiUnauthorizedPolicy::Drop, _)));
     b.push_str(&format!("        unauthorized_drop: Bool = {};\n", drop));
     b.push_str(
-        "        listen_fd: Int = -1;\n        bind_failed: String = \"\";\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
+        "        listen_fd: Int = -1;\n        bind_failed: String = \"\";\n        next_peer: Int = 1;\n        next_request: Int = 1;\n        in_flight: Int = 0;\n        cur_peer: Int = 0;\n        cur_request: Int = 0;\n        cur_client: String = \"\";\n        cur_caller: std::api::Principal = std::api::Principal { };\n        cur_role: String = \"\";\n        decode_failed: Bool = false;\n    }\n    bus {\n        subscribe __ApiIngressT as on_ingress;\n        subscribe __ApiReplyT as on_reply_seen;\n        publish __ApiIngressT;\n        publish __ApiReplyT;\n        publish __ApiFrameT;\n",
     );
     for s in &surface.streams {
         b.push_str(&format!(
@@ -1487,6 +1646,23 @@ fn binding_src(surface: &ApiSurface, bound: i64, table: Option<&str>) -> String 
         self.reply(self.cur_peer, self.cur_request, self.cur_client, false, __api_refusal("malformed", e.kind + ": " + e.field));
     }
     fn on_ingress(i: __ApiIngress) {
+        // GH #1135: a request on the HTTP transport carries its bearer
+        // token; the program's source says who it is, and the request goes
+        // on as that principal, arrived over `http`. A token the source
+        // names nobody is refused, gated or not.
+        if len(i.bearer) > 0 {
+            let who = self.principals.principal(i.bearer);
+            let caller = std::api::Principal { mode: "bearer", name: who.name, uid: who.uid, gid: who.gid, pid: who.pid, groups: who.groups, via: "http" };
+            if len(who.name) == 0 {
+                self.cur_caller = caller;
+                self.cur_role = "";
+                let why = self.principals.refused();
+                self.reply(i.peer, 0, i.client_id, false, __api_refusal("unauthenticated", "the bearer token is refused" + (if len(why) > 0 { ": " + why } else { "" })));
+                return;
+            }
+            __ApiIngressT <- __ApiIngress { peer: i.peer, client_id: i.client_id, verb: i.verb, subject: i.subject, body: i.body, caller: caller };
+            return;
+        }
         // the name as the description spells it: an imported item's
         // unqualified tail is accepted when exactly one item bears it
         let subject = __api_canonical(i.subject);
@@ -1859,6 +2035,9 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     src.push_str(&envelopes_src(&surface));
     src.push_str(&peer_src(&surface, drop_old));
     src.push_str(&binding_src(&surface, bound, roles_table));
+    if surface.binding.http.is_some() {
+        src.push_str(&http_src());
+    }
     match crate::parse_source_at(&src, API_SYNTH_BASE) {
         Ok(generated) => programs[main_idx].items.extend(generated.items),
         Err(ds) => {
@@ -1959,6 +2138,47 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
             });
         }
     }
+    // GH #1135: the HTTP transport — its bearer source rides into the
+    // binding as the entry wrote it, and a second param holds the
+    // listener, on the binding's pool, its host and port evaluated on
+    // the main locus like the socket path.
+    let mut extra_params: Vec<crate::ast::ParamDecl> = Vec::new();
+    let mut extra_placements = Vec::new();
+    if let Some(h) = &surface.binding.http {
+        if let Some(p) = &h.principals {
+            if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
+                inits.push(crate::ast::StructInit {
+                    name: Ident { name: "principals".to_string(), span: h.span },
+                    value: p.clone(),
+                    span: h.span,
+                });
+            }
+        }
+        let http_src = "main locus __ApiTmp {\n    params { __api_http: __ApiHttp = __ApiHttp { }; }\n    placement { __api_http: cooperative(pool = __api_io) where async_io; }\n}\n";
+        let members = match parse_locus_members(http_src) {
+            Ok(m) => m,
+            Err(msg) => {
+                eprintln!("{}", msg);
+                return None;
+            }
+        };
+        for m in members {
+            match m {
+                LocusMember::Params(pb) => {
+                    for mut p in pb.params {
+                        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut p.init {
+                            for (name, value) in [("host", h.host.clone()), ("port", h.port.clone())] {
+                                inits.push(crate::ast::StructInit { name: Ident { name: name.to_string(), span: h.span }, value, span: h.span });
+                            }
+                        }
+                        extra_params.push(p);
+                    }
+                }
+                LocusMember::Placement(pl) => extra_placements.extend(pl.entries),
+                _ => {}
+            }
+        }
+    }
     let main_name = surface.main_locus.clone();
     walk_items_mut(&mut programs[main_idx].items, &mut |item| {
         let TopDecl::Locus(l) = item else { return };
@@ -1966,21 +2186,19 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
             return;
         }
         let span = l.name.span;
+        let mut params = vec![new_param.clone()];
+        params.extend(extra_params.iter().cloned());
+        let mut placements = vec![new_placement.clone()];
+        placements.extend(extra_placements.iter().cloned());
         if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-            pb.params.push(new_param.clone());
+            pb.params.extend(params);
         } else {
-            l.members.push(LocusMember::Params(crate::ast::ParamsBlock {
-                params: vec![new_param.clone()],
-                span,
-            }));
+            l.members.push(LocusMember::Params(crate::ast::ParamsBlock { params, span }));
         }
         if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
-            pl.entries.push(new_placement.clone());
+            pl.entries.extend(placements);
         } else {
-            l.members.push(LocusMember::Placement(PlacementBlock {
-                entries: vec![new_placement.clone()],
-                span,
-            }));
+            l.members.push(LocusMember::Placement(PlacementBlock { entries: placements, span }));
         }
     });
     let _ = ParamInit::Inferred;

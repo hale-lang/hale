@@ -386,13 +386,12 @@ The record's own commands (`dna/api`) are gated topics on this same
 socket: `owner` is the board, `reviewer` is `position:reviewer`, and
 `position` is any position the peer holds. `git config --local --add
 dna.unix.member "uid:<n>=<person>"` is how a peer becomes a person
-these gates can name. The face reaches the same gates over HTTP: the
-head forwards its `POST …/commands` line to its own socket marked
-`via: oidc:<subject>` for the caller whose ID token it verified, and the
-gates name the person `dna.oidc.member` maps that subject to (a
-fixture's trusted-local session marks it `via: http-session`, as the
-head's own uid). The binding takes the mark from the head's own process
-only. Revoking a mapping (`git config --local --unset`) takes
+these gates can name. The face reaches the same gates over the api
+binding's own HTTP transport: `POST …/commands` goes to it under the
+caller's bearer — the ID token you signed in with, or a service's
+token — and the gates name the person `dna.oidc.member` maps that
+subject to (a fixture's trusted-local session's launch token names the
+head's own account). Revoking a mapping (`git config --local --unset`) takes
 effect when the record next moves, since the source re-reads the
 mapping with the edges then.
 

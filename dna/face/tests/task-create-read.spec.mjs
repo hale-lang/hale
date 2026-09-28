@@ -60,15 +60,18 @@ async function fixture(page, options = {}) {
         const command = request.postDataJSON();
         // A contract slice: TaskCreate while the script offers it.
         if (command.describe) return send(200, describeLine(['CommandLookup', ...(script.available && script.authorized ? ['TaskCreate'] : [])]));
+        if (command.call === 'CommandLookup') {
+          const requestId = command.payload?.request_id; script.gets.push(requestId);
+          if (script.getMode === 'unavailable') return send(503, routeError('commands_unavailable', 'Receipt temporarily unavailable.'));
+          const posted = script.posts.find(post => post.body.payload.request_id === requestId)?.body;
+          return send(200, posted ? receipt(posted) : receiptLine(refusedReply('command_not_found')));
+        }
         script.posts.push({ body: command, headers: request.headers() }); script.savedBefore = await saved(page);
         script.applied = true;
         if (script.postMode === 'lost') return route.abort('failed');
         return send(200, receipt(command));
       }
-      const requestId = url.searchParams.get('request_id'); script.gets.push(requestId);
-      if (script.getMode === 'unavailable') return send(503, routeError('commands_unavailable', 'Receipt temporarily unavailable.'));
-      const command = script.posts.find(post => post.body.payload.request_id === requestId)?.body;
-      return send(200, command ? receipt(command) : receiptLine(refusedReply('command_not_found')));
+      return send(405, routeError('method_not_allowed', 'a command is one POSTed line of the api wire'));
     }
     return send(404, error('not_found', 'Outside this scripted UI contract.'));
   });

@@ -188,6 +188,10 @@ function transientRead(result) {
 async function read(suffix) {
   return until('native source snapshot', () => httpRequest('GET', suffix), result => !transientRead(result));
 }
+// A recovery is a line of the wire too: `CommandLookup` (GH #1135).
+async function lookupLine(requestId) {
+  return until('native command lookup', () => httpRequest('POST', prefix() + '/commands', { call: 'CommandLookup', payload: { request_id: requestId } }), result => !transientRead(result));
+}
 // The host in place of the Body and the relay: it migrates memory and the
 // nerves, builds and runs the organization (the acceptance Body, placed as
 // the project's dna/org), and relays the record's requests on its tick.
@@ -293,7 +297,7 @@ async function submit(command) {
 }
 async function lookup(command, predicate) {
   const result = await until(`outcome ${command.request_id}`, async () => {
-    const response = await read(prefix() + '/commands?request_id=' + encodeURIComponent(command.request_id));
+    const response = await lookupLine(command.request_id);
     const settled = settle(response.status, response.json);
     assert.equal(settled.code, '', JSON.stringify(response));
     assert.equal(settled.reply.application_id, application);
@@ -355,7 +359,7 @@ async function approve(command, predecessor) {
 // binding's is its refusal kind; the provider's is the CommandReply code
 // under a 200.
 async function expectError(method, suffix, command, status, code) {
-  const response = method === 'GET' ? await read(suffix) : await httpRequest(method, suffix, wireLine(command));
+  const response = method === 'LOOKUP' ? await lookupLine(command) : await httpRequest(method, suffix, wireLine(command));
   const settled = settle(response.status, response.json);
   assert.equal(response.status, status, JSON.stringify(response));
   assert.equal(settled.code, code, JSON.stringify(response));
@@ -483,7 +487,7 @@ try {
   });
   await scenario('principal isolation survives API restart with both grants', async () => {
     await switchActor('bob');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'command_not_found');
+    await expectError('LOOKUP', prefix() + '/commands', 'replace-1', 200, 'command_not_found');
     const command = practice('replace-1', active, 'Bob has his own request identity.');
     const proposal = await created(command);
     assert.notEqual(proposal.command_id, firstProposal.command_id);
@@ -501,7 +505,7 @@ try {
     assert.equal(described.status, 200, JSON.stringify(described));
     assert.deepEqual(described.json.value.commands.map(entry => entry.name).sort(), ['CommandLookup', 'TaskCreate']);
     await expectError('POST', prefix() + '/commands', practice('unauthorized', active, 'No policy grant.'), 404, 'unknown');
-    await expectError('GET', prefix() + '/commands?request_id=replace-1', undefined, 200, 'forbidden');
+    await expectError('LOOKUP', prefix() + '/commands', 'replace-1', 200, 'forbidden');
     assert.equal(admission('unauthorized').length, 0);
   });
   await scenario('encoded HTTP cap and maximum decoded fields through native adoption', async () => {

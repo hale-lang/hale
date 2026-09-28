@@ -2,7 +2,7 @@
 // receipts. These cases do not prove native submission, authority or durability.
 import { test, expect } from './harness.mjs';
 import { recoveryMetadata, scriptedCommands } from './command-fixture.mjs';
-import { commandReceipt, commandReply, isDescribe, receiptLine } from './command-wire.mjs';
+import { commandReceipt, commandReply, isDescribe, lookupOf, receiptLine } from './command-wire.mjs';
 
 test.use({ commandSubject: true });
 
@@ -169,11 +169,12 @@ test('practice interaction: an outcome_unknown receipt remains uncertain and ret
     const isPost = request.method() === 'POST';
     // The slice still comes from the shared fixture.
     if (isDescribe(request)) return route.fallback();
-    if (isPost) {
+    const lookup = lookupOf(request);
+    if (lookup) {
+      gets.push(lookup);
+    } else if (isPost) {
       original = request.postDataJSON();
       posts.push(original);
-    } else {
-      gets.push(new URL(request.url()).searchParams.get('request_id'));
     }
     const p = original.payload;
     await route.fulfill({

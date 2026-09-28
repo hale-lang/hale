@@ -63,17 +63,20 @@ async function fixture(page, options = {}) {
         const command = request.postDataJSON();
         // The session's slice: TaskReassign while the script seats it.
         if (command.describe) return send(200, describeLine([...UNGATED, ...(script.available && script.authorized ? ['TaskReassign'] : [])]));
+        if (command.call === 'CommandLookup') {
+          const requestId = command.payload?.request_id; script.gets.push(requestId);
+          if (script.getMode === 'unavailable') return send(503, routeError('commands_unavailable', 'Receipt temporarily unavailable.'));
+          if (script.getMode === 'unauthenticated') return send(401, error('unauthenticated', 'Sign in required.'));
+          const posted = script.posts.find(post => post.body.payload.request_id === requestId)?.body;
+          return send(200, posted ? receipt(posted) : receiptLine(refusedReply('command_not_found')));
+        }
         script.posts.push({ body: command, headers: request.headers() }); script.savedBefore = await saved(page);
         script.applied = true; script.row.assignee = command.payload.to; script.row.assignment_digest = 'sha256:' + '9'.repeat(64);
         script.row.history.push({ event_id: EVENT, sequence: '10', kind: 'task.reassigned', from: command.payload.assignee, to: command.payload.to, by: PRINCIPAL.name });
         if (script.postMode === 'lost') return route.abort('failed');
         return send(200, receipt(command));
       }
-      const requestId = url.searchParams.get('request_id'); script.gets.push(requestId);
-      if (script.getMode === 'unavailable') return send(503, routeError('commands_unavailable', 'Receipt temporarily unavailable.'));
-      if (script.getMode === 'unauthenticated') return send(401, error('unauthenticated', 'Sign in required.'));
-      const command = script.posts.find(post => post.body.payload.request_id === requestId)?.body;
-      return send(200, command ? receipt(command) : receiptLine(refusedReply('command_not_found')));
+      return send(405, routeError('method_not_allowed', 'a command is one POSTed line of the api wire'));
     }
     return send(404, error('not_found', 'Outside this scripted UI contract.'));
   });

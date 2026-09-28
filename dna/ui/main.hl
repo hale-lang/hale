@@ -190,8 +190,12 @@ locus Ui {
     // among its audience, unexpired — "" when there is none or it is
     // refused (`bearer_refused` says why).
     fn bearer_subject(req: std::http::Request) -> String {
+        return self.token_subject(dna::bearer_token(std::http::header(req, "Authorization")));
+    }
+    // GH #1135: the same for a token in hand — what the api binding's
+    // HTTP transport asks of a head's bearer source.
+    fn token_subject(token: String) -> String {
         self.bearer_refused = "";
-        let token = dna::bearer_token(std::http::header(req, "Authorization"));
         if len(token) == 0 { return ""; }
         if !self.discovered() { self.bearer_refused = "the issuer's keys are not read: " + self.discovery_refused; return ""; }
         let sig = self.verify(token);

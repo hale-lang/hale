@@ -131,6 +131,45 @@ printf '%s\n' '{"id":1,"call":"Verdicts","payload":{"review_id":7,"verdict":"rat
     | socat - UNIX-CONNECT:/run/app.sock
 ```
 
+### Over HTTP
+
+A caller that is not on your machine's socket — a browser behind your
+web server, another service — reaches the same commands over the
+binding's HTTP transport. Name it after the socket, with the locus that
+says who a bearer token is:
+
+```hale
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus App {
+    bindings {
+        api: unix("/run/app.sock", bound: 64, on_full: refuse),
+            http("127.0.0.1", 8793, principals: Tokens { });
+    }
+}
+```
+
+Each request is one POST whose body is one line of the same wire,
+under `Authorization: Bearer <token>`:
+
+```sh
+curl -X POST -H 'Authorization: Bearer t-alice' \
+    --data '{"call":"Verdicts","payload":{"review_id":7,"verdict":"ratify"}}' http://127.0.0.1:8793/
+```
+
+The answer is the same line, and its HTTP status is the refusal's kind
+(200 answered, 401 `unauthenticated`, 403 `unauthorized`, 404
+`unknown`, 503 `over_bound`, 400 otherwise). A token your source names
+nobody is `unauthenticated`, and a watch stays on the socket. You write
+no route and no forwarder: the binding authenticates the token, gates
+the call and answers it, exactly as for a socket peer.
+
 ## The clients
 
 You never write a client for a Hale program, because the binding
@@ -228,16 +267,17 @@ type RefundResult { ok: Bool; by: String; }
 locus Billing {
     bus { subscribe Refunds as on_refund; }
     fn on_refund(r: Refund, ctx: std::api::Context) -> RefundResult {
-        // ctx.caller is who; ctx.via says "api" through the binding
-        // and "local" for a publish inside the program.
+        // ctx.caller is who; ctx.via says "api" through the socket,
+        // "http" through the HTTP transport, and "local" for a publish
+        // inside the program.
         return RefundResult { ok: true, by: ctx.caller.name };
     }
 }
 ```
 
 The second parameter is `std::api::Context`: the caller, the
-request id, `via` (the binding's name, `local`, or the mark a
-forwarding transport of the program's own set — see below), and the role
+request id, `via` (`api` through the socket, `http` through the
+binding's HTTP transport — see below — or `local`), and the role
 that authorized the message (empty when the operation is not gated). A message that did not
 come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
@@ -369,15 +409,9 @@ page shows the rest greyed out with the role each item needs.
 - A `Drain<T>` batch handler is not reached through the binding
   yet; bulk requests wait on batch delivery over the cooperative
   queue.
-- A bearer token for HTTP callers waits for the HTTP transport
-  (GH #1135); the Unix socket's peer credentials are the one identity
-  today. Until then a program may forward: a request line carrying
-  `"via": "<mark>"` is honoured only from the program's own process —
-  its uid and its pid, so another process of the same account cannot
-  set it (refused as `malformed` from anyone else) — and the mark
-  rides on the receipt's `caller` and in `ctx.via`, and the principal
-  is the forwarding process's — an HTTP handler that hands a browser's
-  line to its own socket is gated and answered exactly like any peer.
+- A watch over HTTP (a stream to a browser) waits: the HTTP
+  transport answers calls, reads and describes, and a watch is the
+  socket's.
 - Transitive privilege inference (flagging `api -> OrderPlaced ->
   on_order -> refund` as an escalation) is a later, opt-in claim;
   `@gated` is a boundary check and says so.

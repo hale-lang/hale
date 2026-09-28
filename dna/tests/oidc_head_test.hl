@@ -35,14 +35,15 @@ fn head_binary() -> String {
     return seed + "/practice_review";
 }
 
-// One line of the api wire, POSTed to the head's /commands with the
-// headers a caller that is not a browser sends; `bearer` "" sends none.
-// (the body goes by file: it may hold a line break, which argv cannot)
-fn post(api: String, identity: String, line: String, bearer: String) -> dna::RunResult {
+// One line of the api wire, POSTed to the api binding's own HTTP
+// transport (GH #1135) — one port past the head's reads — under a bearer;
+// `bearer` "" sends none. (the body goes by file: it may hold a line
+// break, which argv cannot)
+fn post(commands: String, line: String, bearer: String) -> dna::RunResult {
     let auth = if len(bearer) > 0 { "-H\nAuthorization: Bearer " + bearer + "\n" } else { "" };
     let body = "/tmp/dna-oidc-head-" + to_string(std::process::pid()) + ".body";
     std::io::fs::write_file(body, line) or discard;
-    let r = dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + api + "\n" + auth + "--data-binary\n@" + body + "\n" + api + "/api/hale/v1/applications/" + identity + "/commands");
+    let r = dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n" + auth + "--data-binary\n@" + body + "\n" + commands);
     std::io::fs::unlink(body) or discard;
     return r;
 }
@@ -126,39 +127,46 @@ main locus App {
         }
         std::test::assert(up, "the head came up: " + (std::io::fs::read_file(repo + "/.hale/head.log") or ""));
         let head_row = git.head("journal").id;
+        let commands = "http://127.0.0.1:" + to_string(port + 1) + "/";
         // the claim's name, as the head describes it to alice
         let alice_token = oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", 600);
-        let described = post(api, identity, "{\"describe\":true}", alice_token);
+        let described = post(commands, "{\"describe\":true}", alice_token);
         let name = command_named(std::json::find_field_raw(body_of(described), "value"), "dna.commands.attempt.claim");
         std::test::assert(len(name) > 0, "the head describes the claim: " + described.stdout);
+        // the reads' server relays a caller's line to the binding under the
+        // caller's own bearer, which the binding verifies: the same answer
+        let relay = "http://127.0.0.1:" + to_string(port) + "/api/hale/v1/applications/" + identity + "/commands";
+        let relayed = post(relay, "{\"describe\":true}", alice_token);
+        std::test::assert(status_of(relayed) == "200" && std::str::contains(relayed.stdout, "\"name\":\"oidc:alice-sub\"") && std::str::contains(relayed.stdout, "dna.commands.attempt.claim"), "the head's own route relays alice's line under her token: " + relayed.stdout);
+        std::test::assert_eq_str(status_of(post(relay, "{\"describe\":true}", "")), "401", "with no token and no session nothing is relayed");
         let claim = "{\"call\":\"" + name + "\",\"payload\":{\"request_id\":\"c1\",\"record_head\":\"" + head_row + "\",\"performer_kind\":\"agent\",\"performer\":\"position:agent#1\",\"effect_class\":\"idempotent\",\"capabilities\":\"judgment\",\"data_classes\":\"internal\",\"organizations\":\"\",\"ttl\":60}}";
 
         // ---- no token: refused
-        let bare = post(api, identity, claim, "");
+        let bare = post(commands, claim, "");
         std::test::assert_eq_str(status_of(bare), "401", "a command with no token is refused: " + bare.stdout);
         // ---- a token the stub did not sign: refused, saying why
         let minted = oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", 600);
         let a = std::str::index_of(minted, ".");
         let forged = minted[0..(a + 1)] + oidc::b64("{\"iss\":\"" + self.issuer + "\",\"aud\":\"dna-local\",\"sub\":\"alice-sub\",\"exp\":" + to_string(std::time::now() + 600) + ",\"role\":\"board\"}") + minted[last_of(minted, ".")..len(minted)];
-        let bad = post(api, identity, claim, forged);
+        let bad = post(commands, claim, forged);
         std::test::assert(status_of(bad) == "401" && std::str::contains(bad.stdout, "signature"), "a token the issuer did not sign is refused: " + bad.stdout);
         // ---- a subject no one maps: refused
-        let stranger = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "zed-sub", "", 600));
-        std::test::assert_eq_str(status_of(stranger), "403", "a subject no person maps to is refused: " + stranger.stdout);
+        let stranger = post(commands, claim, oidc::stub_id_token(self.issuer, "dna-local", "zed-sub", "", 600));
+        std::test::assert(status_of(stranger) == "404" && std::str::contains(stranger.stdout, "\"kind\":\"unknown\""), "a subject no person maps to holds nothing: the gate refuses it: " + stranger.stdout);
         // ---- signed by the issuer, and still not for this head: expired, for
         // another client, from another issuer
-        let expired = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", -10));
+        let expired = post(commands, claim, oidc::stub_id_token(self.issuer, "dna-local", "alice-sub", "", -10));
         std::test::assert(status_of(expired) == "401" && std::str::contains(expired.stdout, "expired"), "an expired token is refused: " + expired.stdout);
-        let elsewhere = post(api, identity, claim, oidc::stub_id_token(self.issuer, "another-client", "alice-sub", "", 600));
+        let elsewhere = post(commands, claim, oidc::stub_id_token(self.issuer, "another-client", "alice-sub", "", 600));
         std::test::assert(status_of(elsewhere) == "401" && std::str::contains(elsewhere.stdout, "audience"), "a token for another client is refused: " + elsewhere.stdout);
-        let foreign = post(api, identity, claim, oidc::stub_id_token("https://issuer.example", "dna-local", "alice-sub", "", 600));
+        let foreign = post(commands, claim, oidc::stub_id_token("https://issuer.example", "dna-local", "alice-sub", "", 600));
         std::test::assert(status_of(foreign) == "401" && std::str::contains(foreign.stdout, "issuer"), "a token from another issuer is refused: " + foreign.stdout);
         // ---- a retired person's token reads nothing
         std::test::assert(j.append(j.revision(), "person.retired", "carol", "{}").ok, "carol retired");
         // (the record's roles ask whether it moved at most once a second)
         std::time::sleep(1200ms);
-        let retired = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "carol-sub", "", 600));
-        std::test::assert_eq_str(status_of(retired), "403", "a retired person's token is refused: " + retired.stdout);
+        let retired = post(commands, claim, oidc::stub_id_token(self.issuer, "dna-local", "carol-sub", "", 600));
+        std::test::assert(status_of(retired) == "404" && std::str::contains(retired.stdout, "\"kind\":\"unknown\""), "a retired person's token holds nothing: the gate refuses it: " + retired.stdout);
 
         // ---- alice's ID token, from the stub's token endpoint
         let issued = dna::run_tool("curl\n-s\n-X\nPOST\n--data\ngrant_type=urn:hale:dna:stub&sub=alice-sub&client_id=dna-local&client_secret=dna-local-secret\n" + self.issuer + "/token");
@@ -166,8 +174,8 @@ main locus App {
         std::test::assert(len(token) > 0, "the stub mints an ID token: " + issued.stdout);
         // bob holds no position: the socket's gate lists him no claim, and
         // refuses it as a command he has none of (it names nothing he may not call)
-        let bobs = post(api, identity, claim, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
-        std::test::assert(status_of(bobs) == "404" && std::str::contains(bobs.stdout, "\"kind\":\"unknown\"") && std::str::contains(bobs.stdout, "\"via\":\"oidc:bob-sub\""), "a person who holds no position is refused at the gate: " + bobs.stdout);
+        let bobs = post(commands, claim, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
+        std::test::assert(status_of(bobs) == "404" && std::str::contains(bobs.stdout, "\"kind\":\"unknown\"") && std::str::contains(bobs.stdout, "\"name\":\"oidc:bob-sub\""), "a person who holds no position is refused at the gate: " + bobs.stdout);
         // ---- bob smuggles a second line under the head's mark, naming alice:
         // a friction filed as alice would land as a row; a body of more than
         // one line is refused before the socket, and nothing lands
@@ -175,7 +183,7 @@ main locus App {
         std::test::assert(len(friction) > 0, "the head describes friction to alice");
         let before_rows = j.revision();
         let smuggled = "{\"a\":\n{\"call\":\"" + friction + "\",\"via\":\"oidc:alice-sub\",\"payload\":{\"request_id\":\"f-smuggled\",\"record_head\":\"" + head_row + "\",\"position\":\"position:agent\",\"attempt_id\":\"\",\"text\":\"filed as alice\"}}\n}";
-        let smuggle = post(api, identity, smuggled, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
+        let smuggle = post(commands, smuggled, oidc::stub_id_token(self.issuer, "dna-local", "bob-sub", "", 600));
         std::time::sleep(1500ms);
         let refreshed = j.refresh();
         let mut landed = false;
@@ -191,8 +199,8 @@ main locus App {
         let mut heard = "";
         let heard_by = std::time::now() + 10;
         while !std::str::contains(heard, "\n") && std::time::now() < heard_by { heard = heard + (stream.recv(65536) or ""); }
-        std::test::assert(std::str::contains(heard, "\"kind\":\"malformed\"") && std::str::contains(heard, "own transports only"), "a mark from another process of the account is refused: " + heard);
-        let accepted = post(api, identity, claim, token);
+        std::test::assert(std::str::contains(heard, "\"kind\":\"unknown\"") && !std::str::contains(heard, "alice"), "a `via` in a line is no mark: the call is this process's, which holds nothing: " + heard);
+        let accepted = post(commands, claim, token);
         let receipt = std::json::find_field_raw(std::json::find_field_raw(body_of(accepted), "value"), "receipt");
         std::test::assert(status_of(accepted) == "200", "alice's claim reaches the head: " + accepted.stdout);
         std::test::assert_eq_str(std::json::find_string_field(receipt, "principal_mode"), "oidc", "the receipt says the principal is the issuer's: " + receipt);

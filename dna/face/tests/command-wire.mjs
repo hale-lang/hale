@@ -1,6 +1,7 @@
 // The head's command wire as the face meets it (GH #1104, #1135): one line
-// of the api binding's wire POSTed to …/commands, forwarded to the head's
-// socket, and the binding's receipt line back. Scripted lanes build their
+// of the api binding's wire POSTed to …/commands, the binding's own HTTP
+// transport under the session's bearer, and its receipt line back — a
+// lookup included, as a `CommandLookup` call. Scripted lanes build their
 // answers here so every lane scripts the one shape the head speaks.
 
 // The call each operation is sent as.
@@ -19,24 +20,31 @@ export const KNOWLEDGE_CALLS = {
 export const KNOWLEDGE_LOOKUP = 'KnowledgeLookup';
 // The commands every authenticated peer may send.
 export const UNGATED = ['CommandLookup', 'TaskCreate', KNOWLEDGE_LOOKUP];
-// The call a forwarded line names ('' for a describe or a GET).
+// The call a line names ('' for a describe or a GET).
 export function callOf(request) {
   if (request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/commands')) return '';
   try { return request.postDataJSON()?.call || ''; } catch { return ''; }
 }
 export const isKnowledgeCall = request => Object.values(KNOWLEDGE_CALLS).includes(callOf(request));
 export const isKnowledgeLookup = request => callOf(request) === KNOWLEDGE_LOOKUP;
+// A recovery: the request id a `CommandLookup` line asks after ('' for
+// any other request).
+export function lookupOf(request) {
+  if (callOf(request) !== 'CommandLookup') return '';
+  try { return request.postDataJSON()?.payload?.request_id || ''; } catch { return ''; }
+}
 
-// A describe line asks for the caller's slice. It reads; lanes that watch
-// for writes leave it out.
+// A describe line asks for the caller's slice, and a lookup recovers a
+// receipt. Both read; lanes that watch for writes leave them out.
 export function isDescribe(request) {
   if (request.method() !== 'POST' || !new URL(request.url()).pathname.endsWith('/commands')) return false;
   try { return request.postDataJSON()?.describe === true; } catch { return false; }
 }
-export const isWrite = request => request.method() !== 'GET' && !isDescribe(request);
+export const isWrite = request => request.method() !== 'GET' && !isDescribe(request) && callOf(request) !== 'CommandLookup';
 
-// The head's own caller, as the binding reports a forwarded line.
-export const CALLER = { mode: 'unix', name: 'uid:1000', uid: 1000, gid: 1000, pid: 4242, via: 'http-session' };
+// The session's caller, as the binding reports a line over HTTP: the
+// bearer's principal (a trusted-local session's is the head's account).
+export const CALLER = { mode: 'bearer', name: 'uid:1000', uid: 1000, gid: -1, pid: -1, via: 'http' };
 let sequence = 0;
 export function receiptLine(value, { role } = {}) {
   return { request_id: ++sequence, ok: true, value, caller: CALLER, ...(role ? { role } : {}) };

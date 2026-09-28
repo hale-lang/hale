@@ -258,6 +258,30 @@ export async function startService(options = {}) {
     ? result.json.error?.code === 'snapshot_changed' && result.json.error?.retryable === true
     : [501, 503].includes(result.status) && (result.json.error?.retryable === true || ['record_unavailable', 'commands_unavailable'].includes(result.json.error?.code));
   const read = suffix => wait('native source read', () => get(suffix), result => !transient(result));
+  // One line of the api wire to the head's binding, on its own HTTP
+  // transport one port past the reads, under the launch token — the head's
+  // own account, as a tool presents it (GH #1135).
+  function line(value) {
+    healthy();
+    const body = JSON.stringify(value);
+    return new Promise((resolve, reject) => {
+      const entry = { method: 'POST', path: 'binding:' + (value.call || 'describe') }; requestLog.push(entry);
+      const request = http.request({ host: '127.0.0.1', port: Number(new URL(origin).port) + 1, path: '/', method: 'POST', agent: false,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => {
+          try { const json = JSON.parse(Buffer.concat(chunks).toString('utf8')); entry.status = response.statusCode; resolve({ status: response.statusCode, json }); }
+          catch (error) { reject(error); }
+        });
+        response.on('error', reject);
+      });
+      request.setTimeout(35_000, () => request.destroy(new Error(`Native line timed out: ${value.call}`)));
+      request.on('error', reject);
+      request.end(body);
+    });
+  }
+  const lookup = requestId => wait('native command lookup', () => line({ call: 'CommandLookup', payload: { request_id: requestId } }), result => !transient(result));
   const apiPath = () => `/api/hale/v1/applications/${encodeURIComponent(application)}`;
   // Quiet is a stable Record the head can read. The host projects memory on
   // its tick, and until it has projected the Record's head the head answers
@@ -434,7 +458,7 @@ export async function startService(options = {}) {
       // A page this lane drives: the session cookie now and after every restart.
       async attach(page) { pages.add(page); await authorize(page); },
       // live, not a snapshot: a lane that spreads this service still sees each launch's
-      token: () => token,
+      token: () => token, line, lookup,
       read, journal, quiesce, startHost, stopHost, startAPI, pauseDelivery, resumeDelivery, restart, stop, exportEvidence,
       processes: () => [...[...owned].map(item => ({ name: item.name, pid: item.child.pid, alive: Boolean(alive(item)), paused: item.paused })), ...hostChildren(root).filter(({ pid }) => running(pid)).map(({ name, pid }) => ({ name, pid, alive: true, paused: host?.paused ?? false }))],
       stopAPI: () => stopProcess(api),
@@ -452,11 +476,11 @@ export async function startService(options = {}) {
         // when the record keeps moving — on the real host it moves on the
         // host's tick — answering command_busy (or snapshot_changed from its
         // read). That is not the receipt: ask again until the deadline. A
-        // GET answered command_busy is the head's to fix (PR #1145, Deferred).
+        // lookup answered command_busy is the head's to fix (PR #1145, Deferred).
         let transient = '';
         try {
           return await wait(`command ${requestId}`, async () => {
-            const response = await read(apiPath() + '/commands?' + new URLSearchParams({ request_id: requestId }));
+            const response = await lookup(requestId);
             const settled = settle(response.status, response.json);
             if (['command_busy', 'snapshot_changed'].includes(settled.code)) { transient = settled.code; return null; }
             assert.equal(settled.code, '', JSON.stringify(response));

@@ -1,0 +1,84 @@
+// dna/api/upstream.hl — one HTTP exchange with a loopback listener: the
+// project head's proxy to its API child (project_service/proxy.hl), and
+// a head's relay of a session's command to its own api binding's HTTP
+// transport (bearer.hl, GH #1135).
+//
+// The exchange is one connected fd with a read deadline: the listener
+// always answers `Connection: close` with a `Content-Length`, so the
+// response is read to EOF; a deadline that cuts the body short is an
+// upstream timeout, never a truncated success. The stdlib client is
+// not used: its timeout is declared and applied nowhere.
+// A response larger than this is cut and reported as a timeout.
+const MAX_UPSTREAM_BYTES: Int = 16777216;
+// The proxy's read deadline; the API's slowest read is well under it.
+const UPSTREAM_TIMEOUT_NS: Int = 20000000000;
+
+// One exchange's result: `code` is "" when a whole response arrived,
+// else connect_failed (nothing listens), no_response (the connection
+// closed before a status line) or timeout (the deadline cut the body).
+type Upstream {
+    ok: Bool = false;
+    code: String = "";
+    status: Int = 0;
+    // CRLF-joined header lines, without the status line
+    headers: String = "";
+    body: String = "";
+}
+
+// The value of `name` in a CRLF header block, "" when absent or
+// ambiguous (the command wire's own case-insensitive lookup).
+fn upstream_header(headers: String, name: String) -> String {
+    let wire = CommandWire { };
+    let h = wire.header(headers, name);
+    if !h.valid || h.count != 1 { return ""; }
+    return h.value;
+}
+
+// `METHOD target` against 127.0.0.1:`port` with `headers` (CRLF lines,
+// each terminated) and `body`; read to EOF or `timeout_ns`.
+@unbounded
+fn exchange(port: Int, method: String, target: String, headers: String, body: String, timeout_ns: Int) -> Upstream {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return Upstream { code: "connect_failed" }; }
+    let armed = std::io::tcp::__set_recv_timeout_ns(fd, timeout_ns);
+    let s = std::io::tcp::Stream { conn_fd: fd };
+    let head = method + " " + target + " HTTP/1.1\r\nHost: 127.0.0.1:" + to_string(port) + "\r\n" + headers + "Connection: close\r\n\r\n";
+    s.send(head + body) or discard;
+    let received = std::bytes::BytesBuilder { };
+    let mut total = 0;
+    let mut reading = true;
+    // recv answers empty for EOF and for the deadline alike: the clock
+    // tells them apart when nothing at all arrived
+    let started = std::time::monotonic_ns();
+    while reading {
+        let chunk = s.recv(65536) or "";
+        if len(chunk) == 0 {
+            reading = false;
+        } else {
+            received.append_str(chunk);
+            total = total + len(chunk);
+            if total > MAX_UPSTREAM_BYTES { reading = false; }
+        }
+    }
+    let raw = std::str::from_bytes(received.snapshot());
+    if total == 0 { return Upstream { code: if std::time::monotonic_ns() - started >= timeout_ns { "timeout" } else { "no_response" } }; }
+    if total > MAX_UPSTREAM_BYTES { return Upstream { code: "timeout" }; }
+    let split = std::str::index_of(raw, "\r\n\r\n");
+    if split < 0 { return Upstream { code: "timeout" }; }
+    let block = raw[0..split];
+    let body_text = raw[(split + 4)..len(raw)];
+    let nl = std::str::index_of(block, "\r\n");
+    let status_line = if nl < 0 { block } else { block[0..nl] };
+    let header_lines = if nl < 0 { "" } else { block[(nl + 2)..len(block)] };
+    let sp = std::str::index_of(status_line, " ");
+    if sp < 0 || len(status_line) < sp + 4 { return Upstream { code: "no_response" }; }
+    let http = Http { };
+    let status = http.integer(status_line[(sp + 1)..(sp + 4)], 999);
+    if status < 100 { return Upstream { code: "no_response" }; }
+    let declared = upstream_header(header_lines, "Content-Length");
+    if len(declared) > 0 {
+        let expected = http.integer(declared, MAX_UPSTREAM_BYTES);
+        if expected < 0 || expected > len(body_text) { return Upstream { code: "timeout" }; }
+    }
+    return Upstream { ok: true, status: status, headers: header_lines, body: body_text };
+}

@@ -92,7 +92,7 @@ fn main() {
 
     // ---- the head under OIDC, the project attached at start, the service mapped
     std::io::fs::mkdir(root + "/head") or discard;
-    let f = fixture::HeadFixture { root: root + "/head", oidc_env: "HALE_DNA_OIDC_ISSUER=" + issuer + "\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_MEMBER=local-sub=tester\nHALE_DNA_OIDC_KEY=" + oidc::STUB_SPKI };
+    let f = fixture::HeadFixture { root: root + "/head", oidc_env: "HALE_DNA_OIDC_ISSUER=" + issuer + "\nHALE_DNA_OIDC_CLIENT=dna-local\nHALE_DNA_OIDC_SECRET=dna-local-secret\nHALE_DNA_OIDC_MEMBER=local-sub=tester\nHALE_DNA_OIDC_KEY=" + oidc::STUB_SPKI };
     let mapped = dna::run_tool("git\n-C\n" + f.project + "\nconfig\n--local\n--add\ndna.oidc.service\nvoice-api=voice");
     std::test::assert_eq_int(mapped.code, 0, "the record maps the service");
     // a subject mapped both ways, as a person and as a service
@@ -103,6 +103,9 @@ fn main() {
     let proposed = f.journal.append(f.journal.revision(), "knowledge.proposed", digest, "{\"digest\":\"" + digest + "\",\"review_id\":\"" + dna::knowledge_review_id(digest) + "\",\"kind\":\"practice\",\"author\":\"org\",\"target\":\"org\",\"class\":\"goal\",\"name\":\"operating/limits/personal\"}");
     let ratified = f.journal.append(f.journal.revision(), "knowledge.ratified", digest, "{\"class\":\"goal\"}");
     std::test::assert(proposed.ok && ratified.ok, "a practice proposed and ratified");
+    // tester (whom local-sub signs in as) holds a position; the service none
+    let seat = f.journal.append(f.journal.revision(), "graph.edge", "holds:position:agent|tester", "{\"kind\":\"holds\",\"members\":[{\"role\":\"position\",\"node\":\"position:agent\"},{\"role\":\"holder\",\"node\":\"tester\"}]}");
+    std::test::assert(seat.ok, "tester holds position:agent");
     f.start_with_project(f.project, 0);
     let practices = f.url() + "/api/hale/v1/applications/" + f.identity + "/dna/practices";
 
@@ -132,11 +135,44 @@ fn main() {
     let commands = f.url() + "/api/hale/v1/applications/" + f.identity + "/commands";
     let before = f.journal.revision();
     let proposal = call("POST", commands, token, f.url(), "{\"call\":\"PracticePropose\",\"payload\":{\"request_id\":\"svc-1\",\"subject_digest\":\"" + digest + "\",\"text\":\"requests_per_minute: 6000\",\"rationale\":\"more\"}}");
-    std::test::assert(status_of(proposal) != "200" && std::str::contains(proposal.stdout, "\"via\":\"oidc:voice-api\""), "a practice the service proposes is refused at the gate: " + proposal.stdout);
+    std::test::assert(status_of(proposal) != "200" && std::str::contains(proposal.stdout, "\"name\":\"oidc:voice-api\""), "a practice the service proposes is refused at the gate: " + proposal.stdout);
     let task = call("POST", commands, token, f.url(), "{\"call\":\"TaskCreate\",\"payload\":{\"request_id\":\"svc-2\",\"record_head\":\"" + dna::GitRecord { repo: f.project }.head("journal").id + "\",\"outcome\":\"ship it\",\"to\":\"org\"}}");
     std::test::assert(std::str::contains(task.stdout, "\"ok\":false,\"code\":\"forbidden\""), "a task the service asks is refused, a service being no person: " + task.stdout);
     let moved = f.journal.refresh();
     std::test::assert_eq_int(f.journal.revision(), before, "and nothing landed in the record");
+
+    // ---- a person's session and a service's token reach the same gated
+    // topic over the child's api binding's HTTP transport (GH #1135): the
+    // person, signed in through the head, holds a position and the gate
+    // lets the call through to its handler; the service holds none, and
+    // the same gate refuses it. Nothing forwards a line.
+    let jar = root + "/jar";
+    let signin = dna::run_tool("curl\n-s\n-L\n-c\n" + jar + "\n-b\n" + jar + "\n-o\n/dev/null\n-w\n%{http_code}\n" + f.url() + "/?token=" + f.token());
+    let cookies = std::io::fs::read_file(jar) or "";
+    std::test::assert(std::str::contains(cookies, "dna_session"), "the person signs in through the head: " + signin.stdout + " " + cookies);
+    let propose = "{\"call\":\"PracticePropose\",\"payload\":{\"request_id\":\"both-1\",\"subject_digest\":\"" + digest + "\",\"text\":\"requests_per_minute: 90\",\"rationale\":\"more\"}}";
+    let person = dna::run_tool("curl\n-s\n-D\n-\n-w\n\\n%{http_code}\n-b\n" + jar + "\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + f.url() + "\n--data-binary\n" + propose + "\n" + commands);
+    std::test::assert(status_of(person) == "200" && std::str::contains(person.stdout, "\"ok\":true,\"value\":") && std::str::contains(person.stdout, "\"name\":\"oidc:local-sub\"") && std::str::contains(person.stdout, "\"via\":\"http\"") && std::str::contains(person.stdout, "\"role\":\"position\""), "the person's session reaches PracticePropose's handler through its gate: " + person.stdout);
+    let service = call("POST", commands, token, f.url(), propose);
+    std::test::assert(status_of(service) == "404" && std::str::contains(service.stdout, "\"kind\":\"unknown\"") && std::str::contains(service.stdout, "\"name\":\"oidc:voice-api\"") && std::str::contains(service.stdout, "\"via\":\"http\""), "the service's token reaches the same gate, which refuses it: " + service.stdout);
+
+    // ---- the core's bus is not on the surface, though the head holds core
+    // loci as params (GH #1137): `serve:` names `commands` alone, and every
+    // command the head serves is the record's
+    let dumped = dna::run_tool(toolchain() + "\ncheck\n--dump-api\n" + source() + "/dna/api/practice_review");
+    std::test::assert(dumped.code == 0 && std::str::contains(dumped.stdout, "\"serve\":[{\"param\":\"commands\",\"locus\":\"api::Commands\"}]"), "the head serves exactly what it names: " + dumped.stdout + dumped.stderr);
+    std::test::assert(std::str::contains(std::io::fs::read_file(source() + "/dna/api/practice_review/main.hl") or "", "roles: dna::RecordRoles"), "the head holds a core locus as a param");
+    let mut subjects = dumped.stdout;
+    let mut foreign = "";
+    let mut at = std::str::index_of(subjects, "\"subject\":\"");
+    while at >= 0 {
+        subjects = subjects[(at + 11)..len(subjects)];
+        let end = std::str::index_of(subjects, "\"");
+        let subject = subjects[0..end];
+        if !std::str::starts_with(subject, "dna.commands.") { foreign = foreign + subject + " "; }
+        at = std::str::index_of(subjects, "\"subject\":\"");
+    }
+    std::test::assert_eq_str(foreign, "", "no subject of the core's own bus is served");
 
     f.stop();
     std::process::kill(stub) or discard;

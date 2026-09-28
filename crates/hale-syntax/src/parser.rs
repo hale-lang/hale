@@ -3954,11 +3954,36 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen, ")")?;
-        // GH #1137: clauses after the transport — `serve: [param, …]`.
+        // GH #1137, #1135: clauses after the transport — `serve: [param,
+        // …]` and `http(host, port, principals: <source>)`.
         let mut serve: Vec<Ident> = Vec::new();
+        let mut http: Option<crate::ast::ApiHttp> = None;
         while self.eat(&TokenKind::Comma) {
-            let clause = self.expect_ident("api clause (`serve`)")?;
+            let clause = self.expect_ident("api clause (`serve`, `http`)")?;
             match clause.name.as_str() {
+                "http" => {
+                    self.expect(TokenKind::LParen, "(")?;
+                    let host = self.parse_expr()?;
+                    self.expect(TokenKind::Comma, ",")?;
+                    let port = self.parse_expr()?;
+                    let mut principals = None;
+                    while self.eat(&TokenKind::Comma) {
+                        if self.at(&TokenKind::RParen) {
+                            break;
+                        }
+                        let key = self.expect_ident("http kwarg name (`principals`)")?;
+                        self.expect(TokenKind::Colon, ":")?;
+                        if key.name != "principals" {
+                            return Err(Diag::parse(
+                                key.span,
+                                format!("unknown http kwarg `{}` (recognized: `principals`)", key.name),
+                            ));
+                        }
+                        principals = Some(self.parse_expr()?);
+                    }
+                    let close = self.expect(TokenKind::RParen, ")")?;
+                    http = Some(crate::ast::ApiHttp { host, port, principals, span: clause.span.merge(close.span) });
+                }
                 "serve" => {
                     self.expect(TokenKind::Colon, ":")?;
                     self.expect(TokenKind::LBracket, "[")?;
@@ -3975,7 +4000,7 @@ impl Parser {
                         clause.span,
                         format!(
                             "unknown api clause `{}` (after the transport: `serve: \
-                             [param, …]`)",
+                             [param, …]` or `http(host, port, principals: …)`)",
                             other
                         ),
                     ));
@@ -3995,6 +4020,7 @@ impl Parser {
             on_unauthorized,
             on_watch_full,
             serve,
+            http,
             span: api_tok.span.merge(semi.span),
         })
     }

@@ -59,14 +59,17 @@ async function fixture(page, options = {}) {
         const command = request.postDataJSON();
         // The session's slice: the board's TaskReassign while the script seats it.
         if (command.describe) return send(200, describeLine([...UNGATED, ...(script.authorized ? ['TaskReassign'] : [])]));
+        if (command.call === 'CommandLookup') {
+          const id = command.payload?.request_id; script.gets.push(id);
+          if (script.lookupUnavailable) return send(503, routeError('commands_unavailable', 'Scripted recovery unavailable.'));
+          const posted = script.posts.find(value => value.payload.request_id === id); return send(200, posted ? receipt(posted) : receiptLine(refusedReply('command_not_found')));
+        }
         script.posts.push(command); script.applied = true;
         const row = script.rows.find(row => row.id === command.payload.task_id); row.assignee = command.payload.to; row.assignment_digest = 'sha256:' + '8'.repeat(64);
         row.history.push({ event_id: EVENT, sequence: '50', kind: 'task.reassigned', from: command.payload.assignee, to: command.payload.to, by: PRINCIPAL.name });
         if (script.lost) return route.abort('failed'); return send(200, receipt(command));
       }
-      const id = url.searchParams.get('request_id'); script.gets.push(id);
-      if (script.lookupUnavailable) return send(503, routeError('commands_unavailable', 'Scripted recovery unavailable.'));
-      const command = script.posts.find(value => value.payload.request_id === id); return send(200, command ? receipt(command) : receiptLine(refusedReply('command_not_found')));
+      return send(405, routeError('method_not_allowed', 'a command is one POSTed line of the api wire'));
     }
     return send(404, error('not_found', 'Outside this scripted browser contract.'));
   });

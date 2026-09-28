@@ -404,13 +404,13 @@ locus CommandAdmission {
         let source = self.reader.read();
         let person = self.roles.person(ctx.caller);
         let name = if len(person) > 0 { person } else { ctx.caller.name };
-        let mode = if std::str::starts_with(ctx.caller.via, "oidc:") { "oidc" } else { "local" };
+        let mode = if std::str::starts_with(ctx.caller.name, "oidc:") { "oidc" } else { "local" };
         return CommandContext { root: self.root, source: source, principal_mode: mode, principal_name: name, principal_positions: self.roles.positions(ctx.caller) };
     }
     // An issuer's subject that maps to no person — a service — asks
     // nothing and looks nothing up: a command is a person's, and the store
     // never records a subject as the account the head runs under.
-    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
+    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.name, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
     fn refused(code: String) -> CommandReply { return CommandReply { code: code }; }
     fn reply(result: CommandResult, context: CommandContext) -> CommandReply {
         let mut receipt = result.receipt;

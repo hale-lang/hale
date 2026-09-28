@@ -3,7 +3,7 @@
 // reviewer seat, so the gates open. This proves forwarding/browser
 // composition, not DNA command durability.
 import { test, expect } from './harness.mjs';
-import { isWrite } from './command-wire.mjs';
+import { isWrite, lookupOf } from './command-wire.mjs';
 
 test.use({ commandSubject: true, commandAdapter: true, seats: ['board', 'reviewer'] });
 test.skip(!process.env.HALE_FACE_COMMAND_BIN, 'Supply the explicit scripted native command-adapter fixture.');
@@ -26,12 +26,12 @@ test('scripted native provider: real origin-checked submit and exact-key reload 
   const submitted = await submit(page, service);
   expect(submitted.status()).toBe(200);
   const accepted = await submitted.json();
-  expect(accepted.caller.via).toBe('http-session'); expect(accepted.role).toBe('position');
+  expect(accepted.caller).toMatchObject({ mode: 'bearer', via: 'http' }); expect(accepted.role).toBe('position');
   expect(accepted.value.ok).toBe(true); expect(accepted.value.receipt.state).toBe('recorded');
   expect(accepted.value.receipt.subject_digest).toBe(service.practice);
   const requestID = accepted.value.receipt.request_id;
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(/recorded/i);
-  const recovered = page.waitForResponse(result => new URL(result.url()).searchParams.get('request_id') === requestID);
+  const recovered = page.waitForResponse(result => lookupOf(result.request()) === requestID);
   await page.reload();
   expect((await recovered).status()).toBe(200);
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(requestID);
@@ -54,7 +54,7 @@ test('scripted native provider: approval, adoption refusal and malformed-provide
   // The head forwards the provider's receipt as written; a receipt for
   // another application is the face's to refuse.
   await service.changeCommandMode('malformed');
-  const malformed = page.waitForResponse(result => result.url().includes('/commands?'));
+  const malformed = page.waitForResponse(result => lookupOf(result.request()) !== '');
   await page.getByRole('button', { name: 'Check request status', exact: true }).click();
   expect((await (await malformed).json()).value.receipt.application_id).toBe('another-application');
   await expect(panel).toContainText('could not be verified');
@@ -87,7 +87,7 @@ test('scripted native provider: verdict submission and reload preserve distinct 
   expect(receipt.verdict_value).toBe('revise');
   expect(receipt.proposal_state).toBe('');
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(/recorded/i);
-  const recovered = page.waitForResponse(result => new URL(result.url()).searchParams.get('request_id') === receipt.request_id);
+  const recovered = page.waitForResponse(result => lookupOf(result.request()) === receipt.request_id);
   await page.reload();
   expect((await recovered).status()).toBe(200);
   await expect(page.getByRole('region', { name: 'Command recovery', exact: true })).toContainText(receipt.request_id);
@@ -134,16 +134,23 @@ test('scripted native provider: one recovery namespace rejects a request key reu
   expect(response.status()).toBe(200);
   const refused = await response.json();
   expect(refused.value).toMatchObject({ ok: false, code: 'request_conflict' });
-  const lookup = await page.request.get(service.origin + service.apiPath + '/commands?' + new URLSearchParams({ request_id: original.payload.request_id }));
+  const lookup = await page.request.post(service.origin + service.apiPath + '/commands', {
+    headers: { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json' },
+    data: { call: 'CommandLookup', payload: { request_id: original.payload.request_id } },
+  });
   expect(lookup.status()).toBe(200);
   expect((await lookup.json()).value.receipt.operation).toBe('dna.practice.propose');
 });
 
-test('scripted native provider: a line naming its own forwarder is refused before the socket', async ({ page, service }) => {
+test('scripted native provider: a lookup is a line, and a via mark names no one', async ({ page, service }) => {
+  // GH #1135: there is no GET lookup and no forwarder to name; a line that
+  // still carries the old mark is the session's, over HTTP, like any other.
+  const get = await page.request.get(service.origin + service.apiPath + '/commands?request_id=x');
+  expect(get.status()).toBe(405);
   const response = await page.request.post(service.origin + service.apiPath + '/commands', {
     headers: { Origin: service.origin, 'X-Hale-Command': '1', 'Content-Type': 'application/json' },
     data: { call: 'CommandLookup', payload: { request_id: 'x' }, via: 'http-session' },
   });
-  expect(response.status()).toBe(400);
-  expect((await response.json()).error.code).toBe('invalid_command');
+  const line = await response.json();
+  expect(line.caller).toMatchObject({ mode: 'bearer', via: 'http' });
 });

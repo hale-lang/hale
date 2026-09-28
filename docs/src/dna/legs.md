@@ -585,10 +585,9 @@ generates does neither, so the fixture's own owner (`start_owner` in
 `dna/tests/dogfood_voice_test.hl`: the wiring above, and a `note`
 workflow whose one Work it asks) is the reference until a project wires
 its `dna/org/main.hl` so. A leg's commands go over the socket; the
-head's HTTP forwarder takes a command only with a verified ID token
-(the fixture runs its head in a fixture's trusted-local session, where
-the forwarder takes the launch token the head prints, which a leg never
-holds).
+binding's HTTP transport takes a command only under a bearer it
+verifies (an ID token, or, in the fixture's trusted-local session, the
+launch token the head prints, which a leg never holds).
 
 The performer (`dna/tests/dogfood/work.hl.txt`, installed as the
 project's `dna/org/work.hl`) takes the software kind, makes its change

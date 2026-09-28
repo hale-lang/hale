@@ -797,6 +797,25 @@ locus Head {
         // a service's own bearer (verified in `handle`), else the session's
         let given = dna::bearer_token(std::http::header(req, "Authorization"));
         let bearer = if self.cfg.principal_mode != "oidc" { "" } else if len(given) > 0 { given } else { self.auth.session_token(req) };
+        // GH #1135: a command is the child's api binding's, on its own HTTP
+        // transport one port past the reads — the same wire line, under the
+        // caller's bearer (in a fixture's trusted-local session, the child's
+        // launch token, which the binding names as the head's own account).
+        // Nobody forwards a line: the binding authenticates and gates it.
+        let cut = std::str::index_of(req.path, "?");
+        let bare = if cut < 0 { req.path } else { req.path[0..cut] };
+        if std::str::ends_with(bare, "/commands") {
+            if req.method != "POST" { return self.error(405, "method_not_allowed", "a command is one POSTed line of the api wire; a lookup is a `CommandLookup` call", false); }
+            // a session is an ambient credential: its line keeps the CSRF
+            // guard before it becomes a bearer; a caller's own bearer is not
+            if len(given) == 0 {
+                let guard = api::command_guard(req, head_origin(self.cfg));
+                if len(guard) > 0 { return self.command_error(guard); }
+            }
+            let up = proxy_exchange(req, api::commands_port(self.cfg.api_port), head_origin(self.cfg), "", if self.cfg.principal_mode == "local" { child_token } else { bearer });
+            if up.ok { self.api_ready_pid = child.pid; }
+            return proxied_response(up);
+        }
         let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }

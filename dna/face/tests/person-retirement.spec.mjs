@@ -25,8 +25,9 @@ async function fixture(page,options={}){
     if(url.pathname.endsWith('/commands')){
       // The session's slice: the board's PersonRetire while the script seats it.
       if(req.method()==='POST'&&req.postDataJSON().describe)return send(200,describeLine([...UNGATED,...(script.authorized?['PersonRetire']:[])]));
+      if(req.method()==='POST'&&req.postDataJSON().call==='CommandLookup'){script.gets.push(req.postDataJSON().payload.request_id);return send(200,receipt());}
       if(req.method()==='POST'){script.command=req.postDataJSON();script.posts.push(script.command);script.applied=true;if(script.lost){script.authorized=false;return route.abort('failed');}return send(200,receipt());}
-      script.gets.push(url.searchParams.get('request_id'));return send(200,receipt());
+      return send(405,{api_version:'hale.v1',error:{code:'method_not_allowed',message:'a command is one POSTed line of the api wire',retryable:false}});
     }
     if(url.searchParams.has('snapshot')&&url.searchParams.get('snapshot')!==source().record_head)return send(409,{api_version:'hale.v1',error:{code:'snapshot_changed',message:'Record changed',retryable:true}});
     if(url.pathname.endsWith('/dna/tasks')){

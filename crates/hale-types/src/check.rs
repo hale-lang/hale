@@ -6431,6 +6431,19 @@ fn check_api_binding(programs: &[&Program], diags: &mut Vec<Diag>) {
                 .to_string(),
         ));
     }
+    // GH #1135: an HTTP transport says who its bearers are; without a
+    // source every token is nobody and every request is refused.
+    if let Some(h) = &b.http {
+        if h.principals.is_none() {
+            diags.push(Diag::ty(
+                h.span,
+                "api binding: `http(…)` needs `principals: <source>` — a locus \
+                 satisfying `std::api::BearerSource` that says who a bearer token \
+                 is; without one the transport refuses every request"
+                    .to_string(),
+            ));
+        }
+    }
     for (span, why) in &surface.serve_errors {
         diags.push(Diag::ty(*span, format!("api binding: {}", why)));
     }

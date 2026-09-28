@@ -1375,6 +1375,22 @@ pub struct ApiBinding {
     /// The surface is the entrypoint seed's own loci plus these, and
     /// nothing else: holding a locus never serves its bus.
     pub serve: Vec<Ident>,
+    /// GH #1135: `http(host, port, principals: <source>)` — the binding's
+    /// HTTP transport beside its socket.
+    pub http: Option<ApiHttp>,
+    pub span: Span,
+}
+
+/// GH #1135: the binding's HTTP transport. `host` and `port` are
+/// expressions the main locus evaluates as param defaults, like the
+/// socket path; `principals` is a locus satisfying
+/// `std::api::BearerSource` (absent: `std::api::NoBearer`, which
+/// refuses every token).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApiHttp {
+    pub host: Expr,
+    pub port: Expr,
+    pub principals: Option<Expr>,
     pub span: Span,
 }
 

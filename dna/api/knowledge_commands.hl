@@ -84,7 +84,7 @@ locus KnowledgeAdmission {
     }
     // As CommandAdmission's: an issuer's subject that maps to no person
     // (a service) asks nothing and looks nothing up.
-    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.via, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
+    fn personless(ctx: std::api::Context) -> Bool { return std::str::starts_with(ctx.caller.name, "oidc:") && len(self.roles.person(ctx.caller)) == 0; }
     fn refused(code: String) -> KnowledgeReply { return KnowledgeReply { code: code }; }
     fn reply(result: ops::KnowledgeResult) -> KnowledgeReply {
         return KnowledgeReply { ok: result.ok, code: result.code, application_id: result.application_id, head: result.head, revision: result.revision, receipt: result.receipt };
