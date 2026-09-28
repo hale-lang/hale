@@ -182,12 +182,15 @@ locus HeadFixture {
         std::test::assert(false, "the head neither listened nor exited: " + self.log());
     }
     // Spawns the head and waits until it answers (`first`: its first
-    // answer must be 200; otherwise it may answer before it is ready).
-    // The ports were probed at birth and the head binds them seconds
-    // later, while other test files run beside this one: a head whose own
-    // bind was refused in that window is not the test's failure — what it
-    // started is stopped and it comes up again on fresh ports, three
-    // tries in all. Any other exit fails the test.
+    // answer must be 200; otherwise it may answer before it is ready) —
+    // asked only once this spawn printed its banner, which it does when
+    // its listener is bound, so a neighbour's head on the same port is
+    // never taken for this one. The port was probed at birth and the head
+    // binds it seconds later, while other test files run beside this one:
+    // a head whose bind was refused in that window is not the test's
+    // failure, and it comes up again on a fresh port, three tries in all.
+    // Its children are left as they are, for the next head to adopt, as a
+    // restarted head adopts them. Any other exit fails the test.
     fn listen(project_arg: String, first: Bool) {
         let mut attempt = 0;
         while attempt < 3 {
@@ -199,6 +202,7 @@ locus HeadFixture {
             while !up && !refused && std::time::now() < deadline {
                 let state = std::process::try_wait(self.head) or - 1;
                 if state != -2 && attempt < 2 && self.bind_refused(since) { refused = true; }
+                else if state == -2 && !self.bound(since) { std::time::sleep(50ms); }
                 else {
                     std::test::assert_eq_int(state, -2, "the head exited before listening: " + self.log());
                     let response = self.http("GET", HEAD, "", "");
@@ -213,11 +217,18 @@ locus HeadFixture {
             if !refused { std::test::assert(false, "the head did not become reachable: " + self.log()); return; }
             // exited and reaped: its pid is never signalled again
             self.head.pid = -1;
-            self.stop();
+            self.stop_head();
             attempt = attempt + 1;
             self.port = dna::free_port(1 + 2 * attempt);
-            self.api_port = dna::free_port(2 + 2 * attempt);
+            // an API child the next head adopts keeps its port
+            if !self.child_alive("api") { self.api_port = dna::free_port(2 + 2 * attempt); }
         }
+    }
+    // Whether the head's log since byte `since` has its banner for this
+    // fixture's port: printed once its listener is bound.
+    fn bound(since: Int) -> Bool {
+        let text = self.log();
+        return len(text) > since && std::str::contains(text[since..len(text)], "hale dna head: http://127.0.0.1:" + to_string(self.port) + "/");
     }
     // Whether the head's log since byte `since` says a bind was refused.
     fn bind_refused(since: Int) -> Bool {
