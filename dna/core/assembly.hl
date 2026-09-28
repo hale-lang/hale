@@ -778,9 +778,24 @@ locus Dna {
         if len(request) > 0 { b.string_field("request", request); }
         b.int_field("at", now);
         b.end_object();
-        if !a.ok { let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", entity, b.result()); }
+        // a refusal in process is landed once a window for what it was for:
+        // a Review routed again on a spent window is refused by the row it has
+        if !a.ok && (len(request) > 0 || !self.refused_in_window(entity, now)) { let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", entity, b.result()); }
         else if len(request) > 0 { let y = self.journal.append(self.journal.revision(), "attempt.allowance_granted", entity, b.result()); }
         return a;
+    }
+    // Whether the gate refused a spend for `entity` in the window `now` is in.
+    @unbounded
+    fn refused_in_window(entity: String, now: Int) -> Bool {
+        let w = self.budget.window_of(now);
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.allowance_refused" && e.entity == entity && self.budget.window_of(std::json::find_int_field(e.body, "at")) == w { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     // The spend a lease was granted (GH #1131): the latest
     // `attempt.allowance_granted` on the attempt under this holder and
@@ -2530,6 +2545,12 @@ locus Dna {
         else if !claim.present { why = "attempt " + a.attempt_id + " was never claimed by a leg"; }
         else if claim.holder != a.holder || claim.token != a.token { why = "the lease on attempt " + a.attempt_id + " is " + claim.holder + "'s at token " + to_string(claim.token) + ", not " + a.holder + "'s at token " + to_string(a.token) + ": stale"; }
         else if claim.expires <= now { why = "the lease on attempt " + a.attempt_id + " expired at " + to_string(claim.expires); }
+        else if self.claims.ready() {
+            // memory's claim fences the lease, as it does an outcome's
+            let live = self.claims.current(claim.key);
+            if !self.claims.reachable { why = "memory cannot be reached to fence the lease on attempt " + a.attempt_id; }
+            else if !live.present || live.holder != a.holder || live.token != a.token || live.expires <= now { why = "memory's claim on attempt " + a.attempt_id + " is not " + a.holder + "'s at token " + to_string(a.token) + " now: stale"; }
+        }
         if len(why) > 0 {
             let b = std::json::Builder { };
             b.begin_object();

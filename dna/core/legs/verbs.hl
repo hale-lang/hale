@@ -168,7 +168,7 @@ locus Leg {
     }
     fn usage(why: String) -> Int {
         eprintln("hale dna work: ", why);
-        eprintln("usage: hale dna work next|brief|renew|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
+        eprintln("usage: hale dna work next|brief|renew|allowance|submit|settle|release|friction|run|loop [--api <origin>] [--as position:<name>] …");
         return 2;
     }
     fn fail(verb: String, error: String) -> Int { println(error_json(verb, error)); return 1; }
@@ -262,7 +262,9 @@ locus Leg {
         let deadline = std::time::now() + int_flag(self.a, "--wait", 60);
         while reply.ok && std::json::find_string_field(std::json::find_field_raw(std::json::find_field_raw(reply.body, "data"), "attempt"), "state") == "requested" && std::time::now() < deadline {
             std::time::sleep(500ms);
-            reply = self.head.lookup(request);
+            // a record read while it moved is read again on the next turn
+            let read = self.head.lookup(request);
+            if read.ok || !std::str::starts_with(read.error, "snapshot_changed") { reply = read; }
         }
         return self.done("allowance", request, reply);
     }

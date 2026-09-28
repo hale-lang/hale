@@ -136,6 +136,23 @@ main locus App {
         std::test::assert(len(self.last_of("review.requested", "review:m9")) > 0, "the Review is opened, for the Board: " + asked);
         let review = self.last_of("attempt.allowance_refused", "review:m9");
         std::test::assert(std::str::contains(review, "\"why\": \"budget exhausted (spent 55 of 20"), "the leader's decision is refused by the same gate, as the same row: " + review);
+        // routed again on the same spent window, the Review is refused by the
+        // row it has: one refusal a window for what it was for
+        let again = self.core.review_mutation(dna::Mutation { id: "m9", task_id: "t9", worktree: repo, base_commit: base, candidate_commit: cand, change_class: "application", rationale: "a change" },
+            dna::VerificationReport { candidate: cand, evidence: dna::Evidence { check_clean: true, verify_clean: true }, magnitude: dna::Magnitude { loci: 1, novelty: 1 } }, "editor");
+        let mut refusals = 0;
+        let mut k = 0;
+        while k < self.core.journal.revision() {
+            let e = self.core.journal.read(k);
+            if e.kind == "attempt.allowance_refused" && e.entity == "review:m9" { refusals = refusals + 1; }
+            k = k + 1;
+        }
+        std::test::assert_eq_int(refusals, 1, "one refusal a window, however often it is routed: " + again);
+
+        // 8. what a leg's calls spent, as the owner reads it at settle: a wait
+        //    row (`adapter: legs`) is no call, and costs nothing
+        let spent = dna::spend_of("[{\"adapter\": \"fake\", \"cost_micros\": 5}, {\"adapter\": \"legs\", \"cost_micros\": 0, \"waited_ms\": 100}, {\"adapter\": \"fake\", \"cost_micros\": 7}]");
+        std::test::assert(spent.calls == 2 && spent.cost_micros == 12, "two calls, 12 micro-dollars: " + to_string(spent.calls) + " " + to_string(spent.cost_micros));
         dna::scratch_done(repo);
     }
 }

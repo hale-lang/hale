@@ -173,6 +173,7 @@ always true, since HTTP writes nothing itself. The socket's own description is t
 | AttemptOutcome | dna.commands.attempt.outcome | position |
 | AttemptRenew | dna.commands.attempt.renew | position |
 | AttemptRelease | dna.commands.attempt.release | position |
+| AttemptAllowance | dna.commands.attempt.allowance | position |
 | FrictionFile | dna.commands.friction.file | position |
 | CommandLookup | dna.commands.lookup | any authenticated peer |
 

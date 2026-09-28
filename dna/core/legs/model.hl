@@ -26,9 +26,11 @@
 // GH #1131: the spend is the spine's to admit, as the editor's and the
 // leader's are. Before its first call the leg asks the spine under its
 // lease (`hands.lease.allowance`); refused, it makes no call and the
-// attempt is declined with the reason. Granted, every call — a retry
-// too — is kept within the allowance: the request's cost ceiling is what
-// is left of it, and none is made once it is spent. The evidence speaks
+// attempt is declined with the reason. Granted, it makes no call — a
+// retry included — once its calls have spent the allowance. A call's
+// cost is known only once it is answered (no adapter prices a request
+// before sending it), so the call that crosses the allowance is made
+// whole: a leg passes its grant by at most that one call. The evidence speaks
 // the owner's vocabulary: a call's `adapter` is the adapter that
 // answered (the router's `last_adapter`), and a wait row's is `legs`,
 // with `waited_ms`.
@@ -76,14 +78,6 @@ fn sleep_for_ms(ms: Int) {
 // words the adapters and gateways use for it.
 fn rate_limited(refused: String) -> Bool {
     return std::str::contains(refused, "http 429") || std::str::contains(refused, "rate limit") || std::str::contains(refused, "rate-limit") || std::str::contains(refused, "too many requests");
-}
-
-// The cost ceiling a call is sent with: the request's own, bounded by
-// what is left of the allowance (-1: no allowance bounds it).
-fn within(ceiling: Int, allowance: Int, spent: Int) -> Int {
-    if allowance < 0 { return ceiling; }
-    let left = if allowance > spent { allowance - spent } else { 0 };
-    return if ceiling > 0 && ceiling < left { ceiling } else { left };
 }
 
 // The role a request carries, by the work kind: what the selection
@@ -160,7 +154,6 @@ locus ModelPerformer {
             data_class: if len(class) > 0 { class } else { "internal" },
             cost_ceiling_micros: std::str::parse_int(std::json::find_string_field(brief.hat, "cost_ceiling")) or 0
         };
-        req.cost_ceiling_micros = within(req.cost_ceiling_micros, allowance, self.spent_micros);
         let mut r = self.asked(brief, req);
         let mut tries = 0;
         let mut wait = self.backoff_ms;
@@ -178,7 +171,6 @@ locus ModelPerformer {
             req.retry_of = brief.attempt_id;
             // a retry is a call too: none once the allowance is spent
             if allowance >= 0 && self.spent_micros >= allowance { break; }
-            req.cost_ceiling_micros = within(req.cost_ceiling_micros, allowance, self.spent_micros);
             r = self.asked(brief, req);
         }
         if !r.ok && allowance >= 0 && self.spent_micros >= allowance && rate_limited(r.refused) {

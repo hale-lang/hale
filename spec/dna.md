@@ -2033,30 +2033,7 @@ memory is named to it.
   a second outcome after settlement, calls that cost more than the
   lease was granted (below) — is an
   `attempt.outcome_refused` row naming why and the request, which
-  answers it, so the relay stops.
-- **The spend (GH #1131).** Before its first model call a leg asks the
-  spine, which holds the one budget (**Models**), for its attempt's
-  spend: `dna.attempt.allowance` under its lease (the attempt, the
-  holder, the token), which the head admits as it admits a renewal —
-  the same checks — and writes as `attempt.allowance_requested`
-  (`holder`, `token`, `request`, `at`, and the command). A node relays
-  it onto the nerves (`WorkAllowanceAsk`, `dna.work.allowance`) until
-  the record answers it. The owner checks the lease as of the head's
-  admission (this holder, this token, live, the attempt relayed to a leg
-  and unsettled) and asks the one gate with the Work's own cost ceiling:
-  `attempt.allowance_granted` (`allowance_micros`, `ceiling_micros`,
-  `spent_micros`, `window_micros`, `window`, `holder`, `token`,
-  `request`, `at`) or `attempt.allowance_refused` (`why`, …), naming
-  the request. The ask reads back `requested` until then, `granted`
-  with `allowance_micros`, or `refused` with the reason. The model
-  performer asks before its first call and waits up to 60 s for the
-  answer; refused, or unanswered, it makes no call and hands back
-  `declined`, naming why; granted, it sends every call — a retry too —
-  with the cost ceiling left of the allowance, and makes none once it is
-  spent. At settle the owner refuses an outcome whose calls cost more
-  than the lease was granted — nothing, when it asked for nothing — as
-  `attempt.outcome_refused`; the calls are journaled all the same, for
-  what was spent is spent. A **Patch Work's** outcome (the
+  answers it, so the relay stops. A **Patch Work's** outcome (the
   request's `output_contract` is `Patch`, disposition `done`) is a
   candidate change, and the owner makes it one (GH #1156): the outcome
   names the leg's commit (`result_ref: commit:<sha>`) and files that
@@ -2093,6 +2070,31 @@ memory is named to it.
   live — and asks it again once the lease expires with no outcome
   (`effect.redelivered`, once per
   lease), when a leg claims it anew.
+- **The spend (GH #1131).** Before its first model call a leg asks the
+  spine, which holds the one budget (**Models**), for its attempt's
+  spend: `dna.attempt.allowance` under its lease (the attempt, the
+  holder, the token), which the head admits as it admits a renewal —
+  the same checks — and writes as `attempt.allowance_requested`
+  (`holder`, `token`, `request`, `at`, and the command). A node relays
+  it onto the nerves (`WorkAllowanceAsk`, `dna.work.allowance`) until
+  the record answers it. The owner checks the lease as of the head's
+  admission (this holder, this token, live, the attempt relayed to a leg
+  and unsettled) and asks the one gate with the Work's own cost ceiling:
+  `attempt.allowance_granted` (`allowance_micros`, `ceiling_micros`,
+  `spent_micros`, `window_micros`, `window`, `holder`, `token`,
+  `request`, `at`) or `attempt.allowance_refused` (`why`, …), naming
+  the request. The ask reads back `requested` until then, `granted`
+  with `allowance_micros`, or `refused` with the reason. The model
+  performer asks before its first call and waits up to 60 s for the
+  answer; refused, or unanswered, it makes no call and hands back
+  `declined`, naming why; granted, it makes no call — a retry included
+  — once its calls have spent the allowance. A call's cost is known only
+  once it is answered (no adapter prices a request before sending it),
+  so the call that crosses the allowance is made whole: a leg passes its
+  grant by at most that one call. At settle the owner refuses an
+  outcome whose calls cost more than the lease was granted — nothing, when it asked for nothing — as
+  `attempt.outcome_refused`; the calls are journaled all the same, for
+  what was spent is spent.
 - **The verbs** (`hale dna work`, GH #946 slice 4; `dna/core/legs`,
   vendored as `vendor/dna/legs`) are a leg as API clients: `next` is
   `dna.attempt.claim` for a position (`--as position:<name>`, the
@@ -3369,8 +3371,9 @@ The organization's models are a catalog in source (GH #583 M1):
   journals as `model.called` with the time of the call (`at`). **One
   vocabulary (GH #1131):** a row's `adapter` is the adapter that
   answered the call — `openai-chat`, `anthropic-messages`, `local`,
-  `harness`, `fake`, `recorded` — whether the call was made in process
-  or by a leg (the router records it, `last_adapter`); `legs` is only a
+  `harness`, `fake`, `recorded`; empty when the router permitted no
+  backend, so none answered — whether the call was made in process or
+  by a leg (the router records it, `last_adapter`); `legs` is only a
   leg's wait row, a call that was not made (`refused` says why,
   `waited_ms` for how long). **The prompt is a
   receipt (GH #611):** the evidence carries the prompt and the context
@@ -3562,12 +3565,15 @@ The organization's models are a catalog in source (GH #583 M1):
   a leg's attempt. Intent admission and the optimize pass ask it too
   (their answers stay `intent.refused` and `optimize.refused`).
   **Nothing is reserved, so the window can be overrun, by a bound:**
-  spends admitted against one remainder may together pass the window's
-  allowance by at most the sum of the allowances they were granted,
-  since a leg keeps its calls within its grant and the owner refuses an
-  outcome whose calls cost more. In process the gate admits the
-  editor's attempt and the leader's Review whole; their calls within
-  are not metered against an allowance call by call.
+  legs admitted against one remainder may together pass the window's
+  allowance by at most the sum of the allowances they were granted plus
+  one call each — a leg makes no call once its calls have spent its
+  grant, and the call that crosses it is made whole, since no adapter
+  prices a request before sending it; the owner refuses an outcome whose
+  calls cost more than its grant, and journals them. In process the gate
+  admits the editor's attempt and the leader's Review whole: their calls
+  within are not held to an allowance, so their spend is bounded only by
+  the window being open when they are admitted.
 - **Tokens per task (GH #946).** The attempt id on a `model.called`
   row is the tag its cost is attributed by: `<ask>/plan` to the task
   born of the ask (the `task.born` row whose body starts `<ask>: `);

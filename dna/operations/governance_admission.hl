@@ -750,6 +750,7 @@ locus GovernanceCommands {
                 if attempts.outcome_outstanding(rj, a, command.holder, command.token) {
                     if command.operation == "dna.attempt.outcome" { return self.refusal(s, attempts.refused(context, command, "duplicate: an outcome for attempt " + a + " is already handed back under this lease and awaits the owner; a second under it changes nothing")); }
                     // the lease is spoken for until the owner answers: given back or renewed now, the relayed outcome would be refused as stale
+                    if command.operation == "dna.attempt.allowance" { return self.refusal(s, attempts.refused(context, command, "an outcome for attempt " + a + " is handed back under this lease and awaits the owner; no spend is asked for under it")); }
                     return self.refusal(s, attempts.refused(context, command, "an outcome for attempt " + a + " is handed back under this lease and awaits the owner; the lease is neither renewed nor given back until it answers"));
                 }
                 let claim = dna::recorded_leg_claim(rj, a, rj.revision());

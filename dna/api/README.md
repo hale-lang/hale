@@ -337,6 +337,7 @@ contract for the HTTP reads).
 | `AttemptOutcome` | `dna.commands.attempt.outcome` | `Outcome { request_id, attempt_id, holder, token: Int, disposition, result, result_ref, narrative, evidence, receipts, hat_digest, hat_head, hat_watermark: Int = -1, prompt_digest, renderer }` (evidence/receipts are JSON arrays as text) | `position` |
 | `AttemptRenew` | `dna.commands.attempt.renew` | `Renewal { request_id, attempt_id, holder, token: Int, ttl: Int }` | `position` |
 | `AttemptRelease` | `dna.commands.attempt.release` | `Release { request_id, attempt_id, holder, token: Int, why }` | `position` |
+| `AttemptAllowance` | `dna.commands.attempt.allowance` | `Allowance { request_id, attempt_id, holder, token: Int }` | `position` |
 | `FrictionFile` | `dna.commands.friction.file` | `Friction { request_id, record_head, position, attempt_id, text }` | `position` |
 | `CommandLookup` | `dna.commands.lookup` | `Lookup { request_id }` | any authenticated peer |
 
@@ -780,8 +781,13 @@ refusing row's id. Once the organism has adopted the ledger, both calls and
 the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
 without it they answer `commands_unsupported` / `context_source_unavailable`.
 
-Three more gated topics carry a leg's loop (GH #946 slice 4), all gated
-`position`: `AttemptRenew` (its `Renewal` payload targets `dna.attempt`, the
+Four more gated topics carry a leg's loop (GH #946 slice 4, GH #1131), all gated
+`position`: `AttemptAllowance` (its `Allowance` payload is the lease alone; the
+ask for the attempt's spend lands `attempt.allowance_requested`, which a node
+relays to the organization, and reads back `state: requested` until the
+organization's budget gate answers — `granted` with `allowance_micros`, what
+the attempt may cost, -1 when nothing bounds it, or `refused` with the
+reason), `AttemptRenew` (its `Renewal` payload targets `dna.attempt`, the
 lease, `ttl` 1..86400; the lease extended and the token kept, `state:
 renewed`), `AttemptRelease` (its `Release` payload carries the lease and
 `why`; `attempt.released`, `state: released`, and the attempt is

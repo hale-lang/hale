@@ -436,13 +436,16 @@ the leader do. Before its first call the model performer asks for the
 attempt's spend (`allowance`, above); the organization answers from the
 budget with a row — `attempt.allowance_granted`, or
 `attempt.allowance_refused` naming why. Refused, the leg makes no call
-and hands back `declined` with the reason. Granted, each call goes out
-with the cost ceiling left of the allowance, and none is made once it
-is spent. The organization refuses an outcome whose calls cost more
-than the lease was granted, and journals the calls anyway. Nothing is
-reserved: two legs granted against the same remainder can together
-overrun the window, by at most what they were granted. The prompt as sent is filed as the attempt's
-receipt when its class allows (`public`, `internal`).
+and hands back `declined` with the reason. Granted, it makes no call
+once its calls have spent the allowance; since a call's cost is known
+only once it is answered, the call that crosses the allowance is made
+whole. The organization refuses an outcome whose calls cost more than
+the lease was granted, and journals the calls anyway. Nothing is
+reserved: legs granted against the same remainder can together overrun
+the window, by at most what they were granted plus one call each.
+
+The prompt as sent is filed as the attempt's receipt when its class
+allows (`public`, `internal`).
 
 A **rate-limited** call (HTTP 429, or a backend saying so) is backed
 off inside the attempt: up to `retries` (3) more tries, the first
