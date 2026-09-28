@@ -4040,8 +4040,11 @@ SIGINT or SIGTERM:
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
-prints one line naming the signal, restores the signal's default
-action and re-raises it — the process dies BY the signal, as it
+prints one line naming the signal — and what the drain was still
+waiting on: each cooperative pool with its mode, whether a worker is
+mid-iteration and in which locus, and how many cells queue behind it,
+then the live loci that read `draining`, by name — restores the
+signal's default action and re-raises it — the process dies BY the signal, as it
 would with no runtime at all (a waiting parent sees it killed by
 that signal; a shell reports `128 + signal`) — so a `run()` that
 never reads `self.draining` cannot keep a stopped program alive. A

@@ -1,10 +1,12 @@
-//! The `lifecycle_flow` integration-test binary: 16 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 17 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "drain_grace_names_the_wait.rs"]
+mod drain_grace_names_the_wait;
 #[path = "generic_monomorph_agreement.rs"]
 mod generic_monomorph_agreement;
 #[path = "generics.rs"]
