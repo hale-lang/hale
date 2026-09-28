@@ -645,6 +645,11 @@ main locus Head {
         api: unix(self.socket, bound: 64, on_full: refuse, roles: self.roles), http("127.0.0.1", self.http_port, principals: self.bearer);
     }
     run() {
+        // The binding's transports are born, and listening, before run():
+        // a port the HTTP transport cannot hold stops the program in its
+        // birth. So this line is the process's own word that its commands
+        // port answers, and a launcher waits for it rather than guessing.
+        if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
         while !self.draining { std::time::sleep(100ms); }
     }
 }
