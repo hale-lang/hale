@@ -73,6 +73,11 @@ locus NatsClient {
         user: String = "";
         pass: String = "";
         token: String = "";
+        // The password presented as `user`, sealed: revealed on the one
+        // line that writes CONNECT and nowhere else — never kept in a
+        // field, returned, or put in a URL. With one set, `pass` and a
+        // URL's own password are not used.
+        credential: std::secret::Credential = std::secret::Credential { };
         name: String = "";
         // false: this connection's own publishes are not delivered back
         // to its own subscriptions (what a bus adapter wants).
@@ -154,7 +159,11 @@ locus NatsClient {
     /// Dial, read INFO, send CONNECT, and wait for the server's PONG to
     /// the PING after it: the server has accepted the connection when
     /// the PONG arrives, and a `-ERR` (bad credentials) arrives instead.
-    fn open() -> Bool {
+    fn open() -> Bool { return self.open_as(self.credential); }
+
+    /// `open`, presenting `credential`'s password as `user` (a holder of
+    /// the client passes its own: a `NatsConn`'s).
+    fn open_as(credential: std::secret::Credential) -> Bool {
         self.close();
         self.last_error = "";
         if !self.parse_url() { return false; }
@@ -185,7 +194,9 @@ locus NatsClient {
             self.io.tls = t;
             self.io.set_recv_deadline(self.timeout);
         }
-        if !self.write_str(connect_line(self.user, self.pass, self.token, self.name, self.echo) + ping_line()) { self.io.close(); return false; }
+        // the one place a sealed credential is revealed: straight into the
+        // CONNECT it authenticates
+        if !self.write_str(connect_line(self.user, if credential.ready() { credential.reveal_text() } else { self.pass }, self.token, self.name, self.echo) + ping_line()) { self.io.close(); return false; }
         while std::time::monotonic() < deadline {
             if !self.pull() { break; }
             while self.framer.next() {

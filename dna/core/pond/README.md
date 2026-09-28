@@ -12,13 +12,17 @@ memory or its nerves.
   the node's host and the organization bind their topics to its
   `NatsAdapter`, and a pinned `NatsConn` carries them over NATS
   JetStream.
-  Two changes of this repository's are not in pond yet: `NatsConn`'s
+  Three changes of this repository's are not in pond yet: `NatsConn`'s
   `untyped` prefix, whose messages go out on the local `NatsInbound`
   topic as they arrived, for the host's reading of an application's
   events (GH #987); and `NatsPublisher`, a publish-only adapter that
   dispatches nothing into its program, so an application that says a
   concern keeps an exact artifact its fleet's law can be certified over
-  (GH #986). A refresh keeps both until pond has them.
+  (GH #986); and a sealed `credential` (`std::secret::Credential`) on
+  `NatsClient`, `NatsConn` and `NatsPublisher`, presented as `user`'s
+  password — revealed on the one line that writes CONNECT and nowhere
+  else, never a field, a return or a URL (GH #989). A refresh keeps all
+  three until pond has them.
 
 Refresh by copying the directories from pond again and updating the
 commits here; `hale check dna/core/pond/pq` and
