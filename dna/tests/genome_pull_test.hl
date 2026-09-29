@@ -127,8 +127,10 @@ main locus App {
         let first = head_of(self.node, "HEAD");
 
         // ---- the node, under a supervisor that starts it again on the
-        // genome-restart code (75) and stops on anything else
-        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout 900 sh -c 'while true; do \"$0\" dna dev . --no-iris; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
+        // genome-restart code (75) and stops on anything else. Stopped, it
+        // stops the node as a unit stops it (SIGTERM, which the node's own
+        // drain passes to its organization) and waits for it
+        let started = in_dir(self.node, "sh\n-c\nexport HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_GENOME_POLL=2; nohup timeout 900 sh -c 'stop() { kill -TERM \"$p\" 2>/dev/null; wait \"$p\"; exit 0; }; trap stop TERM; while true; do \"$0\" dna dev . --no-iris & p=$!; wait $p; c=$?; [ $c -eq 75 ] || exit $c; done' \"$1\" >>.hale/node.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
         let loop = dna::trim_nl(started.stdout);
         std::test::assert(len(loop) > 0, "the supervisor started");
         std::test::assert(self.recorded("node.started", first, 300), "the node records the genome it runs: " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
@@ -155,9 +157,42 @@ main locus App {
         let status = in_dir(self.node, toolchain() + "\ndna\nstatus");
         std::test::assert(std::str::contains(status.stdout, "genome:") && std::str::contains(status.stdout, moved[0..12]) && std::str::contains(status.stdout, broken[0..12] + " did not build"), "status names the genome the node runs and the one that did not build: " + status.stdout);
 
-        let stop = dna::run_tool("sh\n-c\nkill \"$1\" 2>/dev/null; pkill -P \"$1\" 2>/dev/null; true\nsh\n" + loop);
+        // ---- down: the supervisor stopped and waited for, then nothing that
+        // runs from or in the scratch root is left before it goes, so the
+        // slice's leftover-process guard never races this teardown
+        let stopped = dna::run_tool("sh\n-c\nkill -TERM \"$1\" 2>/dev/null; for i in $(seq 1 600); do kill -0 \"$1\" 2>/dev/null || exit 0; sleep 0.1; done; exit 1\nsh\n" + loop);
+        let left = quiet_under(scratch, 30);
+        std::test::assert(stopped.code == 0 && len(left) == 0, "the node and its organization stop, and are waited for (still running: " + left + "): " + (std::io::fs::read_file(self.node + "/.hale/node.log") or ""));
         dna::scratch_done(scratch);
     }
+}
+
+// Waits up to `secs` for every process whose command line or working
+// directory is under `dir` — what the suite's guard counts as a fixture's
+// leftover — to end; a straggler past two thirds of that is killed. ""
+// once none is left, else the pids still running. This shell and the
+// fixture that runs it are not among them.
+fn quiet_under(dir: String, secs: Int) -> String {
+    let script = "d=\"$1\"; me=$$; parent=$PPID; n=$(($2 * 10)); kill_at=$(($n * 2 / 3))\n"
+        + "under() {\n"
+        + "  if [ -d /proc/self ]; then\n"
+        + "    for p in /proc/[0-9]*; do\n"
+        + "      q=${p#/proc/}; { [ \"$q\" = \"$me\" ] || [ \"$q\" = \"$parent\" ]; } && continue\n"
+        + "      c=$(readlink \"$p/cwd\" 2>/dev/null); a=$({ tr '\\000' ' ' < \"$p/cmdline\"; } 2>/dev/null)\n"
+        + "      case \"$c/ $a\" in *\"$d/\"*) echo \"$q\";; esac\n"
+        + "    done\n"
+        + "  else\n"
+        + "    ps -eo pid=,args= | awk -v d=\"$d\" -v me=\"$me\" -v parent=\"$parent\" 'BEGIN { d = d \"/\" } $1 != me && $1 != parent && index($0, d) { print $1 }'\n"
+        + "  fi\n"
+        + "}\n"
+        + "i=0; while [ $i -lt $n ]; do\n"
+        + "  left=$(under); [ -z \"$left\" ] && exit 0\n"
+        + "  [ $i -eq $kill_at ] && kill -KILL $left 2>/dev/null\n"
+        + "  sleep 0.1; i=$(($i + 1))\n"
+        + "done\n"
+        + "echo $(under); exit 1";
+    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "\n" + to_string(secs));
+    return if r.code == 0 { "" } else { dna::trim_nl(r.stdout) };
 }
 
 fn main() { App { }; }
