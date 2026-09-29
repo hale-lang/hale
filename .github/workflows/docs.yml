@@ -126,6 +126,14 @@ jobs:
         if: github.event_name != 'pull_request'
         run: cp -r play/site docs/book/play
 
+      # The book itself is read on hale-lang.org, which syncs docs/src
+      # and follows SUMMARY.md; this Pages copy serves only /play and
+      # /api. Every book page becomes a redirect to the same page on
+      # the site, so old links keep working and there is one book.
+      - name: Replace the book's pages with redirects to hale-lang.org
+        if: github.event_name != 'pull_request'
+        run: scripts/book-redirect-stubs.sh docs/book
+
       # --- publish the combined site ---
       - name: Configure Pages
         if: github.event_name != 'pull_request'
