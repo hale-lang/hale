@@ -151,6 +151,9 @@ main locus App {
         std::test::assert(len(host) > 0, "dev started");
         let reading = self.logged("the organization reads its facts from the nerves", 300, host);
         let asked = if reading { in_dir(self.app, toolchain() + "\ndna\ntask\ncreate\nsay hello to the nerves") } else { dna::RunResult { code: -1 } };
+        // a schedule asked from the clone is answered over them too: the
+        // generated organization binds `dna::ScheduleRequested`
+        let declared = if reading { in_dir(self.app, toolchain() + "\ndna\nschedule\ndeclare\nnightly\n--every\n1h\n--definition\nask-person\n--convener\nleader\n--args\n{\"objective\": \"close the day\"}\n--as\nriley") } else { dna::RunResult { code: -1 } };
 
         // ---- the heart's pulse stops (GH #989): its durable deleted, as the
         // owner, while the spine's connection holds. The spine records it
@@ -183,6 +186,7 @@ main locus App {
 
         std::test::assert(reading, "the organization reads its facts from compose's nerves, as the spine: " + self.log());
         std::test::assert(std::str::contains(asked.stdout, "born for intent"), "a task asked from the clone is born over them: " + asked.stdout + asked.stderr + self.log());
+        std::test::assert(declared.code == 0 && std::str::contains(declared.stdout, "schedule nightly declared: ask-person every 1h, convened by position:leader"), "a schedule asked from the clone is declared over them: " + declared.stdout + declared.stderr + self.log());
         std::test::assert(!std::str::contains(self.log(), "adapter_undeliverable") && !std::str::contains(self.log(), "Permissions Violation"), "no publish was refused: " + self.log());
         std::test::assert_eq_str(stopped_the_heart, "", "the owner deleted the heart's durable");
         std::test::assert(pulse_said, "the spine names the pulse stopped: " + self.log());
