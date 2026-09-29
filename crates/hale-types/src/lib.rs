@@ -215,6 +215,9 @@ pub fn check_bundle_for_build(
     let mut borrow = borrow_lifetime::borrow_lifetime_diags_with_renames(&programs, &bundle.import_renames);
     stdlib_bodies::demangle_imports(&mut borrow, &[]);
     diags.extend(borrow);
+    // GH #738: a bare fallible stdlib call is an error on every build
+    // path, as it is in `hale check`.
+    diags.extend(bare_fallible::bare_fallible_calls(&programs));
     diags
 }
 

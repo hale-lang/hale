@@ -1,9 +1,8 @@
-//! GH #738 — a bare fallible stdlib call (no `or`) is a warning by
-//! default, an error under `hale check --strict-fallible`, and a
-//! `hale verify` failure like every advisory. A handled call and a
-//! deliberately discarded one say nothing. The legacy Int-status form
-//! is the bare form and is reported the same way. The typing is
-//! unchanged, so the program still builds either way.
+//! GH #738 — a bare fallible stdlib call (no `or`) is an error, in
+//! `hale check`, `hale verify` and `hale build` alike. A handled call
+//! and a deliberately discarded one say nothing. The legacy Int-status
+//! form is the bare form and is refused the same way. `--strict-fallible`
+//! is gone: there is no mode in which the bare call is accepted.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,27 +40,26 @@ const HANDLED: &str = "fn main() {\n    std::io::fs::write_file(\"/tmp/hale-738-
 const LEGACY_STATUS: &str = "fn main() {\n    let r: Int = std::io::fs::write_file(\"/tmp/hale-738-t\", \"x\");\n    println(r);\n}\n";
 
 #[test]
-fn an_unhandled_call_warns_then_fails_under_the_flag_and_under_verify() {
-    let (ok, out) = run("check", &[], UNHANDLED, "warn");
-    assert!(ok, "the default is a warning, not a failure: {out}");
-    assert!(
-        out.contains("warning:") && out.contains("`std::io::fs::write_file`") && out.contains(NOTICE),
-        "the warning names the callee, its payload and the missing disposition: {out}"
-    );
-    assert!(out.contains("or raise") && out.contains("or discard") && out.contains("or handler(err)"), "{out}");
-    let (ok, out) = run("check", &["--strict-fallible"], UNHANDLED, "strict");
-    assert!(!ok && out.contains("error") && out.contains(NOTICE), "strict: {out}");
-    let (ok, out) = run("verify", &[], UNHANDLED, "verify");
-    assert!(!ok && out.contains(NOTICE), "verify gates on the advisory: {out}");
-    // the typing is unchanged: the bare form still builds
-    let (ok, out) = run("build", &[], UNHANDLED, "build");
-    assert!(ok, "the legacy form builds: {out}");
+fn an_unhandled_call_is_an_error_in_check_verify_and_build() {
+    for verb in ["check", "verify", "build"] {
+        let (ok, out) = run(verb, &[], UNHANDLED, verb);
+        assert!(!ok, "{verb} must refuse the bare call: {out}");
+        assert!(
+            out.contains("`std::io::fs::write_file`") && out.contains(NOTICE),
+            "{verb}: the error names the callee, its payload and the missing disposition: {out}"
+        );
+        assert!(
+            out.contains("or raise") && out.contains("or discard") && out.contains("or handler(err)"),
+            "{verb}: {out}"
+        );
+        assert!(out.contains("error since v0.22.0"), "{verb}: {out}");
+    }
 }
 
 #[test]
 fn a_discarded_or_handled_call_says_nothing() {
     for (src, tag) in [(DISCARDED, "discard"), (HANDLED, "handled")] {
-        let (ok, out) = run("check", &["--strict-fallible"], src, tag);
+        let (ok, out) = run("check", &[], src, tag);
         assert!(ok && !out.contains(NOTICE), "{tag}: {out}");
         let (ok, out) = run("verify", &[], src, &format!("{tag}_v"));
         assert!(ok && out.contains("0 findings"), "{tag} under verify: {out}");
@@ -71,7 +69,11 @@ fn a_discarded_or_handled_call_says_nothing() {
 #[test]
 fn the_legacy_status_form_is_the_bare_form() {
     let (ok, out) = run("check", &[], LEGACY_STATUS, "legacy");
-    assert!(ok && out.contains("warning:") && out.contains(NOTICE), "{out}");
-    let (ok, out) = run("check", &["--strict-fallible"], LEGACY_STATUS, "legacy_strict");
     assert!(!ok && out.contains(NOTICE), "{out}");
+}
+
+#[test]
+fn the_strict_flag_is_gone() {
+    let (ok, out) = run("check", &["--strict-fallible"], DISCARDED, "flag");
+    assert!(!ok && out.contains("--strict-fallible"), "an unknown flag is refused, not ignored: {out}");
 }

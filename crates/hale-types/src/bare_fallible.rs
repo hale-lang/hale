@@ -1,16 +1,16 @@
 //! GH #738 — a bare fallible stdlib call is a call that says nothing
-//! about failure.
+//! about failure, and it is an **error**.
 //!
-//! Every stdlib entry point the signature table marks `fallible` can
-//! be called bare, with no `or`: the call keeps the legacy form (the
-//! success value, or an Int status for the write fns), and the corpus
-//! relies on it, so the checker has always let it through. The ruling
-//! of 2026-09-20 stages the end of that: by default the bare call is a
-//! **warning** naming the callee and the missing disposition;
-//! `hale check --strict-fallible` makes it an **error**; the default
-//! flips at the next minor with a migration note. A handled call
-//! (`or raise`, `or <fallback>`, `or handler(err)`) and a deliberately
-//! discarded one (`or discard`) say nothing here.
+//! Every stdlib entry point the signature table marks `fallible` used
+//! to be callable bare, with no `or`: the call kept the legacy form (the
+//! success value, or an Int status for the write fns), and the checker
+//! let it through. The ruling of 2026-09-20 staged the end of that (a
+//! warning, then `--strict-fallible`, then the default at the next
+//! minor); v0.22.0 is that minor. The bare call is refused by `hale
+//! check`, `build`, `run` and `test` alike, and there is no flag and no
+//! legacy mode. A handled call (`or raise`, `or <fallback>`, `or
+//! handler(err)`) and a deliberately discarded one (`or discard`) say
+//! nothing here.
 //!
 //! The inventory is the table itself: [`crate::stdlib_surface::FnSig`]
 //! rows whose `fallible` is `Some`. This pass reads it, so an entry
@@ -27,10 +27,9 @@ use hale_syntax::ast::{
 };
 use hale_syntax::error::Diag;
 
-/// Every bare fallible stdlib call in `programs`, as warnings, or as
-/// errors under `strict`.
-pub fn bare_fallible_calls(programs: &[&Program], strict: bool) -> Vec<Diag> {
-    let mut w = Walk { strict, diags: Vec::new() };
+/// Every bare fallible stdlib call in `programs`, as errors.
+pub fn bare_fallible_calls(programs: &[&Program]) -> Vec<Diag> {
+    let mut w = Walk { diags: Vec::new() };
     for p in programs {
         w.items(&p.items);
     }
@@ -38,7 +37,6 @@ pub fn bare_fallible_calls(programs: &[&Program], strict: bool) -> Vec<Diag> {
 }
 
 struct Walk {
-    strict: bool,
     diags: Vec<Diag>,
 }
 
@@ -173,21 +171,16 @@ impl Walk {
                             if let Some(payload) = sig.fallible {
                                 let msg = format!(
                                     "`{}` can fail ({}) and this call says nothing \
-                                     about it: write `or raise`, `or <fallback>`, \
-                                     `or discard`, or `or handler(err)`. The bare \
-                                     call keeps the legacy form for now — the \
-                                     success value, or an Int status for a write — \
-                                     and is refused under `hale check \
-                                     --strict-fallible`; the default becomes an \
-                                     error at the next minor (GH #738).",
+                                     about it: write `or raise` to hand the failure \
+                                     to the caller, `or <fallback>` for a value to \
+                                     use instead, `or handler(err)` to deal with it \
+                                     here, or `or discard` when losing it is the \
+                                     intent. A bare call to a fallible entry point \
+                                     is an error since v0.22.0 (GH #738).",
                                     sig.display_path(),
                                     payload
                                 );
-                                self.diags.push(if self.strict {
-                                    Diag::ty(*span, msg)
-                                } else {
-                                    Diag::warn(*span, msg)
-                                });
+                                self.diags.push(Diag::ty(*span, msg));
                             }
                         }
                     }

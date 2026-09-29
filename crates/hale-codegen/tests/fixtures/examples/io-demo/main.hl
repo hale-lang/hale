@@ -47,7 +47,7 @@ fn main() {
     // ---- read config payload ----
     let mut payload: String = "default visit\n";
     if std::io::fs::file_exists(config_path) {
-        payload = std::io::fs::read_file(config_path);
+        payload = std::io::fs::read_file(config_path) or "default visit\n";
         println("config: loaded from ", config_path);
     } else {
         println("config: none, using default");
@@ -61,10 +61,18 @@ fn main() {
     };
 
     // ---- write log ----
-    let r: Int = std::io::fs::write_file(log_path, payload);
+    let r: Int = write_log(log_path, payload) or 1;
     if r == 0 {
         println("io-demo: wrote log to ", log_path);
     } else {
         println("io-demo: log write failed");
     }
+}
+
+// The log write is the one call here whose failure the demo reports
+// rather than absorbs: the helper raises it, `main` turns it into the
+// status the output branches on.
+fn write_log(path: String, text: String) -> Int fallible(IoError) {
+    std::io::fs::write_file(path, text) or raise;
+    return 0;
 }

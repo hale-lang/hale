@@ -414,5 +414,6 @@ handle_request  does={syscall,block,alloc}
 main  does={syscall,env,alloc}
 ### io-demo
 main  does={syscall,env,alloc}
+write_log  does={syscall}
 ### multi-file-seed
 main  does={alloc}
