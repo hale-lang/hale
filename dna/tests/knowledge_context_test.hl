@@ -249,6 +249,25 @@ main locus App {
         std::test::assert(std::str::contains(self.last("mutation.proposed", ""), "docs"), "the Mutation carries the planned class: " + self.last("mutation.proposed", ""));
         let pev = self.last("model.called", "i2/plan");
         std::test::assert(std::str::contains(pev, "\"knowledge_bindings\": \"package:" + org_package + " " + DESIGN + "\""), "the plan's evidence names the package: " + pev);
+        // ---- GH #1225: a quiet organism reads its record no more per tick.
+        // The knowledge client asks memory whether it caught up on every
+        // tick; the record is read again only when the organism's journal
+        // moved, and its identity once.
+        let quiet = dna::MemoryKnowledge { repo: repo, dsn_env: OWNER_ENV };
+        let rev = self.dna.journal.revision();
+        let mut k = 0;
+        while k < 50 { let asked = quiet.caught_up(rev); k = k + 1; }
+        std::test::assert_eq_int(quiet.record_reads, 2, "fifty asks at one revision read the record twice: its identity and its last knowledge row");
+        let moved = quiet.caught_up(rev + 1);
+        std::test::assert_eq_int(quiet.record_reads, 3, "a revision that moved reads its last knowledge row again, once");
+        // and the organization itself, ticking while nothing happens
+        self.dna.tick(std::time::nanos(std::time::current()) / 1000000);
+        let settled_rev = self.dna.journal.revision();
+        let settled_reads = self.dna.knowledge_client.record_reads;
+        let mut t = 0;
+        while t < 20 { self.dna.tick(std::time::nanos(std::time::current()) / 1000000); t = t + 1; }
+        std::test::assert_eq_int(self.dna.journal.revision(), settled_rev, "twenty quiet ticks append nothing");
+        std::test::assert_eq_int(self.dna.knowledge_client.record_reads, settled_reads, "and read the record not once");
         store.close();
         std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "the record's schema and roles dropped");
         dna::scratch_done(repo);
