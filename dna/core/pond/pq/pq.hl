@@ -69,6 +69,11 @@ locus PgConn {
         // requests SCRAM-SHA-256 (AuthenticationSASL). Empty = trust
         // auth (the server sends AuthenticationOk with no challenge).
         password: String = "";
+        // vault — the name of a `std::secret` vault entry holding the
+        // password, presented instead of `password` when set: revealed
+        // into the SCRAM exchange's `@secret` parameter in the one
+        // statement that uses it, never held here (GH #989).
+        vault: String = "";
         database: String = "postgres";
 
         // sslmode — TLS negotiation policy (caller-facing). One of
@@ -436,7 +441,7 @@ locus PgConn {
         let server_first = sasl_r_text(m2.body, m2.total);
 
         // compute the client-final message + expected server signature.
-        let cf = compute_client_final(self.password, cfb, server_first);
+        let cf = if len(self.vault) > 0 { compute_client_final(std::secret::Credential { vault: self.vault }.reveal_text(), cfb, server_first) } else { compute_client_final(self.password, cfb, server_first) };
         if !cf.ok {
             return __SaslResult { ok: false, err_kind: "auth_failed",
                 err_detail: "auth: " + cf.err };

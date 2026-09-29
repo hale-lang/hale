@@ -146,16 +146,17 @@ other two:
 
 ```text
 $ HALE_DNA_MEMORY_DSN_OWNER=postgres://dna:dna@db.internal:5432/dna hale dna memory migrate
-HALE_DNA_MEMORY_DSN_SPINE=postgres://dna_9f3c…_spine:dna_9f3c…_spine@db.internal:5432/dna?sslmode=prefer
-HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_9f3c…_head:dna_9f3c…_head@db.internal:5432/dna?sslmode=prefer
+HALE_DNA_MEMORY_DSN_SPINE=postgres://dna_9f3c…_spine@db.internal:5432/dna?sslmode=prefer&vault=postgres-dna_9f3c…_spine
+HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_9f3c…_head@db.internal:5432/dna?sslmode=prefer&vault=postgres-dna_9f3c…_head
 ```
 
 The two roles, `dna_<identity>_spine` and `dna_<identity>_head`,
 belong to the record: a role granted on every record's schema would
-read every other record's evidence on the same server. Until the
-vault holds their credentials (#989) each role's password is a
-placeholder equal to its name, so keep the database where only the
-people and machines you trust can reach it.
+read every other record's evidence on the same server. Each role's
+password is drawn into the vault (`postgres-<role>`), and its DSN names
+that entry rather than carrying the password: a part that connects
+presents it from the vault on its own machine, so the vault there must
+hold it.
 
 The migration is one transaction and can be run again at any time.
 It writes a schema version (version 8), and every store checks it when
@@ -442,10 +443,10 @@ and it makes a role per owner and prints its DSN:
 
 ```text
 $ HALE_DNA_OWNER_KEYS="acme=… north=…" hale dna memory migrate
-HALE_DNA_MEMORY_DSN_SPINE=postgres://…_spine:…
-HALE_DNA_MEMORY_DSN_HEAD=postgres://…_head:…
-HALE_DNA_MEMORY_DSN_HEAD_ACME=postgres://…_head_acme:…
-HALE_DNA_MEMORY_DSN_HEAD_NORTH=postgres://…_head_north:…
+HALE_DNA_MEMORY_DSN_SPINE=postgres://…_spine@…&vault=postgres-…_spine
+HALE_DNA_MEMORY_DSN_HEAD=postgres://…_head@…&vault=postgres-…_head
+HALE_DNA_MEMORY_DSN_HEAD_ACME=postgres://…_head_acme@…&vault=postgres-…_head_acme
+HALE_DNA_MEMORY_DSN_HEAD_NORTH=postgres://…_head_north@…&vault=postgres-…_head_north
 ```
 
 An owner's heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`; the plain

@@ -153,12 +153,17 @@ fn vault_provision_local(name: String) -> String {
     return if std::secret::Credential { vault: name }.matches(std::bytes::from_string(value)) { "drawn" } else { "" };
 }
 
-// `owner` with the role in place of the owner's user and password.
+// `owner` with the role in place of the owner's user, and the vault entry
+// holding the role's password in place of a password (GH #989): the DSN
+// names where the credential is, and the connection presents it.
 fn role_dsn(owner: Dsn, role: String) -> Dsn {
-    return Dsn { ok: owner.ok, user: role, password: role_password(role), host: owner.host, port: owner.port, database: owner.database, sslmode: owner.sslmode };
+    return Dsn { ok: owner.ok, user: role, vault: role_vault_name(role), host: owner.host, port: owner.port, database: owner.database, sslmode: owner.sslmode };
 }
 
+// A DSN as text: one that names a vault entry carries no password, only
+// the entry's name (`&vault=`); an operator's carries the one it was given.
 fn dsn_text(d: Dsn) -> String {
+    if len(d.vault) > 0 { return "postgres://" + d.user + "@" + d.host + ":" + to_string(d.port) + "/" + d.database + "?sslmode=" + d.sslmode + "&vault=" + d.vault; }
     return "postgres://" + d.user + ":" + d.password + "@" + d.host + ":" + to_string(d.port) + "/" + d.database + "?sslmode=" + d.sslmode;
 }
 
@@ -455,7 +460,7 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
         if len(provision_role(owner_role(record_id, nth_word(owners, oi)))) == 0 { return Migrated { why: "the vault could not hold a password for the owner " + nth_word(owners, oi) + "'s role" }; }
         oi = oi + 1;
     }
-    let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, database: owner.database, sslmode: owner.sslmode };
+    let c = pq::PgConn { host: owner.host, port: owner.port, user: owner.user, password: owner.password, vault: owner.vault, database: owner.database, sslmode: owner.sslmode };
     let st = c.open();
     if !st.ok { return Migrated { why: "open: " + st.err.kind + " " + st.err.detail }; }
     let why = migrate_on(c, record_id, owners);
@@ -611,6 +616,7 @@ fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
     c.port = d.port;
     c.user = d.user;
     c.password = d.password;
+    c.vault = d.vault;
     c.database = d.database;
     c.sslmode = d.sslmode;
     return "";

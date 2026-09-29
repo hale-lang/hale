@@ -383,9 +383,12 @@ secrets are provisioned out of band, and the bootstrap only checks.
 A secret is handed to the adapter that puts it on the wire — the NATS
 client when it connects, the head when it asks the identity provider,
 the model client in its request — and is never a string anywhere else:
-not in a URL, an environment variable or a command line. Two do not
-follow that yet: memory's DSNs carry their role's password, and `gh`
-gets the forge's token in its own environment. A node's own
+not in a URL, an environment variable or a command line. Memory's DSNs
+name the vault entry of their role's password (`&vault=postgres-<role>`)
+and carry no password: the database driver presents it when it connects.
+Two do not follow that yet: the migration sets a role's password in the
+SQL it runs as the owner, and `gh` gets the forge's token in its own
+environment. A node's own
 account and an application's own broker account will be provisioned
 when that member is admitted; neither exists yet.
 

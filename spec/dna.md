@@ -275,7 +275,13 @@ host's tick (**The spine**, below).
   role's password is the vault's `postgres-<role>` (**The organism's
   secrets**), drawn when the role is declared and read at use; the
   migration sets each role's password from the vault (`ALTER ROLE`
-  when it exists), so the vault stays the one source.
+  when it exists), so the vault stays the one source. A role's DSN
+  carries no password: it names the entry,
+  `postgres://<role>@host:port/db?sslmode=…&vault=postgres-<role>`, and
+  the connection reveals it into its SCRAM exchange's `@secret`
+  parameter, in the one statement that uses it (GH #989). The seed
+  compose database's owner DSN names `postgres-owner-<seed>` the same
+  way. An operator's DSN with a password in it is presented as given.
 - **Three DSNs.** `HALE_DNA_MEMORY_DSN_OWNER` is the schema owner's,
   used only to migrate: by `hale dna memory migrate [dir]`, by `hale
   dna dev` before it starts the host, by `hale dna upgrade` when it is
@@ -4484,10 +4490,13 @@ secret, by its vault name, and never creates one.
   locus), and `reveal_text()` is called on the line that writes the
   secret out — pond's NATS client on `CONNECT`, the head's token
   request, the model's request header. No field, URL, argument or
-  environment variable carries one. Two are not sealed yet: memory's
-  DSNs carry their role's password, and the forge's token reaches
-  `gh`, which takes it no other way, as `GH_TOKEN` in that one child's
-  environment (through a file unlinked at once).
+  environment variable carries one; memory's DSNs name their role's
+  entry and pq presents it in its handshake. Two are not sealed yet:
+  the migration sets each role's password in the SQL it runs as the
+  owner (`CREATE` / `ALTER ROLE … PASSWORD`, an SQL literal on pq's
+  ordinary query path), and the forge's token reaches `gh`, which takes
+  it no other way, as `GH_TOKEN` in that one child's environment
+  (through a file unlinked at once).
 - **Fail closed.** `hale dna run` (and `dev`, which starts it) refuses
   when the vault lacks a drawn secret, naming each; `nerves migrate`
   refuses a role with no entry; nothing falls back to a default.
