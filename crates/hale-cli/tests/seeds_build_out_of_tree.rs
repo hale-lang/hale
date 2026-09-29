@@ -50,6 +50,10 @@ const EXEMPT: &[(&str, &str)] = &[
         "dna/tests/head_roles_test.hl",
         "copies dna/ into the fixture's scratch root and builds THAT copy, so the binary sits beside a source inside the scratch root",
     ),
+    (
+        "CHANGELOG.md",
+        "records history, and may name a path that no longer exists (the removed dna/oidc/serve/serve binary)",
+    ),
 ];
 
 /// `.gitignore` files that stand for a user's own project repository
