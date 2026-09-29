@@ -16,8 +16,8 @@ the model is automatic. Here's what's underneath.
 Every locus has an arena — a region of memory. Everything the
 locus allocates (strings it builds, records it constructs,
 collection storage) comes from that arena. When the locus
-dissolves, the entire region is freed at once. There is no
-per-object deallocation, ever.
+dissolves, the entire region is freed at once. Nothing in the
+arena is freed object by object.
 
 Regions nest exactly like loci do. A child's region is a
 sub-region of its parent's:
@@ -61,6 +61,9 @@ locus needs *bounded, disciplined* storage — a recycling pool, a
 growable buffer — it declares **capacity slots**:
 
 ```hale
+type Route { path: String; target: String; }
+type Session { id: Int; user: String; }
+
 locus Router {
     capacity {
         heap routes  of Route;     // growable, individually freed
@@ -92,6 +95,8 @@ resolution at which it observes them — which lets the compiler
 pick the allocator that makes that resolution cheap:
 
 ```hale
+locus Worker { }
+
 locus WorkerPool : projection chunked {
     accept(w: Worker) { }
 }
@@ -103,7 +108,9 @@ locus WorkerPool : projection chunked {
   Per-child sub-regions with free-list reuse — the default when a
   locus accepts children.
 - **`recognition`** — large populations (≈100–500), observed in
-  aggregate (a count, a histogram). Pre-allocated fixed pools.
+  aggregate (a count, a histogram). Pre-allocated fixed pools,
+  and explicit only: you name the cap and the storage discipline,
+  as in `projection recognition(cap = 200, fixed_cell)`.
 
 The projection class changes the allocator strategy, not your
 code: the same parent and child methods read from a `rich` pool
@@ -113,7 +120,9 @@ or a `recognition` pool unchanged. It's a commitment about
 ## Sizing is hints, lifetime is law
 
 Declared sizes are hints — an arena that out-allocates its budget
-just adds another chunk; it doesn't panic. The load-bearing
+just adds another chunk; it doesn't panic. (The one hard limit is
+a `recognition` class's `cap`: a declared budget, enforced at run
+time.) The load-bearing
 property is *lifetime*: wholesale free at dissolve. That's the
 contract every other guarantee leans on.
 

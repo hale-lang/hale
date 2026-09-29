@@ -27,17 +27,18 @@ buffer and the methods over it — `push`, `get`, `set`, `pop`,
 (here: a `{cap, len, buf}` struct with doubling realloc) and the
 method surface.
 
-The four forms and what they require:
+The five forms and what they require:
 
 | Form | Backing slot | Lowers to | Synthesized surface |
 |---|---|---|---|
 | `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*` |
-| `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty` |
+| `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
+| `@form(set)` | one `pool` + `indexed_by` | the hashmap table, value never surfaced | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
 | `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
 | `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len` |
 
-`get` / `pop` / `remove` are `fallible` (bounds / missing-key /
-empty); `push` on `vec` is infallible, on `ring_buffer` returns
+`get` / `pop` / `remove` (and a vec's `set`) are `fallible`
+(bounds / missing-key / empty); `push` on `vec` is infallible, on `ring_buffer` returns
 `Bool` (full is a normal condition, not an error). `lru_cache` is
 the cap-bounded keyed form: `put` is infallible and silently
 evicts the least-recently-**used** entry over `cap` (a `get`
@@ -61,21 +62,22 @@ two same-type forms on two pools.) The rejection is for genuine
 sharing: reaching one instance from a pool other than the one it
 lives on. Opt into that with the `sync = …` parameter —
 `@form(hashmap, sync = serialized)` (per-map mutex),
-`sync = striped` (concurrent readers), or `sync = lockfree`
+`sync = striped` (cell-level CAS, parallel writers), or `sync = lockfree`
 (CAS-only steady state) — trading layout density for the sharing
 discipline the workload needs.
 
 ## The performance contract
 
-Each form commits to a performance band, verified by
-microbenchmarks in the tree:
+Each form commits to a performance band, measured by
+microbenchmarks:
 
 - **Tight-loop primitive** (`push`) — within ~10% of idiomatic
   C. `@form(vec).push` hits this.
 - **Amortized workload** — within ~2× of the C equivalent.
 - **Per-op fallible** (`get` through the fallible ABI) — no tight
-  bound; advisory, because the fallible return shape and the
-  function-call boundary cost real cycles.
+  bound; advisory, because the fallible return shape costs real
+  cycles. `@form(vec)`'s `get` / `set` / `pop` / `push` are inlined
+  at codegen, so for a vec the gap is largely closed.
 
 The point: a form isn't a slow generic that "works for any type."
 It's a specialized implementation monomorphized to your cell
@@ -105,6 +107,9 @@ observations of its *accepted child loci*. They operate on
 different things and compose freely on the same locus:
 
 ```hale
+type Session { id: String; user: String; }
+locus Worker { }
+
 @form(hashmap)
 locus SessionStore : projection chunked {
     capacity { pool sessions of Session indexed_by id; }

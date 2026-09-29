@@ -24,6 +24,10 @@ defeat the automatic bounding?"
 ## The pattern that bites: accumulating in a loop
 
 ```hale
+fn render_row(i: Int) -> String {
+    return f"row {i}\n";
+}
+
 fn render(rows: Int) -> String {
     let mut out = "";
     let mut i = 0;
@@ -41,6 +45,10 @@ crosses a chunk boundary. The fix is an accumulator that grows
 *one* buffer in place:
 
 ```hale
+fn render_row(i: Int) -> String {
+    return f"row {i}\n";
+}
+
 fn render(rows: Int) -> String {
     let b = std::bytes::BytesBuilder { };
     let mut i = 0;
@@ -100,23 +108,37 @@ to be a scalar, and one function's tables may take at most 8 KiB
 of frame in total (a cooperative-pool coroutine stack is 64 KiB).
 A bigger table is still correct — it just allocates.
 
-## Resolve string keys to ints at boot
+## Resolve keyed handles at boot
 
 If a hot path looks something up by string key in another locus,
-the string gets copied on every call. Resolve the key to an `Int`
-index once at startup and pass the index on the hot path:
+every call carries the key across and allocates a search temp.
+Resolve the handle once, before the hot path starts, and keep it
+as a field — `std::metrics` is built for exactly this:
 
 ```hale
+type Msg { n: Int; }
+
 locus Service {
-    params { metrics: MetricsRegistry = MetricsRegistry { }; ticks_idx: Int = 0; }
-    birth() {
-        self.ticks_idx = self.metrics.register("ticks_total");  // clone once
-    }
+    params { ticks: std::metrics::Counter; }   // resolved once, in main
     fn dispatch(m: Msg) {
-        self.metrics.inc(self.ticks_idx);                        // zero per-call alloc
+        self.ticks.inc();                       // no key crosses per call
     }
 }
+
+fn main() {
+    let reg = std::metrics::Registry { namespace: "demo" };
+    let s = Service {
+        ticks: std::metrics::counter(reg, "ticks_total", std::metrics::labels_empty()),
+    };
+    s.dispatch(Msg { n: 1 });
+    s.dispatch(Msg { n: 2 });
+    print(reg.render());    // demo_ticks_total 2
+}
 ```
+
+The handle is threaded in where the service is built: a
+locus-typed field takes a literal or a param, not a factory's
+result assigned later in `birth`.
 
 ## Reclaim per-connection state
 
@@ -252,8 +274,9 @@ environment variables — `LOTUS_ARENA_RESIDENCY=1` to dump live
 arena sizes from a heartbeat, `LOTUS_ARENA_LOG_CHUNK_ATTACH=N` to
 trace which arena is growing, `LOTUS_CHUNK_POOL_STATS=1` for
 chunk-pool hit rates, and the `MALLOC_*` family for glibc's
-trim/arena behavior. The full table is in `spec/memory.md` and
-the *keeping memory bounded* spec material. The workflow:
+trim/arena behavior. The full table is in `spec/runtime.md`
+(*Diagnostic + tuning env vars*), and the styleguide's leak-hunt
+appendix walks through using them. The workflow:
 smaps-diff over a window → if it's `[heap]`, check 30s deltas →
 bursty 64KB steps mean chunk-pool overflow (a loop accumulator)
 → fix with `BytesBuilder`.
@@ -287,8 +310,8 @@ reach for in C, without an FFI shim:
   address space) — for the ordinary case a `BytesBuilder` accumulator
   is the right tool.
 
-And the run-time complement to the compile-time
-`--warn-unbounded-alloc` check: `std::diag::heap_alloc_count()` and
+And the run-time complement to the compile-time unbounded-alloc
+check: `std::diag::heap_alloc_count()` and
 `std::diag::syscall_count(name)` let a test *assert* a steady-state
 region did what you think — read the counter before and after and
 check the delta is zero ("this loop allocated nothing", "exactly one
@@ -340,7 +363,7 @@ the substrate showed through, but native codegen closed it to
 all sit in the ±15% band).
 
 And the honest column: the per-op overheads that remain are
-free-fn **call protocol** (~2.5× behind the compiled trio),
+free-fn **call protocol** (~1.25× behind C and Rust),
 **locus instantiation** (2–3× — region setup is a cost you pay
 at spawn, not a place Hale wins), and heap-payload dispatch.
 The design guidance follows directly: resolve handles at boot

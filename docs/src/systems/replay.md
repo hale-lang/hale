@@ -15,7 +15,7 @@ checked coverage boundary.** What sits outside that boundary —
 live sockets, files, subprocesses — is refused by default rather
 than silently re-executed. This chapter walks the whole surface;
 the normative contract is `spec/runtime.md` § *Lossless recording
-mode* and § *Replay*.
+mode*, which covers both recording and replay.
 
 ## Recording a run
 
@@ -262,8 +262,7 @@ silence.
   fast-forward). What replays is the *schedule*: the data of
   unjournaled I/O still re-executes live (and is gated).
 - **The artifact format is pre-stable** while the remaining phases
-  (fleet replay, replay-under-a-different-plan, durability grades)
-  land.
+  (fleet replay, replay-under-a-different-plan) land.
 
 ## Determinism without the recorder
 

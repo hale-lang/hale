@@ -35,19 +35,19 @@ regimes:
 - **`resolution`** — a single scalar decision: the
   one-input-one-answer path.
 
-The compiler emits a strategy tuned to each regime, rather than
-running one general implementation everywhere.
+Today each mode compiles exactly like a `fn` member: the name
+records which regime the body is written for, and the compiler
+does not yet emit a different lowering per regime.
 
 ## They share the arena
 
 All three modes read and write the *same* locus state through the
 same [arena](./memory.md) — there's no duplicate allocation and
-no copy between them. Because they can touch the same fields, the
-compiler verifies the modes don't *write-conflict*: a
-`resolution`-mode write to state that `bulk` mode also writes
-during overlapping evaluation is a compile-time error. You get
-three execution strategies over one piece of state, with the
-aliasing hazard checked for you.
+no copy between them. A mode is an ordinary synchronous call —
+`self.bulk(...)` runs to completion like any method — so two modes
+never evaluate at once over the same fields. You get three entry
+points over one piece of state, with no second copy to keep in
+step.
 
 ## Why three, and no fourth
 
@@ -64,8 +64,8 @@ classes](./memory.md) for memory.
 Rarely, and only at this tier — when a locus has a kernel
 computation that genuinely runs in more than one of those
 regimes (a numeric model evaluated both in batch and
-per-decision, say) and you want each path lowered well from one
-declaration. For ordinary application and service code, you'll
+per-decision, say) and you want each path declared, and named for
+its regime, on the one locus that owns the state. For ordinary application and service code, you'll
 never declare a mode; the lifecycle methods and `fn` members
 cover everything.
 
