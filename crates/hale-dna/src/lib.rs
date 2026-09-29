@@ -86,6 +86,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "organization_source_request",
     "ownership",
     "performers",
+    "practices",
     "principal",
     "record",
     "record_rows",
