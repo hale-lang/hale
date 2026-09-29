@@ -532,12 +532,14 @@ The observer (iris) watches a running program's loci and messages
 live. Targets: Linux x86_64 and arm64, macOS arm64, and the browser
 through WebAssembly; the LSP ships inside the `hale` binary.
 
-The largest Hale program is written in Hale: **DNA, the organism**, a
-governed software organization whose memory, nerves, heart, senses,
-skin, legs, schedules and head are each a subsystem you can read in
-[`dna/`](./dna/), described part by part in
-[the book](https://hale-lang.org/docs). The compiler and the organism
-are developed against each other.
+**DNA** is the largest thing written in Hale, and it is not a program:
+it is a library from which programs emerge. An application seeds it
+and grows an **organism**, a governed software organization whose
+memory, nerves, heart, senses, skin, legs, schedules and head are
+each a subsystem you can read in [`dna/`](./dna/) and that the book
+describes [part by part](https://hale-lang.org/docs). Every organism
+is its own program, built from the same building block; the compiler
+and the library are developed against each other.
 
 The **frontier**, in the order it lands: the compiler restructured as
 layers over one graph, with every semantic fact derived once and every
