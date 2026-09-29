@@ -293,6 +293,15 @@ fn project_arg(args: &[String], any_positional: bool) -> (PathBuf, Vec<String>) 
 }
 
 pub fn run(args: &[String]) -> ExitCode {
+    // `--help` / `-h` right after a verb asks what `hale dna` takes and
+    // starts nothing: `hale dna dev --help` used to read the flag as the
+    // project directory and bring the seed's compose up (GH #817's rule
+    // — the first argument after a subcommand — at the verb level).
+    if matches!(args.first().map(String::as_str), Some(v) if !v.starts_with('-'))
+        && matches!(args.get(1).map(String::as_str), Some("--help") | Some("-h"))
+    {
+        return usage(0);
+    }
     match args.first().map(String::as_str) {
         Some("init") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
