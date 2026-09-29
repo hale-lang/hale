@@ -87,6 +87,7 @@ locus Scheduler {
     // became: the execution it already was (asked again, by a redelivery
     // or a restart), the one it admitted, or a refusal, a
     // `schedule.refused` row naming the occurrence.
+    @unbounded
     fn admitted(i: Int, t: Int, task: String, again: Bool) {
         let mut s = self.rows.get(i) or Schedule { };
         if again {

@@ -459,9 +459,9 @@ locus Dna {
         self.review_journal.bind(self.journal);
         self.evidence.bind(self.journal, self.verification.receipts);
         self.organization_source_review_facts.bind(self.organization_source_facts);
+        self.scheduler.bind(self.journal);
         self.rehydrate();
         // GH #1143: the schedules the record declares
-        self.scheduler.bind(self.journal);
         self.scheduler.read_rows();
         // GH #596, layering: a child grant wider than the organism's is
         // the early error — refused in the record, and bound by the
