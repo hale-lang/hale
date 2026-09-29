@@ -211,6 +211,7 @@ locus KnowledgeRecord {
 
     // GH #1026: a node request that is neither answered nor started under
     // another body, the rows the family reads before its owner's check.
+    @unbounded
     fn node_fresh(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         let proposed = first_row(self.journal, "knowledge.node.proposed", r.request_id);
@@ -222,6 +223,7 @@ locus KnowledgeRecord {
     // A node request its owner admits: refused when its candidate is not
     // the exact document or it binds laterally, else started. Whether it
     // is started.
+    @unbounded
     fn node_started(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         if digest_of(codec.document(r)) != r.candidate_digest {
@@ -234,6 +236,7 @@ locus KnowledgeRecord {
         }
         return append_once(self.journal, "knowledge.node.started", r.request_id, codec.started(r));
     }
+    @unbounded
     fn node_proposed(r: KnowledgeNodeRequest) -> Bool {
         let codec = KnowledgeNodeRequestCodec { };
         return append_once(self.journal, "knowledge.node.proposed", r.request_id, codec.proposed(r));
@@ -276,6 +279,7 @@ locus KnowledgeRecord {
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
         return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
     }
+    @unbounded
     fn binding_proposed(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { };
         return append_once(self.journal, "knowledge.binding.proposed", r.request_id, codec.proposed(r));
@@ -359,6 +363,7 @@ locus KnowledgeRecord {
         if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
         return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
     }
+    @unbounded
     fn edge_proposed(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { };
         return append_once(self.journal, "knowledge.edge.proposed", r.request_id, codec.proposed(r));
