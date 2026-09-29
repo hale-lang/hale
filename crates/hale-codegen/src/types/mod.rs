@@ -657,13 +657,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function(helper_name)
             .unwrap_or_else(|| panic!("{} declared", helper_name));
-        // F.30b view-ABI compaction: `value` is the view struct
-        // passed by value. The helper checks the staleness epoch
-        // (when the static sentinel isn't set) and returns the
-        // underlying data ptr.
+        // F.30b view-ABI compaction: `value` is the view struct as an
+        // SSA value. The helper takes its two fields (`src`, `epoch`),
+        // checks the staleness epoch (when the static sentinel isn't
+        // set) and returns the underlying data ptr.
+        let view = value.into_struct_value();
+        let src = self
+            .builder
+            .build_extract_value(view, 0, "view.src")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let epoch = self
+            .builder
+            .build_extract_value(view, 1, "view.epoch")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let call = self
             .builder
-            .build_call(f, &[value.into()], "view.unpack")
+            .build_call(f, &[src.into(), epoch.into()], "view.unpack")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(call
             .try_as_basic_value()

@@ -117,10 +117,6 @@ std::io::udp::set_option_bool(
     std::io::sockopt::SO_REUSEADDR(), true) or raise;
 ```
 
-In this release the checker refuses the namespace itself (``unknown
-stdlib namespace `std::io::sockopt` ``), so a program that calls a
-`sockopt` constant does not build yet.
-
 For TCP, `std::io::tcp::set_nodelay(fd, true)` is the common one
 (disable Nagle for latency).
 

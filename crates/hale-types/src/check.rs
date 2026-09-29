@@ -14458,6 +14458,13 @@ impl<'a> Checker<'a> {
                     return;
                 }
                 let name = &path.segments[0].name;
+                // `Drain<T>` is the batch handler's parameter (a bus
+                // subscriber handed a run of records at once): a builtin
+                // generic, declared by no program. Its argument was
+                // checked above.
+                if name == "Drain" && generic_args.len() == 1 {
+                    return;
+                }
                 if self.type_name_is_declared(name) {
                     return;
                 }

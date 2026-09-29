@@ -1,0 +1,21 @@
+// std::io::sockopt — the named platform constants. The namespace was
+// lowered by codegen from the start but absent from the checker's stdlib
+// table, so a program using one was refused as "unknown stdlib
+// namespace"; this file goes through the checker `hale test` runs.
+
+fn main() {
+    // the values differ by platform (SOL_SOCKET is 1 on Linux, 0xffff on
+    // macOS), so the assertions are about the getters answering, and about
+    // the two that every supported platform spells 1
+    std::test::assert(std::io::sockopt::SOL_SOCKET() > 0, "SOL_SOCKET answers");
+    std::test::assert(std::io::sockopt::SO_REUSEADDR() > 0, "SO_REUSEADDR answers");
+    std::test::assert(std::io::sockopt::SO_KEEPALIVE() > 0, "SO_KEEPALIVE answers");
+    std::test::assert_eq_int(std::io::sockopt::TCP_NODELAY(), 1, "TCP_NODELAY is 1 on every platform");
+    std::test::assert_eq_int(std::io::sockopt::IPPROTO_TCP(), 6, "IPPROTO_TCP is 6 on every platform");
+    std::test::assert_eq_int(std::io::sockopt::IPPROTO_UDP(), 17, "IPPROTO_UDP is 17 on every platform");
+    // a constant is the level / name argument of the option calls
+    let fd = std::io::udp::bind("127.0.0.1", 0) or - 1;
+    std::test::assert(fd >= 0, "a udp socket to tune");
+    std::io::udp::set_option_bool(fd, std::io::sockopt::SOL_SOCKET(), std::io::sockopt::SO_REUSEADDR(), true) or std::test::assert(false, "set_option_bool accepts the constants");
+    std::io::udp::close(fd);
+}
