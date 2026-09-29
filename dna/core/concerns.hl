@@ -1,0 +1,215 @@
+// The organization's concerns and pressure, as the record holds them (C3,
+// family 6): a child's concern raised and routed to its source's parent,
+// the count that turns one source's concerns into a proposal, the sources
+// owed one after a stop, and pressure measured toward an organ's proposal.
+// It was part of the assembly; as a locus of its own it holds the two
+// thresholds and nothing else, with the journal the assembly lends it at
+// birth. What a concern or pressure leads to is other parts': the
+// assembly admits concern-escalate's executions (intake's), proposes a
+// persisting concern as knowledge with its Review, asks for an organ as a
+// Mutation, and tells the Board; it asks this family for every row, in the
+// order they always landed (dna/core/record_rows.hl).
+locus ConcernRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        concern_threshold: Int = 3; // a concern raised this often from one source is proposed as knowledge
+        appendage_threshold: Int = 3; // pressure raised this often from one source proposes an organ
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    // Pressure measured (GH #529 D7 extension 4): `pressure.raised`, and
+    // once it persists from one source, `appendage.proposed` — a proposal
+    // for an organ, never one. A request is answered once (GH #986): a
+    // redelivery finds its answer and counts nothing.
+    @unbounded
+    fn pressure(p: Pressure) -> PressureAnswer {
+        let mut seen = 1;
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut proposed = false;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "pressure.raised" && e.entity == p.source {
+                if len(p.request) > 0 && request_named(e.body) == p.request { return PressureAnswer { answered: true }; }
+                seen = seen + 1;
+            }
+            if e.kind == "appendage.proposed" && e.entity == p.source { proposed = true; }
+            i = i + 1;
+        }
+        let x = self.journal.append(self.journal.revision(), "pressure.raised", p.source, pressure_body(p.what, seen, p.request));
+        if seen >= self.appendage_threshold && !proposed {
+            let y = self.journal.append(self.journal.revision(), "appendage.proposed", p.source,
+                "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times");
+            return PressureAnswer { proposed: true, seen: seen };
+        }
+        return PressureAnswer { seen: seen };
+    }
+    // GH #566 F3: the organ's candidate, as the Mutation it was asked for
+    // answered.
+    fn appendage_candidate(source: String, out: String) {
+        let z = self.journal.append(self.journal.revision(), "appendage.candidate", source, out);
+    }
+    // What a concern request already has in the record: the raise it wrote,
+    // and whether another concern under its request was refused.
+    @unbounded
+    fn prior(c: Concern) -> ConcernPrior {
+        let n = self.journal.revision();
+        let mut already = "";
+        let mut refused = false;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "concern.raised" && e.entity == c.source && len(c.request) > 0 && request_named(e.body) == c.request { already = std::str::clone(e.body); }
+            if e.kind == "concern.refused" && e.entity == c.source && request_named(e.body) == c.request { refused = true; }
+            i = i + 1;
+        }
+        return ConcernPrior { raised: already, refused: refused };
+    }
+    // GH #689: one request is one concern; another one under it is refused.
+    fn refuse_other(c: Concern) {
+        let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, concern_refusal_body("request " + c.request + " already raised another concern here; one request is one concern", c.request));
+    }
+    // concern-escalate's inputs for a concern asked of the organization.
+    fn escalation(c: Concern) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("source", c.source);
+        b.string_field("what", c.what);
+        b.int_field("severity", c.severity);
+        b.string_field("request", c.request);
+        b.end_object();
+        return b.result();
+    }
+    // concern-escalate's `raise` step: the concern raised, its row naming
+    // the parent it is routed to (none when its execution raised it
+    // already, or it is owed: its raises are the record's), and whether its
+    // source has now crossed the threshold with no proposal.
+    @unbounded
+    fn raise(task: String, x: String) -> RaiseAnswer {
+        let source = std::json::find_string_field(x, "source");
+        let what = std::json::find_string_field(x, "what");
+        let owed = std::json::find_int_field(x, "owed");
+        let parent = parent_path(source);
+        let n = self.journal.revision();
+        let mut seen = 0;
+        let mut mine = false;
+        let mut proposed = false;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "concern.raised" && e.entity == source {
+                seen = seen + 1;
+                if std::json::find_string_field(e.body, "task") == task { mine = true; }
+            }
+            if e.kind == "concern.proposed" && e.entity == source { proposed = true; }
+            i = i + 1;
+        }
+        // owed: the raises are the record's already
+        if owed == 0 && !mine {
+            // the answer names the request it answers (GH #689), so the host
+            // can tell which of one source's concerns has been heard
+            seen = seen + 1;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("what", what);
+            b.int_field("severity", std::json::find_int_field(x, "severity"));
+            b.int_field("occurrence", seen);
+            b.string_field("request", std::json::find_string_field(x, "request"));
+            b.string_field("parent", parent);
+            b.string_field("task", task);
+            b.end_object();
+            let r = self.journal.append(self.journal.revision(), "concern.raised", source, b.result());
+            if !r.ok { return RaiseAnswer { }; }
+        }
+        return RaiseAnswer { ok: true, seen: seen, propose: !proposed && seen >= self.concern_threshold };
+    }
+    // A concern that persists binds to its source's parent; a source with no
+    // parent has nothing to bind to and is refused, saying so. Whether it
+    // binds.
+    fn bindable(source: String) -> Bool {
+        if len(parent_path(source)) > 0 { return true; }
+        let r = self.journal.append(self.journal.revision(), "knowledge.refused", "concern:" + source, "a concern binds to its source's parent, and `" + source + "` has none: name the source as a path under org");
+        return false;
+    }
+    fn proposed(source: String, digest: String, seen: Int) {
+        let y = self.journal.append(self.journal.revision(), "concern.proposed", source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
+    }
+    // GH #748: every source whose concerns crossed the threshold, with no
+    // proposal of its own and no concern-escalate execution still running
+    // for it, is owed one — rows a stopped organism left, or that reached
+    // the record another way. The count is the record's: each such source
+    // is escalated once, by an execution that raises nothing more (its
+    // raises are the record's) and proposes by the rule that would have.
+    // A source with no parent was already refused where it crossed the
+    // threshold and is left alone. One `<ask id>\t<inputs>` line per
+    // source owed, which the assembly admits.
+    @unbounded
+    fn owed() -> String {
+        let n = self.journal.revision();
+        let mut sources = "\n";
+        let mut out = "";
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "concern.raised" && len(parent_path(e.entity)) > 0 && !std::str::contains(sources, "\n" + e.entity + "\n") { sources = sources + e.entity + "\n"; }
+            i = i + 1;
+        }
+        let mut rest = sources[1..len(sources)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let source = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let mut seen = 0;
+            let mut proposed = false;
+            let mut open = false;
+            let mut what = "";
+            let mut severity = 0;
+            let mut k = 0;
+            while k < n {
+                let o = self.journal.read(k);
+                if o.kind == "concern.raised" && o.entity == source {
+                    seen = seen + 1;
+                    let said = concern_what(o.body);
+                    what = if len(said) > 0 { said } else { std::str::clone(o.body) };
+                    severity = concern_severity(o.body);
+                }
+                if o.kind == "concern.proposed" && o.entity == source { proposed = true; }
+                if o.kind == "workflow.admitted" && std::json::find_string_field(o.body, "definition") == "concern-escalate" && std::json::find_string_field(std::json::find_string_field(o.body, "inputs"), "source") == source && !row_exists(self.journal, "workflow.settled", o.entity) { open = true; }
+                k = k + 1;
+            }
+            if seen >= self.concern_threshold && !proposed && !open {
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("source", source);
+                b.string_field("what", what);
+                b.int_field("severity", severity);
+                b.string_field("request", "");
+                b.int_field("owed", seen);
+                b.end_object();
+                out = out + "concern:" + source + ":owed@" + to_string(seen) + "\t" + b.result() + "\n";
+            }
+        }
+        return out;
+    }
+}
+
+// What measuring pressure came to: the request answered already, or the
+// raise and whether an organ was proposed with it.
+type PressureAnswer {
+    answered: Bool = false;
+    proposed: Bool = false;
+    seen: Int = 0;
+}
+
+// What a concern request already has in the record.
+type ConcernPrior {
+    raised: String = "";
+    refused: Bool = false;
+}
+
+// What concern-escalate's raise came to: written (`ok`), the source's
+// count, and whether it is now to be proposed.
+type RaiseAnswer {
+    ok: Bool = false;
+    seen: Int = 0;
+    propose: Bool = false;
+}

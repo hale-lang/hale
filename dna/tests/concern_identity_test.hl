@@ -31,7 +31,7 @@ main locus App {
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
             // high, so a third concern does not become a proposal here
-            concern_threshold: 99
+            concerns: dna::ConcernRecord { concern_threshold: 99 }
         };
     }
     bus { publish dna::ConcernRaised; }

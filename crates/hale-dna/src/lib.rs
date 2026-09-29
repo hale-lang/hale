@@ -56,6 +56,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "assembly",
     "budget",
     "completion",
+    "concerns",
     "correlation",
     "decision",
     "editing",
