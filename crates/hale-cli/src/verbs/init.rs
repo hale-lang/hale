@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::env;
 use std::process::ExitCode;
 use std::path::Path;
 use std::fs;
@@ -101,4 +103,14 @@ fn main() {
         println!("    hale check {}    # typecheck + analyze", root.display());
     }
     ExitCode::SUCCESS
+}
+
+/// The dispatch arm `main` held inline for this verb, moved out verbatim (C5 step 8).
+pub(crate) fn run_init_cmd(args: &[String]) -> ExitCode {
+    let root = if args.len() >= 3 {
+        PathBuf::from(&args[2])
+    } else {
+        env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    };
+    return run_init(&root);
 }

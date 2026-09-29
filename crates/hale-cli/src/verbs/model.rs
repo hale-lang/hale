@@ -1,3 +1,6 @@
+use std::sync::atomic::Ordering;
+use crate::verbs::check::cli::run_check_cli;
+use crate::verbs;
 use std::process::ExitCode;
 /// GH #527 B4: `hale model diff <a> <b> [--json|--text]`.
 pub(crate) fn run_model_diff(rest: &[String]) -> ExitCode {
@@ -80,4 +83,25 @@ pub(crate) fn diff_lines(expected: &str, current: &str) -> Vec<String> {
         out.push(format!("  + {}", added));
     }
     out
+}
+
+/// The dispatch arm `main` held inline for this verb, moved out verbatim (C5 step 8).
+pub(crate) fn run_model_cmd(args: &[String]) -> ExitCode {
+    let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+    // GH #527 B4: `hale model diff <a> <b> [--json|--text]` —
+    // the semantic difference between two topology artifacts.
+    if rest.first().map(String::as_str) == Some("diff") {
+        return run_model_diff(&rest[1..]);
+    }
+    if rest.first().map(String::as_str) != Some("dump") {
+        eprint!("{}", model_usage());
+        return ExitCode::from(2);
+    }
+    // The check pipeline's dump section reads PROCESS argv (it
+    // is a top-level-command scope), so the flag cannot ride the
+    // rest-args the shim forwards; the shim marks the demand on
+    // the process instead.
+    verbs::check::MODEL_DUMP_DEMANDED.store(true, Ordering::Relaxed);
+    let shim: Vec<String> = rest[1..].to_vec();
+    return run_check_cli(&shim, false);
 }
