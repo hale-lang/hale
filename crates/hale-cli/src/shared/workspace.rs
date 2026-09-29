@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{collect_ap_files, collect_target_files, resolve_import};
+use super::frontend::{collect_ap_files, collect_target_files};
+use super::imports::resolve_import;
 
 /// Walk upward from `start` looking for a `Cargo.toml`; the first
 /// directory containing one is treated as the workspace root.

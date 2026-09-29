@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{build_env, resolve_import, ImportTarget};
+use super::imports::{resolve_import, ImportTarget};
+use crate::build_env;
 
 /// The `hale build` / `hale run` flags whose value is the NEXT argv
 /// entry rather than part of the flag (there is no `--flag=value`
