@@ -59,17 +59,17 @@ const ALIGNED: &[(&str, &str, &str)] = &[
         "the `hale dna <verb>` table: verb column, then description",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/help.rs",
         "check_usage",
         "the `hale check` flag table: flag column, then description",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/fleet.rs",
         "fleet_usage",
         "the `hale fleet` verb table",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/init.rs",
         "main",
         "`hale init`'s closing next-step table (`hale run <dir>      # \
          compile + run`) and its `kept    <path>` outcome column",
@@ -81,12 +81,12 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          (HALE_IMPORT_DEBUG=1)",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/bench.rs",
         "run_bench",
         "the bench result table (`{:<40} {:>12} iters …`)",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/fleet.rs",
         "run_fleet",
         "the `hale fleet` sub-usage lines, each a command column then \
          its description",
@@ -97,13 +97,13 @@ const ALIGNED: &[(&str, &str, &str)] = &[
         "the `ok   <path>` result column, aligned with `FAIL <path>`",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/help.rs",
         "subcommand_help",
         "`hale <command> --help`: each entry is a usage line whose \
          description starts at a fixed column",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/help.rs",
         "usage",
         "the top-level command table",
     ),
