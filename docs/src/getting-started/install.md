@@ -120,7 +120,7 @@ and macOS on Apple Silicon, per the table above.
 
 **2. Where the compiler can be built from source** — the three above,
 plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
-[building from source](#building-from-source).
+[building from source](#build-from-source).
 
 **3. What a build can emit** — `hale --list-targets` is the
 authority. Native binaries for the platform `hale` itself runs on — a
