@@ -237,6 +237,7 @@ crates/hale-codegen/tests/bounded_receiver_dispatch.rs#4 f224362364f184e2
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#5 f224362364f184e2
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#6 f224362364f184e2
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#7 8d626fb945314339
+crates/hale-codegen/tests/bubble_from_param_child.rs#0 218c3b31e667f35d
 crates/hale-codegen/tests/build_hello.rs#0 29a8d183d7eaf7c8
 crates/hale-codegen/tests/build_hello.rs#1 865d341109268295
 crates/hale-codegen/tests/build_hello.rs#10 865d341109268295

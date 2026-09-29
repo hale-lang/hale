@@ -261,6 +261,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map(|cx| (locus_name.to_string(), cx)),
             _ => None,
         };
+        // The locus whose FIELD this instance is, when it is one (the
+        // supervisor just resolved), snapshotted here because the
+        // params-init loop below lowers nested literals that replace
+        // `supervising_parent` before this instance's threading is
+        // written. `owner_for` threading needs it: a param child is born
+        // while its holder is still constructing, so `current_self` is
+        // the enclosing METHOD's locus or nothing at all, and the holder
+        // is the parent the owner pointer has to be threaded from.
+        let field_holder_cx: Option<SelfCx<'ctx>> = self
+            .supervising_parent
+            .as_ref()
+            .map(|(_, cx)| cx.clone());
         // GH #253: high-water mark of the enclosing deferred-
         // dissolve frame. Every entry pushed past this point
         // during THIS call is a (transitive) child of this
@@ -2198,6 +2210,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // use a dedicated transient field that
         // resolve_failure_route consults as a fallback when
         // current_self is None.
+        // (The threading below runs BEFORE this locus's params-init loop,
+        // not after it: a param child of this locus forwards this locus's
+        // own `__owner_for_<I>` in case (b), and it is born inside the loop,
+        // so the fields have to hold their values by then. Written after,
+        // a grandchild read the uninitialised field.)
+        // Interest-based ownership, artifact #2b: birth-threading — the
+        // 3-way write of this child `X`'s `__owner_for_<I>` fields. For
+        // each interest-type `I` in X's forwarding set, decide the owner
+        // pointer to thread FROM the parent `P` (`current_self`, still
+        // live here — it is not swapped to the child until X's own
+        // birth/run further down):
+        //   (a) P ACCEPTS I           → store P's self_ptr (P is the owner)
+        //   (b) P CARRIES __owner_for_I → forward P.__owner_for_I
+        //   (c) otherwise / P is None  → store null (this child is outside
+        //       any I-owner's subtree on this path → transient; a bubble
+        //       site below sees null and does not stitch).
+        // Instance isolation falls out of (a): two `P`/owner instances
+        // thread their OWN self_ptr, so their subtrees stitch disjointly.
+        if !info.owner_forward_field_idxs.is_empty() {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let null_owner = ptr_t.const_null();
+            // Snapshot the parent context (P) once — `current_self` is the
+            // enclosing locus at this point, not yet the child.
+            let parent_ctx = field_holder_cx.clone().or_else(|| self.current_self.clone());
+            let parent_info = parent_ctx
+                .as_ref()
+                .and_then(|cs| self.user_loci.get(&cs.locus_name).cloned());
+            for (interest, field_idx) in info.owner_forward_field_idxs.clone() {
+                let dst = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        field_idx,
+                        &format!(
+                            "{}.__owner_for_{}.ptr",
+                            locus_name, interest
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let value: PointerValue<'ctx> = match (&parent_ctx, &parent_info)
+                {
+                    (Some(cs), Some(pinfo)) => {
+                        let p_accepts = pinfo
+                            .accept_param
+                            .as_ref()
+                            .map(|(_, ct)| ct == &interest)
+                            .unwrap_or(false);
+                        if p_accepts {
+                            // (a) parent is the owner.
+                            cs.self_ptr
+                        } else if let Some(pfidx) =
+                            pinfo.owner_forward_field_idxs.get(&interest).copied()
+                        {
+                            // (b) parent forwards its own carried pointer.
+                            let src = self
+                                .builder
+                                .build_struct_gep(
+                                    pinfo.struct_ty,
+                                    cs.self_ptr,
+                                    pfidx,
+                                    &format!(
+                                        "{}.fwd_{}.src.gep",
+                                        locus_name, interest
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            self.builder
+                                .build_load(
+                                    ptr_t,
+                                    src,
+                                    &format!(
+                                        "{}.fwd_{}.src",
+                                        locus_name, interest
+                                    ),
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?
+                                .into_pointer_value()
+                        } else {
+                            // (c) parent neither accepts nor carries I.
+                            null_owner
+                        }
+                    }
+                    // (c) no parent (a root born at `fn main`).
+                    _ => null_owner,
+                };
+                self.builder
+                    .build_store(dst, value)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
+
         let prev_params_init_self = self.params_init_self.take();
         // Finding 4 (downstream handoff 2026-07-14): remember whether the
         // code that WROTE this instantiation was itself params-
@@ -3397,97 +3505,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).const_null(),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // Interest-based ownership, artifact #2b: birth-threading — the
-        // 3-way write of this child `X`'s `__owner_for_<I>` fields. For
-        // each interest-type `I` in X's forwarding set, decide the owner
-        // pointer to thread FROM the parent `P` (`current_self`, still
-        // live here — it is not swapped to the child until X's own
-        // birth/run further down):
-        //   (a) P ACCEPTS I           → store P's self_ptr (P is the owner)
-        //   (b) P CARRIES __owner_for_I → forward P.__owner_for_I
-        //   (c) otherwise / P is None  → store null (this child is outside
-        //       any I-owner's subtree on this path → transient; a bubble
-        //       site below sees null and does not stitch).
-        // Instance isolation falls out of (a): two `P`/owner instances
-        // thread their OWN self_ptr, so their subtrees stitch disjointly.
-        if !info.owner_forward_field_idxs.is_empty() {
-            let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let null_owner = ptr_t.const_null();
-            // Snapshot the parent context (P) once — `current_self` is the
-            // enclosing locus at this point, not yet the child.
-            let parent_ctx = self.current_self.clone();
-            let parent_info = parent_ctx
-                .as_ref()
-                .and_then(|cs| self.user_loci.get(&cs.locus_name).cloned());
-            for (interest, field_idx) in info.owner_forward_field_idxs.clone() {
-                let dst = self
-                    .builder
-                    .build_struct_gep(
-                        info.struct_ty,
-                        self_ptr,
-                        field_idx,
-                        &format!(
-                            "{}.__owner_for_{}.ptr",
-                            locus_name, interest
-                        ),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let value: PointerValue<'ctx> = match (&parent_ctx, &parent_info)
-                {
-                    (Some(cs), Some(pinfo)) => {
-                        let p_accepts = pinfo
-                            .accept_param
-                            .as_ref()
-                            .map(|(_, ct)| ct == &interest)
-                            .unwrap_or(false);
-                        if p_accepts {
-                            // (a) parent is the owner.
-                            cs.self_ptr
-                        } else if let Some(pfidx) =
-                            pinfo.owner_forward_field_idxs.get(&interest).copied()
-                        {
-                            // (b) parent forwards its own carried pointer.
-                            let src = self
-                                .builder
-                                .build_struct_gep(
-                                    pinfo.struct_ty,
-                                    cs.self_ptr,
-                                    pfidx,
-                                    &format!(
-                                        "{}.fwd_{}.src.gep",
-                                        locus_name, interest
-                                    ),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?;
-                            self.builder
-                                .build_load(
-                                    ptr_t,
-                                    src,
-                                    &format!(
-                                        "{}.fwd_{}.src",
-                                        locus_name, interest
-                                    ),
-                                )
-                                .map_err(|e| {
-                                    CodegenError::LlvmEmit(e.to_string())
-                                })?
-                                .into_pointer_value()
-                        } else {
-                            // (c) parent neither accepts nor carries I.
-                            null_owner
-                        }
-                    }
-                    // (c) no parent (a root born at `fn main`).
-                    _ => null_owner,
-                };
-                self.builder
-                    .build_store(dst, value)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
-        }
 
         // m43: init each __duration_last_fire_<i> field to
         // monotonic-now so the first fire happens after the
