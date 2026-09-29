@@ -513,13 +513,6 @@ locus Dna {
         let exhausted = self.budget_exhausted(now);
         return self.spending.gate(entity, ceiling_micros, request, holder, token, now, self.budget);
     }
-    // ---- knowledge (GH #583 K1): the record's half ------------------
-    // A proposal enters the record as a receipt (its canonical document,
-    // by digest), a `knowledge.proposed` row naming that digest, and a
-    // Review pinned to it — the Board's, since ratified knowledge is the
-    // organization's. Returns the digest. The tower rule decides the
-    // class of the binding (goal / concern / initiative) from who
-    // proposes and where it binds; a lateral proposal is refused.
     // GH #1089: what a Review requires, routed once and recorded. Opening
     // it (`open`), the organization asks memory's graph for the route its
     // definition names — change-deliver the route of the paths its
@@ -552,15 +545,16 @@ locus Dna {
     // them all, and one already settled ignores them.
     @unbounded
     fn announce_gate_runs() { self.tell_routes(self.reviews.gate_runs()); }
-    // Each `<review id>\t<signers>` line told to its Review.
+    // Each Review named, one id a line, told its holders as its latest
+    // `review.routed` row has them.
     @unbounded
     fn tell_routes(lines: String) {
         let mut rest = lines;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
-            let line = rest[0..nl];
+            let id = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            ReviewRouted <- ReviewRouting { review_id: tab_field(line, 0), signers: tab_field(line, 1) };
+            ReviewRouted <- ReviewRouting { review_id: id, signers: native_json_string(routed_row(self.journal, id), "signers") };
         }
     }
     @unbounded

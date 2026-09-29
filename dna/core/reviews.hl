@@ -11,7 +11,7 @@
 // built with stay the assembly's, as do what a verdict applies (a
 // Mutation, knowledge, a binding or an edge) and the bus: memory's client
 // and the receipt store a route reads are passed on the call, and the
-// assembly publishes what this family names (dna/core/record_rows.hl).
+// assembly tells each Review this family names (its `ReviewRouted`).
 locus ReviewRecord {
     params {
         journal: Journal = MemJournal { }; // the assembly's, lent at its birth
@@ -20,13 +20,6 @@ locus ReviewRecord {
         gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
     }
     fn bind(j: Journal) { self.journal = j; }
-    // ---- knowledge (GH #583 K1): the record's half ------------------
-    // A proposal enters the record as a receipt (its canonical document,
-    // by digest), a `knowledge.proposed` row naming that digest, and a
-    // Review pinned to it — the Board's, since ratified knowledge is the
-    // organization's. Returns the digest. The tower rule decides the
-    // class of the binding (goal / concern / initiative) from who
-    // proposes and where it binds; a lateral proposal is refused.
     // GH #1089: what a Review requires, routed once and recorded. Opening
     // it (`open`), the organization asks memory's graph for the route its
     // definition names — change-deliver the route of the paths its
@@ -75,8 +68,8 @@ locus ReviewRecord {
     // position filled after it opened can sign, and a holder who left no
     // longer does. The positions stay the route's; the new holders are a
     // `review.routed` row that supersedes the last, and the Review takes them.
-    // One `<review id>\t<signers>` line per Review routed again, which the
-    // assembly tells its Review.
+    // The Reviews routed again, one id a line, which the assembly tells
+    // their holders.
     @unbounded
     fn reroute(knowledge: MemoryKnowledge) -> String {
         if !knowledge.ready() { return ""; }
@@ -112,7 +105,7 @@ locus ReviewRecord {
             if now_held == signers { continue; }
             let need = RouteRequirement { signers: now_held, gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") };
             let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need, ""));
-            if x.ok { told = told + id + "\t" + now_held + "\n"; }
+            if x.ok { told = told + id + "\n"; }
         }
         return told;
     }
@@ -122,7 +115,7 @@ locus ReviewRecord {
     // digest, not its position: a merged order is rebuilt when a ledger is
     // adopted. Every run again after a restart: a Review rebuilt then hears
     // them all, and one already settled ignores them.
-    // One `<review id>\t<signers>` line per Review to tell, which the
+    // The Reviews a gate run is to be told to, one id a line, which the
     // assembly tells.
     @unbounded
     fn gate_runs() -> String {
@@ -136,7 +129,7 @@ locus ReviewRecord {
             self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
             if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
             told = told + e.entity + "\n";
-            out = out + e.entity + "\t" + native_json_string(routed_row(self.journal, e.entity), "signers") + "\n";
+            out = out + e.entity + "\n";
         }
         return out;
     }
@@ -158,8 +151,9 @@ locus ReviewRecord {
     @unbounded
     fn source_born(id: String) { self.organization_source_reviews.push(id); }
     // ---- a Review's settlement, as the record answers it
-    // A decision by command, settled once, with the reasoning it gave.
-    // Whether both rows are in the record.
+    // A decision by command, settled once, with the reasoning it gave:
+    // whether the settlement, and its reasoning when there is one, are in
+    // the record.
     fn decided(review_id: String, outcome: String, reviewer: String, comment: String) -> Bool {
         if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return false; }
         return len(comment) == 0 || append_once(self.journal, "review.reasoned", review_id, comment);
