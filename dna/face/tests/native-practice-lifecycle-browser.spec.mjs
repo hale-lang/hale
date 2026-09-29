@@ -81,38 +81,24 @@ async function approve(page, service, proposal) {
 async function observed(page, service, proposal, target = '') {
   const retiring = proposal.command.operation === 'dna.knowledge.node.retire';
   const id = proposal.binding || retiring ? proposal.command.target.id : proposal.candidate;
-  // The outcome lands on a tick after the verdict's, and the page reads the
-  // graph once: reload until the receipt observes it, bounded.
+  // `approve` waited for the effect in the record (bound, adopted), and a
+  // quiet Record shows it on the first read: the page is opened once.
   const observed = proposal.binding ? 'Binding observed' : retiring ? 'Retirement observed' : 'Adoption observed';
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    await service.quiesce(); await page.goto(service.url('knowledge', { id, ...(target ? { target } : {}) }));
-    const seen = receipt(page).filter({ hasText: observed });
-    await seen.waitFor({ timeout: 8_000 }).catch(() => {});
-    if (await seen.count() || Date.now() >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
+  await service.quiesce(); await page.goto(service.url('knowledge', { id, ...(target ? { target } : {}) }));
   await expect(receipt(page)).toContainText(observed);
   await receipt(page).getByRole('button', { name: proposal.binding ? 'Dismiss binding request' : 'Dismiss knowledge request', exact: true }).click();
   return id;
 }
-// A page opened while memory is behind the record is answered
-// knowledge_projection_unavailable once and shows "Knowledge unavailable"
-// without reading again: reload, quiesced, until what the lane needs is
-// there, bounded.
+// A page opened while memory is behind the record ("Knowledge
+// unavailable") or while the Record still moves ("Record is changing")
+// does not read again on its own; `quiesce` waits until neither is so, and
+// the page is opened once.
 async function openReady(page, service, url, ready) {
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    await service.quiesce(); await page.goto(url);
-    const target = ready(page);
-    await target.waitFor({ timeout: 8_000 }).catch(() => {});
-    if (await target.count() || Date.now() >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
+  await service.quiesce(); await page.goto(url);
+  await expect(ready(page)).toBeVisible();
 }
 async function openPractice(page, service, id) {
   await openReady(page, service, service.url('practices', { id }), p => p.getByRole('link', { name: 'Manage applicability', exact: true }));
-  await expect(page.getByRole('link', { name: 'Manage applicability', exact: true })).toBeVisible();
 }
 async function precreate(service) {
   const command = await service.command('node.propose', { kind: 'practice', name: 'practice/browser-applicability', text, author: 'org', target: 'org/elsewhere', rationale: reason }, 'org/elsewhere');
