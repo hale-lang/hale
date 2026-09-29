@@ -19,10 +19,8 @@
 //! Response-side `header` call.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
 
 use hale_codegen::build_executable_with_options;
 
@@ -30,6 +28,8 @@ use hale_codegen::build_executable_with_options;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/connect.rs"]
+mod connect;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
@@ -52,9 +52,8 @@ fn run_server_collect_response(
     let server_handle = thread::spawn(move || {
         Command::new(&bin_path).output().expect("run listener")
     });
-    thread::sleep(Duration::from_millis(150));
 
-    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut client = connect::connect_when_listening(port);
     client.write_all(request).expect("client write");
     let mut buf = Vec::new();
     let _ = client.read_to_end(&mut buf);
