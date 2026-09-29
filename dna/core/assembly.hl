@@ -356,7 +356,7 @@ locus Dna {
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         optimize_asked: String = "\n"; // GH #995: the optimize-walk Tasks whose walk this incarnation asked of the leader
-        record_refusals: Int = 0; // the assembly's own writes the record refused (its Mutations'): nothing proceeded past them; status sums every family's
+        mutation_refusals: Int = 0; // the Mutations' writes the record refused: nothing proceeded past them; status sums them with every family's
         gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
@@ -3430,7 +3430,7 @@ locus Dna {
             // the Mutation's identity is not durable: nothing proceeds
             // under it — no summary row, no worktree, no effect. The
             // caller holds the request; a restart never sees this id
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
@@ -3439,7 +3439,7 @@ locus Dna {
             // the summary is compatibility: the Mutation exists by its
             // request row and recovery reads every row it has; the refusal
             // is counted and said, and the Mutation proceeds on its request
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's summary row (" + x0.error + "); it proceeds on its request row");
         }
         let lease = self.gateway.take(id, "dna", now);
@@ -3609,7 +3609,7 @@ locus Dna {
         asked.end_object();
         let xr = self.journal.append(self.journal.revision(), "mutation.requested", id, asked.result());
         if !xr.ok {
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
@@ -4097,8 +4097,8 @@ locus Dna {
         b.int_field("executions_asked", self.executions_asked);
         b.int_field("executions_settled", self.executions_settled);
         // one count per family of the writes the record refused, summed: the
-        // assembly's own (its Mutations) and Work's cases'
-        b.int_field("record_refusals", self.record_refusals + self.cases.record_refusals);
+        // Mutations' and Work's cases'
+        b.int_field("record_refusals", self.mutation_refusals + self.cases.record_refusals);
         b.string_field("routing", self.work.policy());
         b.string_field("review_policy", self.review_policy.name());
         b.string_field("deployment", self.deployment.kind());
