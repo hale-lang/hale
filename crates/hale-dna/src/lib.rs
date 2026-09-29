@@ -70,6 +70,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "knowledge_binding",
     "knowledge_edge_review",
     "knowledge_node_request",
+    "knowledge_record",
     "memory_embed",
     "memory_ledger",
     "memory_protected",

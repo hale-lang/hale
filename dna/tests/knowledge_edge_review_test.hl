@@ -36,7 +36,7 @@ fn count(j: dna::Journal, kind: String, id: String) -> Int {
     let mut i = 0; let mut n = 0; while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
 }
 fn body_once(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
     if len(r.request_id) > 0 { body.on_knowledge_edge_requested(r); }
     body.reconcile_governance();
 }
@@ -57,7 +57,7 @@ main locus App {
     }
     fn bootstrap(repo: String, j: EdgeStageJournal) -> String {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity exists");
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
         let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/relationship", text: "Actual native knowledge.", author: "org" }, "org/source");
         dna::ReviewVerdict <- dna::Verdict { command_id: "baseline/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
         self.wait(j, "knowledge.ratified", digest); return digest;
@@ -97,7 +97,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn interrupted_effect(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
         body.on_knowledge_edge_requested(r); self.verdict(r, "effect/decision", "approve"); self.wait(j, "review.command_decided", "effect/decision");
         let mut n = 0; while j.faults == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; } std::test::assert(j.faults > 0, "exact consequence stage interrupted");
     }
@@ -114,13 +114,13 @@ main locus App {
     }
     fn node(repo: String, j: EdgeStageJournal, label: String, target: String) -> String { return self.node_at(repo, j, label, "org", target); }
     fn node_at(repo: String, j: EdgeStageJournal, label: String, author: String, target: String) -> String {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
         let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/" + label, text: label, author: author }, target);
         dna::ReviewVerdict <- dna::Verdict { command_id: label + "/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
         self.wait(j, "knowledge.ratified", digest); return digest;
     }
     fn decide(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest, id: String, value: String, kind: String) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
         body.on_knowledge_edge_requested(r); self.verdict(r, id, value); self.wait(j, kind, if kind == "review.command_decided" { id } else { r.request_id });
     }
     fn direct(j: EdgeStageJournal, id: String, op: String, from: String, to: String, rel: String) {
@@ -133,7 +133,7 @@ main locus App {
         std::test::assert(written.ok && codec.decode_fact(j.read(j.revision() - 1)).valid, "actual direct fact remains valid");
     }
     fn retire(repo: String, j: EdgeStageJournal, idea: String) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } } };
         let digest = body.propose_knowledge(dna::Idea { kind: "retirement", text: "Retire through an actual Review.", author: "org", supersedes: idea }, "org/support");
         dna::ReviewVerdict <- dna::Verdict { command_id: "retirement/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
         self.wait(j, "knowledge.retired", idea);
@@ -198,7 +198,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn ownership(repo: String, j: EdgeStageJournal, r: dna::KnowledgeEdgeRequest, owners: String) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { },
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } },
             ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: "acme", me_env: "" } };
         body.on_knowledge_edge_requested(r);
     }

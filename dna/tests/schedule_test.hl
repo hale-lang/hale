@@ -222,7 +222,7 @@ main locus App {
         r.ratify_through(review);
         let mut waited = 0;
         while self.rows(r.journal, "schedule.declared", "optimize") == 0 && waited < 50 { std::time::sleep(100ms); waited = waited + 1; }
-        std::test::assert(r.knowledge_ratified(digest), "ratified");
+        std::test::assert(r.knowledge_record.ratified(digest), "ratified");
         let declared = self.last_body(r.journal, "schedule.declared", "optimize");
         std::test::assert(std::str::contains(declared, "\"definition\": \"optimize-walk\"") && std::str::contains(declared, "\"convener\": \"position:leader\""), "and its schedule declared, convened by the leader: " + declared);
         dna::scratch_done("/tmp/dna-schedule-receipts-" + to_string(std::process::pid()));

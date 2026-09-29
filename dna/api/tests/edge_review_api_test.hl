@@ -40,7 +40,7 @@ locus EdgeReviewReadCases {
         let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));
         std::test::assert(fact.valid, "original request retains exact command and grant");
         let body_journal = dna::GitJournal { repo: root }; let verification = dna::HaleVerification { receipts: receipts, repo: root }; let board = dna::Board { who: "board" }; let direct = ops::StrictKnowledgeDirectEdgeFacts { }; let syntax = ops::OrganizationJson { };
-        let body = dna::Dna { journal: body_journal, verification: verification, board: board, binding_policy_syntax: syntax, edge_facts: direct };
+        let body = dna::Dna { journal: body_journal, verification: verification, board: board, knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: syntax, edge_facts: direct } };
         body.on_knowledge_edge_requested(fact.edge);
         let created = commands.lookup(alice, command.request_id); std::test::assert(created.ok && created.receipt.relationship.proposal_state == "created", "actual Body creates exact relationship candidate");
         let request = fact.edge; let native = dna::KnowledgeEdgeCodec { }; let review_id = native.review_id(request.candidate_digest);
