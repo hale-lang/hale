@@ -353,7 +353,6 @@ locus Dna {
         // GH #606: where a protected body goes — the knowledge service, and
         // nowhere else
         evidence: EvidenceStore = EvidenceStore { }; // C3 family 1: filing, retention and redaction of evidence
-        concern_threshold: Int = 3; // a concern raised this often from one source is proposed as knowledge
         // GH #646 workflow card 07: the definitions this organization
         // admits — the project's `dna/org/workflows.hl`, the baseline
         // catalog plus its own (GH #995); a body given none takes the
@@ -412,6 +411,7 @@ locus Dna {
         knowledge_record: KnowledgeRecord = KnowledgeRecord { }; // C3 family 3: knowledge proposals, ratification, bindings and relationships
         org_source: OrganizationSourceRecord = OrganizationSourceRecord { }; // C3 family 4: prepared Organization source requests
         practices: PracticeRecord = PracticeRecord { }; // C3 family 5: practices asked, ratified through practice-ratify, read by the hat
+        concerns: ConcernRecord = ConcernRecord { }; // C3 family 6: concerns raised and escalated, pressure toward an organ
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -428,7 +428,6 @@ locus Dna {
         knowledge_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
         organization_source_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
         organization_source_review_facts: OrganizationSourceReviewFacts = OrganizationSourceReviewFacts { };
-        appendage_threshold: Int = 3; // pressure raised this often from one source proposes an organ
     }
     // A mutation's Review is a child of the assembly: born when the
     // candidate is verified, keyed on its review id so a verdict from
@@ -457,6 +456,7 @@ locus Dna {
         self.evidence.bind(self.journal, self.verification.receipts);
         self.org_source.bind(self.journal);
         self.practices.bind(self.journal);
+        self.concerns.bind(self.journal);
         self.organization_source_review_facts.bind(self.org_source.facts);
         self.scheduler.bind(self.journal);
         self.knowledge_record.bind(self.journal, self.verification.receipts);
@@ -2297,32 +2297,16 @@ locus Dna {
     // the record, so a redelivery finds its answer and counts nothing.
     @unbounded
     fn on_pressure(p: Pressure) {
-        let mut seen = 1;
-        let n = self.journal.revision();
-        let mut i = 0;
-        let mut proposed = false;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "pressure.raised" && e.entity == p.source {
-                if len(p.request) > 0 && request_named(e.body) == p.request { return; }
-                seen = seen + 1;
-            }
-            if e.kind == "appendage.proposed" && e.entity == p.source { proposed = true; }
-            i = i + 1;
-        }
-        let x = self.journal.append(self.journal.revision(), "pressure.raised", p.source, pressure_body(p.what, seen, p.request));
-        if seen >= self.appendage_threshold && !proposed {
-            let y = self.journal.append(self.journal.revision(), "appendage.proposed", p.source,
-                "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times");
-            self.board.notify("appendage", p.source + ": " + p.what + " persists; an organ is proposed, not grown");
-            // GH #566 F3: initiative — the proposal is a candidate commit to
-            // the organization's own seed, verified like any change and
-            // the Board's to decide (an `organization` change always is)
-            if self.initiative {
-                let out = self.mutate("pressure:" + p.source, "organization",
-                    "grow a position in main.hl for `" + p.what + "` (pressure from " + p.source + "): a dna::Leader beside the existing one, named for what it oversees, with `models: leader_models()` from the catalog", "", std::time::now());
-                let z = self.journal.append(self.journal.revision(), "appendage.candidate", p.source, out);
-            }
+        let a = self.concerns.pressure(p);
+        if !a.proposed { return; }
+        self.board.notify("appendage", p.source + ": " + p.what + " persists; an organ is proposed, not grown");
+        // GH #566 F3: initiative — the proposal is a candidate commit to
+        // the organization's own seed, verified like any change and
+        // the Board's to decide (an `organization` change always is)
+        if self.initiative {
+            let out = self.mutate("pressure:" + p.source, "organization",
+                "grow a position in main.hl for `" + p.what + "` (pressure from " + p.source + "): a dna::Leader beside the existing one, named for what it oversees, with `models: leader_models()` from the catalog", "", std::time::now());
+            self.concerns.appendage_candidate(p.source, out);
         }
     }
     // GH #583 K2: a concern — a child's signal about the part above it
@@ -2335,15 +2319,9 @@ locus Dna {
     fn on_concern(c: Concern) {
         let n = self.journal.revision();
         // the row this request already wrote, if it was delivered before
-        let mut already = "";
-        let mut refused = false;
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "concern.raised" && e.entity == c.source && len(c.request) > 0 && request_named(e.body) == c.request { already = std::str::clone(e.body); }
-            if e.kind == "concern.refused" && e.entity == c.source && request_named(e.body) == c.request { refused = true; }
-            i = i + 1;
-        }
+        let prior = self.concerns.prior(c);
+        let mut already = prior.raised;
+        let refused = prior.refused;
         // GH #689: a transport may deliver one request twice — the host
         // relays a row again while it stays unanswered, and an answer it
         // has not seen yet is enough to make that happen. One request is
@@ -2361,18 +2339,11 @@ locus Dna {
         }
         if len(already) > 0 {
             if !same_concern(already, c.what, c.severity) && !refused {
-                let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, concern_refusal_body("request " + c.request + " already raised another concern here; one request is one concern", c.request));
+                self.concerns.refuse_other(c);
             }
             return;
         }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("source", c.source);
-        b.string_field("what", c.what);
-        b.int_field("severity", c.severity);
-        b.string_field("request", c.request);
-        b.end_object();
-        let t = self.run_workflow(WorkflowAsk { id: ask_id, definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: b.result() });
+        let t = self.run_workflow(WorkflowAsk { id: ask_id, definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: self.concerns.escalation(c) });
     }
     // A concern that persists: proposed as knowledge by its source,
     // bound to its parent (a concern by the tower rule), for the Board
@@ -2381,13 +2352,10 @@ locus Dna {
     // this path, and so does a restart that finds a source already over
     // it with no proposal (GH #748) — one rule, one place.
     fn propose_concern(source: String, what: String, seen: Int) {
+        if !self.concerns.bindable(source) { return; }
         let parent = parent_path(source);
-        if len(parent) == 0 {
-            let r = self.journal.append(self.journal.revision(), "knowledge.refused", "concern:" + source, "a concern binds to its source's parent, and `" + source + "` has none: name the source as a path under org");
-            return;
-        }
         let digest = self.propose_knowledge(Idea { id: "concern:" + source, kind: "concern", text: what, author: source }, parent);
-        let y = self.journal.append(self.journal.revision(), "concern.proposed", source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
+        self.concerns.proposed(source, digest, seen);
         self.board.notify("concern", source + ": `" + what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
     }
     // A person proposes a practice for the whole organization (GH #602).
@@ -3337,45 +3305,14 @@ locus Dna {
     fn concern_step(task: String, key: String, x: String) -> StepVerdict {
         if key != "raise" { return step_failed("concern-escalate has no step `" + key + "`"); }
         let source = std::json::find_string_field(x, "source");
-        let what = std::json::find_string_field(x, "what");
-        let owed = std::json::find_int_field(x, "owed");
         let parent = parent_path(source);
-        let n = self.journal.revision();
-        let mut seen = 0;
-        let mut mine = false;
-        let mut proposed = false;
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "concern.raised" && e.entity == source {
-                seen = seen + 1;
-                if std::json::find_string_field(e.body, "task") == task { mine = true; }
-            }
-            if e.kind == "concern.proposed" && e.entity == source { proposed = true; }
-            i = i + 1;
+        let r = self.concerns.raise(task, x);
+        if !r.ok { return step_waits(); }
+        if r.propose {
+            self.propose_concern(source, std::json::find_string_field(x, "what"), r.seen);
+            return step_done(source, "raised, occurrence " + to_string(r.seen) + ", and proposed for " + (if len(parent) > 0 { parent } else { "no parent" }));
         }
-        // owed: the raises are the record's already
-        if owed == 0 && !mine {
-            // the answer names the request it answers (GH #689), so the host
-            // can tell which of one source's concerns has been heard
-            seen = seen + 1;
-            let b = std::json::Builder { };
-            b.begin_object();
-            b.string_field("what", what);
-            b.int_field("severity", std::json::find_int_field(x, "severity"));
-            b.int_field("occurrence", seen);
-            b.string_field("request", std::json::find_string_field(x, "request"));
-            b.string_field("parent", parent);
-            b.string_field("task", task);
-            b.end_object();
-            let r = self.journal.append(self.journal.revision(), "concern.raised", source, b.result());
-            if !r.ok { return step_waits(); }
-        }
-        if !proposed && seen >= self.concern_threshold {
-            self.propose_concern(source, what, seen);
-            return step_done(source, "raised, occurrence " + to_string(seen) + ", and proposed for " + (if len(parent) > 0 { parent } else { "no parent" }));
-        }
-        return step_done(to_string(seen), "raised, occurrence " + to_string(seen) + ", routed to " + (if len(parent) > 0 { parent } else { "no parent" }));
+        return step_done(to_string(r.seen), "raised, occurrence " + to_string(r.seen) + ", routed to " + (if len(parent) > 0 { parent } else { "no parent" }));
     }
 
     // ---- optimize-walk ----
@@ -4592,48 +4529,13 @@ locus Dna {
     // refused where it crossed the threshold and is left alone.
     @unbounded
     fn escalate_owed_concerns() {
-        let n = self.journal.revision();
-        let mut sources = "\n";
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "concern.raised" && len(parent_path(e.entity)) > 0 && !std::str::contains(sources, "\n" + e.entity + "\n") { sources = sources + e.entity + "\n"; }
-            i = i + 1;
-        }
-        let mut rest = sources[1..len(sources)];
+        let mut rest = self.concerns.owed();
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
-            let source = rest[0..nl];
+            let line = rest[0..nl];
             rest = rest[(nl + 1)..len(rest)];
-            let mut seen = 0;
-            let mut proposed = false;
-            let mut open = false;
-            let mut what = "";
-            let mut severity = 0;
-            let mut k = 0;
-            while k < n {
-                let o = self.journal.read(k);
-                if o.kind == "concern.raised" && o.entity == source {
-                    seen = seen + 1;
-                    let said = concern_what(o.body);
-                    what = if len(said) > 0 { said } else { std::str::clone(o.body) };
-                    severity = concern_severity(o.body);
-                }
-                if o.kind == "concern.proposed" && o.entity == source { proposed = true; }
-                if o.kind == "workflow.admitted" && std::json::find_string_field(o.body, "definition") == "concern-escalate" && std::json::find_string_field(std::json::find_string_field(o.body, "inputs"), "source") == source && !row_exists(self.journal, "workflow.settled", o.entity) { open = true; }
-                k = k + 1;
-            }
-            if seen >= self.concern_threshold && !proposed && !open {
-                let b = std::json::Builder { };
-                b.begin_object();
-                b.string_field("source", source);
-                b.string_field("what", what);
-                b.int_field("severity", severity);
-                b.string_field("request", "");
-                b.int_field("owed", seen);
-                b.end_object();
-                let t = self.run_workflow(WorkflowAsk { id: "concern:" + source + ":owed@" + to_string(seen), definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: b.result() });
-            }
+            let tab = std::str::index_of(line, "\t");
+            let t = self.run_workflow(WorkflowAsk { id: line[0..tab], definition: "concern-escalate", revision: self.catalog.latest("concern-escalate"), inputs: line[(tab + 1)..len(line)] });
         }
     }
     // GH #604 rule 3: an effect requested and never resulted was in
