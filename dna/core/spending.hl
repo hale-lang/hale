@@ -1,0 +1,355 @@
+// The organization's spend, as the record holds it (C3, family 7): every
+// model call's evidence and cost, the one gate a model call's spend passes
+// (the window's allowance, a lease's grant, a refusal once a window), and
+// a child's money reserved against its grant, settled attempt by attempt
+// and compensated. It was part of the assembly; as a locus of its own it
+// holds nothing but the journal the assembly lends it at birth. The budget
+// that counts a window is the assembly's (a genome constructs it), passed
+// on each call, as the grants a reservation is admitted under are read by
+// the assembly and passed in. The Board's notices, a lease's claim and the
+// grants' fences stay the assembly's (dna/core/record_rows.hl).
+locus SpendRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    // Every model call's evidence, journaled (never the prompt), and its
+    // cost counted against the window. What was sent is filed by the
+    // evidence family and named here (`bodies`).
+    @unbounded
+    fn called(ev: ModelEvidence, bodies: String, budget: Budget) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("adapter", ev.adapter);
+        b.string_field("backend", ev.backend);
+        b.string_field("endpoint", ev.endpoint);
+        b.string_field("credential", ev.credential);
+        b.string_field("requested_model", ev.requested_model);
+        b.string_field("reported_model", ev.reported_model);
+        b.string_field("params", ev.params);
+        b.string_field("prompt_digest", ev.prompt_digest);
+        b.string_field("context_digest", ev.context_digest);
+        b.string_field("knowledge_bindings", ev.knowledge_bindings);
+        b.string_field("tool_grant", ev.tool_grant);
+        b.string_field("response_digest", ev.response_digest);
+        b.string_field("artifact_digest", ev.artifact_digest);
+        b.int_field("input_tokens", ev.input_tokens);
+        b.int_field("output_tokens", ev.output_tokens);
+        b.string_field("elapsed", ev.elapsed);
+        b.int_field("cost_micros", ev.cost_micros);
+        b.string_field("validation", ev.validation);
+        b.string_field("retry_of", ev.retry_of);
+        b.string_field("data_class", ev.data_class);
+        // GH #611: what was sent is a receipt under the digests above,
+        // so a reviewer reads it byte-exact instead of only proving
+        // something was sent
+        b.string_field("bodies", bodies);
+        b.bool_field("ok", ev.ok);
+        b.string_field("refused", ev.refused);
+        b.int_field("waited_ms", ev.waited_ms);
+        let now = std::time::now();
+        b.int_field("at", now);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "model.called", ev.attempt_id, b.result());
+        budget.account(ev.cost_micros, now);
+    }
+    // The window's allowance is spent: journaled once per window; the
+    // caller refuses or waits. The one gate's answer to any spend at all
+    // (GH #1131). Whether it was announced now, so the Board is told.
+    fn exhausted(now: Int, budget: Budget) -> BudgetState {
+        if budget.admit(0, now).ok { return BudgetState { }; }
+        if !budget.announce() { return BudgetState { exhausted: true }; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("detail", budget.describe(now));
+        b.int_field("spent_micros", budget.spent_micros);
+        b.int_field("allowance_micros", budget.policy.allowance_micros);
+        b.string_field("window", budget.policy.window);
+        b.int_field("at", now);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "budget.exhausted", "budget", b.result());
+        return BudgetState { exhausted: true, announced: true };
+    }
+    // The one gate for a model call's spend, in process and out (GH #1131),
+    // once the assembly has asked whether the window is spent:
+    // the editor's attempt, the leader's Review and a leg's attempt are
+    // each admitted by `Budget.admit` before a call is made, the work's own
+    // ceiling bounding the allowance. A refusal is the same row wherever
+    // it is asked — `attempt.allowance_refused <entity> {why, …}` — and an
+    // exhausted window is announced once, as it always was. A leg's grant
+    // is a row too (it reads its answer at the head); in process the grant
+    // is the call going ahead. `request` names the ask a row answers ("" in
+    // process); `holder` and `token` are the lease's, when there is one.
+    fn gate(entity: String, ceiling_micros: Int, request: String, holder: String, token: Int, now: Int, budget: Budget) -> SpendAdmission {
+        let a = budget.admit(ceiling_micros, now);
+        let b = std::json::Builder { };
+        b.begin_object();
+        if a.ok { b.int_field("allowance_micros", a.allowance_micros); } else { b.string_field("why", a.why); }
+        b.int_field("ceiling_micros", ceiling_micros);
+        b.int_field("spent_micros", budget.spent_micros);
+        b.int_field("window_micros", budget.policy.allowance_micros);
+        b.string_field("window", budget.policy.window);
+        if len(holder) > 0 { b.string_field("holder", holder); b.int_field("token", token); }
+        if len(request) > 0 { b.string_field("request", request); }
+        b.int_field("at", now);
+        b.end_object();
+        // a refusal in process is landed once a window for what it was for:
+        // a Review routed again on a spent window is refused by the row it has
+        if !a.ok && (len(request) > 0 || !self.refused_in_window(entity, now, budget)) { let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", entity, b.result()); }
+        else if len(request) > 0 { let y = self.journal.append(self.journal.revision(), "attempt.allowance_granted", entity, b.result()); }
+        return a;
+    }
+    // Whether the gate refused a spend for `entity` in the window `now` is in.
+    @unbounded
+    fn refused_in_window(entity: String, now: Int, budget: Budget) -> Bool {
+        let w = budget.window_of(now);
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.allowance_refused" && e.entity == entity && budget.window_of(std::json::find_int_field(e.body, "at")) == w { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // The spend a lease was granted (GH #1131): the latest
+    // `attempt.allowance_granted` on the attempt under this holder and
+    // token. Not present when none was asked.
+    @unbounded
+    fn granted_to(attempt_id: String, holder: String, token: Int) -> SpendAdmission {
+        let mut g = SpendAdmission { };
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.allowance_granted" && e.entity == attempt_id && std::json::find_string_field(e.body, "holder") == holder && std::json::find_int_field(e.body, "token") == token {
+                g = SpendAdmission { ok: true, allowance_micros: std::json::find_int_field(e.body, "allowance_micros") };
+            }
+            i = i + 1;
+        }
+        return g;
+    }
+    // Whether the spine answered this ask already (a relay after a lost
+    // publish is answered once).
+    @unbounded
+    fn allowance_answered(a: WorkAllowance) -> Bool {
+        if len(a.request) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if (e.kind == "attempt.allowance_granted" || e.kind == "attempt.allowance_refused") && e.entity == a.attempt_id && request_named(e.body) == a.request { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // A leg's ask for spend refused before the gate: its attempt, its lease
+    // or memory's claim says no (`why`), a row naming the request.
+    fn allowance_refused(a: WorkAllowance, why: String) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("why", why);
+        b.string_field("holder", a.holder);
+        b.int_field("token", a.token);
+        b.string_field("request", a.request);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "attempt.allowance_refused", a.attempt_id, b.result());
+    }
+    // A spend is admitted against the child's grant as it binds now
+    // (through the ceiling), and the admission is a row. A window's
+    // remainder is read from the record at a revision and the row is
+    // appended only at that revision (`append_exact`): another child
+    // that reserved in between moved the record, this append is refused
+    // as stale, and the remainder is read again. The child's own window
+    // counts its reservations; the ceiling's counts every child's under
+    // it, so two children cannot each spend the same remainder.
+    @unbounded
+    // `g` is the grant as it binds now (through the ceiling), `own` and
+    // `above` the child's and the ceiling's own, as the assembly read them.
+    fn reserve(s: Spend, g: Grant, own: Grant, above: Grant, child: String, parent: String, now: Int) -> Admission {
+        let why = permits(g, s, now);
+        if len(why) > 0 { return self.refuse(child, s, why); }
+        let amt = dec(s.amount);
+        let own_limit = amount_of(own.window_amounts, s.currency);
+        let above_limit = if len(parent) > 0 { amount_of(above.window_amounts, s.currency) } else { "" };
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if self.spend_reserved(child, s.id, rev) { return self.refuse(child, s, "operation: `" + s.id + "` is already reserved"); }
+            if len(own_limit) > 0 {
+                let used = self.window_used(false, child, s.currency, own.window, window_start_of(own.window, now), rev);
+                if used + amt > dec(own_limit) { return self.refuse(child, s, "window: " + s.amount + " " + s.currency + " would bring " + child + "'s " + own.window + " to " + ("" + (used + amt)) + " of " + own_limit); }
+            }
+            if len(above_limit) > 0 {
+                let used_above = self.window_used(true, parent, s.currency, above.window, window_start_of(above.window, now), rev);
+                if used_above + amt > dec(above_limit) { return self.refuse(child, s, "window: " + s.amount + " " + s.currency + " would bring the ceiling `" + parent + "`'s " + above.window + " to " + ("" + (used_above + amt)) + " of " + above_limit + " (shared by its children)"); }
+            }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("op", s.id);
+            b.string_field("amount", s.amount);
+            b.string_field("currency", s.currency);
+            b.string_field("counterparty", s.counterparty);
+            b.string_field("route", s.route);
+            b.string_field("ceiling", parent);
+            b.int_field("epoch", g.authority_epoch);
+            b.int_field("at", now);
+            // GH #668: the allocation is the row's entity, so the store's
+            // unique constraint reserves it once, and the row names who pays
+            b.string_field("child", child);
+            b.string_field("funder", funder_owner(g.funder));
+            b.string_field("account", funder_account(g.funder));
+            b.end_object();
+            let r = self.journal.append_exact(rev, "spend.reserved", s.id, b.result());
+            if r.ok { return Admission { ok: true, op: s.id, amount: s.amount, currency: s.currency, authority_epoch: g.authority_epoch }; }
+            if r.error == "claimed" { return self.refuse(child, s, "operation: `" + s.id + "` is already reserved (the store holds the claim)"); }
+            if r.error != "stale_revision" { return Admission { op: s.id, refused: "the record refused the reservation: " + r.error }; }
+            tries = tries + 1;
+        }
+        return self.refuse(child, s, "contention: the record moved under twenty attempts to reserve");
+    }
+    // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
+    // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.
+    fn refuse(child: String, s: Spend, why: String) -> Admission {
+        let x = self.journal.append(self.journal.revision(), "grant.reservation_refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
+        return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: why };
+    }
+    @unbounded
+    fn spend_reserved(child: String, op: String, upto: Int) -> Bool {
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.reserved" && e.entity == op && std::json::find_string_field(e.body, "child") == child { return true; }
+            // a reservation from before GH #668: keyed by the child, the op in its body
+            if e.kind == "grant.reserved" && e.entity == child && std::json::find_string_field(e.body, "op") == op { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // What an operation actually consumed: every settled attempt's spend
+    // less every compensation, as a decimal string; "" while unsettled
+    // (GH #668: every attempt is retained, nothing is rolled back by
+    // implication).
+    @unbounded
+    fn spent_of(child: String, op: String, upto: Int) -> String {
+        let mut total = 0.0d;
+        let mut settled = false;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.settled" && e.entity == op { settled = true; total = total + dec(std::json::find_string_field(e.body, "spent")); }
+            if e.kind == "spend.compensated" && e.entity == op { total = total - dec(std::json::find_string_field(e.body, "amount")); }
+            if e.kind == "grant.released" && e.entity == child && std::json::find_string_field(e.body, "op") == op { settled = true; total = dec(std::json::find_string_field(e.body, "spent")); }
+            i = i + 1;
+        }
+        return if settled { "" + total } else { "" };
+    }
+    // How many settled attempts an operation has, and the sequence of the last.
+    @unbounded
+    fn attempts_of(op: String, upto: Int) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.settled" && e.entity == op { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last_settled_seq(op: String, upto: Int) -> Int {
+        let mut at = -1;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.settled" && e.entity == op { at = i; }
+            i = i + 1;
+        }
+        return at;
+    }
+    // A window's use: every reservation in it (one child's, or every
+    // child's under a ceiling), at what was actually spent once settled.
+    @unbounded
+    fn window_used(by_ceiling: Bool, who: String, currency: String, window: String, start: Int, upto: Int) -> Decimal {
+        let mut used = 0.0d;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            let reserved_now = e.kind == "spend.reserved";
+            let reserved_then = e.kind == "grant.reserved";
+            if (reserved_now || reserved_then) && std::json::find_string_field(e.body, "currency") == currency {
+                let child = if reserved_now { std::json::find_string_field(e.body, "child") } else { e.entity };
+                let op = if reserved_now { e.entity } else { std::json::find_string_field(e.body, "op") };
+                let mine = if by_ceiling { std::json::find_string_field(e.body, "ceiling") == who } else { child == who };
+                if mine && window_start_of(window, std::json::find_int_field(e.body, "at")) == start {
+                    let spent = self.spent_of(child, op, upto);
+                    used = used + dec(if len(spent) > 0 { spent } else { std::json::find_string_field(e.body, "amount") });
+                }
+            }
+            i = i + 1;
+        }
+        return used;
+    }
+    // A reservation settles at what an attempt actually spent, and every
+    // attempt is retained (GH #668): a second settlement is attempt 2,
+    // and the window counts the sum. Under contention a settlement is
+    // once: appended only at the revision "not yet settled by another"
+    // was read at, and a settlement another writer landed in between is
+    // read as the answer, never doubled.
+    @unbounded
+    fn settle(op: String, spent: String, child: String) -> String {
+        let v = std::str::parse_decimal(spent) or - 1.0d;
+        if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }
+        let mut tries = 0;
+        let mut read_at = -1;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+            let last = self.last_settled_seq(op, rev);
+            if read_at >= 0 && last >= read_at { return "`" + op + "` is already settled (attempt " + to_string(self.attempts_of(op, rev)) + " landed while this one was being written)"; }
+            read_at = rev;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("child", child);
+            b.int_field("attempt", self.attempts_of(op, rev) + 1);
+            b.string_field("spent", spent);
+            b.end_object();
+            let x = self.journal.append_exact(rev, "spend.settled", op, b.result());
+            if x.ok { return ""; }
+            if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
+            tries = tries + 1;
+        }
+        return "contention: the record moved under twenty attempts to settle `" + op + "`";
+    }
+    // GH #668: money that came back is a compensation someone authorized,
+    // never an implied rollback: `spend.compensated <op> {child, attempt,
+    // amount, by}`, and the window counts it from then on.
+    fn compensate(op: String, amount: String, by: String, child: String) -> String {
+        let v = std::str::parse_decimal(amount) or - 1.0d;
+        if v < 0.0d { return "amount: `" + amount + "` is not a decimal"; }
+        if len(by) == 0 { return "a compensation names who authorized it"; }
+        let moved = self.journal.refresh();
+        let rev = self.journal.revision();
+        if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+        if len(self.spent_of(child, op, rev)) == 0 { return "`" + op + "` has settled nothing to compensate"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("child", child);
+        b.int_field("attempt", self.attempts_of(op, rev));
+        b.string_field("amount", amount);
+        b.string_field("by", by);
+        b.end_object();
+        let x = self.journal.append(rev, "spend.compensated", op, b.result());
+        return if x.ok { "" } else { "the record refused the compensation: " + x.error };
+    }
+}
+
+// What asking whether the window is spent came to: spent, and announced
+// now (the Board is told once a window).
+type BudgetState {
+    exhausted: Bool = false;
+    announced: Bool = false;
+}

@@ -192,13 +192,13 @@ main locus App {
         // GH #668: every attempt is retained — a second settlement is attempt 2, and the window counts both
         std::test::assert_eq_str(self.app.settle_spend("a1", "1"), "", "a second attempt is retained, not refused");
         std::test::assert(std::str::contains(self.last(repo, "spend.settled"), "\"attempt\": 2") && std::str::contains(self.last(repo, "spend.settled"), "\"spent\": \"1\""), "attempt 2, at what it spent: " + self.last(repo, "spend.settled"));
-        std::test::assert(dna::dec(self.app.spent_of("app", "a1", self.app.journal.revision())) == 151.0d, "a1 consumed both attempts: " + self.app.spent_of("app", "a1", self.app.journal.revision()));
+        std::test::assert(dna::dec(self.app.spending.spent_of("app", "a1", self.app.journal.revision())) == 151.0d, "a1 consumed both attempts: " + self.app.spending.spent_of("app", "a1", self.app.journal.revision()));
         std::test::assert(std::str::contains(self.app.settle_spend("zz", "1"), "no reservation `zz`"), "a settlement needs its reservation");
         // money that came back is a compensation someone authorized, never an implied rollback
         std::test::assert(std::str::contains(self.app.compensate_spend("a1", "50", ""), "names who authorized"), "a compensation is authorized by name");
         std::test::assert_eq_str(self.app.compensate_spend("a1", "50", "alice"), "", "alice authorizes 50 back on a1");
         std::test::assert(std::str::contains(self.last(repo, "spend.compensated"), "\"by\": \"alice\"") && std::str::contains(self.last(repo, "spend.compensated"), "\"amount\": \"50\""), "in the record: " + self.last(repo, "spend.compensated"));
-        std::test::assert(dna::dec(self.app.spent_of("app", "a1", self.app.journal.revision())) == 101.0d, "and the window counts it from then on: " + self.app.spent_of("app", "a1", self.app.journal.revision()));
+        std::test::assert(dna::dec(self.app.spending.spent_of("app", "a1", self.app.journal.revision())) == 101.0d, "and the window counts it from then on: " + self.app.spending.spent_of("app", "a1", self.app.journal.revision()));
         std::test::assert(std::str::contains(self.app.compensate_spend("b9", "1", "alice"), "no reservation"), "nothing is compensated that was never reserved");
         let a3 = self.app.reserve(spend("a3", "300", "USD"));
         std::test::assert(a3.ok, "101 consumed + 400 held + 300 = 801 fits the shared 1000: " + a3.refused);
@@ -208,7 +208,7 @@ main locus App {
         let half_b = self.billing.reserve(spend("po-7-billing", "40", "USD"));
         std::test::assert(half_a.ok && half_b.ok, "each side reserves its half: " + half_a.refused + half_b.refused);
         std::test::assert_eq_str(self.app.settle_spend("po-7-app", "40"), "", "app's half settles");
-        std::test::assert(len(self.app.spent_of("app", "po-7-app", self.app.journal.revision())) > 0 && len(self.billing.spent_of("billing", "po-7-billing", self.billing.journal.revision())) == 0, "one half consumed, the other still only reserved: nothing pretends the purchase is whole");
+        std::test::assert(len(self.app.spending.spent_of("app", "po-7-app", self.app.journal.revision())) > 0 && len(self.billing.spending.spent_of("billing", "po-7-billing", self.billing.journal.revision())) == 0, "one half consumed, the other still only reserved: nothing pretends the purchase is whole");
         let dup = self.app.reserve(spend("a3", "1", "USD"));
         std::test::assert(!dup.ok && std::str::contains(dup.refused, "operation: `a3` is already reserved"), "an operation is reserved once: " + dup.refused);
 

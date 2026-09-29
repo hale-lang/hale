@@ -1,0 +1,123 @@
+// The organization's positions, as the record holds them (C3, family 7):
+// a holder proposed for a position, or a person joining an organization —
+// a graph proposal whose receipt carries the `holds` edge, the Board's to
+// ratify in the name of whoever asked. It was part of the assembly; as a
+// locus of its own it holds nothing but the journal and the receipt store
+// the assembly lends it at birth. The Review the proposal asks for is the
+// assembly's: it asks this family for the rows up to `review.requested`,
+// births the Review, then asks for `hold.proposed` (dna/core/record_rows.hl).
+locus PositionRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        receipts: Receipts = FileReceipts { }; // the verification's store, lent the same way
+    }
+    fn bind(j: Journal, receipts: Receipts) {
+        self.journal = j;
+        self.receipts = receipts;
+    }
+    // GH #1091: a holder proposed for a position, as the organization
+    // proposes any hole — a graph proposal whose receipt carries the
+    // `holds` edge, one Board Review of its own in the name of whoever
+    // asked (who therefore may not ratify it). What a hold may be is the
+    // projection's to check when it is ratified (the store is the gate);
+    // here only its shape is. Answered once, however often it is relayed.
+    // Its rows up to the Board's Review: refused when it is no hold, else
+    // the receipt stored, `knowledge.proposed` and `review.requested`
+    // written. The proposal's digest, "" when it was answered already,
+    // refused, or its receipt or a row is pending.
+    @unbounded
+    fn asked(r: HoldRequest) -> String {
+        if len(r.request_id) == 0 { return ""; }
+        if len(first_row(self.journal, "hold.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "hold.refused", r.request_id).kind) > 0 { return ""; }
+        // GH #1123: a position, or an organization a person joins
+        let name = hold_name(r);
+        let nested = std::str::starts_with(r.position, "organization:") && std::str::starts_with(r.holder, "organization:");
+        if len(name) == 0 || len(r.holder) == 0 || len(r.by) == 0 || std::str::contains(r.holder, "|") || std::str::contains(name, "|") || nested {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("why", "a hold names a position (`position:<name>`) or an organization (`organization:<name>`), a holder with no `|` — a person, or an organization holding a position — and who asks");
+            rb.end_object();
+            let x = append_once(self.journal, "hold.refused", r.request_id, rb.result());
+            return "";
+        }
+        let edge = std::json::Builder { };
+        edge.begin_object();
+        edge.string_field("kind", "holds");
+        edge.begin_array_field("members");
+        edge.begin_object(); edge.string_field("role", "position"); edge.string_field("node", r.position); edge.end_object();
+        edge.begin_object(); edge.string_field("role", "holder"); edge.string_field("node", r.holder); edge.end_object();
+        edge.end_array();
+        edge.end_object();
+        let question = if std::str::starts_with(r.position, "organization:") { "ratify " + r.holder + " joining the organization `" + name + "`, as " + r.by + " proposes" } else { "ratify " + r.holder + " holding the position `" + name + "`, as " + r.by + " proposes" };
+        let d = std::json::Builder { };
+        d.begin_object();
+        d.string_field("author", r.by);
+        d.string_field("kind", "graph");
+        d.string_field("name", name + " held by " + r.holder);
+        d.string_field("provenance", "proposed by " + r.by);
+        d.string_field("question", question);
+        d.begin_array_field("rows");
+        d.begin_object();
+        d.string_field("kind", "graph.edge");
+        d.string_field("entity", "holds:" + r.position + "|" + r.holder);
+        d.string_field("body", edge.result());
+        d.end_object();
+        d.end_array();
+        d.string_field("target", r.position);
+        d.string_field("text", r.holder + " holds " + name + ".");
+        d.end_object();
+        let doc = d.result();
+        let raw = self.receipts.store(doc);
+        // an unavailable receipt is pending work, answered on redelivery
+        if len(raw) != 64 || self.receipts.read(raw) != doc { return ""; }
+        let digest = "sha256:" + raw;
+        let review_id = knowledge_review_id(digest);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", review_id);
+        b.string_field("kind", "graph");
+        b.string_field("author", r.by);
+        b.string_field("target", r.position);
+        b.string_field("class", "initiative");
+        b.string_field("name", name + " held by " + r.holder);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        if !append_once(self.journal, "knowledge.proposed", digest, b.result()) { return ""; }
+        let q = std::json::Builder { };
+        q.begin_object();
+        q.string_field("question", question);
+        q.string_field("subject_digest", digest);
+        q.string_field("required_authority", "board");
+        q.string_field("author", r.by);
+        q.string_field("knowledge_digest", digest);
+        q.string_field("kind", "graph");
+        q.string_field("target", r.position);
+        q.string_field("class", "initiative");
+        q.string_field("group", "holds");
+        q.string_field("name", name + " held by " + r.holder);
+        q.end_object();
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
+        return digest;
+    }
+    // The hold's own row once its Review is born.
+    fn proposed(r: HoldRequest, digest: String) -> Bool {
+        let review_id = knowledge_review_id(digest);
+        let a = std::json::Builder { };
+        a.begin_object();
+        a.string_field("digest", digest);
+        a.string_field("review_id", review_id);
+        a.string_field("position", r.position);
+        a.string_field("holder", r.holder);
+        a.string_field("by", r.by);
+        a.end_object();
+        return append_once(self.journal, "hold.proposed", r.request_id, a.result());
+    }
+}
+
+// What a hold names: the position's (or organization's) name, held by the
+// holder.
+fn hold_name(r: HoldRequest) -> String {
+    let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else if std::str::starts_with(r.position, "organization:") { r.position[13..len(r.position)] } else { "" };
+    return name;
+}
