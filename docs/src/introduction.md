@@ -65,22 +65,26 @@ notice that each phrase you'd say out loud has a place to live.
 
 ```hale
 type Player    { id: String; name: String; }
-type MatchInfo { match_id: String; players: [Player]; }
+type MatchInfo { match_id: String; size: Int; }
 
 topic JoinQueue  { payload: Player; }
 topic MatchReady { payload: MatchInfo; }
 
 locus Matchmaker {
-    params { target_size: Int = 4; }
+    params {
+        target_size: Int = 4;
+        queued:      Int = 0;
+    }
     bus {
         subscribe JoinQueue as on_join;
         publish   MatchReady;
     }
 
     fn on_join(p: Player) {
-        self.waiting.push(p);
-        if self.waiting.len() >= self.target_size {
-            MatchReady <- assemble_match(self.waiting, self.target_size);
+        self.queued = self.queued + 1;
+        if self.queued >= self.target_size {
+            MatchReady <- MatchInfo { match_id: p.id, size: self.queued };
+            self.queued = 0;
         }
     }
 }
@@ -103,8 +107,8 @@ If you're new to programming or to systems languages, start at
 it for the parts that differ from what you know (the failure
 model and the money/time types are worth a look), then jump to
 the part that matches the program you want to write. Many
-chapters after the first part open with a short *"Coming from
-X?"* box to orient you.
+chapters open with a short *"Coming from X?"* box to orient
+you.
 
 When you want the exact rules rather than the tour, the
 [reference](./reference.md) points into `spec/` — the canonical

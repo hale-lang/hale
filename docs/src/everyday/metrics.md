@@ -44,6 +44,8 @@ Two things to notice about the factory call:
   work happens:
 
 ```hale
+type Order { id: Int; }
+
 locus OrderHandler {
     params {
         processed: std::metrics::Counter;
@@ -80,8 +82,9 @@ lat.observe(0.023);
 Rendering follows the Prometheus histogram convention: cumulative
 `_bucket{le="..."}` counts, an implicit `+Inf` bucket that
 catches everything, and `_sum` / `_count` series. Bounds must be
-ascending, and there's room for 32 of them — more than any
-scrape dashboard wants to look at anyway.
+ascending, and there's room for 32 of them (bounds past the 32nd
+are dropped) — more than any scrape dashboard wants to look at
+anyway.
 
 ## Labels
 

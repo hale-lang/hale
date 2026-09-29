@@ -107,7 +107,7 @@ that *isn't* already part of the thing you're storing.
 
 ## A bounded queue — `@form(ring_buffer)`
 
-When you want a fixed-size FIFO that drops the oldest entry once
+When you want a fixed-size FIFO that refuses new entries once
 it's full (recent-events buffers, sliding windows):
 
 ```hale
@@ -117,9 +117,10 @@ locus Recent {
 }
 ```
 
-`push` returns a `Bool` — `false` when the buffer is full — so
-you decide whether to drop or apply backpressure. `pop` is
-fallible on empty.
+`push` returns a `Bool` — `false` when the buffer is full, and the
+new entry is not stored — so you decide whether to drop it, apply
+backpressure, or `pop` the oldest and push again. `pop` takes the
+oldest entry and is fallible on empty.
 
 ## A list inside a type — `bounded[T; N]`
 
@@ -208,8 +209,6 @@ hood](../systems/forms.md) at the systems level.
 One form per locus: a locus is a list *or* a map, not both. If
 you need both, that's two loci — which is usually what the data
 wanted anyway.
-
-Next: [Records & data](./records.md).
 
 ## Asking questions about a collection
 
@@ -404,3 +403,5 @@ if seen.contains("a") { ... }
 `contains` answers `Bool` directly. Through a map you would be writing
 `get(k) or false` at every call site, which is the value you didn't
 want leaking back into your code.
+
+Next: [Records & data](./records.md).

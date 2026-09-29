@@ -65,12 +65,10 @@ That's the whole surface you need to start. The next chapter
 introduces variables and the value types — the vocabulary every
 Hale program is built from.
 
-> **`hale run` and imports.** A single file's `import "..." as
-> ...;` directives are resolved by `hale run` just as `hale build`
-> resolves them. The one gap is the ad-hoc *directory* form (`hale
-> run ./dir`), which bundles the directory's files without
-> cross-seed import resolution — use `hale build ./dir` for a
-> multi-file project that imports libraries.
+> **`hale run` and imports.** `import "..." as ...;` directives
+> are resolved by `hale run` just as `hale build` resolves them,
+> for a single file and for a directory (`hale run ./dir`, which
+> takes the directory's files as one program).
 
 ## Build modes, diagnostics, and debugging
 
@@ -108,7 +106,7 @@ A few switches worth knowing from day one:
   JSON-RPC internal error), and the next edit is checked as usual. No
   configuration. Prefer plain JSON?
   `hale check app.hl --json` emits one object per diagnostic
-  (file, line, col, severity, message) on stdout — a save-hook is
+  (file, line, col, severity, kind, message) on stdout — a save-hook is
   all a minimal integration needs.
 - **Real debugging:** binaries carry full DWARF by default —
   `gdb ./app`, `break app.hl:42`, backtraces with real file:line,

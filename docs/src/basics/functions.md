@@ -140,8 +140,9 @@ fn-pointer binding — or one of the handful of *builtins* the
 compiler answers itself, which you can call without declaring
 anything: `len`, `to_string`, the two numeric casts `Int` /
 `Float`, the printers (`print`, `println`, `eprint`, `eprintln`),
-`abs` / `min` / `max`, `starts_with` / `contains`, and the
-`bounded` collection intrinsics. Those are not magic names to
+`abs` / `min` / `max`, `starts_with` / `contains`, the
+verification accumulators `sum` / `prod` and `check_closures()`,
+and the `bounded` collection intrinsics. Those are not magic names to
 memorise — you'll meet each one where it's useful — but they are
 why `len(s)` needs no import.
 

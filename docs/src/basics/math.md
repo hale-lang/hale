@@ -25,9 +25,10 @@ let negated = !ready;
 
 Bitwise operators (`& | ^ << >> ~`) are available on `Int`.
 
-Comparisons don't chain: `a < b < c` is a parse error — write
-`a < b && b < c`. This is deliberate; chained comparison is a
-common source of silent bugs.
+Comparisons don't chain: write `a < b && b < c`. On numbers,
+`a < b < c` is refused — it would compare the `Bool` from `a < b`
+with an `Int` — so the maths-notation habit can't slip through
+silently.
 
 `&&` and `||` short-circuit: the right side is evaluated only when
 the left side doesn't already decide the answer. So a guard protects
@@ -42,14 +43,16 @@ let found = cached || lookup(key);     // lookup runs only on a miss
 
 `Int` is 64-bit signed; `Float` is a 64-bit IEEE double. Hale
 widens `Int` to `Float` automatically where it's unambiguous —
-at a `let` with a `Float` annotation, when passing an `Int` to a
-`Float` parameter, and when one side of an arithmetic or
-comparison operator is a `Float`:
+when passing an `Int` to a `Float` parameter, and when one side
+of an arithmetic or comparison operator is a `Float`:
 
 ```hale,fragment
-let x: Float = 3;        // 3.0 — widened
-let y = 2.0 * 3;         // 6.0 — Int 3 promoted to Float
+let r = std::math::sqrt(16);   // 4.0 — the Int argument widens
+let y = 2.0 * 3;               // 6.0 — Int 3 promoted to Float
 ```
+
+A `let` annotation does not widen: `let x: Float = 3;` is refused,
+so write `3.0` or `Float(n)`.
 
 Going the other way loses information, so it's explicit:
 
@@ -111,8 +114,8 @@ the literal with a `d` suffix.
 
 ```hale,fragment
 let price = 19.99d;
-let qty   = 3;
-let total = price * 3;          // 59.97d — exact, no drift
+let qty   = 3.0d;
+let total = price * qty;        // 59.97 — exact, no drift
 ```
 
 Printing trims trailing zeros (`12.50d` prints as `12.5` — the
@@ -123,7 +126,8 @@ digits with half-up rounding.
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,
 ratios, and math where approximation is fine. The two never mix
-implicitly — there is no silent `Decimal`/`Float` conversion, so
+implicitly — there is no silent `Decimal`/`Float` conversion, and
+not even `Decimal * Int` (the quantity above is `3.0d`, not `3`), so
 you can't accidentally launder exactness away.
 
 ## Duration — time spans with units
@@ -134,7 +138,7 @@ A duration is a length of time, written with a unit suffix:
 let timeout = 5s;
 let frame   = 16ms;
 let day      = 24h;
-let compound = 1h30m;          // durations add up
+let compound = 1h + 30m;       // durations add up
 ```
 
 No more "is this milliseconds or seconds?" — the unit is part of

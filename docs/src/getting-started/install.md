@@ -20,25 +20,31 @@ Grab the tarball for your platform from the
 | Linux ARM64 (glibc)  | `hale-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon  | `hale-<version>-aarch64-apple-darwin.tar.gz` |
 
-The installer picks the right one for you:
+The installer picks the right one for you, unpacks it into
+`~/.hale/bin` (`HALE_INSTALL` moves it, `HALE_VERSION=v<x.y.z>`
+pins a release) and tells you the `PATH` line to add:
 
 ```sh
 curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
+Or by hand:
+
 ```sh
-tar -xzf hale-<version>-<triple>.tar.gz
-# The archive contains `hale` AND `libhale_ts_shim.a` — keep them
-# in the SAME directory: the compiler looks for the shim next to
-# its own binary and can't link programs without it.
-sudo cp hale libhale_ts_shim.a /usr/local/bin/   # or anywhere on PATH, together
+mkdir -p ~/.hale/bin
+tar -xzf hale-<version>-<triple>.tar.gz -C ~/.hale/bin
+# The archive holds `hale` AND `libhale_ts_shim.a` (and, on macOS,
+# the dylibs `hale` loads) — keep them in the SAME directory: the
+# compiler looks for the shim next to its own binary, and without
+# it refuses to build `std::ts` programs.
+export PATH="$HOME/.hale/bin:$PATH"
 hale --help
 ```
 
 The binary is **self-contained with respect to LLVM** — LLVM 18 is
 statically linked in, so you do *not* need to install LLVM to run
-the compiler. (Intel Macs: run the Apple-Silicon build under
-Rosetta 2.)
+the compiler. There is no prebuilt for Intel Macs: build from
+source there (the installer says so).
 
 ## What you need to run programs
 
@@ -46,11 +52,18 @@ Regardless of how you installed `hale`, compiling a program
 (`hale run` / `hale build`) recompiles and links the runtime on
 your machine, so you need a C toolchain present:
 
-- **`clang`** on your `PATH` (bare or `clang-18`) — used to
-  assemble and link the emitted native code. `lld` is additionally
-  needed only if you build with `LOTUS_LTO=1` or target `wasm32`.
-- **OpenSSL** shared libraries (`libssl` / `libcrypto`) — the
-  standard library's TLS client links against them unconditionally.
+- **`clang`** on your `PATH`, under that name — used to compile
+  the runtime's C sources and link the emitted native code. (On
+  Debian/Ubuntu, `clang-18` alone installs only `clang-18`; add the
+  `clang` package or a symlink.) `lld` is optional: on Linux a
+  native build uses `ld.lld` when it is on `PATH`, for faster
+  links, and it is required for `LOTUS_LTO=1` and for `wasm32`
+  (`wasm-ld`).
+- **OpenSSL** and **zlib** development files (headers and
+  libraries: `libssl-dev` and `zlib1g-dev` on Debian/Ubuntu,
+  `openssl@3` from Homebrew on macOS) — the runtime's TLS and
+  compression sources are compiled against them and every program
+  links them.
 
 Installing `clang` pulls in `libLLVM` as *clang's own* dependency —
 that's expected and harmless; `hale` itself doesn't need it.
@@ -70,7 +83,7 @@ Requirements:
 
 ```sh
 sudo apt install llvm-18-dev libpolly-18-dev libzstd-dev \
-                 clang-18 libclang-18-dev lld-18 zlib1g-dev \
+                 clang clang-18 libclang-18-dev lld-18 zlib1g-dev \
                  libssl-dev pkg-config git
 ```
 
@@ -83,7 +96,7 @@ sudo dnf install llvm18-devel clang18 lld openssl-devel git
 **macOS (Homebrew)**
 
 ```sh
-brew install llvm@18 openssl git
+brew install llvm@18 openssl@3 git
 export LLVM_SYS_180_PREFIX="$(brew --prefix llvm@18)"
 ```
 
@@ -122,8 +135,8 @@ and macOS on Apple Silicon, per the table above.
 plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
 [building from source](#build-from-source).
 
-**3. What a build can emit** — `hale --list-targets` is the
-authority. Native binaries for the platform `hale` itself runs on — a
+**3. What a build can emit** — `hale targets` (also spelled
+`hale --list-targets`) is the authority. Native binaries for the platform `hale` itself runs on — a
 Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
 `wasm32` objects for the browser from either. A **Linux** triple from
 any other host — `--target x86_64-unknown-linux-gnu` or
@@ -134,8 +147,9 @@ from anywhere — is cross-compiled and linked here; see
 [Cross-compiling for Linux](#cross-compiling-for-linux) below. A macOS
 triple from anywhere else gets as far as a relocatable object for that
 platform (`app.o`) and stops with a note — there is no Apple SDK to
-link against off a Mac. `x86_64-pc-windows-msvc` is named and refused
-with a precise error, because Windows codegen does not exist yet
+link against off a Mac. `x86_64-pc-windows-msvc` and
+`aarch64-pc-windows-msvc` are named and refused with a precise error,
+because Windows codegen does not exist yet
 ([GH #445](https://github.com/hale-lang/hale/issues/445)).
 
 ### Cross-compiling for Linux
@@ -174,9 +188,9 @@ build for musl: `hale build --target x86_64-unknown-linux-musl app.hl`
 static file that runs on any Linux — Alpine, a `scratch` container, an
 old glibc — with no libc to match. One carve-out: `async_io` pools are
 refused for musl at check time (its libc has no `ucontext`, which the
-coroutine backend needs). `hale run` and `hale test` refuse a
-foreign target (nothing it builds runs here); `LOTUS_ASAN` and the
-other sanitizers are host-only. Without zig or the sysroot the build
+coroutine backend needs). `hale run` refuses a foreign target
+(nothing it builds runs here) and `hale test` has no `--target`;
+`LOTUS_ASAN` and the other sanitizers are host-only. Without zig or the sysroot the build
 fails before linking and says which one is missing. `HALE_TARGET_GLIBC`
 picks a different glibc floor (the script and the compiler read the
 same variable).
@@ -188,8 +202,8 @@ runs, and what changes about a program compiled there.
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
 | **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, all pool backends included: **`async_io` pools** run on kqueue (Linux's on epoll; same coroutines, same semantics). One carve-out. **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). Neither the prebuilt toolchain nor what it emits needs Homebrew on the machine that runs it: the release tarball carries its libunwind beside `hale`, and emitted binaries link OpenSSL statically (`otool -L` shows only libSystem and libz). Building the compiler *from source* needs `brew install llvm@18 openssl@3`. Intel Macs run the arm64 build via Rosetta 2. |
-| **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler now *names* `x86_64-pc-windows-msvc` (`hale --list-targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
+| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, all pool backends included: **`async_io` pools** run on kqueue (Linux's on epoll; same coroutines, same semantics). One carve-out. **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). What `hale` emits does not need Homebrew on the machine that runs it: emitted binaries link OpenSSL statically (`otool -L` shows only libSystem and libz). The prebuilt `hale` launches without Homebrew too — the release tarball carries its libunwind beside it — but compiling a program needs OpenSSL's headers, so the machine that runs `hale` needs `brew install openssl@3`. Building the compiler *from source* needs `brew install llvm@18 openssl@3`. Intel Macs have no prebuilt; build from source. |
+| **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler *names* `x86_64-pc-windows-msvc` (`hale targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
 | **wasm32** | `hale build --target wasm32` for the browser. |
 
 ## Verify
