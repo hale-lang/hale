@@ -309,7 +309,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("work.settled", "t1/wf1/s0/h1"), 1, "the Work settled");
         std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h2/a0"), "", "the other case's attempt is untouched");
         std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 0, "the root waits for the other case");
-        std::test::assert_eq_int(self.org.cases_completed, 1, "one case connected");
+        std::test::assert_eq_int(self.org.cases.cases_completed, 1, "one case connected");
         // the execution restarted: the case keeps its step waiting, no
         // second case, no second outcome, no second plan
         let plans = self.org.plans;
@@ -336,7 +336,7 @@ main locus App {
         std::test::assert_eq_str(self.outcome_of("t1/wf1/s0/h2/a0"), "done", "the redelivery after the restart connects the completion");
         std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 1, "the root settled");
         std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), 1, "announced once: " + self.outcomes);
-        std::test::assert_eq_int(self.org.cases_completed, 2, "two cases connected");
+        std::test::assert_eq_int(self.org.cases.cases_completed, 2, "two cases connected");
         // a duplicate completion
         self.done("t1.s0.h2", "mara", "again");
         self.observe();
@@ -344,7 +344,7 @@ main locus App {
         self.settle();
         std::test::assert_eq_int(n, 0, "nothing to drive");
         std::test::assert_eq_int(self.rows("attempt.outcome", "t1/wf1/s0/h2/a0"), 1, "a duplicate settles nothing twice");
-        std::test::assert_eq_int(self.org.cases_completed + self.rows("workflow.settled", "t1"), 3, "and connects nothing again");
+        std::test::assert_eq_int(self.org.cases.cases_completed + self.rows("workflow.settled", "t1"), 3, "and connects nothing again");
 
         // ---- t2: what the bound condition refuses connects nothing — not
         //      the assignee's, no evidence where required, an exception
@@ -363,7 +363,7 @@ main locus App {
         self.settle();
         std::test::assert_eq_int(driven, 0, "redrive connects neither");
         std::test::assert_eq_str(self.outcome_of("t2/wf1/s0/h1/a0") + "|" + self.outcome_of("t2/wf1/s0/h2/a0"), "|", "neither connects");
-        std::test::assert_eq_int(self.org.completions_refused, 2, "both noted as refused");
+        std::test::assert_eq_int(self.org.cases.completions_refused, 2, "both noted as refused");
         self.excepted("t2.s0.h2", "receipt lost", "mara", "mara", strict);
         self.done("t2.s0.h2", "mara", "lost it");
         self.observe();
@@ -378,8 +378,8 @@ main locus App {
         let out2 = dna::decode_attempt_outcome(self.body_of("attempt.outcome", "t2/wf1/s0/h2/a0"));
         std::test::assert(out2.ok && std::str::contains(out2.value.result, "exception: receipt lost"), "closed under the exception: " + out2.value.result);
         std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 1, "the root settled");
-        std::test::assert_eq_int(self.org.completions_refused, 2, "the refusals were noted once per case");
-        std::test::assert_eq_int(self.org.cases_completed, 4, "four cases connected");
+        std::test::assert_eq_int(self.org.cases.completions_refused, 2, "the refusals were noted once per case");
+        std::test::assert_eq_int(self.org.cases.cases_completed, 4, "four cases connected");
 
         // ---- t2b: an exception applies to the person closing. dana
         //      authorizes mara's exception (the tooling's own gate, under
@@ -496,7 +496,7 @@ main locus App {
         self.observe();
         let north = self.org.redrive();
         self.settle();
-        std::test::assert_eq_int(north + self.org.cases_completed, 0, "north connects nothing of acme's");
+        std::test::assert_eq_int(north + self.org.cases.cases_completed, 0, "north connects nothing of acme's");
         std::test::assert_eq_str(self.outcome_of("acme:t5/wf1/s0/h1/a0") + "|" + self.outcome_of("acme:t5/wf1/s0/h2/a0"), "|", "no outcome from another owner");
         self.boot_owner_org(repo, "acme");
         self.settle();

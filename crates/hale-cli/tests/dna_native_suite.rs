@@ -1064,7 +1064,7 @@ fn only_the_record_and_the_genome_spell_git() {
 /// `bind`, and nothing else in the organism's code writes into it, the
 /// assembly included. What one family needs of another is a row or a
 /// topic. A family is added here with the PR that carves it out.
-const FAMILIES: &[(&str, &str)] = &[("evidence", "dna/core/evidence.hl"), ("scheduler", "dna/core/scheduler.hl"), ("knowledge_record", "dna/core/knowledge_record.hl"), ("org_source", "dna/core/org_source.hl"), ("practices", "dna/core/practices.hl"), ("concerns", "dna/core/concerns.hl"), ("spending", "dna/core/spending.hl"), ("positions", "dna/core/positions.hl"), ("steps", "dna/core/steps.hl")];
+const FAMILIES: &[(&str, &str)] = &[("evidence", "dna/core/evidence.hl"), ("scheduler", "dna/core/scheduler.hl"), ("knowledge_record", "dna/core/knowledge_record.hl"), ("org_source", "dna/core/org_source.hl"), ("practices", "dna/core/practices.hl"), ("concerns", "dna/core/concerns.hl"), ("spending", "dna/core/spending.hl"), ("positions", "dna/core/positions.hl"), ("steps", "dna/core/steps.hl"), ("cases", "dna/core/cases.hl")];
 
 /// The params a family's file declares, by name: the lines of its first
 /// `params { … }` block.

@@ -233,16 +233,6 @@ fn verdict_by(body: String) -> String {
 // the record resumes, or on `redrive` — never by editing again.
 @form(vec)
 locus Reports { capacity { heap rows of AttemptReport; } }
-// Human attempts relayed from the workflow engine (card 16): the ones
-// awaiting the leader's word on who and under what obligation, and the
-// ones the record refused to admit, re-driven by `redrive`.
-@form(vec)
-locus CaseAsks { capacity { heap rows of CaseAsk; } }
-// Case ids: the admitted cases whose compatibility rows the record
-// refused (card 16); the cases whose completion the bound condition
-// refused, noted once (card 17)
-@form(vec)
-locus CaseIds { capacity { heap rows of String; } }
 
 // The case a human Work's attempt is handed as (card 16): its own Task,
 // `<task>.s<i>.<key>` — the Work's step index and member key under its
@@ -382,14 +372,6 @@ locus Dna {
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
         pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
-        pending_cases: CaseAsks = CaseAsks { }; // card 16: human attempts awaiting the leader's word on who, and under what obligation
-        held_cases: CaseAsks = CaseAsks { }; // card 16: human attempts whose case the record refused to admit
-        held_rows: CaseIds = CaseIds { }; // card 16: admitted cases whose compatibility rows the record refused; completed on the recovery signals
-        refused_completions: CaseIds = CaseIds { }; // card 17: cases whose recorded completion the bound condition refused, noted once
-        cases_completed: Int = 0; // card 17: cases whose completion was connected to their attempt
-        completions_refused: Int = 0; // card 17: cases with a completion the bound condition refused, noted once
-        cases_examined: Int = 0; // card 17: the record revision the cases were last examined for their completion at — whichever path refreshed the journal since
-        cases_admitted: Int = 0;
         reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
         gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
@@ -409,6 +391,7 @@ locus Dna {
         spending: SpendRecord = SpendRecord { }; // C3 family 7: model calls and their gate, a child's money reserved and settled
         positions: PositionRecord = PositionRecord { }; // C3 family 7: holders proposed for positions
         steps: StepRecord = StepRecord { }; // C3 family 8 (Work): the organization's own steps that wait
+        cases: CaseRecord = CaseRecord { }; // C3 family 8 (Work): a person's cases, admitted, held and completed
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -456,6 +439,7 @@ locus Dna {
         self.concerns.bind(self.journal);
         self.spending.bind(self.journal);
         self.positions.bind(self.journal, self.verification.receipts);
+        self.cases.bind(self.journal);
         self.organization_source_review_facts.bind(self.org_source.facts);
         self.scheduler.bind(self.journal);
         self.knowledge_record.bind(self.journal, self.verification.receipts);
@@ -1050,7 +1034,7 @@ locus Dna {
             // not by whether THIS refresh moved: another handler's refresh
             // (a redelivery's) reads the record without examining every
             // case, and must not stand for the examination
-            if self.journal.revision() > self.cases_examined { let completed = self.revisit_cases(); }
+            if self.journal.revision() > self.cases.examined_at() { let completed = self.revisit_cases(); }
             self.refresh_ownership();
             self.reconcile_governance();
             self.reroute_reviews();
@@ -1120,17 +1104,12 @@ locus Dna {
     fn on_planned(p: Plan) {
         // card 16: a human attempt awaiting the leader's word is handed
         // as the case the leader described; nothing of the plan runs
-        let mut c = 0;
-        while c < self.pending_cases.len() {
-            let ask = self.pending_cases.get(c) or CaseAsk { };
-            if len(ask.attempt_id) > 0 && ask.request.task_id == p.task_id && ask.request.work_id == p.work_id {
-                self.pending_cases.set(c, CaseAsk { }) or discard;
-                self.plans = self.plans + 1;
-                self.hand_case(ask, p.assignee, p.obligation, "leader", p.narrative);
-                self.give_up_claim("plan/case:" + case_id_of(ask.request), true);
-                return;
-            }
-            c = c + 1;
+        let ask = self.cases.planned(p.task_id, p.work_id);
+        if len(ask.attempt_id) > 0 {
+            self.plans = self.plans + 1;
+            self.hand_case(ask, p.assignee, p.obligation, "leader", p.narrative);
+            self.give_up_claim("plan/case:" + case_id_of(ask.request), true);
+            return;
         }
         // card 18: an ask awaiting the leader's word is admitted under it:
         // what the ask is (a person's job, an organism change, an
@@ -1244,7 +1223,7 @@ locus Dna {
             self.board.notify("case", "attempt " + c.attempt_id + " names no Work of a step: no case for it");
             return;
         }
-        if len(self.recorded_case(case_id)) > 0 || len(self.case_of_attempt(c.attempt_id)) > 0 {
+        if len(self.cases.recorded(case_id)) > 0 || len(self.cases.of_attempt(c.attempt_id)) > 0 {
             let x = self.ensure_case_rows(case_id);
             // asked again after its person completed it (a restart's
             // redelivery): the outcome is reported now (card 17)
@@ -1260,12 +1239,7 @@ locus Dna {
         }
         if self.planned {
             // a case already awaiting the leader's word is not asked for twice
-            let mut i = 0;
-            while i < self.pending_cases.len() {
-                let p = self.pending_cases.get(i) or CaseAsk { };
-                if len(p.attempt_id) > 0 && case_id_of(p.request) == case_id { return; }
-                i = i + 1;
-            }
+            if self.cases.awaiting(case_id) { return; }
             // GH #1026: claimed before the leader is asked, as an ask is. A
             // case another node is planning is held and driven again
             // (`redrive`) until that node has admitted it or its claim has
@@ -1273,15 +1247,15 @@ locus Dna {
             // claim's last holder admitted meanwhile is completed, not
             // planned twice.
             let key = "plan/case:" + case_id;
-            if !self.take_claim(key, self.claim_ttl) { self.held_cases.push(c); return; }
+            if !self.take_claim(key, self.claim_ttl) { self.cases.hold(c); return; }
             let again = self.journal.refresh();
-            if len(self.recorded_case(case_id)) > 0 {
+            if len(self.cases.recorded(case_id)) > 0 {
                 self.give_up_claim(key, false);
                 let x = self.ensure_case_rows(case_id);
                 return;
             }
             self.note_claim(key);
-            self.pending_cases.push(c);
+            self.cases.await_plan(c);
             PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
             return;
         }
@@ -1310,51 +1284,20 @@ locus Dna {
             let rev = self.journal.revision();
             if row_exists(self.journal, "case.admitted", case_id) { let x = self.ensure_case_rows(case_id); return; }
             let terms = self.handoff_terms(assignee_named, obligation);
-            let body = self.case_body(c, case_id, terms, obligation, by, narrative);
-            let a = self.journal.append_exact(rev, "case.admitted", case_id, body);
+            let body = self.cases.body(c, case_id, terms, obligation, by, narrative, self.ownership.me);
+            let a = self.cases.admit(case_id, body, rev);
             if a.ok {
-                self.cases_admitted = self.cases_admitted + 1;
                 let x = self.ensure_case_rows(case_id);
                 return;
             }
             if a.error != "stale_revision" && a.error != "claimed" {
-                self.record_refusals = self.record_refusals + 1;
-                self.held_cases.push(c);
+                self.cases.refused(c);
                 self.board.notify("record", "the case of " + req.work_id + " was not admitted by the record (" + a.error + "); held");
                 return;
             }
         }
-        self.held_cases.push(c);
+        self.cases.hold(c);
         self.board.notify("record", "the case of " + req.work_id + " was not admitted: the record moved too often; held");
-    }
-    // The admission of a case: versioned, self-sufficient, naming its
-    // origin (`owner`), its disposition (`to`: the owner whose person
-    // takes it, "" for this owner's own) and the performer whose attempt
-    // it is (version 2, card 17: the report of its completion answers as
-    // that performer).
-    fn case_body(c: CaseAsk, case_id: String, terms: Handoff, obligation: String, by: String, narrative: String) -> String {
-        let req = c.request;
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.int_field("version", 2);
-        b.string_field("case_id", case_id);
-        b.string_field("performer", c.performer);
-        b.string_field("task_id", req.task_id);
-        b.string_field("work_id", req.work_id);
-        b.string_field("attempt_id", c.attempt_id);
-        b.string_field("step_id", req.step_id);
-        b.string_field("objective", req.objective);
-        b.string_field("assignee", terms.assignee);
-        b.string_field("retired_assignee", terms.retired_assignee);
-        b.string_field("obligation", obligation);
-        b.string_field("acceptance", terms.practice);
-        b.bool_field("evidence_required", terms.evidence_required);
-        b.string_field("by", by);
-        b.string_field("narrative", if len(narrative) > 0 { "handed: " + narrative } else { "handed: a person's work" });
-        b.string_field("owner", self.ownership.me);
-        b.string_field("to", terms.theirs);
-        b.end_object();
-        return b.result();
     }
     // The compatibility rows of an admitted case, whichever are missing:
     // `task.born <case>` and `task.handed <case>` (`task.transfer_requested`
@@ -1369,77 +1312,18 @@ locus Dna {
     // hand-off is announced once it is durable. True when the rows are.
     @unbounded
     fn ensure_case_rows(case_id: String) -> Bool {
-        let adm = self.recorded_case(case_id);
-        if len(adm) == 0 { return false; }
-        let origin = std::json::find_string_field(adm, "owner");
-        if origin != self.ownership.me { return false; }
-        let work = std::json::find_string_field(adm, "work_id");
-        // the tooling of the day reads a Task from its birth: the handed
-        // row follows the born row, or waits for the next completion
-        if !row_exists(self.journal, "task.born", case_id) {
-            let x = self.journal.append(self.journal.revision(), "task.born", case_id, work + ": " + std::json::find_string_field(adm, "objective"));
-            if !x.ok { self.hold_rows(case_id, "task.born", x.error); return false; }
-        }
-        if row_exists(self.journal, "task.handed", case_id) || row_exists(self.journal, "task.transfer_requested", case_id) { self.release_rows(case_id); return true; }
-        let assignee = std::json::find_string_field(adm, "assignee");
-        let theirs = std::json::find_string_field(adm, "to");
-        let transfer = len(theirs) > 0;
-        let hb = std::json::Builder { };
-        hb.begin_object();
-        hb.string_field("work", work);
-        hb.string_field("assignee", assignee);
-        let retired = std::json::find_string_field(adm, "retired_assignee");
-        if len(retired) > 0 { hb.string_field("retired_assignee", retired); }
-        hb.string_field("obligation", std::json::find_string_field(adm, "obligation"));
-        hb.string_field("acceptance", std::json::find_string_field(adm, "acceptance"));
-        hb.bool_field("evidence_required", std::str::trim(std::json::find_field_raw(adm, "evidence_required")) == "true");
-        hb.string_field("by", std::json::find_string_field(adm, "by"));
-        hb.string_field("narrative", std::json::find_string_field(adm, "narrative"));
-        hb.string_field("case", case_id);
-        if transfer {
-            hb.string_field("owner", origin);
-            hb.string_field("to", theirs);
-        }
-        hb.end_object();
-        let kind = if transfer { "task.transfer_requested" } else { "task.handed" };
-        let y = self.journal.append(self.journal.revision(), kind, case_id, hb.result());
-        if !y.ok { self.hold_rows(case_id, kind, y.error); return false; }
-        self.release_rows(case_id);
-        if transfer {
-            self.board.notify("task", case_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
-        } else {
-            self.board.notify("task", case_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
-        }
-        return true;
-    }
-    // An admitted case whose compatibility row the record refused: held,
-    // once, for `RecordResumed` and `redrive`.
-    @unbounded
-    fn hold_rows(case_id: String, kind: String, why: String) {
-        self.record_refusals = self.record_refusals + 1;
-        self.board.notify("record", "the " + kind + " row of case " + case_id + " was refused by the record (" + why + "); held");
-        let mut i = 0;
-        while i < self.held_rows.len() {
-            if (self.held_rows.get(i) or "") == case_id { return; }
-            i = i + 1;
-        }
-        self.held_rows.push(case_id);
-    }
-    @unbounded
-    fn release_rows(case_id: String) {
-        let mut i = 0;
-        while i < self.held_rows.len() {
-            if (self.held_rows.get(i) or "") == case_id { self.held_rows.set(i, "") or discard; }
-            i = i + 1;
-        }
+        let r = self.cases.rows(case_id, self.ownership.me);
+        if len(r.held) > 0 { self.board.notify("record", "the " + r.held + " row of case " + case_id + " was refused by the record (" + r.why + "); held"); }
+        if len(r.notice) > 0 { self.board.notify("task", r.notice); }
+        return r.ok;
     }
     // The held compatibility rows put again: how many cases completed.
     @unbounded
     fn retry_rows() -> Int {
         let mut n = 0;
         let mut i = 0;
-        while i < self.held_rows.len() {
-            let case_id = self.held_rows.get(i) or "";
+        while i < self.cases.held_row_count() {
+            let case_id = self.cases.held_row(i);
             if len(case_id) > 0 && self.ensure_case_rows(case_id) { n = n + 1; }
             i = i + 1;
         }
@@ -1461,34 +1345,6 @@ locus Dna {
             theirs: if len(theirs) > 0 && theirs != self.ownership.me { theirs } else { "" }
         };
     }
-    // The admission of a case, "" when none.
-    @unbounded
-    fn recorded_case(case_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "case.admitted" && e.entity == case_id { return e.body; }
-            i = i + 1;
-        }
-        return "";
-    }
-    // Whether a Task is a case: admitted as one. A case is a person's,
-    // never an executable root, never legacy edit work.
-    fn case_admitted(task_id: String) -> Bool { return len(self.recorded_case(task_id)) > 0; }
-    // The case admitted for an attempt, "" when none.
-    @unbounded
-    fn case_of_attempt(attempt_id: String) -> String {
-        if len(attempt_id) == 0 { return ""; }
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "case.admitted" && std::json::find_string_field(e.body, "attempt_id") == attempt_id { return e.entity; }
-            i = i + 1;
-        }
-        return "";
-    }
     // Card 17: a case completed by its person — `task.done` in their
     // name, or a decision reported and accepted — is the outcome of the
     // attempt it was admitted for: reported to the runtime as an edit's
@@ -1502,7 +1358,7 @@ locus Dna {
     // reported now.
     @unbounded
     fn revisit_case(case_id: String) -> Bool {
-        let adm = self.recorded_case(case_id);
+        let adm = self.cases.recorded(case_id);
         if len(adm) == 0 { return false; }
         if std::json::find_string_field(adm, "owner") != self.ownership.me { return false; }
         let attempt = std::json::find_string_field(adm, "attempt_id");
@@ -1512,7 +1368,7 @@ locus Dna {
             let how = "case " + case_id + " " + c.how + " by " + c.by
                 + (if len(c.evidence) > 0 { " (evidence " + c.evidence + ")" } else if len(c.exception) > 0 { " (exception: " + c.exception + ")" } else { "" });
             if !self.reported(attempt) {
-                self.cases_completed = self.cases_completed + 1;
+                self.cases.completed_now();
                 self.board.notify("case", how + "; attempt " + attempt + " is done");
             }
             self.report_attempt(self.org_id, attempt, WorkResult {
@@ -1521,19 +1377,9 @@ locus Dna {
             });
             return true;
         }
-        if c.found && !self.noted_refusal(case_id) {
-            self.completions_refused = self.completions_refused + 1;
-            self.refused_completions.push(case_id);
+        if c.found && !self.cases.noted(case_id) {
+            self.cases.refused_now(case_id);
             self.board.notify("case", "case " + case_id + " has a completion its bound condition refuses (" + c.why + "); the attempt " + attempt + " stays out");
-        }
-        return false;
-    }
-    @unbounded
-    fn noted_refusal(case_id: String) -> Bool {
-        let mut i = 0;
-        while i < self.refused_completions.len() {
-            if (self.refused_completions.get(i) or "") == case_id { return true; }
-            i = i + 1;
         }
         return false;
     }
@@ -1551,7 +1397,7 @@ locus Dna {
             if e.kind == "case.admitted" && self.revisit_case(e.entity) { reported = reported + 1; }
             i = i + 1;
         }
-        self.cases_examined = n;
+        self.cases.examined(n);
         return reported;
     }
     // Every admitted case of this owner's has its compatibility rows: a
@@ -2092,12 +1938,11 @@ locus Dna {
         n = n + self.retry_rows();
         n = n + self.revisit_cases();
         self.revisit_waiting();
-        let cases = self.held_cases.len();
+        let cases = self.cases.held_count();
         let mut h = 0;
         while h < cases {
-            let c = self.held_cases.get(h) or CaseAsk { };
+            let c = self.cases.take_held(h);
             if len(c.attempt_id) > 0 {
-                self.held_cases.set(h, CaseAsk { }) or discard;
                 self.on_case_requested(c);
                 n = n + 1;
             }
