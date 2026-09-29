@@ -71,8 +71,8 @@ fn source_body(repo: String, st: Stage, request_id: String, owner: String, owner
     let made = dna::run_tool("mkdir\n-p\n" + repo + "/.hale/dna");
     let body = dna::Dna {
         journal: SourceStageJournal { inner: dna::GitJournal { repo: repo }, stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
-        organization_source_facts: ops::StrictOrganizationSourceFacts { },
-        organization_source_inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner, ownership: dna::graph_ownership_of(owners) },
+        org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
+            inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner, ownership: dna::graph_ownership_of(owners) } },
         ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },

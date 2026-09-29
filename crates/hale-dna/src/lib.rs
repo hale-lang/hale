@@ -81,6 +81,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "native_json",
     "nerves",
     "org",
+    "org_source",
     "organization_launch",
     "organization_source_request",
     "ownership",

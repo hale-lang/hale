@@ -22,7 +22,7 @@ locus SourceCandidateCases {
     fn body(root: String, id: String) {
         let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" }; let journal = dna::GitJournal { repo: root };
         let body = dna::Dna {
-            journal: journal, organization_source_facts: ops::StrictOrganizationSourceFacts { }, organization_source_inputs: inputs,
+            journal: journal, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs },
             ownership: dna::Ownership { me_env: "" },
             gateway: dna::MutationGateway { leases: dna::GitLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
             verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
