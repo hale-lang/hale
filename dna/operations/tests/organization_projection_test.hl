@@ -67,7 +67,7 @@ fn who(repo: String, name: String) -> ops::GovernanceContext {
 fn run_body(repo: String, id: String) {
     let inputs = source::OrganizationPublicationInputs { root: repo }; let j = dna::GitJournal { repo: repo };
     let body = dna::Dna {
-        journal: j, organization_source_facts: ops::StrictOrganizationSourceFacts { }, organization_source_inputs: inputs,
+        journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs },
         ownership: dna::Ownership { me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
@@ -78,7 +78,7 @@ fn run_body(repo: String, id: String) {
 fn continue_application(repo: String, command_id: String, stage: String) {
     let inputs = source::OrganizationPublicationInputs { root: repo }; let j = ApplicationJournal { inner: dna::GitJournal { repo: repo }, stage: stage };
     let body = dna::Dna {
-        journal: j, organization_source_facts: ops::StrictOrganizationSourceFacts { }, organization_source_inputs: inputs, organization_source_apply_inputs: inputs,
+        journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs, apply_inputs: inputs },
         ownership: dna::Ownership { me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },

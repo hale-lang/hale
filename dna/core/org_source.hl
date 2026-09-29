@@ -1,0 +1,153 @@
+// A prepared Organization source request, as the record holds it (C3,
+// family 4): the request read back through the facts that admit it, the
+// rows it writes (started, proposed, refused, failed), its exact verdict,
+// the refusals that end it, and whether its candidate's verification is
+// the one the record holds. It was part of the assembly; as a locus of its
+// own it holds the facts a request is read with and the inputs that read
+// the source, check a candidate, write it and prove it applied, with the
+// journal the assembly lends it at birth. Whose a request is, the gateway
+// that commits and applies a candidate, and the Review a candidate asks
+// for stay the assembly's: it drives a request through them and asks this
+// family for each row and each check (dna/core/record_rows.hl).
+locus OrganizationSourceRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        facts: OrganizationSourceFacts = NoOrganizationSourceFacts { };
+        inputs: OrganizationSourceInputs = NoOrganizationSourceInputs { };
+        apply_inputs: OrganizationSourceApplyInputs = NoOrganizationSourceApplyInputs { };
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    fn request(request_id: String) -> OrganizationSourceRequest {
+        let codec = OrganizationSourceRequestCodec { };
+        return codec.started_request(self.journal, self.facts, request_id);
+    }
+    fn admitted(request_id: String) -> OrganizationSourceRequest {
+        let codec = OrganizationSourceRequestCodec { };
+        return codec.admitted(self.journal, self.facts, request_id);
+    }
+    // The request's own rows: started, proposed with its candidate, failed
+    // verification, refused for want of a blocking Review. Whether each is
+    // in the record.
+    fn started(r: OrganizationSourceRequest) -> Bool {
+        let codec = OrganizationSourceRequestCodec { };
+        return append_once(self.journal, "organization.source.started", r.request_id, codec.started(r));
+    }
+    fn proposed(r: OrganizationSourceRequest, candidate: String) -> Bool {
+        let codec = OrganizationSourceRequestCodec { };
+        return append_once(self.journal, "organization.source.proposed", r.request_id, codec.proposed(r, candidate));
+    }
+    fn failed(r: OrganizationSourceRequest) -> Bool {
+        let codec = OrganizationSourceRequestCodec { };
+        return append_once(self.journal, "organization.source.failed", r.request_id, codec.failed(r, "verification", "candidate_verification_failed", "The exact Organization candidate failed native verification."));
+    }
+    fn review_refused(r: OrganizationSourceRequest) -> Bool {
+        let codec = OrganizationSourceRequestCodec { };
+        return append_once(self.journal, "organization.source.refused", r.request_id, codec.refused(r, "review", "blocking_review_required", "Prepared Organization source requires blocking native Review."));
+    }
+    // The source as it stands, a candidate checked against it, the
+    // candidate's bytes written into its worktree, and the proof that it
+    // applied: the inputs this family is built with.
+    fn current(r: OrganizationSourceRequest) -> OrganizationSourceCheck { return self.inputs.current(r); }
+    fn candidate(r: OrganizationSourceRequest, worktree: String, candidate: String) -> OrganizationSourceCheck { return self.inputs.candidate(r, worktree, candidate); }
+    fn materialize(r: OrganizationSourceRequest, worktree: String) -> OrganizationSourceCheck { return self.inputs.materialize(r, worktree); }
+    fn apply_available() -> Bool { return self.apply_inputs.available(); }
+    fn applied(r: OrganizationSourceRequest, worktree: String, candidate: String) -> OrganizationSourceCheck { return self.apply_inputs.applied(r, worktree, candidate); }
+    fn prepared(e: Event) -> Bool {
+        if e.kind != "mutation.proposed" { return false; }
+        let codec = OrganizationSourceRequestCodec { }; let mut i = 0;
+        while i < e.seq {
+            let s = self.journal.read(i);
+            if s.kind == "organization.source.started" && native_json_string(s.body, "mutation_id") == e.entity {
+                let r = self.request(s.entity);
+                if codec.valid(r) && codec.mutation_id(r) == e.entity && s.body == codec.started(r)
+                    && e.body == "prepared organization source " + r.request_id + " at " + r.source_head { return true; }
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+    // Whether a `review.requested` body is exactly the one this request's
+    // candidate asks for, in the worktree the gateway keeps for it.
+    fn review_matches(r: OrganizationSourceRequest, candidate: String, body: String, worktree: String) -> Bool {
+        let codec = OrganizationSourceRequestCodec { };
+        return native_json_string(body, "organization_source_request_id") == r.request_id
+            && native_json_string(body, "organization_source_digest") == r.source_digest
+            && native_json_string(body, "mutation_id") == codec.mutation_id(r)
+            && native_json_string(body, "subject_digest") == candidate && native_json_string(body, "candidate_commit") == candidate
+            && native_json_string(body, "base_commit") == r.source_head && native_json_string(body, "seed") == codec.seed()
+            && native_json_string(body, "author") == r.by && native_json_string(body, "change_class") == "organization"
+            && native_json_string(body, "worktree") == worktree;
+    }
+    // Only the tagged, strictly decoded incoming command can continue a
+    // prepared-source Review. A generic mutation settlement or another caller's
+    // approval cannot supply this command's authority or original application.
+    @unbounded
+    // The exact verdict `command_id` decided on a request its owner holds
+    // (the assembly's check), or no verdict.
+    fn verdict(r: OrganizationSourceRequest, command_id: String, worktree: String) -> Verdict {
+        let codec = OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
+        let proposed = codec.fact(self.journal, "organization.source.proposed", r.request_id);
+        let candidate = native_json_string(proposed.body, "candidate_commit");
+        let req = codec.fact(self.journal, "review.requested", "review:" + id);
+        let committed = codec.fact(self.journal, "mutation.candidate", id);
+        let mutation = codec.fact(self.journal, "mutation.proposed", id);
+        let started = codec.fact(self.journal, "organization.source.started", r.request_id);
+        let decision = codec.fact(self.journal, "review.command_decided", command_id);
+        if proposed.kind != "organization.source.proposed" || proposed.body != codec.proposed(r, candidate)
+            || req.kind != "review.requested" || !self.review_matches(r, candidate, req.body, worktree)
+            || committed.kind != "mutation.candidate" || committed.body != candidate
+            || !self.prepared(mutation) || started.seq >= mutation.seq || mutation.seq >= committed.seq
+            || committed.seq >= req.seq || req.seq >= proposed.seq || decision.kind != "review.command_decided" { return Verdict { }; }
+        let mut incoming = Event { }; let mut i = proposed.seq + 1;
+        while i < decision.seq {
+            let e = self.journal.read(i);
+            if e.kind == "review.verdict" && native_json_string(e.body, "command_id") == command_id {
+                if len(incoming.kind) > 0 && incoming.body != e.body { return Verdict { }; }
+                incoming = e;
+            }
+            i = i + 1;
+        }
+        if incoming.kind != "review.verdict" || incoming.entity != id
+            || native_json_string(incoming.body, "command_authority_profile") != "dna.organization-review/1"
+            || native_json_string(native_json_string(incoming.body, "command_payload"), "application_id") != r.application_id { return Verdict { }; }
+        let v = self.facts.verdict(incoming);
+        if v.command_id != command_id || v.review_id != id || v.subject_digest != candidate
+            || (v.verdict != "approve" && v.verdict != "reject" && v.verdict != "revise")
+            || decision.body != review_command_body(v, true, "", true, v.verdict) { return Verdict { }; }
+        return v;
+    }
+    fn apply_refusal(r: OrganizationSourceRequest, command_id: String, candidate: String, code: String) -> String {
+        if code != "invalid_command" && code != "forbidden" && code != "stale_subject" && code != "organization_worktree_invalid"
+            && code != "organization_candidate_invalid" && code != "organization_snapshot_unsupported" && code != "organization_deployment_unsupported" { return "pending: " + code; }
+        let codec = OrganizationSourceRequestCodec { };
+        let saved = append_once(self.journal, "mutation.refused", codec.mutation_id(r), codec.apply_refused(r, command_id, candidate, code));
+        return if saved { "refused: " + code } else { "pending: application refusal acknowledgment" };
+    }
+    fn refusal(r: OrganizationSourceRequest, stage: String, check: OrganizationSourceCheck) -> Bool {
+        // Missing storage/inspection/effect evidence stays pending. Only explicit
+        // domain refusals terminate the source proposal.
+        if check.code != "invalid_command" && check.code != "forbidden" && check.code != "stale_subject"
+            && check.code != "organization_worktree_invalid" && check.code != "organization_candidate_invalid" && check.code != "organization_snapshot_unsupported" { return false; }
+        let codec = OrganizationSourceRequestCodec { };
+        return append_once(self.journal, "organization.source.refused", r.request_id, codec.refused(r, stage, check.code, check.detail));
+    }
+    fn verified(m: Mutation, report: VerificationReport) -> Bool {
+        if report.mutation_id != m.id || report.candidate != m.candidate_commit { return false; }
+        if report.evidence.check_clean && (len(report.candidate_shape) == 0 || len(report.diff_json) == 0 || len(report.diff_text) == 0) { return false; }
+        let steps = if report.evidence.check_clean { "fmt check verify test fleet rollback diff" } else { "fmt check verify test fleet" }; let mut i = 0;
+        while len(nth_word(steps, i)) > 0 {
+            let step = nth_word(steps, i); let mut found = false; let mut k = 0;
+            while k < self.journal.revision() {
+                let e = self.journal.read(k);
+                if e.kind == "evidence." + step && e.entity == m.candidate_commit && native_json_string(e.body, "mutation_id") == m.id
+                    && native_json_string(e.body, "step") == step {
+                        let code = std::json::find_int_field(e.body, "code");
+                        found = std::str::contains(" " + report.steps + " ", " " + step + "=" + to_string(code) + " ");
+                    }
+                k = k + 1;
+            }
+            if !found { return false; } i = i + 1;
+        }
+        return true;
+    }
+}

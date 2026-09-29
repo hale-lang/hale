@@ -53,9 +53,9 @@ fn source_count(j: dna::Journal, kind: String, id: String) -> Int {
 }
 fn source_body(repo: String, j: SourceApplyJournal, request_id: String, owner: String, owners: String) {
     let body = dna::Dna {
-        journal: j, organization_source_facts: ops::StrictOrganizationSourceFacts { },
-        organization_source_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
-        organization_source_apply_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
+        journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
+            inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
+            apply_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner } },
         ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
@@ -155,8 +155,8 @@ main locus App {
         let v = self.decide(j, r, "approval", "bob", "approve", "", true);
         if stage == "" {
             let unconfigured = dna::Dna {
-                journal: j, organization_source_facts: ops::StrictOrganizationSourceFacts { },
-                organization_source_inputs: source::OrganizationPublicationInputs { root: repo },
+                journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
+                    inputs: source::OrganizationPublicationInputs { root: repo } },
                 gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
                 verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
                 review_policy: dna::OrgPolicy { }, board: dna::Board { }

@@ -8,9 +8,9 @@ import "../../../organization_runtime" as org_runtime;
 
 fn body(repo: String, request_id: String) {
     let app = dna::Dna {
-        journal: dna::GitJournal { repo: repo }, organization_source_facts: ops::StrictOrganizationSourceFacts { },
-        organization_source_inputs: source::OrganizationPublicationInputs { root: repo },
-        organization_source_apply_inputs: source::OrganizationPublicationInputs { root: repo },
+        journal: dna::GitJournal { repo: repo }, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
+            inputs: source::OrganizationPublicationInputs { root: repo },
+            apply_inputs: source::OrganizationPublicationInputs { root: repo } },
         gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
