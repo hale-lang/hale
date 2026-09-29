@@ -1396,3 +1396,38 @@ fn redaction_line(root: String, digest: String) -> String {
     }
     return "";
 }
+
+// ---- the application ------------------------------------------------
+
+// `hale dna application remove [--as <who>]` (GH #989): the record's
+// attached application removed from the organization — an
+// `application.detached` row naming it, in the record (the membership's
+// source) — and its broker account revoked: its user gone from
+// dna/nats.conf, its password from the include and the vault, and the
+// nerves restarted to drop what it holds.
+@unbounded
+fn application_remove_verb(root: String, who_flag: String) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let app = attached_application(root);
+    if len(app) == 0 { return fail("application remove: the record attaches no application (or it was removed)"); }
+    let j = dna::GitJournal { repo: root };
+    let mut entity = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "application.attached" { entity = e.entity; }
+        i = i + 1;
+    }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", app);
+    b.string_field("by", who);
+    b.end_object();
+    if len(record_append(root, "application.detached", entity, b.result(), who)) == 0 { return fail("application remove: the record did not take the `application.detached` row; nothing was revoked"); }
+    let org = dna::schema_for(record_identity(root));
+    let revoked = revoke_app_secret(root, org, app);
+    if !revoked.ok { return fail("application remove: `" + app + "` is detached in the record, and its account is not yet revoked: " + revoked.why); }
+    return answer("application remove: `" + app + "` detached (application.detached in the record)\n" + revoked.report);
+}

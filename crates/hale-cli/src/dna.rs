@@ -431,7 +431,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 // inherits (started without the spine's, the owner's and the
                 // head's) to say its own events. URLs carry no password; a
                 // part presents its credential from the vault by name
-                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
+                Ok(NervesPlan::Roles(roles)) => roles.into_iter().filter(|(k, _)| k == "HALE_DNA_NATS_ORG" || k == "HALE_DNA_NATS_URL_SPINE" || k == "HALE_DNA_NATS_URL_APP" || k == "HALE_DNA_NATS_USER_APP" || k == "HALE_DNA_NATS_VAULT_APP").collect(),
                 Ok(NervesPlan::NoServer(why)) => {
                     eprintln!("hale dna dev: {why}");
                     Vec::new()
@@ -610,6 +610,11 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("secrets") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             host_exec("secrets", &dir, &[])
+        }
+        // GH #989: the attached application removed, its broker account revoked
+        Some("application") if args.get(1).map(String::as_str) == Some("remove") => {
+            let (dir, rest) = project_arg(&args[2..], false);
+            host_exec("application-remove", &dir, &rest)
         }
         Some("schedule") => host_exec("schedule", Path::new("."), &args[1..]),
         Some("receipt") => host_exec("receipt", Path::new("."), &args[1..]),
@@ -860,6 +865,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    a credential from stdin (never argv, never the record) into its slot of the vault");
     eprintln!("                                    (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)");
+    eprintln!("       hale dna application remove [project] [--as <who>]");
+    eprintln!("                                    the attached application removed (`application.detached` in the record) and its");
+    eprintln!("                                    broker account revoked: its user, its password and its vault entry (GH #989)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>");
     eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
@@ -2847,6 +2855,14 @@ impl Chain {
     }
 }
 
+/// GH #989: the name the record attaches the application by, which its
+/// broker account carries (`app-<name>`, publishing on `<org>.app.<name>.>`):
+/// the project's name as a subject token, as `dna::nerves_app_name` spells
+/// it — lower-case letters and digits, anything else `_`, at most 32.
+fn app_account_name(project: &str) -> String {
+    project.chars().take(32).map(|c| c.to_ascii_lowercase()).map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '_' }).collect()
+}
+
 fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<usize, String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
@@ -2855,7 +2871,7 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<us
         "application.attached",
         &app.seed_rel,
         &serde_json::json!({
-            "main": app.main_name, "artifact": BASELINE_REL,
+            "main": app.main_name, "name": app_account_name(&app.project), "artifact": BASELINE_REL,
             "artifact_digest": s(&art["artifact_digest"]), "shape_hash": s(&art["shape_hash"]),
             "schema": s(&art["schema"]), "verdict": s(&art["verdict"]),
             "toolchain": TOOLCHAIN, "provenance": "observed"

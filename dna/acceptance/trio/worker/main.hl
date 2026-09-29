@@ -9,8 +9,9 @@
 // own subject `app.trio.`, and publishes it onto the nerves through
 // pond's publish-only adapter (`NatsPublisher`: it dispatches nothing
 // into the worker, so the fleet's law stays provable over it) as the
-// application's account its node names (HALE_DNA_NATS_URL_APP, the vault
-// entry HALE_DNA_NATS_VAULT_APP, under HALE_DNA_NATS_ORG). It imports
+// application's own account its node names (HALE_DNA_NATS_URL_APP, the
+// user HALE_DNA_NATS_USER_APP and the vault entry HALE_DNA_NATS_VAULT_APP,
+// under HALE_DNA_NATS_ORG; GH #989). It imports
 // nothing of the DNA. The organism's heart lands it as a reading, and
 // the spine puts it into the record as a concern; the organization
 // proposes it as knowledge; the Board ratifies; the next change to the
@@ -67,9 +68,10 @@ main locus TrioWorker {
     }
     bus { publish Fulfil; publish WorkerConcerns; }
     // the nerves its node handed it (no url: it says nothing)
-    // the application's account: its password is the vault's entry its node
-    // names (HALE_DNA_NATS_VAULT_APP), presented on CONNECT alone (GH #989)
-    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker", user: "app", credential: std::secret::Credential { vault: env_or_empty("HALE_DNA_NATS_VAULT_APP") } } codec(ConcernJson { }); }
+    // the application's own account: its user and the vault's entry holding
+    // its password, as its node names them (HALE_DNA_NATS_USER_APP,
+    // HALE_DNA_NATS_VAULT_APP), presented on CONNECT alone (GH #989)
+    bindings { WorkerConcerns: nats::NatsPublisher { url: env_or_empty("HALE_DNA_NATS_URL_APP"), subject_prefix: env_or_empty("HALE_DNA_NATS_ORG") + ".", name: "trio-worker", user: env_or_empty("HALE_DNA_NATS_USER_APP"), credential: std::secret::Credential { vault: env_or_empty("HALE_DNA_NATS_VAULT_APP") } } codec(ConcernJson { }); }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);

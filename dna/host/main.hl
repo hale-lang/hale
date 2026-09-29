@@ -225,6 +225,9 @@ fn main() {
     } else if verb == "secrets-provision" {
         // GH #989: the organism's secrets, provisioned (init, upgrade)
         ans = secrets_provision_verb(root, has_flag(a, "--rotate"));
+    } else if verb == "application-remove" {
+        // GH #989: the attached application detached, its account revoked
+        ans = application_remove_verb(root, flag(a, "--as"));
     } else if verb == "secrets" {
         // GH #989: what the organism requires, and what the vault holds
         ans = secrets_status_verb(root);
