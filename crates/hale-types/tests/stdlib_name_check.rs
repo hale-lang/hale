@@ -67,10 +67,29 @@ fn valid_names_do_not_flag() {
 }
 
 #[test]
-fn untabled_namespace_stays_permissive() {
-    // std::io::sockopt dispatches non-literal names (constant table)
-    // — deliberately untabled, so no name errors even for nonsense.
-    let m = msgs(
+fn sockopt_constants_are_tabled_and_a_made_up_one_is_flagged() {
+    // std::io::sockopt is a namespace of zero-argument constant getters.
+    // It used to be left out of the table ("dispatches non-literal names,
+    // deliberately untabled"), which stopped being permissive once an
+    // unknown namespace became an error (#353 item 9): every use was
+    // refused as `unknown stdlib namespace`. It is tabled now, the names
+    // codegen lowers (`std::io::sockopt::SO_REUSEADDR`, …) are clean, and
+    // a made-up one is the same error any tabled namespace gives.
+    let ok = msgs(
+        r#"
+        fn main() {
+            let a = std::io::sockopt::SOL_SOCKET();
+            let b = std::io::sockopt::SO_REUSEADDR();
+            println(a, b);
+        }
+    "#,
+    );
+    assert!(
+        !ok.iter().any(|s| s.contains("unknown stdlib")),
+        "got: {:?}",
+        ok
+    );
+    let bad = msgs(
         r#"
         fn main() {
             let v = std::io::sockopt::TOTALLY_MADE_UP();
@@ -79,9 +98,9 @@ fn untabled_namespace_stays_permissive() {
     "#,
     );
     assert!(
-        !m.iter().any(|s| s.contains("unknown stdlib function")),
+        bad.iter().any(|s| s.contains("unknown stdlib function `std::io::sockopt::TOTALLY_MADE_UP`")),
         "got: {:?}",
-        m
+        bad
     );
 }
 

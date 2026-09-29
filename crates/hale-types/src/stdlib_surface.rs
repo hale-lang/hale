@@ -524,6 +524,28 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // The named platform constants (`std::io::sockopt::SO_REUSEADDR()`):
+    // zero-argument getters, each a C function returning the platform's
+    // number, so a program never hardcodes one. Codegen has always lowered
+    // them (`SOCKOPT_NAMES`); this table is what the checker consults, and
+    // without an entry the namespace was refused as unknown. Keep in step
+    // with `SOCKOPT_NAMES` (a test in this crate's suite compares them).
+    NsSurface {
+        ns: &["io", "sockopt"],
+        fns: &[
+            e("IPPROTO_IP", EffectSet::PURE), e("IPPROTO_IPV6", EffectSet::PURE), e("IPPROTO_TCP", EffectSet::PURE),
+            e("IPPROTO_UDP", EffectSet::PURE), e("IP_ADD_MEMBERSHIP", EffectSet::PURE), e("IP_DROP_MEMBERSHIP", EffectSet::PURE),
+            e("IP_MTU_DISCOVER", EffectSet::PURE), e("IP_MULTICAST_IF", EffectSet::PURE), e("IP_MULTICAST_LOOP", EffectSet::PURE),
+            e("IP_MULTICAST_TTL", EffectSet::PURE), e("IP_PKTINFO", EffectSet::PURE), e("IP_PMTUDISC_DO", EffectSet::PURE),
+            e("IP_PMTUDISC_DONT", EffectSet::PURE), e("IP_PMTUDISC_PROBE", EffectSet::PURE), e("IP_PMTUDISC_WANT", EffectSet::PURE),
+            e("IP_TOS", EffectSet::PURE), e("IP_TTL", EffectSet::PURE), e("SOL_SOCKET", EffectSet::PURE), e("SO_BINDTODEVICE", EffectSet::PURE),
+            e("SO_BROADCAST", EffectSet::PURE), e("SO_KEEPALIVE", EffectSet::PURE), e("SO_LINGER", EffectSet::PURE),
+            e("SO_PRIORITY", EffectSet::PURE), e("SO_RCVBUF", EffectSet::PURE), e("SO_RCVTIMEO", EffectSet::PURE),
+            e("SO_REUSEADDR", EffectSet::PURE), e("SO_REUSEPORT", EffectSet::PURE), e("SO_SNDBUF", EffectSet::PURE),
+            e("SO_SNDTIMEO", EffectSet::PURE), e("TCP_NODELAY", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["io", "tls"],
         fns: &[

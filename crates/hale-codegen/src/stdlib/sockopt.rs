@@ -54,3 +54,33 @@ impl<'ctx, 'p> SockoptStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((v_i64.into(), CodegenTy::Int))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::codegen::SOCKOPT_NAMES;
+
+    /// The checker's stdlib surface and codegen's constant list are two
+    /// spellings of one set. Codegen lowered `std::io::sockopt::*` from
+    /// the start, but the checker's table had no such namespace, so every
+    /// program using one was refused as "unknown stdlib namespace" and
+    /// the docs said so. Each name codegen lowers is known to the
+    /// checker, and the checker knows no name codegen would refuse.
+    #[test]
+    fn the_checker_knows_every_constant_codegen_lowers() {
+        for name in SOCKOPT_NAMES {
+            assert_eq!(
+                hale_types::stdlib_surface::unknown_fn_error(&["std", "io", "sockopt", name]),
+                None,
+                "`std::io::sockopt::{name}` is lowered by codegen but refused by the checker"
+            );
+        }
+        // (a variable, not a literal path: the registry parity scraper
+        // reads every `"std", "io", …` literal in this source as a
+        // dispatch arm)
+        let bogus = String::from("NOT_A_CONSTANT");
+        assert!(
+            hale_types::stdlib_surface::unknown_fn_error(&["std", "io", "sockopt", &bogus]).is_some(),
+            "the namespace is tabled, so a name codegen does not lower is refused"
+        );
+    }
+}
