@@ -42,10 +42,16 @@ main locus App {
     fn log() -> String { return std::io::fs::read_file(self.app + "/.hale/dev.log") or ""; }
     // Whether the host's log comes to say `text` within `secs`.
     @unbounded
-    fn logged(text: String, secs: Int) -> Bool {
+    // Whether `text` reaches dev's log within `secs`. A dev that cannot
+    // start compose, or that has ended, never will: that is known at once,
+    // and said, rather than after the whole deadline.
+    fn logged(text: String, secs: Int, host: String) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
-            if std::str::contains(self.log(), text) { return true; }
+            let log = self.log();
+            if std::str::contains(log, text) { return true; }
+            if std::str::contains(log, "docker compose up failed") { return false; }
+            if len(host) > 0 && dna::run_tool("kill\n-0\n" + host).code != 0 { return std::str::contains(self.log(), text); }
             std::time::sleep(500ms);
         }
         return false;
@@ -85,7 +91,7 @@ main locus App {
         let started = in_dir(self.app, "sh\n-c\nnohup timeout 600 \"$0\" dna dev . --no-iris >.hale/dev.log 2>&1 </dev/null & echo $!\n" + toolchain());
         let host = dna::trim_nl(started.stdout);
         std::test::assert(len(host) > 0, "dev started");
-        let reading = self.logged("the organization reads its facts from the nerves", 300);
+        let reading = self.logged("the organization reads its facts from the nerves", 300, host);
         let asked = if reading { in_dir(self.app, toolchain() + "\ndna\ntask\ncreate\nsay hello to the nerves") } else { dna::RunResult { code: -1 } };
 
         // ---- the stream dropped as the owner, over the authenticated server

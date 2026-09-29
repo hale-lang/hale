@@ -345,7 +345,10 @@ the record maps. The servers `dna/compose.yaml` runs read theirs from
 `dna/nats.secrets.conf` and `dna/postgres.secrets`, written from the
 same draw, readable by you alone and ignored by git; no committed file
 holds a secret. Each seed's compose is a project of its own,
-`hale-dna-<name>`, so two seeds on one machine never share a container. Where a person supplies
+`hale-dna-<name>`, so two seeds on one machine never share a container,
+and its host ports are the seed's own: `init` takes each one free when
+it makes the seed, stepping past any port something already listens on,
+and `upgrade` keeps them. Where a person supplies
 it, the vault gets a named empty slot: the forge's token and each model
 key your catalog names. Nothing else creates one; `dev`, `nerves
 migrate`, the head and `dna/face/start.sh` only read them, by name.
