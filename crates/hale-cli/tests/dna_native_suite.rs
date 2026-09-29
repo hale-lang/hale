@@ -955,6 +955,7 @@ fn dna_fixture_set_is_complete() {
             "nerves_fake_test.hl",
             "nerves_loss_test.hl",
             "node_document_test.hl",
+            "oidc_compose_test.hl",
             "oidc_head_test.hl",
             "oidc_verify_test.hl",
             "openai_chat_test.hl",
