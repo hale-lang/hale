@@ -180,6 +180,7 @@ crates/hale-cli/tests/topology_v2.rs#15 975ed76c7dbf4a74
 crates/hale-cli/tests/topology_v2.rs#16 51d8db711fbba4c6
 crates/hale-cli/tests/topology_v2.rs#6 16638d003fd75bff
 crates/hale-cli/tests/verify.rs#0 8b15407796dba7d4
+crates/hale-cli/tests/wasm_link_is_quiet.rs#0 f2c1228edb650960
 crates/hale-cli/tests/workspace_check.rs#0 f428caff9d863411
 crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#0 878ce3ead1cfc606
 crates/hale-codegen/tests/alloc_model_rss.rs#0 24127672b40393ac
@@ -1242,6 +1243,7 @@ crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295
 crates/hale-codegen/tests/tcp_recv_bytes.rs#2 865d341109268295
 crates/hale-codegen/tests/tcp_recv_bytes.rs#3 865d341109268295
+crates/hale-codegen/tests/tcp_set_nodelay.rs#0 dc40a52c1985fc11
 crates/hale-codegen/tests/term_primitives.rs#0 865d341109268295
 crates/hale-codegen/tests/term_primitives.rs#1 865d341109268295
 crates/hale-codegen/tests/term_primitives.rs#2 865d341109268295
@@ -1289,8 +1291,12 @@ crates/hale-codegen/tests/topic_phase2_adapter_binding.rs#8 67a3486c2cf6cd6a
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#0 d954e8fa4eec6f42
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#1 d06bf1c989aab72e
 crates/hale-codegen/tests/type_record_fn_pointer_field.rs#2 f5e1bcb7cb45407f
+crates/hale-codegen/tests/udp_multicast.rs#0 865d341109268295
+crates/hale-codegen/tests/udp_multicast.rs#1 865d341109268295
+crates/hale-codegen/tests/udp_multicast.rs#2 865d341109268295
 crates/hale-codegen/tests/udp_multicast.rs#3 865d341109268295
 crates/hale-codegen/tests/udp_multicast.rs#4 824246644df0eb58
+crates/hale-codegen/tests/udp_p4_source_and_timeout.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/udp_p4_source_and_timeout.rs#1 865d341109268295
 crates/hale-codegen/tests/udp_p4_source_and_timeout.rs#2 4ec1c37613fb598f
 crates/hale-codegen/tests/udp_p4_source_and_timeout.rs#3 865d341109268295
@@ -1644,8 +1650,9 @@ crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/self_containing_locus.rs#10 7fcd9d3c87565eae
 crates/hale-types/tests/self_containing_locus.rs#11 1d9bb2dd607e1c91
 crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
-crates/hale-types/tests/stdlib_name_check.rs#3 7ba49c53bd84fd5d
-crates/hale-types/tests/stdlib_name_check.rs#4 f2c1228edb650960
+crates/hale-types/tests/stdlib_name_check.rs#2 865d341109268295
+crates/hale-types/tests/stdlib_name_check.rs#4 7ba49c53bd84fd5d
+crates/hale-types/tests/stdlib_name_check.rs#5 f2c1228edb650960
 crates/hale-types/tests/stdlib_or_on_infallible.rs#1 865d341109268295
 crates/hale-types/tests/stdlib_or_on_infallible.rs#4 f7d36b63d0259ddf
 crates/hale-types/tests/stdlib_sig_check.rs#4 90900b8058a0b246
