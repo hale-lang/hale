@@ -99,6 +99,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "routing",
     "senses",
     "spending",
+    "steps",
     "tape",
     "topics",
     "types",

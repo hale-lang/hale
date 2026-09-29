@@ -189,11 +189,6 @@ locus PendingAsks { capacity { heap rows of Intent; } }
 @form(vec)
 locus EditAsks { capacity { heap rows of EditAsk; } }
 
-// GH #995: the catalog steps the organization performs, waiting on what
-// they wait for (a verdict, the leader's word, memory's projection).
-@form(vec)
-locus StepAsks { capacity { heap rows of StepAsk; } }
-
 // A step's outcome as its performer decides it: "done" or "failed" with
 // what it wrote, or no disposition — it waits, and is performed again.
 type StepVerdict { disposition: String = ""; result: String = ""; narrative: String = ""; }
@@ -382,7 +377,6 @@ locus Dna {
         claimed: Lease = Lease { }; // the claim this node took last
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
-        waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         optimize_asked: String = "\n"; // GH #995: the optimize-walk Tasks whose walk this incarnation asked of the leader
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
@@ -414,6 +408,7 @@ locus Dna {
         concerns: ConcernRecord = ConcernRecord { }; // C3 family 6: concerns raised and escalated, pressure toward an organ
         spending: SpendRecord = SpendRecord { }; // C3 family 7: model calls and their gate, a child's money reserved and settled
         positions: PositionRecord = PositionRecord { }; // C3 family 7: holders proposed for positions
+        steps: StepRecord = StepRecord { }; // C3 family 8 (Work): the organization's own steps that wait
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -2974,17 +2969,7 @@ locus Dna {
         let moved = self.journal.refresh();
         self.release_recorded();
         if last_segment(s.request.work_id) == "hat" { self.memory_ready = self.knowledge_client.caught_up(); }
-        if !self.perform_step(s) && !self.step_waiting(s.attempt_id) { self.waiting_steps.push(s); }
-    }
-    @unbounded
-    fn step_waiting(attempt_id: String) -> Bool {
-        let mut i = 0;
-        while i < self.waiting_steps.len() {
-            let w = self.waiting_steps.get(i) or StepAsk { };
-            if w.attempt_id == attempt_id { return true; }
-            i = i + 1;
-        }
-        return false;
+        if !self.perform_step(s) { self.steps.wait(s); }
     }
     // Every waiting step performed again; those that reported leave the
     // list, which empties when none waits.
@@ -2996,15 +2981,15 @@ locus Dna {
         if on_tick { self.memory_ready = self.knowledge_client.caught_up(); }
         let mut left = 0;
         let mut i = 0;
-        while i < self.waiting_steps.len() {
-            let w = self.waiting_steps.get(i) or StepAsk { };
+        while i < self.steps.count() {
+            let w = self.steps.at(i);
             if len(w.attempt_id) > 0 && !on_tick && last_segment(w.request.work_id) == "hat" { left = left + 1; }
             else if len(w.attempt_id) > 0 {
-                if self.perform_step(w) { self.waiting_steps.set(i, StepAsk { }) or discard; } else { left = left + 1; }
+                if self.perform_step(w) { self.steps.done(i); } else { left = left + 1; }
             }
             i = i + 1;
         }
-        if left == 0 && self.waiting_steps.len() > 0 { self.waiting_steps = StepAsks { }; }
+        self.steps.walked(left);
     }
     // Perform one step; whether its outcome was reported.
     @unbounded
