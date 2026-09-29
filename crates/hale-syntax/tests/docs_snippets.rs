@@ -4,7 +4,10 @@
 //! snippets (a bare block, a method body, an elided sketch) opt
 //! out with the info-string `hale,fragment` — mdBook keys
 //! highlighting off the first token, so rendering is unchanged
-//! (the rust,ignore convention).
+//! (the rust,ignore convention). A complete program a page shows
+//! being refused (a claim violated, a contract broken) is fenced
+//! `hale,refused`: it parses here like any other, and only the
+//! build refuses it.
 //!
 //! This is the parse gate; running snippets where feasible is
 //! the corpus's job (fixtures/examples). CI runs this test in

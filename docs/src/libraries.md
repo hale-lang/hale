@@ -5,8 +5,9 @@ JSON, HTTP, crypto, the bus. Everything else — web stacks,
 databases, observability — lives in **pond**, the contributed
 library catalog: <https://github.com/hale-lang/pond>.
 
-*Many lotus grow in a pond.* Each library is a directory of `.hl`
-loci you vendor into your project.
+*Many lotus grow in a pond.* Pond is one repository you vendor
+into your project; each library is a directory of `.hl` loci in
+it, and you import only the ones you use.
 
 ## Using one
 
@@ -14,31 +15,38 @@ Declare it in `hale.toml`, fetch it, import it:
 
 ```toml
 [deps]
-pond = { git = "https://github.com/hale-lang/pond", tag = "v0.1.0" }
+pond = { git = "https://github.com/hale-lang/pond", rev = "<commit>" }
 ```
+
+Pin a commit. Pond's one published tag, `v0.8.0`, predates most of
+the catalog, and pond tracks the compiler closely, so a commit
+known to build with your `hale` is the safe pin.
 
 ```sh
 hale fetch
 ```
 
-```hale
-import "vendor/pond/router" as router;
+The import line below is an excerpt of a program with pond
+vendored; on its own it resolves nothing:
+
+```hale,fragment
+import "vendor/pond/sqlite" as sqlite;
 ```
 
 Everything the library declares is then reachable as
-`router::Name`, and a qualified literal — `router::Config { ...
-}` — is typechecked against the library's own declaration:
+`sqlite::Name`, and a qualified literal — `sqlite::Db { path:
+"app.db" }` — is typechecked against the library's own declaration:
 misspell a field and `hale check` says so, the same as for a
 type you declared yourself.
 
 So is a qualified type written as an *annotation*. `let c:
-router::Config = "dev";` is a type error naming `router::Config`,
+sqlite::Db = "dev";` is a type error naming `sqlite::Db`,
 and so is the same type in a parameter, a return, a struct field,
 a `params` field or a `capacity` slot — the library's declaration
-is the type, and `c.timeuot` is a misspelled field rather than
+is the type, and `c.pth` is a misspelled field rather than
 something the checker shrugs at. Import the same library under two
-aliases and you still have one type: what `a::Config` builds fits
-where `b::Config` is wanted.
+aliases and you still have one type: what `a::Row` builds fits
+where `b::Row` is wanted.
 
 The one thing to know is *when*: this needs the whole program, so
 run `hale check` on the seed (`hale check .`) rather than on a
@@ -48,17 +56,21 @@ a file you did not hand it. `build`, `run` and `test` always see
 the whole thing.
 
 `hale fetch` clones each dependency into `vendor/<name>/` and
-pins the resolved commit in `hale.lock`. Pond's "no transitive
-dependencies in v1" rule means every package your program pulls
-in is visible in your lockfile — if a library uses another, you
-vendor both explicitly.
+pins the resolved commit in `hale.lock`. Hale resolves no
+transitive dependencies, so every repository your program pulls in
+is a `[deps]` entry of your own and a row of your lockfile. Inside
+pond, when one library uses another (`jobs` keeps its queue in
+`sqlite`), import that one in your program too: pond asks for it,
+and a library's `hale.toml` link settings are picked up only from
+your program's own imports.
 
 ## The alias is not a value
 
 The name after `as` is a namespace, not a binding, so it can be
-the same as a fn you declare:
+the same as a fn you declare. With a library at `../core` that
+declares `greet`, this is a file of the program:
 
-```hale
+```hale,fragment
 import "../core" as core;
 
 fn core(args: String) -> String { return "[" + args + "]"; }
@@ -126,9 +138,10 @@ belongs to the library, not to your entry: it does not count
 against the rule that a program has at most one, its `bindings { }`
 stay inert (nothing is bound, and no socket path is touched), and
 its `run()` is never started by your program. So an app can import a
-seed for its functions and types and still declare its own:
+seed for its functions and types and still declare its own. With a
+library at `../lib` that declares `greeting`, a program can read:
 
-```hale
+```hale,fragment
 import "../lib" as lib;
 
 main locus App {
@@ -216,24 +229,30 @@ hand it. `hale check .` and every build path see the whole seed.
 | `db` | Driver-agnostic database surface: the `DbDriver` interface + `Args` bind-parameter list for parameterized (`$1, $2, …`) queries. Pick a backend (`pq`, `sqlite`) at the `DbDriver` slot. |
 | `pq` | PostgreSQL driver — `PgConn` plus `PgPool`, a fixed-size fd connection pool that itself satisfies `db::DbDriver`. |
 | `sqlite` | SQLite connection + fallible query surface. |
-| `migrations` | Schema migration runner (up/down); builds to a `migrate` binary. |
-| `jobs` | SQLite-backed job queue (`Queue`) + a pinned-worker pool. |
+| `migrations` | Schema migration runner over `db::DbDriver`: register the migrations, then `Migrator` runs up / down / steps / goto. |
+| `jobs` | SQLite-backed job queue (`Queue`) + a pinned-worker pool (`Pool`, `Worker`). |
 
 **Web**
 
 | Library | Provides |
 |---|---|
-| `http` | HTTP client (`http/client`) over `std::io` — request/response building atop the socket primitives, for libraries that need an HTTP client without the full `std::http` server surface. |
-| `router` | HTTP router over `std::http` — method + path-param routes, middleware chain. |
+| `http` | HTTP client (`http/client`) with a pool and retries. Superseded by the client in `std::http`; kept for older pins. |
+| `router` | HTTP router — method + path-param routes, middleware chain. Superseded by `std::http::Router`; kept for older pins. |
 | `sessions` | Stateless, HMAC-signed cookie sessions (`session=<base64(payload)>.<base64(hmac)>`). |
-| `websocket` | Synchronous, owner-driven RFC 6455 WebSocket client (suggested alias `ws`); a passive wrapper your own `run()` loop drives. |
+| `websocket` | RFC 6455 WebSocket client and server-side upgrade, with ping/pong liveness deadlines (suggested alias `ws`). |
+
+**Realtime**
+
+| Library | Provides |
+|---|---|
+| `realtime/nats` | NATS core + JetStream client, and a `std::bus` adapter that carries a program's topics over NATS with at-least-once delivery. |
 
 **Observability & supervision**
 
 | Library | Provides |
 |---|---|
-| `logfmt` | Alternative `std::log` sinks wearing the `std::text::Sink` shape — file with rotation, structured output. |
-| `metrics` | Counter / gauge / histogram primitives + a Prometheus text-format renderer and `/metrics` endpoint. |
+| `logfmt` | Alternative `std::log` sinks wearing the `std::text::Sink` shape. Its file and console sinks moved into `std::log`; `OtlpSink` is pond-only. |
+| `metrics` | Counter / gauge / histogram primitives + a Prometheus text-format renderer and `/metrics` endpoint. Superseded by `std::metrics`; kept for older pins. |
 | `tracing` | Span tree mirroring the locus tower — one `Tracer` per app; spans nest with locus instantiation. |
 | `supervisor` | Erlang/OTP supervision-tree strategies grafted onto Hale's `on_failure` + `restart` / `restart_in_place` / `bubble`. |
 
@@ -241,9 +260,8 @@ hand it. `hale check .` and every build path see the whole seed.
 
 | Library | Provides |
 |---|---|
-| `crypto` | SHA-256, HMAC-SHA256, hex encode/decode, constant-time compare, CSPRNG. |
-| `subprocess` | Spawn + manage child processes (suggested alias `sub`) — wraps the `std::process` spawn / wait / pipe primitives. |
-| `tower` | Run several independent locus trees ("towers") under one process, each with its own root and lifecycle. |
+| `crypto` | SHA-256/512, HMAC-SHA256/512, hex encode/decode, constant-time compare, CSPRNG. |
+| `subprocess` | Spawn + manage child processes (suggested alias `sub`) — wraps `std::process::run` / `spawn` with pipes and a timeout. |
 
 **Terminal & UI**
 
@@ -263,8 +281,8 @@ hand it. `hale check .` and every build path see the whole seed.
 > The tree-sitter grammar that drives editor highlighting lives at
 > [tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale)
 > (it moved out of pond — it's developer tooling, not a library you
-> `import`). The `_util` directory holds internal helper libs
-> consumed by other pond libs, not imported directly by apps.
+> `import`). The `_util` directory holds small shared helper libs,
+> mostly consumed by other pond libs.
 
 Pond is where the ecosystem grows: if a protocol, parser, or
 shape is too useful to rewrite per project but doesn't belong in

@@ -1,11 +1,12 @@
 # The design
 
-> Why one shape held across all four tiers.
+> Why one shape held across all six parts.
 
-This guide descended four levels — a small scripting language, a
-high-level application language, a concurrent-services language, a
-systems language. At each level you reached for the same
-primitive, the **locus**, and saw more of it. That wasn't a
+This guide descended through six parts — a small everyday
+language, a concurrent-services language, a language of stated
+guarantees, a systems language, and then out to governed
+applications and what they share. At each level you reached for
+the same primitive, the **locus**, and saw more of it. That wasn't a
 teaching trick layered on top of the language. It's the language's
 actual structure, and it's worth seeing whole now that you've felt
 it.
@@ -14,23 +15,28 @@ it.
 
 Hale is built bottom-up from one idea: a locus is a **system** —
 a thing that decomposes into sub-systems and serves a role in
-some super-system. Everything structural is a locus. A `type` is
-a locus that hasn't grown flow yet; an app is a locus; a service,
-a connection, a collection, a parser — loci, all the way down.
+some super-system. Everything with flow is a locus; a `type` is
+the pure shape a locus carries and passes around. An app is a
+locus; a service, a connection, a collection, a parser — loci,
+all the way down.
 
-The tiers of this guide are the *same* tower observed at
+The parts of this guide are the *same* tower observed at
 different depths:
 
-- *The basics* met a locus as the shell around `main`.
-- *Everyday programs* saw it as an object with state and methods.
-- *Concurrent services* saw it as a lifecycle, a bus participant,
+- *The language* met a locus as an object with state and methods.
+- *The locus model* saw it as a lifecycle, a bus participant,
   a supervised parent.
+- *Saying what must hold* saw it as a node in a graph the build
+  can reason about.
 - *Systems control* saw it as a memory region with a layout and
   an execution strategy.
+- *The organism* saw a whole governed application built from
+  loci on a typed bus, and *the habitat* sketched what several
+  of them share.
 
 None of those views contradict; each is a higher-resolution
 perspective on the thing below. That's why the function you wrote
-in chapter one still works in the last chapter — you were
+in the first part still works in the last one — you were
 descending into one structure, not switching languages.
 
 ## The commitments that make it hold
@@ -39,7 +45,7 @@ A locus carries a small set of structural commitments, and every
 guarantee in the language falls out of them:
 
 - **Bounded attachment.** A locus bounds how many things attach
-  to it. (The capacity model you met in the systems tier.)
+  to it. (The capacity model you met in systems control.)
 - **Vertical-only flow.** A locus talks up to its parent and down
   to its children — never sideways. Siblings coordinate through a
   shared parent or the bus.
@@ -64,9 +70,10 @@ the guarantees.
   mapping. Written for agents authoring `.hl`, but it's the
   tightest statement of the design for a human too.
 - **[`spec/design-rationale.md`](https://github.com/hale-lang/hale/blob/main/spec/design-rationale.md)**
-  — every numbered design decision (`F.1` … `F.36`), the
-  alternatives considered, and why each commitment is shaped the
-  way it is.
+  and **[`spec/decisions.md`](https://github.com/hale-lang/hale/blob/main/spec/decisions.md)**
+  — the current rationale, and every numbered design decision
+  (`F.1` … `F.39`) with the alternatives considered and why each
+  commitment is shaped the way it is.
 
 You now have the whole arc: a small language at the top, a
 systems substrate at the bottom, one shape connecting them. Build
