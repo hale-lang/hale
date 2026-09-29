@@ -8,44 +8,68 @@ behavior.
 
 ## Unreleased
 
-The organism gets its subsystems. DNA, the organism you run with `hale dna`, now keeps its memory in Postgres, one per record, and moves every fact between its parts over its nerves. It takes an application's events into its heart and its readings into its senses, signs people and services in at its skin, and hands work to legs through its head. Schedules point at workflow definitions, and the repository's graph is the one org chart. Underneath it, a program's API is a first-class binding with a principal, roles and gates, Hale builds and runs on macOS and cross-compiles for Linux, and a round of checker, codegen and supervision fixes turns silent misbehaviour into located errors. It is a prerelease: the shapes still move under fixtures rather than under customers. The item-level notes follow this page, one entry per change.
+## v0.22.0 — the organism, part by part (2026-09-30)
+
+The organism gets its subsystems. DNA, the organism you run with `hale dna`, now keeps its memory in Postgres, one per record, and moves every fact between its parts over its nerves. It takes an application's events into its heart and its readings into its senses, signs people and services in at its skin, keeps every secret it needs in its vault, provisioned by its own bootstrap, and hands work to legs through its head, under one budget gate. Schedules point at workflow definitions, and the repository's graph is the one org chart. Underneath it, a program's API is a first-class binding with a principal, roles, gates and an HTTP transport; a revealed secret must be consumed where it is revealed; Hale builds and runs on macOS and cross-compiles for Linux; and a round of checker, codegen, runtime and supervision fixes turns silent misbehaviour into located errors or a loud stop. The book is reorganized in six parts, with the organism as the fifth, and every chapter is checked against the tree. It is a prerelease: the shapes still move under fixtures rather than under customers.
+
+The item-level notes for this release, one entry per change with every issue reference, follow this page; the CHANGELOG as it stood at the tag is `git show v0.22.0:CHANGELOG.md`.
+
+**Performance.** The six benchmarks v0.21.0 shipped 17–50× slow (`field_alt_empty`, `field_alt_short`, `field_bytes_alt`, `field_whole_struct`, `vec_queue_pop`, `vec_set_bytes`) are back at baseline, fixed by PRs #1057 (self-field alternation) and #1060 (`@form(vec)` pop and set free what they replace). Every benchmark is at or under its 09-28 number: the allocator's out-of-memory abort (PR #1227) moved to the bump allocator's cold path, so an allocation is a tail call again (PR #1264).
+
+### Breaking changes
+
+- **A revealed secret is consumed in the statement that reveals it (PR #1216):** only into a wire write's payload, a whole-value comparison or a `@secret` parameter; `Credential.write_private` writes one to a private 0600 file.
+- **A handle a method keeps is a borrow its receiver holds (GH #1048):** a `Router` handler built in a function that returns or fills the router is refused.
+- **A bare fallible stdlib call is an error (GH #738, PR #1265)** in `check`, `verify` and `build`, the Int-status form of a write included, and `--strict-fallible` is gone. Migration: give each call its disposition (`or raise`, `or <fallback>`, `or handler(err)`, or `or discard` where the failure is meant to be ignored); code that read a write's status moves the call into a `fallible` helper that `or raise`s.
+- **A second `on_failure` for one child type is an error (PR #1229),** and a declaration that reuses a stdlib internal name is refused (PR #1233).
+- **Secrets come from the vault alone (GH #989):** a model key is the vault's `model-<key>` slot and the forge token its `forge-token`, with no environment or `gh` fallback (PR #1237); `HALE_DNA_OIDC_SECRET` is gone; the nerves' shared `app` user gives way to one account per attached application (PR #1241).
+- **DNA:** the Board's field is `board`, not `membrane` (PR #1204); the Unix-socket membrane is gone (PR #1201); a program's own `via` mark is gone (PR #1209).
+- **A `dna::Dna { … }` written by hand moves its family params into family loci** (`evidence:`, `knowledge_record:`, `org_source:`, `concerns:`), and counts read off a `Dna` move with them (C3, PR #1255).
+- **`nerves.lost` is gone:** an adapter that cannot deliver records `violation.recorded {kind: adapter_undeliverable}` (PR #1246).
+- **`hale test`, `run`, `replay` and `bench` build in a private per-run scratch directory** and remove it; `hale build -o` keeps a binary (PR #1222).
 
 ### The organism's subsystems
 
-- **Memory and nerves (GH #985, #986).** Memory is Postgres per record, with a role per client and the ledger's gate in its insert function. Every fact between the organism's parts travels over NATS, and the Unix-socket transport is gone (PR #1201). The head pushes to the face as rows land.
-- **Heart and senses (GH #987, #988).** An application's events become `reading.recorded` rows before anything acts on them (PR #1191). Every long-running part serves its readings to a Prometheus the seed compose brings up, and a reflex reads them (PR #1197).
-- **Skin (GH #989).** Every HTTP caller of a head is a verified OpenID Connect subject (ES256, PR #1188). `std::secret::Credential` reads from a vault (PR #1189), and a service with no person behind it reads through the head with a `client_credentials` token of its own (PR #1200).
-- **Legs (GH #946).** `hale dna work` is a leg made of API calls: the hat as structure, claim and outcome, a worker loop, the model leg and a walkthrough. Every performer declares an effect class, a leg works only as a position its person holds, and its candidate becomes a Mutation and its Review (PRs #1117, #1124, #1127, #1130, #1134, #1136, #1149, #1166, #1179, #1180, #1184).
-- **Schedules (GH #1143).** A schedule is a definition, its args and a wall-clock cadence, convened by a position. An occurrence is one execution, keyed by its time, and the optimize pass is a seeded operating practice.
-- **The head (GH #1104, #1110, #1144, #1029).** The head is the record's api binding, with the record as its membership source. A judgment goes through the head, and the face's native command lanes run on the real host.
+- **Memory and nerves (GH #985, #986).** Memory is Postgres per record, with a role per client and the ledger's gate in its insert function. Every fact between the organism's parts travels over NATS, and the head pushes to the face as rows land.
+- **Heart and senses (GH #987, #988).** An application's events become `reading.recorded` rows before anything acts on them. Every long-running part serves its readings to a Prometheus the seed compose brings up, and a reflex reads them.
+- **Skin and secrets (GH #989).** Every HTTP caller of a head is a verified OpenID Connect subject, and a service reads with a `client_credentials` token of its own. `std::secret::Credential` reads from a vault; `hale dna init` and `upgrade` provision every secret the organism needs from one list, and only the adapter that puts a credential on the wire ever holds it. Memory's DSNs name a vault entry instead of carrying a password, and each attached application holds a broker account of its own, revoked when it is removed. A loss its owner absorbs is a `violation.recorded` row: an undeliverable adapter, a lease that expired unsettled, a heart whose pulse stopped; the board counts them (PR #1246).
+- **Legs (GH #946, #1131).** `hale dna work` is a leg made of API calls: the hat, claim and outcome, a worker loop, the model leg and a walkthrough. Every performer declares an effect class, a leg works only as a position its person holds, its candidate becomes a Mutation and its Review, and it asks the budget's one gate before any model call. Tokens and cost are summed per task and per attempt.
+- **Schedules (GH #1143).** A schedule is a definition, its args and a wall-clock cadence, convened by a position; an occurrence is one execution, keyed by its time.
+- **The head (GH #1104, #1110, #1144, #1029).** The head is the record's api binding, with the record as its membership source, and serves its commands over HTTP under an OIDC or service token. A judgment goes through the head, and a leg asks again a command the moving record left undecided.
+- **Seeds side by side.** Each seed's compose is a project of its own, and its host ports are picked free when the seed is made (PR #1232).
 
 ### The graph and the organization
 
 - **The repository as one graph (GH #1085, #1090, #1086).** The graph lives in the record and in memory, and `hale dna init` reads a repository into it. `hale dna show org` and `show processes` read it back.
-- **Holes, routing and one org chart (GH #1091, #1087, #1089, #1123).** Holes are proposals at record birth, and a Review takes its signers from the graph's route. The owners map is retired: a firm is an `organization` node that holds positions.
+- **Holes, routing and one org chart (GH #1091, #1087, #1089, #1123).** Holes are proposals at record birth, and a Review takes its signers from the graph's route. A firm is an `organization` node that holds positions.
 - **The workflow catalog (GH #995, #994).** Every step names the one store it writes. The operating practices are seeded beside the design practices, and `hale dna ask` is now `hale dna task create`.
 
 ### The api binding (GH #1104)
 
-- **Binding and clients (GH #1106, #1107).** `bindings { api: unix(…) }`, or `hale run --api`, serves a program's topics and exposes over one socket. The binding describes itself, and `hale call`, `watch`, `admin` and `mcp --app` read only that description.
-- **Principal and gates (GH #1108, #1109).** `std::api::Principal` and a handler's `ctx: std::api::Context`; `role` declarations and `@gated(role: …)` answered by a membership source.
+- **Binding and clients (GH #1106, #1107).** `bindings { api: unix(…) }`, or `hale run --api`, serves a program's topics and exposes; the binding describes itself, and `hale call`, `watch`, `admin` and `mcp --app` read only that description.
+- **Principal and gates (GH #1108, #1109).** `std::api::Principal` and a handler's `ctx`; `role` declarations and `@gated(role: …)` answered by a membership source.
+- **Serve and HTTP (PR #1209).** `serve: [...]` names the imported loci a binding serves, and `http(host, port, principals: …)` gives it a bearer-token HTTP transport with the socket's surface and gates.
 
 ### Platforms
 
 - **macOS (GH #970).** Hale and DNA run on macOS: a kqueue backend for `async_io`, the host's gaps, a body fence that reaches orphaned tools, and CI.
-- **Linux targets (GH #970, #969).** Linux binaries cross-compile from a Mac, `musl` targets link statically, and `--target` refuses another host's triple instead of building for the host.
+- **Linux targets (GH #970, #969).** Linux binaries cross-compile from a Mac, `musl` targets link statically, and `--target` refuses another host's triple.
 
 ### Language, checker and runtime
 
 - **Scoping and declarations.** A `let` is its block's, in codegen and in `hale check <file>` alike (GH #1132, #1139). A name declared twice in one type is an error (GH #1141). `hale check --flows` names the release clause that makes a flow (GH #736).
-- **Types and ownership.** Interface methods declare `fallible(E)` (GH #732), an imported fn is a value (GH #1082), a borrow must outlive its holder (GH #730, #967), and `let` copies a struct (GH #713). A bare fallible stdlib call warns, and is an error under `--strict-fallible` (GH #738).
-- **Supervision and shutdown.** `on_failure` picks its handler by the failing child's type (PR #1199). A child built anywhere is supervised by its holder (GH #1074, #1035), and a failed child can be restarted and stays readable (GH #1066, #1069). SIGINT and SIGTERM drain the program (GH #1039, #1077).
+- **Types and ownership.** Interface methods declare `fallible(E)` (GH #732), an imported fn is a value (GH #1082), a borrow must outlive its holder (GH #730, #967), a container a handler hands a resident is refused with its fix (GH #712), `let` copies a struct (GH #713), and ownership follows the binding, not the name (GH #1140).
+- **Supervision and shutdown.** `on_failure` picks its handler by the failing child's type. A child built anywhere is supervised by its holder (GH #1074, #1035), and a failed child can be restarted and stays readable (GH #1066, #1069). SIGINT and SIGTERM drain the program (GH #1039, #1077), and a drain that outlasts its grace names what it waited on.
+- **Runtime.** Two crashes are fixed: a main locus built outside `main` tearing down under its pool, and a free fn's copies piling into its caller's arena (GH #1148). A refused allocation aborts where it happens, naming the arena (PR #1227). A locus born in a param child's method bubbles to the ancestor that accepts it instead of crashing (PR #1263), and the observer hears a locus's dissolve past the 4,096th birth (PR #1259). `std::http::Server` no longer keeps what a request allocated (GH #578).
 - **Bus and I/O.** A bus payload larger than the wire buffer crosses whole (GH #1155). Adapters keep their keys, codecs and threads and stop leaking (GH #1032, #1034, #1038, #1040, #1041, #1058). A refused TCP connect fails at once (GH #1030).
 
 ### Tools, iris and CI
 
-- **Iris and the face (GH #998, #690, #965).** They are two products: iris inspects running programs, and the face is DNA's people surface.
-- **Tests and builds.** `hale test` runs files in parallel (GH #1009), the stale-binary warning covers the embedded DNA (GH #785), and concurrent builds of one output no longer race (PR #1194).
+- **Iris and the face (GH #998, #690, #965, #578).** They are two products: iris inspects running programs, and the face is DNA's people surface. Iris's memory is bounded, and `hale iris` names a signal that killed its observer.
+- **Tests and builds.** `hale build -o` writes the binary where it is told, and the DNA host builds seeds out of the source tree (PR #1222). `hale test` runs files in parallel (GH #1009), each on a vault of its own; the stale-binary warning covers the embedded DNA (GH #785), and concurrent builds of one output no longer race (PR #1194).
+- **`hale dna <verb> --help`** prints the usage and starts nothing (PR #1261).
+- **The book (PR #1258).** Six parts: the language, the locus model, saying what must hold, systems control, the organism and the habitat. It adds a constitutions chapter, rewrites the DNA section as the organism part by part, and compiles every complete example.
+- **Internal structure.** The DNA assembly is twelve family loci (C3, PRs #1219–#1255), and the CLI's `main.rs` is dispatch over verb modules (C5, PRs #1240–#1256); the record's rows and the commands' behaviour are unchanged.
 - **Changelog and CI.** CHANGELOG entries are fragments under `unreleased/` (PR #1111), and CI runs on free runners with macOS only when its paths change (PRs #1146, #1164, #1167, #1168, #1185, #1186).
 
 ### Tokens per task (GH #946, slice 1)
@@ -993,6 +1017,577 @@ foreign one was silently dropped; `hale --list-targets` listed it as
 
 - `dna/core/work_system.hl`, `dna/core/assembly.hl`, `dna/core/topics.hl`, `dna/core/routing.hl`: a human leaf of a workflow execution is a case for a person. The `human` performer kind's `HumanRelay` publishes the attempt (`CaseRequested`, keyed by the runtime's scope) and answers pending; the assembly admits the case as its own handed Task, `<task>.s<i>.<key>` — stable across redeliveries, naming its exact parent Work and attempt — with a versioned, self-sufficient `case.admitted` row (the `case` family is the ledger's) exact at its reading, and only then the rows the tooling of the day reads, `task.born` then `task.handed` (or `task.transfer_requested`), so `hale dna task done <case>` addresses the case as a job today. Assignee, obligation, acceptance practice and required evidence bind as a job's: the leader's word where one plans, unassigned without. The hand-off settles no Work and marks no root; two human Works in one step are two independently completable cases; an attempt asked again admits no second; a restart between the admission and either compatibility row completes them in order (`restore_cases`) and never plans, resumes or pends a case as edit work; an admission the record refuses holds the attempt for `redrive`. `workflow_human_cases_test.hl` runs two human Works beside a delayed sibling under a planning leader (two cases, ordered rows, bound terms, parent Works pending, one completed on its own), an unplanned organism (unassigned), a redelivery, and restarts with the record refusing the first born row and the first handed row. Review: a case is found by its stable identity — the Work's — before the leader is asked, so a later attempt of the Work reuses it and plans nothing, and a case awaiting the leader's word is not asked for twice; the terms and the admission body are decided from the reading each exact append is at, a stale reading repeating the decision (a retirement landing between the reading and the append sends the case to the successor); the compatibility rows say what the admission recorded — its origin (`owner`) and disposition (`to`) — and only the recorded owner writes them: a transfer to another owner stays theirs to hand once a member accepts it (`admit_transfers`), and another owner's restart neither hands it nor completes the offer; both compatibility append results are checked, a refused row holds the case (`held_rows`), completed on `RecordResumed` or `redrive` without a restart, and the hand-off is announced only once durable. The fixture adds the later attempt's `plans` check, the held handed row completed by `RecordResumed` and by `redrive`, the retirement landing inside the first admission's exact append (`Retiring`), the two-owner transfer (refused offer, the other owner's restart, the origin's restart, acceptance, the receiving owner's hand-off), and the same case relayed twice while its plan is outstanding.
 
+### CHANGELOG entries are fragments under `unreleased/` (PR #1111)
+
+- A change's CHANGELOG entry is `unreleased/<pr-number>.md`, one file per PR, worded as it would read under `## Unreleased`; `scripts/changelog-fold.sh vX.Y.Z "headline"` folds the fragments under the next version at release. Parallel PRs no longer rebase over each other's changelog line.
+
+### DNA: the repository as one graph, in the record and in memory (GH #1085)
+
+- **Added:** the record holds the repository as one recursive hypergraph
+  (`graph.node`, `graph.edge`, `graph.retired`): purpose, axioms,
+  processes, seeds, contracts, nouns, deployments, gates, documents,
+  witnesses, positions and work, joined by `unfold`, `meets`, `names`,
+  `refers`, `constrains`, `runs`, `gates`, `witnesses`, `holds` and
+  `reviews`. The spine projects it into memory with everything else, and
+  the org chart and the process model are queries over it
+  (`graph_perspective("org")`, `("processes")`). Practices and `binds`
+  are the knowledge ideas and bindings they already were.
+- **Changed:** memory's schema version is 4 and its projection protocol 4:
+  run `hale dna memory migrate` with the owner's DSN; the graph is emptied
+  once and rebuilt from the record.
+
+### The api binding: a program's API over a Unix socket with one entry (GH #1106)
+
+- **`bindings { api: unix("/run/app.sock", bound: 64, on_full: refuse); }`** on the main locus, or `hale run --api <path>` with no source change, binds every subscribed topic as a command, every published topic as a stream and every `expose` of the main locus or a default child as a read, over one JSON object per line. A subscribed handler may declare a return type, and through the binding its value is the reply; a payload that does not decode is refused before dispatch; a read answers a snapshot with an `as_of` digest; over `bound` the caller is refused, never the program. Types with a field of no JSON form and topics a `Drain<T>` handler subscribes are left out with a warning at the entry. `LOTUS_API=<path>` overrides the socket path of an entry the program carries.
+- **`std::io::unix`:** `listen_socket(path)`, `connect(path)` and `connect_wait(path, wait)`, the AF_UNIX siblings of the tcp primitives; the fd wraps in `std::io::tcp::Stream`.
+- **Fixed:** a subscribed handler with a return type failed the LLVM verifier (its quarantine skip returned nothing from a value-returning function); a nested struct's `T::to_json` emitted the field's key in place of the nested encoder's name, and a generator parse failure now says so on stderr instead of silently leaving `T::to_json` unrewritten.
+
+### DNA: `hale dna init` reads a repository into the graph (GH #1090)
+
+- **Added:** `hale dna init` on a repository with no application at its
+  root (a seed per process, specs, a compose file) makes the organization
+  there and seeds the record with what the repository holds, as the
+  graph: purpose, processes, seeds, contracts and their nouns, documents,
+  CI jobs as gates, `FRICTION.md` entries as witnesses. Two markdown
+  conventions say what structure cannot: a list item opening with a code
+  span (`axiom`, `derived`, `practice`, `law`), and a table with `Served
+  by | Consumed by | Over` or `Deployment | Runs` columns. Every graph
+  row is checked before any is appended. An application directory is
+  attached as before.
+
+### The api binding describes itself, and `hale describe` / `call` / `watch` / `admin` / `mcp --app` read only that (GH #1107)
+
+- **A bound program answers `{"describe": true}`** with its commands, reads and streams and a JSON Schema per type, in the same bytes `hale check --dump-api` emits; the document is form only (no socket path) and carries two notes, that a gate is a boundary check and a read is a snapshot. `spec/model.md` records it as the model's first wire form. `hale describe <socket | file> [--openapi | --mcp]` prints it or its OpenAPI 3.1 / MCP forms.
+- **The clients:** `hale call <socket> <name> [json]` (a command or a read; a refusal on stderr with exit 1), `hale watch <socket> <stream>` (one JSON line per frame), `hale admin <socket>` (a local page over the description), and `hale mcp --app <socket>` (every command a tool, every read a resource).
+
+### The hat as a read; a leg's claim and outcome (GH #946, slices 2 and 3)
+
+- **Added:** `GET …/dna/context?id=<work>` answers one Work's context as
+  structure, never a prompt: the position (the graph's
+  `position:<name>` id) and its charter, the practices with their ids,
+  the bindings, the grant, the contract, the class, the history as
+  facts, the record head and memory's watermark, and a digest over all
+  of it (`dna/operations/context.hl`, contract `ContextResponse`).
+- **Added:** two commands on `POST /commands`, the spine's whole API to
+  a leg: `dna.attempt.claim` takes memory's claim on an admitted,
+  outstanding attempt for the leg with a TTL, writes `attempt.claimed`
+  and returns the task and the lease as a value; `dna.attempt.outcome`
+  refuses a stale or duplicate outcome with the reason, files the
+  receipts and writes `attempt.outcome_requested`, which a node relays
+  (`WorkSubmit`) and the owner settles as it settles every reply, or
+  refuses with `attempt.outcome_refused`. A `LegRelay` performer answers
+  pending for the kinds a program hands to legs. The generated
+  organization binds `dna::WorkSubmit`; `hale dna upgrade` says so to
+  an older one.
+
+### DNA: ingest refuses with a reason, never half a record (GH #1090)
+
+- **Fixed:** an ingest `hale dna init` refused left the purpose's Review in the record, and a second `init` then seeded nothing more; the Review and the graph are now seeded in one checked call, so a refusal leaves no record and `init` can be run again. Input the conventions cannot take (an `axiom` with no bold name, a name with a `|`, a table row that links no contract, a name in code the repository does not have) is refused with the reason instead of dropped. A four-space YAML file is read as written, a path above ASCII as git holds it, and `refers` come only from local `$ref`s and `REFERENCES` to nouns the contract names. An empty tree is an empty graph.
+
+### The api clients, hardened after review (PR #1119)
+
+- **`hale admin` serves 127.0.0.1 only:** a foreign Host or Origin is refused, a call needs `Content-Type: application/json` and a body that parses, and every request presents the launch token the page carries; a refused attach answers the receipt and closes.
+- **The description is the binding's bytes:** `hale describe` and `hale check --dump-api` print the compact document in its own key order; an imported topic is named as the author spells it (`lib::Orders`) and its MCP tool name maps `::` to `__`.
+- **OpenAPI** inlines scalar replies and reads and declares the `role` security scheme; **MCP** answers an unknown method with `-32601` and an unknown resource with `-32002`; `hale call --receipt` prints the whole receipt, and a refusal prints it on stderr.
+
+### DNA: `hale dna show org` and `hale dna show processes` (GH #1086)
+
+- **Added:** the org chart and the process model, the two perspectives over the repository's graph, printed from memory under the head's role: `hale dna show org | processes [--json] [project]`. Text shows positions by what they sit under, with what each reviews and who holds it, and every contract as consumers to servers over its transport; `--json` is the query's answer with how far memory has projected the record. Nothing is edited through them; when memory is behind the record the text says so on stderr.
+
+### The principal at the api binding, and the handler that asks (GH #1108)
+
+- **`std::api::Principal`** (`mode`, `name`, `uid`, `gid`, `pid`), promoted from the `principal_mode` / `principal_name` pair DNA carried by hand: a peer on the api socket is `unix` with its kernel credentials (`std::io::unix::peer_uid` / `peer_gid` / `peer_pid`), a publish inside the program is the local principal, `bearer` waits for HTTP. Every receipt the binding writes carries `caller`.
+- **A handler may take `ctx: std::api::Context`** as a second parameter, with the `subscribe` line unchanged: the caller, the request id, `via` (`api` or `local`) and, later, the authorizing role. Through the binding it is the caller the socket established; in-process it is `std::api::local_context()`. Any other parameter shape is refused at the subscribe site naming the rule.
+
+### DNA: `hale dna show` reads as the head and says what it cannot show (GH #1086)
+
+- **Fixed:** `hale dna show` read memory as the spine when a process held the spine's DSN; it reads as the head alone. It refuses a flag it does not take, a second project and a project that is not a directory. A record with no rows is the empty perspective (not "schema dna_unscoped is not migrated"), an org chart with no positions prints nothing, and memory ahead of the record or a projection stamp that vouches for nothing is said on stderr; `--json` carries `stamp_valid`, and `projected_rows` never overstates the graph.
+
+### A leg's claim and outcome, hardened (GH #946, before the verbs)
+
+- **Fixed:** `attempt.outcome` names the request it answers, so a
+  settled `attempt.outcome_requested` stops being relayed; a refused
+  outcome reads back `refused` with the refusing row instead of 503;
+  one outcome per lease (`duplicate` at the head; a submission after
+  settlement is refused as a row); the claim is no longer fenced on
+  the record head the leg read (memory's insert is the race, the
+  loser gets a receipt, a claim memory took that ends in no row is
+  given back); `result_ref` travels into the outcome; the claim row
+  names the principal that took it and another principal's outcome
+  under the lease is refused; usage keys the editor's calls
+  `position:editor`, as the hat does.
+- **Changed:** the outcome carries the hat the leg wore (`hat_digest`,
+  `hat_head`, `hat_watermark`, `prompt_digest`, `renderer`), the hat's
+  practices are structure (`id`, `name`, `text`, `kind`, `author`)
+  from one memory snapshot, and every hat built is kept in memory by
+  its digest (`hats`; memory schema 5 — `hale dna memory migrate`).
+  The assembly builds a hat for the edits it asks and carries its
+  digest; the practices reach the editor as its brief and the ask
+  stays the ask. An owner that restarts with a leg's attempt in
+  flight leaves it to its claim and asks again when the lease
+  expires. An empty `data_classes` is no class. After `hale dna
+  ledger adopt` the commands and the hat read and write the ledger
+  under the head's role.
+
+### DNA: holes as proposals at record birth; the graph is the org chart (GH #1091)
+
+- **Added:** `hale dna init` on a repository proposes what a delivery needs and the repository cannot imply, each with a Board Review: a board, a dev and a reviewer for every process (the reviewer signing the contracts it serves), an operator and the operational roles (support, accounts, billing, on-call) under every deployment, one work item per process done when its gate passes, and the practices its documents mark. Ratified, they are the org chart. `hale dna hold <position> <holder>` proposes who holds a position; one person as a process's dev and reviewer is a warning under `dna.trust = local` and refused elsewhere. Deriving `dna/org` from the graph is #1123.
+
+### Roles, `@gated` and membership sources at the api binding (GH #1109)
+
+- **`role NAME [includes A, B];`** is declared authorization vocabulary, like `group`: a name nothing declares is an error, `includes` is grant-only and union-only (a cycle or a second declaration is an error), and `owner` is the one built-in role. Role names are never mangled.
+- **`@gated(role: R)`** on a subscribed handler, an `expose` member or a `publish` member: a call, a read or a watch arriving through the api binding is refused unless the caller holds R — commands and reads per message, a stream once at attach. Every subscriber (and publisher) of one topic states the same gate; a gated handler's topic cannot also be bound to a `bindings { }` transport; anywhere else the annotation is an error. A boundary check, named so: nothing about internal call paths is inferred.
+- **Membership sources.** `std::api::RoleSource` (`fn holds(p: Principal, r: String) -> Bool`, the direct question) handed to the entry as `roles: <expr>` — a locus literal or a main param (`self.roles`), evaluated on the main locus so the source can carry the program's state — or the stdlib's `std::api::StaticRoles` whose table `hale build --env <name>` / `hale run --env <name>` bake from `[environments.<name>.roles]` in `hale.toml` (the flag also adopts the environment's constitution, as `check --env` does) and `LOTUS_API_ROLES` overrides at run time; members `uid:`, `gid:` (the primary group or a supplementary one the kernel reports for the connection, `SO_PEERGROUPS`), `user:` / `group:` (resolved once at birth per the account database; unknown holds nobody), `*`. A table naming an undeclared role or a member outside those spellings is a manifest error and refuses to start at birth. Without a table every gate refuses, and the build says so. New `std::io::unix::user_id` / `group_id` / `peer_groups_count` / `peer_group_at`; `Principal.groups`.
+- **Receipts and refusals.** The first role that authorizes an operation is on the receipt as `role` and in `ctx.role`. An item outside a caller's slice answers `unknown`, as a name that does not exist would (existence is not disclosed); `unauthorized` names `owner` on a refused full description; a peer the kernel cannot vouch for is `unauthenticated` for every request; `on_unauthorized: drop` answers nothing. A stream follows its topic's subscribers' gate unless its `publish` states its own.
+- **The description is the caller's slice** — the items it may use and only the schemas those reference — so `hale mcp --app` lists exactly a principal's tools and `hale admin` shows what it may reach (greying out the rest for an owner). `{"describe": "full"}` / `hale describe --full` is a read gated on `owner` and is the `hale check --dump-api` bytes.
+- **`hale check --matrix`** proves per (entrypoint, environment) that every declared role (and `owner`) is mapped or explicitly `[]`, and that nothing undeclared is mapped; a member spelling outside the five is a manifest error.
+
+### `hale dna work`: a leg as verbs, the person leg end to end (GH #946)
+
+- **Added:** `hale dna work next|brief|renew|submit|settle|release|friction|run`,
+  a leg as API clients against a head (`--api`; `--as position:<name>`,
+  the graph's id): one JSON object per verb, nothing held between
+  them, no database role; `brief --render text|prompt|agent` renders
+  the hat in the leg and records the hat digest, the prompt digest and
+  the renderer's version on the outcome. The legs seed lives at
+  `dna/core/legs` and is vendored as `vendor/dna/legs`; the project's
+  performers, `dna/org/work.hl`, are generated at init and by
+  `upgrade` — a person, a deterministic performer that wins for the
+  work kinds it takes, and the model performer of the model leg to
+  come. Hands are interfaces (git in scratch, the forge through `gh`,
+  the toolchain; deploy and the heart refuse, naming #987). `hale mcp`
+  exposes the verbs as `hale_dna_work`.
+- **Added:** three commands on `POST /commands` for a leg's loop:
+  `dna.attempt.renew` (the lease extended, the token kept),
+  `dna.attempt.release` (`attempt.released`; the attempt is another
+  leg's to claim) and `dna.friction.file` (`friction.filed`, a fact
+  nobody admits), in the codec, the admission, the contract and the
+  head.
+
+### DNA: review routing from the graph; holds asked of the organization (GH #1087, #1091)
+
+- **Added:** `hale dna route [--json] (<path>… | --diff <range>)`, who must sign a change set, read from the graph. A seed's change goes to the reviewer of every process unfolding into it. A contract's goes to its reviewers and every consumer's reviewer, and to the board where a ratified practice makes it law. A document's goes to whoever reviews it. A dev never signs. The evidence is the run of every gate guarding what the change touches. A consumer no position reviews is listed; a path no position signs is left to the fallback. Reviews do not take their signers from the route yet.
+- **Changed:** `hale dna hold` is now `hale dna fill <position> <holder> [project] [--as <who>]`, asked of the running organization. The organization proposes the hold to the Board in the asker's name, so the asker cannot ratify it. The holder must be a person the record knows and has not retired. Memory checks every hold it projects, so a hold that breaks the rules is not projected, however it reached the record. `hale dna review` lists holes, practices and holds as groups. Ratified holes enter the org chart in the order they were proposed.
+- **Changed:** on a repository record (a seed with no Hale source), `hale dna dev` and `hale dna run` run the organization alone.
+
+### The DNA head is the binding, and the record is a membership source (GH #1110, hale side)
+
+- **`dna::RecordRoles`** implements `std::api::RoleSource` over the record: a principal holds a role when the graph has a live `holds` edge from the position the role names to a known person the principal is mapped to (`git config --add dna.unix.member "uid:1000=ada"`, the `dna.oidc.member` shape). A role names a position by its name, `/` as `_`; `owner` is the board. Retired edges, positions and people hold nothing; the record is re-read when it moves.
+- **The head carries an api entry** (`dna/api/main.hl`, `main locus Head`) with the record as its source, built by the program with its own root (`roles: self.roles`). The verbs land on it from the DNA line; `LOTUS_API` names the socket.
+- **The api surface is the entrypoint seed's own loci.** A locus that came in through `import` is not part of the surface: a head importing its core no longer serves the core's internal bus as commands. Imported topics are unaffected.
+- A `RoleSource` from another seed (`roles: lib::TableRoles { … }`) is exercised end to end.
+- **The record's commands are gated topics on that binding**, not HTTP: `PracticePropose` (`position`), `ReviewVerdict` (`reviewer`), `OrganizationPropose`, `TaskReassign`, `PersonRetire` (`owner`), `AttemptClaim` / `AttemptOutcome` / `AttemptRenew` / `AttemptRelease` / `FrictionFile` (`position`), `TaskCreate` and `CommandLookup` (any authenticated peer); subjects under `dna.commands.`. The binding authenticates and gates, `dna.unix.member` names the person, the composed provider admits as before. `role position;` is any live seat, `role reviewer;` is `position:reviewer`.
+- **The HTTP command route is gone**: `POST/GET …/commands`, the hand-built command wire, the `writes` and `*_commands` fields of `/capabilities` (now `api{transport,socket}`), the provider's capability facets, and the command half of `dna/api/contract/v1` — the emitted description (`hale check --dump-api dna/api`) is the commands' contract; the contract keeps the HTTP reads. The face's browser lanes that drove commands over HTTP are skipped until the face has a write path; `hale dna work` switches to the socket in the DNA line's PR.
+- **Knowledge commands are gated topics too**: `KnowledgeEdgeLink`, `KnowledgeEdgeUnlink`, `KnowledgeNodePropose`, `KnowledgeNodeRevise`, `KnowledgeNodeRetire`, `KnowledgeBindingBind`, `KnowledgeBindingUnbind` (`position`; the Knowledge policy still decides per person what may change and whether it goes to Review) and `KnowledgeLookup` (any authenticated peer), subjects `dna.commands.knowledge.*`, one flat payload each, answered `KnowledgeReply { ok, code, application_id, head, revision, receipt }` with the record's Knowledge receipt as a typed value. `POST/GET …/dna/knowledge/commands[/capability]`, its capability profiles, `knowledge_write` and its half of `contract/v1` are gone; `/capabilities.read_only` is always `true`, and the face's Knowledge drafts use the forwarded wire.
+- **HTTP is a forwarding transport** (GH #1135 is the binding's own): the head's `POST …/commands` forwards one line of the api wire to its own socket with `"via": "http-session"` — a mark the binding honours only from the program's own uid (`std::process::uid()`, new), refused as `malformed` from anyone else, carried on the receipt's `caller` and in `ctx.via` — so the browser's writes are gated by the record exactly as a socket peer's, under the head's own principal (the person the record maps its uid to, which is also the local session's name now); the local session only. The face's command layer speaks that wire. `Principal.via` is the new field.
+- **Names on the wire**: an item another seed declared is described qualified (`api::Claim`); a caller may write the bare tail when exactly one item bears it (a composed head's callers know the head, not its seeds), and gets `unknown` otherwise.
+- **One socket per record**: `$XDG_RUNTIME_DIR/hale/dna/<id12>.sock` (the record id's first twelve characters), else `<root>/.hale/dna/<id12>.sock`, else `/tmp/hale-<uid>/<id12>.sock` when the path would not fit an AF_UNIX address; `LOTUS_API` overrides. A socket another live process holds is never unlinked (the bind is refused); a head whose socket cannot bind records it, still serves HTTP, and advertises no socket; the forwarder connects only to its own process (peer pid).
+- **The local session's trust until OIDC (GH #989)**: a local head mints a launch token into `<root>/.hale/dna/head.token` (0600) and prints its URL with it; the shell at `/` and every POST need it (the `dna_local` cookie the URL sets, or `X-Hale-Token`). An unmapped head uid is recorded as `uid:<n>`, never `$USER`. A revoked `dna.unix.member` mapping takes effect when the record next moves. SIGTERM drains the head: the server ends and the binding's dissolve removes the socket.
+- **The composed head serves the commands**: `dna/api/practice_review` declares its own `main locus` with the api entry and a wrapper subscribing the same topics over the shared admissions (`api::CommandAdmission`, `api::KnowledgeAdmission`), since an imported main's binding is inert and an imported locus is not on the surface (GH #1137 is the rule that would remove the wrapper).
+- **An imported `main` is inert**: it counts neither for the one-main rule nor as a binding of its topics, so a program with its own main may import a head.
+- **`dna::RecordRoles` reads `dna.unix.member` with `--local` only** and re-reads it, with the holds edges, whenever the record moves.
+- **A reply larger than the socket's send buffer arrives whole** (the macOS red of `head_roles_test`, the head's 13 KB description against Darwin's 8 KB buffer). The binding's peer shares one socket between two coroutines of its pool — `run()` parked on it for the next line, a reply handler writing — and the poller keeps one registration per fd, so the writer could not park on a would-block: Linux refused the second registration and the write gave up mid-reply (past its 208 KB buffer), macOS took it and the first resume dropped both. A send that cannot park now yields on a timer and retries; one from a classic context on a non-blocking fd waits in `poll`. `tests/hale/api_big_reply_test.hl` overfills the buffer on any platform. A reply carrying a `String` past 64 KB is a separate defect, GH #1155.
+
+### Worker mode and the model leg (GH #946)
+
+- **Added:** `hale dna work loop --as position:<name> --parallel N`, a
+  worker: N supervised child processes, each `run` once as its own
+  holder (`position:<name>#1` … `#N`, so two workers of one position
+  never share a lease), each answer one JSON line as the child ends,
+  started again at once after a task and after a per-slot doubling
+  backoff when idle; SIGTERM/SIGINT drains the loop and ends its
+  children; `--once`, `--only <kind>`, `--performer`, and `loop
+  --drain` to end a running loop once its children have. `run
+  --performer person|deterministic|model` names the performer instead
+  of the catalog's choice; a performer never answers a kind it does
+  not take. A refused outcome is printed as its receipt, exit 1.
+- **Added:** the model leg, `legs::ModelPerformer { router:
+  agent_models() }` in the generated `dna/org/work.hl`: the catalog's
+  router behind the performer interface, out of process, one task per
+  run. Every call the router answers is evidence on the outcome
+  (backend, reported model, tokens, cost, wall time, under the prompt
+  and context digests), journaled as `model.called` rows on the
+  attempt, with the input and output tokens as the backend reported
+  them. A rate-limited call is backed off inside the attempt, bounded
+  and doubling, the lease renewed before each wait, and each wait is
+  a row of evidence of its own. The model is sent the render alone;
+  the hat's digest is the context digest. A project initialised with
+  no backend configured hands agent Works to a person (`NoModel`).
+  `hale_dna_work` in `hale mcp` takes `loop` (with `--once`), and an
+  external harness plugs in with `next`, `brief --render agent` and
+  `submit --evidence-file`.
+
+### DNA: the baseline workflow catalog, one store per step (GH #995)
+
+- **Added:** every workflow step names the one store it writes (`define(id, revision, stores, title)`), and a step on a part not built yet is refused at admission, naming it. DNA ships a baseline catalog: `dna/org/workflows.hl`, written at `hale dna new`, returns it plus the project's own, and `hale dna definitions` lists it. An upgrade supersedes the baseline by revision.
+- **Changed:** every proposal the Board decides is ratified by an execution of `practice-ratify`; concerns and the optimize pass are executions too. The declared purpose is a proposal like any practice (`hale dna review purpose approve`). `hale dna review <group> approve` writes every verdict before it waits. On a git-backed record each step is a few commits: adopt the ledger to run an organization.
+- **Changed:** routing and holds after review. A deployment's file routes to its operator; the board signs only where a practice ratified as law binds the contract. Memory refuses a holder the record never knew, and records every hold it refuses as a `hold.refused` row.
+
+### The legs walkthrough, and a judgment a fresh project can ask for (GH #946)
+
+- **Added:** `hale dna task create --judgment <question>` asks for an
+  assessment rather than a change: no plan is asked of the leader, and
+  the ask is admitted under `ask-judge` — one leaf requiring judgment
+  under the `Assessment` contract, an agent's on the first attempt (a
+  leg's, through the legs' relay) and a person's on the second.
+- **Changed:** the organization `hale dna new` generates hands its
+  agent work to legs (`agent: dna::LegRelay`, `agent_reconciler:
+  dna::RelayReplay`); `hale dna upgrade` notes an organization from
+  before that still performs it in process.
+- **Docs:** the legs chapter opens with the whole loop on a fresh
+  project — a judgment asked for, performed by a person as a leg and by
+  the model leg in worker mode over the fake backend, settled, and its
+  usage read from the record.
+- **Changed:** `hale dna new`, `init` and `upgrade` seat the record:
+  the uid of whoever made it is mapped to them in the record's local
+  config (`dna.unix.member`) and the record declares `dna.trust =
+  local`, so the head's socket knows that peer and they hold every
+  position there.
+
+### The legs speak the head's socket (GH #1104 piece 5, GH #946)
+
+- **Changed:** `hale dna work` sends every command as a `call` on the
+  head's gated topic over its api socket — the payload the description
+  gives it, the receipt on the value channel — and reads the record
+  head, the hat and the socket's path (`/capabilities`, `api.socket`)
+  over HTTP; `--socket` and `HALE_DNA_SOCKET` name the socket outright.
+  The principal is the socket peer, mapped to a person by the record:
+  `--holder` is gone, the lease's holder is the position (`--as`), and
+  a worker of a loop is `--worker <n>`.
+- **Fixed:** the composed head (`dna/api/practice_review`, the one the
+  face starts) served no command on any socket: the head's admission
+  (`CommandAdmission`) is split from its gated wrapper, and the
+  composed head declares its own api entry and a wrapper of its own
+  seed subscribing the same topics under the same gates.
+
+### A `let` is its block's (GH #1132)
+
+- **A `let` that reused a parameter's or an outer `let`'s name inside a branch no longer changes that binding for the rest of the fn.** Codegen kept one name map per fn, so on the path that never took the branch the fn read a slot nothing had stored (garbage, or a segfault); the checker always scoped a `let` to its block, and the built program now agrees. The slot's lifetime stays the fn's (deferred dissolve unchanged); the name is the block's. Sequential re-`let`s and sibling branches binding one name keep working.
+
+### The face's native command lanes run on the real host (GH #1029)
+
+- **`native-command-harness.mjs`** starts `hale dna dev` in place of the acceptance Body and the relay that went with the membrane: a project from `hale dna new` with the acceptance Body as its organization, memory and nerves migrated by the host from the owners' URLs, request rows relayed and memory projected on its tick, the composed API as the head. The record's memory and stream are dropped when a lane stops (`dna/face/tests/memory`, `hale dna nerves drop`). The knowledge node, binding, edge-review and practice lifecycle lanes and the standalone script ride on it.
+- **CI runs them:** the face-browser job passes `HALE_NATIVE_COMMAND_API` beside the owners it already had. The README's "unported" sections are the run recipe.
+- **The native lanes run on the real host**: a refused or busy setup command is sent again with a fresh head, a lookup the busy head refuses is asked again, a page behind the projection is reloaded, and the Knowledge editor reports the snapshot it reviewed against, not a policy it cannot know before sending. The pagination case stays declared skipped on GH #1148, and eighteen lanes on what the runner showed, one Deferred line each (the record moves on every tick under the organism's ratification workflow); a failed lane's report carries the record and the process logs. Three native lanes run on the runner. The face reads a described command name another seed declared by its tail, as the wire accepts it, so the composed head's `api::` names open its commands.
+
+### CI: the face jobs' wall clock
+
+- **Changed:** `face (browser)` runs as two shards, `face (browser,
+  startup)` (the one-command launcher's specs, whose first case builds
+  the head and its API) and `face (browser, rest)`. Both face jobs build
+  their seeds beside the DNA toolchain warm instead of after it
+  (`scripts/warm-and-build.sh`), and the browser suite's
+  generated-organization case creates its project under the warmed
+  toolchain cache instead of building the host from cold inside the
+  case.
+
+### Every performer declares an effect class (GH #946)
+
+- **DNA legs: every performer declares an effect class** (GH #946, from the outside review of the voice split). `effect_free`, `idempotent` or `uncertain`, with no default: a catalog with a performer declaring none is refused by the verbs that claim or hand back, and a project's own `dna/org/work.hl` must declare (`hale dna new` seeds `Person { effect: "idempotent" }` and the model leg's class from the catalog it found: `uncertain` when a tier is a harness with tools). The class is the claim's filter (a Work that is answered admits every class, an edit no `effect_free`; the hat says so in `effects`), is recorded on the claim, and is evidence on the outcome. A settle that fails behind an `effect_free` or `idempotent` performer is `unsettled`: the lease given back, the loop performs anew after a rest. Behind an `uncertain` performer nothing is retried by a program: the leg marks the attempt unresolved at the head (`attempt.unresolved` and `effect.result unknown`, its calls as evidence), files friction, and the attempt awaits no leg — not another's, not its own holder's — until a person resolves it (`hale dna effect resolve attempt:<id> --outcome ok|failed`); an `uncertain` claim whose lease lapses with no outcome is marked unknown by the owner instead of asked again. Model results say whether the backend may have acted (`ModelResult.made`), which is what the model leg judges a refusal by. `hale dna work next|submit --effect <class>`; `effect_class` on the claim and outcome wire and in contract v1, with the `unresolved` disposition.
+
+### DNA: the catalog after review (GH #995)
+
+- **Changed:** a decision taken by command is ratified the same way as any other, and `ratify` reports done only once the practice it supersedes is retired. `hale dna upgrade` regenerates `dna/org/workflows.hl` to the current shape. The project's own definitions live in `dna/org/own_workflows.hl`, which the upgrade leaves alone. `deploy-observe` is `deploy` then `settle`.
+- **Added:** `hale dna definitions` lists what an admission would refuse each definition for, and the head serves the organization's own catalog. A definition with an organism step this toolchain does not know is refused at admission, naming the step.
+
+### DNA: a Review takes its signers from the route (GH #1089)
+
+- **Changed:** when the organization opens a Review, it records the positions `hale dna route` names for the Review's candidate (the Board, for a proposal), with their holders, and the gates guarding the change (`review.routed`). After that, a verdict from anyone who holds none of those positions is refused, whatever authority it claims, and approval needs every required position. A route that left some path uncovered also requires the Review's own authority, and holders are routed again while the Review is open. A Review whose route names no held position keeps its own required authority; a change's Review records that fallback with its reason. A Review is not opened while memory is configured but not answering, or while git cannot name the paths its candidate changes; the organization asks again.
+- **Added:** a Review with gates settles approved only with a passing run of each at the candidate, as the forge reports it (GH #1161, PR #1183).
+
+### Face: Organization reads
+
+- **Fixed:** the face's Organization reads wait 35 s instead of 15 s.
+  An Organization read runs the compiler over the committed
+  organization and its dependencies, which the service bounds at 30 s;
+  on a slower machine the face abandoned a check that was about to
+  finish and showed "Service took too long". It now waits for the
+  service's own answer, as the organization editor's draft check
+  already did. Other reads keep their 15 s deadline.
+
+### CI
+
+- The two DNA shards and the three CLI shards run on the org's 8-core L1 runner for pushes and for PRs from this repository; a fork's PR keeps `ubuntu-latest`. On L1 the DNA slices run eight at a time under the new `large` nextest profile (#1164).
+
+### The legs' loop on voice (GH #946)
+
+- **DNA legs: the loop run end to end on the vendored voice repository**, through the head's socket with a deterministic performer (`dna/tests/dogfood_voice_test.hl`), and the deployment profile and by-hand commands in the legs chapter. A lease may now be held as a graph position (`position:api/dev#1`), and a hole `hale dna init` proposed and the Board ratified is a position the head knows.
+
+### CI: the macOS job
+
+- **Changed:** the macOS workflow runs the DNA fixture suite in three parts, every third slice per part, so its wall clock is one part's (about 10 minutes) instead of the whole suite's (25 to 30). Nothing else in the job changed (#1167).
+
+### CI: the macOS job
+
+- **Changed:** the macOS DNA suite runs in four parts instead of three, so each heavy slice leads a part of its own and the small tests ride on the lightest; with three parts the first took 23 minutes and the others 10 and 15 (#1168).
+
+### A judgment through the head (GH #1144)
+
+- **DNA: a judgment can be asked through the head and the face.** The head's `TaskCreate` payload carries `kind` (`judgment`, or empty for a change), recorded on the intent row where `hale dna task create --judgment` writes it; the face's task form asks "A change" or "An assessment".
+
+### A name declared twice in one type is an error (GH #1141)
+
+- **The checker refuses the second declaration** of a name in a struct's fields, an enum's variants, a locus's or a perspective's `params`, a `contract`'s named members and an `interface`'s methods, naming the first as the related location: `field `a` is already declared in type `T`; a name is one slot, so declare it once`. Before, the second passed `hale check` and one of the two won the slot, while the json codecs and the api description assumed one slot per name.
+
+### The api binding fixture reads past stream frames (GH #1142)
+
+- **`tests/hale/api_binding_test.hl`** no longer takes a stream frame for the refusal of a non-JSON line: the malformed-line case skips frames the way its reply reader does. A runner-only flake; the binding was right.
+
+### Check: which release clause makes a flow (GH #736)
+
+- **Added:** `hale check --flows` reports every locus type that is a flow (reclaimed when its `run()` completes) with each `release(c: T)` clause that makes it one: its declaring locus, file and line, imported seeds included. A `release` anywhere in the program makes every `T` a flow, even on a locus never instantiated; the report answers "why was my child reclaimed". It is opt-in, never a warning.
+
+### `hale check <file>` refuses a read of a block's let after the block (GH #1139)
+
+- **The single-file check agrees with the seed check and the build**: a name a block of the same body bound and released is the block's, never a sibling file's const, so `hale check <file>` refuses the read — `unknown identifier `x`: … it was bound in a block that has ended, and a block's binding is the block's` — where it used to say `ok`. A name the file never bound stays lenient alone.
+
+### A bus payload past the wire buffer crosses whole (GH #1155)
+
+- **The synthesized serializer honours its cap** and the runtime serializes a payload past its 64 KiB wire buffer again into a buffer of that size, so a reply carrying a `String` past 64 KB crosses the bus whole where it used to die in the serializer — the static-bucket dispatcher's non-flat branch (a literal-subject publish) now routes through the same encode/free path as the other three dispatchers; it used to read past the buffer instead of dying, delivering stale bytes silently. A codec-bound subject's encode thunk keeps the same contract now too, so a codec payload past cap no longer drops LOCAL delivery outright. Local delivery is bounded by the payload arena; a remote transport's frame stays 64 KiB, and a payload past it is a loss for every remote subscriber (no fallible-publish path or counter surfaces this to the program yet), said once per subject on stderr — every flat and non-flat dispatcher now agrees on that guard, and the dedup cache behind it is UAF- and race-free. `spec/semantics.md` states the size rule and the loss.
+
+### `hale check` builds its rename table once per model derivation (GH #1159)
+
+- **The model builder demangled per absorbed call edge**, rebuilding the whole rename table for each string; it builds the table once now and the topology artifact is byte-identical. The check on a generated organization takes a fraction of the time, with and without `--dump-topology`.
+
+### The stale-binary warning covers the embedded DNA (GH #785)
+
+- **`hale` warns when `dna/**` differs from what the binary embeds**, on every source-reading command (`check`, `verify`, `build`, `run`, `test`, `dna`, `inputs`), naming the directory, what `hale dna new`/`init`/`upgrade` would materialize instead, and the rebuild; `HALE_SKIP_STALE_CHECK=1` silences it with the codegen half.
+
+### A leg is handed only the attempts its relay answered (GH #1158, PR #1179)
+
+- `hale dna next` (the head's `dna.attempt.claim`) no longer hands a leg an attempt the organism performs itself — an edit its editor holds, a case a person does. The owner records an attempt its leg relay answered as `effect.relayed attempt:<id>`, and the head claims only those; the refusal counts the rest as "performed in the organism, not relayed to a leg". The owner likewise refuses a leg's outcome for an attempt never relayed to one.
+
+### A leg's candidate becomes a Mutation and its Review (GH #1156, PR #1180)
+
+- A `Patch` Work's outcome from a leg is a candidate change now. The outcome names the leg's commit (`result_ref: commit:<sha>`) and files the commit's own patch as a receipt (`hands.git.patch` exports it). The owner makes that a Mutation bound to the attempt, applies the patch in its gateway at the genome's head under the class's seed, then commits and verifies it and opens the Review with the leg as its author. The attempt settles on the prepared candidate, or fails with why.
+- A candidate whose seed has no Hale source (a genome in another language) is no longer denied for a `hale check` with nothing to check. The evidence says so (`hale_source`), and no grant stages or releases such a candidate: a person reviews it before anything applies.
+
+### DNA: holes and routing follow the graph's edges (GH #1091)
+
+- **Changed:** `hale dna init` derives the positions and work it proposes from the graph's edges instead of listing them. A reviewer goes to each process or seed that serves or consumes a contract, reviewing its code and those contracts. A dev and a work item go wherever a gate guards something to deliver, done when that gate passes. An operator goes under each deployment. The fixed operational roles are gone.
+- **Added:** `dna/org/structure.hl`, written by `init` for a repository. Its `operational_roles()` opts each deployment into `support`, `accounts`, `billing` or `on-call`, none by default. It is read when the record is born, so write it before `init`; `hale dna upgrade` keeps the roles it names and reports anything else it drops.
+- **Changed:** `hale dna route` and a Review's signers follow the `reviews` edges alone. A position signs what it reviews, whatever it is called. A `reviews` subject may now be a seed or a deployment.
+
+### A gate's run is the forge's, observed by the host (GH #1161, PR #1183)
+
+- A routed Review weighs only the gate runs the host observed at the forge. The forge sync reads the check runs for the candidate and records each completed run of a routed gate as `gate.observed`. A verdict no longer cites runs: `hale dna review <id> approve --evidence` is gone, and a filed `gate.run` receipt counts for nothing. Approvals given before the runs are in are kept, and the Review settles once every gate's passing run is observed. `hale dna review <id>` lists the runs.
+
+### A leg works only as a position its person holds (GH #1162, PR #1184)
+
+- A leg's claim (`hale dna work next --as position:<name>`) is refused unless the person the peer maps to holds that position. Holding comes from the graph's `holds` edges, or from a record that declares `dna.trust = local`, where the one person holds every position. The refusal names the person and the position. Before, anyone seated anywhere could work as any position the record knew.
+
+### CI: free runners, macOS by paths
+
+- **Changed:** the dna and cli shards stay on the free runner (the paid runner tried on 2026-09-26 is gone, with its nextest profile); a PR runs the macOS validator only when the crates, the language tests or the workflow itself change, main keeps its full macOS run on every push (#1185).
+
+### CI: a partial DNA toolchain cache is rebuilt, not trusted
+
+- **The DNA toolchain cache's warm step now verifies what it restored**: a cached host or observer binary must be non-empty, not merely present, or it is rebuilt rather than trusted — a truncated file from an incomplete cache save used to be handed to callers as if it were whole, paying its build cost later inside a fixture's own budget instead of the warm step's.
+
+### The face launcher builds its seeds side by side
+
+- **Changed:** `dna/face/start.sh` builds the per-project API (`dna/api/practice_review`) and the project service (`dna/api/project_service`) at once instead of one after the other. It waits for both, prints each build's output as its own group, and fails if either failed. A binary handed in with `--api` or `--head` is checked before anything is built, and a launch stopped mid-build stops its builds. What is built is unchanged. CI's `face (browser, startup)` shard now builds the head its later cases use beside the suite instead of before it (#1187).
+
+### The head's principal path is OIDC, verified (GH #989, PR #1188)
+
+- Every HTTP caller of a head is a verified OpenID Connect subject. The head reads the issuer's discovery document and JWKS once at start and verifies every ID token (ES256; RS256 is refused). The token comes from a browser's sign-in or from a bearer (`Authorization: Bearer`).
+- Commands forwarded over HTTP carry the verified subject to the head's socket. The receipt names `principal_mode: oidc`, the person (`dna.oidc.member`) and the positions they hold (`principal_positions`).
+- Local mode is OIDC too. `dna/face/start.sh` starts a stub OpenID provider (`dna/oidc`) under a key made for that launch, and signs you in through it. Only the browser that opened the URL the face prints may sign in. A project pins a loopback issuer's key (`dna.oidc.key`). The face forwards your ID token to each project's API child, which verifies it. A leg reads the head with `HALE_DNA_ID_TOKEN`.
+- Trusted-local (the launch-token session, and `hale dna ui` with no principal source) is a test fixture's mode only, under `HALE_DNA_TRUSTED_LOCAL=1`. Without it, a head with no principal source refuses to start.
+
+### `std::secret::Credential` gains a `vault:` source (GH #989)
+
+- **A name resolved against a vault**, fresh on every privileged call rather than cached at `birth` like `env_var`/`key_file` — local mode reads a directory of files keyed by name (`HALE_VAULT_DIR`, or the toolchain's own per-user cache root), `HALE_VAULT_ADDR` set makes it an HTTP `GET` authenticated with the per-host token in `HALE_VAULT_TOKEN`. Fails closed exactly like the other two sources, and refuses a name carrying `/`, `\` or `..` before it ever reaches a path. `Credential` also gains `reveal()`/`reveal_text()`, an intentional exception for a plain credential that has to leave as text to be usable. DNA's Postgres role passwords and the forge token now read through it, the latter never through argv.
+
+### DNA: the graph is the one org chart (GH #1123)
+
+- **Changed:** a shared record's owners are the graph's. A firm is an `organization` node that holds positions, and a person is its member by holding it; `hale dna fill` proposes both, and the Board ratifies them. Memory's `org_members`, which the Ledger's gate checks, is now a view over those edges (memory schema 6). A body that names its organization (`dna.owner`) admits nothing until memory says what it holds, and `hale dna run`/`dev` read which organizations exist from the record itself.
+- **Changed:** owner quorums are gone. Every approval is the route's, and a position an organization holds is signed by any of its members.
+- **Removed:** `dna/org/owners`, the generated `main.hl`'s `ownership:` field, the organization-source ownership profile, the `dna.organization.ownership.propose` command, the ownership draft route and its capability, and the face's ownership editor. `hale dna upgrade` removes the file and the field, and names anything the file stated.
+
+### The thin heart: an application's events become readings (GH #987, PR #1191)
+
+- An application declares its events as its own topics, under its own subjects `app.<app>.<event>`, and publishes them through pond's NATS adapter under the organization's prefix. It imports nothing of DNA. Each event is one JSON object with a string `id` the application chooses.
+- The node's host reads `<org>.app.>` through the organization's durable `heart` and records each event as a `reading.recorded` row, `<app>/<event>/<id>`, before anything acts on it. The event is acknowledged only once its row has landed. A second arrival of the same event and id is refused as a duplicate. A body that is not such an object is not a reading, and the host says why.
+- `reading` is a ledger family, and memory's schema is version 7: run `hale dna memory migrate` (`dev` does it for you).
+- Pond's `NatsConn` (vendored) takes an `untyped` prefix: messages under it go out on `NatsInbound` as they arrived, and their subscriber acknowledges them with `nats_ack`. `ConsumerSpec` takes `max_ack_pending`.
+
+### DNA: schedules point at workflow definitions (GH #1143)
+
+- **Changed:** a schedule is a workflow definition plus args on a wall-clock cadence (interval or UTC cron), convened by a position. Each occurrence is an ordinary execution, keyed by the schedule and the occurrence time, so an occurrence is never admitted twice, including across a restart. A run of missed occurrences is one `schedule.missed` row. Whether an occurrence is skipped while one is open (`skip`, the default, or `overlap`) is the definition's `concurrency`.
+- **Changed:** `hale dna schedule declare` takes `--definition`, `--args` and `--convener`, and declaring is the Board's or the convener's holder's. A declaration is refused as a row when the definition is not admitted, the args do not match what it takes, or nobody holds the convener (a hole). A declared schedule is a `convenes` edge in the graph, which `show processes` lists.
+- **Changed:** the optimize pass is the seeded operating practice `operating/optimize-cadence`. `optimize_every_ms` is removed, the generated loop ticks on the wall clock, and `hale dna upgrade` rewrites the generated text.
+- **Removed:** a schedule's `ask` and `requires`, and the `schedule.fired` row.
+
+### Concurrent builds of one output path no longer race (PR #1194)
+
+- Two `hale build`s writing the same output path could fail to link: the object sat beside the output under a shared name and one build's cleanup deleted it while the other's linker was reading it. Every build now links through private `{pid}.{nonce}` names and renames the finished binary over the output, so a concurrent build, or a running copy of the old binary, never sees a half-written file, and a failed link leaves nothing behind.
+
+### The senses and a reflex (GH #988, PR #1197)
+
+- Every long-running part serves its readings as a Prometheus scrape target: the host (the spine) on 9464, a node on 9465, the head on 9466, or `HALE_DNA_SENSES_PORT`. Every series carries `part`, a node's `node` too. The node reads `dna_instance_up` and `dna_instance_since_seconds` per instance; every part's pulse is `dna_pulse_seconds`. No label is per event, task or revision.
+- The seed's `dna/compose.yaml` gains a `senses` service, Prometheus kept a week, scraping `dna/senses.yml` (which `init` writes, and `upgrade` writes when it is missing). `hale dna senses up` brings it up and prints its read URL; `hale dna dev` runs it with the rest of compose.
+- The reflexes (`dna/reflexes`) read the store and publish `reflex.fired` onto the nerves as an application, with the new `reflexes` user: `dna/nats.conf` gives it `*.app.reflexes.>` alone and denies that to `app` (`upgrade` says so when an older file lacks it). One rule, `instance.down`: the node that runs the instance restarts it and records `reflex.acted`; a second firing within the window becomes a concern the organization raises. `dna/face/start.sh` starts them when it attaches a project.
+- `hale node` runs as the host program's main locus and drains on SIGTERM.
+- `reflex` is a ledger family, and memory's schema is version 8: run `hale dna memory migrate` (`dev` does it for you).
+- `std::metrics` renders every value to the digit: epoch seconds and counters past 999999 were rounded to six significant digits.
+
+### `on_failure` picks the handler by the failing child's type (PR #1199)
+
+- A locus that declared one `on_failure` per child type ran the wrong one: codegen kept only the last handler's child type and filled it with the first handler's body. So the last-declared child's failure ran the first handler, and the first-declared child's failure found no handler and exited (downstream handoff). Each handler now lowers into its own fn, and a failure runs the handler for the failing child's own locus type, whatever the declaration order. This includes stdlib children such as `std::http::Server`.
+
+### DNA: a service principal at the head
+
+- **Added:** a service, a program with no person behind it, reads a project through the head under OIDC. It gets its token from the issuer's `client_credentials` grant, with its secret in the vault (`oidc-service-<id>`), and presents it as a bearer on the project's API routes. The record maps it with `git config --local --add dna.oidc.service "<subject>=<service>"`. It reads what a person reads, gets no session, and may send no command. The stub provider answers the grant for the ids in `HALE_DNA_OIDC_SERVICES`.
+- **Fixed:** a command whose OIDC subject maps to no person is refused (`forbidden`). It is no longer recorded as the account the head runs under.
+
+### The Unix-socket membrane is gone (GH #986, PR #1201)
+
+- DNA writes no `LOTUS_BUS_CONFIG`, binds no Unix socket and writes no route file: every fact between the organism's parts travels over the nerves. `hale node` no longer listens for its instances' concerns on `.hale/node/concern.raised.sock`.
+- An application's concern is one of its own events: `concern.raised` under its own subject `app.<app>.`, one JSON object with its `id`, `source`, `what` and `severity`. The heart lands it as a reading, and the spine puts it into the record as `concern.requested` (its request the reading), once, before the event is acknowledged. The organization raises it as before. The `source` must name one of the application's own parts; any other is refused. The trio's worker raises its concerns this way.
+- An application — a node's instance, `dev`'s expression — inherits the application credential and the organization's token (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_ORG`) and no other credential of the organism's. Start `hale node` with both (`hale dna nerves migrate` prints them); `dev` passes them on. `hale node` materializes `vendor/dna` in its clone.
+- Pond's NATS client (vendored) gains `NatsPublisher`, a publish-only adapter that dispatches nothing into its program, so an application bound to it keeps an exact artifact its fleet's law can be certified over.
+- A record row's kind and entity may not carry a line break.
+
+### DNA: the Board's field is `board`
+
+- **Changed:** the field on `dna::Dna` that names where people see and decide is `board`, no longer `membrane` (`board: dna::Board { who: "board" }`); "membrane" was also the name of the socket transport the nerves replaced. `hale dna upgrade` rewrites the generated line in an older `dna/org/main.hl` and names a hand-written one, which no longer builds.
+
+### The organism's secrets are provisioned by its bootstrap (GH #989, PR #1207)
+
+- `hale dna init` and `upgrade` provision every secret the organism needs into the vault, from one list: memory's roles and the compose database's superuser, the nerves' five accounts, the head's OIDC client and each service client (drawn), the forge token and each model key (empty slots a person fills with `hale dna secret set`). Nothing else creates a secret; a start that finds a drawn one missing refuses. `hale dna secrets` lists them all and whether the vault holds each, never a value.
+- A credential is presented by the adapter that puts it on the wire and is held nowhere else: pond's NATS client reveals the vault's entry on `CONNECT`, and `HALE_DNA_NATS_URL_<ROLE>` carries `nats://host:port` alone, with `HALE_DNA_NATS_VAULT_APP` / `_REFLEXES` naming the entries. `HALE_DNA_OIDC_SECRET` is gone: the client secret is the vault's `oidc-client-<client>`. No committed seed file holds a secret; the servers read theirs from `dna/nats.secrets.conf` and `dna/postgres.secrets`, mode 600 and ignored.
+- Each seed's `dna/compose.yaml` is a compose project of its own (`hale-dna-<seed>`), so two seeds on one machine no longer replace each other's containers; `upgrade` rewrites the file.
+- Every seed binary under `dna/` is ignored by rule; the committed `dna/oidc/serve/serve` binary is gone.
+
+### Two runtime crashes fixed (GH #1148, PR #1208)
+
+- A main locus built in a fn other than `main` now joins the cooperative pools before its deferred teardown. A subscribing main locus with a field on `cooperative(pool = ..)` used to free that field's arena while its `run()` was still on the pool's worker, and the process segfaulted on every stop.
+- A free fn whose allocations cannot outlive the call except through its return value (String/scalar params and return, no struct literals or method calls, calls only to its own class, value builtins and pure `std::` primitives) now allocates into its own per-call arena instead of its caller's. A line scanner that re-slices a local used to leave every suffix copy in the caller's arena until the caller's scope ended: cubic garbage for a per-line loop, which exhausted a 512 MiB head inside one command (downstream handoff).
+
+### api binding: `serve:` and an HTTP transport
+
+- **Added:** the api entry names the imported loci it serves: `api: unix(…), serve: [commands]`, where `commands` is a param of the main locus. The surface is the entrypoint seed's own loci plus those; a locus the program only holds is never served. `hale check --dump-api` lists them under `serve`.
+- **Added:** `http(host, port, principals: <source>)` after `unix(…)` gives the binding an HTTP transport. A `POST` carries one line of the wire under `Authorization: Bearer <token>`, and the program's `std::api::BearerSource` says who the token is (`mode: "bearer"`, `via: "http"`). The surface, gates, description and receipts are the socket's. The status is the refusal's: 401, 403, 404, 503, else 400.
+- **Removed:** the `via` mark a program's own forwarder set. The binding honours no `via` from any caller, and `ctx.via` is the transport (`api`, `http`, `local`).
+- **Changed:** a DNA head serves its commands on its binding's HTTP transport, at the port its launcher gives it (`HALE_DNA_COMMANDS_PORT`; `start.sh --commands-port`, 8795 by default), under an OIDC ID token, a service's token or, in a trusted-local session, the launch token. The face relays a session's `POST …/commands` there, and recovers with a `CommandLookup` line; `GET …/commands?request_id=` is gone.
+
+- **Fixed:** a `let` that shadows a name the fn returns no longer leaks. Ownership follows the binding, not the name: the inner `let` is reclaimed like any other binding (at the fn's exit, as every deferred dissolve is), and the returned binding still passes to the caller, who reclaims it (GH #1140).
+
+- **The drain grace's line names what the drain waited on.** When a SIGINT / SIGTERM drain outlasts `LOTUS_DRAIN_GRACE_MS`, the one line the runtime prints before ending the process now also lists each started cooperative pool (its mode, whether a worker is mid-iteration and in which locus, its queued cells) and the live loci that read `draining`, by name. The process ends the same way at the same time.
+
+### A leg asks the budget's one gate before a model call (GH #1131, PR #1213)
+
+- The organization's budget has one gate, `Budget.admit`, and every model-backed spend passes it: the editor's attempt and the Leader's Review in process, and a leg's attempt out of process. A refusal is the same row wherever it is asked, `attempt.allowance_refused`.
+- A leg asks for its attempt's spend before its first model call (`hale dna work allowance`; the model performer does it itself). The organization answers `attempt.allowance_granted` with what the attempt may cost, or refuses. Refused, the leg makes no call and declines the attempt; granted, it makes no call whose known price is past what is left, and none once the allowance is spent. An attempt whose calls cost more than the lease was granted settles failed, naming the overrun, and the calls are journaled anyway. `ModelBackend` gains `adapter()` and `price_micros(req)`. A leg running this release needs an organization and a head from it: against an older one, its attempts are declined unanswered.
+- A `model.called` row's `adapter` is the adapter that answered, in process or from a leg; `legs` marks only a leg's wait row, which carries `waited_ms`.
+
+- **Changed (breaking):** a handle a method keeps is a borrow its receiver holds, and must outlive it (GH #1048). `std::http::Router.add` keeps its handler and `use` its middleware, so `hale check` and `hale build` now refuse a handler literal (or `let`) built in a function that returns the router, fills a router it was handed, or fills `self`'s router — before, the router dispatched into a freed handler. The shape the book used to show, `fn build_router() -> Router { r.add(…, Hello { }); return r; }` with `Server { handler: build_router() }`, is one of them. Migrate by making each handler a field of the locus that owns the router and filling the router in `birth()`:
+
+  ```hale
+  locus Routes {
+      params { hello: Hello = Hello { }; router: std::http::Router = std::http::Router { }; }
+      birth() { self.router.add("GET", "/hello/:name", self.hello); }
+      fn handle(req: std::http::Request) -> std::http::Response { return self.router.dispatch(req); }
+  }
+  ```
+
+  A router built and used in one function stays sound. The borrow rule (GH #730 and this) now gates `build`, `run` and `test` as well as `check`.
+
+- **`hale test` runs each test file on a vault of its own.** `HALE_VAULT_DIR` is a fresh private directory per file (`<tmp>/hale-test-vaults-<uid>/…`, mode 700), removed when the file ends, and `HALE_VAULT_ADDR` is unset, so a test that provisions or reads a secret through `std::secret` never touches the developer's vault. A DNA fixture run by hand used to draw a throwaway organization's entries into `~/.cache/hale/vault`. `HALE_TEST_KEEP_VAULT=1` keeps each file's vault and prints where.
+
+- **Changed (breaking):** a revealed secret is consumed in the statement that reveals it. `std::secret::Credential.reveal()` / `reveal_text()` may be called only in a locus method, and the value must reach a wire write's payload (never a URL or host), a comparison of the whole value (`==`, `!=`, a `match` that binds nothing, `Credential.matches`) or a `@secret` parameter in the same statement; `hale check` and `hale build` refuse it bound to a `let` or a pattern, stored, returned, printed, used to decide a branch or handed to `std::process`, and refuse a comparison of a slice of it. A `@secret` parameter is held to the same inside its fn. Migrate by building the header or body inline in the call that sends it (`std::http::request(ClientRequest { headers: "Authorization: Bearer " + c.reveal_text(), … })`), and compare with `matches`.
+- **Added:** `Credential.write_private(path)`: the secret written on the sealed side, into a new file created mode 0600 by `openat(2)` in a private directory the user owns (no group or world access, not a symlink, outside any git work tree), for a tool that reads it from a file.
+
+- **A leg asks again a command its head's moving record left undecided.** When the head answers `snapshot_changed` (the record moved while it was read) or `command_busy` (it moved through every read the admission allows), the leg now sends the same command again, 200ms apart, for up to ten seconds, under the same request id. A command that landed meanwhile is found by that id, so it is never acted on twice. This applies to every command and to the hat. Before, only the spend ask retried, so two workers handing their outcomes back at once could lose one: the leg gave it up as unsettled and it was never relayed. A run whose hat can't be read now gives its lease back rather than holding it for its TTL.
+
+- **`hale dna api` announces its commands port.** Once the api binding's HTTP transport is listening, the head prints `hale dna api: commands http://127.0.0.1:<port>/`, so a launcher can wait for that line instead of guessing when the port answers. The read API's fixtures wait for it: a first command POSTed right after the reads answered no longer finds the port closed.
+
+### Seeds build out of the source tree
+
+- **`hale build -o <path>` (`--out`)** writes the binary at exactly that path, creating its directories; a wasm build puts its `.mjs` loader beside the `.wasm`. Without `-o` the binary still lands beside its source.
+- **Breaking: `hale test`, `hale run`, `hale replay` and `hale bench` build into a private per-run scratch directory** (mode 0700 under the temp directory) and remove it when they finish. The predictable temp names they used before (`hale_test_<pid>_<n>_<hash>`, `hale_run_<hash>`, `hale_replay_<hash>`, `hale_bench_<hash>`) are gone; use `hale build -o` to keep a binary.
+- **The DNA host builds seeds with `-o`** into its fingerprint-keyed cache entry (now a directory) and starts the binary from there; without the cache it builds into `.hale/dna/build/`. A build writes nothing beside the seed.
+
+- **Fixed: `std::http::Server` no longer keeps what a request allocated.** Each connection is served in a child of the Server that dissolves with it, so a server's memory no longer grows with the requests it answers (a 450 KB response used to grow the process 450 KB per request).
+- **Fixed: iris's memory is bounded.** `fuse-hl` indexes its live-locus table instead of scanning it per event, holds at most 8192 rows, keeping the ones born first (`/snapshot` counts births past the bound in `loci_untracked`), and no longer grew without end on a live organism (it reached 10 GB).
+- **Changed: `hale iris` says how its observer ended.** A `fuse-hl` killed by a signal is named, and `hale iris` exits 128 plus the signal, where it used to exit 1 without a word.
+
+- **A refused allocation aborts where it happens.** When the operating system refuses the arena a chunk (an address-space or cgroup limit, an exhausted machine), the process now aborts at that call with one line naming the arena, the size asked for, the chunk needed, what the arena holds and the caller, instead of returning NULL and crashing later in unrelated code. A full `fixed_size` cell and an arena at its byte cap still return NULL to the callers that route it.
+
+- **Changed (breaking): a second `on_failure` for one child type is an error.** A failing child reaches the first handler declared for its type, so a second handler for the same type could never run; `hale check` and `hale build` now refuse it where it stands and point at the first. Put everything a failure of that type needs in the one handler.
+
+- **A container a handler hands a resident: the rule is stated and the refusal names the fix (GH #712).** A value handed to a resident is copied at the store; a locus, such as a `@form(vec)` a bus handler built, is a borrow that must outlive its holder, and `hale check`, `build`, `run` and `test` refuse it at the argument. The refusal now says a container a handler builds belongs to that dispatch and that a resident that must keep its rows copies them in its own `birth()`. The spec's "the checker does not yet diagnose it" is replaced with the rule.
+
+- **A seed's compose takes its host ports free.** `hale dna init` now picks each of memory's, the nerves' and the senses' host ports when it makes the seed: the seed's own candidate, stepped past any port something on the machine already listens on. Before, the ports were hashed from the seed's name alone, so a seed could be handed a port another server holds (a CI runner's NATS on 4222) or another seed's. `hale dna upgrade` keeps the ports the compose file already publishes.
+
+- **Changed: a name the stdlib declares is declared once.** A program declaration that reuses a bundled stdlib declaration's internal name (e.g. a locus named `__StdHttpServer`), or a second stdlib declaration of one, is refused by `hale check` at the second declaration, naming the first; it used to pass the check and panic the build.
+
+### A model key and the forge token come from the vault alone (GH #989, PR #1237)
+
+- **Breaking:** a hosted model's key is the vault's `model-<key>` slot, read in the statement that sends a request. `HostedCredential { key: "…" }` replaces `env_var`, and no model key is read from the environment. `hale dna init` discovers keys in the vault, and the credential check names a key the vault lacks. Move a key over with `hale dna secret set <KEY>`.
+- **Breaking:** the forge token is the vault's `forge-token`. With none provisioned, a forge call refuses and names `hale dna secret set FORGE_TOKEN`; it no longer falls back to `gh`'s ambient login.
+- The head's `GET /head` `credentials` gains `vault_present`: the catalog's keys whose vault slot holds a value. `file_sources` and `env_present` are the sources `dna.secret.set` fills a slot from.
+
+### Memory's DSNs carry no password (GH #989, PR #1239)
+
+- The DSNs the organism makes for its own roles, and the compose database owner's, name the vault entry that holds the password (`postgres://<role>@host:port/db?sslmode=…&vault=postgres-<role>`) instead of carrying it, and pq presents that entry in its SCRAM handshake. `hale dna memory migrate` prints DSNs of this form. An operator's own DSN with a password in it connects as before.
+
+### The attached application holds a broker account of its own (GH #989, PR #1241)
+
+- **Breaking:** the shared `app` user of the nerves is gone. The application the record attaches is named by its project (the project's name as a subject token, recorded as `name` on `application.attached`), and its own user `app-<name>` may publish on `<org>.app.<name>.>` alone. An application publishes under its project's name. `hale dna nerves migrate` prints its user as `HALE_DNA_NATS_USER_APP` beside `HALE_DNA_NATS_VAULT_APP`, and an application connects with both. `hale dna upgrade` draws the account for an existing seed.
+- `hale dna application remove [project] [--as <who>]` writes `application.detached` and revokes the account: its user, its password and its vault entry, with compose's nerves restarted.
+
+### Violations are recorded where their owner absorbs them (GH #989, PR #1246)
+
+- **Breaking:** `nerves.lost` is gone. An adapter that cannot deliver records `violation.recorded {kind: adapter_undeliverable, subject: nerves, owner, detail}` instead.
+- A leg whose lease expires with no outcome records `violation.recorded {kind: lease_unsettled}` once, and the attempt is asked again.
+- A heart whose pull is refused while its connection holds (its durable or stream deleted) records `violation.recorded {kind: pulse_stopped}` once per outage, makes the durable again, and goes on.
+- `hale dna board` counts the violations recorded and lists the latest five.
+
+### The assembly is split into its families (C3, PRs #1219–#1255)
+
+`locus Dna` keeps birth, rehydration, the tick, intake, executions and its Reviews. Each family of what it did is a locus of its own that the assembly holds, and the record's rows and their order are unchanged. A `dna::Dna { … }` written by hand, and code that read these off a `Dna`, change as follows:
+
+- **Constructor params that moved:**
+  - `vault` → `evidence: dna::EvidenceStore { vault: … }`;
+  - `binding_policy_syntax`, `edge_facts` → `knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: …, edge_facts: … }`;
+  - `organization_source_facts`, `organization_source_inputs`, `organization_source_apply_inputs` → `org_source: dna::OrganizationSourceRecord { facts: …, inputs: …, apply_inputs: … }`;
+  - `concern_threshold`, `appendage_threshold` → `concerns: dna::ConcernRecord { concern_threshold: …, appendage_threshold: … }`.
+  - `budget` stays on `Dna`, as every genome's `dna/org/main.hl` constructs it.
+- **Methods now on a family:**
+  - `file_evidence`, `redact_evidence`, `hold_evidence`, `release_hold`, `evidence_class` → `evidence.file`, `.redact`, `.hold`, `.release_hold`, `.class_of`;
+  - `schedule(s)` → `scheduler.declare(s, catalog, knowledge_client)`;
+  - `knowledge_ratified`, `practice_in_force` → `knowledge_record.ratified`, `.practice_in_force`;
+  - `case_of_attempt` → `cases.of_attempt`;
+  - `spent_of` → `spending.spent_of`.
+- **Counts and queues now on a family:**
+  - `cases_admitted`, `cases_completed`, `completions_refused`, `held_rows` → `cases.…`;
+  - `edits_reported`, `reports_retried`, `waiting_edits`, `pending_reports` → `attempts.…`.
+- **`status`** reports `record_refusals`: the writes the record refused, summed over the Mutations and Work's cases, each counted where it is written. The count was kept and never reported.
+
+### The book in six parts (PR #1258)
+
+- **The book is organized as six parts:** the language, the locus model, saying what must hold, systems control, the organism and the habitat. Each part opens with a page saying what the layer is and what the next one adds.
+- **The DNA section is now The organism.** It covers the organism part by part, and closes with DNA, the building block.
+- **New chapters:**
+  - constitutions: how an application states its own law, checked at every build;
+  - the habitat, marked as a design rather than the tree.
+- **Every chapter was checked against the tree:** each complete example compiles, and each verb, flag and path exists. Pages that claimed what the tree does not do were corrected.
+
+- **The observer hears a locus's dissolve past the 4,096th birth.** The observation plane named a dissolving locus through a table that held 4,096 instances for the process's life and gave none back, so after that many births the runtime kept emitting births and dropped every dissolve, whatever shape the loci were born in. A dissolved locus's slot is now reused, and the table bounds the loci alive together (16,384).
+
+- **`hale dna <verb> --help` prints the usage and starts nothing.** `hale dna dev --help` used to read the flag as the project directory and bring the seed's compose up; `init`, `upgrade` and the host verbs read it as a path. `--help` or `-h` right after any `hale dna` verb now prints the `hale dna` usage and exits 0 before the verb runs.
+
+- **A locus born in a param child's method bubbles to the ancestor that accepts it.** A program crashed (exit 139) when a locus was born in the method of a locus that is a param default of another, and the outer locus accepted it (`World { fleet: Fleet = Fleet { } }`, `accept(s: Ship)`, `Ship { … }` born in `Fleet.spawn`). The pointer the birth chain threads to the bubble site was written from the wrong parent, and after the holder's own params were built; both are fixed, including a grandchild param child.
+
+- **`lotus_arena_alloc` is a tail call into the bump allocator again.** The out-of-memory abort added in #1227 put a result check on every allocation and cost the `field_*` benchmarks 3-5% (`field_whole_struct` 72.7 ms to 76.2 ms). The abort now lives in the bump's cold path; the report is the same, and the benchmarks are back at their earlier numbers.
+
+### A bare fallible stdlib call is an error (GH #738)
+
+- A stdlib call the signature table marks `fallible` and that carries no `or` is now a type error in `hale check`, `hale verify` and `hale build`. The legacy Int-status form (`let r: Int = std::io::fs::write_file(..)`) is the bare form and is refused too.
+- **Migration:** choose a disposition per site: `or raise`, `or <fallback>`, `or handler(err)`, or `or discard` where ignoring the failure is the intent. Code that read the write status moves the call into a `fallible` helper that `or raise`s.
+- `hale check --strict-fallible` is removed; drop it from scripts (it is now an unknown flag).
 
 ## v0.21.0 — the DNA prerelease (2026-09-21)
 
