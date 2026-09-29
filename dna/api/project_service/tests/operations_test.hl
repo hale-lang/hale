@@ -223,6 +223,7 @@ locus OperationCases {
         std::test::assert_eq_str(head::catalog_credentials(self.root + "/plain"), "", "no catalog, no names");
         let json = head::credentials_json(self.cfg, self.project);
         std::test::assert(std::json::valid(json) && len(std::json::find_field_raw(json, "needed")) > 2, "the credentials object: " + json);
+        std::test::assert_eq_str(std::json::find_field_raw(json, "vault_present"), "[]", "the vault holds none of the catalog's keys yet: " + json);
         std::io::fs::mkdir(self.cfg.sources_dir) or discard;
         std::test::assert(head::write_private(self.cfg.sources_dir + "/SOME_KEY", "value\n"), "a source file");
         std::test::assert(std::str::contains(head::credentials_json(self.cfg, self.project), "\"file_sources\": [\"SOME_KEY\"]"), "file sources are listed by name: " + head::credentials_json(self.cfg, self.project));

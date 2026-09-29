@@ -24,7 +24,7 @@ created …/chat/dna/org/purpose.hl
 created …/chat/dna/org/law.hl
 created …/chat/dna/org/models.hl
 created …/chat/dna/org/work.hl
-models  found   OPENAI_API_KEY set, no ollama on PATH
+models  found   OPENAI_API_KEY in the vault, no ollama on PATH
 models  frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY) · desk = llama3 (ollama at 127.0.0.1:11434, not found)
 models  leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)
 created …/chat/dna/org/main.hl

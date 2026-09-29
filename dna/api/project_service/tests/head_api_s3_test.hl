@@ -195,6 +195,7 @@ locus S3HeadCases {
         self.state_of(state, "dna.models.probe", true, "");
         let credentials = self.f.json.raw(state, "credentials");
         std::test::assert(self.f.json.count(self.f.json.raw(credentials, "needed")) > 0, "the made project's catalog names credentials: " + credentials);
+        std::test::assert_eq_str(self.f.json.raw(credentials, "vault_present"), "[]", "the vault holds no key yet (GH #989: the one source a key is read from)");
         std::test::assert_eq_str(self.f.json.raw(credentials, "file_sources"), "[]", "no file source yet");
         std::test::assert_eq_str(self.f.json.raw(credentials, "env_present"), "[]", "no catalog credential is set in the head's environment");
     }
@@ -250,7 +251,9 @@ locus S3HeadCases {
         std::test::assert_eq_str(std::io::fs::read_file(slot) or "", FILE_SECRET, "the verb filled the key's slot of the vault");
         std::test::assert_eq_str(head::mode_of(slot), "600", "the slot is private");
         std::test::assert(!std::io::fs::file_exists(self.sources() + "/openai"), "the file source is consumed");
-        std::test::assert_eq_str(self.f.json.raw(self.f.json.raw(self.f.head_state(), "credentials"), "file_sources"), "[]", "the consumed source is no longer advertised");
+        let after = self.f.json.raw(self.f.head_state(), "credentials");
+        std::test::assert_eq_str(self.f.json.raw(after, "file_sources"), "[]", "the consumed source is no longer advertised");
+        std::test::assert(std::str::contains(self.f.json.raw(after, "vault_present"), "\"OPENAI_API_KEY\""), "the key its slot now holds is reported by the vault: " + after);
         std::test::assert(!anywhere_under(self.f.state, FILE_SECRET), "the value is in no receipt, log or script of the head");
         let log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id, "", ""), "HeadLogResponse", 200));
         let text = self.f.json.string(log, "text");

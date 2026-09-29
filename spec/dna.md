@@ -1465,7 +1465,7 @@ record's.
 | `person.retired` | record | someone left, and who took their work |
 | `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
 | `body.provisioned` | record | a machine made able to run it |
-| `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is set where the body runs |
+| `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is in the vault where the body runs |
 | `secret.rotated` | record | a credential set or rotated — the name and the place, never the value |
 | `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization (`hale dna schedule declare`), relayed by the host; its answer under the request's id: `declared`, `why` |
 | `schedule.declared` / `schedule.refused` | ledger | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`); or one that would not be declared (`why`, and `hole` for a convener nobody holds), or an occurrence whose admission was refused (`occurrence`, `why`) |
@@ -3319,9 +3319,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   carries the value: the part that sends it reads it from the vault.
   `secret rotate <NAME>` is the same for a name already set. The record
   gets `secret.rotated <NAME> {where, by}` and nothing else. At start
-  the host checks the credentials its catalog names (`env_var` in
-  `dna/org/models.hl`): when none is set in its environment or its slot
-  it says so and appends `body.credential_missing model {any_of}`;
+  the host checks the credentials its catalog names
+  (`HostedCredential { key }` in `dna/org/models.hl`): when none is in
+  its slot of the vault (`model-<key>`, the one source a model key has;
+  no environment variable is read) it says so and appends `body.credential_missing model {any_of}`;
   `status` and `board` carry "no credential for the model" until a
   start finds one and appends `body.credential_present`.
 - **What a body holds on a machine is bound to its record (#635).**
@@ -3424,10 +3425,12 @@ The organization's models are a catalog in source (GH #583 M1):
   `FakeModel` (scripted: `answer`, `answer_file`, `answers_dir`,
   `answer_role`; `fail_after` refuses after that many calls). A hosted
   adapter's `complete` carries `external_model`; its credential is a
-  sealed `HostedCredential` that names its source (`env_var`) and its
-  `scheme` — `bearer` (an `Authorization: Bearer` header) or
-  `x-api-key` — and never returns the bytes: the credential composes
-  the header, no adapter does. An API error is refused as `http
+  sealed `HostedCredential` that names its key (`key`, whose vault slot
+  is `model-<key>`; GH #989, the vault is the one source a model key
+  has, and no environment variable is read) and its `scheme` — `bearer`
+  (an `Authorization: Bearer` header) or `x-api-key` — and never returns
+  the bytes: the credential reads its slot and composes the header in
+  the one statement that sends the request, no adapter does. An API error is refused as `http
   <status> <the API's message>`; a transport failure as `http 0
   <kind> <detail>`.
 - **The harness.** `HarnessModel` runs an installed coding harness
@@ -4451,7 +4454,7 @@ secret, by its vault name, and never creates one.
 | `nats-<org>-<role>`, for `owner spine head app reflexes` | drawn | the nerves' accounts (**The nerves**) |
 | `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
-| `forge-token` | slot | the forge's token (else `gh`'s own login) |
+| `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
 | `model-<NAME>`, per credential the catalog names | slot | a model's key (**Models**) |
 
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
@@ -4491,7 +4494,8 @@ secret, by its vault name, and never creates one.
 - **`hale dna secrets`** lists every secret the organism requires,
   whether the vault holds it, and the remedy for each missing one;
   never a value. The board says so for each missing one (a model key
-  is reported by the body, which may hold it in its environment).
+  is reported by the body, since the vault that matters is the one on
+  the machine that calls the model).
 
 ## The fleet
 

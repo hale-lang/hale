@@ -175,11 +175,11 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
 
     // ---- secrets ----
     let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
-    let cred = catalog.split("env_var: \"").nth(1).expect("the catalog names a credential").split('"').next().unwrap().to_string();
+    let cred = catalog.split("HostedCredential { key: \"").nth(1).expect("the catalog names a credential").split('"').next().unwrap().to_string();
     let (ok, out) = hale_env(&["dna", "secret", "set", &format!("{cred}=sk-on-argv")], &app, &home, None);
     assert!(!ok && out.contains("never goes on the command line"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "set", "not a name"], &app, &home, Some("x\n"));
-    assert!(!ok && out.contains("is not an environment variable name"), "{out}");
+    assert!(!ok && out.contains("is not a secret's name"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some(""));
     assert!(!ok && out.contains("no value was given on stdin"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "rotate", &cred], &app, &home, Some("x\n"));
@@ -192,11 +192,11 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     let l = std::fs::read_to_string(&log).unwrap();
-    assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in the vault's slot for it")), "{l}");
+    assert!(l.contains(&format!("no credential for the model: none of {cred} is in its slot of the vault")), "{l}");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home, None);
-    assert!(ok && st.contains(&format!("; no credential for the model (none of {cred} is set where the body runs)")), "{st}");
+    assert!(ok && st.contains(&format!("; no credential for the model (none of {cred} is in the vault where the body runs)")), "{st}");
     let (ok, board) = hale_env(&["dna", "board"], &app, &home, None);
-    assert!(ok && board.contains(&format!("body: no credential for the model (none of {cred} is set where the body runs)")), "{board}");
+    assert!(ok && board.contains(&format!("body: no credential for the model (none of {cred} is in the vault where the body runs)")), "{board}");
     stop_host(&app, &mut host);
     assert!(journal(&app).contains("\"kind\": \"body.credential_missing\", \"entity\": \"model\""));
 

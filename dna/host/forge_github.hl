@@ -9,24 +9,23 @@
 
 import "../core" as dna;
 
-// GH #989: when the vault holds a forge token, `gh` uses it — scoped to
-// this one call. An argv element is any co-resident user's to read from
-// /proc/<pid>/cmdline, and nothing here reveals the token into a value at
-// all (spec/semantics.md § "@sealed"): the sealed `Credential` writes it
-// into a file only this user can read — created 0600 by openat(2), in a
-// fresh `mktemp -d` directory (0700, outside any work tree) —
-// and `gh` reads it from there through `GH_TOKEN="$(cat …)"`, so the token
-// lives only in `gh`'s own environment. The script unlinks the file as
-// soon as it has read it, and the directory goes after the call. No token
-// provisioned is not a refusal: `gh`'s own ambient login (a developer's
-// `gh auth login`, a CI runner's token) is what every deployment already
-// had, and vaulting the forge token is opt-in until one is provisioned.
-// A token provisioned but not deliverable IS a refusal: the call fails
-// rather than run as whoever `gh` happens to be logged in as.
+// GH #989: the forge token is the vault's (`forge-token`, which `hale dna
+// secret set FORGE_TOKEN` fills), the one source a DNA credential has, and
+// `gh` uses it, scoped to this one call. With none provisioned, nothing
+// runs: `gh`'s own ambient login (a developer's `gh auth login`, a CI
+// runner's token) is never the organization's identity in its place. An
+// argv element is any co-resident user's to read from /proc/<pid>/cmdline,
+// and nothing here reveals the token into a value at all (spec/semantics.md
+// § "@sealed"): the sealed `Credential` writes it into a file only this user
+// can read — created 0600 by openat(2), in a fresh `mktemp -d` directory
+// (0700, outside any work tree) — and `gh` reads it from there through
+// `GH_TOKEN="$(cat …)"`, so the token lives only in `gh`'s own environment.
+// The script unlinks the file as soon as it has read it, and the directory
+// goes after the call.
 fn gh(args: String) -> dna::RunResult {
     let token = std::secret::Credential { vault: "forge-token" };
     if !token.ready() {
-        return dna::run_tool("gh\n" + args);
+        return dna::RunResult { code: 1, stderr: "no forge token: the vault holds none (`hale dna secret set FORGE_TOKEN`); gh's own login is never used in its place" };
     }
     // a token is provisioned: it is the identity, or nothing runs —
     // never `gh`'s ambient login in its place

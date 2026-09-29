@@ -69,9 +69,12 @@ fn main() {
 "#;
 
 /// The fake `gh`: logs every invocation; `pr create` prints a URL;
-/// `pr view N` prints `<dir>/pr<N>.json`; `pr comment` logs.
+/// `pr view N` prints `<dir>/pr<N>.json`; `pr comment` logs. It answers
+/// only as the forge token the vault holds (GH #989): a call carrying any
+/// other identity, or none, fails.
 const FAKE_GH: &str = r#"#!/bin/sh
 dir="$(dirname "$0")"
+[ "$GH_TOKEN" = "fake-forge-token" ] || { echo "fake gh: not the vault's forge token" >&2; exit 4; }
 echo "$@" >> "$dir/gh.log"
 case "$1 $2" in
   "pr create") echo "https://github.com/o/r/pull/7" ;;
@@ -98,6 +101,12 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     std::fs::write(bin.join("gh"), FAKE_GH).unwrap();
     let _ = Command::new("chmod").args(["+x", &bin.join("gh").to_string_lossy()]).status();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    // the forge's token is the vault's, the one source `gh` is handed
+    std::fs::write(vault::dir().join("forge-token"), "fake-forge-token").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(vault::dir().join("forge-token"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
         let _s = trace::Span::new("hale", args.join(" "));
         let out = vault::hale()

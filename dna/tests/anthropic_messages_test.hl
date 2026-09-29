@@ -113,6 +113,9 @@ main locus App {
 // The fake endpoint's port is one `dna::free_port` bound, never a number
 // the fixture invents: the adapters are handed the endpoint built from it.
 fn main() {
+    // the model key is the vault's (GH #989): `hale test` gives this file a
+    // vault of its own, and its slot for the key is written here
+    std::io::fs::write_file(std::secret::vault_local_dir() + "/model-TEST_MODEL_KEY", "test-model-key") or discard;
     let port = dna::free_port(91);
     let endpoint = "http://127.0.0.1:" + to_string(port) + "/v1/messages";
     App {
@@ -120,26 +123,26 @@ fn main() {
         hosted: dna::AnthropicMessages {
             name: "deep", model: "test-model",
             endpoint: endpoint,
-            // any present env var stands in for the API key; the server only checks presence
-            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" },
+            // the key is the vault's slot for it, written by main; the server only checks presence
+            credential: dna::HostedCredential { key: "TEST_MODEL_KEY", scheme: "x-api-key" },
             max_tokens: 64, temperature_milli: 200
         },
         keyless: dna::AnthropicMessages {
             name: "deep", model: "test-model",
             endpoint: endpoint,
-            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3b", scheme: "x-api-key" }
+            credential: dna::HostedCredential { key: "HALE_DNA_NO_SUCH_KEY_7f3b", scheme: "x-api-key" }
         },
         overloaded: dna::AnthropicMessages {
             name: "deep", model: "overloaded-model",
             endpoint: endpoint,
-            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" }
+            credential: dna::HostedCredential { key: "TEST_MODEL_KEY", scheme: "x-api-key" }
         },
         // a bearer credential on the Anthropic wire: the scheme is the
         // credential's, and the endpoint refuses it
         wrong_scheme: dna::AnthropicMessages {
             name: "deep", model: "test-model",
             endpoint: endpoint,
-            credential: dna::HostedCredential { env_var: "HOME" }
+            credential: dna::HostedCredential { key: "TEST_MODEL_KEY" }
         }
     };
 }

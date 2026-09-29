@@ -9,7 +9,7 @@ machine had and yours to edit:
 ```hale,fragment
 // a backend is a constructor function
 fn frontier() -> dna::OpenAiChat {
-    return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 };
+    return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { key: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 };
 }
 fn fast() -> dna::OpenAiChat { … }
 fn desk() -> dna::LocalModel {
@@ -42,21 +42,24 @@ it.
 
 ## What init found
 
-`init` looks at the environment and `PATH` and writes the catalog
-for what is there, then says so:
+`init` looks at the vault (the model keys `hale dna secret set` put
+there) and `PATH` and writes the catalog for what is there, then says
+so:
 
 ```text
 created …/chat/dna/org/models.hl
-models  found   ANTHROPIC_API_KEY set, ollama on PATH (llama3), claude on PATH
+models  found   ANTHROPIC_API_KEY in the vault, ollama on PATH (llama3), claude on PATH
 models  frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_API_KEY) · desk = llama3 (ollama at 127.0.0.1:11434)
 models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)
 ```
 
-With `ANTHROPIC_API_KEY` the hosted backends are `AnthropicMessages`
-with the strongest models; with `OPENAI_API_KEY` alone, `OpenAiChat`
-to OpenAI; with neither, the catalog still names OpenAI with the
-key's name as a placeholder, the hosted backends are simply not
-permitted until it is set, and every review waits for the Board. `ollama` on `PATH` makes its first listed model
+With `ANTHROPIC_API_KEY` in the vault the hosted backends are
+`AnthropicMessages` with the strongest models; with `OPENAI_API_KEY`
+alone, `OpenAiChat` to OpenAI; with neither, the catalog still names
+OpenAI with the key's name as a placeholder, the hosted backends are
+simply not permitted until `hale dna secret set OPENAI_API_KEY` puts it
+there, and every review waits for the Board. A key in the environment
+is not a key: the vault is the one source a model key has. `ollama` on `PATH` makes its first listed model
 the desk model. `claude` (else `codex`) on `PATH` becomes
 `harness()`: the editor's and the agent's quick tier, and with no key
 at all every model-backed slot, so a laptop with a harness and no key
@@ -316,8 +319,12 @@ makes](./attach.md)).
 `HostedCredential` is `@sealed`: its params are readable only from
 inside it, so no holder can read the key back, and the generated law
 requires it (`credentials_sealed: require sealed(all credentials)`).
-It takes the *name* of a source (`env_var`), never the bytes, and
-loads at birth, so there is no construction site at which anything
-held the material. Its `scheme` says how the wire wants the key —
+It takes the key's *name* (`key`), never the bytes. The key is the
+vault's slot for it, `model-<key>`, which `hale dna secret set <key>`
+fills: the vault is the one source a DNA credential has, and no
+environment variable is read. The slot is read where the key is
+presented, in the header line that sends the request, so there is no
+construction site, and no moment between calls, at which anything
+holds the material. Its `scheme` says how the wire wants the key —
 `bearer` or `x-api-key` — and the credential composes that header
 itself; an adapter hands it only its own headers. See [Claims & the law](../claims.md) on `@sealed`.

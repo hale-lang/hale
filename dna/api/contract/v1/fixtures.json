@@ -11252,6 +11252,7 @@
         },
         "credentials": {
           "needed": [],
+          "vault_present": [],
           "file_sources": [],
           "env_present": []
         },
@@ -11443,6 +11444,7 @@
           "needed": [
             "OPENAI_API_KEY"
           ],
+          "vault_present": [],
           "file_sources": [
             "OPENAI_API_KEY"
           ],
@@ -12241,6 +12243,7 @@
         },
         "credentials": {
           "needed": [],
+          "vault_present": [],
           "file_sources": [],
           "env_present": []
         },

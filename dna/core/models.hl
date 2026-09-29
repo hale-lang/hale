@@ -341,32 +341,28 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
     };
 }
 
-// A hosted credential: read from the environment at birth, presented
-// on the wire from inside this sealed locus, never returned. The only
+// A hosted credential: the vault's slot for a model key (`model-<key>`,
+// which `hale dna secret set <key>` fills), presented on the wire from
+// inside this sealed locus, never returned (GH #989: the vault is the one
+// source a DNA credential has; no environment variable is read). The only
 // things that leave are a readiness bit, a fingerprint (a correlation
 // handle over a high-entropy token), and HTTP responses. The `scheme`
 // says how the wire wants it (GH #583 M2): `bearer` (an
 // `Authorization: Bearer` header: OpenAI and everything that speaks
 // its shape) or `x-api-key` (Anthropic's native API); no adapter
 // composes a header with the material in it.
+// The vault's name for the model key `key`.
+fn model_key_slot(key: String) -> String { return "model-" + key; }
+
 @sealed locus HostedCredential {
-    params { env_var: String = "OPENAI_API_KEY"; scheme: String = "bearer"; value: Bytes = b""; }
-    birth() {
-        if len(self.env_var) > 0 && std::env::var_exists(self.env_var) {
-            self.value = std::bytes::from_string(std::env::var(self.env_var));
-        }
-    }
-    // GH #989: with nothing in the environment, the key is the vault's slot
-    // for it (`model-<env_var>`, which `hale dna secret set` fills), read
-    // where it is presented and nowhere else
-    fn slot() -> String { return "model-" + self.env_var; }
-    fn ready() -> Bool { return len(self.value) > 0 || std::secret::Credential { vault: self.slot() }.ready(); }
+    params { key: String = "OPENAI_API_KEY"; scheme: String = "bearer"; }
+    // the vault's name for it, read where it is presented and nowhere else
+    fn slot() -> String { return model_key_slot(self.key); }
+    fn ready() -> Bool { return std::secret::Credential { vault: self.slot() }.ready(); }
     @effects(is: { secret_use })
     fn fingerprint() -> String {
         if !self.ready() { return ""; }
-        if len(self.value) == 0 { return "fp:" + std::secret::Credential { vault: self.slot() }.fingerprint(); }
-        let h = hex(std::crypto::sha256(self.value));
-        return "fp:" + h[0..16];
+        return "fp:" + std::secret::Credential { vault: self.slot() }.fingerprint();
     }
     // POST a JSON body with the credential attached HERE, per its
     // scheme; `extra` is the adapter's own headers (CRLF-terminated
@@ -381,7 +377,7 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
             url: u,
             headers: "Content-Type: application/json\r\n" + extra
                 + (if self.scheme == "x-api-key" { "x-api-key: " } else { "Authorization: Bearer " })
-                + (if len(self.value) > 0 { std::str::from_bytes(self.value) } else { std::secret::Credential { vault: self.slot() }.reveal_text() }),
+                + std::secret::Credential { vault: self.slot() }.reveal_text(),
             body: std::bytes::from_string(body)
         }) or raise;
     }
@@ -518,7 +514,7 @@ locus AnthropicMessages {
         endpoint: String = "https://api.anthropic.com/v1/messages";
         version: String = "2023-06-01"; // the `anthropic-version` header
         model: String = "claude-sonnet-5";
-        credential: HostedCredential = HostedCredential { env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key" };
+        credential: HostedCredential = HostedCredential { key: "ANTHROPIC_API_KEY", scheme: "x-api-key" };
         max_bytes: Int = 800000;
         temperature_milli: Int = -1; // < 0: the provider's default; 0..1000 sent as 0.000..1.000
         max_tokens: Int = 4096; // required by the API; a whole-file rewrite needs room

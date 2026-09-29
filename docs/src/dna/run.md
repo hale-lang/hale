@@ -362,14 +362,17 @@ the organism's secrets (the local vault, /home/riley/.cache/hale/vault):
   present  nats-dna_4f…-owner  the nerves: the owner's account
   …
   present  oidc-client-dna-local  the skin: the head's OIDC client secret (the local stub's)
-  MISSING  forge-token  the forge's token (else `gh`'s own login) — a person supplies it: `hale dna secret set FORGE_TOKEN`
+  MISSING  forge-token  the forge's token — a person supplies it: `hale dna secret set FORGE_TOKEN`
   MISSING  model-ANTHROPIC_API_KEY  the model's key ANTHROPIC_API_KEY — a person supplies it: `hale dna secret set ANTHROPIC_API_KEY`
 2 missing
 ```
 
 It never prints a value. The board says the same for each one missing
-but a model key, which the body reports itself, since it may hold the
-key in its environment.
+but a model key, which the body reports itself: the vault that matters is
+the one on the machine that calls the model. A model key and the forge's
+token are read from the vault alone. No environment variable stands in
+for either, and without the forge's token nothing is done at the forge in
+the name of whoever `gh` happens to be logged in as.
 A start that finds a drawn secret missing refuses and names it:
 `hale dna upgrade` draws it. With a real vault (`HALE_VAULT_ADDR`) the
 secrets are provisioned out of band, and the bootstrap only checks.
