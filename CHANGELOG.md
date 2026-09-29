@@ -8,44 +8,56 @@ behavior.
 
 ## Unreleased
 
-The organism gets its subsystems. DNA, the organism you run with `hale dna`, now keeps its memory in Postgres, one per record, and moves every fact between its parts over its nerves. It takes an application's events into its heart and its readings into its senses, signs people and services in at its skin, and hands work to legs through its head. Schedules point at workflow definitions, and the repository's graph is the one org chart. Underneath it, a program's API is a first-class binding with a principal, roles and gates, Hale builds and runs on macOS and cross-compiles for Linux, and a round of checker, codegen and supervision fixes turns silent misbehaviour into located errors. It is a prerelease: the shapes still move under fixtures rather than under customers. The item-level notes follow this page, one entry per change.
+The organism gets its subsystems. DNA, the organism you run with `hale dna`, now keeps its memory in Postgres, one per record, and moves every fact between its parts over its nerves. It takes an application's events into its heart and its readings into its senses, signs people and services in at its skin, provisions every secret it needs from its own bootstrap, and hands work to legs through its head, under one budget gate. Schedules point at workflow definitions, and the repository's graph is the one org chart. Underneath it, a program's API is a first-class binding with a principal, roles, gates and an HTTP transport; a revealed secret must be consumed where it is revealed; Hale builds and runs on macOS and cross-compiles for Linux; and a round of checker, codegen, runtime and supervision fixes turns silent misbehaviour into located errors or a loud stop. It is a prerelease: the shapes still move under fixtures rather than under customers. The item-level notes follow this page, one entry per change.
+
+**Performance.** The six benchmarks v0.21.0 shipped 17–50× slow (`field_alt_empty`, `field_alt_short`, `field_bytes_alt`, `field_whole_struct`, `vec_queue_pop`, `vec_set_bytes`) are back at baseline, fixed by PRs #1057 (self-field alternation) and #1060 (`@form(vec)` pop and set free what they replace); nothing else moved outside its band.
+
+### Breaking changes
+
+- **A revealed secret is consumed in the statement that reveals it (PR #1216):** only into a wire write's payload, a whole-value comparison or a `@secret` parameter; `Credential.write_private` writes one to a private 0600 file.
+- **A handle a method keeps is a borrow its receiver holds (GH #1048):** a `Router` handler built in a function that returns or fills the router is refused.
+- **A second `on_failure` for one child type is an error (PR #1229),** and a declaration that reuses a stdlib internal name is refused (PR #1233).
+- **DNA:** the Board's field is `board`, not `membrane` (PR #1204); the Unix-socket membrane is gone (PR #1201); `HALE_DNA_OIDC_SECRET` gives way to the vault (GH #989); a program's own `via` mark is gone (PR #1209).
 
 ### The organism's subsystems
 
-- **Memory and nerves (GH #985, #986).** Memory is Postgres per record, with a role per client and the ledger's gate in its insert function. Every fact between the organism's parts travels over NATS, and the Unix-socket transport is gone (PR #1201). The head pushes to the face as rows land.
-- **Heart and senses (GH #987, #988).** An application's events become `reading.recorded` rows before anything acts on them (PR #1191). Every long-running part serves its readings to a Prometheus the seed compose brings up, and a reflex reads them (PR #1197).
-- **Skin (GH #989).** Every HTTP caller of a head is a verified OpenID Connect subject (ES256, PR #1188). `std::secret::Credential` reads from a vault (PR #1189), and a service with no person behind it reads through the head with a `client_credentials` token of its own (PR #1200).
-- **Legs (GH #946).** `hale dna work` is a leg made of API calls: the hat as structure, claim and outcome, a worker loop, the model leg and a walkthrough. Every performer declares an effect class, a leg works only as a position its person holds, and its candidate becomes a Mutation and its Review (PRs #1117, #1124, #1127, #1130, #1134, #1136, #1149, #1166, #1179, #1180, #1184).
-- **Schedules (GH #1143).** A schedule is a definition, its args and a wall-clock cadence, convened by a position. An occurrence is one execution, keyed by its time, and the optimize pass is a seeded operating practice.
-- **The head (GH #1104, #1110, #1144, #1029).** The head is the record's api binding, with the record as its membership source. A judgment goes through the head, and the face's native command lanes run on the real host.
+- **Memory and nerves (GH #985, #986).** Memory is Postgres per record, with a role per client and the ledger's gate in its insert function. Every fact between the organism's parts travels over NATS, and the head pushes to the face as rows land.
+- **Heart and senses (GH #987, #988).** An application's events become `reading.recorded` rows before anything acts on them. Every long-running part serves its readings to a Prometheus the seed compose brings up, and a reflex reads them.
+- **Skin and secrets (GH #989).** Every HTTP caller of a head is a verified OpenID Connect subject, and a service reads with a `client_credentials` token of its own. `std::secret::Credential` reads from a vault; `hale dna init` and `upgrade` provision every secret the organism needs from one list, and only the adapter that puts a credential on the wire ever holds it.
+- **Legs (GH #946, #1131).** `hale dna work` is a leg made of API calls: the hat, claim and outcome, a worker loop, the model leg and a walkthrough. Every performer declares an effect class, a leg works only as a position its person holds, its candidate becomes a Mutation and its Review, and it asks the budget's one gate before any model call. Tokens and cost are summed per task and per attempt.
+- **Schedules (GH #1143).** A schedule is a definition, its args and a wall-clock cadence, convened by a position; an occurrence is one execution, keyed by its time.
+- **The head (GH #1104, #1110, #1144, #1029).** The head is the record's api binding, with the record as its membership source, and serves its commands over HTTP under an OIDC or service token. A judgment goes through the head, and a leg asks again a command the moving record left undecided.
+- **Seeds side by side.** Each seed's compose is a project of its own, and its host ports are picked free when the seed is made (PR #1232).
 
 ### The graph and the organization
 
 - **The repository as one graph (GH #1085, #1090, #1086).** The graph lives in the record and in memory, and `hale dna init` reads a repository into it. `hale dna show org` and `show processes` read it back.
-- **Holes, routing and one org chart (GH #1091, #1087, #1089, #1123).** Holes are proposals at record birth, and a Review takes its signers from the graph's route. The owners map is retired: a firm is an `organization` node that holds positions.
+- **Holes, routing and one org chart (GH #1091, #1087, #1089, #1123).** Holes are proposals at record birth, and a Review takes its signers from the graph's route. A firm is an `organization` node that holds positions.
 - **The workflow catalog (GH #995, #994).** Every step names the one store it writes. The operating practices are seeded beside the design practices, and `hale dna ask` is now `hale dna task create`.
 
 ### The api binding (GH #1104)
 
-- **Binding and clients (GH #1106, #1107).** `bindings { api: unix(…) }`, or `hale run --api`, serves a program's topics and exposes over one socket. The binding describes itself, and `hale call`, `watch`, `admin` and `mcp --app` read only that description.
-- **Principal and gates (GH #1108, #1109).** `std::api::Principal` and a handler's `ctx: std::api::Context`; `role` declarations and `@gated(role: …)` answered by a membership source.
+- **Binding and clients (GH #1106, #1107).** `bindings { api: unix(…) }`, or `hale run --api`, serves a program's topics and exposes; the binding describes itself, and `hale call`, `watch`, `admin` and `mcp --app` read only that description.
+- **Principal and gates (GH #1108, #1109).** `std::api::Principal` and a handler's `ctx`; `role` declarations and `@gated(role: …)` answered by a membership source.
+- **Serve and HTTP (PR #1209).** `serve: [...]` names the imported loci a binding serves, and `http(host, port, principals: …)` gives it a bearer-token HTTP transport with the socket's surface and gates.
 
 ### Platforms
 
 - **macOS (GH #970).** Hale and DNA run on macOS: a kqueue backend for `async_io`, the host's gaps, a body fence that reaches orphaned tools, and CI.
-- **Linux targets (GH #970, #969).** Linux binaries cross-compile from a Mac, `musl` targets link statically, and `--target` refuses another host's triple instead of building for the host.
+- **Linux targets (GH #970, #969).** Linux binaries cross-compile from a Mac, `musl` targets link statically, and `--target` refuses another host's triple.
 
 ### Language, checker and runtime
 
 - **Scoping and declarations.** A `let` is its block's, in codegen and in `hale check <file>` alike (GH #1132, #1139). A name declared twice in one type is an error (GH #1141). `hale check --flows` names the release clause that makes a flow (GH #736).
-- **Types and ownership.** Interface methods declare `fallible(E)` (GH #732), an imported fn is a value (GH #1082), a borrow must outlive its holder (GH #730, #967), and `let` copies a struct (GH #713). A bare fallible stdlib call warns, and is an error under `--strict-fallible` (GH #738).
-- **Supervision and shutdown.** `on_failure` picks its handler by the failing child's type (PR #1199). A child built anywhere is supervised by its holder (GH #1074, #1035), and a failed child can be restarted and stays readable (GH #1066, #1069). SIGINT and SIGTERM drain the program (GH #1039, #1077).
+- **Types and ownership.** Interface methods declare `fallible(E)` (GH #732), an imported fn is a value (GH #1082), a borrow must outlive its holder (GH #730, #967), a container a handler hands a resident is refused with its fix (GH #712), `let` copies a struct (GH #713), and ownership follows the binding, not the name (GH #1140). A bare fallible stdlib call warns, and is an error under `--strict-fallible` (GH #738).
+- **Supervision and shutdown.** `on_failure` picks its handler by the failing child's type. A child built anywhere is supervised by its holder (GH #1074, #1035), and a failed child can be restarted and stays readable (GH #1066, #1069). SIGINT and SIGTERM drain the program (GH #1039, #1077), and a drain that outlasts its grace names what it waited on.
+- **Runtime.** Two crashes are fixed: a main locus built outside `main` tearing down under its pool, and a free fn's copies piling into its caller's arena (GH #1148). A refused allocation aborts where it happens, naming the arena (PR #1227). `std::http::Server` no longer keeps what a request allocated (GH #578).
 - **Bus and I/O.** A bus payload larger than the wire buffer crosses whole (GH #1155). Adapters keep their keys, codecs and threads and stop leaking (GH #1032, #1034, #1038, #1040, #1041, #1058). A refused TCP connect fails at once (GH #1030).
 
 ### Tools, iris and CI
 
-- **Iris and the face (GH #998, #690, #965).** They are two products: iris inspects running programs, and the face is DNA's people surface.
-- **Tests and builds.** `hale test` runs files in parallel (GH #1009), the stale-binary warning covers the embedded DNA (GH #785), and concurrent builds of one output no longer race (PR #1194).
+- **Iris and the face (GH #998, #690, #965, #578).** They are two products: iris inspects running programs, and the face is DNA's people surface. Iris's memory is bounded, and `hale iris` names a signal that killed its observer.
+- **Tests and builds.** `hale test` runs files in parallel (GH #1009), each on a vault of its own; the stale-binary warning covers the embedded DNA (GH #785), and concurrent builds of one output no longer race (PR #1194).
 - **Changelog and CI.** CHANGELOG entries are fragments under `unreleased/` (PR #1111), and CI runs on free runners with macOS only when its paths change (PRs #1146, #1164, #1167, #1168, #1185, #1186).
 
 ### Tokens per task (GH #946, slice 1)
