@@ -4600,6 +4600,17 @@ modules declaring the same name are the ordinary duplicate-name
 error, and the module's name is not itself a value, a type, or a
 path head.
 
+The bundled stdlib's declarations share that one scope, under their
+internal names (`std::http::Server` is the locus `__StdHttpServer`).
+A program declaration of any kind that reuses one of those names is
+the same duplicate-name error, in the same one namespace: `hale
+check` refuses it where it stands and names the stdlib's
+declaration. The stdlib's own source checked as a program declares
+the same thing again, not a second thing, and is not refused; and a
+library's names reach an importer mangled (`__lib_…`), so only a
+library checked on its own can meet one. The stdlib itself declares
+each name once, which its own test holds it to.
+
 The consequence is a rule, not an implementation detail:
 
 > A declaration inside a `module { }` is **first class**. It is

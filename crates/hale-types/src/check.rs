@@ -786,6 +786,7 @@ pub fn check_bundle_scoped(
     // value reaching a wire write, a comparison or a `@secret` parameter
     // within the statement, and a `@secret` parameter held to the same.
     diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames));
+    diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
     diags
 }
 
