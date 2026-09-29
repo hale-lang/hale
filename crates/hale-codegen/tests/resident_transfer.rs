@@ -32,8 +32,6 @@ use std::process::Command;
 
 use hale_syntax::parse_source;
 
-#[path = "support/build.rs"]
-mod build_opts;
 #[path = "support/harness.rs"]
 mod harness;
 
