@@ -23284,9 +23284,14 @@ void lotus_view_stale_panic(const char *kind,
  * helper compares the view's epoch against the source builder's
  * live mutation_epoch and panics on mismatch; on the OK path
  * returns the underlying data pointer (Bytes-shaped for view(),
- * C-string for text_view()). View struct is passed by value (two
- * INTEGER eightbytes in arg registers per SysV ABI). */
-void *lotus_bytes_view_data(lotus_view_t v) {
+ * C-string for text_view()). The view arrives as its two fields, not as
+ * a struct: a two-word struct by value is two registers under SysV, but
+ * the wasm32 C ABI passes it indirectly while an LLVM aggregate argument
+ * lowers to two scalars, so the two sides disagreed about the signature
+ * and wasm-ld reported a mismatch on every build. Two scalars are the
+ * same call on every target. */
+void *lotus_bytes_view_data(void *src, int64_t epoch) {
+    lotus_view_t v = { src, epoch };
     if (v.epoch == LOTUS_VIEW_EPOCH_STATIC) {
         /* Static-lifetime view (built via lotus_view_from_static_data
          * or the null-handle path of builder_view). `src` is the
@@ -23304,7 +23309,8 @@ void *lotus_bytes_view_data(lotus_view_t v) {
     return b->buf - sizeof(int64_t);
 }
 
-const char *lotus_str_view_data(lotus_view_t v) {
+const char *lotus_str_view_data(void *src, int64_t epoch) {
+    lotus_view_t v = { src, epoch };
     static const char empty[1] = { 0 };
     if (v.epoch == LOTUS_VIEW_EPOCH_STATIC) {
         return v.src ? (const char *)v.src : empty;

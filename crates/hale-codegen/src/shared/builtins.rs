@@ -4116,9 +4116,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // compares the view's epoch against the source builder's
         // live mutation_epoch and panics on mismatch; the static
         // sentinel `epoch == -1` skips the check.
-        // declare ptr @lotus_bytes_view_data({ptr, i64} view)
-        // declare ptr @lotus_str_view_data({ptr, i64} view)
-        let view_data_ty = ptr_t.fn_type(&[view_struct_ty.into()], false);
+        // declare ptr @lotus_bytes_view_data(ptr src, i64 epoch)
+        // declare ptr @lotus_str_view_data(ptr src, i64 epoch)
+        // The view's two fields, not the struct: see the note on the C
+        // definitions (the wasm32 ABI passes a two-word struct indirectly,
+        // an IR aggregate argument lowers to two scalars).
+        let view_data_ty = ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module.add_function(
             "lotus_bytes_view_data",
             view_data_ty,
