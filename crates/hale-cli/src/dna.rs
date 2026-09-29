@@ -777,7 +777,7 @@ fn print_embedded_provenance(dir: &Path) {
     let mut line = format!("embedded dna: {} (hale {TOOLCHAIN})", hale_dna::embedded_short());
     let root = dir
         .canonicalize()
-        .map(|d| crate::find_workspace_root_pub(&d).unwrap_or(d))
+        .map(|d| crate::shared::workspace::find_workspace_root_pub(&d).unwrap_or(d))
         .unwrap_or_else(|_| dir.to_path_buf());
     if let Some(was) = materialized_digest(&root) {
         if was != hale_dna::EMBEDDED_DIGEST {
@@ -1044,7 +1044,7 @@ fn locate(app_dir: &Path) -> Result<App, String> {
     if !seed.is_dir() {
         return Err(format!("{} is not a directory (the app seed)", seed.display()));
     }
-    let root = crate::find_workspace_root_pub(&seed).unwrap_or_else(|| seed.clone());
+    let root = crate::shared::workspace::find_workspace_root_pub(&seed).unwrap_or_else(|| seed.clone());
     let seed_rel = seed
         .strip_prefix(&root)
         .map(|p| {
@@ -1113,7 +1113,7 @@ fn repository_root(dir: &Path) -> Result<Option<PathBuf>, String> {
     if source {
         return Ok(None);
     }
-    match crate::find_workspace_root_pub(&at) {
+    match crate::shared::workspace::find_workspace_root_pub(&at) {
         Some(root) if root != at => Ok(None),
         _ => Ok(Some(at)),
     }
@@ -1335,7 +1335,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
 
 fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let root = crate::find_workspace_root_pub(&start).unwrap_or(start);
+    let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
     if !root.join("vendor/dna").is_dir() && !root.join("dna").is_dir() {
         return Err(format!("{} has no DNA (no vendor/dna or dna/); run `hale dna init` first", root.display()));
     }
@@ -2239,7 +2239,7 @@ fn probe_catalog() -> String {{
 /// The project root and its DNA entrypoint (from `[environments.local]`).
 fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
-    let root = crate::find_workspace_root_pub(&start).unwrap_or(start);
+    let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
     let manifest = root.join("hale.toml");
     let (envs, _) = crate::pkg::read_claims_config(&manifest)?;
     let seed = envs
