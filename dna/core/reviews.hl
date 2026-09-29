@@ -1,0 +1,215 @@
+// The organization's Reviews, as the record holds them (C3, family 9):
+// what a Review requires, routed once and recorded (`review.routed`) and
+// routed again when who holds its positions changed; the gate runs told to
+// their Reviews; a Review's settlement as the record answers it (settled,
+// refused, signed, reasoned); whether a Mutation's review approved it; and
+// the Reviews this incarnation has born, which it checks before bearing
+// one. It was part of the assembly; as a locus of its own it holds those
+// lists, with the journal the assembly lends it at birth. Bearing a Review
+// — a resident the assembly accepts, lives as long as it does, and counts
+// (`reviews_open`) — and the facts an Organization source's Review is
+// built with stay the assembly's, as do what a verdict applies (a
+// Mutation, knowledge, a binding or an edge) and the bus: memory's client
+// and the receipt store a route reads are passed on the call, and the
+// assembly tells each Review this family names (its `ReviewRouted`).
+locus ReviewRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        knowledge_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
+        organization_source_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
+        gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    // GH #1089: what a Review requires, routed once and recorded. Opening
+    // it (`open`), the organization asks memory's graph for the route its
+    // definition names — change-deliver the route of the paths its
+    // candidate changes, practice-ratify the Board — and writes
+    // `review.routed`; afterwards, a restart included, the row is what the
+    // Review requires. A change's fallback is a row too — no signers, and
+    // `why`: no memory is named, or no position the route names is held —
+    // and final. A proposal's writes nothing on its fallback, and is routed
+    // again each time it is rebuilt, so a Board seated later signs it:
+    // rebuilding the seeded proposals at a restart appends nothing. Memory
+    // that is named and does not answer routes nothing: the Review is not
+    // opened (`recorded: false`) and reconcile asks again, so it never
+    // opens on its claimed authority alone.
+    @unbounded
+    fn routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool, knowledge: MemoryKnowledge, receipts: Receipts) -> RouteRequirement {
+        let row = routed_row(self.journal, review_id);
+        let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
+        if len(row) > 0 && !again { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
+        if !open { return RouteRequirement { }; }
+        if !knowledge.ready() { return self.fallback(review_id, definition, row, "no memory is named"); }
+        let data = knowledge.routing();
+        if len(data) == 0 { return RouteRequirement { recorded: false }; }
+        let mut need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), receipts))) };
+        if len(need.signers) == 0 { return self.fallback(review_id, definition, row, "no position the route names is held"); }
+        // a prepared source's Review is never opened at a forge, where a
+        // gate's run is observed: it takes the route's positions, and no gate
+        if !gated { need.gates = ""; }
+        if len(row) > 0 {
+            let x = self.journal.append(self.journal.revision(), "review.routed", review_id, routed_body(definition, need, ""));
+            if !x.ok { return RouteRequirement { recorded: false }; }
+            return need;
+        }
+        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
+        return need;
+    }
+    // The fallback: a Review on it is decided by its own required
+    // authority. A change's is recorded once, with why.
+    @unbounded
+    fn fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
+        if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
+        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
+        return RouteRequirement { };
+    }
+    // GH #1089: an open routed Review's holders routed again when who holds
+    // its positions changed — a hold ratified, a holder retired — so a
+    // position filled after it opened can sign, and a holder who left no
+    // longer does. The positions stay the route's; the new holders are a
+    // `review.routed` row that supersedes the last, and the Review takes them.
+    // The Reviews routed again, one id a line, which the assembly tells
+    // their holders.
+    @unbounded
+    fn reroute(knowledge: MemoryKnowledge) -> String {
+        if !knowledge.ready() { return ""; }
+        let mut routed = "\n";
+        let mut settled = "\n";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "review.routed" && !std::str::contains(routed, "\n" + e.entity + "\n") { routed = routed + e.entity + "\n"; }
+            if e.kind == "review.settled" { settled = settled + e.entity + "\n"; }
+            i = i + 1;
+        }
+        let mut open = "";
+        let mut told = "";
+        let mut rest = routed[1..len(routed)];
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let id = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if !std::str::contains(settled, "\n" + id + "\n") { open = open + id + "\n"; }
+        }
+        if len(open) == 0 { return ""; }
+        let data = knowledge.routing();
+        if len(data) == 0 { return ""; }
+        rest = open;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let id = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let row = routed_row(self.journal, id);
+            let signers = native_json_string(row, "signers");
+            let now_held = signers_held_now(data, signers);
+            if now_held == signers { continue; }
+            let need = RouteRequirement { signers: now_held, gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") };
+            let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need, ""));
+            if x.ok { told = told + id + "\n"; }
+        }
+        return told;
+    }
+    // GH #1161: a gate run the host observed at the forge (`gate.observed`)
+    // is told to its Review, once, routed again as it stands, and the
+    // Review weighs its approvals with the run in. Known by the row's
+    // digest, not its position: a merged order is rebuilt when a ledger is
+    // adopted. Every run again after a restart: a Review rebuilt then hears
+    // them all, and one already settled ignores them.
+    // The Reviews a gate run is to be told to, one id a line, which the
+    // assembly tells.
+    @unbounded
+    fn gate_runs() -> String {
+        let mut told = "\n";
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            i = i + 1;
+            if e.kind != "gate.observed" || std::str::contains(self.gate_runs_told, "\n" + e.digest + "\n") { continue; }
+            self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
+            if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
+            told = told + e.entity + "\n";
+            out = out + e.entity + "\n";
+        }
+        return out;
+    }
+    // ---- the Reviews this incarnation has born
+    @unbounded
+    fn knowledge_known(id: String) -> Bool {
+        let mut i = 0;
+        while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        return false;
+    }
+    @unbounded
+    fn knowledge_born(id: String) { self.knowledge_reviews.push(id); }
+    @unbounded
+    fn source_known(id: String) -> Bool {
+        let mut i = 0;
+        while i < self.organization_source_reviews.len() { if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        return false;
+    }
+    @unbounded
+    fn source_born(id: String) { self.organization_source_reviews.push(id); }
+    // ---- a Review's settlement, as the record answers it
+    // A decision by command, settled once, with the reasoning it gave:
+    // whether the settlement, and its reasoning when there is one, are in
+    // the record.
+    fn decided(review_id: String, outcome: String, reviewer: String, comment: String) -> Bool {
+        if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return false; }
+        return len(comment) == 0 || append_once(self.journal, "review.reasoned", review_id, comment);
+    }
+    fn refused(review_id: String, why: String) {
+        let x = self.journal.append(self.journal.revision(), "review.refused", review_id, why);
+    }
+    // GH #1089: an approval admitted that settled nothing — a required
+    // position signed — answered, with what the Review still awaits.
+    fn signed(review_id: String, by: String, awaiting: String) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("awaiting", awaiting);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "review.signed", review_id, b.result());
+    }
+    // The Review's own settlement, and (GH #566 F7) why: a person's note,
+    // or the Leader's reasoning.
+    fn settled(review_id: String, outcome: String, by: String, comment: String) {
+        let x = self.journal.append(self.journal.revision(), "review.settled", review_id, outcome + " by " + by);
+        if len(comment) > 0 {
+            let w = self.journal.append(self.journal.revision(), "review.reasoned", review_id, comment);
+        }
+    }
+    @unbounded
+    fn approved(mutation_id: String) -> Bool {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut ok = false;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == mutation_id { ok = e.body[0..7] == "approve"; }
+            i = i + 1;
+        }
+        return ok;
+    }
+    // The settled verdict on a Mutation's review — "approve", "reject",
+    // "revise" — or "" while it is open.
+    @unbounded
+    fn outcome_of(mutation_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == mutation_id {
+                let sp = std::str::index_of(e.body, " ");
+                out = if sp < 0 { e.body } else { e.body[0..sp] };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+// The Reviews born this incarnation, by id.
+@form(vec)
+locus KnowledgeReviewIds { capacity { heap rows of String; } }

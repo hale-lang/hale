@@ -15,9 +15,6 @@
 
 // ---- the Board: where people see and decide -------------------------
 
-@form(vec)
-locus KnowledgeReviewIds { capacity { heap rows of String; } }
-
 interface Membrane {
     fn offer(i: Intent) -> String; // "accepted" | "refused: ..."
     fn notify(kind: String, msg: String);
@@ -356,8 +353,7 @@ locus Dna {
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         optimize_asked: String = "\n"; // GH #995: the optimize-walk Tasks whose walk this incarnation asked of the leader
-        record_refusals: Int = 0; // the assembly's own writes the record refused (its Mutations'): nothing proceeded past them; status sums every family's
-        gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
+        mutation_refusals: Int = 0; // the Mutations' writes the record refused: nothing proceeded past them; status sums them with every family's
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
         // this organism's leader; the pass is an execution of
@@ -376,6 +372,7 @@ locus Dna {
         steps: StepRecord = StepRecord { }; // C3 family 8 (Work): the organization's own steps that wait
         cases: CaseRecord = CaseRecord { }; // C3 family 8 (Work): a person's cases, admitted, held and completed
         attempts: AttemptRecord = AttemptRecord { }; // C3 family 8 (Work): an attempt's reports, waiting edits and a leg's lease
+        reviews: ReviewRecord = ReviewRecord { }; // C3 family 9: a Review's route, settlement and the Reviews born; bearing one is the assembly's
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -389,8 +386,6 @@ locus Dna {
         restarts_requested: Int = 0;
         reviews_open: Int = 0; // live mutation Reviews (accepted children)
         rehydrated: Int = 0; // Reviews re-born from the Journal at birth
-        knowledge_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
-        organization_source_reviews: KnowledgeReviewIds = KnowledgeReviewIds { };
         organization_source_review_facts: OrganizationSourceReviewFacts = OrganizationSourceReviewFacts { };
     }
     // A mutation's Review is a child of the assembly: born when the
@@ -425,6 +420,7 @@ locus Dna {
         self.positions.bind(self.journal, self.verification.receipts);
         self.cases.bind(self.journal);
         self.attempts.bind(self.journal);
+        self.reviews.bind(self.journal);
         self.organization_source_review_facts.bind(self.org_source.facts);
         self.scheduler.bind(self.journal);
         self.knowledge_record.bind(self.journal, self.verification.receipts);
@@ -517,13 +513,6 @@ locus Dna {
         let exhausted = self.budget_exhausted(now);
         return self.spending.gate(entity, ceiling_micros, request, holder, token, now, self.budget);
     }
-    // ---- knowledge (GH #583 K1): the record's half ------------------
-    // A proposal enters the record as a receipt (its canonical document,
-    // by digest), a `knowledge.proposed` row naming that digest, and a
-    // Review pinned to it — the Board's, since ratified knowledge is the
-    // organization's. Returns the digest. The tower rule decides the
-    // class of the binding (goal / concern / initiative) from who
-    // proposes and where it binds; a lateral proposal is refused.
     // GH #1089: what a Review requires, routed once and recorded. Opening
     // it (`open`), the organization asks memory's graph for the route its
     // definition names — change-deliver the route of the paths its
@@ -539,33 +528,7 @@ locus Dna {
     // opens on its claimed authority alone.
     @unbounded
     fn review_routing(review_id: String, definition: String, paths: String, open: Bool, gated: Bool) -> RouteRequirement {
-        let row = routed_row(self.journal, review_id);
-        let again = len(row) > 0 && open && definition == "practice-ratify" && len(native_json_string(row, "signers")) == 0;
-        if len(row) > 0 && !again { return RouteRequirement { signers: native_json_string(row, "signers"), gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") }; }
-        if !open { return RouteRequirement { }; }
-        if !self.knowledge_client.ready() { return self.route_fallback(review_id, definition, row, "no memory is named"); }
-        let data = self.knowledge_client.routing();
-        if len(data) == 0 { return RouteRequirement { recorded: false }; }
-        let mut need = if definition == "practice-ratify" { board_requirement(data) } else { route_requirement(data, graph_route(data, paths, route_law(route_bound(data), self.verification.receipts))) };
-        if len(need.signers) == 0 { return self.route_fallback(review_id, definition, row, "no position the route names is held"); }
-        // a prepared source's Review is never opened at a forge, where a
-        // gate's run is observed: it takes the route's positions, and no gate
-        if !gated { need.gates = ""; }
-        if len(row) > 0 {
-            let x = self.journal.append(self.journal.revision(), "review.routed", review_id, routed_body(definition, need, ""));
-            if !x.ok { return RouteRequirement { recorded: false }; }
-            return need;
-        }
-        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, need, "")) { return RouteRequirement { recorded: false }; }
-        return need;
-    }
-    // The fallback: a Review on it is decided by its own required
-    // authority. A change's is recorded once, with why.
-    @unbounded
-    fn route_fallback(review_id: String, definition: String, row: String, why: String) -> RouteRequirement {
-        if len(row) > 0 || definition != "change-deliver" { return RouteRequirement { }; }
-        if !append_once(self.journal, "review.routed", review_id, routed_body(definition, RouteRequirement { }, why)) { return RouteRequirement { recorded: false }; }
-        return RouteRequirement { };
+        return self.reviews.routing(review_id, definition, paths, open, gated, self.knowledge_client, self.verification.receipts);
     }
     // GH #1089: an open routed Review's holders routed again when who holds
     // its positions changed — a hold ratified, a holder retired — so a
@@ -573,42 +536,7 @@ locus Dna {
     // longer does. The positions stay the route's; the new holders are a
     // `review.routed` row that supersedes the last, and the Review takes them.
     @unbounded
-    fn reroute_reviews() {
-        if !self.knowledge_client.ready() { return; }
-        let mut routed = "\n";
-        let mut settled = "\n";
-        let mut i = 0;
-        while i < self.journal.revision() {
-            let e = self.journal.read(i);
-            if e.kind == "review.routed" && !std::str::contains(routed, "\n" + e.entity + "\n") { routed = routed + e.entity + "\n"; }
-            if e.kind == "review.settled" { settled = settled + e.entity + "\n"; }
-            i = i + 1;
-        }
-        let mut open = "";
-        let mut rest = routed[1..len(routed)];
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let id = rest[0..nl];
-            rest = rest[(nl + 1)..len(rest)];
-            if !std::str::contains(settled, "\n" + id + "\n") { open = open + id + "\n"; }
-        }
-        if len(open) == 0 { return; }
-        let data = self.knowledge_client.routing();
-        if len(data) == 0 { return; }
-        rest = open;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let id = rest[0..nl];
-            rest = rest[(nl + 1)..len(rest)];
-            let row = routed_row(self.journal, id);
-            let signers = native_json_string(row, "signers");
-            let now_held = signers_held_now(data, signers);
-            if now_held == signers { continue; }
-            let need = RouteRequirement { signers: now_held, gates: native_json_string(row, "gates"), fallback: std::json::find_bool_field(row, "fallback") };
-            let x = self.journal.append(self.journal.revision(), "review.routed", id, routed_body(native_json_string(row, "definition"), need, ""));
-            if x.ok { ReviewRouted <- ReviewRouting { review_id: id, signers: now_held }; }
-        }
-    }
+    fn reroute_reviews() { self.tell_routes(self.reviews.reroute(self.knowledge_client)); }
     // GH #1161: a gate run the host observed at the forge (`gate.observed`)
     // is told to its Review, once, routed again as it stands, and the
     // Review weighs its approvals with the run in. Known by the row's
@@ -616,28 +544,24 @@ locus Dna {
     // adopted. Every run again after a restart: a Review rebuilt then hears
     // them all, and one already settled ignores them.
     @unbounded
-    fn announce_gate_runs() {
-        let mut told = "\n";
-        let mut i = 0;
-        while i < self.journal.revision() {
-            let e = self.journal.read(i);
-            i = i + 1;
-            if e.kind != "gate.observed" || std::str::contains(self.gate_runs_told, "\n" + e.digest + "\n") { continue; }
-            self.gate_runs_told = self.gate_runs_told + e.digest + "\n";
-            if std::str::contains(told, "\n" + e.entity + "\n") { continue; }
-            told = told + e.entity + "\n";
-            ReviewRouted <- ReviewRouting { review_id: e.entity, signers: native_json_string(routed_row(self.journal, e.entity), "signers") };
+    fn announce_gate_runs() { self.tell_routes(self.reviews.gate_runs()); }
+    // Each Review named, one id a line, told its holders as its latest
+    // `review.routed` row has them.
+    @unbounded
+    fn tell_routes(lines: String) {
+        let mut rest = lines;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let id = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            ReviewRouted <- ReviewRouting { review_id: id, signers: native_json_string(routed_row(self.journal, id), "signers") };
         }
     }
     @unbounded
     fn ensure_knowledge_review(review_id: String) -> Bool {
         let req = self.knowledge_record.request_of(review_id);
         if len(req) == 0 { return false; }
-        let mut i = 0;
-        while i < self.knowledge_reviews.len() {
-            if (self.knowledge_reviews.get(i) or "") == review_id { return true; }
-            i = i + 1;
-        }
+        if self.reviews.knowledge_known(review_id) { return true; }
         let settlement = first_row(self.journal, "review.settled", review_id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
         let need = self.review_routing(review_id, "practice-ratify", "", len(settlement.kind) == 0, true);
@@ -651,7 +575,7 @@ locus Dna {
             signers: need.signers, gates: need.gates, fallback: need.fallback,
             settled: len(settlement.kind) > 0, outcome: outcome
         };
-        self.knowledge_reviews.push(review_id);
+        self.reviews.knowledge_born(review_id);
         return true;
     }
     // A knowledge proposal: its rows (the family's), then the Board's
@@ -677,9 +601,7 @@ locus Dna {
         let edge = edge_codec.request_of(self.journal, review_id);
         if edge_codec.valid(edge) {
             if edge.candidate_digest != native_json_string(decision, "subject_digest") || outcome != native_json_string(decision, "verdict") || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return; }
-            if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
-            let comment = native_json_string(decision, "comment");
-            if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
+            if !self.reviews.decided(review_id, outcome, reviewer, native_json_string(decision, "comment")) { return; }
             let resumed = self.resume_edge_result(review_id, outcome, reviewer, command_id);
             return;
         }
@@ -687,17 +609,13 @@ locus Dna {
         let binding = binding_codec.request_of(self.journal, review_id);
         if binding_codec.valid(binding) {
             if binding.candidate_digest != native_json_string(decision, "subject_digest") || outcome != native_json_string(decision, "verdict") || (outcome != "approve" && outcome != "reject" && outcome != "revise") { return; }
-            if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
-            let comment = native_json_string(decision, "comment");
-            if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
+            if !self.reviews.decided(review_id, outcome, reviewer, native_json_string(decision, "comment")) { return; }
             let resumed = self.resume_binding_result(review_id, outcome, reviewer, command_id);
             return;
         }
         if len(req) == 0 || native_json_string(req, "subject_digest") != native_json_string(decision, "subject_digest") { return; }
         if (outcome != "approve" && outcome != "reject" && outcome != "revise") || outcome != native_json_string(decision, "verdict") { return; }
-        if !append_once(self.journal, "review.settled", review_id, outcome + " by " + reviewer) { return; }
-        let comment = native_json_string(decision, "comment");
-        if len(comment) > 0 && !append_once(self.journal, "review.reasoned", review_id, comment) { return; }
+        if !self.reviews.decided(review_id, outcome, reviewer, native_json_string(decision, "comment")) { return; }
         // GH #995: a decision by command is ratified as every decision is,
         // by the practice-ratify execution it admits
         self.ratify_through(review_id);
@@ -714,18 +632,13 @@ locus Dna {
             return;
         }
         if r.refusal != "" {
-            let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, r.refusal);
+            self.reviews.refused(r.review_id, r.refusal);
             return;
         }
         // GH #1089: an approval admitted that settled nothing — a required
         // position signed — is answered, with what the Review still awaits
         if r.signed {
-            let b = std::json::Builder { };
-            b.begin_object();
-            b.string_field("by", r.decided_by);
-            b.string_field("awaiting", r.awaiting);
-            b.end_object();
-            let x = self.journal.append(self.journal.revision(), "review.signed", r.review_id, b.result());
+            self.reviews.signed(r.review_id, r.decided_by, r.awaiting);
             return;
         }
         // An approved candidate that never applied, approved AGAIN by a
@@ -741,7 +654,7 @@ locus Dna {
             // approved again after it already applied: nothing to do, and
             // the record answers so a waiting `hale dna review` hears it
             if d == "applied" || d == "retained" {
-                let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, "already " + d + " (approved again by " + r.decided_by + ")");
+                self.reviews.refused(r.review_id, "already " + d + " (approved again by " + r.decided_by + ")");
                 return;
             }
             let a = self.journal.append(self.journal.revision(), "mutation.apply_retried", r.review_id, "approved again by " + r.decided_by + "; the gate runs again");
@@ -754,15 +667,12 @@ locus Dna {
             // `review.settled` or `review.refused` and nothing else, and
             // reported failure after applying (the fifth round's
             // finding 2). The first settlement stands above this row.
-            let z = self.journal.append(self.journal.revision(), "review.settled", r.review_id, "approve by " + r.decided_by);
+            self.reviews.settled(r.review_id, "approve", r.decided_by, "");
             return;
         }
-        let x = self.journal.append(self.journal.revision(), "review.settled", r.review_id, r.outcome + " by " + r.decided_by);
         // the record says why (GH #566 F7): a person's note, or the Leader's
         // reasoning — the model's answer, not a digest of it
-        if len(r.comment) > 0 {
-            let w = self.journal.append(self.journal.revision(), "review.reasoned", r.review_id, r.comment);
-        }
+        self.reviews.settled(r.review_id, r.outcome, r.decided_by, r.comment);
         // GH #583 K1: a knowledge proposal's approval is the authoritative
         // ratification — one row naming the digest, which the knowledge
         // service applies from the record; anything else leaves the
@@ -830,7 +740,7 @@ locus Dna {
         if len(native_json_string(req, "organization_source_request_id")) > 0 { return self.apply_organization_source(mutation_id, now); }
         let reviewed = std::json::find_string_field(req, "subject_digest");
         let wt = std::json::find_string_field(req, "worktree");
-        if !self.approved(mutation_id) {
+        if !self.reviews.approved(mutation_id) {
             let x = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "not approved");
             return "refused: not approved";
         }
@@ -927,18 +837,6 @@ locus Dna {
         self.restarts_requested = self.restarts_requested + 1;
         let y = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "rollback " + base + " seed " + std::json::find_string_field(req, "seed") + " after " + why);
         self.board.notify("restart", mutation_id + " rolled back to " + base + " after " + why);
-    }
-    @unbounded
-    fn approved(mutation_id: String) -> Bool {
-        let n = self.journal.revision();
-        let mut i = 0;
-        let mut ok = false;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "review.settled" && e.entity == mutation_id { ok = e.body[0..7] == "approve"; }
-            i = i + 1;
-        }
-        return ok;
     }
     // The host's report on the observation window (GH #529 D6). Only an
     // applied Mutation is judged: healthy retains it and dissolves its
@@ -1439,7 +1337,7 @@ locus Dna {
     // pending, unresolved — is not an outcome yet, and the Work keeps
     // waiting. Whether it was settled.
     fn report_review(e: EditAsk, mutation_id: String) -> Bool {
-        let verdict = self.review_outcome_of(mutation_id);
+        let verdict = self.reviews.outcome_of(mutation_id);
         if len(verdict) == 0 { return false; }
         if verdict != "approve" {
             self.report(e, "failed", mutation_id + ": " + verdict, "the candidate was " + (if verdict == "revise" { "sent back" } else { "rejected" }));
@@ -1733,23 +1631,6 @@ locus Dna {
         }
         return "";
     }
-    // The settled verdict on a Mutation's review — "approve", "reject",
-    // "revise" — or "" while it is open.
-    @unbounded
-    fn review_outcome_of(mutation_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        let mut out = "";
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "review.settled" && e.entity == mutation_id {
-                let sp = std::str::index_of(e.body, " ");
-                out = if sp < 0 { e.body } else { e.body[0..sp] };
-            }
-            i = i + 1;
-        }
-        return out;
-    }
     // Every waiting attempt is evaluated again from the durable state of
     // what it waits on (card 15): its producing Work's settlement, and
     // the review and application of that Work's accepted attempt's
@@ -2037,8 +1918,7 @@ locus Dna {
     @unbounded
     fn ensure_binding_review(r: KnowledgeBindingRequest) -> Bool {
         let codec = KnowledgeBindingCodec { }; let id = codec.review_id(r.candidate_digest);
-        let mut i = 0;
-        while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        if self.reviews.knowledge_known(id) { return true; }
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
         let settlement = first_row(self.journal, "review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
@@ -2046,7 +1926,7 @@ locus Dna {
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
             subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
-        self.knowledge_reviews.push(id); return true;
+        self.reviews.knowledge_born(id); return true;
     }
     @unbounded
     fn on_knowledge_binding_requested(r: KnowledgeBindingRequest) {
@@ -2070,8 +1950,7 @@ locus Dna {
     @unbounded
     fn ensure_edge_review(r: KnowledgeEdgeRequest) -> Bool {
         let codec = KnowledgeEdgeCodec { }; let id = codec.review_id(r.candidate_digest);
-        let mut i = 0;
-        while i < self.knowledge_reviews.len() { if (self.knowledge_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        if self.reviews.knowledge_known(id) { return true; }
         if !codec.valid(codec.request_of(self.journal, id)) { return false; }
         let settlement = first_row(self.journal, "review.settled", id);
         let outcome = if std::str::starts_with(settlement.body, "approve by ") { "approve" } else if std::str::starts_with(settlement.body, "reject by ") { "reject" } else if std::str::starts_with(settlement.body, "revise by ") { "revise" } else { "" };
@@ -2079,7 +1958,7 @@ locus Dna {
         if !need.recorded { return false; }
         Review { journal: self.review_journal, review_id: id, question: native_json_string(codec.review_request(r), "question"),
             subject_digest: r.candidate_digest, required_authority: "board", author: r.by, signers: need.signers, gates: need.gates, fallback: need.fallback, settled: len(settlement.kind) > 0, outcome: outcome };
-        self.knowledge_reviews.push(id); return true;
+        self.reviews.knowledge_born(id); return true;
     }
     @unbounded
     fn on_knowledge_edge_requested(r: KnowledgeEdgeRequest) {
@@ -2119,8 +1998,7 @@ locus Dna {
         if req.kind != "review.requested" || started.kind != "organization.source.started" || started.body != codec.started(r)
             || committed.kind != "mutation.candidate" || committed.body != candidate || committed.seq >= req.seq || started.seq >= committed.seq
             || !self.organization_source_owner(r) || !self.org_source.review_matches(r, candidate, req.body, self.gateway.workspaces.path_of(id)) { return false; }
-        let mut i = 0;
-        while i < self.organization_source_reviews.len() { if (self.organization_source_reviews.get(i) or "") == id { return true; } i = i + 1; }
+        if self.reviews.source_known(id) { return true; }
         let settled = codec.fact(self.journal, "review.settled", id);
         if settled.kind == "invalid" { return false; }
         let outcome = if std::str::starts_with(settled.body, "approve by ") { "approve" } else if std::str::starts_with(settled.body, "reject by ") { "reject" } else if std::str::starts_with(settled.body, "revise by ") { "revise" } else { "" };
@@ -2132,7 +2010,7 @@ locus Dna {
             required_authority: native_json_string(req.body, "required_authority"), author: r.by,
             settled: len(outcome) > 0, outcome: outcome
         };
-        self.organization_source_reviews.push(id); return true;
+        self.reviews.source_born(id); return true;
     }
     // Only the tagged, strictly decoded incoming command can continue a
     // prepared-source Review. A generic mutation settlement or another caller's
@@ -2152,8 +2030,7 @@ locus Dna {
         if len(request_id) == 0 { return false; }
         let r = self.org_source.request(request_id); let v = self.organization_source_verdict(r, command_id);
         if len(v.command_id) == 0 { return true; }
-        if !append_once(self.journal, "review.settled", id, v.verdict + " by " + v.reviewer) { return true; }
-        if len(v.comment) > 0 && !append_once(self.journal, "review.reasoned", id, v.comment) { return true; }
+        if !self.reviews.decided(id, v.verdict, v.reviewer, v.comment) { return true; }
         if v.verdict == "approve" { let result = self.apply_reviewed(id, std::time::now()); return true; }
         // The fixed user candidate remains reachable for inspection; revise
         // records the native outcome and never starts a model rewrite.
@@ -3430,7 +3307,7 @@ locus Dna {
             // the Mutation's identity is not durable: nothing proceeds
             // under it — no summary row, no worktree, no effect. The
             // caller holds the request; a restart never sees this id
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
@@ -3439,7 +3316,7 @@ locus Dna {
             // the summary is compatibility: the Mutation exists by its
             // request row and recovery reads every row it has; the refusal
             // is counted and said, and the Mutation proceeds on its request
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's summary row (" + x0.error + "); it proceeds on its request row");
         }
         let lease = self.gateway.take(id, "dna", now);
@@ -3609,7 +3486,7 @@ locus Dna {
         asked.end_object();
         let xr = self.journal.append(self.journal.revision(), "mutation.requested", id, asked.result());
         if !xr.ok {
-            self.record_refusals = self.record_refusals + 1;
+            self.mutation_refusals = self.mutation_refusals + 1;
             self.board.notify("record", id + ": the record would not take the Mutation's request (" + xr.error + "); nothing proceeds under it");
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
@@ -4097,8 +3974,8 @@ locus Dna {
         b.int_field("executions_asked", self.executions_asked);
         b.int_field("executions_settled", self.executions_settled);
         // one count per family of the writes the record refused, summed: the
-        // assembly's own (its Mutations) and Work's cases'
-        b.int_field("record_refusals", self.record_refusals + self.cases.record_refusals);
+        // Mutations' and Work's cases'
+        b.int_field("record_refusals", self.mutation_refusals + self.cases.record_refusals);
         b.string_field("routing", self.work.policy());
         b.string_field("review_policy", self.review_policy.name());
         b.string_field("deployment", self.deployment.kind());
