@@ -1,0 +1,122 @@
+// The organization's practices, as the record holds them (C3, family 5):
+// a practice asked of the organization and its own rows (refused, started,
+// proposed), the Reviews this incarnation has ratified through
+// practice-ratify, the execution a proposal is ratified under, and the
+// practice-ratify step that reads the hat. It was part of the assembly; as
+// a locus of its own it holds the one thing only it keeps, the Reviews it
+// has ratified through (`ratified_through`, never scanned for again), with
+// the journal the assembly lends it at birth. Memory's client the hat is
+// read from is the assembly's, passed on the call. The knowledge a
+// practice is, its Review, the ratification and the schedule a practice
+// carries are other families' and the assembly's: the assembly admits a
+// ratification's execution and performs its `ratify` step, and records
+// through this family what it has ratified (dna/core/record_rows.hl).
+locus PracticeRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        ratified_through: String = "\n"; // GH #995: the Reviews this incarnation has ratified through practice-ratify, never scanned for again
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    // GH #682: a practice request relayed again after a lost publish is
+    // answered once
+    // GH #682: whether a practice request already has its answer.
+    @unbounded
+    fn answered(request_id: String) -> Bool {
+        if len(request_id) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.entity == request_id && (e.kind == "practice.proposed" || e.kind == "practice.refused") { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // A practice request's own rows: refused for want of a name and a text,
+    // started once the body received it, proposed with the knowledge's
+    // digest. Whether each is in the record.
+    fn refused(r: PracticeRequest) -> Bool { return append_once(self.journal, "practice.refused", r.request_id, "a practice has a name and a text"); }
+    @unbounded
+    fn started(r: PracticeRequest) -> Bool {
+        let started = std::json::Builder { };
+        started.begin_object();
+        started.string_field("request_id", r.request_id);
+        started.string_field("name", r.name);
+        started.string_field("text", r.text);
+        started.string_field("by", r.by);
+        started.string_field("because", r.because);
+        started.string_field("supersedes", r.supersedes);
+        started.end_object();
+        return append_once(self.journal, "practice.started", r.request_id, started.result());
+    }
+    @unbounded
+    fn proposed(r: PracticeRequest, digest: String) -> Bool {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("name", r.name);
+        b.string_field("digest", digest);
+        b.string_field("review_id", knowledge_review_id(digest));
+        b.string_field("by", r.by);
+        b.string_field("because", r.because);
+        b.string_field("supersedes", r.supersedes);
+        b.end_object();
+        return append_once(self.journal, "practice.proposed", r.request_id, b.result());
+    }
+    // Whether this incarnation has ratified `review_id` through
+    // practice-ratify, and so never asks it again.
+    fn ratified(review_id: String) -> Bool { return std::str::contains(self.ratified_through, "\n" + review_id + "\n"); }
+    // one line per Review, per incarnation: bounded by the record's Reviews
+    @unbounded
+    fn ratified_now(review_id: String) { self.ratified_through = self.ratified_through + review_id + "\n"; }
+    // ---- practice-ratify ----
+    // The execution a knowledge proposal is ratified under, "" when none.
+    @unbounded
+    fn ratification_of(digest: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "definition") == "practice-ratify" && std::json::find_string_field(std::json::find_string_field(e.body, "inputs"), "digest") == digest { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // practice-ratify's `hat` step for the proposal at `digest`: what the
+    // hat reads once memory's projection holds the idea and its binding —
+    // the package for the target at memory's head, and whether it carries
+    // the proposal, the row it was fenced to. `memory_ready`: memory's
+    // projection had caught up when last asked.
+    @unbounded
+    fn hat(task: String, digest: String, knowledge: MemoryKnowledge, memory_ready: Bool) -> StepVerdict {
+        // what the hat reads once memory's projection holds the idea and its
+        // binding: the package for the target at memory's head, and whether
+        // it carries the proposal — the row it was fenced to
+        let read = first_row(self.journal, "practice.read", digest);
+        if len(read.kind) > 0 { return step_done(std::json::find_string_field(read.body, "hat"), "the hat read it at row " + to_string(std::json::find_int_field(read.body, "head"))); }
+        // no memory named: the hat is memory's to read, and nothing will
+        // come to wait for — the chain ends saying so. Memory named but
+        // behind, or unreachable a moment: the step waits for it.
+        if !knowledge.ready() { return step_failed("no memory is named (" + knowledge.dsn_env + " is not set): the hat is memory's to read"); }
+        let at = knowledge.ratified_at(digest);
+        if at < 0 { return step_waits(); }
+        // never block the organization's handler on memory's projection:
+        // behind the record's knowledge, the step waits and is performed
+        // again at the tick
+        if !memory_ready { return step_waits(); }
+        let target = std::json::find_string_field(first_row(self.journal, "knowledge.proposed", digest).body, "target");
+        let pkg = knowledge.package_for(target, "");
+        if len(pkg.error) > 0 { return step_waits(); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("target", target);
+        b.int_field("ratified_at", at);
+        b.string_field("hat", pkg.digest);
+        b.int_field("head", pkg.revision);
+        b.bool_field("included", std::str::contains(" " + pkg.included + " ", " " + digest + " "));
+        b.string_field("task", task);
+        b.end_object();
+        if !append_once(self.journal, "practice.read", digest, b.result()) { return step_waits(); }
+        return step_done(pkg.digest, "the hat for " + target + " at row " + to_string(pkg.revision));
+    }
+}
