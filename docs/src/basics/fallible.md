@@ -47,9 +47,11 @@ let d = parse_count(s) or fail OtherErr { };  // translate the error
 some_unit_call()       or discard;            // ignore (unit result only)
 ```
 
-- **`or raise`** — pass the error up to *your* caller. Your
-  function must itself be `fallible(E)` with a compatible error
-  type, so the error has somewhere to go.
+- **`or raise`** — pass the error up to *your* caller. For that
+  your function is itself `fallible(E)` with the same error type
+  (a different one is refused). In a function that isn't
+  fallible the error has nowhere to go, so it ends the program:
+  `Hale panic: unhandled E escaping main locus`.
 - **`or <expression>`** — substitute a fallback value of the
   success type. Inside the expression, `err` is bound to the
   payload, so you can inspect it:
@@ -116,8 +118,8 @@ let n = std::str::parse_int(s) or handler(err);    // handle
 `or discard` is the honest spelling of "I do not care": it is silent,
 where the bare call is a warning. `hale check --strict-fallible` makes
 the warning an error, and `hale verify` already fails on it, since it
-fails on every advisory. At the next minor the error is the default
-(GH #738); until then the bare form still builds exactly as it did.
+fails on every advisory. Without the flag, the bare form still builds
+exactly as it did.
 
 ## Chaining
 
@@ -177,9 +179,6 @@ services tier ([When things fail](../services/failure.md)). For
 everything you'll write at this level, `fallible` + `or` is the
 whole story.
 
-Next, we put the pieces together: [Your first
-program](./first-program.md).
-
 ## When the handler can fail too
 
 A recovery handler is often itself a fallible operation — read a
@@ -203,3 +202,6 @@ For your own fallible functions the inner `or raise` is implicit —
 automatically. Stdlib calls and `@form` methods used as handlers
 still need the explicit nested spelling above (the compiler will
 tell you, with the exact rewrite, if you forget).
+
+Next, we put the pieces together: [Your first
+program](./first-program.md).

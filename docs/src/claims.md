@@ -16,9 +16,10 @@ first, let countermodels drive implementation — read
 ## The worked example
 
 One program exercises most of the surface. Two wings, one boundary
-temptation:
+temptation. It is written to be refused, so the build stops at its
+claim:
 
-```hale
+```hale,refused
 type Task { id: Int; }
 type Metric { n: Int; }
 topic Tasks   { payload: Task; }
@@ -85,7 +86,8 @@ effect_family_decl
 claims_block      = "claims" , "{" , { claim_entry } , "}" ;
                   (* inside main locus: the world tier;
                      at top level: the library tier (#392) *)
-claim_entry       = IDENTIFIER , ":" , claim_form , ";" ;
+claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
+                  | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | count_form ;
 
@@ -105,9 +107,15 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 
-require_form      = "require" , ( "subscribes" | "publishes" ) ,
+require_form      = require_endpoint | require_sealed
+                  | require_attributed ;
+require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
                     topic_ref , ")" ;
+require_sealed    = "require" , "sealed" ,
+                    "(" , "all" , IDENTIFIER , ")" ;
+require_attributed = "require" , "attributed" ,
+                    "(" , "all" , IDENTIFIER , ")" ;
 
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
@@ -411,8 +419,8 @@ matters).
 one_call: bound llm <= 1 on paths from positions;
 ```
 
-`C` must be a **user-declared** class (a built-in here is an error
-pointing at the `@budget` spellings); composed classes and family
+`C` must be a **user-declared** class or `secret_use` (any other
+built-in here is an error pointing at the `@budget` spellings); composed classes and family
 instantiations work through their masks. The quantity is the
 **per-invocation aggregate** — a call-tree sum, exactly
 `@budget`'s semantics: if a handler calls two helpers and each
@@ -468,8 +476,9 @@ Counts **distinct declared loci** on the chosen end of the topic.
 `== 1` is the single-writer invariant. A violation reports the
 actual count and names the participating loci. These are counts
 over declarations, not a runtime census of replicated instances —
-exact instance claims belong to deployment elaboration, when it
-lands.
+exact instance counts are a fleet claim
+(`count_publisher_instances` in a fleet plan; see
+[Checking the whole deployment](./services/multi-binary.md#checking-the-whole-deployment)).
 
 ## Library-tier claims
 
@@ -592,7 +601,7 @@ The complete catalog, grouped by stage. Parse errors:
 | unknown claim verb | lists the six verbs |
 | `via { }` with no relations / unknown relation | "must name at least one relation" / "the composable relations are `calls` and `bus`" |
 | nested glob in a group member | "the glob is trailing-only" |
-| negative bound or count | "must be non-negative" |
+| negative bound or count | "expected an integer bound after `<=`" / "expected an integer after the comparison" |
 | empty or duplicate `domain` | "has no members" / "declared more than once" |
 | family over a domain not in this file | "declare `domain X = { … };` above the family" |
 | effect-mask overflow (incl. family expansion) | rejected at the declaration, fail-closed |
@@ -632,9 +641,10 @@ Violations (the claim's result is `violated`):
 
 ## One law, many entrypoints
 
-`claims { }` is only legal inside `main locus`, and that rule is
-load-bearing: claims are closed-world statements, and `main` is the
-only place a world is closed. But that constrains *evaluation*, not
+World law — a `claims { }` block over the whole program — is only
+legal inside `main locus`, and that rule is load-bearing: such
+claims are closed-world statements, and `main` is the only place a
+world is closed. But that constrains *evaluation*, not
 *authoring*. Copy-pasting a law into twenty main loci means the copy
 somebody forgets fails open, silently.
 
@@ -642,18 +652,46 @@ A **constitution** is a named claimset declared once, outside any
 main, and adopted by each entrypoint:
 
 ```hale
+type Settle { n: Int; }
+topic Settled { payload: Settle; }
+
+locus Billing {
+    bus { publish Settled; }
+    fn settle(n: Int) { Settled <- Settle { n: n }; }
+}
+
+locus Ledger {
+    params { total: Int = 0; }
+    bus { subscribe Settled as on_settled; }
+    fn on_settled(s: Settle) { self.total = self.total + s.n; }
+}
+
+locus Research {
+    params { notes: Int = 0; }
+    fn note() { self.notes = self.notes + 1; }
+}
+
+group billing  = { Billing };
+group research = { Research };
+
 constitution Core {
     tenant_iso: forbid reaches(billing, research);
     one_writer: count publishers(topic Settled) == 1;
 }
 
 main locus App {
-    params { b: Billing = Billing { }; r: Research = Research { }; }
+    params {
+        b: Billing = Billing { };
+        l: Ledger = Ledger { };
+        r: Research = Research { };
+    }
     claims {
         adopt Core;
         local_rule: require publishes(some billing, topic Settled);
     }
 }
+
+fn main() { App { }; }
 ```
 
 Every clause is still evaluated **here**, in this entrypoint's closed
@@ -874,9 +912,11 @@ new semantics.
 The renderer admits before it draws, in the fleet loader's order:
 the whole-body `artifact_digest` must verify (a hand-edited
 artifact is refused, not rendered under a stale identity), the
-model `semantics` must match the build, and the schema minor must
-be one the adapter actually covers (1.4+). It does *not* require a
-clean verdict — violations are worth drawing.
+model `semantics` must match the build, the `shape_hash` must
+recompute from the model half, and the schema must be exactly the
+one this build emits — before 1.0 there is no additive-minor
+promise, so an older artifact is re-dumped, not read. It does *not*
+require a clean verdict — violations are worth drawing.
 
 The renderer is an **artifact client**: it reads exactly the JSON a
 third party reads, never your source, and its output is
@@ -899,11 +939,14 @@ hale model diff before.topology after.topology          # versioned JSON
 ```
 
 ```text
+hale model diff  before.topology  ->  after.topology
 classification: model-shape  (shape_hash 560bb0… -> 578951…)
+legend: + added  - removed  ~ renamed  > moved  * split/joined  ? ambiguous  ! changed in place
+classes: identical · source-only (no model or contract change) · contract (a contract or effect moved, shape_hash unmoved) · model-shape
 declarations:
   ~ locus Worker -> Crew  (renamed; shape unchanged)
-  + locus Pager  (main.hl:248..253)
-  + topic Alerts  (main.hl:71..77)
+  + locus Pager  (main.hl bytes 248..253)
+  + topic Alerts  (main.hl bytes 71..77)
 contracts:
   ! locus App params: +limit: Int
   ! locus App publishes: +Alerts
@@ -1013,13 +1056,15 @@ The artifact is a *projection* of the compiler's canonical model —
 see [The model](./the-model.md) for what that value is and why it
 records what it could not determine.
 
-The artifact shape (schema `1.17`):
+The artifact shape (schema `1.19`):
 
 ```text
 {
-  "schema": "1.17",
+  "schema": "1.19",
+  "semantics": <model semantics version>,
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
+  "sealed":    [ <@sealed loci> ],
   "relations": {
     "calls": [ {"from", "to",
                 "loop"?: true, "unbounded"?: true,
@@ -1038,19 +1083,24 @@ The artifact shape (schema `1.17`):
                   "untyped_receiver_call:<callee>" |
                   "uninhabited_interface_call:<iface>.<callee>" |
                   "computed_publish"]} ],
+  "endpoint_identity": [ {"verb", "fn" | "locus", "site"?,
+                          "wire", "topic"?} ],   // HASHED
+  "sources":   [ {"id", "path", "digest"} ],
   "provenance": { "calls": [+span], "publishes": [+span],
                   "subscribes": [+span],
                   "decls": {name: span, topics included},
                   "supervision": [+span] },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
-  "endpoint_identity": [ {"verb", "fn" | "locus", "site"?,
-                          "wire", "topic"?} ],   // HASHED
   "endpoints": [ {"verb": "publish" | "subscribe", "subject",
                   "via": "site" | "declaration",
                   "fn"?, "site"?, "locus"?, "topic"?,
                   "file"?, "span"?} ],
   "declares_publish": [ {"locus", "subject", "topic"?,
                          "file"?, "span"?} ],
+  "contracts": [ {"locus", "sealed", "params", "methods",
+                  "publishes", "subscribes", "supervises",
+                  "instances", "file", "span"} ],   // 1.18
+  "bindings":  [ <declared bindings: topic, transport, role> ],  // 1.19
   "claims":    [ {"name", "form", "result": <verdict>,
                   "ordinal", "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>,
@@ -1092,7 +1142,9 @@ The artifact shape (schema `1.17`):
   //   certificate, causes, depends, budget — every migrated
   //   family carries an account, and admission requires exactly
   //   the set its schema version names
-  "verdict":   "clean" | "law_failed"
+  "evaluation": { "environment"?, "roots": […], "closure": […] },
+  "verdict":   "clean" | "law_failed",
+  "artifact_digest": "<over everything above>"
 }
 ```
 
@@ -1138,9 +1190,10 @@ The pieces worth knowing:
 - **`phases` / `seeds` / `effects`.** What `during`, `cover`, and
   effect-class endpoints evaluate against, exported — the rows
   that used to be compiler-certified-only.
-- **`provenance`.** Bundle-global byte-offset spans (`[start,
-  end]`) for every user edge and decl — the "where to edit" data,
-  unhashed by design.
+- **`provenance`.** Byte-offset spans (`[start, end]`) for every
+  user edge and decl, each with the `source` id of the file it
+  sits in (the `sources` rows carry each file's path and digest) —
+  the "where to edit" data, unhashed by design.
 - **`lowered`.** Every fn-grained certificate — each `@effects`
   assert, each `@phase_effects` phase contract, each `@budget` —
   as the claim form it is pointwise sugar for, with the verdict of

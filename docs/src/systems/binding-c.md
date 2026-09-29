@@ -12,7 +12,7 @@
 An `@ffi("c")` annotation on a bodiless top-level function
 declares an external C symbol:
 
-```hale
+```hale,fragment
 @ffi("c") fn doubler_double(x: Int) -> Int;
 
 fn main() {
@@ -42,9 +42,10 @@ fixed:
 | user `type` | pointer to a layout-matching struct |
 | `()` | `void` (return only) |
 
-`Decimal` and fixed-size arrays are *not* portable across FFI —
-the compiler rejects them at the boundary. Function declarations
-also can't be generic or `fallible(E)`; a C function reports
+`Decimal`, `Uint` and fixed-size arrays are *not* portable across
+FFI — the compiler rejects them at the boundary. Function
+declarations also can't be generic, take defaulted parameters, or
+be `fallible(E)`; a C function reports
 errors with a sentinel, and your Hale wrapper translates that
 sentinel into the [`fallible`](../basics/fallible.md) channel.
 
@@ -75,7 +76,10 @@ link = ["raylib"]
 ```
 
 A downstream project then just `import`s the binding and builds
-normally; the FFI flags thread through automatically.
+normally; the FFI flags thread through automatically. Only the
+entry's own imports are read: if a library imports a binding in
+turn, the entry has to repeat that binding's `[ffi]` (or pass
+`--link` / `--csrc`).
 
 ## Lifetime rules across the boundary
 

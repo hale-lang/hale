@@ -8,17 +8,19 @@ doesn't.
 
 ## The substrate is model-checked
 
-Hale's runtime, **lotus**, is C: pthreads and C11 atomics. Every
-primitive in it with a cross-thread surface is transcribed into a model
-and checked **exhaustively, under every legal interleaving**, with
+Hale's runtime, **lotus**, is C: pthreads and C11 atomics. Its core
+cross-thread primitives are transcribed into models and checked
+**exhaustively, under every legal interleaving**, with
 [GenMC](https://github.com/MPI-SWS/genmc) — as a standing CI gate. A
 race, use-after-free, or assertion failure in any model fails the build.
 
 | Primitive | What's verified |
 |---|---|
 | Lock-free hashmap | the enter / drain / grow protocol |
-| Mailbox monitor | the pinned-locus mutex hand-off |
-| Bus queue | the cooperative-pool conditional lock |
+| Hashmap iteration | a grow landing between iteration steps (sequential consistency only; see below) |
+| Mailbox | the pinned locus's lock-free MPSC ring and its wake-when-parked handshake |
+| Cooperative pool queue | the same ring and wake on the cooperative pool |
+| Bus queue | the cooperative-pool conditional lock, and a grow racing a drain |
 | Arena subregion lock | the parent's child-slot freelist |
 
 Each model carries a **negative control**: delete the synchronization
@@ -98,8 +100,8 @@ fails the build:
 **Concurrency & placement**, keeping a program's placement coherent
 with how the runtime dispatches:
 
-- **Dead bus receiver** — a cooperative locus that subscribes to the
-  bus *and* blocks in `run()`, so the blocking call monopolizes the
+- **Dead bus receiver** — a non-`main` cooperative locus that
+  subscribes to the bus *and* blocks in `run()`, so the blocking call monopolizes the
   pool thread and its handlers never fire — **error**.
 - **Blocking call on a cooperative pool** — a blocking `run()`
   (`recv` / `accept` / `process::run`) on a pool that isn't
@@ -130,9 +132,8 @@ dissolves** — with loop-ranking that *proves* a `while v < N`
 counter bounded. Run-to-exit programs (a `main` with no `run` loop
 and no bus handler) warn nothing — a script owes no bound proof.
 `@unbounded fn` is the in-source carve-out for an acknowledged
-site; `--no-warn-unbounded-alloc` opts a run out. Advisory today; a
-hard error contract is the intended end state once the remaining
-documented false-positive classes get their annotations. A separate
+site; `--no-warn-unbounded-alloc` opts a run out. It is advisory:
+the warnings print and never fail the build. A separate
 advisory also flags two **loop-scoped hot-path allocations** — a locus
 or `BytesBuilder` instantiated per iteration, and an allocating `recv`
 in a loop — steering toward a hoisted field / `recv_into`.
@@ -199,9 +200,10 @@ Effect assertions attach to one function. A **claim** quantifies over
 the whole assembled program: a named sentence, declared on the main
 locus, checked at every `hale check`. The canonical use is isolation
 — "nothing in wing A reaches wing B" — stated once, with a name a
-code review or a compliance document can cite:
+code review or a compliance document can cite. The program below is
+written to be refused:
 
-```hale
+```hale,refused
 type Task { id: Int; }
 type Metric { n: Int; }
 topic Tasks   { payload: Task; }
@@ -481,15 +483,18 @@ have to answer by reading. `hale check --sealable` tells you:
 sealability: 4 of 5 loci can be `@sealed` today
 
   free to seal (nothing outside touches their params):
-    Already, App, Holder, Private
+    Already
+    App
+    Holder
+    Private
 
   would break callers:
     Exposed — 1 external access(es): Exposed.k
 ```
 
 Empty means sealing that locus is a no-op. In practice most loci
-already qualify: across this repo's own corpus, 148 of 151. The ones
-that don't share a shape — a parent reading a child's *result* field
+already qualify: when the survey landed, 148 of 151 loci across this
+repo's own corpus did. The ones that didn't share a shape — a parent reading a child's *result* field
 instead of calling a method, which the no-locus-return rule already
 discourages.
 

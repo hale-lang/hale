@@ -107,14 +107,19 @@ long-lived client can run keep-alive work instead of hanging.
 ## Tuning sockets — `std::io::sockopt`
 
 The UDP `set_option_int` / `set_option_bool` / `get_option_int`
-calls take a `level` and `name` from `std::io::sockopt`'s named
-constants, so you never hardcode a platform number:
+calls take a `level` and `name`. `std::io::sockopt` names those
+constants as zero-argument functions, so you never hardcode a
+platform number:
 
 ```hale,fragment
 std::io::udp::set_option_bool(
     fd, std::io::sockopt::SOL_SOCKET(),
     std::io::sockopt::SO_REUSEADDR(), true) or raise;
 ```
+
+In this release the checker refuses the namespace itself (``unknown
+stdlib namespace `std::io::sockopt` ``), so a program that calls a
+`sockopt` constant does not build yet.
 
 For TCP, `std::io::tcp::set_nodelay(fd, true)` is the common one
 (disable Nagle for latency).

@@ -47,8 +47,9 @@ run() {
 The sleeping locus still wakes after the full duration; it just
 doesn't hold the thread hostage in the meantime. You write
 `sleep(30s)` and the slicing is invisible — there's nothing to
-opt into. (A `pinned` locus owns its thread, so its sleeps affect
-no one and aren't sliced.)
+opt into. (A `pinned` locus owns its thread, so its sleeps stall
+no one else; its slices drain its own mailbox. On a `where
+async_io` pool a sleep parks instead of slicing.)
 
 ## Placement lives on `main`
 
@@ -56,6 +57,10 @@ You declare placement once, against the top-level loci, in
 `main`:
 
 ```hale
+locus Gateway       { }
+locus MetricsServer { params { port: Int = 80; } }
+locus Renderer      { }
+
 main locus App {
     params {
         gateway: Gateway       = Gateway { };
@@ -69,6 +74,8 @@ main locus App {
         // anything unlisted defaults to cooperative(pool = main)
     }
 }
+
+fn main() { App { }; }
 ```
 
 - `cooperative(pool = X)` puts the locus on pool `X`'s thread.
@@ -107,6 +114,9 @@ an L3. A `topology { }` block on `main` describes the host's
 core partition once, and placement entries target it by name:
 
 ```hale
+locus Matcher { }
+locus Region  { }
+
 main locus App {
     topology {
         reserve cores 0..2;              // hands-off for the OS / main
@@ -127,6 +137,8 @@ main locus App {
         region:  pinned(node = 0);    // affinity = node 0's cores, {4..12}
     }
 }
+
+fn main() { App { }; }
 ```
 
 - `pinned(node = N)` masks the thread to node `N`'s cores — the
@@ -237,8 +249,9 @@ instantiate the helper:
 ```hale
 locus Gateway {              // placed pinned in main
     params {
-        reg:   Registry = Registry { };
-        ticks: metrics::Counter = metrics::counter(self.reg, "ticks");
+        reg:   std::metrics::Registry = std::metrics::Registry { namespace: "gw" };
+        ticks: std::metrics::Counter  = std::metrics::counter(
+                   self.reg, "ticks", std::metrics::labels_empty());
     }
     // run() calls self.ticks.inc() etc. — all on the pinned thread
 }
@@ -368,7 +381,13 @@ placement and the locus's shape are known at compile time:
   *function* holding the literal is fine — each call joins its own
   thread before it returns:
 
-  ```hale
+  ```hale,refused
+  locus Worker { }
+  main locus App {
+      params { w: Worker = Worker { }; }
+      placement { w: pinned; }
+  }
+
   fn boot() { App { }; }          // fine: one thread per call, joined
 
   fn main() {
@@ -384,7 +403,10 @@ placement and the locus's shape are known at compile time:
   be silently dropped, and the field would run wherever an unplaced
   field runs. Write the literal in the field:
 
-  ```hale
+  ```hale,refused
+  locus Worker { }
+  fn make_worker() -> Worker { return Worker { }; }
+
   main locus App {
       params {
           a: Worker = make_worker();   // error: nothing carries `a: pinned`

@@ -158,7 +158,7 @@ These are the scalar types built into the language:
 | `Bool` | true / false | `true`, `false` |
 | `String` | UTF-8 text | `"hello"`, `"line\n"` |
 | `Decimal` | exact fixed-point number | `1.50d`, `0.00d` |
-| `Duration` | a span of time | `100ms`, `5s`, `1h30m` |
+| `Duration` | a span of time | `100ms`, `5s`, `90m` |
 | `Time` | a wall-clock instant | `` `2026-05-08T12:00:00Z` `` |
 | `Bytes` | a binary blob | `b"\x00\x01\xff"` |
 

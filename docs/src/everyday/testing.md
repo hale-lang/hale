@@ -22,8 +22,8 @@ fn main() {
 | Assertion | Passes when… |
 |---|---|
 | `assert(cond, msg)` | `cond` is `true` |
-| `assert_eq_int(a, b, msg)` | `a == b` (with an `expected / actual` diff on failure) |
-| `assert_eq_str(a, b, msg)` | `a == b` |
+| `assert_eq_int(actual, expected, msg)` | `actual == expected` (with an `expected / actual` diff on failure) |
+| `assert_eq_str(actual, expected, msg)` | `actual == expected` (the same diff, quoted) |
 
 The contract is exit-code based, and it's the whole model:
 
@@ -65,13 +65,19 @@ locus Sandbox {
     }
 }
 
+fn fetch(url: String) -> String {
+    let resp = std::http::get(url) or { return ""; };
+    return std::str::from_bytes(resp.body);
+}
+
 fn main() {
-    let dir = "/tmp/my_suite_scratch";
+    let dir = f"/tmp/my_suite_{std::process::pid()}";
     std::io::fs::mkdir(dir) or discard;
     let srv = std::process::spawn("./build/server") or raise;
     let sandbox = Sandbox { dir: dir, pid: srv.pid };
 
-    std::test::assert_eq_str(fetch("/health"), "ok", "server is up");
+    std::test::assert_eq_str(fetch("http://127.0.0.1:8080/health"), "ok",
+        "server is up");
 }
 ```
 
@@ -102,7 +108,7 @@ normative version of this.
 ```sh
 hale test               # discover + run every *_test.hl under the cwd
 hale test tests/        # ...under a directory
-hale test -run concat   # only files whose name matches a substring
+hale test -run concat   # only files whose path contains a substring
 hale test --json        # machine-readable results (one record per file)
 hale test -j 1          # one file at a time (default: one per core)
 ```

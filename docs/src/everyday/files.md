@@ -20,8 +20,9 @@ fn main() {
 }
 ```
 
-For `main` to use `or raise`, `main` would need to be fallible;
-more often at the top level you substitute or report:
+`or raise` in `main` has no caller to hand the error to: the
+program stops with `Hale panic: unhandled IoError escaping main
+locus`. More often at the top level you substitute or report:
 
 ```hale
 fn main() {
@@ -29,7 +30,7 @@ fn main() {
         eprintln("no config; using defaults");
         return;
     };
-    use_config(body);
+    println("config: ", len(body), " bytes");
 }
 ```
 
@@ -49,8 +50,9 @@ All of these live under `std::io::fs` and all are
 | `mkdir(path)` | create a directory |
 | `rename(from, to)` | move / rename |
 | `unlink(path)` | delete |
-| `mktemp(prefix) -> String` | make a temp file |
-| `list_dir(path) -> ...` | enumerate entries |
+| `mktemp(prefix, suffix) -> String` | make a temp file, return its path |
+| `list_dir_count(path) -> Int` | how many entries |
+| `list_dir_at(path, i) -> String` | the `i`th entry's name |
 | `file_exists(path) -> Bool` | test (never fails) |
 
 ## The error tells you what happened
@@ -121,7 +123,7 @@ the open descriptor for its lifetime:
 
 ```hale,fragment
 let f = std::io::file::open("log.txt", "r") or raise;
-let line = f.read_line() or "";
+let line = f.read_line();              // "" at end of file
 // ... f closes when it goes out of scope
 ```
 

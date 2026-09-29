@@ -206,17 +206,21 @@ JSON by forgetting a comma:
 ```hale,fragment
 let b = std::json::Builder { };
 b.begin_object();
-b.field("name", "Ada");
+b.string_field("name", "Ada");
 b.int_field("age", 36);
 b.bool_field("active", true);
 b.end_object();
-let out = b.result();      // {"name":"Ada","age":36,"active":true}
+let out = b.result();      // {"name": "Ada", "age": 36, "active": true}
 ```
 
-Nest objects and arrays by pairing `begin_*` / `end_*`. String
-values are escaped per the JSON spec automatically; if you need
-to escape or unescape a string by hand, `std::json::escape_string`
-and `unescape_string` are there.
+Nest objects and arrays by pairing `begin_*` / `end_*`
+(`begin_object_field` / `begin_array_field` open one as a named
+field). `string_field` and `string_value` quote and escape per the
+JSON spec for you; plain `field(name, value)` writes `value` as
+raw, already-formatted JSON, so it is the one to use for a
+fragment you built yourself — not for text. If you need to escape
+or unescape a string by hand, `std::json::escape_string` and
+`unescape_string` are there.
 
 `result()` hands back a copy, so it is a snapshot rather than a
 window: keep building after it and the `String` you already took

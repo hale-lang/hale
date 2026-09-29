@@ -31,21 +31,30 @@ choose to see.
 > [example gallery](https://hale-lang.org/play/) walks curated programs
 > chapter by chapter.
 
-This guide is built around that idea. It introduces Hale at four
-levels, each one self-contained:
+This guide is built around that idea. It comes in six parts,
+each one opening with a page that says what the layer is and
+what the next one adds:
 
-- **The basics** — variables, math, functions, control flow.
-  Hale as a small, clean language. You can write real scripts
-  knowing only this.
-- **Everyday programs** — files, JSON, HTTP, a bit of structure.
+- **The language** — values, math, functions, control flow,
+  failure as a value, and everyday files, JSON, HTTP and tests.
   Hale at the altitude you'd reach for Python or Node.
-- **Concurrent services** — long-running processes, a typed
-  message bus, supervision. Hale where you'd reach for Go.
+- **The locus model** — loci that run over time: a lifecycle, a
+  typed message bus, placement, supervision, programs split
+  across binaries. Hale where you'd reach for Go.
+- **Saying what must hold** — effect contracts, claims over the
+  whole program graph, and constitutions: promises the build
+  checks before anything runs.
 - **Systems control** — memory, layout, lifetime, zero-copy I/O,
-  C bindings. Hale where you'd reach for Rust or C++.
+  C, WebAssembly, and watching a program run. Hale where you'd
+  reach for Rust or C++.
+- **The organism** — an application that is governed: it
+  proposes its own changes, proves them, asks the people with
+  authority, and applies exactly what they approve.
+- **The habitat** — the design for what several organisms and
+  their people share.
 
-Each level expands on the one before it without contradicting
-it. The function you wrote in *the basics* still works in
+Each part expands on the one before it without contradicting
+it. The function you wrote in *the language* still works in
 *systems control* — you've just learned to see more of what was
 always there.
 
@@ -56,22 +65,26 @@ notice that each phrase you'd say out loud has a place to live.
 
 ```hale
 type Player    { id: String; name: String; }
-type MatchInfo { match_id: String; players: [Player]; }
+type MatchInfo { match_id: String; size: Int; }
 
 topic JoinQueue  { payload: Player; }
 topic MatchReady { payload: MatchInfo; }
 
 locus Matchmaker {
-    params { target_size: Int = 4; }
+    params {
+        target_size: Int = 4;
+        queued:      Int = 0;
+    }
     bus {
         subscribe JoinQueue as on_join;
         publish   MatchReady;
     }
 
     fn on_join(p: Player) {
-        self.waiting.push(p);
-        if self.waiting.len() >= self.target_size {
-            MatchReady <- assemble_match(self.waiting, self.target_size);
+        self.queued = self.queued + 1;
+        if self.queued >= self.target_size {
+            MatchReady <- MatchInfo { match_id: p.id, size: self.queued };
+            self.queued = 0;
         }
     }
 }
@@ -90,12 +103,12 @@ across the whole range — and across human, LLM, and machine.
 ## How to read this
 
 If you're new to programming or to systems languages, start at
-**The basics** and go in order. If you already program, skim the
-basics for the parts that differ from what you know (the failure
+**The language** and go in order. If you already program, skim
+it for the parts that differ from what you know (the failure
 model and the money/time types are worth a look), then jump to
-the level that matches the program you want to write. Every
-level after the basics opens with a short *"Coming from X?"* box
-to orient you.
+the part that matches the program you want to write. Many
+chapters open with a short *"Coming from X?"* box to orient
+you.
 
 When you want the exact rules rather than the tour, the
 [reference](./reference.md) points into `spec/` — the canonical

@@ -23,6 +23,9 @@ zero-copy path explicitly.
 In `main`'s [`bindings { }`](../services/multi-binary.md) block:
 
 ```hale
+type Update { px: Int; qty: Int; }
+topic L2Updates { payload: Update; }
+
 main locus App {
     bindings {
         L2Updates: shm_ring("/l2-updates",
@@ -31,6 +34,8 @@ main locus App {
                   where intra_machine, zero_copy;
     }
 }
+
+fn main() { App { }; }
 ```
 
 Publisher and subscriber `mmap` the same `/dev/shm` object and
@@ -47,9 +52,15 @@ the zero-copy lowering from the binding, not from the locus code.
 By default the substrate calls your handler once per record:
 
 ```hale
-fn on_update(u: Update) {   // per-record
-    self.total = self.total + u.px;
+locus Book {
+    params { total: Int = 0; }
+    bus { subscribe L2Updates as on_update; }
+    fn on_update(u: Update) {   // per-record
+        self.total = self.total + u.px;
+    }
 }
+
+fn main() { Book { }; }
 ```
 
 On a high-rate cross-process feed that per-record call — plus the
@@ -59,7 +70,10 @@ change the parameter type to `Drain<T>` and the substrate calls the
 handler **once per available batch**, handing you a handle you
 consume with a tight inline loop.
 
-```hale
+```hale,fragment
+type Tick { px: Int; qty: Int; }
+topic Quotes { payload: Tick; }
+
 locus Agg {
     params { total: Int = 0; }
     bus { subscribe Quotes as on_quotes; }   // SAME subscribe line
@@ -98,12 +112,13 @@ assertion about the route, and a contract the compiler validates.
 
 A payload you can drop into a shared slot must be **flat-shapeable**:
 every leaf is a fixed-layout primitive (`Int`, `Float`, `Bool`,
-`Decimal`, `Time`, `Duration`), a fixed-size array of those, or a
-struct whose fields are all flat-shapeable. `String`, `Bytes`,
-and unbounded arrays carry heap pointers that don't translate to
-a shared slot, so the compiler rejects them on a zero-copy topic.
-Use a fixed-size byte array (`[Byte; 256]`) for bounded text on
-these routes.
+`Decimal`, `Time`, `Duration`), a fixed-size array of scalars
+(`[Int; 8]`, laid out inline), or a struct whose fields are all
+flat-shapeable. `String`, `Bytes`, views and unbounded arrays carry
+heap pointers that don't translate to a shared slot, so the
+compiler rejects them on a zero-copy topic. Carry bounded data in
+a scalar array on these routes, and variable-length records as a
+[raw `BytesView` frame](#mixed-record-types-a-raw-bytesview-payload).
 
 ## Overflow is your decision
 
@@ -126,6 +141,9 @@ or forking the runtime, you *declare* that layout and point a
 binding at it:
 
 ```hale
+type Tick { px: Int; qty: Int; }
+topic Ticks { payload: Tick; }
+
 ring_layout ForeignRing {
     magic 0x52494E47464D5431;        // expected header magic at offset 0
     version 1 at 8 : u32;            // header field `version`, must equal 1
@@ -140,12 +158,21 @@ ring_layout ForeignRing {
     overflow lap_detect;
 }
 
+locus Tape {
+    params { last: Int = 0; }
+    bus { subscribe Ticks as on_tick; }
+    fn on_tick(t: Tick) { self.last = t.px; }
+}
+
 main locus App {
+    params { tape: Tape = Tape { }; }
     bindings {
         Ticks: shm_ring("/foreign.ticks", on_overflow: drop,
                         layout: ForeignRing) where zero_copy;
     }
 }
+
+fn main() { App { }; }
 ```
 
 A subscriber on `Ticks` now reads that foreign ring directly: the
@@ -203,20 +230,26 @@ locus Reader {
 
 No fixed size is assumed (a differently-sized valid record isn't
 dropped), and you decode with the `std::bytes::read_*` pack readers and
-a discriminator branch. This is the path for reading real external
+a discriminator branch. The topic is bound like `Ticks` above, to a
+`layout:` ring, but without `where zero_copy`: each record is copied
+into a scratch blob for the pack readers, so raw-frame mode is not
+zero-copy. This is the path for reading real external
 mixed-record rings; the typed-struct binding stays the fast path for a
 homogeneous ring.
 
 Producing such a ring is symmetric — build a record with a
 `BytesBuilder` and send the bytes:
 
-```hale
-fn emit_l2(level: L2) {
-    let b = std::bytes::BytesBuilder { initial_cap: 64 };
-    b.append_u8(2);                // discriminator
-    b.append_u32_le(level.price);
-    b.append_u32_le(level.qty);
-    Recs <- b.view();              // framed at its own length
+```hale,fragment
+locus Feed {
+    bus { publish Recs; }
+    fn emit_l2(level: L2) {
+        let b = std::bytes::BytesBuilder { initial_cap: 64 };
+        b.append_u8(2);                // discriminator
+        b.append_u32_le(level.price);
+        b.append_u32_le(level.qty);
+        Recs <- b.view();              // framed at its own length
+    }
 }
 ```
 
@@ -229,14 +262,17 @@ That builds the record in a temporary buffer, then copies it into the
 ring. To skip the copy on a hot producer path, write the fields
 *directly* into the reserved slot:
 
-```hale
-fn emit_l2(level: L2) {
-    Recs.write(24) { w =>           // reserve up to 24 bytes
-        std::bytes::write_u8(w, 0, 2)              or raise;
-        std::bytes::write_u32_le(w, 1, level.price) or raise;
-        std::bytes::write_u32_le(w, 5, level.qty)   or raise;
-        9                            // bytes written -> the record length
-    };
+```hale,fragment
+locus FastFeed {
+    bus { publish Recs; }
+    fn emit_l2(level: L2) {
+        Recs.write(24) { w =>           // reserve up to 24 bytes
+            std::bytes::write_u8(w, 0, 2)              or raise;
+            std::bytes::write_u32_le(w, 1, level.price) or raise;
+            std::bytes::write_u32_le(w, 5, level.qty)   or raise;
+            9                            // bytes written -> the record length
+        };
+    }
 }
 ```
 
@@ -294,7 +330,8 @@ other keys (e.g. `json:`) are free for later tools.
 Real external feeds often prefix each record with a small fixed
 header — a sequence number, a producer-side wire-arrival timestamp —
 before the variable payload. Declare it in the `ring_layout` with
-`record_header_bytes` (and `pad_field` for any alignment padding),
+`record_header_bytes` (and `pad_field_*` when the producer marks its
+wrap padding with a header field),
 and the subscriber reads those header fields *for the record it's
 currently handling* through `std::shm`:
 

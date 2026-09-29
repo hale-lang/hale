@@ -1,18 +1,13 @@
 # Summary
 
 [Introduction](./introduction.md)
+[Install](./getting-started/install.md)
+[Your first run](./getting-started/first-run.md)
+[Build a job queue](./tutorial/job-queue.md)
 
-# Getting started
+# The language
 
-- [Install](./getting-started/install.md)
-- [Your first run](./getting-started/first-run.md)
-
-# Tutorial
-
-- [Build a job queue](./tutorial/job-queue.md)
-
-# The basics
-
+- [The language](./parts/language.md)
 - [Values & variables](./basics/values.md)
 - [Math, money & time](./basics/math.md)
 - [Functions](./basics/functions.md)
@@ -20,9 +15,6 @@
 - [Strings & text](./basics/strings.md)
 - [When a call can fail](./basics/fallible.md)
 - [Your first program](./basics/first-program.md)
-
-# Everyday programs
-
 - [The locus, gently](./everyday/locus-gently.md)
 - [Lists & maps](./everyday/collections.md)
 - [Records & data](./everyday/records.md)
@@ -36,8 +28,9 @@
 - [Metrics](./everyday/metrics.md)
 - [Testing](./everyday/testing.md)
 
-# Concurrent services
+# The locus model
 
+- [The locus model](./parts/locus-model.md)
 - [The lifecycle](./services/lifecycle.md)
 - [The bus](./services/bus.md)
 - [Concurrency & placement](./services/concurrency.md)
@@ -47,12 +40,19 @@
 - [Across binaries](./services/multi-binary.md)
 - [Drive it from outside](./services/api.md)
 - [Composition patterns](./services/patterns.md)
+- [The model](./the-model.md)
+
+# Saying what must hold
+
+- [Saying what must hold](./parts/what-must-hold.md)
+- [Effects & contracts](./effects.md)
+- [Claims & the law](./claims.md)
+- [Constitutions](./constitutions.md)
 
 # Systems control
 
+- [Systems control](./parts/systems.md)
 - [Memory & lifetime](./systems/memory.md)
-- [Effects & contracts](./effects.md)
-- [Claims & the law](./claims.md)
 - [Performance](./systems/performance.md)
 - [Forms under the hood](./systems/forms.md)
 - [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
@@ -63,36 +63,34 @@
 - [Record & replay](./systems/replay.md)
 - [Modes](./systems/modes.md)
 
-# DNA
+# The organism
 
-- [A governed codebase](./dna/index.md)
+- [The organism](./parts/organism.md)
+- [The organism, part by part](./dna/index.md)
 - [Getting started](./dna/getting-started.md)
-- [Working with it](./dna/working.md)
-- [The organization](./dna/organization.md)
-- [Operating the fleet](./dna/operating.md)
-- [Shaping it](./dna/shaping.md)
-- [What it will and won't do](./dna/limits.md)
+- [One task, end to end](./dna/workflow.md)
+- [Memory and the record](./dna/memory.md)
+- [The spine](./dna/spine.md)
+- [The nerves](./dna/nerves.md)
+- [The heart and the body](./dna/heart.md)
+- [Senses and reflexes](./dna/senses.md)
+- [The skin](./dna/skin.md)
+- [Legs, hands and voice](./dna/legs.md)
+- [Schedules](./dna/schedules.md)
+- [The head and the face](./dna/head.md)
+- [Shaping and governing it](./dna/shaping.md)
+- [DNA, the building block](./dna/dna.md)
 - [Troubleshooting](./dna/troubleshooting.md)
-
-# DNA, under the hood
-
-- [What init makes](./dna/attach.md)
-- [The record](./dna/record.md)
-- [The host, the nerves, the nodes](./dna/run.md)
-- [The twelve steps, with the record](./dna/walkthrough.md)
-- [The workflow](./dna/workflow.md)
-- [The Review in detail](./dna/review.md)
-- [Apply, express, observe](./dna/apply.md)
-- [Autonomy: the vector and the rules](./dna/autonomy.md)
-- [Models and credentials](./dna/models.md)
-- [Legs: hale dna work](./dna/legs.md)
-- [The knowledge graph](./dna/knowledge.md)
 - [Reference](./dna/reference.md)
+
+# The habitat
+
+- [The habitat](./parts/habitat.md)
+- [The habitat, as designed](./habitat.md)
 
 ---
 
 - [Reference](./reference.md)
 - [Libraries (pond)](./libraries.md)
 - [Verification](./verification.md)
-- [The model](./the-model.md)
 - [The design](./the-design.md)

@@ -19,6 +19,15 @@ To carry a topic *between* binaries, name it in the `main`
 locus's `bindings { }` block with a transport:
 
 ```hale
+type Match { size: Int; }
+topic MatchReady { payload: Match; }
+
+locus Matchmaker {
+    params { target_size: Int = 2; }
+    bus { publish MatchReady; }
+    run() { MatchReady <- Match { size: self.target_size }; }
+}
+
 main locus App {
     bindings {
         MatchReady: unix("/tmp/matches.sock");
@@ -27,6 +36,8 @@ main locus App {
         Matchmaker { target_size: 4 };
     }
 }
+
+fn main() { App { }; }
 ```
 
 A binding may name a topic the seed imports — `bindings {
@@ -34,7 +45,7 @@ core::Verdict: unix("/tmp/verdicts.sock", role: listen); }` — so a
 library's own declarations are what cross the socket, not copies
 of them.
 
-A listen binding serves any number of connected publishers at once,
+A listen binding serves up to 64 connected publishers at once,
 and a `keyed_by` topic keeps its routing across the socket: the
 receiving side derives the key from the payload, so a
 `subscribe T as h where key == self.k` behind a binding hears
@@ -49,7 +60,7 @@ one topic for another binary; that is its own chapter,
 [Drive it from outside](./api.md).
 
 `bindings { }` is legal only on a `main` locus. The publisher's
-`MatchReady <- info;` and the subscriber's `subscribe MatchReady
+`MatchReady <- m;` and the subscriber's `subscribe MatchReady
 as ...` are *unchanged* — they don't know or care that delivery
 now crosses a socket. The same locus source runs in a test
 (in-memory), a single binary (in-memory), and a multi-binary
@@ -62,9 +73,9 @@ deployment (unix), chosen entirely at this seam.
   by the runtime. The role (listen vs connect) is inferred from
   whether the binary publishes or subscribes the topic; specify
   `role: listen | connect` when one binary does both.
-- **`udp://host:port`** — datagram transport, including IPv4
-  multicast. Lossy by nature — right for tick streams and
-  telemetry where stale-is-worthless.
+- **`shm_ring("/name", on_overflow: …)`** — a POSIX shared-memory
+  ring for routes between processes on one machine; the
+  [systems tier](../systems/zero-copy-bus.md) covers it.
 - **A user adapter** — any locus you write that satisfies the
   `__StdBusAdapter` interface (a single `send(subject, bytes)`
   method). This is how NATS, MQTT, a raw-TCP framing, or a
@@ -86,6 +97,14 @@ deployment (unix), chosen entirely at this seam.
 The substrate stays neutral on protocol semantics — reliability,
 ordering, retries, backpressure all live in the adapter body,
 where they belong.
+
+`udp://host:port` — datagrams, IPv4 multicast included, lossy by
+nature, right for tick streams and telemetry where
+stale-is-worthless — is not a `bindings { }` constructor. It is a
+route in the `LOTUS_BUS_CONFIG` file the runtime reads at startup
+(the peer and route table `hale node` writes), beside `unix://`
+routes. The route lives in the operator's layer, so the source
+names no transport for it at all.
 
 An adapter is pinned: its `run()` — the receive loop — has a thread
 of its own, and every topic it subscribes to is delivered there.
@@ -114,8 +133,9 @@ what "accepted" obligates the broker to depends on the binding:
 |--------------|-----------------------------------------------------------|
 | in-process   | dispatched to every born subscriber in this binary        |
 | `unix(...)`  | handed to the peer connection, message boundaries intact  |
-| `udp://...`  | handed to the local IP stack — lossy from there, by design |
+| `shm_ring(...)` | slot claimed and committed, under the declared `on_overflow` policy |
 | adapter      | whatever the adapter locus's own contract says            |
+| `udp://` route | handed to the local IP stack — lossy from there, by design |
 
 The one thing a broker may never do is accept a message it
 already knows it can't handle. So a binding that can't be
@@ -133,7 +153,7 @@ And a peer *disconnecting* from a `unix(...)` listener isn't a
 failure at all: the listener stays bound and simply accepts the
 next connection. Restart the publishing binary and it reconnects
 — the subscriber never notices. (Under the hood each binding is
-a real locus, a child of your `main` locus, whose lifecycle
+a real locus, built before any statement you wrote, whose lifecycle
 opens the transport at birth and tears it down at dissolve —
 the same shape as a custom adapter. Its dissolve is the *last*
 one your program runs; see the teardown order below.)
@@ -146,13 +166,19 @@ no longer deliver would be lying to you. If you'd rather
 reconnect, say so — as a supervision decision on `main`:
 
 ```hale
+type Reading { v: Int; }
+topic Evt { payload: Reading; }
+
 main locus App {
     bindings { Evt: unix("/tmp/evt.sock", role: connect); }
+    bus { publish Evt; }
     on_failure(t: std::bus::UnixTransport, err: ClosureViolation) {
         restart (t);     // re-run the connect-with-retry
     }
-    run() { /* ... */ }
+    run() { Evt <- Reading { v: 1 }; }
 }
+
+fn main() { App { }; }
 ```
 
 `restart` re-dials with the same retry window the boot connect
@@ -190,12 +216,12 @@ opened refuses the boot.
 
 The *listen* side makes a delivery promise of its own: **wire
 data the kernel accepted is delivered, even at the awkward
-edges** (GH #468). A peer that connects and publishes in the
-instant between the socket appearing and this binary's
-subscribers finishing registration used to lose that traffic
-silently — now it's buffered (bounded — 64 messages / 1 MiB per
-binding — and visible as `buffered_early` in the counters dump)
-and delivered the moment the registration lands. And a program
+edges**. A peer that connects and publishes in the instant
+between the socket appearing and this binary's subscribers
+finishing registration doesn't lose that traffic: it's buffered
+(bounded — 64 messages / 1 MiB per binding — and visible as
+`buffered_early` in the counters dump) and delivered the moment
+the registration lands. And a program
 whose `main` returns while messages still sit undrained in a
 socket queue quiesces first: listeners stop accepting new
 connections, what already arrived is drained and handled while
@@ -206,10 +232,10 @@ What you should *not* read into this: it is not durability — a
 message still in the publisher when either process dies is gone,
 and `udp://` remains lossy by declaration.
 
-The binding locus itself goes last. Your `main` locus is born
-before any user statement and dissolves after every locus it
-owns, and a binding is born before *that* — so the teardown
-order at exit is: quiesce the listeners, join the cooperative
+The binding locus itself goes last. It is set up in `fn main`'s
+prelude, before any statement you wrote, so it is the first thing
+`fn main` owns and the last it tears down — the teardown order at
+exit is: quiesce the listeners, join the cooperative
 pools, dissolve your loci innermost-first, and only then
 dissolve the bindings, closing their sockets and joining their
 serve threads. That ordering is what makes a publish from a

@@ -14,8 +14,8 @@
 hale build client/main.hl --target wasm32
 ```
 
-This emits `client/main.wasm` (self-contained — a tiny bundled
-libc, no external runtime) and `client/main.mjs` (a loader that
+This emits `client/main.wasm` (self-contained — the runtime is
+linked in, with no libc and no external runtime) and `client/main.mjs` (a loader that
 instantiates the module and wires the host functions). The program
 declares the target so the typechecker can gate the parts of the
 standard library that need syscalls:
@@ -98,10 +98,13 @@ Each `fn` method becomes a wasm export the page calls by name
 (`inst.exports.frame()`). State lives in the locus's fields and
 **persists across calls** — `on_message()` writes `self.sx`,
 `frame()` reads it, just like a native locus. On the native target
-`@export` is a no-op. (There is also a lower-level `@export fn` for
-free functions — same export, but stateless; see below.) Methods
-may not be `fallible` (the host has no error channel), and the locus
-must not define `run()` — the host drives it.
+an `@export locus` is an ordinary locus. (There is also a lower-level
+`@export fn` for free functions — same export, but stateless; see
+below. On a native target an `@export fn` becomes an unmangled C
+symbol instead, for C code that calls back into Hale.) A `fallible`
+method stays internal and is not exported (the host has no error
+channel), and the locus must not define `run()` — the host drives
+it.
 
 ## The run-model: entry inversion
 
@@ -182,16 +185,20 @@ inst.exports.on_message();
 ```
 
 ```hale
+target wasm { }
 @ffi("c") fn lotus_wasm_inbox() -> Bytes;   // the bytes JS wrote
 
-// inside the Client locus:
-fn on_message() {
-    let msg = lotus_wasm_inbox();
-    if len(msg) > 0 {
-        let s = std::str::from_bytes(msg);
-        // ... std::json parse, then store into self.* ...
-        self.ready = true;
+@export locus Client {
+    params { sx: Float = 0.0; sy: Float = 0.0; ready: Bool = false; }
+    fn on_message() {
+        let msg = lotus_wasm_inbox();
+        if len(msg) > 0 {
+            let s = std::str::from_bytes(msg);
+            // ... std::json parse, then store into self.* ...
+            self.ready = true;
+        }
     }
+    fn frame() { /* render from the fields */ }
 }
 ```
 
@@ -249,7 +256,7 @@ The second one links and then fails at the call with a wasm
 `signature_mismatch`. That's abrupt, but it is the good outcome: on a
 native target the same mismatch quietly truncates instead.
 
-*(Before Hale 0.12, package `csrc` was skipped for wasm entirely and
+*(Before Hale 0.13, package `csrc` was skipped for wasm entirely and
 those symbols became stubs returning 0 — a build that looked fine and
 a program that silently did nothing. If you have a workaround
 supplying them from JS, it can go.)*

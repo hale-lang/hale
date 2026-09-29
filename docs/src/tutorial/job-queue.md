@@ -1,8 +1,8 @@
 # Build a job queue
 
 In about thirty minutes, you'll build a small **job queue** and watch it
-descend the four altitudes — from a throwaway script to a service split
-across processes — changing almost nothing but `main` at the very end. The
+grow in four stages — from a throwaway script to a service split across
+processes — changing almost nothing but `main` at the very end. The
 first three stages run in the browser at the
 [playground](https://play.hale-lang.org/) (no install); to follow
 along locally, drop each program in a `.hl` file and `hale run` it.
@@ -154,7 +154,7 @@ changes; you give them a new `main` per deployment.
 To run the worker as its own process — listening for jobs over a Unix
 socket, on its own cooperative pool — that's a `main` locus:
 
-```hale
+```hale,fragment
 // worker.hl — the worker as its own binary. Import the shared Job/Result
 // types, the Jobs/Results topics, and the Worker/Reporter loci from §3;
 // only this `main` is new.
@@ -167,18 +167,27 @@ main locus WorkerNode {
         worker: cooperative(pool = jobs);   // its own pool / OS thread
     }
     bindings {
-        Jobs: unix("/run/jobs.sock", role: listen);
+        Jobs: unix("/tmp/jobs.sock", role: listen);
+    }
+    run() {
+        while !self.draining { std::time::sleep(1s); }   // serve until Ctrl-C
     }
 }
+
+fn main() { WorkerNode { }; }
 ```
+
+The `run()` loop is what keeps a listening process up: a program whose
+`main` has nothing left to do exits, socket and all.
 
 The job *source* becomes a second binary whose `main` instantiates the
 `Submitter` and binds the same topic with `role: connect`
-(`Jobs: unix("/run/jobs.sock", role: connect);`). Same `Jobs` topic, same
+(`Jobs: unix("/tmp/jobs.sock", role: connect);`). Same `Jobs` topic, same
 typed payload — now crossing a process boundary instead of an in-memory
-queue. Swap `unix(...)` for `udp://host:port` or a broker adapter and the
-loci still don't change; only `main` does. (Add a `codec(...)` on the
-binding to put JSON or protobuf on the wire so a non-Hale peer can read it.)
+queue. Swap `unix(...)` for a broker adapter locus and the loci still
+don't change; only `main` does. (Add a `codec(...)` on the binding — a
+codec locus you write — to put JSON or protobuf on the wire so a non-Hale
+peer can read it.)
 
 For the full multi-binary picture — sharing the loci across files, picking
 transports, and supervising the workers — see
@@ -188,15 +197,15 @@ transports, and supervising the workers — see
 ## What you built
 
 The same `Job` / `Worker` / topic definitions carried you from a script to a
-distributed service. Each altitude added exactly what it needed and nothing
+distributed service. Each stage added exactly what it needed and nothing
 more:
 
-| Altitude | What appeared |
+| Stage | What appeared |
 |---|---|
 | **Script** | `type`, `fn` — data and the work |
 | **Everyday** | a `@form(vec)` locus that holds the jobs |
 | **Concurrent** | `topic`s + the bus; workers react instead of being called |
-| **Systems** | `main` chooses placement and transports — the loci untouched |
+| **Deployed** | `main` chooses placement and transports — the loci untouched |
 
 > **Altitude, not scale.** These four steps are how much machinery you are
 > choosing to control. They are a different axis from the *scales* the
@@ -208,7 +217,7 @@ more:
 
 That last row is the point: a Hale program is a *design* of loci and topics;
 where and how it runs is a binding you change in one place. From here, the
-[concurrent services](../services/lifecycle.md) chapters go deeper on
+[locus model](../services/lifecycle.md) chapters go deeper on
 lifecycle, failure, and supervision — or open the
 [playground](https://play.hale-lang.org/) and run the bus version
 in your browser.

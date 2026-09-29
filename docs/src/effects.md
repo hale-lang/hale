@@ -21,7 +21,7 @@ there.
 
 Effect contracts are **opt-in**. Nothing here fires until you ask for
 it; a program with no annotations behaves exactly as before. The one
-exception is noted at the end — placement implies a contract, because
+exception is noted below — placement implies a contract, because
 putting a handler on an `async_io` pool is already a claim that it
 won't block.
 
@@ -44,7 +44,7 @@ enforces it across everything reachable from it:
 ```
 
 `none: {…}` forbids effect classes — `syscall`, `block`, `time`,
-`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`,
+`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`,
 `secret_use`.
 `publish: {…}` declares which topics a fn may publish to (exact,
 because Hale's topic set is closed).
@@ -115,7 +115,7 @@ contracts on a `fn` the hook calls.
 clock, no randomness and no environment is a function of its inputs,
 so replaying its inputs replays its behavior exactly. The compiler
 knows the difference between reading a source and using a supplied
-value — `std::time::time_from_unix(at)` formats an instant you
+value — `std::time::time_from_unix(at)` converts an instant you
 passed in and is fine; `std::time::monotonic_ns()` is not.
 
 Reach for the general form when the shorthand doesn't say what you
@@ -293,7 +293,7 @@ says nothing at all.
 | `publish` | sending on the bus | `Orders <- o` |
 | `spawn` | instantiating a locus | `Worker { }` |
 | `recursion` | a cycle in the call graph | a fn that reaches itself |
-| `alloc` | arena allocation — a phase-only class, see `@phase_effects` | `Buf { n: 1 }` |
+| `alloc` | arena allocation — also the class `@phase_effects` budgets by phase | `Buf { n: 1 }` |
 | `secret_use` | a privileged operation over confined secret material | `std::secret::Signer.sign` |
 
 `secret_use` is **compiler-owned**: `std::secret`'s privileged methods
@@ -326,14 +326,15 @@ A function handed a timestamp is a function of its inputs. A function
 that *fetches* one is not, and cannot be replayed.
 
 You never have to work this out from memory. `hale doc --stdlib`
-publishes every function's classes alongside its signature, generated
-from the same registry the checker queries — so the catalogue and the
-enforcement cannot disagree:
+publishes every function's classes alongside its signature (the
+signature in a `hale` code block of its own), generated from the same
+registry the checker queries — so the catalogue and the enforcement
+cannot disagree:
 
-```
+```text
 ### std::io::fs::read_file
 
-    fn read_file(String) -> String fallible(IoError)
+fn read_file(String) -> String fallible(IoError)
 
 **Effects:** `syscall`
 ```
@@ -365,7 +366,7 @@ named rather than located, because it is a position in a file of the
 compiler's, not one of yours:
 
 ```
-    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:118:18)
+    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:98:18)
 ```
 
 Read the suggestion precisely. Moving an effect behind a locus your
@@ -383,7 +384,8 @@ exactly what it must not certify.
 ## What the compiler infers, as a reviewable artifact
 
 Annotations only describe the functions someone remembered to annotate.
-The manifest describes **every** function:
+The manifest describes **every** function that does anything or
+declares a contract (a pure, unannotated fn has no line):
 
 ```sh
 hale check app.hl --dump-effects-manifest > .hale.effects
@@ -395,7 +397,7 @@ not, for free functions, locus methods and lifecycle hooks alike:
 
 ```
 # .hale.effects v1 — declared effect contracts
-App::run     does={syscall,block,time}
+App::run  does={syscall,block,time}
 Pusher::run  does={syscall,block,publish,time,alloc}
 ```
 
@@ -406,8 +408,9 @@ hale check app.hl --check-effects-manifest .hale.effects
 ```
 
 ```
-- Api::emit  none={block}  does={publish,alloc}
-+ Api::emit  none={block}  does={syscall,publish,alloc}
+effect manifest changed — .hale.effects no longer matches the program's effects.
+  - Api::emit  none={block}  does={publish,alloc}
+  + Api::emit  none={block}  does={syscall,publish,alloc}
 ```
 
 This catches what annotations structurally cannot. `Api::emit` gained
@@ -452,7 +455,7 @@ the complete set of subjects that can transitively reach any of a
 locus's handlers:
 
 ```hale,fragment
-@effects(depends: {Recalled})
+@effects(depends: {SumLookup, Recalled})
 locus StatedCarry {
   bus { subscribe SumLookup as on_sum; }
 }
@@ -462,8 +465,9 @@ Without it, an independence claim is unenforceable. A locus that
 subscribes only to `SumLookup` looks isolated from `Recalled` in
 every declaration it carries — but if some third locus subscribes to
 `Recalled` and republishes onto `SumLookup`, the influence arrives
-anyway, and nothing in the depending locus's source mentions it. The
-diagnostic names the laundering path:
+anyway, and nothing in the depending locus's source mentions it.
+Declare `{SumLookup}` alone and the diagnostic names the laundering
+path:
 
 ```
 type error: declared dependency set violated: `StatedCarry` can
@@ -473,7 +477,8 @@ transitively depend on `Recalled` through the bus, which its
 ```
 
 You may name the topic (`Recalled`) or its wire subject
-(`"recalled"`) — they address one endpoint, and the compiler joins
+(`"recalled"`, when the topic declares `subject: "recalled"`) — they
+address one endpoint, and the compiler joins
 on that identity rather than on how you spelled it.
 
 It sits on the **locus**, not a fn: dependence enters through
@@ -493,7 +498,7 @@ through a file — is not part of it.
 
 ## Effects you declare yourself
 
-The ten classes above are the compiler's. A program can name its own:
+The eleven classes above are the compiler's. A program can name its own:
 
 ```hale
 effect money;
@@ -511,7 +516,8 @@ fn main() { println(quote(100)); }
 source of it. From there it is an ordinary effect: it propagates
 through the call graph, it travels over the bus under `causes:`, it
 can be forbidden with `none:`, and a violation reports the same
-witness path a built-in would.
+witness path a built-in would. Were `quote` to call `charge`, the
+build would stop with:
 
 ```
 type error: effect assertion violated: `quote` must not reach `money`,
@@ -567,7 +573,7 @@ It is the wrong shape when you care about *everything else*. To say
 out every other class:
 
 ```hale,fragment
-@effects(none: { syscall, block, publish, time, entropy, env, ffi, spawn, recursion })
+@effects(none: { syscall, block, publish, time, entropy, env, ffi, spawn, recursion, secret_use })
 ```
 
 And that list is a snapshot. Add a class to the language — or declare
@@ -587,10 +593,11 @@ fn label(n: Int) -> String {
 
 The inferred effect set must be a **subset** of what you listed. The
 complement is computed when the program is checked, from the classes
-that actually exist — the ten built-ins plus every class the program
-declares. Nothing is written down, so nothing can go stale:
+that actually exist — the eleven built-ins plus every class the program
+declares. Nothing is written down, so nothing can go stale, and the
+build refuses this program:
 
-```hale
+```hale,refused
 effect money;
 
 @effects(is: { money })

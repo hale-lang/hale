@@ -42,7 +42,8 @@ log.error(f"request {id} failed: {reason}");
 ### Turning the volume down
 
 `HALE_LOG` sets a threshold — `error`, `warn`, `info`, or
-`debug` — and anything below it is dropped:
+`debug` — and anything below it is dropped (unset, or a value it
+doesn't recognise, drops nothing):
 
 ```sh
 HALE_LOG=warn ./myapp      # warn and error only
@@ -131,8 +132,9 @@ sink's `last_error_kind()` / `last_error_errno()` /
 `last_error_path()` accessors. `ConsoleSink` renders
 `14:02:07 WARN  app.db retry 1/3` with colored level badges —
 automatically disabled when output isn't a terminal (and `NO_COLOR`
-always wins). Both send WARN/ERROR to stderr so shell pipelines and
-CI capture keep the signal lane separate. Run several sinks at once
+always wins). `ConsoleSink`, like `StdoutSink`, sends WARN/ERROR to
+stderr so shell pipelines and CI capture keep the signal lane
+separate; `FileSink` writes every level to its file. Run several sinks at once
 — they're all just subscribers.
 
 ## You just used the bus

@@ -50,10 +50,10 @@ You only write the phases you need; the compiler supplies no-op
 defaults for the rest. A locus with just `birth` and `run` is
 completely normal.
 
-> One rule: no `return` inside `birth` / `run` / `dissolve`
-> bodies. These are driven by the runtime, not called by you, so
-> "return a value" has no meaning. Factor any early-exit logic
-> into a helper free function the body calls.
+> One rule: a lifecycle body returns no value. These are driven
+> by the runtime, not called by you, so "return a value" has no
+> meaning. A bare `return;` ends the body early, exactly as
+> falling off its end does; `return <value>` is refused.
 
 ## A simple service
 
@@ -83,12 +83,21 @@ next sibling is touched. So a child whose `run()` never returns
 means the params after it are never born.
 
 ```hale
+locus Server {
+    run() { while true { std::time::sleep(1s); } }   // never returns
+}
+locus Metrics {
+    birth() { println("metrics up"); }   // never printed
+}
+
 main locus App {
     params {
-        server:  Server  = Server { };    // run() { while true { ... } }
+        server:  Server  = Server { };
         metrics: Metrics = Metrics { };   // never born
     }
 }
+
+fn main() { App { }; }
 ```
 
 `Metrics` doesn't just fail to *run* — its `birth()` never happens,
@@ -135,8 +144,10 @@ only once every child has been born.
 A params field is where a locus keeps its children, so this looks
 like it should be a linked list:
 
-```hale,fragment
-params { n: Int = 0; next: Node = Node { n: 1 }; }   // won't compile
+```hale,refused
+locus Node {
+    params { n: Int = 0; next: Node = Node { n: 1 }; }   // won't compile
+}
 ```
 
 It isn't one. The `Node` that default builds leaves *its* `next` to
@@ -147,12 +158,14 @@ The compiler says so at the param:
 
 ```text
 param `next` of `Node` defaults to a `Node`; a locus cannot contain
-itself by value - every one the default builds needs another, and
-no locus literal can end the chain.
+itself by value — every one the default builds needs another, and
+no locus literal can end the chain. Drop the default and take the
+child from the caller (`next: Node;`), or hold a value rather than
+a locus.
 ```
 
 The same error covers a ring through two or three types, and names
-it (`Alpha` -> `Beta` -> `Alpha`). A locus holding a *different*
+it (`Alpha` → `Beta` → `Alpha`). A locus holding a *different*
 locus is the ordinary parent/child shape and is untouched.
 
 What to write instead: take the child from the caller

@@ -1,436 +1,556 @@
 # Reference
 
+The CLI, the environment, the record's vocabulary, the status
+projection and the files, in one place. The chapters explain; this
+page lists. [spec/dna.md](https://github.com/hale-lang/hale/blob/main/spec/dna.md)
+is the contract behind all of it.
+
 ## The CLI
 
+`hale dna --help` prints every verb. Here the same lines are grouped by
+the part each verb drives, word for word. Most verbs take the project
+directory as an optional argument and default to the current one.
+
+### Starting: DNA and the genome
+
+[Getting started](./getting-started.md) and
+[DNA, the building block](./dna.md).
+
 ```text
-hale dna init [app-dir]      generate the organization (dna/org) for an existing application, or for a
-                             repository with none at its root, whose holdings it reads into the graph
+hale dna init [app-dir]      attach the DNA to an existing application
+hale dna new <name>          a greenfield application with its DNA
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
-                             a greenfield application with its organization; the profile sets pieces;
-                             like init, seats the record: this uid mapped to its user (dna.unix.member) and
-                             dna.trust = local declared, both in the record's local config
-hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from
-                             before it); maps this uid for the head's socket, declares no trust for a record it did not make
+                             the profile sets the pieces (a remote, a body host); the combination is always detected
+hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain
+hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust
 hale dna --embedded-digest [--from-tree <dir>]
-                             the digest of the DNA source this binary embeds, alone on stdout; with a
-                             checkout, what that tree would embed (unequal = the binary predates it)
-hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
-hale dna work <verb> [flags] a leg's verbs against the head's API, JSON out ([legs](./legs.md)): next, brief,
-                             renew, allowance (the attempt's spend, asked of the budget's one gate before the first
-                             model call), submit, settle, release, friction, run; --as position:<name>, --api <origin>;
-                             --effect effect_free|idempotent|uncertain on next and submit (the performer's class;
-                             run and loop use their performer's); an uncertain performer's failed settle or lost
-                             reply marks the attempt `unresolved` (effect.result unknown, friction filed), never
-                             retried by a program: `hale dna effect resolve attempt:<id> --outcome ok|failed`
-                             loop --parallel N is a worker (N children, holders position:<name>#n via --worker n);
-                             loop --drain; the commands go over the head's socket (--socket, HALE_DNA_SOCKET,
-                             or as /capabilities names it), the peer's credentials the principal
-hale dna definitions [project] [--json]
-                             the workflow catalog (dna/org/workflows.hl): every definition with its
-                             revision, each step with the one store it writes, how it occurs on a
-                             schedule where that is not the default (`occurs: skip while open,
-                             takes objective`), and what is refused at admission for a part not built
-hale dna memory migrate [dir]
-                             apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or
-                             dna/compose.yaml) and print the record's spine and head DSNs
-                             (HALE_DNA_MEMORY_DSN_SPINE=…, HALE_DNA_MEMORY_DSN_HEAD=…)
-hale dna nerves migrate [dir]
-                             create the organization's NATS JetStream stream with the owner's URL
-                             (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token, each
-                             role's URL, nats://host:port alone (HALE_DNA_NATS_ORG=…,
-                             HALE_DNA_NATS_URL_SPINE=…, …), the reflexes' vault name, and the attached
-                             application's own user and vault name (HALE_DNA_NATS_USER_APP=app-<name>,
-                             HALE_DNA_NATS_VAULT_APP=…)
-hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
-hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
-                             the organization AND the application under one host: rebuild and
-                             restart the application on an apply, watch the window, report back
-hale dna run [project] [--port N] [--no-iris] [--observe <secs>]
-                             the organization only; the fleet ([dna] fleet), or a deployment
-                             gateway, expresses the application; memory from HALE_DNA_MEMORY_DSN_SPINE
-                             (an owner's or head's DSN is taken out of the host's environment)
-hale dna ui [project] [--port N]
-                             (under `git config dna.principal oidc`: a hosted head behind sign-in at
-                             dna.oidc.issuer, every ID token verified ES256 against its JWKS, read at
-                             start; dna.oidc.client, dna.oidc.redirect, dna.oidc.member
-                             "<subject>=<name>", dna.oidc.board, the vault's oidc-client-<client>; without it,
-                             a fixture's trusted-local session only (HALE_DNA_TRUSTED_LOCAL=1);
-                             the head's socket knows a peer by uid: --local dna.unix.member "uid:<n>=<name>";
-                             the record's own commands are gated topics on that same socket, listed by
-                             `hale describe <socket>`)
-                             the surface in a browser, from the record alone
-hale dna status [project] [--json]
-                             the status projection, from the record
-hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>
-                             ask for an outcome, as a Task: a row in the record, which a node relays to the organism;
-                             --judgment asks for an assessment rather than a change: one judgment leaf, a leg's
-                             to perform (hale dna work), no plan asked of the leader
-hale dna review              the pending Reviews
-hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (offline)
-hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>]
-                             [--comment <c>] [--digest <sha>] [--no-wait]
-                             a routed Review admits only holders of the positions it requires,
-                             and weighs only the gate runs the host observed at the forge
-hale dna history [<entity>]  walk the record by causal links (offline)
-hale dna fill <position>|organization:<name> <holder>|organization:<name> [project] [--as <who>]
-                             ask the organization to propose who holds a position: a Board Review in
-                             your name; the holder is a person the record knows; dev and reviewer of
-                             one process as one person is a warning under dna.trust = local, refused
-                             elsewhere, here and where memory projects it. `<position>
-                             organization:<o>` proposes that firm owning the position;
-                             `organization:<o> <person>` proposes the person's membership (they need
-                             not be known yet; one organization per person)
-hale dna route [--json] (<path>… | --diff <range>)
-                             who must sign a change set, from the graph: each touched seed's process
-                             reviewer, a contract's reviewers and its consumers', the board where a
-                             practice ratified as law binds it, a deployment file's operator; and the
-                             gates whose runs are the evidence (paths from a subdirectory are taken
-                             from there)
-hale dna show org|processes [--json] [project]
-                             the graph's two perspectives, read from memory under the head's role:
-                             the org chart, the process model (and what each position convenes on a
-                             cadence); `--json` is the query's answer
-hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
-hale dna ledger [status | rows | adopt | abandon --why <w>]
-                             the operational memory: where the day's work lives, the ledger as JSON
-                             lines, and requests for the body to adopt or abandon it
-hale dna candidates [<mutation> | drop <mutation> --why <w>]
-                             the candidates the record keeps; one as a diff; stop keeping one
-hale dna profile [project]   the organism's combination, detected from its pieces
-hale dna body                who runs this record (the body lease); `claim --force` takes it from a
-                             body that is gone; `release [--force]` gives it up; rows in your name
-hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run]
-                             a body over ssh: the pinned toolchain, the record cloned, Postgres from
-                             compose or the DSN, a systemd user unit; writes nothing it cannot finish
-hale dna body start|stop|logs [--body <user@host>]
-                             the body's unit, over ssh
-hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]
-                             protected evidence: kept in memory alone, sealed there; disclosure
-                             and every read are rows in the reader's name
-hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
-hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]
-hale dna practice [propose <name> --text <text> [--because <why>] [--supersedes <digest>] [--as <who>]]
-hale dna task done <id> [--as <who>] [--note …] [--evidence <digest> | --exception <why> --authorized-by <who>]
-hale dna task authorize <id> --exception <why> [--as <authorizer>]
-hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]
-hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,confidential> [--by <who>]]
-hale dna disconnect <n> --why <why> [--by <who>]
-hale dna handoff [<n> task <id> | <n> receipt <digest> [--note …] [--as <who>] | accept <id> [--note …] [--as <who>] | sync]
-                             a hold refuses redaction; a redaction removes the body, keeps the digest
-hale dna schedule [pause <id> | resume <id>] [--as <who>]
-                             the schedules the record declares (definition, cadence, convener) and
-                             their occurrences, skips and misses; pause and resume are rows in your name
-hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id>
-                             --convener <position> [--args <json>] [--as <who>]
-                             a schedule asked of the organization, declared or refused with the reason:
-                             each occurrence is one execution of the definition, `sched:<id>@<time>`;
-                             --args names every input the definition takes (GH #1143)
-hale dna secret set <NAME> [--body <user@host>]
-                             a credential from stdin into its slot of the vault there or here (a model
-                             key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET); `secret rotate <NAME>`; the
-                             record gets `secret.rotated` only
-hale dna secrets [dir]       every secret the organism requires, whether the vault holds it, and what
-                             provides a missing one (never a value)
-hale dna application remove [project] [--as <who>]
-                             the attached application removed (`application.detached` in the record)
-                             and its broker account revoked: its user, its password, its vault entry
-hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
-hale dna report [project]    file a report from the record since the last one
-hale dna concern raise <source> <what…> [--severity N]
-                             a concern from a locus path about the part above it; three become a proposal
-hale dna pressure [raise <source> <what…>]
-                             pressure raised and answered; `raise` writes one signal, which a node relays
-hale dna github sync         mirror pending Reviews to pull requests, read reviews back as verdicts
-hale dna fleet [project]     what the fleet expresses: every instance, node, revision, hash, state
-hale dna deploy <revision>   express a genome revision through the fleet's nodes
-hale dna rollback <mutation> express the base a Mutation was applied on, again
-hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]
-                             run the instances a plan assigns to this node, from the record
-hale fleet check [plan.json] [--in <dir>] [--if-declared]
-                             compose and check; every declared fleet when no plan is named
+                             the digest of the DNA source this binary embeds (nothing else on stdout);
+                             with a checkout, what that tree would embed — a mismatch means the binary
+                             predates the working tree and a mutation run against it proves nothing
 ```
 
-Environment the host sets on the organization: `LOTUS_OBS=1`,
-`HALE_BIN` (the toolchain it runs for verification), and on a
-restart `HALE_DNA_RESTART_FOR` / `HALE_DNA_EXPRESSION`. A node sets
-`HALE_DNA_NODE` and `HALE_DNA_INSTANCE` on each instance.
-`HALE_DNA_ONESHOT` makes a generated application's `run()` return
-after its first cycle (for tests). `HALE_DNA_NO_BUILD_CACHE=1` makes
-the host build the organization's seed — and under `dev` the
-application's — from scratch on every start (into `.hale/dna/build/`),
-instead of reusing the binary it built for the same sources ([the host, the nerves, the
-nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
-`init` looks for when it writes the catalog, and the
-`HostedCredential` sources it names. Git config: `dna.remote` (default
-`origin`), `dna.github` (`owner/repo`), `dna.github.board` (logins).
+### The record
 
-Every `HALE_DNA_*` variable, with its default and effect, is tabled in
-the spec's [Environment](https://github.com/hale-lang/hale/blob/main/spec/dna.md#environment)
-section; a test fails when one is missing from it.
+[Memory and the record](./memory.md).
 
-Memory ([Operating](./operating.md#memory)):
-`HALE_DNA_MEMORY_DSN_OWNER`, the schema owner's DSN, used only to
-apply the schema (`memory migrate`, `dev`, `upgrade`, and a
-provisioned body's env file); `HALE_DNA_MEMORY_DSN_SPINE`, the DSN the
-host that runs the organism is handed and the organization inherits;
-`HALE_DNA_MEMORY_DSN_HEAD`, a head's (the CLI, `hale dna ui`, the read
-API). `HALE_DNA_RECEIPT_KEY` (sixteen characters at least) is read
-once, at migration, into memory. `HALE_DNA_OWNER_KEYS` (`<owner>=<key>
-…`), over a shared record, names the owners the migration makes a head
-role for, printed as `HALE_DNA_MEMORY_DSN_HEAD_<OWNER>`; an owner's
-heads take theirs as `HALE_DNA_MEMORY_DSN_HEAD`. `HALE_DNA_NODE` is the
-name a node's organism claims under, which the host sets to its body's
-holder. `HALE_DNA_GENOME_POLL` is how often, in seconds, a node fetches
-the forge's default branch (300; 0 is never).
+```text
+hale dna status [project] [--json]
+                             the organism's status projection, from the Journal
+hale dna history [<entity>]  walk the Journal by causal links (works offline)
+hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin
+hale dna candidates [<mutation> | drop <mutation> --why <w>]
+                             the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one
+hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>
+                             propose a connection to another record (a Board Review); `hale dna connect` lists them;
+                             `hale dna disconnect <n> --why <w>` closes one
+hale dna handoff <n> task <id> | receipt <digest>
+                             write one fact into the connected record, with origin, lineage and purpose;
+                             `handoff` lists, `handoff accept <id>` accepts one received, `handoff sync` reads acceptances back
+```
 
-The nerves ([Operating](./operating.md#the-nerves)):
-`HALE_DNA_NATS_URL_OWNER`, the stream owner's URL, used only to create
-the stream (`nerves migrate`, `dev`); `HALE_DNA_NATS_URL_SPINE` and
-`HALE_DNA_NATS_ORG`, the URL and the organization's token the host that
-runs the organism is handed and the organization inherits;
-`HALE_DNA_NATS_URL_HEAD` and `HALE_DNA_NATS_URL_APP`, a head's and an
-application's (the face's head, without its own, subscribes as the head
-on the owner's server or the project's compose `nerves`). No URL carries
-a password: each role's is the vault's `nats-<org>-<role>`, the attached
-application's `nats-<org>-app-<name>` under its own user `app-<name>`
-(`HALE_DNA_NATS_USER_APP`), and a program that is not the host is handed
-the name of its entry (`HALE_DNA_NATS_VAULT_APP`,
-`HALE_DNA_NATS_VAULT_REFLEXES`). The host
-hands its organization its body lease as `HALE_DNA_LEASE` /
-`HALE_DNA_LEASE_TOKEN` once the ledger is adopted.
-`LOTUS_DRAIN_GRACE_MS` is how long a node has to drain on SIGTERM —
-stop its organization, give its lease back — before the runtime ends
-it; `hale dna run` and `dev` set 30000 unless it is already set.
+### Memory
 
-The head (`dna/face/start.sh`) serves `GET /api/hale/v1/head/events`,
-the event stream the face reads again on, and reads `HALE_BIN` (the
-compiler every operation execs, absolute), `HALE_DNA_HEAD_STATE`
-(its state directory, default
-`${XDG_STATE_HOME:-~/.local/state}/hale/dna/head`: registry, receipt
-journal, runs, children). Secret sources live under
-`${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, one line,
-mode `0600`; the head passes the name, the run's shell reads the
-value.
+[Memory and the record](./memory.md).
+
+```text
+hale dna memory migrate [dir]
+                             apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)
+                             and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)
+hale dna ledger [status | rows | adopt | abandon --why <w>]
+                             the operational memory: where the day's work lives, its rows as JSON lines, and the one-way
+                             move of it into memory — adopt and abandon are asked in the record; a node carries them out on its tick
+                             once the ledger is adopted, a head's write (a task done, a receipt filed …) goes straight into it
+                             under the head's role: done when it lands, or refused by memory with the reason
+hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]
+hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
+hale dna receipt file <path> [--class internal|customer|confidential]   file a document as evidence
+                             a hold refuses redaction until released; a redaction removes the body and keeps the digest, as a row
+                             (a body kept in memory is erased by the body on its tick, and filing it again is refused)
+                             protected evidence (customer, confidential): kept in memory alone, sealed there;
+                             disclosure and every read are rows in the reader's name (--as <who>)
+hale dna show org|processes [--json] [project]
+                             the org chart and the process model, as queries over memory
+```
+
+### The nerves
+
+[The nerves](./nerves.md).
+
+```text
+hale dna nerves migrate [dir]
+                             create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,
+                             or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)
+hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
+```
+
+### The spine
+
+[The spine](./spine.md).
+
+```text
+hale dna run [project] [--port N] [--no-iris]
+                             build and run the organization (dna/org), a node of it: relay the record's requests
+                             to it over the nerves (NATS); iris inspects its process
+hale dna definitions [project] [--json]
+                             the workflow catalog (dna/org/workflows.hl): each definition's revisions and every step's store
+hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name
+```
+
+### The heart and the body
+
+[The heart and the body](./heart.md).
+
+```text
+hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
+                             the organization AND the application under one host: rebuild and restart
+                             the application on an apply, watch the window, report back
+hale dna application remove [project] [--as <who>]
+                             the attached application removed (`application.detached` in the record) and its
+                             broker account revoked: its user, its password and its vault entry (GH #989)
+hale dna body                who runs this record (the body lease); `body claim --force` takes it from a body that is gone;
+                             `body release [--force]` gives it up — both are rows in your name (--as <who>)
+hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--dry-run]
+                             over ssh: the toolchain hale.lock pins, the record's remote cloned, Postgres from
+                             dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing
+                             when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`
+hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state
+hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)
+hale dna rollback <mutation> express the base a Mutation was applied on, again
+                             (`[dna] fleet = "<name>"` in hale.toml names the plan; `hale node <name>` runs a node)
+```
+
+A node is its own command. `hale node --help`:
+
+```text
+usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]
+
+The agent that expresses a fleet plan's instances on one machine,
+from the record: it reconciles what the plan says this node runs
+against what is running here (GH #566 F5). With HALE_DNA_NATS_URL_APP
+and HALE_DNA_NATS_ORG set (`hale dna nerves migrate` prints them), it
+hands both to every instance, which says what it says onto the
+nerves itself (GH #986).
+```
+
+### Senses and reflexes
+
+[Senses and reflexes](./senses.md).
+
+```text
+hale dna senses up [dir]     bring up the senses' store (compose's `senses` service) and print its read URL
+hale dna pressure [raise <source> <what…>]
+                             pressure raised and answered; `raise` writes one signal into the record, which a node relays
+hale dna concern raise <source> <what…> [--severity N]
+                             a concern from a locus path about the part above it; persistent ones become knowledge proposals
+```
+
+### The skin
+
+[The skin](./skin.md).
+
+```text
+hale dna secret set <NAME> [--body <user@host>]
+                             a credential from stdin (never argv, never the record) into its slot of the vault
+                             (a model key's, FORGE_TOKEN, or OIDC_CLIENT_SECRET) on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only
+hale dna secrets [dir]       every secret the organism requires, and whether the vault holds it (never a value)
+```
+
+### Legs and voice
+
+[Legs, hands and voice](./legs.md).
+
+```text
+hale dna work <verb> …       a leg's verbs against the head's API (--api, --as position:<name>): next, brief,
+                             renew, allowance, submit, settle, release, friction, run — the project's performers (dna/org/work.hl);
+                             loop --parallel N is a worker: N children, each its own holder; loop --drain ends one
+hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each
+```
+
+### Schedules
+
+[Schedules](./schedules.md).
+
+```text
+hale dna schedule [pause <id> | resume <id>]
+                             the schedules the record declares (a definition on an interval or a cron, and who
+                             convenes it) and their occurrences; pause and resume are rows in your name (--as <who>)
+hale dna schedule declare <id> (--every <n>ms|s|m|h|d | --cron <expr>) --definition <id> --convener <position> [--args <json>]
+                             a schedule asked of the organization, which declares it or refuses it; an occurrence
+                             is an execution of the definition (GH #1143)
+```
+
+### The head and the face
+
+[The head and the face](./head.md).
+
+```text
+hale dna ui [project] [--port N]
+                             under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,
+                             subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;
+                             with no principal source it refuses to start (trusted-local is a test fixture's mode)
+                             the DNA surface in a browser, from the record alone: the Board's queue, the Reviews
+                             with their three views, the fleet, the history; verdicts, intent and pressure from forms
+hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports
+hale dna review              the pending Reviews
+hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)
+hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]
+                             write a verdict into the record, which a node relays; the Review decides
+hale dna route [--json] (<path>… | --diff <range>)
+                             who must sign a change set, and the gates it is judged against
+hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts
+                             (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)
+hale dna report [project]    file a report from the record since the last one (report.filed)
+```
+
+### Tasks and people
+
+[One task, end to end](./workflow.md).
+
+```text
+hale dna task create [--to <locus>] [--as <who>] [--judgment] [--no-wait] <outcome…>
+                             ask for an outcome (--judgment: an assessment, a leg's to perform): a row in the record, which a node relays to the organism; prints the Task born or the refusal
+                             (on an adopted ledger it prints the request's digest: see `hale dna ledger`)
+hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`
+                             under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>
+hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)
+hale dna task decide <id>    report a decision someone else made (--decided-by <party> --via <channel> --evidence <digest>, --as <reporter>)
+hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows
+```
+
+### Shaping
+
+[Shaping and governing it](./shaping.md).
+
+```text
+hale dna fill <position> <holder> [project] [--as <who>]
+                             ask the organization to propose who holds a position, for the Board
+hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]
+                             propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them
+```
+
+## The environment
+
+The variables you set yourself. Everything else the CLI and the body
+set for the processes they start.
+
+| variable | what it does |
+|---|---|
+| `HALE_DNA_MEMORY_DSN_OWNER` | a Postgres of your own instead of `dna/compose.yaml`'s: the owner role that migrates memory (`memory migrate`, `dev`, `show`) |
+| `HALE_DNA_NATS_URL_OWNER` | a NATS server of your own instead of compose's: the owner user that creates the stream (`nerves migrate`, `dev`) |
+| `HALE_DNA_MEMORY_DSN_SPINE` | the spine role's DSN, which `hale dna run` needs; `memory migrate` prints it |
+| `HALE_DNA_NATS_URL_SPINE`, `HALE_DNA_NATS_ORG` | the spine's nerves URL and the organization's token, which `hale dna run` needs; `nerves migrate` prints them |
+| `HALE_DNA_MEMORY_DSN_HEAD` | the head role's DSN, for a head and nothing else; `memory migrate` prints it |
+| `HALE_DNA_RECEIPT_KEY` | sixteen characters or more: the key protected evidence is sealed under, given to `memory migrate` once |
+| `HALE_DNA_OWNER_KEYS` | `<owner>=<key> …`: the owners of a shared record, for `memory migrate` |
+| `HALE_DNA_API`, `HALE_DNA_ID_TOKEN` | the head a leg's `hale dna work` verbs talk to without `--api`, and the bearer token it presents |
+| `HALE_DNA_GENOME_POLL` | seconds between polls of the record's remote for a changed genome (300) |
+| `HALE_DNA_NO_BUILD_CACHE` | build every seed, instead of reusing a build of the same sources |
+| `HALE_VAULT_DIR`, `HALE_VAULT_ADDR`, `HALE_VAULT_TOKEN` | where the vault is: a local directory, or a vault's HTTP API and its token |
+
+Every `HALE_DNA_*` variable, with its default and effect, is in the
+spec's [Environment](https://github.com/hale-lang/hale/blob/main/spec/dna.md#environment)
+table; a test fails when the tree names one the table does not. The
+vault's three are in the runtime's
+[environment table](https://github.com/hale-lang/hale/blob/main/spec/runtime.md#diagnostic--tuning-env-vars).
+
+The record's settings live in the clone's git config:
+
+| key | what it does |
+|---|---|
+| `dna.remote` | the remote the record syncs with (`origin` when unset) |
+| `dna.trust` | `local` (every writer to the record is trusted) or `signed` (a relayed row needs a verified signature) |
+| `dna.owner` | on a shared record, the organization this body is |
+| `dna.body` | `<user@host>`, set by `body provision` (or `new --body`): where `body start`, `stop`, `logs` and `secret set` go without `--body` |
+| `dna.unix.member` | `uid:<n>=<name>`: who a local uid is, for the head's socket |
+| `dna.principal` | `oidc` for a hosted head |
+| `dna.oidc.issuer`, `dna.oidc.client`, `dna.oidc.redirect` | the issuer, the head's client id, its redirect URI |
+| `dna.oidc.member` | `<subject>=<name>`, one per person: who a subject is |
+| `dna.oidc.board` | the member names that act with Board authority |
+| `dna.oidc.key` | the pinned signing key of an issuer on the loopback |
+| `dna.github`, `dna.github.board` | the `owner/repo` Reviews are mirrored to, and the logins whose reviews count as the Board's |
 
 ## The record's vocabulary
 
-One commit per event on `refs/dna/journal`; `journal.jsonl` in the
-tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
-`author`.
+Every row has a kind, an entity, a body and an author. The **memory**
+column is where the row lives once the ledger is adopted: `record` is
+git (`refs/dna/journal`), `ledger` is memory (Postgres). Before
+adoption every row is the record's, and the two are read as one
+sequence either way ([Memory and the record](./memory.md)). The table
+in `dna/core/routing.hl` (`memory_of`) decides. A reader that meets a
+kind it does not know keeps walking.
 
-The **memory** column is where the row lives once the organism has
-adopted the ledger (`hale dna ledger adopt`, routing 1): `record` is
-git, `ledger` is memory (Postgres, the record's own schema). Before
-adoption every kind is the record's, and the two are read as one
-sequence either way — see [The record](./record.md).
+### The record and memory
 
-| kind | memory | entity | body |
-|---|---|---|---|
-| `application.attached` | record | the seed | the entrypoint, the artifact's digests, the toolchain, and `name`: the project's name, which its broker account carries |
-| `application.detached` | record | the seed | `name` and `by`: the application removed, its broker account revoked |
-| `structure.observed` | record | `locus:X`, `topic:X`, `claim:X`, … | the compiler's model of it, `provenance: observed` |
-| `graph.node` | record | `<kind>:<name>` (`process:api`) | a node of the repository's graph: `kind`, `name`, `text`, `source` |
-| `graph.edge` | record | `<kind>:<anchor>` or `<kind>:<anchor>\|<second>` | a hyperedge: `kind`, `members` (`role`, `node`) in order, `via`, `outside` |
-| `graph.retired` | record | a node's or an edge's id | it leaves the graph |
-| `responsibility.proposed` | record | `locus:X` | an inferred one-line responsibility, `ratified: false` |
-| `law.deferred` | record | a clause | why `init` could not certify it |
-| `intent.requested` | ledger | the intent id | an ask from a clone with no organization: outcome, from, to |
-| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, an optimizer) / the refusal |
-| `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
-| `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
-| `ledger.adopting` / `ledger.adopted` | record | `ledger` | a head's ask to adopt (`routing`, `by`), and a node's adoption: `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
-| `ledger.abandoning` / `ledger.abandoned` | record | `ledger` | a head's ask to abandon, and a node's abandonment: `by`, `why` |
-| `task.born` | ledger | `t<n>` (`<owner>:t<n>` over a shared record) | `<intent>: <outcome>` |
-| `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
-| `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |
-| `task.done` / `task.failed` | ledger | `t<n>` | a case's completion (card 17) or failure; an execution's root is settled by `workflow.settled` |
-| `workflow.admitted` / `workflow.refused` | ledger | `t<n>`, a child `t<n>.s<i>.<key>` | an execution admitted: definition, revision, the ask as request, the plan bound in the inputs, the bound recipe and limits; or the refusal — [The workflow](./workflow.md) |
-| `workflow.ask_refused` | ledger | `<ask>#<n>` | an ask refused before any Task was minted |
-| `workflow.settled` | ledger | the Task | `done`, `failed` or `cancelled`, with the parent Task and spawning step for a child |
-| `step.registered` / `step.activated` / `step.completed` / `step.failed` | ledger | `<task>/wf1/s<i>` | the whole required set (`<key>:<leaf\|child>:<id>` each), then the step's life |
-| `attempt.admitted` / `attempt.outcome` | ledger | `<work>/a<n>` | one attempt and the `WorkRequest` it was admitted with; its disposition, result and evidence |
-| `work.settled` | ledger | `<step>/<key>` | the unit of work settled, naming the attempt it settled on |
-| `case.admitted` | ledger | `<task>.s<i>.<key>` | a person's leaf as its own handed Task: the parent, the attempt, the terms of the acceptance practice at admission |
-| `mutation.requested` | record | `m<n>` | which unit of work and attempt asked for the Mutation, written before `mutation.proposed`; a leg's candidate adds `leg`, `leg_commit` and `patch` (the receipt that is its patch) |
-| `effect.redelivered` | ledger | `attempt:<id>` | a claimed attempt delivered again by the incarnation that restored it |
-| `effect.relayed` | ledger | `attempt:<id>` | an attempt a leg relay answered pending: the only attempts the head hands a leg that claims (an edit the editor holds, a person's case, is never a leg's) |
-| `lease.taken` | record | the lease key | the runtime's lease on the record: holder, token, expiry |
-| `mutation.proposed` | record | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
-| `mutation.worktree` | record | `m<n>` | `opened <path> at <base> …` / `removed` |
-| `mutation.located` | record | `m<n>` | the files and the grant they were found under |
-| `mutation.candidate` | record | `m<n>` | the candidate commit |
-| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | record | `m<n>` | the boundary's disposition |
-| `mutation.topology` | record | `m<n>` | the diff names a plan or the manifest: re-classed for the Board |
-| `mutation.applied` | record | `m<n>` | the candidate commit |
-| `mutation.apply_retried` | record | `m<n>` | the apply ran again on a review that was already settled |
-| `mutation.retained` / `.rolled_back` / `.rejected` / `.revise` / `.refused` / `.failed` | record | `m<n>` | why |
-| `effect.requested` / `effect.result` | ledger | an idempotency key | an attempt's one claim (`attempt:<id>`), and the gateway's record: `worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`, `rollback:<id>:<base>` |
-| `evidence.base` / `.fmt` / `.check` / `.verify` / `.test` / `.fleet` / `.replay` / `.rollback` / `.diff` | record | the candidate commit | `{step, ok, code, output_digest, bytes}`; the receipt is `refs/dna/receipts/<output_digest>` |
-| `evidence.magnitude` | record | the candidate commit | the vector |
-| `review.requested` | record | `review:<id>` | question, authority, candidate, base, shape, disposition, evidence, magnitude, diff digests, fitness signals |
-| `review.verdict` | record | `<id>` | a verdict appended from a clone or from GitHub, in the reviewer's name |
-| `review.settled` / `review.refused` | record | `<id>` | `<verdict> by <reviewer>` / the reason |
-| `review.reasoned` | record | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
-| `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
-| `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
-| `node.started` / `node.build_failed` | record | the node's holder | the genome it runs, by `sha` / a genome that did not check or build: its `sha` and `why`, the node staying on the last that did |
-| `violation.recorded` | record | `<kind>/<subject…>` | a closure the organism absorbed (GH #989), `{kind, subject, owner, detail}`, recorded by its owner, which goes on: `adapter_undeliverable` (the nerves did not acknowledge a publish; the node exits 75 for its unit to start it again), `lease_unsettled` (a leg's lease expired with no outcome; the attempt is asked again), `pulse_stopped` (the heart's pull was refused while the connection held; the durable is made again). The board shows the latest five |
-| `observation.requested` / `observation.refused` | record | the mutation | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it |
-| `claim.taken` / `claim.released` | ledger | the claim's key: `plan/<intent>`, `plan/case:<case>` | a node took the claim before acting (`holder`, `token`, `until`) / gave it back on completion (`holder`) |
-| `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
-| `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
-| `expression.deployed` | record | `m<n>` | what a deployment gateway expressed, and its judgement |
-| `expression.observed` / `expression.crashed` | record | `m<n>` | the window's outcome; `crashed` names the instance and node on a fleet |
-| `fleet.deploy` | record | `m<n>` or a short revision | plan, revision, seed, the instances touched, reason |
-| `instance.up` / `instance.exited` | ledger | the instance id | node, revision, model hash, build, pid / node, revision, code — authored `node/<name>` |
-| `github.pr` / `github.commented` | record | `m<n>` | the pull request opened / the settlement commented |
-| `gate.observed` | record | `m<n>` | a gate's check run at the candidate as the forge reported it to the host's sync (`gate`, `sha`, `conclusion`, `url`, `forge`, `run`); the only gate run a Review weighs |
-| `pressure.requested` / `pressure.raised` | ledger | a source | a signal from a source, with its own `request` id, which a node relays until answered; the answer is one object (`what`, `count`, `request`), written once per request (a row from before #986 is `<what> x<n>`) |
-| `pressure.remeasured` | ledger | `m<n>` | the Task, the declared fitness signals, the outcome |
-| `appendage.proposed` / `appendage.candidate` | record | a source | the organ proposed / the organization mutation that proposes it |
-| `report.filed` | ledger | `r<n>` | the summary since the last report |
-| `grant.contracted` | record | a child | authority narrowed, and what it leaves: `to`, `epoch` |
-| `grant.refused` | record | a child | a grant born wider than its ceiling: authority |
-| `grant.reservation_refused` | ledger | a child | a spend the window would not admit, naming the field: money |
-| `spend.reserved` | ledger | the allocation (op) | a spend admitted: child, amount, currency, counterparty, route, ceiling, epoch, at, funder, account — reserved once by the store's claim (GH #668) |
-| `spend.settled` | ledger | the allocation | one attempt's actual consumption: child, attempt, spent; every attempt is retained |
-| `spend.compensated` | ledger | the allocation | money that came back, authorized by name: child, attempt, amount, by |
-| `grant.reserved` / `grant.released` | ledger | a child | a reservation and its settlement from before GH #668 (`op` in the body); read as above |
-| `grant.fenced` | ledger | a child | an admission refused because the grant's epoch moved since |
-| `receipt.classified` | ledger | a digest | a protected body memory keeps: class, by, store |
-| `receipt.withheld` | ledger | a digest | a protected body no memory could keep: class, by, why |
-| `receipt.disclosed` | ledger | a digest | a reader authorized: recipient, purpose, by |
-| `receipt.read` / `receipt.read_refused` | ledger | a digest | a read in the reader's name, or its refusal: by, purpose, class |
-| `receipt.filed` | ledger | a digest | an internal document filed as evidence: by, name, bytes, class, store |
-| `knowledge.proposed` / `knowledge.ratified` / `knowledge.declined` / `knowledge.refused` | record | the practice's digest | a practice through its review: class, target, and the verdict that settled it |
-| `knowledge.retired` | record | the practice's digest | superseded by a later version, when that one is ratified |
-| `knowledge.consulted` | ledger | `m<n>` or the work | what this piece of work looked up, and the digests it read |
-| `person.retired` | record | `<who>` | someone left: by, the successor their handed Tasks went to |
-| `practice.requested` / `practice.proposed` / `practice.refused` | record | a request id | a person's practice proposal: requested in the record (name, text, by, because, supersedes), proposed by the organization (name, digest, review_id, by, because, supersedes), or refused (why) |
-| `exception.authorized` | ledger | `t<n>` | an exception to a Task's acceptance condition, authorized in the authorizer's own name: task, why, by, practice |
-| `completion.linked` / `completion.excepted` | ledger | `t<n>` | a person's completion under its acceptance condition: the evidence linked (task, evidence, by, practice), or an exception someone else authorized (task, why, authorized_by, by, practice) |
-| `connection.proposed` / `connection.closed` | record | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |
-| `handoff.received` | ledger | `handoff:<id>` | an envelope in the receiving record's mailbox `refs/dna/exchange/<origin identity>`, never its journal: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
-| `handoff.published` / `handoff.refused` | ledger | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |
-| `handoff.accepted` / `handoff.accepted_by_peer` | ledger | `handoff:<id>` | an acceptance in the receiving record's journal (by, note, connection, and the envelope's origin, lineage, purpose and fact), sent back as an envelope into the origin's mailbox; its admission in the origin (connection, peer, handoff, accepted_by, note) |
-| `task.transfer_requested` / `task.transfer_accepted` | ledger | `t<n>` | a Task handed across a connection (`handoff`, `peer`), or offered to another owner of a shared record (`owner`, `to`, `assignee`); settled only on the receiver's acceptance |
-| `decision.reported` | ledger | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
-| `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
-| `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
-| `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`, and the `parent` it is routed to and the concern-escalate execution, `task`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
-| `concern.refused` | ledger | a source | one the organization would not admit, and why |
-| `practice.read` | record | a digest | practice-ratify's `hat` step: what the hat for the proposal's target read once memory held it ratified, at which head (target, ratified_at, hat, head, included, task) |
-| `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s). Which raise a concern is — its `occurrence` — is counted from the record, so a restart continues the count; and a source found over the threshold with no proposal of its own, which an organism stopped between the third raise and its proposal leaves behind, is proposed when it comes back |
-| `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by, owner (when the clone names one) |
-| `body.provisioned` | record | `<user>@<host>` | a machine made able to run it: dir, toolchain, knowledge (`compose` or `dsn`), by |
-| `body.credential_missing` / `body.credential_present` | ledger | `model` | whether the model's key is in the vault where the body runs: any_of, holder |
-| `secret.rotated` | record | the variable's name | a credential set or rotated: where (`local` or the body), by — never the value |
-| `schedule.requested` / `schedule.answered` | ledger | the request id | a schedule asked of the organization by `hale dna schedule declare` / its answer: `declared`, `why` |
-| `schedule.declared` / `schedule.refused` | ledger | the schedule id | a schedule a ratified practice or a request declares (`every_ms`, `cron`, `definition`, `args`, `convener`, `from`) / why it was not declared (a bad cron, a definition not in the catalog, args missing an input, a convener that cannot reach it; `hole` when nobody holds the convener), or why an occurrence was not admitted (`occurrence`, `why`) |
-| `schedule.skipped` / `schedule.missed` | ledger | the schedule id | an occurrence not run because the last execution is still open (`occurrence`, `task`) / occurrences that passed while the organization was down (`first`, `last`, `count`, `why`) |
-| `schedule.paused` / `schedule.resumed` | ledger | the schedule id | paused and resumed by hand, in your name |
-| `budget.exhausted` | ledger | `budget` | the window's model allowance is spent: what was spent, of what, and when the window turns |
-| `attempt.allowance_requested` | ledger | the attempt | a leg asked for its attempt's spend under its lease (GH #1131); a node relays it until the organization answers |
-| `attempt.allowance_granted` / `attempt.allowance_refused` | ledger | the attempt, or `review:<id>` | the budget's one gate answered: what the attempt may cost (`allowance_micros`), or why nothing may be spent — for a leg, the editor, or the Leader's Review |
-| `model.called` | ledger | `<work>/a<n>` or a review id | the model evidence; `adapter` is the adapter that answered, in process or from a leg (`legs` only on a leg's wait row, with `waited_ms`); the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
+| kind | memory | what it is |
+|---|---|---|
+| `structure.observed` | record | the compiler's model of one of the application's parts, at `init` |
+| `graph.node` / `graph.edge` / `graph.retired` | record | a node of the repository's graph; a hyperedge of it; one leaving it |
+| `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
+| `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
+| `ledger.adopting` / `ledger.adopted` | record | the move of the day's work into the ledger asked for, and done at a checkpoint |
+| `ledger.abandoning` / `ledger.abandoned` | record | its undoing asked for, and done |
+| `receipt.filed` | ledger | an internal document filed as evidence |
+| `receipt.classified` / `receipt.withheld` | ledger | a protected body memory keeps sealed, or one withheld because no memory could keep it |
+| `receipt.disclosed` | ledger | a reader authorized, for a purpose |
+| `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
+| `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
+| `receipt.redacted` | ledger | the body removed, the digest kept |
+| `connection.proposed` / `connection.closed` | record | a connection to another record, for the Board; and its closing |
+| `handoff.published` / `handoff.refused` | ledger | a fact written into a connected record, or why not |
+| `handoff.received` | ledger | an envelope in the receiving record's mailbox |
+| `handoff.accepted` / `handoff.accepted_by_peer` | ledger | an acceptance in the receiving record, and its admission back in the origin |
+| `task.transfer_requested` / `task.transfer_accepted` | ledger | a Task offered across a connection or to another owner, and accepted |
 
-## `status.json`
+### The spine
 
-The projection `hale dna status --json` prints and `hale dna ui`
-serves: `organism`, `journal { ref, revision, chain }`,
-`expression { attached, current, build_digest, toolchain, restarts,
-last_restart_request, last_observed }`, `intents`, `tasks[]`,
-`reviews[]` (a mutation's Review carries `mutation_id`,
-`change_class`, `seed`, `disposition`, `base_commit`,
-`candidate_commit`, `candidate_shape`, `evidence`, `magnitude`,
-`diff_text`, `diff_json`, `author`), `mutations[]` (`id`, `task`,
-`class`, `objective`, `disposition`, `candidate`, `events`),
-`law_deferred`, `model_calls`.
+| kind | memory | what it is |
+|---|---|---|
+| `intent.requested` | ledger | an ask from a clone with no organization running |
+| `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
+| `intent.unrecovered` | ledger | an intent offered before a restart that no admission names; never re-offered |
+| `task.born` | ledger | the work an intent or a settled Review made |
+| `workflow.admitted` / `workflow.refused` | ledger | an execution admitted (definition, revision, inputs, the bound recipe), or refused |
+| `workflow.ask_refused` | ledger | an ask refused before any Task was minted |
+| `workflow.settled` | ledger | an execution settled `done`, `failed` or `cancelled` |
+| `step.registered` / `step.activated` / `step.completed` / `step.failed` | ledger | a step's required set, then its life |
+| `attempt.admitted` / `attempt.outcome` | ledger | one attempt and the request it was admitted with; its disposition, result and evidence |
+| `work.settled` | ledger | a unit of work settled, naming the attempt it settled on |
+| `effect.requested` / `effect.result` | ledger | the exclusive claim on an effect key, and its outcome |
+| `effect.relayed` | ledger | an attempt a leg relay answered pending: a leg's to claim at the head |
+| `effect.redelivered` | ledger | a claimed attempt dispatched again after a restart |
+| `claim.taken` / `claim.released` | ledger | a node's claim by id before it acts, and its release |
+| `lease.taken` / `lease.renewed` / `lease.released` | ledger | the runtime's lease on its record, with its fencing token |
+| `budget.exhausted` | ledger | the window's model allowance is spent |
+| `model.called` | ledger | a model call and its evidence |
+| `grant.contracted` / `grant.revoked` / `grant.refused` | record | authority narrowed, taken back, or born wider than its ceiling |
+| `grant.reservation_refused` / `grant.fenced` | ledger | a spend the window would not admit; an admission refused because the grant's epoch moved |
+| `spend.reserved` / `spend.settled` / `spend.compensated` | ledger | a spend admitted; one attempt's actual consumption; money that came back, authorized by name |
+| `optimize.refused` | ledger | the organization's pass over itself did not run |
+| `org.reviewed` | record | that pass's own answer |
 
-## The files
+### Legs
+
+| kind | memory | what it is |
+|---|---|---|
+| `attempt.claimed` | ledger | a leg's lease on an admitted attempt, taken at the head |
+| `attempt.outcome_requested` / `attempt.outcome_refused` | ledger | the outcome a leg handed back under its lease, or why the owner would not settle it |
+| `attempt.allowance_requested` | ledger | a leg's ask for its attempt's spend |
+| `attempt.allowance_granted` / `attempt.allowance_refused` | ledger | the budget's one gate answering it (also the editor's, and `review:<id>` for the Leader's) |
+| `attempt.released` | ledger | a leg gave its lease back without an outcome |
+| `attempt.unresolved` | ledger | an `uncertain` performer's attempt with no known outcome, until a person resolves it |
+| `friction.filed` | record | what got in a position's way |
+
+### Changes and Reviews
+
+| kind | memory | what it is |
+|---|---|---|
+| `mutation.requested` | record | which Work and attempt asked for the Mutation |
+| `mutation.proposed` | record | a change proposed for a Task: class, objective, target, base |
+| `mutation.worktree` / `mutation.located` / `mutation.candidate` | record | the sandbox; the files found and the grant; the candidate commit |
+| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | record | what the autonomy boundary decided |
+| `mutation.topology` | record | the diff names a plan or the manifest: re-classed for the Board |
+| `mutation.applied` / `mutation.apply_retried` | record | the candidate applied to the genome; the apply run again |
+| `mutation.retained` / `mutation.rolled_back` | record | kept after its observation window, or the genome back at the base |
+| `mutation.rejected` / `mutation.revise` | record | refused after review, or sent back |
+| `mutation.refused` / `mutation.failed` | record | not applied, or did not survive its own verification |
+| `evidence.<step>` | record | a verification step's output by digest: `base`, `fmt`, `check`, `verify`, `test`, `fleet`, `replay`, `rollback`, `diff` |
+| `evidence.magnitude` | record | the measured magnitude of the change |
+| `review.requested` | record | the Review: question, authority, candidate, disposition, evidence, diffs |
+| `review.routed` / `review.signed` | record | what a routed Review requires; an approval it admitted that settled nothing |
+| `review.verdict` | record | a verdict in the reviewer's name, from a clone or a forge |
+| `review.command_decided` | record | a Review decided by a command |
+| `review.settled` / `review.refused` | record | the verdict that decided it, or why one was not admitted |
+| `review.reasoned` | record | the deciding verdict's comment |
+| `gate.observed` | record | a gate's check run at the candidate, as the forge reported it |
+| `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
+
+### The heart and the body
+
+| kind | memory | what it is |
+|---|---|---|
+| `application.attached` / `application.detached` | record | the application the organism oversees, and its removal |
+| `expression.restart_requested` | record | the organization asks for a change to be expressed |
+| `expression.restarted` / `expression.deployed` | record | what the new expression reports, or what a deployment gateway expressed |
+| `expression.observed` / `expression.crashed` | record | the observation window's outcome |
+| `observation.requested` / `observation.refused` | record | the host's observation report as a row |
+| `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
+| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
+| `node.started` / `node.build_failed` | record | a node runs a genome; or a genome did not build, and it stayed on the last |
+| `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
+| `body.provisioned` | record | a machine made able to run it |
+| `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is in the vault where the body runs |
+
+### Senses and reflexes
+
+| kind | memory | what it is |
+|---|---|---|
+| `reading.recorded` | ledger | an application's event, landed as a reading before anything acts on it |
+| `reflex.acted` | ledger | what a node did about a reflex's firing |
+| `pressure.requested` / `pressure.raised` | ledger | a signal from a source, and its answer |
+| `pressure.remeasured` | ledger | the declared fitness signals, measured again after a change |
+| `concern.requested` / `concern.raised` / `concern.refused` | ledger | a concern from a part about the part above it, and its answer |
+| `concern.proposed` | record | three raises became a proposal |
+| `appendage.proposed` / `appendage.candidate` | record | an organ the organization proposes for itself, and the Mutation that proposes it |
+
+### The skin
+
+| kind | memory | what it is |
+|---|---|---|
+| `secret.rotated` | record | a credential set or rotated: its name and where, never the value |
+| `violation.recorded` | record | a closure a part absorbed and went on from: `adapter_undeliverable`, `lease_unsettled`, `pulse_stopped` |
+
+### Schedules
+
+| kind | memory | what it is |
+|---|---|---|
+| `schedule.requested` / `schedule.answered` | ledger | a schedule asked of the organization, and its answer |
+| `schedule.declared` / `schedule.refused` | ledger | a schedule declared, or refused with the reason (also an occurrence refused) |
+| `schedule.skipped` / `schedule.missed` | ledger | an occurrence skipped while the last is open; occurrences that passed with no tick |
+| `schedule.paused` / `schedule.resumed` | ledger | paused and resumed by hand |
+
+### People, knowledge and practices
+
+| kind | memory | what it is |
+|---|---|---|
+| `task.handed` / `task.reassigned` | ledger | a Task handed to a person; the assignment moved |
+| `case.admitted` | ledger | a person's leaf as its own handed Task |
+| `task.done` | ledger | a person reports a handed Task done |
+| `completion.linked` / `completion.excepted` | ledger | the evidence a completion links, or the exception it carries |
+| `exception.authorized` | ledger | an exception to a Task's acceptance, in the authorizer's name |
+| `decision.reported` | ledger | a decision someone else made, reported by the assignee |
+| `person.retired` | record | someone left, and who took their work |
+| `hold.requested` / `hold.proposed` / `hold.refused` | record | a holder asked for a position (`hale dna fill`), proposed to the Board, or refused |
+| `practice.requested` / `practice.proposed` / `practice.refused` | record | a person's practice proposal: asked, proposed for review, or refused |
+| `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its Review |
+| `knowledge.retired` | record | a practice superseded by a later version |
+| `knowledge.consulted` | ledger | what a piece of work looked up |
+| `practice.read` | record | what the hat read once a proposal was ratified |
+| `report.filed` | ledger | a report from the record since the last one |
+
+## `hale dna status --json`
+
+The projection `status` prints, as one JSON document on one line;
+`hale dna ui` serves the same at `/api/status`. Here it is for a fresh project with nothing
+running, indented, with fifteen of its sixteen pending Reviews cut:
+
+```text
+$ hale dna status --json
+{
+  "organism": "not running — reading the Journal",
+  "journal": {
+    "ref": "refs/dna/journal",
+    "revision": 38,
+    "chain": "verified",
+    "chain_head": "77bc90bc6b4a31e4fb45b98d4da500309d6e6100"
+  },
+  "expression": {
+    "attached": {
+      "artifact": ".hale/dna/baseline.topology",
+      "artifact_digest": "aaa7945205031d36",
+      "main": "Refproj",
+      "name": "refproj",
+      "provenance": "observed",
+      "schema": "1.19",
+      "shape_hash": "6aacbffe834a9fcd",
+      "toolchain": "0.21.0",
+      "verdict": "clean"
+    },
+    "current": null,
+    "build_digest": null,
+    "toolchain": "0.21.0",
+    "restarts": 0,
+    "last_restart_request": null,
+    "last_observed": null
+  },
+  "intents": {
+    "offered": 0,
+    "refused": []
+  },
+  "tasks": [],
+  "reviews": [
+    {
+      "id": "k:05cecb18af4e",
+      "state": "pending",
+      "question": "ratify the design practice `design/software-delivery`: For an appendage or a product: process boundaries first (what runs, fail…",
+      "required_authority": "board",
+      "subject_digest": "sha256:05cecb18af4e5fc83bd62025ee3477b831ff2a9299c497116dc4ffaf90ccd7a1",
+      "refusals": []
+    },
+    …
+  ],
+  "mutations": [],
+  "law_deferred": [],
+  "model_calls": {
+    "total": 0,
+    "recent": []
+  },
+  "pressure": "not journaled in Phase 1",
+  "projected_at": 1790702205
+}
+```
+
+`organism` is `running (this clone's body holds the lease)` when a body
+here holds the lease. `chain` is `verified` or `BROKEN`. As the
+organism works, the arrays fill:
+
+- a task: `id`, `outcome`, `state`, `since`, and `detail` when there is
+  one;
+- a settled Review adds `settled` (and `reasoned`); a Mutation's Review
+  adds `mutation_id`, `change_class`, `seed`, `disposition`,
+  `base_commit`, `candidate_commit`, `candidate_shape`, `evidence`,
+  `magnitude`, `diff_text`, `diff_json` and `author`;
+- a Mutation: `id`, `candidate`, `disposition`, `class`, `task`,
+  `objective`, `detail` and `worktree` when set, and its `events`;
+- `last_restart_request` and `last_observed`: `mutation`, `what`,
+  `seq`.
+
+## Where things live
+
+### A generated project
+
+`hale dna new <name>` writes these; `hale dna init` writes the same
+around an application you already have.
 
 | path | what |
 |---|---|
-| `vendor/dna/*.hl` | the core (toolchain-owned, git-ignored, pinned in `hale.lock`) |
-| `dna/org/main.hl` | the organization |
+| `main.hl`, `tests/main_test.hl` | the application and its first test (`new` only) |
+| `hale.toml` | the manifest: an environment for the application (`.`) and one for the organization (`dna/org`) |
+| `hale.lock` | the toolchain the DNA was materialized for (`[dna] toolchain`) |
+| `.gitignore` | ignores the build artifact, `/vendor/`, `/.hale/` and the two password files |
+| `vendor/dna/` | the DNA core, copied from the toolchain; git-ignored, `hale dna upgrade` copies it again |
+| `dna/org/main.hl` | the organization: its positions, the Leader's grant, the budget's owner |
 | `dna/org/law.hl` | its law |
 | `dna/org/purpose.hl` | the declared purpose |
-| `refs/dna/journal` | the record |
-| `refs/dna/receipts/<sha256>` | receipts by content digest |
-| `refs/dna/lease/<key>` | leases with fencing tokens |
-| `refs/dna/revisions/<rev>` | revisions a deploy asked for |
-| `refs/dna/candidates/<mutation>` | a Mutation's candidate, kept whatever its Review decided |
-| `refs/dna/exchange/<identity>` | a connected record's mailbox for this one |
-| `.hale/dna/` | sockets, `status.json`, `worktrees/<id>/`, `scratch/`, `embedded.digest` (which toolchain build materialized `vendor/dna`), the artifacts as attached / running / before the last restart |
-| `.hale/node/<name>/` | on a node: `<instance>.pid`, `<instance>.topology` |
-| `<plan>.plan.json` | the fleet plan (schema 1.2: `seed`, `node` on an instance) |
+| `dna/org/charter.hl` | the Leader's brief |
+| `dna/org/models.hl` | the model catalog and the budget |
+| `dna/org/work.hl` | the performers a leg runs |
+| `dna/org/workflows.hl` | the workflow catalog; rewritten by `upgrade`, not yours to edit |
+| `dna/org/own_workflows.hl` | your own workflow definitions, beside the baseline |
+| `dna/compose.yaml` | memory (Postgres), the nerves (NATS) and the senses' store, for `hale dna dev` |
+| `dna/nats.conf` | the nerves' users, one per family of subjects |
+| `dna/senses.yml` | what the senses' store scrapes |
+| `dna/nats.secrets.conf`, `dna/postgres.secrets` | the compose services' passwords, written from the vault; git-ignored |
 
-## The core, by file
+### The organism's state
 
-`vendor/dna/` after `init` (`dna/core/` in the hale repository):
-
-| file | what |
+| where | what |
 |---|---|
-| `assembly.hl` | `Dna` (the substrate), `Board`, `OrgPolicy` and the other review policies, `NoDeployment` / `ShellDeployment` / `LocalApplyDeployment` |
-| `org.hl` | `Leader`, `SourceReader` |
-| `journal.hl` | `Journal`, `MemJournal`, `Receipts` (`FileReceipts`), `Coordination` (`MemLeases`), the effect idempotency helpers |
-| `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
-| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one; its ledger is a `MemoryLedger`), `routing_of`, `checkpoint_of`; `GitLeases` moves its leases to memory's `MemoryLeases` with the routing |
-| `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), with their memory implementations; the host's `infra.hl` is the reference one — compose, a systemd user unit, the env file, over ssh or this machine's shell |
-| `exchange.hl` | `Exchange` (one record's mailbox in another: deliver once, delivered?, received) and `MemExchange`; the host's `connections.hl` exchanges as mailbox refs in the peer's git remote, and refuses a service url |
-| `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge`; the host's `forge_github.hl` is `GitHubForge` over `gh` and the `FileForge` fixtures use |
-| `performers.hl` (card 18) | `Performing`: what the engine asks of the system that performs its attempts (`identity_of`, `perform_as`, `reconcile_as`); `NoPerformers`, the runtime's inert default, so a runtime constructed without a system designates no routing policy |
-| `work_system.hl` | `WorkSystem`, routing perspectives, the performers; `EditRelay` (card 15): the `edit` performer kind, relaying an edit leaf's attempt to the assembly (`EditRequested`) and answering pending; `HumanRelay` (card 16): the `human` kind, relaying a human leaf's attempt as a case (`CaseRequested`) and answering pending |
-| `workflow_definition.hl` | `WorkflowCatalog` (code-authored workflow definitions: `define`, `leaf`, `child`, `expand`, `encode` / `decode`), `AdmissionLimits`, `bound_request`, `encode_bound` / `decode_bound` (one execution as a recipe, refused whole when it cannot be read whole) — definitions and their bound expansion only; nothing executes them yet |
-| `workflow_events.hl` | the durable facts of one workflow execution: `AdmittedWorkflow`, `RefusedWorkflow`, `RegisteredMembers`, `ActivatedStep`, `AdmittedAttempt`, `AttemptOutcome`, `WorkOutcome`, `StepOutcome`, `WorkflowOutcome` with their `encode_*` / `decode_*` (each read whole or not at all: version, identities, numbers that are numbers, and identities that agree with each other), `TransitionRef` and `committed_by` (the scope, key and proposal id a fact was committed under, appended with it), plus `attempt_id_of`, `transition_id` and `transition_conflict` (a repeated proposal id is a replay only if it repeats the proposal) |
-| `workflow_projection.hl` | `WorkflowProjection` and `replay` (`@no_syscall`): the state of one execution, read from its facts alone, with the admitted recipe as authority — `WorkView`, `StepView`, `TaskView`, `joined`, `pending`, `result_of`, `digest`. Every transition needs its basis in the rows before it; a row is a replay for the same bytes under a recorded identity and a conflict otherwise; the member join is by identity and by kind, each member once |
-| `assembly.hl` (card 18) | `Dna.ask(Intent)`: the Board's, the owner's and the budget's gates, `intent.offered`, then the ask admitted as a workflow — planned first where the organism plans (`pending_asks`, `PlanRequested` once; `admit_ask` binds the word into the admission's inputs; `ask_plan_of` reads it back for the edit and human leaves) — and started in the assembly's own engine (`runtime`, `executions`, born with it under `org_id`; `runs_engine: false` for a program that assembles them itself); `run_workflow(WorkflowAsk)` the authored-definition API; `define_asks` (`ask-edit`, `ask-person`, `ask-judge`); `kinds_of` (`<work id>=<kind>` for every leaf of the tree, the request under its own Task: `task_of_bound`), `start_execution`, `resume_executions` at rehydrate (every root of this owner's not settled or not `drained` — a Work of its tree still owed a settlement); `on_workflow_settled`. The runtime resolves a leaf's kind by its bound Work id first (`workflow_runtime.hl`), and answers an execution's state with the responsibilities outstanding anywhere in its tree (`WorkflowProjection.outstanding_in_tree`: Works, and admitted descendant Tasks not yet settled) and the durable fence over its ancestry (`ExecutionState.cancelled_above`, from `recorded_fence`), which a reborn child settles itself under. The host's `task_create_verb` (`hale dna task create`) answers with the execution whose admission names the ask (`writers.hl`) |
-| `assembly.hl` (card 07) | `Dna.admit_workflow(WorkflowAsk)`: mint, expand from `catalog` under `admission_limits`, append `workflow.admitted` exactly, then the `task.born` summary; a refusal is one `workflow.refused` row; the ask's id is the admission's identity; a restart counts admitted ids and resumes no admitted Task as edit work |
-| `completion.hl` (card 17) | `CaseCompletion`, `case_completion(journal, case_id, admission)`: a case's completion as the record holds it, judged against the admission's bound terms — the first `task.done` in the assignee's name (as reassigned) with `completion.linked` / `completion.excepted` under the bound practice where evidence is required, or a `decision.reported` accepted under the bound policy (`policy`) with exactly this case as its `scope` and reported by the assignee; the exception judged at the completion row (recorded in the closer's name, authorized by someone else); refused ones counted with their reason; `completion_by` reads `by <who>[: note]` |
-| `assembly.hl` (card 17) | `Dna.revisit_case` / `revisit_cases`: an admitted case's valid completion reported as its attempt's outcome (`report_attempt`, shared with card 15's `report`; `pending_reports` until `attempt.outcome` is seen) — at rehydrate, `on_record_resumed`, `redrive`, the tick (whenever the record is past `cases_examined`, the revision last examined — not by the tick's own refresh) and a redelivery through `on_case_requested`; `cases_completed`, `completions_refused` (noted once per case, `refused_completions`); the admission carries its `performer` (version 2) |
-| `assembly.hl` (card 16) | `Dna.on_case_requested` / `hand_case` / `ensure_case_rows` / `restore_cases`: a human attempt admitted as its own case `<task>.s<i>.<key>` (`case_id_of`), the versioned `case.admitted` exact at its reading before `task.born` / `task.handed`; `handoff_terms` binds assignee, obligation, acceptance and required evidence as a job's (the leader's word through `on_planned` where the organism plans); `case_of_attempt`, `case_admitted` (never edit recovery); the terms and the body (`case_body`) decided from the reading each exact append is at; the rows say what the admission recorded (`owner`, `to`) and only the recorded owner writes them; `held_cases` (refused admissions) and `held_rows` (refused compatibility rows, `retry_rows` on `RecordResumed` / `redrive`) |
-| `assembly.hl` (card 15) | `Dna.on_edit_requested`: an engine edit attempt performed under `Patch` (once — a re-asked attempt answers from the Mutation bound to it) or waited on under `Applied` / `Approved` (`waiting_edits`, answered by `settle_waiting` when the Task's candidate's review settles, at once when it already has); `report_prepared` / `report_review` / `report` (`AttemptReported`, for the exact attempt; `producer_of` names the Work an `Applied` Work waits on from its `target`, `candidate_of` resolves it to the Mutation of the attempt that Work settled on (`settlement_of`), `already_waiting` keeps a re-asked waiter waiting once; `revisit_waiting` evaluates every waiter from its producer's state on each landing — `on_run_life` (a Work's end), a verdict, `on_record_resumed`, `redrive`, an ask; done only on the application, waiting through a refused apply); `edits_reported`; `pending_reports` / `release_recorded` / `retry_reports` (a report kept until the record holds the outcome, put again on `RecordResumed` or `redrive`); `settle_task_of` and the legacy settlement paths never settle an admitted execution's Task |
-| `assembly.hl` / `correlation.hl` (card 14) | `WorkBinding` (`binding_of`, `encode_binding` / `decode_binding`, `request_of_binding`, `planned_work_of`): which exact Work and attempt asked for a plan (`task.planned … binding`) and produced a Mutation (`mutation.requested <m>`, before `mutation.proposed`), with the request as asked; `Dna.mutate_for(req, …)` beside the Task-level `mutate`; `mutation_of_work`, `task_of_mutation` (the request row first, the summary after), `unbound_mutation_of`; `resume_work` resumes each planned Work under its own plan and request, never a Work whose Mutation is in the record; a Mutation's recovery is derived from every row it has, from its request row (request-only work fails once; the summary is compatibility) and its id is counted; a refused association write starts nothing (`held_plans` / `held_direct`, `record_refusals`) and `redrive` drives the held ones again |
-| `workflow_events.hl` (card 07) | `WorkflowAsk`, `RefusedAsk` with `encode_ask_refusal` / `decode_ask_refusal` and `ask_refusal_id` (`<ask>#<n>`): `workflow.ask_refused`, a refusal that reached no Task, its own kind and identity |
-| `workflow_execution.hl` | `AttemptExecutor` (`execute`, `settle`): one admitted attempt, once — durable admission first, recorded outcome reused, execution claimed before the performer runs, reply identity checked, outcome persisted exactly before answering, a refused append stopping the path; `WorkResult.attempt_id` is the reply's echo of the attempt it answers |
-| `workflow_runtime.hl` | `WorkflowRuntime`: the committer (`TransitionProposed` → one reading, dry validation, exact append, apply, `TransitionAnswered`) and executor (`AttemptRequested` → `execute_attempt`, `settle` → `AttemptReplied`) over one journal; `StepRun` and `WorkRun`, the resident step and leaf: registered and activated before a leaf is born, one proposal at a time, a member answering once by key (`MemberSettled`), one terminal outcome (`StepSettled`), alive until every dispatched member settled; a record-refused transition is held and proposed again on `RecordResumed`; a never-admitted leaf retires under its settled step (`MemberRetired`); `WorkflowRun` (card 10): ordered steps born one behind the other's drained committed completion (`StepDrained`), `workflow.settled` done / failed / cancelled as proposals, cancellation (`WorkflowCancelRequested` → `WorkflowSettled` → `StepFenced`) fencing the active step's live Works, the durable fence read by the executor at its claim's reading (`recorded_fence`); `TaskRun` and `Executions` (card 11): one Task with its recipe, its workflow, and its children asked through the Task (`ChildRequested` → `ChildAdmitRequested`) and answered to the spawning step (`ChildSettled`); `LeafSpec` / `leaf_of`, `ChildSpec` / `child_of`; restore (card 12a): a workflow asks the record what it holds first (`ExecutionStateAsked`), every attempt request is decided by `dispatch_attempt` with redelivery derived from the runtime's own claims and written as `effect.redelivered` exactly at its reading; the runtime is fenced on a lease that is rows of its record, atomically with each exact write (card 12b: `lease_take` / `lease_renew` / `lease_at` in `journal.hl`, a `Fence` through every executor write, `take_lease` / `renew_lease` / `tick` on the runtime; a stale holder answers `fenced`); reconciliation at a restart (card 12c: `Reconciler` / `NoEvidence` / `IdempotentReplay` in `performers.hl`, `WorkSystem.<kind>_reconciler`, the admitted kind's asked by `dispatch_attempt` before any redelivery, its evidence scoped to that kind and identity; an unresolved claim is `effect.result unknown` until `hale dna effect resolve`); recovery (card 13: `ExecutionAsked` names the task and the performer kinds for attempts the record has not admitted, `AdmissionAsked` / `AdmissionAnswered` fetch the admission the projection accepted from the record, correlated by `ask_id` to the owner's outstanding question and taken once, a child refused as a root; `WorkStateAsked` / `WorkStateAnswered` give a leaf its recorded attempt and performer kind before it proposes, correlated by scope and `ask_id` and taken once, a fence heard while the question is out decided after the answer; `ExecutionRefused` when it cannot be resumed); edit outcomes (card 15: `AttemptReported` settled for the exact attempt, as a late reply) |
-| `dna/tests/workflow_conformance_test.hl` (card 19) | the baseline: the canonical example under every reply pattern and every mode — in process, a git record with a restart mid-flight, two memories reconstructed mid-flight, a fenced lease — with one oracle over the record and the adapters' stores; `dna/tests/conformance/runner.hl` is the public assembly over a git record, built and run as a separate process by that fixture and killed at three cuts (`spec/dna.md`, "Workflow execution: the baseline") |
-| `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
-| `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
-| `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter), `Budget.admit` (the one gate for spend, in process and out) |
-| `hat.hl` | `Hat` (GH #946): one content-addressed context per Work — position and charter, practices as structure, bindings, grant, contract, class, history, head and watermark — `hat_body` / `hat_digest` / `hat_json`, `hat_position_of` (one id for a position wherever it is keyed), `hat_with_package`, `hat_sealed`; the owner builds one for the edits it asks, a head reads one for a leg (`dna/operations/context.hl`), memory keeps each by digest |
-| `tape.hl` | `RecordedModel` (record and replay over any backend) |
-| `legs/` (`dna/core/legs`, vendored as `vendor/dna/legs`) | the legs seed (GH #946): `Head` (the API as a leg sees it: attach, submit, lookup, context), `render` / `prompt_digest` / `RENDERER_VERSION`, `Brief` / `Performance` / `Performer` (`Person`, `NoDeterministic`, `FixedAnswer`, `NoModel`, `PerformerCatalog`), the hands (`GitHand` / `ScratchGit`, `ForgeHand` / `GhForge`, `ToolchainHand` / `Toolchain`, `NoDeploy`, `NoHeart`, `Hands`), `leg_main` (the verbs) |
+| `refs/dna/journal` | the record: one commit per row |
+| `refs/dna/receipts/<sha256>` | receipts, by the digest of their content |
+| `refs/dna/identity` | the record's identity; a sync publishes it to the remote |
+| `refs/dna/lease/<key>` | leases with fencing tokens; `refs/dna/lease/body` is the body lease |
+| `refs/dna/candidates/<mutation>` | a Mutation's candidate, kept whatever its Review decided |
+| `refs/dna/revisions/<rev>` | a revision a deploy asked the nodes to express |
+| `refs/dna/exchange/<identity>` | a connected record's mailbox in this one |
+| `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`, `genome`) |
+| `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
+| `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/` |
+| `.hale/node/<name>/` | on a node: its instances' pid files and artifacts |
+| memory | Postgres, schema `dna_<record identity>`: the ledger, the graph and protected evidence, under the spine's and the head's roles |
+| the nerves | one JetStream stream per organization, named after its token in capitals |
+| the vault | `HALE_VAULT_DIR`, else `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`; one file per secret, mode 600. `HALE_VAULT_ADDR` names a vault's HTTP API instead |
+| `HALE_DNA_HEAD_STATE` | the project head's state (`${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` when unset) |
 
-| `memory_schema.hl` | memory's schema, applied by its owner: `migrate` (the tables — `hats` among them since version 5; version 7 admits the `reading` family, version 8 the `reflex` family — the record's two roles and their grants, the three receipt functions, the receipt key, the schema version), `memory_fence`, `spine_role`, `head_role` |
-| `memory_store.hl` | `KnowledgeStore` and `Pq` (the graph in Postgres, the repository's graph and its two perspectives), `Dsn` / `parse_dsn`, `schema_for` |
-| `memory_ledger.hl` | `Ledger`, `PqLedger` (the ledger in Postgres), `LeaseStore`, `PqLeaseStore` (leases swapped by token), `row_json` |
-| `memory_protected.hl` | `ProtectedBodies`, `PqProtected` (protected evidence through memory's own functions) |
-| `memory_embed.hl` | the hashed bag-of-words embedding the graph ranks with |
-| `memory_spine.hl` | `Memory` (one process's handle), `MemoryLedger`, `MemoryLeases` (the `claims` table: leases, and `claim` / `release_claim` by id), `MemoryKnowledge` (the context package), `MemoryVault` (protected evidence), `LedgerAdoption` (adoption and abandonment, carried out by a node under a claim) |
-| `pond/` | pond's `db` and `pq`, pinned: the Postgres driver the memory files open through (`vendor/dna/pond` in a project) |
-| `knowledge.hl` | semantic memory: ideas, edges, bindings |
-| `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
-| `editing.hl` | `WorktreeTools`, `SourceEditor` |
-| `verification.hl` | `HaleVerification`, `assess_structure` |
-| `topics.hl` | the typed topics, including the facts that travel on the nerves |
-| `senses.hl` | the senses (GH #988): the port each part serves its readings on (`HALE_DNA_SENSES_PORT`, else the seed's), where it binds (`senses_host`), `Senses` (a part's registry and the server that answers the store's scrape, which its `main locus` places on a cooperative pool of its own), `part_labels`, `senses_now` |
-| `nerves.hl` | the nerves (GH #986): subjects under the organization's token (and an owner's), its stream, the durable consumers' names and filters (`spine` for the organization's facts, `heart` for the applications' events, GH #987), the roles' URLs; it imports no NATS (the host holds the migration and the readiness probe) |
-| `types.hl` | `Intent`, `WorkRequest`, `Grant`, `Magnitude`, `Evidence`, `Disposition`, `Mutation`, `dispose` |
-
-Beside the core, `dna/host` (the host: the projections, the writers,
-`run` / `dev`, the node agent — everything `hale dna` does that is DNA
-behaviour rather than manifest or scaffolding; `pulse.hl` lands an
-application's events as readings, GH #987; `reflex.hl` answers the
-reflexes' firings, GH #988) and `dna/ui` (the
-surface) ship in the
-toolchain the same way; `hale dna` resolves the project and execs the
-host. The compiler keeps `init` / `new` / `upgrade`, `hale fleet
-check` and the plan schema. The projection of the record into the
-graph, `MemoryProjection`, is not in the core: it lives with the
-command codecs it decodes admitted facts with, in
-`dna/operations/memory_tail.hl`, and the host runs it on its tick.
-The contract the library and the commands promise is
-`spec/dna.md`. Friction the DNA has logged against the language and
-the toolchain, with reproducers, is `dna/FRICTION.md`.
+Once the ledger is adopted, the day's work is in memory, not in
+`refs/dna/journal`; `hale dna ledger status` says where things stand.
+`hale dna secrets` lists every vault entry the organism needs.

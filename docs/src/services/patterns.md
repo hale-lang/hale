@@ -79,15 +79,16 @@ relies on. The rejection without a replacement strands you, so here
 is the migration:
 
 - **Pre-allocated handles at boot.** Declare the counter/gauge loci
-  as `params` of the owner, instantiated once at birth. The hot path
-  mutates a field in place (`self.hits = self.hits + 1`) — no method
-  returning a locus, no per-call allocation.
+  as `params` of the owner, instantiated once at birth —
+  `std::metrics::counter(...)` as a param default, as
+  [Concurrency & placement](./concurrency.md) shows. The hot path
+  mutates in place (`self.ticks.inc()`, or a plain `self.hits =
+  self.hits + 1`) — no method returning a locus, no per-call
+  allocation.
 - **Bus-routed single-writer store.** For shared metrics, publish a
   `MetricUpdate { name, delta }` to a single collector locus that
   owns the store and applies updates in its handler. One writer, no
-  contention, and the closed-world rewrite keeps the publish
-  synchronous. This is the shape `pond/metrics`' `MetricsCollector`
-  uses.
+  contention.
 
 Either way the hot path does an in-place field write or a publish —
 never a method that returns a locus.
@@ -95,21 +96,37 @@ never a method that returns a locus.
 ## 4. The publish-policy gate
 
 When you produce data faster than you want to publish it (telemetry,
-book snapshots), gate the publish behind a `tick()` with a
-time-or-volume trigger rather than publishing per-update:
+book snapshots), gate the publish behind a time-or-volume trigger
+rather than publishing per-update:
 
 ```hale
-fn on_update(u: Update) {
-    self.pending = self.pending + 1;
-    self.acc = self.acc + u.delta;          // accumulate in place
-    if self.pending >= 100 { self.flush(); } // volume trigger
-}
-fn tick() {                                  // time trigger (scheduled)
-    if self.pending > 0 { self.flush(); }
-}
-fn flush() {
-    "snapshot" <- Snapshot { total: self.acc };
-    self.pending = 0;
+type Update   { delta: Int; }
+type Snapshot { total: Int; }
+topic Updates   { payload: Update; }
+topic Snapshots { payload: Snapshot; }
+
+locus Batcher {
+    params { pending: Int = 0; acc: Int = 0; }
+    bus {
+        subscribe Updates as on_update;
+        publish   Snapshots;
+    }
+
+    fn on_update(u: Update) {
+        self.pending = self.pending + 1;
+        self.acc = self.acc + u.delta;           // accumulate in place
+        if self.pending >= 100 { self.flush(); } // volume trigger
+    }
+    run() {                                      // time trigger
+        while !self.draining {
+            std::time::sleep(1s);
+            if self.pending > 0 { self.flush(); }
+        }
+    }
+    fn flush() {
+        Snapshots <- Snapshot { total: self.acc };
+        self.pending = 0;
+    }
 }
 ```
 
@@ -119,32 +136,33 @@ volume independently of input volume.
 
 ## 5. View lifetime — copy out to persist
 
-The zero-copy span/JSON APIs (`StringView`, `BytesView`,
-`std::json::*_span`) hand you a **view into a buffer you don't own**.
-That view is valid only until the next operation that overwrites the
-buffer — the next `recv`, the next ring read. Holding it across that
-boundary reads freed/overwritten memory:
+The zero-copy APIs (`StringView`, `BytesView`, a builder's `.view()`
+/ `.text_view()`, the `std::json::*_span` cursors) hand you a **view
+into a buffer you don't own**. That view is valid only until the next
+operation that overwrites the buffer — the next `recv`, the next ring
+read. Holding it across that boundary reads bytes that are no longer
+the ones you looked at:
 
 ```hale,fragment
-let name = std::json::find_string_field(msg, "name");  // view into recv buf
-self.read_msg();                                       // ← overwrites the buffer
-println(name);                                         // ✗ dangling view
+let name = self.rx_buf.text_view();   // view into the receive buffer
+self.read_msg();                      // ← refills rx_buf
+println(name);                        // ✗ stale view
 ```
 
 The rule: **a view is valid until the next recv/overwrite; copy out
 to persist.** Materialize it before the boundary:
 
 ```hale,fragment
-let name = std::str::clone(std::json::find_string_field(msg, "name"));
+let name = std::str::clone(self.rx_buf.text_view());
 self.read_msg();
 println(name);   // ✓ owns its own copy
 ```
 
-Forgetting this is now **panic-guarded** (a stale-view access exits
-with a diagnostic rather than reading garbage), so you'll see a clear
-"view used after its buffer was overwritten" message instead of a
-silent corruption — but the fix is always to clone out before the
-overwriting call.
+A builder's views are **panic-guarded**: reading one after its
+`BytesBuilder` changed exits with a diagnostic rather than reading
+garbage — `violation: StringView read after source BytesBuilder
+mutated …` — instead of a silent corruption. The fix is always to
+copy out before the overwriting call.
 
 ## 6. The reused-buffer connection
 
@@ -209,6 +227,20 @@ One reader locus per source, parked on readiness — never a poll
 loop with `set_recv_timeout`:
 
 ```hale
+locus Reader {
+    params {
+        port: Int = 0;
+        src: std::io::udp::Reader =
+            std::io::udp::Reader { addr: "127.0.0.1", port: self.port, cap: 2048 };
+    }
+    run() {
+        while !self.draining {
+            let frame = self.src.next() or raise;   // parks on EPOLLIN
+            // decode `frame`, publish what it says
+        }
+    }
+}
+
 main locus App {
     params { r0: Reader = Reader { port: 9000 }; r1: Reader = Reader { port: 9001 }; }
     placement {
@@ -216,11 +248,13 @@ main locus App {
         r1: cooperative(pool = ingest) where async_io;
     }
 }
+
+fn main() { App { }; }
 ```
 
-Each reader's `recv` parks its coroutine on EPOLLIN; N readers
+Each reader's `next()` parks its coroutine on EPOLLIN; N readers
 share one pool worker with microsecond wakes (measured ~4 µs p50).
 Poll-scanner sleeps accumulate tail-latency debt that looks like a
 runtime problem but is the sleep schedule. Blocking I/O that can't
-park (TLS today) goes on `pinned` instead — see
+park (a TLS handshake, say) goes on `pinned` instead — see
 [Concurrency & placement](./concurrency.md).

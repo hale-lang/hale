@@ -33,12 +33,14 @@ let band = if score >= 90 {
 };
 ```
 
-One small thing the compiler is strict about: an empty `if` body
-won't parse. If you genuinely want a branch that does nothing,
-put a comment in it or restructure the condition:
+One small trap: when the condition ends in a bare name, an
+*empty* body won't parse — `done { }` reads as a struct literal,
+and a comment inside doesn't change that. If you genuinely want a
+branch that does nothing, wrap the condition in parentheses or
+restructure it:
 
 ```hale,fragment
-if done {
+if (done) {
     // nothing to do yet
 }
 ```
@@ -113,7 +115,7 @@ Sometimes there's no single value to match on — you just want the
 first true condition out of several. Leave the scrutinee out:
 
 ```hale,fragment
-let tier = match {
+let size = match {
     n < 10  -> "small",
     n < 100 -> "medium",
     else    -> "large",
@@ -145,7 +147,7 @@ A `{ ... }` block's last expression — written without a trailing
 `;` — is the block's value. That's why `if`/`match` can be used
 as expressions, and why a function can end in a bare expression
 instead of `return`. A block whose last item *does* end in `;`
-has value `()`.
+has no value, so it can't stand where one is expected.
 
 ```hale,fragment
 let label = {

@@ -8,8 +8,8 @@ The `+` operator concatenates strings, and `println` /
 f-strings join for you:
 
 ```hale,fragment
-let first = "Ada";
-let last  = "Lovelace";
+let first = "alice";
+let last  = "smith";
 
 let full  = first + " " + last;
 let hi    = f"hello, {first}";
@@ -30,7 +30,7 @@ An `f` before the quote turns `{...}` into interpolation. What
 goes inside is a whole expression, not just a name:
 
 ```hale,fragment
-let name = "Ada";
+let name = "alice";
 let n    = 3;
 
 println(f"hello, {name}");
@@ -66,7 +66,7 @@ fn main() {
 
 Strings *inside* a rendered value are quoted, so a value
 containing a comma still reads as one value. A string on its own
-is not quoted — `f"{name}"` is just `Ada`.
+is not quoted — `f"{name}"` is just `alice`.
 
 Two things deliberately do not render: a **locus** (it is flow,
 not shape — and rendering one would leak the state a `@sealed`
@@ -79,11 +79,11 @@ An interpolation can say *how* to render, after a `:`:
 
 ```hale,fragment
 let n     = 42;
-let name  = "ada";
+let name  = "alice";
 let ratio = 3.14159;
 
 println(f"[{n:6}]");        // [    42]   numbers pad left
-println(f"[{name:6}]");     // [ada   ]   text pads right
+println(f"[{name:6}]");     // [alice ]   text pads right
 println(f"[{n:<6}]");       // [42    ]   `<` `^` `>` override
 println(f"[{n:0>6}]");      // [000042]   a fill character
 println(f"{ratio:.2}");     // 3.14       precision (Float/Decimal)
@@ -212,8 +212,6 @@ a file and need to frame messages yourself — that's a topic for
 this level, just know the two types are distinct and you convert
 explicitly between them.
 
-Next: the failure model — [When a call can fail](./fallible.md).
-
 ## Splitting, joining, searching
 
 ```hale,fragment
@@ -286,3 +284,5 @@ exponential time is not something you can be allowed to put there.
 
 Check `valid` on any pattern you didn't write yourself. Without it, a
 typo looks exactly like "no matches".
+
+Next: the failure model — [When a call can fail](./fallible.md).

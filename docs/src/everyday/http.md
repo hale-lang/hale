@@ -4,9 +4,9 @@
 > moment — but instead of decorators or a routes table, you write
 > a **handler locus**: a locus with a `handle(req) -> Response`
 > method. `std::http::Server` runs the accept loop and calls your
-> handler per request. Routing is a `match` on the path inside
-> `handle`. (A fuller router with path params lives in the `pond`
-> library catalog.)
+> handler per request. Routing is an `if` on the path inside
+> `handle`, or `std::http::Router` once there are more than a few
+> routes.
 
 ## A server
 
@@ -192,8 +192,9 @@ direct calls with `self` in scope: state without ceremony.
 
 Don't reach for a fancier router on performance instinct: at
 service-sized route counts (tens of routes) this linear scan
-costs a few hundred nanoseconds against the microseconds the
-request spends in parsing and syscalls. The shape also pairs
+costs about 90 ns per route it tries (measured worst case: the
+request matches the last route), a microsecond or so at ten
+routes, next to what the request spends in parsing and syscalls. The shape also pairs
 naturally with [replicated placement](../services/concurrency.md):
 under `pinned(..., replicas = K)` each replica is its own `Api`
 instance, so `params` state — that database handle — is
@@ -226,13 +227,16 @@ is the famous one. For those, a handler can *take over* the raw
 connection instead of finishing the request/response cycle:
 
 ```hale
+type Conn { fd: Int; }
+topic WsConn { payload: Conn; subject: "ws.conn"; }
+
 locus WsHandler {
-    params { }
+    bus { publish WsConn; }
     fn handle(req: std::http::Request) -> std::http::Response {
         // req.conn_fd is the live socket. Hand it to whoever
         // will own the session (typically: publish it to a
         // session locus on its own pool).
-        "ws.conn" <- Conn { fd: req.conn_fd };
+        WsConn <- Conn { fd: req.conn_fd };
         return std::http::Response {
             status: 101,
             headers: "Upgrade: websocket\r\nConnection: Upgrade",
@@ -309,12 +313,12 @@ let c = std::http::Client { keep_alive: true, max_retries: 2 };
 let r = c.get("http://api.local/health") or raise;
 ```
 
-One placement note: **https calls block their thread** (TLS has no
-async_io integration yet) — keep loci that make them on `pinned`
-or an ordinary cooperative pool, not an `async_io` one.
+One placement note: **https calls block their thread** (the
+client's TLS handshake and reads don't park on `async_io`) — keep
+loci that make them on `pinned` or an ordinary cooperative pool,
+not an `async_io` one.
 
-That import line, the `bindings` that wire a server across
-processes, and the lifecycle that lets a server shut down cleanly
+The `bindings` that wire a server across processes, and the lifecycle that lets a server shut down cleanly
 on Ctrl-C are all next-level topics — but the handler you wrote
 above doesn't change when you get there. The server *code* is
 already complete; the surrounding tier just gives it more ways to

@@ -89,6 +89,8 @@ to `log.<component>` for whichever component it was built for — you
 declare a **wildcard** publish and send to a computed string:
 
 ```hale
+type LogEvent { phase: String; }
+
 locus Trace {
     params { component: String = "root"; }
     bus { publish "log.**" of type LogEvent; }
@@ -316,8 +318,8 @@ reaches only the `Feed` instances that subscribed with
   `pinned(..., replicas = K)` fan-out shards an Int-keyed topic
   with one subscribe line (see the concurrency chapter's
   fan-out pattern). A filter of any shape requires a *keyed*
-  topic — on an unkeyed one it would silently match nothing, and
-  the checker now says so.
+  topic — on an unkeyed one it would silently match nothing, so
+  the checker refuses it.
 - The key is **captured by value when the locus is constructed.**
   Reassigning `self.symbol_id` later does *not* re-route the
   subscription; to change shards, dissolve the locus and
@@ -329,7 +331,14 @@ A keyed publish whose key matches no subscriber is governed by the
 topic's `on_unmatched:` policy:
 
 ```hale
+type Tick { symbol_id: Int; price: Decimal; }
+
 topic Quote { payload: Tick; keyed_by symbol_id; on_unmatched: fallback; }
+
+locus Unrouted {
+    bus { subscribe Quote as on_stray where key == _; }   // the catch-all
+    fn on_stray(t: Tick) { }
+}
 ```
 
 - **`swallow`** *(the default)* — the message is dropped silently.

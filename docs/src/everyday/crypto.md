@@ -44,8 +44,10 @@ let url = std::text::base64::url_encode(data);  // URL-safe, unpadded
 ```
 
 `url_encode` is RFC 4648 §5 (the `-_` alphabet, no `=` padding) —
-the form JWTs, OAuth, and webhook signatures use. `decode` accepts
-both alphabets.
+the form JWTs, OAuth, and webhook signatures use. `decode` reads
+the standard, padded alphabet only (`+/`, `=`): it skips whitespace
+and returns an empty `Bytes` for anything else — `url_encode`'s
+output included. There is no URL-safe decoder.
 
 ## Signing — ECDSA P-256 (`ES256`)
 

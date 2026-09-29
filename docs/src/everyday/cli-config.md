@@ -49,8 +49,10 @@ fn main() {
 The resolver checks the argument (positions come from `argv_keys`,
 one key per line, first line mapping to argv[1]), then the prefixed
 environment variable (`MYAPP_HOST`), then the supplied default —
-`get` for strings, `get_int` for numbers. Empty values fall through
-to the next layer rather than counting as "set."
+`get` for strings, `get_int` for numbers. A layer counts as set once
+the argument is present or the variable exists, even when its value
+is empty: `get` then answers `""`. `get_int` answers the default for
+an empty or unparseable value rather than failing.
 
 ## Interactive terminal I/O
 
@@ -108,7 +110,10 @@ locus App {
 }
 
 fn main() {
-    let cfg = std::cli::Resolver { prefix: "MYAPP" };
+    let cfg = std::cli::Resolver {
+        env_prefix: "MYAPP_",
+        argv_keys:  "host\nport\n",
+    };
     App {
         host: cfg.get("host", "127.0.0.1"),
         port: cfg.get("port", "8080"),

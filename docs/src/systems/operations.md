@@ -1,6 +1,6 @@
 # Operations & debugging
 
-Most of the time an Hale program either works or fails loudly. The
+Most of the time a Hale program either works or fails loudly. The
 two exceptions — the ones that send you here — are **a message that
 quietly doesn't arrive** and **resident memory that quietly grows**.
 Both are silent by design (the steady-state behavior is correct), so
@@ -96,7 +96,7 @@ flags report on allocation shape:
 |---|---|
 | *(default on every check/build)* | flag an allocation that escapes into an unbounded context and accumulates until its locus dissolves (advisory warnings; `--no-warn-unbounded-alloc` opts out) |
 | `--dump-alloc-summary` | every allocation site, escape-tagged (local / returned / stored-to-self / sent), with the bounded-vs-unbounded verdict; plus each locus's storage shape (capacity slots, `@form`, projection cap) and the `self.<field>` / `self.<slot>` an allocation targets |
-| `--dump-resource-budget` | per-locus resource counts (allocations, held fds) against declared ceilings |
+| `--dump-resource-budget` | a static count of pinned threads, cooperative pools, bus subjects and fd-acquisition sites (`--check-resource-budget <file>` gates it against declared ceilings) |
 | `--locality-report` | per-locus working-set size against cache-tier budgets |
 
 The memory-bound warnings run **by default** on every `hale check`
@@ -113,6 +113,8 @@ For a long-lived service, the surface is:
   lifecycle hook (`@unbounded run { … }`).
 
   ```hale
+  type Snapshot { seq: Int; total: Int; }
+
   locus Aggregator {
       // ... handlers checked for unbounded accumulation ...
 
@@ -133,9 +135,10 @@ it tells you *which site* can grow before you've watched it grow.
 ## Bus backpressure: bounding a flood
 
 A producer that outruns its consumer used to grow the dispatch queue
-without limit. It no longer does — the queue and each pinned-locus
-mailbox are capped at `LOTUS_BUS_QUEUE_CAP` cells (default 8192 ≈
-4.5 MB):
+without limit. It no longer does — the queue, each pinned-locus
+mailbox and each cooperative pool's queue are capped at
+`LOTUS_BUS_QUEUE_CAP` cells (default 8192; a pinned mailbox or pool
+queue pre-allocates its cap, about 4.3 MB at the default):
 
 ```sh
 LOTUS_BUS_QUEUE_CAP=1024 ./myapp   # tighter bound, more frequent drains
@@ -233,9 +236,17 @@ on your next tick), any other value is the exit code (`-1` =
 killed by a signal), and the child is reaped:
 
 ```hale
-fn tick() {
-    let code = std::process::try_wait(self.child) or -2;
-    if code != -2 { self.on_child_exit(code); }
+locus Supervisor {
+    params { child: std::process::Child = std::process::Child { }; }
+
+    fn tick() {
+        let code = std::process::try_wait(self.child) or -2;
+        if code != -2 { self.on_child_exit(code); }
+    }
+
+    fn on_child_exit(code: Int) {
+        println("child exited: ", code);
+    }
 }
 ```
 
@@ -307,7 +318,8 @@ the reference consumer and ships in the binary — `hale run
 and an observer beside it (see [Iris](./iris.md)): one whose
 lifetime is bounded by that `hale`, and whose own output goes to
 stderr rather than into the program's stdout. Knobs:
-`LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default 4096).
+`LOTUS_OBS_RINGS` (default 8, or 64 when recording),
+`LOTUS_OBS_SLOTS` (default 4096).
 
 **Cross-process edges opt into the wire.** The `(origin, seq)`
 key that pairs a send with its deliveries travels *in the wire

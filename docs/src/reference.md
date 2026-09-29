@@ -31,11 +31,11 @@ diagnostic's meaning, go there.
 ## Two more anchors
 
 - **[`AGENTS.md`](https://github.com/hale-lang/hale/blob/main/AGENTS.md)** — the load-bearing prompt for
-  agents writing `.hl`. It condenses the six idiomatic patterns,
+  agents writing `.hl`. It condenses the seven idiomatic shapes,
   the "what's not in the language" reflexes, and the formal
   design model into one file. Excellent for a human, too.
 - **Working programs** — `crates/hale-codegen/tests/fixtures/examples/`
-  holds 83 small per-feature programs, numbered. Reading a few
+  holds about ninety small per-feature programs, numbered. Reading a few
   near your target shape is the fastest way to see real,
   compiling Hale.
 
@@ -57,7 +57,7 @@ diagnostic's meaning, go there.
 | `hale node <name>` | express a fleet plan's instances on one machine, from the record |
 | `hale replay <rec> <file>` | re-run a recording; `--diff` reports the first divergence and per-category coverage — see [Record & replay](./systems/replay.md) |
 | `hale iris [port]` | the embedded observer; `hale run --observe` starts a session beside a run — see [Iris](./systems/iris.md) |
-| `hale dna <verb>` | attach and operate an organization: `init`, `new`, `run`, `ask`, `status`, `ledger`, `body` and the rest — see the [DNA reference](./dna/reference.md) |
+| `hale dna <verb>` | attach and operate an organization: `init`, `new`, `run`, `task create`, `status`, `ledger`, `body` and the rest — see the [DNA reference](./dna/reference.md) |
 | `hale inputs <seed>` | every file a build of the seed reads, imports followed |
 | `hale targets` | the targets this compiler can name, and which of them it can build |
 | `hale lsp` | the language server, in the compiler binary |
@@ -137,20 +137,22 @@ file that never opened has no text to point into. In text mode you
 read the same sentence you always did, on stderr.
 
 Some findings point into the **standard library** rather than into
-your source. When a `@no_alloc` fn reaches an allocation, the
+your source. When a fn that declares `@effects(none: {alloc})`
+reaches an allocation, the
 allocation is often several calls deep inside a stdlib locus — and
 the stdlib is Hale source the compiler reads on its own terms, not a
 file of your project. Those locations are named, never placed:
 
 ```
-main.hl:2:4: type error: effect assertion violated: `ship` must not reach `alloc`, …
+main.hl:2:4: type error: effect assertion violated: `ship` must not reach `alloc`, but reaches ship -> std::io::tcp::Stream::recv [an allocation (struct `IoError`)]. …
     fn ship(s: std::io::tcp::Stream) {
        ^^^^
-    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:118:18)
+    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:98:18)
 ```
 
 The finding itself sits on the line you have to change; the note says
-where in the library the effect actually happens, and `--json` carries
-that note in the record's `message` with an empty `file` and no line.
+where in the library the effect actually happens, and `--json` emits
+that note as a record of its own, the library location in its
+`message`, with an empty `file` and `line` and `col` 0.
 Your editor gets the finding and nothing else — there is no range in
 the file you have open for a position in another one.
