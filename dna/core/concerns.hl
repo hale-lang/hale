@@ -29,7 +29,7 @@ locus ConcernRecord {
         while i < n {
             let e = self.journal.read(i);
             if e.kind == "pressure.raised" && e.entity == p.source {
-                if len(p.request) > 0 && request_named(e.body) == p.request { return PressureAnswer { answered: true }; }
+                if len(p.request) > 0 && request_named(e.body) == p.request { return PressureAnswer { }; }
                 seen = seen + 1;
             }
             if e.kind == "appendage.proposed" && e.entity == p.source { proposed = true; }
@@ -192,10 +192,9 @@ locus ConcernRecord {
     }
 }
 
-// What measuring pressure came to: the request answered already, or the
-// raise and whether an organ was proposed with it.
+// What measuring pressure came to: whether an organ was proposed with the
+// raise, and the source's count (nothing, for a request answered already).
 type PressureAnswer {
-    answered: Bool = false;
     proposed: Bool = false;
     seen: Int = 0;
 }
