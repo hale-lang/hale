@@ -1,0 +1,37 @@
+// The organization's own steps (C3, family 8: Work's steps): the catalog
+// steps it performs that wait — on a verdict, the leader, or memory —
+// held until performed. It was part of the assembly; as a locus of its
+// own it holds that queue and nothing else. Performing a step is the
+// assembly's (`perform_step` asks the family whose definition it is, and
+// its outcome is reported as every attempt's is): the assembly walks the
+// queue through `count`, `at` and `done`, as it walks the schedules.
+locus StepRecord {
+    params {
+        waiting_steps: StepAsks = StepAsks { }; // GH #995: catalog steps waiting on a verdict, the leader, or memory
+    }
+    // Whether the step of `attempt_id` waits already.
+    @unbounded
+    fn waiting(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.waiting_steps.len() {
+            let w = self.waiting_steps.get(i) or StepAsk { };
+            if w.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // A step that did not report waits, once.
+    @unbounded
+    fn wait(s: StepAsk) { if !self.waiting(s.attempt_id) { self.waiting_steps.push(s); } }
+    fn count() -> Int { return self.waiting_steps.len(); }
+    fn at(i: Int) -> StepAsk { return self.waiting_steps.get(i) or StepAsk { }; }
+    // The step at `i` reported: it leaves the queue.
+    fn done(i: Int) { self.waiting_steps.set(i, StepAsk { }) or discard; }
+    // A walk found `left` still waiting: none left, the queue empties.
+    fn walked(left: Int) { if left == 0 && self.waiting_steps.len() > 0 { self.waiting_steps = StepAsks { }; } }
+}
+
+// GH #995: the catalog steps the organization performs, waiting on what
+// they wait for (a verdict, the leader's word, memory's projection).
+@form(vec)
+locus StepAsks { capacity { heap rows of StepAsk; } }

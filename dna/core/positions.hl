@@ -101,6 +101,7 @@ locus PositionRecord {
         return digest;
     }
     // The hold's own row once its Review is born.
+    @unbounded
     fn proposed(r: HoldRequest, digest: String) -> Bool {
         let review_id = knowledge_review_id(digest);
         let a = std::json::Builder { };
@@ -115,8 +116,8 @@ locus PositionRecord {
     }
 }
 
-// What a hold names: the position's (or organization's) name, held by the
-// holder.
+// The name of what a hold is for: the position's, or the organization's
+// a person joins. The callers say who holds it.
 fn hold_name(r: HoldRequest) -> String {
     let name = if std::str::starts_with(r.position, "position:") { r.position[9..len(r.position)] } else if std::str::starts_with(r.position, "organization:") { r.position[13..len(r.position)] } else { "" };
     return name;

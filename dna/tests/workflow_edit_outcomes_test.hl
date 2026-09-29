@@ -249,8 +249,8 @@ main locus App {
     fn held_waiters() -> Int {
         let mut n = 0;
         let mut i = 0;
-        while i < self.org.waiting_edits.len() {
-            let e = self.org.waiting_edits.get(i) or dna::EditAsk { };
+        while i < self.org.attempts.waiting_edits.len() {
+            let e = self.org.attempts.waiting_edits.get(i) or dna::EditAsk { };
             if len(e.attempt_id) > 0 { n = n + 1; }
             i = i + 1;
         }
@@ -261,8 +261,8 @@ main locus App {
     fn held_reports() -> Int {
         let mut n = 0;
         let mut i = 0;
-        while i < self.org.pending_reports.len() {
-            let r = self.org.pending_reports.get(i) or dna::AttemptReport { };
+        while i < self.org.attempts.pending_reports.len() {
+            let r = self.org.attempts.pending_reports.get(i) or dna::AttemptReport { };
             if len(r.attempt_id) > 0 { n = n + 1; }
             i = i + 1;
         }
@@ -326,7 +326,7 @@ main locus App {
         std::test::assert_eq_str(self.settled_as("t1/wf1/s0/e"), "done", "e is done: its candidate is prepared for review");
         std::test::assert_eq_int(self.rows(j, "review.requested", "review:m1"), 1, "the candidate m1 is in review");
         std::test::assert_eq_str(dna::decode_binding(self.body_of(j, "mutation.requested", "m1")).attempt_id, "t1/wf1/s0/e/a0", "m1 is bound to e's attempt");
-        std::test::assert_eq_int(self.org.edits_reported, 1, "one outcome reported, for that attempt");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, 1, "one outcome reported, for that attempt");
         std::test::assert_eq_int(self.rows(j, "task.done", "t1") + self.rows(j, "task.failed", "t1"), 0, "no Work settled the root");
         std::test::assert_eq_int(self.rows(j, "workflow.settled", "t1"), 0, "the root is pending on the delayed sibling");
         std::test::assert_eq_str(self.settled_as("t1/wf1/s0/s"), "", "s is still out");
@@ -335,7 +335,7 @@ main locus App {
         self.until(true, "t1/wf1/s1/w:born", 1);
         self.settle();
         std::test::assert_eq_int(self.rows(j, "step.completed", "t1/wf1/s0"), 1, "the first step completed on both members");
-        std::test::assert_eq_int(self.org.waiting_edits.len(), 1, "w waits for the candidate's review");
+        std::test::assert_eq_int(self.org.attempts.waiting_edits.len(), 1, "w waits for the candidate's review");
         std::test::assert_eq_str(self.settled_as("t1/wf1/s1/w"), "", "and is not settled");
         self.verdict("m1", "reject");
         self.until(false, "t1:failed", 1);
@@ -347,7 +347,7 @@ main locus App {
         std::test::assert_eq_str(self.settled_as("t1/wf1/s0/e"), "done", "a later denial reverses nothing about the prepared candidate");
         std::test::assert_eq_int(self.rows(j, "workflow.settled", "t1"), 1, "the workflow settled the root");
         std::test::assert_eq_int(self.rows(j, "task.failed", "t1") + self.rows(j, "task.done", "t1"), 0, "and nothing else did: one root terminal writer");
-        std::test::assert_eq_int(self.org.edits_reported, 2, "two outcomes reported: e's and w's");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, 2, "two outcomes reported: e's and w's");
 
         // ---- t2: approved: the candidate is applied and the waiting Work
         //      is done; the workflow settles done
@@ -374,12 +374,12 @@ main locus App {
         self.verdict("m3", "approve");
         self.until_rows("mutation.applied", "m3", 1);
         self.settle();
-        let waiting_before = self.org.waiting_edits.len();
+        let waiting_before = self.org.attempts.waiting_edits.len();
         let r3 = self.reply("t3/wf1/s0/s/a0");
         self.until(false, "t3:done", 1);
         self.settle();
         std::test::assert_eq_str(self.settled_as("t3/wf1/s1/w"), "done", "w, asked after the verdict, is done at once");
-        std::test::assert_eq_int(self.org.waiting_edits.len(), waiting_before, "it never waited");
+        std::test::assert_eq_int(self.org.attempts.waiting_edits.len(), waiting_before, "it never waited");
 
         // ---- t4: preparation fails: the failure maps to the Work that
         //      asked, its step fails, the workflow settles failed; the
@@ -400,12 +400,12 @@ main locus App {
         //      Mutation bound to it: nothing is edited twice
         let minted = self.rows(j, "mutation.requested", "");
         let outcomes = self.rows(j, "attempt.outcome", "");
-        let reported = self.org.edits_reported;
+        let reported = self.org.attempts.edits_reported;
         let rec = dna::decode_attempt(self.body_of(j, "attempt.admitted", "t2/wf1/s0/e/a0"));
         std::test::assert(rec.ok, "e's admitted attempt reads back");
         dna::EditRequested <- dna::EditAsk { scope: "edits", attempt_id: "t2/wf1/s0/e/a0", performer: "editor", request: rec.value.request };
         self.settle();
-        std::test::assert_eq_int(self.org.edits_reported, reported + 1, "the attempt was answered again");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, reported + 1, "the attempt was answered again");
         std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), minted, "from the Mutation bound to it: nothing was minted");
         std::test::assert_eq_int(self.rows(j, "attempt.outcome", ""), outcomes, "and the record holds no second outcome for it");
         // a report is one attempt's, whole: one whose outcome names another
@@ -499,11 +499,11 @@ main locus App {
         let j8 = self.boot.rt.journal;
         self.admit("t8", "ship");
         let minted8 = self.rows(j8, "mutation.requested", "");
-        let reported8 = self.org.edits_reported;
+        let reported8 = self.org.attempts.edits_reported;
         self.ask("t8");
         self.until_rows("review.requested", "review:" + "m" + to_string(minted8 + 1), 1);
         self.settle();
-        std::test::assert_eq_int(self.org.edits_reported, reported8 + 1, "the edit was performed and reported once");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, reported8 + 1, "the edit was performed and reported once");
         std::test::assert_eq_int(self.rows(j8, "attempt.outcome", "t8/wf1/s0/e/a0"), 0, "and the record refused the outcome");
         std::test::assert_eq_int(self.boot.rt.reports_refused, 1, "which the runtime counted");
         std::test::assert_eq_int(self.held_reports(), 1, "the assembly keeps the report — and only that one: every other was seen to land");
@@ -515,8 +515,8 @@ main locus App {
         std::test::assert_eq_str(self.settled_as("t8/wf1/s0/e"), "done", "e is done on it");
         std::test::assert_eq_int(self.org.redrive(), 0, "nothing is held any more");
         std::test::assert_eq_int(self.held_reports(), 0, "the report was released once the record held its outcome");
-        std::test::assert_eq_int(self.org.edits_reported, reported8 + 1, "one report");
-        std::test::assert_eq_int(self.org.reports_retried, 1, "put twice: once refused, once landed");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, reported8 + 1, "one report");
+        std::test::assert_eq_int(self.org.attempts.reports_retried, 1, "put twice: once refused, once landed");
 
         // (the journal handle taken at the start belongs to the first Boot,
         // replaced above: these probes read the live runtime's)
@@ -658,13 +658,13 @@ main locus App {
             },
             owner: dna::Executions { scope: "edits" }
         };
-        let reported13 = self.org.edits_reported;
+        let reported13 = self.org.attempts.edits_reported;
         self.ask("t13");
         self.until(true, "t13/wf1/s1/w:born", 2);
         self.settle();
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:t13/wf1/s1/w/a0"), 1, "the waiter's attempt was redelivered");
         std::test::assert_eq_int(self.held_waiters(), waiting12 + 1, "and waits once");
-        std::test::assert_eq_int(self.org.edits_reported, reported13, "nothing was reported for it yet");
+        std::test::assert_eq_int(self.org.attempts.edits_reported, reported13, "nothing was reported for it yet");
         self.verdict(md, "approve");
         self.until(false, "t13:done", 1);
         self.settle();

@@ -1,0 +1,201 @@
+// Work's attempts (C3, family 8): what the organization keeps of an
+// attempt's life — the outcomes it reported to the workflow engine, kept
+// until the record holds them (card 15, card 17); the edit attempts that
+// wait on a review's outcome, and those the record refused to start; a
+// leg's lease on an attempt as the record holds it, the outcome it
+// handed back answered or refused, and the leases that expired with no
+// outcome, asked again once each (GH #946) and named as a violation (GH
+// #989). It was part of the assembly; as a locus of its own it holds those
+// queues and counts, with the journal the assembly lends it at birth.
+// Publishing a report on the bus, a review's and a Mutation's state, the
+// runtime that asks an attempt again, and the Board's notices stay the
+// assembly's: it walks these queues through the family's accessors
+// (dna/core/record_rows.hl).
+locus AttemptRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
+        reports_retried: Int = 0;
+        waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
+        held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
+        edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
+        submissions_refused: Int = 0;
+        reopened: String = ""; // leg claims (`<attempt>@<token>`) this incarnation asked again after they expired (GH #946)
+    }
+    fn bind(j: Journal) { self.journal = j; }
+    // ---- reports (card 15, card 17)
+    // A report the assembly published, kept, once, until the record is
+    // seen to hold its outcome.
+    @unbounded
+    fn keep(r: AttemptReport) {
+        if !row_exists(self.journal, "attempt.outcome", r.attempt_id) && !self.reported(r.attempt_id) { self.pending_reports.push(r); }
+    }
+    // Whether a report for the attempt is kept, its outcome not yet seen.
+    @unbounded
+    fn reported(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let r = self.pending_reports.get(i) or AttemptReport { };
+            if r.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // Every held report whose outcome the record holds is released.
+    @unbounded
+    fn release_recorded() {
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let r = self.pending_reports.get(i) or AttemptReport { };
+            if len(r.attempt_id) > 0 && row_exists(self.journal, "attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
+            i = i + 1;
+        }
+    }
+    fn report_count() -> Int { return self.pending_reports.len(); }
+    fn report_at(i: Int) -> AttemptReport { return self.pending_reports.get(i) or AttemptReport { }; }
+    fn release_report(i: Int) { self.pending_reports.set(i, AttemptReport { }) or discard; }
+    fn retried() { self.reports_retried = self.reports_retried + 1; }
+    // ---- edits (card 15)
+    fn edit_reported() { self.edits_reported = self.edits_reported + 1; }
+    // Whether an attempt is already waiting here.
+    @unbounded
+    fn waiting(attempt_id: String) -> Bool {
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let e = self.waiting_edits.get(i) or EditAsk { };
+            if e.attempt_id == attempt_id { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // An edit attempt waiting on its review's outcome, once.
+    @unbounded
+    fn wait(e: EditAsk) { if !self.waiting(e.attempt_id) { self.waiting_edits.push(e); } }
+    // How many attempts wait here (the form keeps released slots).
+    @unbounded
+    fn waiting_held() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let e = self.waiting_edits.get(i) or EditAsk { };
+            if len(e.attempt_id) > 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn waiting_count() -> Int { return self.waiting_edits.len(); }
+    fn waiting_at(i: Int) -> EditAsk { return self.waiting_edits.get(i) or EditAsk { }; }
+    fn waited(i: Int) { self.waiting_edits.set(i, EditAsk { }) or discard; }
+    // An edit attempt whose Mutation's request row the record refused,
+    // held for `redrive`.
+    @unbounded
+    fn hold(e: EditAsk) { self.held_edits.push(e); }
+    fn held_count() -> Int { return self.held_edits.len(); }
+    // The held edit at `k`, taken from the held.
+    fn take_held(k: Int) -> EditAsk {
+        let e = self.held_edits.get(k) or EditAsk { };
+        if len(e.attempt_id) > 0 { self.held_edits.set(k, EditAsk { }) or discard; }
+        return e;
+    }
+    // ---- a leg's lease and outcome (GH #946)
+    // ---- GH #946 slice 3: a leg's outcome, through the head ---------------
+    // The latest `attempt.claimed` row of an attempt: who holds the lease,
+    // its token and until when (0 when none was taken).
+    @unbounded
+    fn claim_of(attempt_id: String) -> Lease {
+        let c = recorded_leg_claim(self.journal, attempt_id, self.journal.revision());
+        return Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
+    }
+    // Whether this submission's request was refused already (a relay
+    // after a lost publish is answered once).
+    @unbounded
+    fn answered(s: WorkSubmission) -> Bool {
+        if len(s.request) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.outcome_refused" && e.entity == s.attempt_id && request_named(e.body) == s.request { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // An outcome a leg handed back, refused: a row naming why and the
+    // request it answers, counted.
+    @unbounded
+    fn refuse(s: WorkSubmission, why: String) {
+        self.submissions_refused = self.submissions_refused + 1;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("why", why);
+        b.string_field("holder", s.holder);
+        b.int_field("token", s.token);
+        b.string_field("request", s.request);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "attempt.outcome_refused", s.attempt_id, b.result());
+    }
+    // GH #946 hardening (D3): a leg's claim that expired with no outcome
+    // is asked again, once per lease — the attempt is redelivered pending,
+    // and a leg claims it anew. Nothing is asked of an attempt whose
+    // lease is live, or that has settled, or that another owner (`me` is
+    // this one) holds; a leg's attempt whose effect a person resolved is
+    // taken again at once. One `<attempt>\t<key>\t<resolved>\t<holder>\t
+    // <token>\t<expires>` line per attempt to ask again, which the
+    // assembly asks through its runtime, each in turn.
+    @unbounded
+    fn expired(now: Int, me: String) -> String {
+        let n = self.journal.revision();
+        // one pass: the attempts a leg ever claimed, and those since settled
+        let mut claimed = "";
+        let mut settled = "";
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.claimed" { claimed = set_add(claimed, e.entity); }
+            if e.kind == "attempt.outcome" { settled = set_add(settled, e.entity); }
+            i = i + 1;
+        }
+        let mut out = "";
+        let mut rest = claimed;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let attempt = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            if len(attempt) == 0 || set_has(settled, attempt) { continue; }
+            let c = recorded_leg_claim(self.journal, attempt, n);
+            let said = effect_result_body(self.journal, execution_key(attempt));
+            let resolved = len(said) > 0 && !std::str::starts_with(said, "unknown") && std::str::contains(said, "(resolved by ");
+            let key = if resolved { attempt + "@resolved" } else { attempt + "@" + to_string(c.token) };
+            if c.present && (resolved || c.expires <= now) && !set_has(self.reopened, key) {
+                let adm = recorded_attempt_admission(self.journal, attempt, n);
+                if adm.ok && owned_by(me, adm.value.task_id) {
+                    out = out + attempt + "\t" + key + "\t" + (if resolved { "1" } else { "0" }) + "\t" + c.holder + "\t" + to_string(c.token) + "\t" + to_string(c.expires) + "\n";
+                }
+            }
+        }
+        return out;
+    }
+    // A lease asked again: noted, so this incarnation asks it once; and,
+    // when it expired unsettled, a closure the owner absorbs, named in the
+    // record once per lease (GH #989).
+    @unbounded
+    fn reopening(attempt: String, key: String, resolved: Bool, holder: String, token: String, expires: String) {
+        self.reopened = set_add(self.reopened, key);
+        if !resolved {
+            let v = append_once(self.journal, VIOLATION_KIND, "lease_unsettled/" + key,
+                violation_body("lease_unsettled", attempt, "spine", "the lease " + holder + " held at token " + token + " expired at " + expires + " with no outcome; the attempt is asked again"));
+        }
+    }
+}
+
+// Edit attempts relayed from the workflow engine (card 15): the ones
+// waiting on a review's outcome, and the ones the record refused to
+// start, re-driven by `redrive`.
+@form(vec)
+locus EditAsks { capacity { heap rows of EditAsk; } }
+// Outcomes reported to the engine (card 15), kept until the record holds
+// the attempt's outcome: a report the record refused is put again when
+// the record resumes, or on `redrive` — never by editing again.
+@form(vec)
+locus Reports { capacity { heap rows of AttemptReport; } }

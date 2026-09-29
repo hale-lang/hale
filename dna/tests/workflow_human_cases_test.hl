@@ -326,10 +326,10 @@ main locus App {
         std::test::assert_eq_str(std::json::find_string_field(handed1, "assignee") + "|" + std::json::find_string_field(handed1, "obligation") + "|" + std::json::find_string_field(handed1, "work"), "mara|expense-approval|t1/wf1/s0/h1", "the handed row binds as a job's does today");
         let f1 = self.org.journal.refresh(); // the assembly reads fresh at its own entry points; the probe reads its view directly
         std::test::assert_eq_str(self.org.task_state("t1.s0.h1") + "|" + self.org.task_state("t1.s0.h2"), "handed|handed", "both cases stand handed");
-        std::test::assert_eq_str(self.org.case_of_attempt("t1/wf1/s0/h1/a0") + "|" + self.org.case_of_attempt("t1/wf1/s0/h2/a0"), "t1.s0.h1|t1.s0.h2", "each attempt has its own case");
+        std::test::assert_eq_str(self.org.cases.of_attempt("t1/wf1/s0/h1/a0") + "|" + self.org.cases.of_attempt("t1/wf1/s0/h2/a0"), "t1.s0.h1|t1.s0.h2", "each attempt has its own case");
         std::test::assert_eq_int(self.rows(j, "work.settled", "t1/wf1/s0/h1") + self.rows(j, "work.settled", "t1/wf1/s0/h2"), 0, "the hand-off settles no Work");
         std::test::assert_eq_int(self.rows(j, "workflow.settled", "t1") + self.rows(j, "task.done", "t1"), 0, "and marks the root nothing");
-        std::test::assert_eq_int(self.org.cases_admitted, 2, "the assembly admitted two");
+        std::test::assert_eq_int(self.org.cases.cases_admitted, 2, "the assembly admitted two");
         // repeated delivery: the attempt asked again admits no second case
         let rec = dna::decode_attempt(self.body_of(j, "attempt.admitted", "t1/wf1/s0/h1/a0"));
         std::test::assert(rec.ok, "h1's admitted attempt reads back");
@@ -412,7 +412,7 @@ main locus App {
         self.until_rows("case.admitted", "t5.s0.h2", 1);
         self.settle();
         std::test::assert_eq_int(self.rows(j, "task.handed", "t5.s0.h1") + self.rows(j, "task.handed", "t5.s0.h2"), 1, "one handed row was refused");
-        std::test::assert_eq_int(self.org.held_rows.len(), 1, "the case is held for the record's return");
+        std::test::assert_eq_int(self.org.cases.held_rows.len(), 1, "the case is held for the record's return");
         dna::RecordResumed <- dna::RecordResume { scope: "cases" };
         self.settle();
         std::test::assert_eq_int(self.rows(j, "task.handed", "t5.s0.h1") + self.rows(j, "task.handed", "t5.s0.h2"), 2, "the record's return completed the held hand-off");

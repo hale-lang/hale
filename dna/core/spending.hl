@@ -145,6 +145,7 @@ locus SpendRecord {
     }
     // A leg's ask for spend refused before the gate: its attempt, its lease
     // or memory's claim says no (`why`), a row naming the request.
+    @unbounded
     fn allowance_refused(a: WorkAllowance, why: String) {
         let b = std::json::Builder { };
         b.begin_object();
@@ -164,9 +165,9 @@ locus SpendRecord {
     // as stale, and the remainder is read again. The child's own window
     // counts its reservations; the ceiling's counts every child's under
     // it, so two children cannot each spend the same remainder.
-    @unbounded
     // `g` is the grant as it binds now (through the ceiling), `own` and
     // `above` the child's and the ceiling's own, as the assembly read them.
+    @unbounded
     fn reserve(s: Spend, g: Grant, own: Grant, above: Grant, child: String, parent: String, now: Int) -> Admission {
         let why = permits(g, s, now);
         if len(why) > 0 { return self.refuse(child, s, why); }
