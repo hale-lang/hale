@@ -9,5 +9,6 @@ pub(crate) mod fmt;
 pub(crate) mod help;
 pub(crate) mod init;
 pub(crate) mod model;
+pub(crate) mod replay;
 pub(crate) mod run;
 pub(crate) mod test;
