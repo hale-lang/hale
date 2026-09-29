@@ -27,12 +27,23 @@ allowed its consumer (`spine`, or over a shared record `spine_<owner>`;
 (`.hale/dna/org.log`) says which. The facts wait in the stream; they
 reach it once it connects.
 
-**`nerves.lost` in the history.** The stream stopped acknowledging the
+**A violation, `adapter_undeliverable`, in the history.** The stream stopped acknowledging the
 host's publishes — the server went away, or no stream takes the
 subject (`hale dna nerves migrate` makes it). The host stopped, gave
 its lease back and exited 75; its unit starts it again with a fresh
 connection, and every request still unanswered is published again.
 Under `hale dna dev` there is no unit: start it again yourself.
+
+**A violation, `lease_unsettled`.** A leg took an attempt and handed no
+outcome back before its lease expired: its process ended, or it hung.
+The owner recorded it once for that lease and asked the attempt again,
+so another leg, or the same one started again, takes it.
+
+**A violation, `pulse_stopped`.** The heart's pull on its durable was
+refused while the connection held: the durable, or its stream, was
+deleted. The spine recorded it once for the outage, made the durable
+again, and pulls on. If the stream itself is gone, `hale dna nerves
+migrate` makes it. `hale dna board` lists the latest violations.
 
 **`fetch origin: error: cannot lock ref 'refs/dna/remote/journal'`**
 from `sync`, `ledger adopt` or the host. Another git process kept the

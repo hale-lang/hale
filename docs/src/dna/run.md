@@ -234,7 +234,8 @@ state. Pressure is counted by source. The nerves are how the outside
 gets *in*; nothing about a decision lives in them. A fact the
 transport loses costs a relay, never the fact: the row is still
 unanswered, and the host publishes it again. When the stream stops
-acknowledging, the host writes `nerves.lost` and exits for its unit to
+acknowledging, the host records the violation (`violation.recorded`,
+`adapter_undeliverable`) and exits for its unit to
 start it again with a fresh connection. Over a shared record every
 owner's facts travel in a space of their own, so each organization
 hears only its owner's.

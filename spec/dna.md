@@ -1326,8 +1326,8 @@ repository:
   `delivery` closure. The violation collapses it to its owner, which
   does not restart the connection in place: the node starts again as a
   fresh process, its connection and its organization's both new. The
-  host appends `nerves.lost <holder>`
-  (`why`, `by`), stops its organization and the expression, gives the
+  host appends `violation.recorded` (`adapter_undeliverable`, subject
+  `nerves`, owner its holder, `detail` why), stops its organization and the expression, gives the
   body lease back (`body.released`, `why: nerves`) and exits
   `NODE_RESTART` (75, the genome pull's code: one restart code for the
   organism), and its unit (`Restart=always`, which restarts on any exit)
@@ -1483,7 +1483,7 @@ record's.
 | `model.called` | ledger | a model call and its evidence |
 | `optimize.refused` | ledger | the organization's pass over itself did not run |
 | `node.started` / `node.build_failed` | record | a node runs a genome, by its sha; a genome did not check or build, and the node stayed on the last that did (`sha`, `why`) |
-| `nerves.lost` | record | a node's connection to the nerves collapsed — a publish the stream did not acknowledge in its window (`why`, `by`); the node stops and exits 75 for its unit to start it again, and the next node relays every unanswered request again (GH #986) |
+| `violation.recorded` | record | a closure the organism absorbed (GH #989), recorded by the part that owns it, which goes on: `{kind, subject, owner, detail}`. `adapter_undeliverable`: a node's connection to the nerves collapsed, a publish the stream did not acknowledge in its window (subject `nerves`, owner the node's holder); the node stops and exits 75 for its unit to start it again. `lease_unsettled`: a leg's lease expired with no outcome (subject the attempt, owner `spine`), once per lease, before the attempt is asked again. `pulse_stopped`: the heart's pull on its durable refused while the connection held (subject `heart`, owner the spine's holder), once per outage; the durable is made again. The board shows the latest five |
 | `observation.requested` / `observation.refused` | record | the host's observation report as a row (`mutation_id`, `outcome`, `model_hash`, `detail`), relayed until `expression.observed` answers it; refused, unrelayed, when the row is not verified under `signed` trust (GH #986) |
 | `claim.taken` / `claim.released` | ledger | a node took a claim by id before acting — `plan/<intent>`, `plan/case:<case>` — and gave it back: `holder`, and for a take its `token` and `until` |
 | `attempt.claimed` | ledger | a leg's claim on an admitted, outstanding attempt, taken at the head (GH #946): the lease (`holder`, `token`, `until`), the principal that took it (`principal_mode`, `principal_name`: whose outcome the lease admits), the attempt's task, work and performer kind, and the command that took it |
