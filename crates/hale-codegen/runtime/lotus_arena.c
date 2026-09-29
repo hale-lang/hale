@@ -2345,12 +2345,13 @@ static void lotus_arena_oom(const char *what, const lotus_arena_t *a,
 #endif
 }
 
-/* Set on the cold path where the OS refused a chunk, read by the public
- * `lotus_arena_alloc` only when it is about to return NULL: the size of
- * the chunk that was refused (never 0 for a refusal). It is how the
- * wrapper, which alone knows its caller's address, tells "the OS said
- * no" from the contract NULLs above without the fast path paying for
- * the caller's address on every allocation. */
+/* Set on the cold path where the OS refused a chunk of a SHARED arena,
+ * read by `lotus_arena_alloc`'s locked branch when the bump returns
+ * NULL: the size of the chunk that was refused (never 0 for a refusal).
+ * A shared arena's abort has to wait until the lock is released, and
+ * only the wrapper holds the caller's address there, so the bump leaves
+ * the refusal here for it. An unshared arena never comes through this:
+ * the bump aborts itself (see below). */
 static __thread size_t lotus_arena_refused_chunk;
 
 /* Compute the offset within `c` that yields a pointer aligned to
@@ -2446,6 +2447,17 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
         }
         lotus_arena_chunk_t *fresh = lotus_arena_new_chunk_for(a, cap);
         if (!fresh) {
+            /* The OS refused the chunk. An unshared arena stops here, at
+             * the call that met the refusal: the wrapper tail-calls this
+             * function, so its return address is the ALLOCATION'S caller
+             * (an out-of-line cold path, so the fast path is the shape it
+             * had before the abort existed — a bare tail call, no result
+             * check). A shared arena is inside its lock and returns NULL
+             * for the wrapper to abort once the lock is released. */
+            if (__builtin_expect(!a->shared_concurrent, 1)) {
+                lotus_arena_oom("a chunk was refused", a, size, align, cap,
+                                __builtin_return_address(0));
+            }
             lotus_arena_refused_chunk = cap;
             return NULL;
         }
@@ -2478,23 +2490,22 @@ static void *lotus_arena_alloc_nolock(lotus_arena_t *a, size_t size, size_t alig
  * 32-bit but the declared param stays 64-bit). WASM plan. */
 LOTUS_HOT_ALIGN
 void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
-    void *p;
     if (a && a->shared_concurrent) {
         pthread_mutex_lock(&a->subregion_lock);
-        p = lotus_arena_alloc_nolock(a, size, align);
+        void *p = lotus_arena_alloc_nolock(a, size, align);
         pthread_mutex_unlock(&a->subregion_lock);
-    } else {
-        p = lotus_arena_alloc_nolock(a, size, align);
+        /* NULL is rare and mostly contractual (see the out-of-memory note
+         * above); only a chunk the OS refused is fatal, and for a shared
+         * arena it stops HERE, the lock released, this function's return
+         * address being the allocation's caller. */
+        if (__builtin_expect(p == NULL, 0) && lotus_arena_refused_chunk) {
+            lotus_arena_oom("a chunk was refused", a, (size_t)size,
+                            (size_t)align, lotus_arena_refused_chunk,
+                            __builtin_return_address(0));
+        }
+        return p;
     }
-    /* NULL is rare and mostly contractual (see the out-of-memory note
-     * above); only a chunk the OS refused is fatal, and it stops HERE
-     * — this function's return address is the allocation's caller. */
-    if (__builtin_expect(p == NULL, 0) && lotus_arena_refused_chunk) {
-        lotus_arena_oom("a chunk was refused", a, (size_t)size,
-                        (size_t)align, lotus_arena_refused_chunk,
-                        __builtin_return_address(0));
-    }
-    return p;
+    return lotus_arena_alloc_nolock(a, size, align);
 }
 
 /* Mark an arena as concurrently reachable: serializes the bump
