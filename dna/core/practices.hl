@@ -17,8 +17,6 @@ locus PracticeRecord {
         ratified_through: String = "\n"; // GH #995: the Reviews this incarnation has ratified through practice-ratify, never scanned for again
     }
     fn bind(j: Journal) { self.journal = j; }
-    // GH #682: a practice request relayed again after a lost publish is
-    // answered once
     // GH #682: whether a practice request already has its answer.
     @unbounded
     fn answered(request_id: String) -> Bool {
@@ -35,6 +33,7 @@ locus PracticeRecord {
     // A practice request's own rows: refused for want of a name and a text,
     // started once the body received it, proposed with the knowledge's
     // digest. Whether each is in the record.
+    @unbounded
     fn refused(r: PracticeRequest) -> Bool { return append_once(self.journal, "practice.refused", r.request_id, "a practice has a name and a text"); }
     @unbounded
     fn started(r: PracticeRequest) -> Bool {
