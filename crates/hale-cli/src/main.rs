@@ -28,6 +28,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+use shared::process::{dies_with_us, wait_passing_signals, RunScratch};
+use shared::stale::check_stale_cli;
+use shared::workspace::{
+    collect_seeds, find_workspace_root, sanitize_identifier, seed_dir_for_entry_file, seed_inputs,
+    top_decl_ident,
+};
 mod build_env;
 mod fleet;
 mod dna;
@@ -40,6 +46,7 @@ mod sign;
 mod topology_graph;
 mod fleet_model;
 mod topology_law;
+mod shared;
 
 /// GH #476 Change 2: did `hale model dump` ask for the canonical
 /// model? The command is a shim into the check pipeline, and the
@@ -2290,54 +2297,6 @@ impl AliasScopes {
     }
 }
 
-/// Walk upward from `start` looking for a `Cargo.toml`; the first
-/// directory containing one is treated as the workspace root.
-/// Used for the workspace-root fallback in import resolution.
-/// Returns `None` if no Cargo.toml is found before hitting the
-/// filesystem root (standalone-shipped binaries hit this — they
-/// can still use entry-relative imports, just not the
-/// workspace-fallback path).
-/// Walk up from `start` looking for a workspace anchor. Hale
-/// repos are anchored by `hale.toml`; hale's own dev tree
-/// is also a cargo workspace, so `Cargo.toml` works as a fallback
-/// anchor for compiler-side development. The first one found
-/// wins. The result is the directory containing the anchor.
-///
-/// 2026-05-22: anchor used as the basis for path-based mangling
-/// (`lib_canonical_id`). Two consumers in the same workspace
-/// importing the same lib produce identical mangled names
-/// because they compute the lib's path relative to the same
-/// root.
-/// `find_workspace_root` for sibling modules.
-pub(crate) fn find_workspace_root_pub(start: &Path) -> Option<PathBuf> {
-    find_workspace_root(start)
-}
-
-fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    // Canonicalize first so the walk-up traverses real ancestor
-    // directories regardless of whether `start` came in relative
-    // (e.g., `hale build apps/a/main.hl` from the repo root).
-    // Without this, relative paths walk `apps/a/main.hl` →
-    // `apps/a` → `apps` → "" and never reach the actual
-    // workspace root containing the hale.toml.
-    let canon = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-    let mut cur = if canon.is_file() {
-        canon.parent()?.to_path_buf()
-    } else {
-        canon
-    };
-    loop {
-        if cur.join("hale.toml").is_file() || cur.join("Cargo.toml").is_file()
-        {
-            return Some(cur);
-        }
-        cur = match cur.parent() {
-            Some(p) => p.to_path_buf(),
-            None => return None,
-        };
-    }
-}
-
 /// What an `import "path" as alias;` resolved to on disk.
 enum ImportTarget {
     /// `<importer_dir>/<path>.hl` (single-file lib).
@@ -2402,73 +2361,6 @@ fn lib_canonical_id(target: &ImportTarget, workspace_root: Option<&Path>) -> Str
     sanitize_identifier(basis_str)
 }
 
-fn sanitize_identifier(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    // Collapse runs of underscores so deeply-nested paths don't
-    // produce eye-watering `___` sequences in symbol names.
-    let mut collapsed = String::with_capacity(out.len());
-    let mut prev_underscore = false;
-    for ch in out.chars() {
-        if ch == '_' {
-            if !prev_underscore {
-                collapsed.push('_');
-            }
-            prev_underscore = true;
-        } else {
-            collapsed.push(ch);
-            prev_underscore = false;
-        }
-    }
-    collapsed.trim_matches('_').to_string()
-}
-
-/// GH #763: `<dir>/main.hl` and `<dir>` name the SAME library.
-///
-/// A seed is a directory (F.19): every `.hl` file in it shares one
-/// declaration namespace, and `main.hl` is that seed's entry file,
-/// not a library of its own. So `import "../lib/main"` names the
-/// seed `../lib`, exactly as `import "../lib"` does, and this
-/// collapses the first spelling onto the second before anything
-/// downstream derives an identity from the target.
-///
-/// Without the collapse the two spellings produced two library
-/// identities — two `lib_key`s in `resolve_imports`, two `lib_id`s
-/// in `lib_canonical_id`, two sets of mangled symbols. The `visited`
-/// set is global across the build, so whichever spelling resolved
-/// second found every file already parsed, registered no rename rows
-/// under its own key, and its `alias::Name` references died at
-/// codegen as `unknown qualified name` while the other alias worked.
-///
-/// Any OTHER single file stays its own library: rule 1 of the
-/// resolution order (spec `projects.md`) is a real single-file
-/// library, and only the `main.hl` entry spelling is a second name
-/// for the directory around it.
-///
-/// `import "main"` from inside the directory itself is left alone —
-/// collapsing it would make a seed import itself.
-fn seed_dir_for_entry_file(single: &Path, importer_dir: &Path) -> Option<PathBuf> {
-    if single.file_name().and_then(|s| s.to_str()) != Some("main.hl") {
-        return None;
-    }
-    let dir = single.parent()?;
-    if !dir.is_dir() {
-        return None;
-    }
-    let canon_dir = dir.canonicalize().ok()?;
-    let canon_importer = importer_dir.canonicalize().ok()?;
-    if canon_dir == canon_importer {
-        return None;
-    }
-    Some(dir.to_path_buf())
-}
-
 fn resolve_import(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
@@ -2493,56 +2385,6 @@ fn resolve_import(
         }
     }
     None
-}
-
-/// Collect every `.hl` file at an import target. SingleFile
-/// resolves to one path; Directory enumerates the dir, sorting
-/// alphabetically for deterministic merge order (mirrors the
-/// per-dir seed convention from F.19).
-/// The transitive input set of a seed: its own `.hl` files and those
-/// of every imported directory; the `hale.toml` of every such
-/// directory when it has one, and every C source that manifest
-/// declares under `[ffi] csrc`, exactly as the native build adds them
-/// (a declared source is an input whether or not it exists yet — the
-/// build reads it and fails on it). Canonical, sorted, each once. A
-/// file that does not parse is still an input; only its imports go
-/// unfollowed.
-fn seed_inputs(target: &Path) -> Result<Vec<PathBuf>, String> {
-    let workspace_root = find_workspace_root(target);
-    let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-    let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-    let mut queue: Vec<PathBuf> = collect_ap_files(target)?;
-    while let Some(f) = queue.pop() {
-        let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
-        if !seen.insert(canon.clone()) {
-            continue;
-        }
-        let dir = canon.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        dirs.insert(dir.clone());
-        let Ok(src) = fs::read_to_string(&canon) else { continue };
-        let Ok(program) = hale_syntax::parse_source(&src) else { continue };
-        for imp in &program.imports {
-            if let Some(t) = resolve_import(&dir, workspace_root.as_deref(), &imp.path) {
-                if let Ok(files) = collect_target_files(&t) {
-                    queue.extend(files);
-                }
-            }
-        }
-    }
-    for dir in dirs {
-        let manifest = dir.join("hale.toml");
-        if !manifest.is_file() {
-            continue;
-        }
-        seen.insert(manifest.canonicalize().unwrap_or(manifest));
-        if let Ok(Some(ffi)) = crate::pkg::read_lib_ffi(&dir) {
-            for csrc in ffi.csrc {
-                let p = dir.join(csrc);
-                seen.insert(p.canonicalize().unwrap_or(p));
-            }
-        }
-    }
-    Ok(seen.into_iter().collect())
 }
 
 fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
@@ -3894,28 +3736,6 @@ fn collect_qualified_uses(
             text: format!("{}::{}", head, next),
             span: place(t.span.merge(seg.span)),
         });
-    }
-}
-
-/// The name a top-level decl introduces. Mirrors the mangler's
-/// private `top_decl_name`; used only for the "a path head may name
-/// this seed's own declaration" exemption below, where a miss costs
-/// an exemption and never a false finding.
-fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
-    use hale_syntax::ast::TopDecl as T;
-    match d {
-        T::Locus(l) => Some(&l.name.name),
-        T::Perspective(p) => Some(&p.name.name),
-        T::Type(t) => Some(&t.name.name),
-        T::Const(c) => Some(&c.name.name),
-        T::Fn(f) => Some(&f.name.name),
-        T::Interface(i) => Some(&i.name.name),
-        T::Topic(t) => Some(&t.name.name),
-        T::RingLayout(r) => Some(&r.name.name),
-        T::Target(t) => Some(&t.name.name),
-        T::Group(g) => Some(&g.name.name),
-        T::Role(r) => Some(&r.name.name),
-        T::Module(_) | T::Claims(_) | T::Constitution(_) => None,
     }
 }
 
@@ -5361,40 +5181,6 @@ fn main() {
         println!("    hale check {}    # typecheck + analyze", root.display());
     }
     ExitCode::SUCCESS
-}
-
-/// Every SEED under `root`: a directory holding one or more `.hl`
-/// files directly. `check` operates on one seed and does not recurse
-/// — correctly, since a directory is one compilation unit — so a
-/// repository with many seeds needs something to enumerate them.
-///
-/// Skips `vendor` and dot-directories, matching `hale fmt`'s walk,
-/// plus `target`. A seed you do not own is not yours to gate.
-fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else { return };
-    let mut has_hl = false;
-    let mut subdirs: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let p = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if p.is_dir() {
-            if name == "vendor" || name == "target" || name.starts_with('.')
-            {
-                continue;
-            }
-            subdirs.push(p);
-        } else if name.ends_with(".hl") {
-            has_hl = true;
-        }
-    }
-    if has_hl {
-        out.push(root.to_path_buf());
-    }
-    subdirs.sort();
-    for d in subdirs {
-        collect_seeds(&d, out);
-    }
 }
 
 /// A `--flag value` / `--flag=value` reader over an explicit argv
@@ -7111,184 +6897,6 @@ fn render_diag_json(
         &message,
         &related,
     )
-}
-
-/// Bind a child's life to ours (GH #905).
-///
-/// `hale run` is a foreground wrapper: the program it compiled, the
-/// iris session `--observe` puts beside it, the `hale build` that
-/// materializes the observer, fuse-hl under `hale iris`. None of them
-/// has a reason to outlive the `hale` that asked for it, and when one
-/// does it is not merely a stray — it inherited our descriptors, so a
-/// caller reading our stdout through a pipe waits on the orphan's copy
-/// of the write end long after we are gone. `timeout`, a CI cancel or
-/// any SIGKILL aimed at `hale` used to leave exactly that: a hung
-/// caller and a process nobody knows to kill.
-///
-/// Two layers, neither of which the child has to cooperate with:
-///
-///   * `PR_SET_PDEATHSIG` — the kernel signals the child the moment
-///     the thread that forked it dies, whatever killed us, SIGKILL
-///     included. The `getppid` check closes the window where we die
-///     between the fork and the `prctl`, in which the setting would
-///     be armed against a death that already happened. It compares
-///     against OUR pid rather than testing for pid 1, so a `hale`
-///     legitimately parented by an init in a container is not read
-///     as an orphan.
-///   * the process GROUP, which we deliberately leave alone: no
-///     `setsid`, no `setpgid`, so a group-directed kill (a shell's
-///     Ctrl-C, `timeout` without `--foreground`) reaches the child
-///     the same way it reaches us.
-///
-/// Every caller waits on the child it starts on the thread that
-/// started it, so the forking thread cannot exit early and retire
-/// the signal under a child that should still be running.
-/// The pid `hale run`'s SIGTERM handler forwards to (GH #1039).
-static RUN_CHILD_PID: std::sync::atomic::AtomicI32 =
-    std::sync::atomic::AtomicI32::new(0);
-
-extern "C" fn forward_to_run_child(sig: libc::c_int) {
-    let pid = RUN_CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
-    if pid > 0 {
-        // SAFETY: kill(2) is async-signal-safe.
-        unsafe {
-            libc::kill(pid, sig);
-        }
-    }
-}
-
-/// Spawn `cmd` and wait for it, standing aside for its signals (GH
-/// #1039). The program drains on SIGINT / SIGTERM, so `hale run` must
-/// not end first and leave it orphaned mid-drain:
-///
-/// * **SIGINT is ignored.** A terminal's Ctrl-C reaches the whole
-///   foreground process group, the program included; `hale` just
-///   keeps waiting and reports how the drain ended.
-/// * **SIGTERM is forwarded.** A `kill` names `hale`'s pid only, so
-///   the program would never hear it; the handler passes it on, and
-///   `hale` keeps waiting.
-///
-/// Both dispositions change only AFTER the spawn — an ignored SIGINT
-/// is inherited across exec, and the program must get the default —
-/// and are restored once the program has ended.
-fn wait_passing_signals(
-    cmd: &mut std::process::Command,
-) -> std::io::Result<std::process::ExitStatus> {
-    let mut child = cmd.spawn()?;
-    RUN_CHILD_PID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
-    // SAFETY: plain sigaction(2) calls; the handler only calls kill.
-    let (old_int, old_term) = unsafe {
-        let mut ign: libc::sigaction = std::mem::zeroed();
-        ign.sa_sigaction = libc::SIG_IGN;
-        libc::sigemptyset(&mut ign.sa_mask);
-        let mut fwd: libc::sigaction = std::mem::zeroed();
-        fwd.sa_sigaction = forward_to_run_child as extern "C" fn(libc::c_int) as usize;
-        libc::sigemptyset(&mut fwd.sa_mask);
-        fwd.sa_flags = libc::SA_RESTART;
-        let mut old_int: libc::sigaction = std::mem::zeroed();
-        let mut old_term: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(libc::SIGINT, &ign, &mut old_int);
-        libc::sigaction(libc::SIGTERM, &fwd, &mut old_term);
-        (old_int, old_term)
-    };
-    let status = child.wait();
-    // SAFETY: restoring the dispositions saved above.
-    unsafe {
-        libc::sigaction(libc::SIGINT, &old_int, std::ptr::null_mut());
-        libc::sigaction(libc::SIGTERM, &old_term, std::ptr::null_mut());
-    }
-    RUN_CHILD_PID.store(0, std::sync::atomic::Ordering::SeqCst);
-    status
-}
-
-/// A private directory for what one `hale run` / `test` / `replay` /
-/// `bench` compiles: the binary, the object files codegen writes
-/// beside it, a replay's status and verification files. Made under
-/// the temp directory with mode 0700 and a name nobody else can have
-/// picked (`create_dir` fails on an existing path, symlink included,
-/// and the name is retried), and removed with everything in it when
-/// the guard drops — on every return, not only the one that
-/// remembered to `remove_file`.
-///
-/// It replaces `temp_dir()/hale_run_<hash>` and its siblings: a name
-/// derived from the program, in a directory every user of the box
-/// can write to, is a path another process can pre-create or race.
-struct RunScratch {
-    dir: PathBuf,
-}
-
-impl RunScratch {
-    fn new(tag: &str) -> Result<RunScratch, String> {
-        use std::os::unix::fs::DirBuilderExt;
-        static NONCE: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let base = std::env::temp_dir();
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let mut last = None;
-        for _ in 0..32 {
-            let n = NONCE.fetch_add(1, Ordering::Relaxed);
-            let dir = base.join(format!(
-                "hale-{tag}-{}-{n}-{stamp:08x}",
-                std::process::id()
-            ));
-            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-                Ok(()) => return Ok(RunScratch { dir }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    last = Some(e);
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "cannot make a scratch directory under {}: {e}",
-                        base.display()
-                    ));
-                }
-            }
-        }
-        Err(format!(
-            "cannot make a scratch directory under {}: {}",
-            base.display(),
-            last.map(|e| e.to_string()).unwrap_or_default()
-        ))
-    }
-
-    fn path(&self, name: &str) -> PathBuf {
-        self.dir.join(name)
-    }
-}
-
-impl Drop for RunScratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-pub(crate) fn dies_with_us(cmd: &mut std::process::Command) {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt;
-        let us = std::process::id() as libc::pid_t;
-        // SAFETY: the closure runs between fork and exec in the
-        // child. `prctl`, `getppid` and `_exit` are async-signal-safe
-        // and allocate nothing.
-        unsafe {
-            cmd.pre_exec(move || {
-                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if libc::getppid() != us {
-                    libc::_exit(0);
-                }
-                Ok(())
-            });
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = cmd;
-    }
 }
 
 /// Compile `program` to a temporary native binary and execute it,
@@ -9916,131 +9524,6 @@ where
     };
     Some(merged)
 }
-
-/// Phase 2i: warn when the CLI binary's bundled codegen + runtime
-/// source snapshots are stale relative to the workspace's on-disk
-/// source. Both the baked-in hash (set at build time by
-/// `build.rs`) and the runtime-recomputed hash use the same
-/// algorithm — DefaultHasher over each file's bytes, salted with
-/// the relative path — so they match exactly when the on-disk
-/// tree is the one the binary was built against.
-///
-/// Skipped silently when:
-///  - `HALE_SKIP_STALE_CHECK=1` is set,
-///  - the baked codegen directory doesn't exist on this host
-///    (installed binary, moved workspace),
-///  - `build.rs` couldn't locate the workspace at build time
-///    (the env vars are empty).
-fn check_stale_cli() {
-    if env::var_os("HALE_SKIP_STALE_CHECK")
-        .filter(|v| !v.is_empty() && v != "0")
-        .is_some()
-    {
-        return;
-    }
-    let baked_hash = env!("HALE_CODEGEN_SRC_HASH");
-    let baked_dir = env!("HALE_CODEGEN_DIR");
-    if baked_hash.is_empty() || baked_dir.is_empty() {
-        return;
-    }
-    let codegen_dir = Path::new(baked_dir);
-    if !codegen_dir.exists() {
-        return;
-    }
-    check_stale_dna(codegen_dir);
-    let current = compute_codegen_src_hash(codegen_dir);
-    if current != baked_hash {
-        eprintln!(
-            "warning: hale CLI binary was built against an older \
-             codegen+runtime source tree."
-        );
-        eprintln!(
-            "         {} has changed since the CLI was built; the \
-             emitted binary may use stale lowering.",
-            codegen_dir.display()
-        );
-        eprintln!(
-            "         Rebuild with: cargo build -p hale-cli"
-        );
-        eprintln!(
-            "         (Set HALE_SKIP_STALE_CHECK=1 to silence \
-             this warning.)"
-        );
-    }
-}
-
-/// GH #785: the same warning for the DNA source set. `hale dna new`,
-/// `init` and `upgrade` materialize the `dna/` the binary EMBEDS
-/// (`hale_dna::EMBEDDED_DIGEST`, GH #726), and every organism a
-/// fixture starts runs that core — so a `dna/core` edited after the
-/// last build runs nowhere, and nothing said so until `hale dna
-/// status` was asked. The tree digested is the workspace the binary
-/// was built from (the codegen dir's workspace), or the one
-/// `HALE_STALE_DNA_ROOT` names — the regression test's way to hand
-/// the check a tree it may edit.
-fn check_stale_dna(codegen_dir: &Path) {
-    let root = match env::var_os("HALE_STALE_DNA_ROOT").filter(|v| !v.is_empty()) {
-        Some(v) => PathBuf::from(v),
-        None => match codegen_dir.parent().and_then(|p| p.parent()) {
-            Some(r) => r.to_path_buf(),
-            None => return,
-        },
-    };
-    if !root.join("dna").is_dir() {
-        return;
-    }
-    let Ok(current) = hale_dna::digest_of_tree(&root) else {
-        return;
-    };
-    if current != hale_dna::EMBEDDED_DIGEST {
-        eprintln!(
-            "warning: hale CLI binary embeds an older dna/ source set."
-        );
-        eprintln!(
-            "         {} has changed since the CLI was built; `hale dna \
-             new`, `init` and `upgrade` materialize what the binary \
-             carries, and an organism a fixture starts runs that.",
-            root.join("dna").display()
-        );
-        eprintln!("         Rebuild with: cargo build --release");
-        eprintln!(
-            "         (Set HALE_SKIP_STALE_CHECK=1 to silence this \
-             warning.)"
-        );
-    }
-}
-
-fn compute_codegen_src_hash(codegen_dir: &Path) -> String {
-    let mut paths: Vec<PathBuf> = vec![
-        codegen_dir.join("src").join("codegen.rs"),
-        codegen_dir.join("runtime").join("lotus_arena.c"),
-    ];
-    let stdlib_dir = codegen_dir.join("runtime").join("stdlib");
-    if let Ok(entries) = fs::read_dir(&stdlib_dir) {
-        let mut stdlib_files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    == Some("hl")
-            })
-            .map(|e| e.path())
-            .collect();
-        stdlib_files.sort();
-        paths.extend(stdlib_files);
-    }
-    let mut hasher = DefaultHasher::new();
-    for path in &paths {
-        if let Ok(bytes) = fs::read(path) {
-            hasher.write(path.to_string_lossy().as_bytes());
-            hasher.write(&[0u8]);
-            hasher.write(&bytes);
-        }
-    }
-    format!("{:016x}", hasher.finish())
-}
-
 
 /// GH #265: minimal line diff for the effect-manifest gate — enough
 /// to show WHICH fn's effects changed without pulling in a diff

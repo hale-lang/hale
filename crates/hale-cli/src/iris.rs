@@ -69,7 +69,7 @@ pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) ->
     eprintln!("hale iris: building {what} ({} @ {})", seed, root.display());
     let mut build = Command::new(&me);
     build.arg("build").arg(root.join(seed)).stdin(Stdio::null()).stdout(Stdio::null());
-    crate::dies_with_us(&mut build);
+    crate::shared::process::dies_with_us(&mut build);
     let status = build.status().map_err(|e| format!("hale iris: build failed to start: {e}"))?;
     if !status.success() {
         return Err(format!("hale iris: building {} failed ({status})", seed));
@@ -119,7 +119,7 @@ fn exec(bin: &Path, args: &[String], observer: bool) -> ExitCode {
     // what `hale run --observe` does when the program ends, and what
     // a parent-death signal does when it is killed) left fuse-hl
     // running and holding every descriptor it inherited — GH #905.
-    crate::dies_with_us(&mut cmd);
+    crate::shared::process::dies_with_us(&mut cmd);
     let name = bin.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
     match cmd.status() {
         // Every way out says why (GH #578): a child killed by a signal
@@ -297,7 +297,7 @@ fn write_pair_diff(a: &str, b: &str) -> Result<String, String> {
 ///
 /// The session is strictly ancillary to the run, so (GH #905):
 ///
-///   * it does not outlive us — see [`crate::dies_with_us`];
+///   * it does not outlive us — see [`crate::shared::process::dies_with_us`];
 ///   * it does not write to OUR stdout. The program's stdout is the
 ///     command's output, and a caller consuming it through a pipe
 ///     must see EOF when we exit. An observer sharing that
@@ -312,7 +312,7 @@ pub fn spawn_session() -> Option<std::process::Child> {
     let me = std::env::current_exe().ok()?;
     let mut cmd = Command::new(me);
     cmd.arg("iris").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    crate::dies_with_us(&mut cmd);
+    crate::shared::process::dies_with_us(&mut cmd);
     match cmd.spawn() {
         Ok(mut c) => {
             if let Some(out) = c.stdout.take() {
