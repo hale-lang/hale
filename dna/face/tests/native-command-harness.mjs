@@ -291,6 +291,12 @@ export async function startService(options = {}) {
   // Stable means unchanged for longer than one host tick (HOST_TICK, 1 s):
   // a request row the host has yet to relay moves the Record again on the
   // next tick, and a shorter window fits between two.
+  // Memory answering is not the end of it: work that waits for memory's
+  // projection runs on the host's next tick once it has caught up (the
+  // bootstrap practice-ratify's `hat` step writes `practice.read` through
+  // `workflow.settled`), so quiet is a whole stable window after memory
+  // first answers. A page opened sooner reads while those rows land, is
+  // answered `snapshot_changed` twice, and stays on "Record is changing".
   async function stableHead() {
     let head = journal().head, since = Date.now();
     await wait('stable Record', async () => { await delay(100); const next = journal().head; if (next !== head) { head = next; since = Date.now(); } return Date.now() - since; }, quiet => quiet >= 1500);
@@ -303,8 +309,9 @@ export async function startService(options = {}) {
       const head = await stableHead();
       if (!alive(api) || !alive(host) || host.paused) return;
       await wait('Knowledge projection at the Record head', () => get(apiPath() + '/dna/knowledge/nodes?limit=1'), result => !projecting(result), 30_000);
-      if (journal().head === head) return;
-      // the record moved while memory caught up: once more, bounded — a
+      if (await stableHead() === head) return;
+      // the record moved while memory caught up, or in the window after it
+      // first answered: once more, bounded — a
       // record that never settles is a finding, not a quiet return
       assert(round < 4, `The Record did not settle in five rounds: ${previous} then ${head}, now ${journal().head}`);
       previous = head;

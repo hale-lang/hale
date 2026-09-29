@@ -112,17 +112,10 @@ async function approve(page, service, proposal, activation = 'adopted') {
   return native;
 }
 async function openObserved(page, service, id, retiring = false) {
-  // The activation the organism adopts lands on a tick after the verdict's,
-  // and the page reads the graph once: reload until the receipt observes it.
+  // `approve` waited for the activation in the record, and a quiet Record
+  // shows it on the first read: the page is opened once.
   const observed = retiring ? 'Retirement observed' : 'Adoption observed';
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    await service.quiesce(); await page.goto(service.url('knowledge', { id }));
-    const seen = receipt(page).filter({ hasText: observed });
-    await seen.waitFor({ timeout: 8_000 }).catch(() => {});
-    if (await seen.count() || Date.now() >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
+  await service.quiesce(); await page.goto(service.url('knowledge', { id }));
   await expect(receipt(page)).toContainText(observed);
   await expect(detail(page)).toContainText(id);
 }

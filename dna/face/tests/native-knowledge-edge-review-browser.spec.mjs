@@ -38,18 +38,11 @@ async function reviewDraft(page, button = 'Review knowledge draft') {
   await expect(editor(page).getByRole('status')).toContainText('Draft reviewed against the current visible snapshot');
 }
 async function prepare(page, service, { other = service.practice, edge = null, rel = label } = {}) {
-  // The page reads the graph once, and on the real host the record moves on
-  // the host's tick: a read the head answers snapshot_changed or
-  // knowledge_projection_unavailable leaves the map empty. Reload until it
-  // is there, bounded.
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    await service.quiesce(); await page.goto(service.url('knowledge', { id: service.practice }));
-    const add = map(page).getByRole('button', { name: 'Add relationship', exact: true });
-    await add.waitFor({ timeout: 8_000 }).catch(() => {});
-    if (await add.count() || Date.now() >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
+  // The page reads the graph once: a read the head answers
+  // snapshot_changed or knowledge_projection_unavailable leaves the map
+  // empty. `quiesce` waits until neither can happen, and the page is
+  // opened once.
+  await service.quiesce(); await page.goto(service.url('knowledge', { id: service.practice }));
   if (edge) {
     await map(page).getByRole('button', { name: 'Inspect relationship ' + edge.id, exact: true }).click();
     await map(page).getByRole('button', { name: 'Remove this relationship', exact: true }).click();
