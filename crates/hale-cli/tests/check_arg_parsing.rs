@@ -247,6 +247,79 @@ fn every_subcommand_answers_help() {
     let _ = std::fs::remove_dir_all(scratch_dir("every"));
 }
 
+/// Every `hale dna` verb `dna::run` dispatches.
+const DNA_VERBS: &[&str] = &[
+    "init", "new", "upgrade", "memory", "nerves", "senses", "run", "dev",
+    "plan-of", "status", "task", "retire", "effect", "show", "route", "fill",
+    "history", "body", "secret", "secrets", "application", "schedule",
+    "receipt", "connect", "practice", "disconnect", "handoff", "profile",
+    "sync", "candidates", "ledger", "board", "report", "pressure", "concern",
+    "github", "fleet", "ui", "models", "work", "definitions", "deploy",
+    "rollback", "review",
+];
+
+/// `hale dna <verb> --help` answers with the usage and starts nothing.
+/// `dev` read the flag as its project directory and brought the seed's
+/// compose up (a scratch project ran it for 20 s), so each verb runs in
+/// an empty directory under a deadline, and the directory must still be
+/// empty afterwards: nothing scaffolded, nothing started.
+#[test]
+fn every_dna_verb_answers_help_without_side_effects() {
+    let dir = scratch_dir("dna_verbs");
+    // a vault of the test's own beside the directory it checks (the
+    // directory itself must stay empty), so no verb could reach the
+    // developer's even if it did run
+    let vault = scratch_dir("dna_verbs_vault");
+    let _ = std::fs::remove_dir_all(&vault);
+    std::fs::create_dir_all(&vault).expect("vault dir");
+    for verb in DNA_VERBS {
+        for flag in ["--help", "-h"] {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hale"))
+                .args(["dna", verb, flag])
+                .env("HALE_VAULT_DIR", &vault)
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("run hale");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let status = loop {
+                match child.try_wait().expect("wait") {
+                    Some(s) => break Some(s),
+                    None if std::time::Instant::now() > deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                    None => std::thread::sleep(std::time::Duration::from_millis(20)),
+                }
+            };
+            let out = child.wait_with_output().expect("output");
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let status = status.unwrap_or_else(|| {
+                panic!("`hale dna {verb} {flag}` did not return in 15 s — it ran the verb: {text}")
+            });
+            assert!(status.success(), "`hale dna {verb} {flag}`: {status:?}\n{text}");
+            assert!(text.contains("usage: hale dna"), "`hale dna {verb} {flag}` prints the usage: {text}");
+            let left: Vec<_> = std::fs::read_dir(&dir)
+                .expect("read scratch")
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(left.is_empty(), "`hale dna {verb} {flag}` wrote {left:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&vault);
+}
+
 /// The reported symptom, and the second half of the ask: the usage
 /// is the place the output path is stated — where it lands by
 /// default, and that `-o` names it exactly.
