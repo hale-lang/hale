@@ -94,19 +94,18 @@ fn load_greeting() -> String fallible(...) {
 }
 ```
 
-## The bare form, and `--strict-fallible`
+## The bare form is an error
 
-A stdlib function that can fail may be called with no `or` at all:
+A stdlib function that can fail must be called with an `or`:
 
 ```hale,fragment
-std::io::fs::write_file(path, text);          // says nothing about failure
-let r: Int = std::io::fs::write_file(path, text);   // the legacy Int status
+std::io::fs::write_file(path, text);                // ERROR: says nothing about failure
+let r: Int = std::io::fs::write_file(path, text);   // ERROR: the legacy Int status
 ```
 
-That is the **legacy form**: the call yields its success value, or an
-Int status for a write, and a failure goes unaddressed. `hale check`
-now warns on every such call, naming the function, what it can fail
-with, and the four ways to say what should happen. Say it:
+Since v0.22.0 the compiler refuses every such call in `hale check`,
+`hale verify` and `hale build`, naming the function, what it can fail
+with, and the four ways to say what should happen:
 
 ```hale,fragment
 std::io::fs::write_file(path, text) or raise;      // propagate
@@ -115,11 +114,14 @@ let text = std::io::fs::read_file(path) or "";     // substitute
 let n = std::str::parse_int(s) or handler(err);    // handle
 ```
 
-`or discard` is the honest spelling of "I do not care": it is silent,
-where the bare call is a warning. `hale check --strict-fallible` makes
-the warning an error, and `hale verify` already fails on it, since it
-fails on every advisory. Without the flag, the bare form still builds
-exactly as it did.
+**Migrating.** Pick the disposition per site: `or raise` where the
+caller can act on the failure, `or <fallback>` where a default is
+right, `or handler(err)` where several sites share a policy, and
+`or discard` only where ignoring the failure is the intent. A code
+that read the legacy Int status (`let r: Int = write_file(..)`)
+moves the call into a `fallible` helper that `or raise`s and takes
+the status from its caller's `or`. The `--strict-fallible` flag is
+removed; drop it from scripts.
 
 ## Chaining
 

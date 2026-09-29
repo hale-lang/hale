@@ -463,7 +463,6 @@ pub(crate) fn check_usage(verify: bool) {
     println!("Advisories:");
     println!("  --warn-resource-leak            enable the resource-leak lint");
     println!("  --strict-secret                 fail-closed `@secret` containment check");
-    println!("  --strict-fallible               a bare fallible stdlib call is an error, not a warning");
     println!("  --sealable                      report which loci could be `@sealed`");
     println!("  --flows                         report which locus types are flows, and the");
     println!("                                 `release(c: T)` clause(s) that make each one");

@@ -603,7 +603,7 @@ crates/hale-codegen/tests/fixtures/examples/fitter-applier-pair/shared.hl af67c9
 crates/hale-codegen/tests/fixtures/examples/hello-world/main.hl 3da7113b0fcd2386
 crates/hale-codegen/tests/fixtures/examples/http-hello/main.hl d0e3eb5ff17eba2c
 crates/hale-codegen/tests/fixtures/examples/interface-fallible.hl 1bdc2cecd449cc6a
-crates/hale-codegen/tests/fixtures/examples/io-demo/main.hl 2e55e671c01349f5
+crates/hale-codegen/tests/fixtures/examples/io-demo/main.hl 00552856b3ca6fa4
 crates/hale-codegen/tests/fixtures/examples/multi-file-seed/greet.hl 7be704260b632f4e
 crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl eb9e9d20ee149284
 crates/hale-codegen/tests/float_to_int_cast.rs#0 865d341109268295

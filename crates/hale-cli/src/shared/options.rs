@@ -81,7 +81,6 @@ pub(crate) const CHECK_FLAGS: &[(&str, bool)] = &[
     // GH #436
     ("--strict-secret", false),
     // GH #738
-    ("--strict-fallible", false),
     ("--sealable", false),
     // GH #736
     ("--flows", false),
