@@ -21,11 +21,17 @@ use std::time::{Duration, Instant};
 /// 20 ms for up to ten seconds. Panics naming the port when the
 /// listener never answers, so a dead child fails here and not as an
 /// empty response further on.
+///
+/// The port was drawn from the ephemeral range, which is where a
+/// connect's own local port comes from too, so a retry can land on
+/// local == peer and open a connection to itself before the child
+/// binds. That one is dropped and the loop goes on.
 pub fn connect_when_listening(port: u16) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => return stream,
+            Ok(stream) if stream.local_addr().ok() != stream.peer_addr().ok() => return stream,
+            Ok(_) => std::thread::sleep(Duration::from_millis(20)),
             Err(err) if Instant::now() >= deadline => {
                 panic!("nothing listened on 127.0.0.1:{port} within 10s: {err}")
             }

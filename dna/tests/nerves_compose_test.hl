@@ -152,7 +152,8 @@ main locus App {
         let reading = self.logged("the organization reads its facts from the nerves", 300, host);
         let asked = if reading { in_dir(self.app, toolchain() + "\ndna\ntask\ncreate\nsay hello to the nerves") } else { dna::RunResult { code: -1 } };
         // a schedule asked from the clone is answered over them too: the
-        // generated organization binds `dna::ScheduleRequested`
+        // organization's nerves connection hands every subject it pulls to
+        // its local topic, `dna::ScheduleRequested` among them, bound or not
         let declared = if reading { in_dir(self.app, toolchain() + "\ndna\nschedule\ndeclare\nnightly\n--every\n1h\n--definition\nask-person\n--convener\nleader\n--args\n{\"objective\": \"close the day\"}\n--as\nriley") } else { dna::RunResult { code: -1 } };
 
         // ---- the heart's pulse stops (GH #989): its durable deleted, as the
