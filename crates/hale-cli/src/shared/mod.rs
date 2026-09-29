@@ -3,6 +3,8 @@
 //! functions that keep their bodies; a verb reaches them by path.
 
 pub(crate) mod diag;
+pub(crate) mod frontend;
+pub(crate) mod imports;
 pub(crate) mod options;
 pub(crate) mod process;
 pub(crate) mod stale;
