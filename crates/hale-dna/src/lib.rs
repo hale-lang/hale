@@ -54,6 +54,7 @@ macro_rules! core {
 /// Every file of `dna/core`, in the order the repo lists them.
 pub const FILES: &[EmbeddedFile] = core![
     "assembly",
+    "attempts",
     "budget",
     "cases",
     "completion",

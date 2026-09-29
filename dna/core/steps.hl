@@ -21,6 +21,7 @@ locus StepRecord {
         return false;
     }
     // A step that did not report waits, once.
+    @unbounded
     fn wait(s: StepAsk) { if !self.waiting(s.attempt_id) { self.waiting_steps.push(s); } }
     fn count() -> Int { return self.waiting_steps.len(); }
     fn at(i: Int) -> StepAsk { return self.waiting_steps.get(i) or StepAsk { }; }

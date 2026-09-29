@@ -183,11 +183,6 @@ fn record_refused(out: String) -> Bool { return std::str::contains(out, ": refus
 // plan arrives.
 @form(vec)
 locus PendingAsks { capacity { heap rows of Intent; } }
-// Edit attempts relayed from the workflow engine (card 15): the ones
-// waiting on a review's outcome, and the ones the record refused to
-// start, re-driven by `redrive`.
-@form(vec)
-locus EditAsks { capacity { heap rows of EditAsk; } }
 
 // A step's outcome as its performer decides it: "done" or "failed" with
 // what it wrote, or no disposition — it waits, and is performed again.
@@ -228,11 +223,6 @@ fn verdict_by(body: String) -> String {
     if len(o) == 0 { return ""; }
     return body[(len(o) + 4)..len(body)];
 }
-// Outcomes reported to the engine (card 15), kept until the record holds
-// the attempt's outcome: a report the record refused is put again when
-// the record resumes, or on `redrive` — never by editing again.
-@form(vec)
-locus Reports { capacity { heap rows of AttemptReport; } }
 
 // The case a human Work's attempt is handed as (card 16): its own Task,
 // `<task>.s<i>.<key>` — the Work's step index and member key under its
@@ -301,7 +291,6 @@ locus Dna {
         executions: Executions = Executions { };
         minted: Int = 0; // durable Task ids continue from the record
         executions_asked: Int = 0; // roots started or resumed through `ExecutionAsked`
-        reopened: String = ""; // leg claims (`<attempt>@<token>`) this incarnation asked again after they expired (GH #946)
         executions_settled: Int = 0; // roots whose workflow settled, heard
         boundary: AutonomyBoundary = AutonomyBoundary { child: "app" };
         // GH #596, layering: the grant above the child's — the
@@ -363,17 +352,11 @@ locus Dna {
         claim_ttl: Int = 300;
         // GH #946 slice 3: what came back from legs through the head
         submissions_settled: Int = 0;
-        submissions_refused: Int = 0;
         claimed: Lease = Lease { }; // the claim this node took last
         pending_asks: PendingAsks = PendingAsks { }; // card 18: intents awaiting the leader's word before their admission
-        waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         memory_ready: Bool = false; // GH #995: memory's projection had caught up with the record's knowledge when last asked
         optimize_asked: String = "\n"; // GH #995: the optimize-walk Tasks whose walk this incarnation asked of the leader
-        held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
-        edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
-        pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
-        reports_retried: Int = 0;
-        record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
+        record_refusals: Int = 0; // the assembly's own writes the record refused (its Mutations'): nothing proceeded past them; status sums every family's
         gate_runs_told: String = "\n"; // GH #1161: the digests of the gate runs told to their Reviews
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
@@ -392,6 +375,7 @@ locus Dna {
         positions: PositionRecord = PositionRecord { }; // C3 family 7: holders proposed for positions
         steps: StepRecord = StepRecord { }; // C3 family 8 (Work): the organization's own steps that wait
         cases: CaseRecord = CaseRecord { }; // C3 family 8 (Work): a person's cases, admitted, held and completed
+        attempts: AttemptRecord = AttemptRecord { }; // C3 family 8 (Work): an attempt's reports, waiting edits and a leg's lease
         last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
@@ -440,6 +424,7 @@ locus Dna {
         self.spending.bind(self.journal);
         self.positions.bind(self.journal, self.verification.receipts);
         self.cases.bind(self.journal);
+        self.attempts.bind(self.journal);
         self.organization_source_review_facts.bind(self.org_source.facts);
         self.scheduler.bind(self.journal);
         self.knowledge_record.bind(self.journal, self.verification.receipts);
@@ -1145,7 +1130,7 @@ locus Dna {
         // writer's: read them fresh before deciding on them; and the
         // reports the record has been seen to hold since are released
         let moved = self.journal.refresh();
-        self.release_recorded();
+        self.attempts.release_recorded();
         self.revisit_waiting();
         let req = e.request;
         if review_waiting(req.output_contract) {
@@ -1167,7 +1152,7 @@ locus Dna {
             let m = self.candidate_of(producer);
             if len(m) > 0 && self.report_review(e, m) { return; }
             // asked again — a redelivery — it waits once
-            if !self.already_waiting(e.attempt_id) { self.waiting_edits.push(e); }
+            self.attempts.wait(e);
             return;
         }
         let seen = self.mutation_of_attempt(e.attempt_id);
@@ -1190,7 +1175,7 @@ locus Dna {
         let planned_target = plan.parsed && len(plan.target) > 0 && !std::str::contains(plan.target, " ") && std::io::fs::file_exists(under);
         let target = if planned_target { plan.target } else { req.target };
         let out = self.mutate_for(req, class, req.objective, target, std::time::now());
-        if record_refused(out) { self.held_edits.push(e); return; }
+        if record_refused(out) { self.attempts.hold(e); return; }
         let m = self.mutation_of_attempt(e.attempt_id);
         self.report_prepared(e, m);
     }
@@ -1367,7 +1352,7 @@ locus Dna {
         if c.valid {
             let how = "case " + case_id + " " + c.how + " by " + c.by
                 + (if len(c.evidence) > 0 { " (evidence " + c.evidence + ")" } else if len(c.exception) > 0 { " (exception: " + c.exception + ")" } else { "" });
-            if !self.reported(attempt) {
+            if !self.attempts.reported(attempt) {
                 self.cases.completed_now();
                 self.board.notify("case", how + "; attempt " + attempt + " is done");
             }
@@ -1475,42 +1460,11 @@ locus Dna {
     // when the record is seen to hold its outcome.
     @unbounded
     fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
-        self.edits_reported = self.edits_reported + 1;
+        self.attempts.edit_reported();
         self.report_attempt(e.scope, e.attempt_id, WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id });
     }
-    // ---- GH #946 slice 3: a leg's outcome, through the head ---------------
-    // The latest `attempt.claimed` row of an attempt: who holds the lease,
-    // its token and until when (0 when none was taken).
-    @unbounded
-    fn recorded_claim(attempt_id: String) -> Lease {
-        let c = recorded_leg_claim(self.journal, attempt_id, self.journal.revision());
-        return Lease { key: "attempt:" + attempt_id, holder: c.holder, token: c.token, expires: c.expires, present: c.present };
-    }
-    // Whether this submission's request was refused already (a relay
-    // after a lost publish is answered once).
-    @unbounded
-    fn submission_answered(s: WorkSubmission) -> Bool {
-        if len(s.request) == 0 { return false; }
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "attempt.outcome_refused" && e.entity == s.attempt_id && request_named(e.body) == s.request { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
     fn refuse_submission(s: WorkSubmission, why: String) {
-        self.submissions_refused = self.submissions_refused + 1;
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("why", why);
-        b.string_field("holder", s.holder);
-        b.int_field("token", s.token);
-        b.string_field("request", s.request);
-        b.int_field("at", std::time::now());
-        b.end_object();
-        let x = self.journal.append(self.journal.revision(), "attempt.outcome_refused", s.attempt_id, b.result());
+        self.attempts.refuse(s, why);
         self.board.notify("attempt", "attempt " + s.attempt_id + ": the outcome " + s.holder + " handed back is refused: " + why);
     }
     // The calls a leg made under the attempt, as it reported them: each
@@ -1565,7 +1519,7 @@ locus Dna {
         let adm = recorded_attempt_admission(self.journal, a.attempt_id, self.journal.revision());
         if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
         if self.spending.allowance_answered(a) { return; }
-        let claim = self.recorded_claim(a.attempt_id);
+        let claim = self.attempts.claim_of(a.attempt_id);
         let now = if a.at > 0 { a.at } else { std::time::now() };
         let mut why = "";
         if recorded_attempt_outcome(self.journal, a.attempt_id, self.journal.revision()).ok { why = "attempt " + a.attempt_id + " is settled; no spend is admitted for it"; }
@@ -1596,7 +1550,7 @@ locus Dna {
         if len(s.attempt_id) == 0 { return; }
         let adm = recorded_attempt_admission(self.journal, s.attempt_id, self.journal.revision());
         if !adm.ok || !owned_by(self.ownership.me, adm.value.task_id) { return; }
-        if self.submission_answered(s) { return; }
+        if self.attempts.answered(s) { return; }
         let settled = recorded_attempt_outcome(self.journal, s.attempt_id, self.journal.revision());
         if settled.ok {
             // the outcome that settled it answers its own request; a second
@@ -1606,7 +1560,7 @@ locus Dna {
             self.refuse_submission(s, "duplicate: attempt " + s.attempt_id + " is settled (" + settled.value.disposition + "); this outcome changes nothing");
             return;
         }
-        let claim = self.recorded_claim(s.attempt_id);
+        let claim = self.attempts.claim_of(s.attempt_id);
         // the lease is judged as of the head's admission (hardening, B3): a
         // relay that arrives after the lease ran out settles what was
         // handed back while it was live
@@ -1693,28 +1647,7 @@ locus Dna {
         let r = AttemptReport { scope: scope, attempt_id: attempt_id, result: result };
         AttemptReported <- r;
         let moved = self.journal.refresh();
-        if !row_exists(self.journal, "attempt.outcome", attempt_id) && !self.reported(attempt_id) { self.pending_reports.push(r); }
-    }
-    // Whether a report for the attempt is kept, its outcome not yet seen.
-    @unbounded
-    fn reported(attempt_id: String) -> Bool {
-        let mut i = 0;
-        while i < self.pending_reports.len() {
-            let r = self.pending_reports.get(i) or AttemptReport { };
-            if r.attempt_id == attempt_id { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-    // Every held report whose outcome the record holds is released.
-    @unbounded
-    fn release_recorded() {
-        let mut i = 0;
-        while i < self.pending_reports.len() {
-            let r = self.pending_reports.get(i) or AttemptReport { };
-            if len(r.attempt_id) > 0 && row_exists(self.journal, "attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
-            i = i + 1;
-        }
+        self.attempts.keep(r);
     }
     // Every report the record has not been seen to hold is put again;
     // one it holds is released. The edit is never performed again: the
@@ -1724,13 +1657,13 @@ locus Dna {
         let moved = self.journal.refresh();
         let mut n = 0;
         let mut i = 0;
-        while i < self.pending_reports.len() {
-            let r = self.pending_reports.get(i) or AttemptReport { };
+        while i < self.attempts.report_count() {
+            let r = self.attempts.report_at(i);
             if len(r.attempt_id) > 0 {
                 if row_exists(self.journal, "attempt.outcome", r.attempt_id) {
-                    self.pending_reports.set(i, AttemptReport { }) or discard;
+                    self.attempts.release_report(i);
                 } else {
-                    self.reports_retried = self.reports_retried + 1;
+                    self.attempts.retried();
                     n = n + 1;
                     AttemptReported <- r;
                 }
@@ -1786,17 +1719,6 @@ locus Dna {
         }
         return self.mutation_of_attempt(attempt);
     }
-    // Whether an attempt is already waiting here.
-    @unbounded
-    fn already_waiting(attempt_id: String) -> Bool {
-        let mut i = 0;
-        while i < self.waiting_edits.len() {
-            let e = self.waiting_edits.get(i) or EditAsk { };
-            if e.attempt_id == attempt_id { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
     // The Mutation bound to an attempt (card 14), by the attempt's id in
     // the Mutation's own request row; "" when none.
     @unbounded
@@ -1837,36 +1759,24 @@ locus Dna {
     // once, when its state is an outcome; the others keep waiting.
     @unbounded
     fn revisit_waiting() {
-        if self.held_waiting() == 0 { return; }
+        if self.attempts.waiting_held() == 0 { return; }
         let moved = self.journal.refresh();
         let mut i = 0;
-        while i < self.waiting_edits.len() {
-            let e = self.waiting_edits.get(i) or EditAsk { };
+        while i < self.attempts.waiting_count() {
+            let e = self.attempts.waiting_at(i);
             if len(e.attempt_id) > 0 {
                 let producer = producer_of(e.request);
                 let settled = self.settlement_of(producer);
                 if len(settled) > 0 && settled != "done" {
-                    self.waiting_edits.set(i, EditAsk { }) or discard;
+                    self.attempts.waited(i);
                     self.report(e, "failed", producer + ": " + settled, "the producing Work settled " + settled + ": there is no candidate to wait on");
                 } else {
                     let m = self.candidate_of(producer);
-                    if len(m) > 0 && self.report_review(e, m) { self.waiting_edits.set(i, EditAsk { }) or discard; }
+                    if len(m) > 0 && self.report_review(e, m) { self.attempts.waited(i); }
                 }
             }
             i = i + 1;
         }
-    }
-    // How many attempts wait here (the form keeps released slots).
-    @unbounded
-    fn held_waiting() -> Int {
-        let mut n = 0;
-        let mut i = 0;
-        while i < self.waiting_edits.len() {
-            let e = self.waiting_edits.get(i) or EditAsk { };
-            if len(e.attempt_id) > 0 { n = n + 1; }
-            i = i + 1;
-        }
-        return n;
     }
     // A Work of the engine ended — settled, its row in the record: a
     // producer some attempt waits on may have settled. Looked at when
@@ -1880,53 +1790,20 @@ locus Dna {
     // a held engine attempt (card 15) through `on_edit_requested`. One
     // round: what the record refuses again is held again, for the next.
     // How many were driven.
-    // GH #946 hardening (D3): a leg's claim that expired with no outcome
-    // is asked again, once per lease — the attempt is redelivered pending,
-    // and a leg claims it anew. Nothing is asked of an attempt whose
-    // lease is live, or that has settled, or that another owner holds.
+    // GH #946 hardening (D3): the leases that expired with no outcome,
+    // each asked again through the runtime, in turn (the family's scan).
     @unbounded
     fn reopen_expired_claims() -> Int {
-        let now = std::time::now();
-        let n = self.journal.revision();
-        // one pass: the attempts a leg ever claimed, and those since settled
-        let mut claimed = "";
-        let mut settled = "";
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "attempt.claimed" { claimed = set_add(claimed, e.entity); }
-            if e.kind == "attempt.outcome" { settled = set_add(settled, e.entity); }
-            i = i + 1;
-        }
+        let mut rest = self.attempts.expired(std::time::now(), self.ownership.me);
         let mut count = 0;
-        let mut rest = claimed;
         while len(rest) > 0 {
-            let sp = std::str::index_of(rest, " ");
-            let attempt = if sp < 0 { rest } else { rest[0..sp] };
-            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
-            if len(attempt) == 0 || set_has(settled, attempt) { continue; }
-            let c = recorded_leg_claim(self.journal, attempt, n);
-            // a leg's attempt whose effect a person resolved (`hale dna effect
-            // resolve`, after an uncertain performer left it unknown) is taken
-            // again at once, lease or no lease: the resolution is its outcome
-            let said = effect_result_body(self.journal, execution_key(attempt));
-            let resolved = len(said) > 0 && !std::str::starts_with(said, "unknown") && std::str::contains(said, "(resolved by ");
-            let key = if resolved { attempt + "@resolved" } else { attempt + "@" + to_string(c.token) };
-            if c.present && (resolved || c.expires <= now) && !set_has(self.reopened, key) {
-                let adm = recorded_attempt_admission(self.journal, attempt, n);
-                if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
-                    self.reopened = set_add(self.reopened, key);
-                    // GH #989: a leg that did not settle within its lease is a
-                    // closure the owner absorbs: named in the record once per
-                    // lease, before the attempt is asked again
-                    if !resolved {
-                        let v = append_once(self.journal, VIOLATION_KIND, "lease_unsettled/" + key,
-                            violation_body("lease_unsettled", attempt, "spine", "the lease " + c.holder + " held at token " + to_string(c.token) + " expired at " + to_string(c.expires) + " with no outcome; the attempt is asked again"));
-                    }
-                    let x = self.runtime.reopen(attempt);
-                    count = count + 1;
-                }
-            }
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            let attempt = tab_field(line, 0);
+            self.attempts.reopening(attempt, tab_field(line, 1), tab_field(line, 2) == "1", tab_field(line, 3), tab_field(line, 4), tab_field(line, 5));
+            let x = self.runtime.reopen(attempt);
+            count = count + 1;
         }
         return count;
     }
@@ -1948,12 +1825,11 @@ locus Dna {
             }
             h = h + 1;
         }
-        let edits = self.held_edits.len();
+        let edits = self.attempts.held_count();
         let mut k = 0;
         while k < edits {
-            let e = self.held_edits.get(k) or EditAsk { };
+            let e = self.attempts.take_held(k);
             if len(e.attempt_id) > 0 {
-                self.held_edits.set(k, EditAsk { }) or discard;
                 self.on_edit_requested(e);
                 n = n + 1;
             }
@@ -2812,7 +2688,7 @@ locus Dna {
     @unbounded
     fn on_step_requested(s: StepAsk) {
         let moved = self.journal.refresh();
-        self.release_recorded();
+        self.attempts.release_recorded();
         if last_segment(s.request.work_id) == "hat" { self.memory_ready = self.knowledge_client.caught_up(); }
         if !self.perform_step(s) { self.steps.wait(s); }
     }
@@ -2839,7 +2715,7 @@ locus Dna {
     // Perform one step; whether its outcome was reported.
     @unbounded
     fn perform_step(s: StepAsk) -> Bool {
-        if row_exists(self.journal, "attempt.outcome", s.attempt_id) || self.reported(s.attempt_id) { return true; }
+        if row_exists(self.journal, "attempt.outcome", s.attempt_id) || self.attempts.reported(s.attempt_id) { return true; }
         let task = s.request.task_id;
         let adm = self.recorded_admission(task);
         if !adm.ok { return self.step_report(s, step_failed("no admission for task " + task)); }
@@ -4220,6 +4096,9 @@ locus Dna {
         b.int_field("journal_revision", self.journal.revision());
         b.int_field("executions_asked", self.executions_asked);
         b.int_field("executions_settled", self.executions_settled);
+        // one count per family of the writes the record refused, summed: the
+        // assembly's own (its Mutations) and Work's cases'
+        b.int_field("record_refusals", self.record_refusals + self.cases.record_refusals);
         b.string_field("routing", self.work.policy());
         b.string_field("review_policy", self.review_policy.name());
         b.string_field("deployment", self.deployment.kind());

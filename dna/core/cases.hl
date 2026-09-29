@@ -64,6 +64,7 @@ locus CaseRecord {
         }
         return false;
     }
+    @unbounded
     fn await_plan(c: CaseAsk) { self.pending_cases.push(c); }
     // The case awaiting the leader's word on this Work, taken from the
     // waiting (an empty ask when none waits).
@@ -81,8 +82,10 @@ locus CaseRecord {
         return CaseAsk { };
     }
     // ---- held asks (card 16), re-driven by the assembly's `redrive`
+    @unbounded
     fn hold(c: CaseAsk) { self.held_cases.push(c); }
     // The record refused a case's admission: counted, and held.
+    @unbounded
     fn refused(c: CaseAsk) {
         self.record_refusals = self.record_refusals + 1;
         self.held_cases.push(c);
@@ -217,6 +220,7 @@ locus CaseRecord {
         return false;
     }
     // A completion its bound condition refuses, noted once.
+    @unbounded
     fn refused_now(case_id: String) {
         self.completions_refused = self.completions_refused + 1;
         self.refused_completions.push(case_id);
