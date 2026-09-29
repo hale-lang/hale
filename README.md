@@ -509,40 +509,62 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-The **language surface** has taken no breaking changes since v0.10.0
-(2026-07-07): everything since has been additive (`@hot` / `@budget`
-enforcement, `match` expressions, String routing keys) plus runtime
-fixes. The **stdlib** is a narrower promise: v0.11.0 (2026-07-16)
-carried two breaking entries: `Stream.send` / `recv` and their
-`_bytes` forms became `fallible(IoError)`, so every call site must
-address the error, and TCP listeners stopped setting `SO_REUSEPORT`,
-so a second live bind on the same port now fails instead of
-silently splitting connections. It's pre-1.0 because the frontier
-below is still moving.
+Hale is at **v0.22.0** (2026-09-30) and pre-1.0, and it uses that
+freedom: there are no compatibility windows before 1.0. A rule that
+turns out to be wrong changes in the release that finds it, the change
+is listed under *Breaking changes* on that release's page with its
+migration, and nothing keeps the old form alive beside the new one.
+v0.22.0 carried nine such changes: a bare call to a fallible stdlib
+function is now an error rather than a warning, a revealed secret is
+consumed in the statement that reveals it, a second `on_failure` for
+one child type is refused. Expect more of the same until 1.0; the page
+for each release says exactly what moved.
 
-The proven core is the typed topic bus, `placement` / `bindings` deployment,
-`@form` collections, structural `interface`s, `@ffi` C bindings, the
-`fallible(T)` error model, and the four tiers of law, effects, claims,
-constitutions, and fleet composition, all self-hosted by the native
-compiler. The **frontier**: NUMA-aware `topology` placement with `replicas`.
-(`mode` projections and `closure` assertions round out the surface; reach
-for them when your problem calls for them.)
+The **proven core**, all of it self-hosted by the native compiler: the
+typed topic bus; `placement`, `bindings` and NUMA-aware `topology`
+with `replicas`; `@form` collections; structural `interface`s; `@ffi`
+C bindings; the `fallible(T)` error model; effects and budgets;
+claims, constitutions and fleet composition; the canonical model
+(`hale model`, its diff and its verification); record and replay; and
+the api binding, which turns any program into a CLI, an MCP host and
+a generated admin surface with role gating from one line in `main`.
+The observer (iris) watches a running program's loci and messages
+live. Targets: Linux x86_64 and arm64, macOS arm64, and the browser
+through WebAssembly; the LSP ships inside the `hale` binary.
+
+**DNA** is the largest thing written in Hale, and it is not a program:
+it is a library from which programs emerge. An application seeds it
+and grows an **organism**, a governed software organization whose
+memory, nerves, heart, senses, skin, legs, schedules and head are
+each a subsystem you can read in [`dna/`](./dna/) and that the book
+describes [part by part](https://hale-lang.org/docs). Every organism
+is its own program, built from the same building block; the compiler
+and the library are developed against each other.
+
+The **frontier**, in the order it lands: the compiler restructured as
+layers over one graph, with every semantic fact derived once and every
+migration checked by shadow diff ([RFC #1212](https://github.com/hale-lang/hale/issues/1212),
+delivered as a PR series on `main`); the habitat, the shared
+environment organisms are born into ([#602](https://github.com/hale-lang/hale/issues/602));
+and, once the graph is in place, `@evented` loci, a unit dialect and a
+UI emitted from the same tables.
 
 **Performance, scoped honestly:** Hale is faster than Go at message
-dispatch, JSON parsing, and `@form` collections, and slower at raw
-function-call and spawn overhead. From the cross-language snapshot
-(Hale v0.9.0 grid, 2026-06-30, Ryzen 7 9800X3D; the same workload shape
-in each language):
+dispatch, JSON parsing and `@form` collections, and slower at raw
+function-call and spawn overhead. From the cross-language grid at
+v0.22.0 (2026-09-29, AMD Ryzen 7 9800X3D / x86_64 / Linux, the same
+workload shape in each language):
 
 | Bench | Hale | Go | vs Go |
 |---|---:|---:|---|
-| `bus_dispatch` (100k typed messages) | 196 µs | 471 µs | **2.4× faster** |
-| `json_parse` (200k 7-field parses) | 58.0 ms | 150.0 ms | **2.6× faster** |
-| `form_vec_push` (500k) | 573 µs | 2.76 ms | **4.8× faster** |
-| `loop_overhead` (100M xor-reduce) | 1.59 ms | 19.7 ms | **12.4× faster**\* |
-| `fn_call` (10M free-fn calls) | 19.1 ms | 7.7 ms | 2.5× slower |
-| `locus_instantiation` (100k) | 1.25 ms | 153 µs | 8.2× slower |
-| `coord_with_churn` (2000 children) | 42.8 µs | 2.4 µs | 18× slower |
+| `bus_dispatch` (100k typed messages) | 178 µs | 458 µs | **2.6× faster** |
+| `json_parse` (200k 7-field parses) | 61.8 ms | 143.6 ms | **2.3× faster** |
+| `form_vec_push` (500k) | 671 µs | 2.63 ms | **3.9× faster** |
+| `form_vec_get` (500k) | 11.8 µs | 39.1 µs | **3.3× faster** |
+| `loop_overhead` (100M xor-reduce) | 1.79 ms | 19.8 ms | **11.0× faster**\* |
+| `fn_call` (10M free-fn calls) | 11.5 ms | 7.7 ms | 1.5× slower |
+| `locus_instantiation` (100k) | 1.52 ms | 153 µs | 9.9× slower |
+| `coord_with_churn` (2000 children) | 35.0 µs | 2.0 µs | 17.5× slower |
 
 \* Not dead code on either side (both xor-accumulate and print the
 result), but LLVM autovectorizes the reduction to AVX-512 while Go
@@ -590,8 +612,8 @@ They mean things, and they fit together:
   what it describes.
 - **[`AGENTS.md`](./AGENTS.md)**: the load-bearing prompt for coding models
   writing `.hl` (and a tight read for humans).
-- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)**: 88
-  working example programs (96 `.hl` files), compiled and run in CI.
+- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)**: 97
+  working example programs (106 `.hl` files), compiled and run in CI.
 - **[pond](https://github.com/hale-lang/pond)** · contributed libraries.
   **[CONTRIBUTING](./CONTRIBUTING.md)** · how to build + send a change.
   **[Issues](https://github.com/hale-lang/hale/issues)** · questions, ideas,
