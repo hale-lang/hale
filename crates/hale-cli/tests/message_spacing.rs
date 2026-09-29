@@ -92,7 +92,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          its description",
     ),
     (
-        "crates/hale-cli/src/main.rs",
+        "crates/hale-cli/src/verbs/test.rs",
         "run_test",
         "the `ok   <path>` result column, aligned with `FAIL <path>`",
     ),
