@@ -968,6 +968,7 @@ crates/hale-codegen/tests/no_chunk_pool_knob.rs#0 4707eb603fd26fa8
 crates/hale-codegen/tests/noalias_self.rs#0 c48db3a4a7ec3bdf
 crates/hale-codegen/tests/noalias_self.rs#1 eca8127dcb7fdece
 crates/hale-codegen/tests/obs_emission.rs#0 b524dee0804a0399
+crates/hale-codegen/tests/obs_emission.rs#1 be67489f6919cb64
 crates/hale-codegen/tests/obs_entity_ids_unstamped.rs#0 91bb8e57301d9b73
 crates/hale-codegen/tests/obs_fleet_contract.rs#0 72edd5611e497f74
 crates/hale-codegen/tests/obs_fleet_contract.rs#1 304944bd620cd334

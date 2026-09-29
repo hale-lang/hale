@@ -10,7 +10,10 @@
 //!     the byte count,
 //!   - records were emitted to the rings (records_total > 0),
 //!   - dormant default: without LOTUS_OBS the segment does not
-//!     exist.
+//!     exist,
+//!   - a locus that dissolves is reported to have dissolved however
+//!     many loci the process has already born (the instance table
+//!     that names them gives a dissolved locus's slot back).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -318,6 +321,98 @@ fn dormant_by_default() {
     let _ = child.kill();
     let _ = child.wait();
     assert!(!exists, "no segment without LOTUS_OBS");
+}
+
+/// The dna pane's report: loci born inside a temporary's `birth()` were
+/// reclaimed (memory flat) but the observer saw births and no
+/// dissolves. The shape was a bystander. The dissolve probe names the
+/// locus by looking it up in a table that held 4,096 instances for the
+/// life of the process, so past the 4,096th birth — three per iteration
+/// here, a few seconds at that rate — births kept being emitted and
+/// their dissolves were dropped, whatever the shape. A plain loop body
+/// lost them the same way (`plain_loop` below).
+fn births_and_dissolves_after(src: &str, tag: &str) -> (usize, usize) {
+    let bin = build(tag, src);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    let shm = format!("/dev/shm/hale-obs-{}", pid);
+    for _ in 0..200 {
+        if std::path::Path::new(&shm).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    obs::attach_observer(pid);
+    let seg = obs::map_shm(pid).expect("segment");
+    let status = child.wait().expect("wait");
+    let _ = std::fs::remove_file(&bin);
+    assert!(status.success(), "{tag}: {status:?}");
+    (obs::records(seg, obs::EK_LOCUS_BIRTH).len(), obs::records(seg, obs::EK_LOCUS_DISSOLVE).len())
+}
+
+const CHURN_PROLOGUE: &str = r#"
+    locus Leaf { params { n: Int = 0; } }
+"#;
+
+#[test]
+fn loci_born_in_a_temporarys_birth_report_their_dissolve_at_volume() {
+    let src = format!(
+        r#"{CHURN_PROLOGUE}
+        locus Tmp {{
+            params {{ n: Int = 0; }}
+            birth() {{
+                Leaf {{ n: self.n }};
+                Leaf {{ n: self.n + 1 }};
+            }}
+        }}
+        locus Driver {{
+            params {{ _u: Int = 0; }}
+            run() {{
+                std::time::sleep(500ms);
+                let mut i = 0;
+                while i < 5000 {{ Tmp {{ n: i }}; i = i + 1; }}
+            }}
+        }}
+        main locus Root {{ params {{ d: Driver = Driver {{ }}; }} }}
+        fn main() {{ Root {{ }}; }}
+    "#
+    );
+    let (births, dissolves) = births_and_dissolves_after(&src, "temp_birth");
+    assert!(births > 1000, "the ring holds a window of the burst: {births}");
+    assert!(
+        dissolves * 10 >= births * 9,
+        "each birth in the window has its dissolve (15,000 births, past the \
+         4,096 the instance table once held): {births} births, {dissolves} dissolves"
+    );
+}
+
+#[test]
+fn plain_loop_body_loci_report_their_dissolve_at_volume() {
+    let src = format!(
+        r#"{CHURN_PROLOGUE}
+        locus Driver {{
+            params {{ _u: Int = 0; }}
+            run() {{
+                std::time::sleep(500ms);
+                let mut i = 0;
+                while i < 6000 {{ Leaf {{ n: i }}; i = i + 1; }}
+            }}
+        }}
+        main locus Root {{ params {{ d: Driver = Driver {{ }}; }} }}
+        fn main() {{ Root {{ }}; }}
+    "#
+    );
+    let (births, dissolves) = births_and_dissolves_after(&src, "plain_loop");
+    assert!(births > 1000, "{births}");
+    assert!(
+        dissolves * 10 >= births * 9,
+        "{births} births, {dissolves} dissolves"
+    );
 }
 
 unsafe fn libc_mmap(f: &std::fs::File, len: usize) -> *mut u8 {
