@@ -49,7 +49,7 @@
     } else check(data.active === null && active === "");
     check(closed(data.children, ["body"]));
     validBody(data.children.body);
-    check(closed(data.credentials, ["needed", "file_sources", "env_present"]) && strings(data.credentials.needed) && strings(data.credentials.file_sources) && strings(data.credentials.env_present));
+    check(closed(data.credentials, ["needed", "vault_present", "file_sources", "env_present"]) && strings(data.credentials.needed) && strings(data.credentials.vault_present) && strings(data.credentials.file_sources) && strings(data.credentials.env_present));
     check(Array.isArray(data.operations) && data.operations.length <= 64);
     const names = new Set();
     for (const operation of data.operations) {
@@ -478,7 +478,7 @@
       fact(summary, "Body", d.children.body.state + (d.children.body.mode ? " · " + d.children.body.mode : "") + (d.children.body.state === "running" ? (d.children.body.organism_alive ? " · organism alive" : " · organism not alive") : "") + (d.children.body.state === "exited" ? " · exit " + d.children.body.exit_code : ""));
       fact(summary, "State directory", d.state_dir, true);
       fact(summary, "Secret sources", d.sources_dir + (d.credentials.file_sources.length ? " · " + d.credentials.file_sources.join(", ") : " · none"), true);
-      fact(summary, "Credentials needed", d.credentials.needed.length ? d.credentials.needed.map(name => name + (d.credentials.env_present.includes(name) ? " (exported)" : "")).join(", ") : "none declared");
+      fact(summary, "Credentials needed", d.credentials.needed.length ? d.credentials.needed.map(name => name + (d.credentials.vault_present.includes(name) ? " (in the vault)" : d.credentials.env_present.includes(name) ? " (exported)" : "")).join(", ") : "none declared");
       fact(summary, "Busy", d.busy || "no", d.busy.length > 0);
     }
     function renderRegistry() {
