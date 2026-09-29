@@ -21,6 +21,8 @@ use hale_codegen::build_executable_with_options;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/connect.rs"]
+mod connect;
 
 const ECHO_SERVER: &str = r#"
     locus Echo {
@@ -52,16 +54,6 @@ fn build_echo(name: &str) -> PathBuf {
     bin
 }
 
-fn connect_with_retry(port: u16) -> TcpStream {
-    for _ in 0..100 {
-        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
-            return s;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    panic!("failed to connect after 2s on port {}", port);
-}
-
 fn run_one(name: &str, client: impl FnOnce(&mut TcpStream)) -> String {
     let bin = build_echo(name);
     let port = pick_free_port();
@@ -73,7 +65,7 @@ fn run_one(name: &str, client: impl FnOnce(&mut TcpStream)) -> String {
         .spawn()
         .expect("spawn echo server");
 
-    let mut sock = connect_with_retry(port);
+    let mut sock = connect::connect_when_listening(port);
     client(&mut sock);
     let mut buf = Vec::new();
     let _ = sock.read_to_end(&mut buf);

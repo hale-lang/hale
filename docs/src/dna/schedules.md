@@ -61,14 +61,10 @@ the request and says so:
 schedule nightly asked of the organization in the record by <who> (<request>); it declares it when it hears it
 ```
 
-> **Note.** A generated organization does not bind `ScheduleRequested`
-> to the nerves: the `bindings { }` in its `dna/org/main.hl` has no
-> entry for it. So in a project `hale dna new` or `hale dna init` made,
-> a request made with this verb waits unanswered, and beside a running
-> organism the verb ends with `asked for the schedule, but the
-> organization journaled no answer for <request> in time`. A schedule a
-> ratified practice carries is declared in process, and is not
-> affected ([below](#a-practice-carries-a-schedule-the-optimize-pass)).
+The organization's connection to the nerves hands each message it
+receives to the topic its subject names, so the relayed request reaches
+the organization's `ScheduleRequested` subscription without any entry
+in the `bindings { }` of `dna/org/main.hl`.
 
 ## How the organization answers
 
@@ -239,8 +235,7 @@ Board ratifies ([Shaping and governing it](./shaping.md)).
   a graph convener needs memory; `hale dna memory migrate` prints the
   DSNs ([Memory and the record](./memory.md)).
 - **`asked for the schedule, but the organization journaled no answer for <request> in time`**:
-  no answer came within a minute. In a generated project this is the
-  note above: the organization does not receive the request. The
-  request stays in the record.
+  no organization answered within a minute. The request stays in the
+  record, and a running organization declares it when it hears it.
 - **`missed N`** in the listing: the organism was down through those
   occurrences. They are not run late; the next one runs on time.

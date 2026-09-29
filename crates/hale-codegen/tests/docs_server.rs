@@ -10,11 +10,9 @@
 //!   - `GET /../etc/passwd` → 404 (path-traversal rejection)
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable_with_options;
 
@@ -22,6 +20,8 @@ use hale_codegen::build_executable_with_options;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/connect.rs"]
+mod connect;
 
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -60,18 +60,8 @@ fn unique_dir(tag: &str) -> PathBuf {
     p
 }
 
-fn connect_with_retry(port: u16) -> TcpStream {
-    for _ in 0..100 {
-        if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
-            return s;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    panic!("server never came up on port {}", port);
-}
-
 fn http_get(port: u16, path: &str) -> String {
-    let mut sock = connect_with_retry(port);
+    let mut sock = connect::connect_when_listening(port);
     sock.write_all(format!("GET {} HTTP/1.1\r\n\r\n", path).as_bytes())
         .expect("client write");
     let mut buf = Vec::new();

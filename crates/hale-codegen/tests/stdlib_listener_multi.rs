@@ -17,10 +17,8 @@
 //!    iteration's fd closes after the callback returns.
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
 
 use hale_codegen::build_executable_with_options;
 
@@ -28,6 +26,8 @@ use hale_codegen::build_executable_with_options;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/connect.rs"]
+mod connect;
 
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
@@ -63,15 +63,14 @@ fn listener_default_callback_handles_one_connection() {
     );
     let bin = build_hale("default_cb", &src);
 
-    // Spawn the Hale Listener; give it a moment to bind.
+    // Spawn the Hale Listener; connect once it listens.
     let bin_path = bin.clone();
     let server_handle = thread::spawn(move || {
         Command::new(&bin_path).output().expect("run listener")
     });
-    thread::sleep(Duration::from_millis(150));
 
     // One client connection, then close.
-    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut client = connect::connect_when_listening(port);
     let _ = client.write_all(b"hi");
     drop(client);
 
@@ -127,9 +126,8 @@ fn listener_user_callback_receives_usable_stream() {
     let server_handle = thread::spawn(move || {
         Command::new(&bin_path).output().expect("run listener")
     });
-    thread::sleep(Duration::from_millis(150));
 
-    let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let mut client = connect::connect_when_listening(port);
     client.write_all(b"hello-server").expect("client write");
     let mut buf = [0u8; 64];
     let n = client.read(&mut buf).expect("client read");
@@ -191,12 +189,10 @@ fn listener_handles_multiple_connections_in_sequence() {
     let server_handle = thread::spawn(move || {
         Command::new(&bin_path).output().expect("run listener")
     });
-    thread::sleep(Duration::from_millis(150));
 
     let mut acks = Vec::new();
     for tag in &["one", "two", "three"] {
-        let mut client = TcpStream::connect(("127.0.0.1", port))
-            .expect("client connect");
+        let mut client = connect::connect_when_listening(port);
         client
             .write_all(format!("conn-{}", tag).as_bytes())
             .expect("client write");
