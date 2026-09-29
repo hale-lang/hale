@@ -348,7 +348,8 @@ organization have a space of their own on the stream
 organization never takes another's facts. The host waits at start for
 the organization to be reading, and says so. A publish the stream does
 not acknowledge in time collapses the host's connection: the host
-writes `nerves.lost`, stops, and exits 75 for its unit to start it
+records `violation.recorded` (`adapter_undeliverable`), stops, and
+exits 75 for its unit to start it
 again, and the new node relays every request still unanswered, because
 the row, not the publish, is the fact. Without the spine's URL the host
 says so and runs, and the organization hears nothing the record asks.

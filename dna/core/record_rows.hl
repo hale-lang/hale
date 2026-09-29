@@ -128,3 +128,24 @@ fn retirement(j: Journal, who: String) -> RetiredPerson {
     }
     return out;
 }
+
+// ---- closures (GH #989): a violation, named and recorded ----------------
+//
+// Three violations are closures of the organism: an adapter that cannot
+// deliver (`adapter_undeliverable`), a leg that cannot settle within its
+// lease (`lease_unsettled`), and a heart whose pulse stops (`pulse_stopped`).
+// Each is absorbed by the part that owns it, which records a
+// `violation.recorded` row, `{kind, subject, owner, detail}`, and goes on.
+// The board shows them. No topic carries one.
+const VIOLATION_KIND: String = "violation.recorded";
+
+fn violation_body(kind: String, subject: String, owner: String, detail: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", kind);
+    b.string_field("subject", subject);
+    b.string_field("owner", owner);
+    b.string_field("detail", detail);
+    b.end_object();
+    return b.result();
+}

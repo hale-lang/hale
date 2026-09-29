@@ -2195,6 +2195,13 @@ locus Dna {
                 let adm = recorded_attempt_admission(self.journal, attempt, n);
                 if adm.ok && owned_by(self.ownership.me, adm.value.task_id) {
                     self.reopened = set_add(self.reopened, key);
+                    // GH #989: a leg that did not settle within its lease is a
+                    // closure the owner absorbs: named in the record once per
+                    // lease, before the attempt is asked again
+                    if !resolved {
+                        let v = append_once(self.journal, VIOLATION_KIND, "lease_unsettled/" + key,
+                            violation_body("lease_unsettled", attempt, "spine", "the lease " + c.holder + " held at token " + to_string(c.token) + " expired at " + to_string(c.expires) + " with no outcome; the attempt is asked again"));
+                    }
                     let x = self.runtime.reopen(attempt);
                     count = count + 1;
                 }

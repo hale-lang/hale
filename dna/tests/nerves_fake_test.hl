@@ -9,7 +9,8 @@
 // publishes again while the record holds no answer — the same intent is
 // admitted once. A connection that never hears an acknowledgement
 // violates its `delivery` closure, and the violation reaches the
-// connection's owner, which is where the host records `nerves.lost` and
+// connection's owner, which is where the host records the violation
+// (`violation.recorded`, `adapter_undeliverable`) and
 // starts the connection again. The fixtures that start a body cover the
 // same path over a real server.
 
