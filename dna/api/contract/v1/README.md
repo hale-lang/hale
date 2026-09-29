@@ -104,12 +104,12 @@ Definitions fixtures include leaf/child relationships, multiple exact revisions,
 large and signed native values, a valid empty catalog, and structured refusals. To check a captured response:
 
 ```sh
-hale build dna/api/contract/v1/check
+hale build dna/api/contract/v1/check -o target/seeds/check/check
 HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
-  dna/api/contract/v1/check/check PracticesResponse result.json
+  target/seeds/check/check PracticesResponse result.json
 ```
 
-Running `check/check` without arguments checks the files and fixtures alone.
+Running `check` without arguments checks the files and fixtures alone.
 The live HTTP suite imports `validator` and uses a let-bound instance:
 
 ```hale

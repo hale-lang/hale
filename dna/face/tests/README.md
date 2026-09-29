@@ -663,7 +663,7 @@ Nothing here is mocked, seeded or relayed by a lane-only program.
 
 ```sh
 HALE_BIN=/absolute/path/to/hale \
-HALE_NATIVE_COMMAND_API=/absolute/path/to/dna/api/practice_review/practice_review \
+HALE_NATIVE_COMMAND_API=/absolute/path/to/target/seeds/practice_review/practice_review \
 HALE_FACE_MEMORY_BIN=/absolute/path/to/memory-fixture \
 HALE_DNA_MEMORY_DSN_OWNER='postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable' \
 HALE_DNA_NATS_URL_OWNER=nats://127.0.0.1:4222 \
@@ -881,7 +881,7 @@ receipt lifecycle for `succeeded`, `refused`, `failed` and `outcome_unknown`
 argument sets of the preview, forge and secret forms, the recovery slot
 restored as a GET-only lookup, a lost POST response followed by lookups until
 it settles, and a busy head. `projects-read.spec.mjs` runs the real plain
-`dna/api/api` through `harness.mjs`: the shell's single head probe answers 404,
+the API binary (`HALE_API_BIN`) through `harness.mjs`: the shell's single head probe answers 404,
 the page continues to Practices with the Projects entry hidden, the workspace
 opened by hand says no project service answers, no
 request other than GET is sent and the Record's refs are unchanged.

@@ -33,34 +33,6 @@ Thumbs.db
 # builds under its own dir.
 docs/**/book/
 
-# Hale app build artifacts (binaries + generated content)
-apps/*/main
-apps/*/out/
-
-# Multi-file-seed binaries take the directory name as the output
-# (apps/ferryman/ → apps/ferryman/ferryman). Match per app
-# directory; the .hl-source files are explicitly preserved.
-apps/ferryman/ferryman
-apps/reload-demo/reload-demo
-apps/market-book/market-book
-apps/ws-echo/ws-echo
-apps/cli-demo/cli-demo
-
-# Hale example build artifacts (compiled binaries sit next
-# to main.hl after `hale build`).
-examples/*/main
-# Multi-file examples take the directory name as the output —
-# match per example directory the way apps/ does.
-examples/14-projection-classes/14-projection-classes
-
-# Codegen test fixtures build binaries next to their .hl sources
-# (same `hale build` shape as apps/ and examples/). Match the
-# per-fixture-dir output: either `<dirname>/main` (single-file
-# fixtures) or `<dirname>/<dirname>` (multi-file fixtures).
-crates/hale-codegen/tests/fixtures/**/main
-crates/hale-codegen/tests/fixtures/examples/05-bus/05-bus
-crates/hale-codegen/tests/fixtures/import-fallible-consumer/import-fallible-consumer
-
 # Ferryman recognition output. Lands in <repo>/.ferryman/ wherever
 # ferryman is pointed; the apps/operational-graph/fixture path
 # is the in-repo smoke-test target.
@@ -87,26 +59,13 @@ UPSTREAM*.md
 # Agent worktrees (transient; can hold root-owned build artifacts)
 .claude/worktrees/
 
-# `hale build` / `hale test` write the binary beside the source: a seed
-# `<dir>` builds `<dir>/<basename of dir>`, a file `x.hl` builds `x`. A
-# compiled program is never a source (a 6.6 MB `dna/tests/apply_test`, a
-# 6 MB `upstream-repro/repro3` and a 6.4 MB `dna/oidc/serve/serve` were
-# committed by accident). Every binary is an extensionless file, and no
-# source under dna/ is one but the names re-included below, so every
-# extensionless file under dna/ is ignored — every seed's binary without
-# a list to keep. The vendored onboarding trees are someone else's
-# repository, taken whole: nothing in them is ignored.
-/dna/**
-!/dna/**/
-!/dna/**/*.*
-!/dna/**/LICENSE
-!/dna/**/Dockerfile
-!/dna/tests/onboarding/**
-# the one program whose name has a dot of its own (`main.v2.hl` builds
-# `main.v2`), which the extension rule cannot tell from a source
-/dna/acceptance/books.fixture/main.v2
+# Compiled Hale binaries have no rule here, on purpose. `hale build -o`
+# puts a seed's binary under target/ (target/seeds/<name>/<name>), and
+# `hale test`, `run` and `replay` build into a scratch directory they
+# remove. A binary that turns up beside a source is a defect `git status`
+# must show: the dna and face jobs fail on it, and
+# crates/hale-cli/tests/seeds_build_out_of_tree.rs fails on a rule that
+# would hide one.
+# Secrets a local organism writes beside its compose file: not binaries.
 /dna/**/nats.secrets.conf
 /dna/**/postgres.secrets
-tests/hale/*_test
-iris/**/upstream-repro/repro[0-9]*
-!iris/**/upstream-repro/*.hl

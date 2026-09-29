@@ -87,9 +87,12 @@ mtime, so a compiler rebuilt in place is a different fingerprint),
 the environment variables that change codegen, and the seed's path.
 Edit anything under `dna/org`, or upgrade `vendor/dna`, and the next
 start builds. The binaries live in `$XDG_CACHE_HOME/hale/dna-build`
-(or `~/.cache/hale/dna-build`), 32 of them, least-recently-used
-pruned; deleting that directory costs one rebuild and nothing else.
-`HALE_DNA_NO_BUILD_CACHE=1` builds from scratch every time.
+(or `~/.cache/hale/dna-build`), one directory per fingerprint, 32 of
+them, least-recently-used pruned; the host starts the binary from its
+entry, and deleting that directory costs one rebuild and nothing else.
+A build writes nothing into your checkout. `HALE_DNA_NO_BUILD_CACHE=1`
+builds from scratch every time, into `.hale/dna/build/` under the
+project root.
 
 ## One body per record
 

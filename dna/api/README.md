@@ -35,8 +35,8 @@ capture and service configuration.
 From the Hale source checkout, using a current Hale compiler:
 
 ```sh
-hale build dna/api
-./dna/api/api /absolute/path/to/a/dna-project 8792
+hale build dna/api -o target/seeds/api/api
+./target/seeds/api/api /absolute/path/to/a/dna-project 8792
 ```
 
 The project must already have a DNA Record (`hale dna new` / `init`). The server
@@ -49,7 +49,7 @@ curl http://127.0.0.1:8792/api/hale/v1/applications
 To serve the face as well, pass its static directory as the third argument:
 
 ```sh
-./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
+./target/seeds/api/api /absolute/path/to/a/dna-project 8792 "$PWD/dna/face/web"
 ```
 
 Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/application.js`,
@@ -519,7 +519,7 @@ policies in its environment:
 ```sh
 HALE_DNA_COMMAND_POLICY=/absolute/path/authority.json \
 HALE_DNA_TASK_POLICY=/absolute/path/task-authority.json \
-  dna/api/practice_review/practice_review /absolute/path/project 8793
+  target/seeds/practice_review/practice_review /absolute/path/project 8793
 ```
 
 Under the launcher the [head](#head-project-service) starts this binary itself
@@ -577,10 +577,10 @@ the children whose command line matches what it recorded, or is still one of
 the head's own wrappers on its way there.
 
 ```sh
-hale build dna/api/practice_review
-hale build dna/api/project_service
+hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
+hale build dna/api/project_service -o target/seeds/project_service/project_service
 HALE_BIN="$(command -v hale)" \
-  ./dna/api/project_service/project_service 8792 dna/face/web dna/api/practice_review/practice_review 8793 [/absolute/path/project]
+  ./target/seeds/project_service/project_service 8792 dna/face/web target/seeds/practice_review/practice_review 8793 [/absolute/path/project]
 ```
 
 Four routes, described in `contract/v1` beside the Record routes, all under the
@@ -848,11 +848,11 @@ From the source checkout, run the native Hale contract and integration tests:
 export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
 hale test dna/api/contract/v1/tests
 hale check dna/api
-hale build dna/api
-HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/tests
-hale check dna/api/practice_review && hale build dna/api/practice_review
-hale check dna/api/project_service && hale build dna/api/project_service
-HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/dna/api/project_service/project_service" HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/project_service/tests
+hale build dna/api -o target/seeds/api/api
+HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/tests
+hale check dna/api/practice_review && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
+hale check dna/api/project_service && hale build dna/api/project_service -o target/seeds/project_service/project_service
+HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/project_service/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```

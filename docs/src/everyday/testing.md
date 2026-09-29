@@ -118,6 +118,14 @@ you typed.
 it, reporting which passed and which failed. It's the same binary that
 `hale build` produces — there's no separate test runtime.
 
+Those binaries never land in your tree. Each `hale test` run makes one
+private directory under `$TMPDIR` (`hale-test-<pid>-…`, mode 0700),
+builds every test binary and its object files into it, and removes the
+whole directory when the run ends, pass or fail. The same holds for
+`hale run` and `hale replay`, which build into a directory of their own
+(`hale-run-…`, `hale-replay-…`). To keep a binary, use `hale build ...
+-o <path>`.
+
 Files compile and run **in parallel**, one per available core unless
 you say otherwise with `-j N` (or `HALE_TEST_JOBS=N`). The report does
 not depend on it: the lines come out in sorted file order once every

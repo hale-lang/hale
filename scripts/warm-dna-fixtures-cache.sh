@@ -37,7 +37,7 @@ fi
 
 build_cache="$cache/hale/dna-build"
 mkdir -p "$build_cache"
-before=$(find "$build_cache" -maxdepth 1 -type f 2>/dev/null | wc -l)
+before=$(find "$build_cache" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm-fixtures.XXXXXX")
 pid=
@@ -76,7 +76,7 @@ kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
 pid=
 
-after=$(find "$build_cache" -maxdepth 1 -type f 2>/dev/null | wc -l)
+after=$(find "$build_cache" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l)
 ready=$(grep -c "under LOTUS_OBS=1" "$tmp/dev.log" 2>/dev/null ||:)
 echo "warm-dna-fixtures-cache: dna-build entries $before -> $after; $ready/2 seeds reported ready"
 if ((ready < 2)); then

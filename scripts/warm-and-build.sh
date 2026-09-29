@@ -12,10 +12,15 @@
 # as one group, so the log reads as if they had run in turn. Every build
 # is waited for even after one fails; the step fails if any did.
 #
-#   scripts/warm-and-build.sh <hale> [--check] [--target-cpu <cpu>] [<seed dir>...]
+#   scripts/warm-and-build.sh <hale> [--check] [--target-cpu <cpu>] [--out-dir <dir>] [<seed dir>...]
 #
 #   --check             `hale check` each seed before building it
 #   --target-cpu <cpu>  passed to every `hale build`
+#   --out-dir <dir>     where the binaries go (default: target/seeds under the
+#                       repository): each seed is built with `hale build -o`
+#                       into <dir>/<name>/<name>, <name> being the seed
+#                       directory's own name, and nothing is written beside
+#                       the sources. Two seeds with one name are refused.
 #
 # The warm reads its own environment (HALE_WARM_SKIP_IRIS and the rest);
 # the builds share the runtime object cache with it, which is
@@ -26,13 +31,24 @@ shift
 check=
 build_flags=()
 seeds=()
+scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+out_dir=$(cd -- "$scripts_dir/.." && pwd -P)/target/seeds
 while (($#)); do
   case "$1" in
     --check) check=1; shift ;;
     --target-cpu) build_flags+=(--target-cpu "${2:?--target-cpu needs a value}"); shift 2 ;;
+    --out-dir) out_dir=${2:?--out-dir needs a value}; shift 2 ;;
     -*) echo "warm-and-build: unknown option $1" >&2; exit 2 ;;
     *) seeds+=("$1"); shift ;;
   esac
+done
+names=()
+for seed in "${seeds[@]}"; do
+  name=$(basename -- "$seed")
+  for other in ${names[@]+"${names[@]}"}; do
+    [[ "$other" != "$name" ]] || { echo "warm-and-build: two seeds are named $name; each needs its own <name>/<name>" >&2; exit 2; }
+  done
+  names+=("$name")
 done
 logs=$(mktemp -d "${TMPDIR:-/tmp}/hale-seed-builds.XXXXXX")
 trap 'rm -rf -- "$logs"' EXIT
@@ -43,13 +59,12 @@ for i in "${!seeds[@]}"; do
     set -e
     start=$SECONDS
     if [[ -n "$check" ]]; then "$hale" check "$seed"; fi
-    "$hale" build "$seed" "${build_flags[@]}"
+    "$hale" build "$seed" -o "$out_dir/${names[$i]}/${names[$i]}" "${build_flags[@]}"
     echo "($seed: $((SECONDS - start)) s)"
   ) > "$logs/$i.log" 2>&1 &
   pids+=("$!")
 done
 start=$SECONDS
-scripts_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 "$scripts_dir/warm-dna-cache.sh" "$hale"
 echo "warm: $((SECONDS - start)) s"
 failed=()

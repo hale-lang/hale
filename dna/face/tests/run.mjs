@@ -8,7 +8,7 @@ import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.m
 const face = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.resolve(face, '../..');
 const hale = path.resolve(process.env.HALE_BIN || path.join(repo, 'target/release/hale'));
-const api = path.resolve(process.env.HALE_API_BIN || path.join(repo, 'dna/api/api'));
+const api = path.resolve(process.env.HALE_API_BIN || path.join(repo, 'target/seeds/api/api'));
 const catalog = process.env.HALE_FACE_CATALOG_BIN || '';
 const knowledge = process.env.HALE_FACE_KNOWLEDGE_BIN || '';
 const commands = process.env.HALE_FACE_COMMAND_BIN || '';

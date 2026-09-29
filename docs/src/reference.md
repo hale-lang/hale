@@ -69,9 +69,14 @@ diagnostic's meaning, go there.
 
 Every one of them answers `--help` (or `-h`) as its first argument with
 its own flags, its input shape and where its output goes. `hale build
---help` is where the built binary's path is written down — `build` has
-no `-o`, so a file target becomes `./app` and a directory target becomes
-`myapp/myapp`, inside the directory.
+--help` is where the built binary's path is written down: a file target
+becomes `./app` and a directory target becomes `myapp/myapp`, inside the
+directory — unless `-o <path>` (`--out`) says where. `hale build myapp/
+-o target/seeds/myapp/myapp` writes exactly that path, making its
+directories, and nothing beside the source; a wasm build takes the same
+flag for its `.wasm` and puts the `.mjs` loader next to it. Build
+somewhere else, not in the tree, whenever the seed is not yours to
+litter: it is the one way to keep a checkout free of binaries.
 
 Flags may stand on either side of the target. The first argument that
 is not a flag is the target, so `hale build --dev app.hl` and `hale
@@ -87,7 +92,7 @@ of the execution identity a recording carries, and `hale replay` takes
 the same set: a run recorded under `--dev` replays under `hale replay
 --dev`, and a default replay refuses it. The flags that report on a
 build rather than change it (`--locality-report`, `--target-cache`,
-`--strict`, `--wrap-main`) belong to `build` alone and are refused by
+`--strict`, `--wrap-main`, `-o`) belong to `build` alone and are refused by
 name.
 
 `check` and `verify` follow every `import`, so a parse failure anywhere

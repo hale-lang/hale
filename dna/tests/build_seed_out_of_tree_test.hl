@@ -1,0 +1,119 @@
+// dna/tests/build_seed_out_of_tree_test.hl — a seed build leaves the
+// source tree as it found it.
+//
+// The host used to run `hale build <seed>`, which writes the binary
+// beside the seed, and then copy it into the build cache; every start
+// left an untracked file in the checkout and `.gitignore` grew a rule
+// per binary. `build_seed_at` passes `-o` now: with a cache the binary
+// is built straight into `<cache>/<fingerprint>/<seed name>` and that
+// path is the answer; without one, into `<root>/.hale/dna/build/…`.
+//
+// Proved on `build_seed_at` itself, which takes the cache directory
+// as a parameter, so no organism is started and nothing touches the
+// caller's real cache.
+
+import "../core" as dna;
+import "../host" as host;
+
+fn hale_bin() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn write_seed(root: String, body: String) {
+    dna::run_tool("mkdir\n-p\n" + root + "/app");
+    std::io::fs::write_file(root + "/hale.toml", "[deps]\n") or discard;
+    std::io::fs::write_file(root + "/app/main.hl", body) or discard;
+}
+
+// Every file under `dir`, one path per line, sorted.
+fn listing(dir: String) -> String {
+    let r = dna::run_tool("sh\n-c\ncd -- \"$1\" && find . -mindepth 1 | sort\nsh\n" + dir);
+    return dna::trim_nl(r.stdout);
+}
+
+fn main() {
+    let hale = hale_bin();
+    let ok_src = "fn main() { }\n";
+
+    // No cache: the binary goes under the project's own `.hale/`, and
+    // the seed directory holds only its source.
+    let a = dna::scratch_root("build-seed-nocache");
+    write_seed(a, ok_src);
+    let r = host::build_seed_at(hale, a, a + "/app", "");
+    std::test::assert_eq_str(r.why, "", "the build succeeds");
+    std::test::assert_eq_str(r.bin, a + "/.hale/dna/build/app/app", "no cache: built under .hale/dna/build/<seed>/");
+    std::test::assert(std::io::fs::file_exists(r.bin), "the binary is there");
+    std::test::assert_eq_str(listing(a + "/app"), "./main.hl", "the seed directory is untouched");
+    std::test::assert_eq_int(dna::run_tool(r.bin).code, 0, "and it runs");
+
+    // A cache: built into the entry, renamed whole, answered in place.
+    let b = dna::scratch_root("build-seed-cache-root");
+    let cache = dna::scratch_root("build-seed-cache");
+    write_seed(b, ok_src);
+    let first = host::build_seed_at(hale, b, b + "/app", cache);
+    std::test::assert_eq_str(first.why, "", "the cached build succeeds");
+    std::test::assert(std::str::starts_with(first.bin, cache + "/"), "answered from the cache entry: " + first.bin);
+    std::test::assert(std::str::ends_with(first.bin, "/app"), "the entry keeps the seed's name: " + first.bin);
+    std::test::assert(std::io::fs::file_exists(first.bin), "the binary is in the entry");
+    std::test::assert_eq_str(listing(b + "/app"), "./main.hl", "the seed directory is untouched by a cached build");
+    std::test::assert(!std::io::fs::file_exists(b + "/.hale/dna/build/app/app"), "a cached build does not also build under .hale");
+    let lst = listing(cache);
+    std::test::assert(!std::str::contains(lst, ".build."), "no private build directory is left in the cache: " + lst);
+
+    // A second build of the same sources is a hit: same path, same bytes.
+    let before = dna::sha256_file(first.bin);
+    let second = host::build_seed_at(hale, b, b + "/app", cache);
+    std::test::assert_eq_str(second.bin, first.bin, "a hit answers the same path");
+    std::test::assert_eq_str(dna::sha256_file(second.bin), before, "and is not rebuilt");
+
+    // Another root, byte-identical sources: the fingerprint is of the
+    // project and not of where it sits, so it is the same entry.
+    let c = dna::scratch_root("build-seed-cache-root2");
+    write_seed(c, ok_src);
+    let third = host::build_seed_at(hale, c, c + "/app", cache);
+    std::test::assert_eq_str(third.bin, first.bin, "identical sources share one entry");
+
+    // A build that fails names itself, answers "", and leaves neither
+    // a binary nor a half-made directory behind.
+    let d = dna::scratch_root("build-seed-broken");
+    write_seed(d, "fn main( {\n");
+    let broken = host::build_seed_at(hale, d, d + "/app", cache);
+    std::test::assert_eq_str(broken.bin, "", "a failing build has no binary");
+    std::test::assert(len(broken.why) > 0, "and says why");
+    std::test::assert_eq_str(listing(d + "/app"), "./main.hl", "the failed build wrote nothing into the seed directory");
+    let lst2 = listing(cache);
+    std::test::assert(!std::str::contains(lst2, ".build."), "the failed build's private directory is removed: " + lst2);
+
+    // The cache holds BUILD_CACHE_KEEP entries: forty stale ones (and an
+    // old-layout file entry) are pruned, the fresh one and its binary
+    // survive, and pruning removes directories, not only files.
+    let f = dna::scratch_root("build-seed-prune-root");
+    let pcache = dna::scratch_root("build-seed-prune-cache");
+    write_seed(f, ok_src);
+    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"old$i/app\"; touch -t 200101010000 \"old$i\"; i=$((i+1)); done; echo stale > oldfile; touch -t 200101010000 oldfile\nsh\n" + pcache);
+    let fresh = host::build_seed_at(hale, f, f + "/app", pcache);
+    std::test::assert_eq_str(fresh.why, "", "the build beside a full cache succeeds");
+    std::test::assert(std::io::fs::file_exists(fresh.bin), "the fresh binary survives the pruning");
+    let kept = dna::run_tool("sh\n-c\nls -1 -- \"$1\" | wc -l | tr -d ' '\nsh\n" + pcache);
+    std::test::assert_eq_str(dna::trim_nl(kept.stdout), "32", "the cache is held to 32 entries");
+    std::test::assert(!std::io::fs::file_exists(pcache + "/oldfile"), "an old-layout file entry is pruned too");
+
+    // The default project's own app IS its root.
+    let e = dna::scratch_root("build-seed-root-app");
+    std::io::fs::write_file(e + "/hale.toml", "[deps]\n") or discard;
+    std::io::fs::write_file(e + "/main.hl", ok_src) or discard;
+    let root_app = host::build_seed_at(hale, e, e, "");
+    std::test::assert_eq_str(root_app.why, "", "an app-at-root builds");
+    std::test::assert(std::str::starts_with(root_app.bin, e + "/.hale/dna/build/"), "under .hale/dna/build: " + root_app.bin);
+    std::test::assert(!std::io::fs::file_exists(e + "/" + dna::trim_nl(dna::run_tool("basename\n" + e).stdout)), "and not beside main.hl");
+
+    dna::scratch_done(a);
+    dna::scratch_done(b);
+    dna::scratch_done(c);
+    dna::scratch_done(d);
+    dna::scratch_done(e);
+    dna::scratch_done(f);
+    dna::scratch_done(pcache);
+    dna::scratch_done(cache);
+}

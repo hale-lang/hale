@@ -61,6 +61,11 @@ myapp/                            # the project — one seed
 
 Build: `hale build myapp/` → `myapp/myapp` binary (next to
 source; directory's basename becomes the binary name).
+`hale build myapp/ -o <path>` writes the binary at exactly `<path>`
+instead — its directories are made, no extension is added, and
+nothing is written beside the source; a wasm build puts its `.mjs`
+loader next to the `.wasm` at `<path>`. `-o` belongs to `build`
+alone: `run` and `replay` execute their binary and refuse it.
 
 The center of the project is one named locus declared in
 `main.hl` (per the apps-are-loci rule in `spec/styleguide.md`).

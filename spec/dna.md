@@ -4681,11 +4681,20 @@ exec shims. The host decides nothing.
 The host builds the organization's seed before it starts it, and the
 application's seed too under `dev`; it rebuilds both on a restart. A
 build is a pure function of what it reads, so the host does it **once
-per content fingerprint** and copies the binary thereafter. The cache
-is `$XDG_CACHE_HOME/hale/dna-build` (or `~/.cache/hale/dna-build`), a
-sibling of the toolchain cache the host and the surface are themselves
-built into; it holds the 32 most recently used
-binaries and prunes the rest.
+per content fingerprint** and starts the stored binary thereafter. The
+cache is `$XDG_CACHE_HOME/hale/dna-build` (or `~/.cache/hale/dna-build`),
+a sibling of the toolchain cache the host and the surface are themselves
+built into; it holds the 32 most recently used entries and prunes the
+rest. An entry is a directory, `<fingerprint>/<seed name>`, so the
+process keeps the seed's own name.
+
+A build never writes into the seed's directory. The host passes `hale
+build -o`: with a cache the binary is built into a private directory
+beside the entries and renamed whole to its entry, and the entry's path
+is what the host starts; without one (`HALE_DNA_NO_BUILD_CACHE`, no
+cache home, a fingerprint that could not be taken) it is built into
+`.hale/dna/build/<seed>/<seed name>` under the project root. Either way
+a checkout has no binary in it afterwards.
 
 The fingerprint is a SHA-256 over:
 
@@ -4703,12 +4712,12 @@ The fingerprint is a SHA-256 over:
 - the seed's own path, because a binary carries the paths of the
   sources it was built from.
 
-A hit is a copy and nothing else: the binary is copied beside the
-seed and renamed over its place, so a reader sees the old file or the
-whole new one, and a binary that is still running is replaced rather
-than written through. A store is the same rename into the cache, so
-two hosts building one thing at once need no lock; one of them wins
-and both are right. Anything that stops the fingerprint being taken
+A hit is the entry used where it lies, and nothing else is done. A
+store is one rename of a whole directory into the cache, so a reader
+sees a whole entry or none, and a binary that is still running keeps
+its inode when its entry is replaced or pruned. Two hosts building one
+thing at once need no lock: the second rename finds the entry there
+and drops its own copy, and both are right. Anything that stops the fingerprint being taken
 whole — no cache home, `hale inputs` failing — is a miss, and a miss
 builds exactly as it did before. `HALE_DNA_NO_BUILD_CACHE=1` makes
 every build a miss.

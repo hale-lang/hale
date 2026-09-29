@@ -8,8 +8,8 @@ redaction with a stale local blob. They do not test domain admission or executio
 From the repository root, build the API once and run the HTTP suite:
 
 ```sh
-hale build dna/api
-HALE_API_BIN="$PWD/dna/api/api" \
+hale build dna/api -o target/seeds/api/api
+HALE_API_BIN="$PWD/target/seeds/api/api" \
 HALE_BIN="$(command -v hale)" \
 HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
 hale test dna/api/tests/read_api_test.hl

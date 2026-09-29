@@ -44,6 +44,10 @@ name = "check_cli"
 path = "tests/check_cli.rs"
 
 [[test]]
+name = "seeds_build_out_of_tree"
+path = "tests/seeds_build_out_of_tree.rs"
+
+[[test]]
 name = "dna_fixture_ports_are_free"
 path = "tests/dna_fixture_ports_are_free.rs"
 

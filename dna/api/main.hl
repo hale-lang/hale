@@ -1,5 +1,5 @@
-// Build: hale build dna/api
-// Run: dna/api/api <project-root> <port> [face-webroot]
+// Build: hale build dna/api -o <path>
+// Run: <binary built with `hale build dna/api -o …`> <project-root> <port> [face-webroot]
 // Commands: the api binding, `hale describe <socket>` (commands.hl)
 // A single-Record surface, always loopback. Explicitly configured or composed
 // command providers own native authority and durable recovery. No legacy
