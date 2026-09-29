@@ -46,6 +46,7 @@ main locus App {
     bindings {
         api: unix("/run/app.sock", bound: 64, on_full: refuse);
     }
+    run() { while !self.draining { std::time::sleep(100ms); } }   // serve until SIGTERM
 }
 
 fn main() {
@@ -53,7 +54,9 @@ fn main() {
 }
 ```
 
-The `api:` entry is the whole change. It binds every topic a locus
+The `api:` entry is the whole change. (`App`'s `run()` is what keeps
+the program up: `billing` runs on an `async_io` pool, which does not
+hold the process open on its own once `main`'s `run()` ends.) It binds every topic a locus
 of this seed subscribes as a **command** (`Verdicts`), every topic
 such a locus publishes as a **stream** (`Prices`), and every `expose`
 of the main locus or of its default children as a **read**
@@ -69,7 +72,10 @@ subscribes is served under its qualified name, `lib::Orders`).
 To serve a library's handler locus as it is, hold it as a param of
 your main locus and name it after the transport:
 
-```hale
+```hale,fragment
+import "../../dna/api" as api;    // wherever the libraries sit beside your seed
+import "../../dna/core" as dna;
+
 main locus Head {
     params { commands: api::Commands = api::Commands { }; core: dna::Dna = dna::Dna { }; }
     bindings {
@@ -120,6 +126,10 @@ and each answer carries your `id` plus the binding's own
 {"stream": "Prices", "value": {"sym": "ABC", "price": 1.5}}
 ```
 
+(Each answer also carries the `caller` the binding established; see
+[Who is calling](#who-is-calling). Answers come in the order the
+program produces them, so match them by `id`.)
+
 A command whose handler has no return type is answered `{"ok":
 true, "accepted": true}` the moment it is dispatched: that is what
 "accepted" means for this binding, and it is the same promise
@@ -153,6 +163,8 @@ main locus App {
             http("127.0.0.1", 8793, principals: Tokens { });
     }
 }
+
+fn main() { App { }; }
 ```
 
 Each request is one POST whose body is one line of the same wire,
@@ -262,7 +274,9 @@ A handler that wants the caller declares it, and nothing on the
 `subscribe` line changes:
 
 ```hale
+type Refund { order_id: Int; amount: Int; }
 type RefundResult { ok: Bool; by: String; }
+topic Refunds { payload: Refund; }
 
 locus Billing {
     bus { subscribe Refunds as on_refund; }
@@ -277,7 +291,7 @@ locus Billing {
 
 The second parameter is `std::api::Context`: the caller, the
 request id, `via` (`api` through the socket, `http` through the
-binding's HTTP transport — see below — or `local`), and the role
+binding's HTTP transport — see above — or `local`), and the role
 that authorized the message (empty when the operation is not gated). A message that did not
 come through the binding hands the handler the local principal, so a
 handler never asks whether it was reached from outside; it reads
@@ -295,11 +309,19 @@ deployment fact. So the requirement is written once, on the
 operation, and the mapping lives beside the socket path.
 
 ```hale
+type Ledger { balance: Int; entries: Int; }
+type Refund { order_id: Int; amount: Int; }
+type RefundResult { ok: Bool; by: String; }
+type Move { amount: Int; }
+topic Refunds { payload: Refund; }
+topic Moved   { payload: Move; }
+
 role refund_support;
 role auditor;
 role owner includes refund_support;      // whoever is owner may do what support may
 
 locus Billing {
+    params { ledger: Ledger = Ledger { balance: 100, entries: 0 }; }
     contract {
         @gated(role: auditor) expose ledger: Ledger;     // a gated read
     }
@@ -311,6 +333,7 @@ locus Billing {
     fn on_refund(r: Refund, ctx: std::api::Context) -> RefundResult {
         // ctx.role is the role that authorized this call: "refund_support",
         // or "owner" for an owner, so the handler can write its own audit row.
+        Moved <- Move { amount: r.amount };
         return RefundResult { ok: true, by: ctx.caller.name };
     }
 }
@@ -333,7 +356,7 @@ Who holds a role is written in `hale.toml`, per environment:
 [environments.prod.roles]
 refund_support = ["group:support-leads"]
 auditor        = ["user:audit", "uid:1007"]
-owner          = ["user:riley"]
+owner          = ["user:alice"]
 ```
 
 `hale build --env prod` (or `hale run --env prod`) bakes that table
@@ -341,7 +364,7 @@ into the binding; the members are matched against the peer's
 credentials (`uid:`; `gid:` against the primary group and the
 supplementary groups the kernel reports for the connection; `user:`
 and `group:` resolved once at start per the account database; `*`
-for any authenticated peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:riley"`
+for any authenticated peer). `LOTUS_API_ROLES="refund_support=uid:1000;owner=user:alice"`
 overrides it at run time, which is how a test drives it. A table
 naming a role the program does not declare, or a member outside
 those spellings, is refused at start with the reason, the same rule
@@ -356,11 +379,20 @@ entry as an expression the main locus evaluates, so it can be built
 with the program's own state and kept as a handle:
 
 ```hale
+locus RecordRoles {                      // a std::api::RoleSource
+    params { root: String = "."; }
+    fn holds(p: std::api::Principal, r: String) -> Bool {
+        return r == "owner" && p.name == "uid:1000";   // ask the record at self.root
+    }
+}
+
 main locus Head {
     params { root: String = "."; roles: RecordRoles = RecordRoles { }; }
     bindings { api: unix("/run/head.sock", bound: 64, on_full: refuse, roles: self.roles); }
     birth() { self.roles.root = self.root; }
 }
+
+fn main() { Head { }; }
 ```
 
 That is how a program whose positions are roles answers from its own
@@ -413,5 +445,5 @@ page shows the rest greyed out with the role each item needs.
   transport answers calls, reads and describes, and a watch is the
   socket's.
 - Transitive privilege inference (flagging `api -> OrderPlaced ->
-  on_order -> refund` as an escalation) is a later, opt-in claim;
-  `@gated` is a boundary check and says so.
+  on_order -> refund` as an escalation) is not part of `@gated`,
+  which is a boundary check and says so.

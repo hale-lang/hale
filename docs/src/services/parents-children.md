@@ -14,8 +14,10 @@ A locus declares it can parent a child type by implementing
 `accept`:
 
 ```hale
+type Player { name: String; }
+
 locus GameSession {
-    params { players: [Player]; tick: Int = 0; }
+    params { host: Player; tick: Int = 0; }
 }
 
 locus Room {
@@ -26,7 +28,7 @@ locus Room {
 
     fn on_join(p: Player) {
         // instantiating a child inside a parent method attaches it
-        GameSession { players: [p] };
+        GameSession { host: p };
     }
 }
 ```
@@ -63,6 +65,8 @@ doesn't become a detached throwaway — it **bubbles up to the
 nearest ancestor that does** accept it.
 
 ```hale
+locus Ship { params { hull: Int = 0; } }
+
 locus World {
     accept(s: Ship) { }          // a top-level registry of ships
 }
@@ -106,32 +110,37 @@ keep the value.
 
 ## The contract: what crosses the boundary
 
-A child decides what its parent may see by declaring a
-`contract`:
+A child declares what its parent may see in a `contract`, and a
+parent declares what it reads:
 
 ```hale
+type SessionState = enum { Lobby, Playing, Over };
+
 locus GameSession {
-    params { tick: Int = 0; state: SessionState; }
+    params { tick: Int = 0; state: SessionState = SessionState::Lobby; }
     contract {
-        expose tick: Int;          // parent may read this
+        expose tick: Int;          // the parent may read this
         expose state: SessionState;
-        consume clock: Time;       // parent must provide this
     }
 }
 
 locus Room {
-    contract { consume clock: Time; }
+    contract { consume tick: Int; }        // what Room reads from a session
     accept(g: GameSession) {
         if g.tick > 1000 { /* ... */ }     // reading an exposed field
     }
 }
 ```
 
-`expose` is what the child lets the parent read; `consume` is
-what the child needs the parent to provide. Anything not in the
-contract is invisible across the boundary — the compiler rejects
-reads of un-exposed fields. You don't write hiding logic; the
-structural boundary does it.
+`expose` is what the child offers its parent; `consume` is what
+the parent reads from the child type it accepts. The compiler
+checks the two against each other: every name a parent consumes
+must be one its child type exposes, with the same type, and a
+parent that consumes with no `accept` to bind against is an
+error. The check is on the declarations: a parent's direct read
+of a field the child did not expose (`g.secret`) still compiles
+today, so treat the contract as the boundary you have declared
+and checked, not as a wall around the rest.
 
 ## Flow is vertical only
 
@@ -198,12 +207,15 @@ locus Server {
   declares it; if a child you meant to keep is reclaimed when its
   `run()` returns, `hale check --flows` lists every `release(c: T)`
   in the program, imported seeds included, with its file and line.
-- What a handler hands a resident lives only for that dispatch.
-  The payload and any container a handler builds (`@form(vec)` rows,
-  Strings) are reclaimed when the handler returns, so a resident
-  born from a handler that must keep them copies them in its own
-  `birth()`, cloning the Strings, into storage it owns. Reading them
-  later from the handler's arena is a use after free.
+- What a handler hands a resident is copied or refused, never left
+  dangling. The payload and anything the handler builds belong to
+  that dispatch and are reclaimed when the handler returns. A
+  String, a row or a payload field handed to the resident is copied
+  into its own storage as it is stored. A container that is a locus
+  (a `@form(vec)` the handler built) would be a borrow that dies
+  with the dispatch, so `hale check` refuses it at the argument; the
+  resident copies the rows into a `@form(vec)` of its own in
+  `birth()` instead.
 - A locus can also end *itself* early with **`terminate;`** —
   the locus analogue of `return`. It exits the method and lets
   the runtime tear the locus down. For a resident that is the

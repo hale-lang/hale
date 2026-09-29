@@ -74,11 +74,18 @@ taking the declaration's default, the same way it can fill any
 interface-typed field:
 
 ```hale
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 200; }
+    fn health() -> Int { return 1; }
+}
+
 main locus App {
     params {
         gw: Gateway = Gateway { router: RouterV2 { } };  // not RouterV1
     }
 }
+
+fn main() { App { }; }
 ```
 
 `RouterV2` must `serves Router`; a locus that doesn't is refused
@@ -91,7 +98,7 @@ the real one, and the holder's source never changes.
 
 `self.router.route(...)` doesn't call `RouterV1` directly — it goes
 through the perspective's **slot**. That indirection is the whole
-point: it's the seam a future redeploy re-points.
+point: it's the seam a redeploy re-points.
 
 ## One slot, not many handles
 
@@ -124,19 +131,34 @@ The whole point of the slot is that it can be re-pointed while the
 program runs. `reperspective` does exactly that:
 
 ```hale
+perspective Router {
+    fn route(code: Int) -> Int;
+    fn health() -> Int;
+}
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int { return code + 100; }
+    fn health() -> Int { return 1; }
+}
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 200; }
+    fn health() -> Int { return 1; }
+}
+
 locus Gateway {
     params { router: perspective(Router) = RouterV1 { }; }
     run() {
-        println(self.router.route(1));        // RouterV1
+        println(self.router.route(1));        // 101 — RouterV1
         reperspective self.router as RouterV2;
-        println(self.router.route(1));        // RouterV2 — same call site
+        println(self.router.route(1));        // 201 — RouterV2, same call site
     }
 }
+
+fn main() { Gateway { }; }
 ```
 
 The `self.router.route(...)` call didn't change. What changed is
-what's behind the slot: `reperspective` instantiated a fresh
-`RouterV2` and flipped the slot to it. Because every holder shares
+what's behind the slot: `reperspective` stored `RouterV2`'s code
+into the slot, over the state `RouterV1` was running on. Because every holder shares
 the one slot, that single flip redirects the entire program at
 once — no matter how many places call through the perspective.
 
@@ -160,8 +182,8 @@ A few rules:
   This is sound because every impl of a perspective must share the
   same **footprint** (same params, same types). A version that
   *changes* the footprint — adds a field, changes a type — can't
-  reinterpret the old state, so it's a compile error today: that's
-  the `migrate` case, a later slice.
+  reinterpret the old state, so it's a compile error: that's the
+  `migrate` case, which isn't supported yet.
 - **Cost.** A swap is a single pointer store (the vtable). Nothing
   is re-instantiated and nothing is torn down — the state was never
   the code.

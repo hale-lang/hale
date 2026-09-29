@@ -20,7 +20,8 @@ Hale keeps two failure mechanisms strictly separate:
   *locus tower* to the parent's `on_failure`. "A promised
   property no longer holds; the supervisor decides."
 
-There's no `panic`, no `assert`, no exceptions. Every legitimate
+There's no `panic` statement, no exceptions, and `assert` lives only
+in the test library. Every legitimate
 failure is one of these two, and they only meet at the program's
 root.
 
@@ -66,8 +67,10 @@ type. The failing child's type picks the handler, so each child's
 failure reaches its own:
 
 ```hale
-main locus App {
-    params { server: std::http::Server; cache: Cache = Cache { }; }
+locus Cache { params { hits: Int = 0; } }
+
+locus App {
+    params { cache: Cache = Cache { }; server: std::http::Server; }
     on_failure(s: std::http::Server, err: ClosureViolation) { eprintln("server down"); }
     on_failure(c: Cache, err: ClosureViolation) { restart(c); }
 }
@@ -85,6 +88,13 @@ default or is written in the parent's literal where the parent
 is built — the usual way to configure a child from `main()`:
 
 ```hale
+locus Conn { params { url: String = ""; } }
+
+main locus App {
+    params { conn: Conn; }
+    on_failure(c: Conn, err: ClosureViolation) { restart(c); }
+}
+
 fn main() {
     App { conn: Conn { url: std::env::var("URL") } };
 }
@@ -168,8 +178,22 @@ supervisor take over. You bridge with an *inline* closure and the
 `violate` statement:
 
 ```hale
+type Query { sql: String; }
+type Row   { data: String; }
+topic QueryRequest { payload: Query; }
+topic QueryResult  { payload: Row; }
+
+fn send_query(fd: Int, q: Query) -> Row fallible(IoError) {
+    if fd < 0 { fail IoError { kind: "broken_pipe", errno: 32, path: "" }; }
+    return Row { data: q.sql };
+}
+
 locus DbConnection {
-    params { last_error: String = ""; }
+    params { conn_fd: Int = -1; last_error: String = ""; }
+    bus {
+        subscribe QueryRequest as on_query;
+        publish   QueryResult;
+    }
 
     closure fatal_io { captures: last_error; epoch inline; }
 
@@ -192,12 +216,15 @@ locus DbConnection {
 
 - `closure fatal_io { ... epoch inline; }` is a *named structural
   failure* with no assertion — it only fires when you say so. The
-  `captures:` clause snapshots locus state into the violation
-  payload.
+  `captures:` clause names the state the failure is about. The
+  `ClosureViolation` itself has a fixed shape (which locus, which
+  closure), so the supervisor reads that state through the child
+  handle it is given: `c.last_error` in `on_failure(c, err)`.
 - `violate fatal_io;` fires it. It's divergent (the `Never` type,
   like `fail` and `bubble`), so the branches that violate need no
-  `return`. The locus enters drain at the next yield; the parent's
-  `on_failure` gets the typed violation with the captured state.
+  `return`. It fires on the spot: `self.draining` turns true, the
+  parent's `on_failure` runs with the typed violation, and the
+  method exits as a `return` would.
 - `self.draining` is a Bool every locus can read — true once it's
   decided to wind down. Use it to stop publishing after the
   decision.
