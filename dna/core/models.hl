@@ -351,10 +351,13 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
 // `Authorization: Bearer` header: OpenAI and everything that speaks
 // its shape) or `x-api-key` (Anthropic's native API); no adapter
 // composes a header with the material in it.
+// The vault's name for the model key `key`.
+fn model_key_slot(key: String) -> String { return "model-" + key; }
+
 @sealed locus HostedCredential {
     params { key: String = "OPENAI_API_KEY"; scheme: String = "bearer"; }
     // the vault's name for it, read where it is presented and nowhere else
-    fn slot() -> String { return "model-" + self.key; }
+    fn slot() -> String { return model_key_slot(self.key); }
     fn ready() -> Bool { return std::secret::Credential { vault: self.slot() }.ready(); }
     @effects(is: { secret_use })
     fn fingerprint() -> String {

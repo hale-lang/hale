@@ -479,7 +479,7 @@ fn with_field(json: String, key: String, raw: String) -> String {
 
 // ---- credentials ---------------------------------------------------------
 
-// The model credentials the catalog names (`env_var: "X"` in
+// The model keys the catalog names (`HostedCredential { key: "X" }` in
 // dna/org/models.hl), space-separated: the host's own scan.
 @unbounded
 fn catalog_credentials(root: String) -> String {
@@ -487,9 +487,9 @@ fn catalog_credentials(root: String) -> String {
     let mut out = "";
     let mut rest = catalog;
     while true {
-        let at = std::str::index_of(rest, "env_var: \"");
+        let at = std::str::index_of(rest, "HostedCredential { key: \"");
         if at < 0 { break; }
-        let after = rest[(at + 10)..len(rest)];
+        let after = rest[(at + 25)..len(rest)];
         let q = std::str::index_of(after, "\"");
         if q < 0 { break; }
         let name = after[0..q];
@@ -528,6 +528,21 @@ fn words_json(words: String) -> String {
     return b.result();
 }
 
+// The keys among `words` whose vault slot holds a value (GH #989: the one
+// source a key is read from), asked by presence, never read.
+@unbounded
+fn vault_present(words: String) -> String {
+    let mut out = "";
+    let mut rest = words;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let word = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(word) > 0 && std::secret::Credential { vault: dna::model_key_slot(word) }.ready() { out = out + (if len(out) > 0 { " " } else { "" }) + word; }
+    }
+    return out;
+}
+
 // The names among `words` that are set in this process's environment.
 @unbounded
 fn env_present(words: String) -> String {
@@ -542,12 +557,16 @@ fn env_present(words: String) -> String {
     return out;
 }
 
-// `GET /head`'s `credentials` object for the active project.
+// `GET /head`'s `credentials` object for the active project: the keys the
+// catalog names, those the vault holds (what a model reads), and the
+// sources `dna.secret.set` may fill a slot from — the operator's files and
+// the needed names set in the head's environment. Names only.
 fn credentials_json(cfg: HeadConfig, root: String) -> String {
     let needed = if len(root) > 0 { catalog_credentials(root) } else { "" };
     let b = std::json::Builder { };
     b.begin_object();
     b.field("needed", words_json(needed));
+    b.field("vault_present", words_json(vault_present(needed)));
     b.field("file_sources", words_json(file_names(cfg.sources_dir)));
     b.field("env_present", words_json(env_present(needed)));
     b.end_object();

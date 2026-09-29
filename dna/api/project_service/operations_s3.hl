@@ -91,32 +91,12 @@ fn s3_body_mode(ctx: HeadContext) -> String {
     return "";
 }
 
-// The model credentials the catalog names (`env_var: "X"` in
-// dna/org/models.hl), space-separated — the host's own scan.
-@unbounded
-fn s3_catalog_credentials(root: String) -> String {
-    let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
-    let mut out = "";
-    let mut rest = catalog;
-    while true {
-        let at = std::str::index_of(rest, "env_var: \"");
-        if at < 0 { break; }
-        let after = rest[(at + 10)..len(rest)];
-        let q = std::str::index_of(after, "\"");
-        if q < 0 { break; }
-        let name = after[0..q];
-        if len(name) > 0 && !std::str::contains(" " + out + " ", " " + name + " ") { out = if len(out) == 0 { name } else { out + " " + name }; }
-        rest = after[(q + 1)..len(after)];
-    }
-    return out;
-}
-
 // The catalog's credentials that are set in the head's environment: the
 // names an `env` secret source may name. Names only, never values.
 @unbounded
 fn s3_env_present(root: String) -> String {
     let mut out = "";
-    let mut rest = s3_catalog_credentials(root);
+    let mut rest = catalog_credentials(root);
     while len(rest) > 0 {
         let sp = std::str::index_of(rest, " ");
         let name = if sp < 0 { rest } else { rest[0..sp] };

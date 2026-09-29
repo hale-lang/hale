@@ -148,7 +148,7 @@ locus HeadFixture {
         self.git("config\ngc.auto\n0");
         std::io::fs::mkdir(self.project + "/dna") or discard;
         std::io::fs::mkdir(self.project + "/dna/org") or discard;
-        std::io::fs::write_file(self.project + "/dna/org/models.hl", "// fixture catalog\n// env_var: \"FIXTURE_MODEL_KEY\"\n") or discard;
+        std::io::fs::write_file(self.project + "/dna/org/models.hl", "// fixture catalog\n// HostedCredential { key: \"FIXTURE_MODEL_KEY\" }\n") or discard;
         std::io::fs::write_file(self.project + "/.gitignore", ".hale/\n") or discard;
         std::io::fs::write_file(self.project + "/README.md", "# head fixture\n") or discard;
         self.journal = dna::GitJournal { repo: self.project };

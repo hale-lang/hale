@@ -29,7 +29,7 @@ const headData = s => ({
   active: s.active ? { application_id: APP, root: '/home/operator/dna/demo', name: 'demo', api: { port: 8793, state: s.apiState, pid: 555 } } : null,
   state_dir: '/home/operator/.local/state/hale/dna/head', sources_dir: '/home/operator/.config/hale-dna/sources', projects_dir: '/home/operator/dna',
   children: { body: child(s.body) },
-  credentials: { needed: ['MODEL_API_KEY', 'SEARCH_API_KEY'], file_sources: ['MODEL_API_KEY'], env_present: ['SEARCH_API_KEY'] },
+  credentials: { needed: ['MODEL_API_KEY', 'SEARCH_API_KEY'], vault_present: [], file_sources: ['MODEL_API_KEY'], env_present: ['SEARCH_API_KEY'] },
   busy: s.busy, operations: s.operations.map(operation => ({ ...operation, available: !s.unavailable.includes(operation.name) && (s.active || HEAD_SCOPED.has(operation.name)), reason_code: s.unavailable.includes(operation.name) ? 'body_running' : s.active || HEAD_SCOPED.has(operation.name) ? '' : 'detached' }))
 });
 const project = (s, detail) => ({

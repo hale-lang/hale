@@ -6202,6 +6202,13 @@
             "minLength": 1
           }
         },
+        "vault_present": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "file_sources": {
           "type": "array",
           "items": {
@@ -6219,11 +6226,12 @@
       },
       "required": [
         "needed",
+        "vault_present",
         "file_sources",
         "env_present"
       ],
       "additionalProperties": false,
-      "description": "Names only: the credentials the catalog names, the operator's file sources, and the needed names set in the head's environment. No value ever crosses this wire."
+      "description": "Names only: the model keys the catalog names; those whose vault slot holds a value, the one source a model reads a key from; and the sources dna.secret.set may fill a slot from, the operator's file sources and the needed names set in the head's environment. No value ever crosses this wire."
     },
     "HeadOperation": {
       "type": "object",
