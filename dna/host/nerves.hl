@@ -50,9 +50,15 @@ fn nerves_migrate_verb(root: String) -> Answer {
     let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
     out = out + dna::NATS_SPINE_URL_ENV + "=" + url + "\n";
     out = out + dna::NATS_HEAD_URL_ENV + "=" + url + "\n";
-    out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
     out = out + dna::NATS_REFLEXES_URL_ENV + "=" + url + "\n";
-    out = out + "HALE_DNA_NATS_VAULT_APP=" + dna::nerves_vault_name(org, "app") + "\n";
+    // GH #989: the attached application's own account, when the record
+    // attaches one that holds it
+    let app = attached_application(root);
+    if len(app) > 0 && len(dna::nerves_app_refusal(app)) == 0 {
+        out = out + dna::NATS_APP_URL_ENV + "=" + url + "\n";
+        out = out + dna::NATS_APP_USER_ENV + "=" + dna::nerves_app_user(app) + "\n";
+        out = out + dna::NATS_APP_VAULT_ENV + "=" + dna::nerves_app_vault(org, app) + "\n";
+    }
     out = out + "HALE_DNA_NATS_VAULT_REFLEXES=" + dna::nerves_vault_name(org, "reflexes") + "\n";
     return answer(out);
 }

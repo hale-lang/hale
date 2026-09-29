@@ -92,6 +92,32 @@ fn organizations_in_record(root: String) -> String {
     }
     return out;
 }
+// GH #989: the application the record attaches, by the name its broker
+// account carries — `application.attached`'s `name`, or for a row written
+// before it named one, the project's directory, as `hale dna init` names
+// it — and "" when none is attached or an `application.detached` row
+// removed it. The record is the membership source.
+@unbounded
+fn attached_application(root: String) -> String {
+    let j = dna::GitJournal { repo: root };
+    let mut name = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "application.attached" {
+            let named = std::json::find_string_field(e.body, "name");
+            name = dna::nerves_app_name(if len(named) > 0 { named } else { project_dir_name(root) });
+        }
+        if e.kind == "application.detached" && dna::nerves_app_name(std::json::find_string_field(e.body, "name")) == name { name = ""; }
+        i = i + 1;
+    }
+    return name;
+}
+// The last segment of the project's directory, resolved.
+fn project_dir_name(root: String) -> String {
+    let r = dna::run_tool("sh\n-c\nbasename \"$(cd \"$1\" && pwd -P)\"\nsh\n" + root);
+    return if r.code == 0 { dna::trim_nl(r.stdout) } else { "" };
+}
 // Every organization the graph names, as memory projects it.
 fn owners_here(root: String) -> String {
     let o = dna::Ownership { graph: ownership_graph_here(root), me: owner_here(root), me_env: "" };

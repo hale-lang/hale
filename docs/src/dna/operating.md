@@ -316,10 +316,11 @@ $ HALE_DNA_NATS_URL_OWNER=nats://nats.internal:4222 hale dna nerves migrate
 HALE_DNA_NATS_ORG=dna_9f3c…
 HALE_DNA_NATS_URL_SPINE=nats://nats.internal:4222
 HALE_DNA_NATS_URL_HEAD=nats://nats.internal:4222
-HALE_DNA_NATS_URL_APP=nats://nats.internal:4222
 HALE_DNA_NATS_URL_REFLEXES=nats://nats.internal:4222
-HALE_DNA_NATS_VAULT_APP=nats-dna_9f3c…-app
 HALE_DNA_NATS_VAULT_REFLEXES=nats-dna_9f3c…-reflexes
+HALE_DNA_NATS_URL_APP=nats://nats.internal:4222
+HALE_DNA_NATS_USER_APP=app-shop
+HALE_DNA_NATS_VAULT_APP=nats-dna_9f3c…-app-shop
 ```
 
 `hale dna nerves drop` deletes the stream, and everything it held, with
@@ -372,9 +373,10 @@ spine may not publish `<org>.head.>`; `hale dna upgrade` says what to
 add.
 
 Every fact travels over the nerves. A fleet
-node hands each instance it starts the application's server, the vault
-name of its credential and the organization's token it was started with
-(`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`,
+node hands each instance it starts the application's server, its own
+user and the vault name of that user's credential, and the
+organization's token it was started with (`HALE_DNA_NATS_URL_APP`,
+`HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`,
 which `hale dna nerves migrate` prints), and an
 instance that raises a concern publishes it onto the nerves itself, as
 one of its own events. The heart lands it and the spine puts it into

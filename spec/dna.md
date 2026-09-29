@@ -1251,20 +1251,43 @@ repository:
   `<org>.<owner>.dna.>` (the host and the organization), reads
   `<org>.app.>` through the durable `heart` (the host), and publishes
   `<org>.head.>` and an owner's `<org>.<owner>.head.>`; `head`
-  subscribes and publishes nothing; `app`
-  publishes on `<org>.app.*.>` and reads nothing of DNA's. `hale dna nerves migrate [dir]`
+  subscribes and publishes nothing; the application the record attaches
+  holds a user of its own, `app-<name>` (**The application's
+  account**), which publishes on `<org>.app.<name>.>` alone and reads
+  nothing of DNA's. `hale dna nerves migrate [dir]`
   creates or updates the stream with the owner's URL
   (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
   `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG`, one
   `HALE_DNA_NATS_URL_<ROLE>` per role — `nats://host:port` alone — and
-  `HALE_DNA_NATS_VAULT_APP` and `_REFLEXES`, the vault names a program
-  that is not the host presents; `hale dna dev` runs it
+  `HALE_DNA_NATS_VAULT_REFLEXES`, and for the attached application
+  `HALE_DNA_NATS_USER_APP` and `HALE_DNA_NATS_VAULT_APP`: the users and
+  vault names a program that is not the host presents; `hale dna dev` runs it
   before it starts the host and hands the host the spine's URL and the
   token, never the owner's nor the head's; `hale dna run` takes the
   two from its environment and has the owner's and the head's removed
   from it. `hale dna nerves drop [dir]` deletes the stream, and
   everything it held, with the owner's URL — beside dropping memory's
   schema, when an organization is torn down.
+- **The application's account** (GH #989). The application the record
+  attaches is named by its project: the project's name as a subject
+  token (lower-case letters and digits, anything else `_`, at most 32),
+  recorded as `name` on the `application.attached` row when it lands. A
+  row recorded before that field resolves by the project's directory
+  name: a record is data already written, not an API kept compatible.
+  An application publishes under its project's name. Its user is
+  `app-<name>`, its password the vault's `nats-<org>-app-<name>` and
+  `dna/nats.conf`'s `$NATS_APP_<NAME>_PASSWORD`, and it may publish on
+  `<org>.app.<name>.>` and nowhere else; no other application's
+  subjects, nor the reflexes'. It is provisioned when
+  `application.attached` lands (`hale dna init` lands it, then
+  provisions the organism's secrets) and on every `upgrade` that finds
+  it missing. `hale dna application remove [project] [--as <who>]`
+  writes `application.detached {name, by}` to the record, the
+  membership's source, and revokes the account: its user leaves
+  `dna/nats.conf`, its password the include and its entry the vault,
+  and compose's `nerves` is restarted, so a connection it holds is
+  closed and none opens again. An application named `reflexes` holds
+  no account: those subjects are the reflexes' alone.
 - **The nerves' passwords** (GH #989) are the vault's, one per role
   and seed, `nats-<org>-<role>` (**The organism's secrets**). A part
   that connects holds `std::secret::Credential { vault: … }` beside its
@@ -1275,7 +1298,8 @@ repository:
   host, the reflexes); nothing connects with a default.
   - **The server's files.** `dna/nats.conf` is a tracked seed file with
     no secret in it: it `include`s `./nats.secrets.conf` and names each
-    user's password as its variable (`$NATS_<ROLE>_PASSWORD`).
+    user's password as its variable (`$NATS_<ROLE>_PASSWORD`, and the
+    attached application's `$NATS_APP_<NAME>_PASSWORD`).
     `dna/nats.secrets.conf`, written by the bootstrap from the same draw
     as the vault's entries, is the one file that holds a password: mode
     600, ignored by the project's `.gitignore` (which `init` and
@@ -1314,10 +1338,11 @@ repository:
   still unanswered.
 - **The heart's events** (GH #987). An application's one hookup to DNA
   is its events. It declares each as a topic of its own, under its own
-  subject `app.<app>.<event>`, binds it to pond's `NatsAdapter` with a
+  subject `app.<app>.<event>`, `<app>` its project's name (**The
+  application's account**), binds it to pond's `NatsAdapter` with a
   codec that writes one JSON object, and publishes it through a pinned
-  `NatsConn` as the `app` user, presenting the vault's entry
-  `HALE_DNA_NATS_VAULT_APP` names, under the organization's prefix,
+  `NatsConn` as its own user (`HALE_DNA_NATS_USER_APP`), presenting the
+  vault's entry `HALE_DNA_NATS_VAULT_APP` names, under the organization's prefix,
   acknowledged by the
   stream. It imports nothing of DNA. The event names itself: its body
   is one JSON object as `std::json::valid_object` admits it (well-formed
@@ -1381,8 +1406,9 @@ repository:
   an application's concern is one of its own events (**The heart's
   events**; **The application side**). An application — an instance a
   node starts, the expression `dev` starts — inherits the application's
-  server, the vault name of its credential and the organization's token
-  (`HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_VAULT_APP`,
+  server, its own user and the vault name of that user's credential,
+  and the organization's token (`HALE_DNA_NATS_URL_APP`,
+  `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`,
   `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
   started with them), and none of the organism's other credentials: the
   spine's, the owner's, the head's and the reflexes' NATS URLs and
@@ -1403,7 +1429,8 @@ record's.
 
 | kind | memory | what it is |
 |---|---|---|
-| `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain |
+| `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain, and its `name`, which its broker account carries |
+| `application.detached` | record | the attached application removed (`hale dna application remove`): its `name` and who; its broker account is revoked |
 | `structure.observed` | record | the compiler's model of one of its parts, at `init` |
 | `graph.node` | record | a node of the repository's graph, entity `<kind>:<name>` (**The repository's graph**) |
 | `graph.edge` | record | a hyperedge of it, entity its id: kind, members `{role, node}` in order, `via`, `outside` |
@@ -4447,8 +4474,10 @@ that uses one runs; per-member secrets are provisioned at that member's
 admission, and are not on the organism's list: an owner's head role on
 a shared record (`postgres-<schema>_head_<owner>`) where the owner
 is declared to memory (`memory migrate` under `HALE_DNA_OWNER_KEYS`);
-a node's own account and a per-application broker account, not yet
-built. One skin-owned function
+a node's own account, not yet built. The application the record
+attaches is the exception on the list: its broker account is drawn
+once `application.attached` lands, and revoked by `application.detached`
+(**The application's account**). One skin-owned function
 (`dna/host/secrets.hl`, `organism_secrets`) holds the list, and one
 (`provision_secrets`) provisions it; every other part only consumes a
 secret, by its vault name, and never creates one.
@@ -4457,7 +4486,8 @@ secret, by its vault name, and never creates one.
 |---|---|---|
 | `postgres-dna_<identity>_spine`, `_head` | drawn | memory's roles (**Memory**) |
 | `postgres-owner-<seed>`, when the seed has `dna/compose.yaml` | drawn | the compose database's superuser |
-| `nats-<org>-<role>`, for `owner spine head app reflexes` | drawn | the nerves' accounts (**The nerves**) |
+| `nats-<org>-<role>`, for `owner spine head reflexes` | drawn | the nerves' accounts (**The nerves**) |
+| `nats-<org>-app-<name>`, while the record attaches the application | drawn | the application's broker account (**The application's account**) |
 | `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
 | `oidc-service-<service>`, per `dna.oidc.service` | drawn | a service client (**The principal source**) |
 | `forge-token` | slot | the forge's token: with none, nothing is done at the forge, never as `gh`'s own login |
@@ -4482,8 +4512,8 @@ secret, by its vault name, and never creates one.
   what the vault lacks. The local vault is one directory per user, not a
   boundary between the parts one user runs: any of them can read any
   entry by name. What keeps a part to its own credential is what it is
-  handed (an application gets the app's vault name and none of the
-  others'), not what it could read.
+  handed (an application gets its own account's vault name and none of
+  the others'), not what it could read.
 - **Presented, never held.** A credential is presented by the adapter
   that puts it on the wire, and never exists as a String elsewhere: a
   part carries a `std::secret::Credential { vault: … }` (a sealed
@@ -4622,8 +4652,8 @@ routes; it never plans on a reading.
   tier. They hold the store's read URL and a publish-only credential,
   the `reflexes` user of the nerves (`HALE_DNA_NATS_URL_REFLEXES`, which
   `hale dna nerves migrate` prints). That user may publish on
-  `<org>.app.reflexes.>` alone, and the `app` user is denied it, so no
-  application can speak as the reflexes. They hold nothing else: never
+  `<org>.app.reflexes.>` alone, and an application's user may publish
+  only under its own name, so no application can speak as the reflexes. They hold nothing else: never
   the record, memory or the vault. To the organism they are one more
   application.
   - **The rule.** One is built in, `instance.down`: an instance its node
@@ -4900,6 +4930,7 @@ otherwise.
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
+| `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
 | `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
