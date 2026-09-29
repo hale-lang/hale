@@ -9,6 +9,7 @@ pub(crate) mod fleet;
 pub(crate) mod fmt;
 pub(crate) mod help;
 pub(crate) mod init;
+pub(crate) mod misc;
 pub(crate) mod model;
 pub(crate) mod replay;
 pub(crate) mod run;

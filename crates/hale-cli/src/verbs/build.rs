@@ -1,3 +1,8 @@
+use crate::iris;
+use crate::shared::options::parse_exec_build_options;
+use super::run::run_program;
+use crate::shared::options::split_target_args;
+use super::help::usage;
 use crate::shared::imports::AliasScopes;
 use std::collections::BTreeMap;
 use crate::EffectTable;
@@ -544,4 +549,89 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// The dispatch arm `main` held inline for this verb, moved out verbatim (C5 step 8).
+pub(crate) fn run_build_or_run(cmd: &str, args: &[String]) -> ExitCode {
+    let (before, target, after) = split_target_args(&args[2..]);
+    let target = match target {
+        Some(t) => PathBuf::from(t),
+        None => {
+            usage();
+            return ExitCode::from(2);
+        }
+    };
+    if cmd == "build" {
+        // `build` has no trailing operand of its own, so the
+        // flags on both sides are one list.
+        let mut flags = before;
+        flags.extend(after);
+        return run_build(&target, &flags);
+    }
+    // `hale run` compiles the program to a temporary binary
+    // (the same codegen backend as `hale build`) and executes
+    // it — there is no separate interpreter. The program's
+    // trailing argv is forwarded to the exec'd process, so
+    // `hale run script.hl foo bar` makes the program's
+    // `std::env::arg(1..)` see ["foo", "bar"] exactly as a
+    // built binary run directly would. That is why the
+    // splitter's rule stops at the target here: after it, a
+    // `--flag` is the PROGRAM's, not ours.
+    let mut user_args = after;
+    // GH #527 B3: `hale run --observe <target>` — the program
+    // publishes its observation segment (LOTUS_OBS=1, inherited
+    // by the child) and an iris session runs beside it for the
+    // program's lifetime. The flag is consumed here; nothing
+    // reaches the program's argv. Accepted immediately after
+    // the target too, the spelling that shipped in B3. The
+    // session writes to its own pipe and dies with this process
+    // whatever kills it (GH #905) — the program's stdout stays
+    // the command's output, and there is no orphan left holding
+    // it open.
+    let mut observe = before.iter().any(|f| f == "--observe");
+    if !observe && user_args.first().map(String::as_str) == Some("--observe") {
+        observe = true;
+        user_args.remove(0);
+    }
+    // GH #904: everything else before the target is a BUILD
+    // option, parsed by the parser `hale build` uses and
+    // honored. `run` used to compile with `BuildOptions::
+    // default()` no matter what was passed, so a build flag was
+    // first read as the target, then (GH #900) named and
+    // refused — and the documented spot-check `hale run
+    // prog.hl` could exercise neither a dev build nor an FFI
+    // program. One parser, so `build` and `run` cannot drift.
+    let build_flags: Vec<String> = before
+        .iter()
+        .filter(|f| *f != "--observe")
+        .cloned()
+        .collect();
+    let options = match parse_exec_build_options("run", &build_flags) {
+        Ok(o) => o,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            eprintln!(
+                "(`hale run` takes its flags before the target; \
+                 everything after the target is the program's argv)"
+            );
+            return ExitCode::from(2);
+        }
+    };
+    if observe {
+        // GH #887: `LOTUS_OBS=1` is for the PROGRAM, and it used
+        // to be planted in this process's environment for the
+        // child to inherit. `set_var` is undefined behaviour once
+        // a process has threads, and `iris::spawn_session()` on
+        // the next line starts one — so it travels on the child's
+        // own `Command` instead, which is where it was always
+        // meant to arrive. Nothing in this process reads it.
+        let session = iris::spawn_session();
+        let code = run_program(&target, &user_args, options, true);
+        if let Some(mut s) = session {
+            let _ = s.kill();
+            let _ = s.wait();
+        }
+        return code;
+    }
+    return run_program(&target, &user_args, options, false);
 }
