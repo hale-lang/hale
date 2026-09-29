@@ -322,14 +322,33 @@ locus MemoryKnowledge {
         asked: Int = 0;
         answered: Int = 0;
         last_error: String = "";
+        // GH #1225: what this client read of the record, kept until it can
+        // change — the record's identity (fixed once it has a first row),
+        // and its last knowledge row at the organism's journal revision
+        // it was read at — and how often it read the record at all
+        scope: String = "";
+        scope_repo: String = "";
+        knowledge_row: Int = -1;
+        knowledge_rev: Int = -1;
+        record_reads: Int = 0;
     }
     fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    // The record's identity, read once it has one: a record with no rows
+    // has none yet, and is asked again until it does.
+    fn record_identity() -> String {
+        if len(self.scope) == 0 || self.scope_repo != self.repo {
+            self.scope = record_scope(self.repo);
+            self.scope_repo = self.repo;
+            self.record_reads = self.record_reads + 1;
+        }
+        return self.scope;
+    }
     // The store scoped to the record as it is now (a record that had no
     // rows when the store opened, and has some now, moves to its own
     // schema), and a connection that still answers.
     @unbounded
     fn ensure_open() -> Bool {
-        let scope = record_scope(self.repo);
+        let scope = self.record_identity();
         self.store.dsn_env = self.dsn_env;
         if scope != self.store.record() { self.store.scope(scope); }
         if self.store.healthy() { return true; }
@@ -420,11 +439,20 @@ locus MemoryKnowledge {
     }
     // Whether memory's projection has reached the record's last knowledge
     // row, asked without waiting (GH #995): a step that needs it waits as a
-    // step, never inside the handler that answers verdicts.
+    // step, never inside the handler that answers verdicts. `revision` is
+    // the organism's journal revision: the record is read for its last
+    // knowledge row only when that moved (GH #1225: every tick asks, and a
+    // quiet organism's record has nothing new to say), and memory's
+    // watermark, which moves on its own, is asked every time.
     @unbounded
-    fn caught_up() -> Bool {
+    fn caught_up(revision: Int) -> Bool {
         if !self.ready() || !self.ensure_open() { return false; }
-        return self.store.watermark() >= last_knowledge_row(self.repo) + 1;
+        if revision != self.knowledge_rev {
+            self.knowledge_row = last_knowledge_row(self.repo);
+            self.knowledge_rev = revision;
+            self.record_reads = self.record_reads + 1;
+        }
+        return self.store.watermark() >= self.knowledge_row + 1;
     }
     // The record row memory ratified an idea at (GH #995: the idea and its
     // binding fenced to that head), -1 while memory does not hold it

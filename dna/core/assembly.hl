@@ -2566,7 +2566,7 @@ locus Dna {
     fn on_step_requested(s: StepAsk) {
         let moved = self.journal.refresh();
         self.attempts.release_recorded();
-        if last_segment(s.request.work_id) == "hat" { self.memory_ready = self.knowledge_client.caught_up(); }
+        if last_segment(s.request.work_id) == "hat" { self.memory_ready = self.knowledge_client.caught_up(self.journal.revision()); }
         if !self.perform_step(s) { self.steps.wait(s); }
     }
     // Every waiting step performed again; those that reported leave the
@@ -2576,7 +2576,7 @@ locus Dna {
     // once whether its projection caught up; a verdict or an answer
     // revisits the others, never blocking on memory.
     fn revisit_steps(on_tick: Bool) {
-        if on_tick { self.memory_ready = self.knowledge_client.caught_up(); }
+        if on_tick { self.memory_ready = self.knowledge_client.caught_up(self.journal.revision()); }
         let mut left = 0;
         let mut i = 0;
         while i < self.steps.count() {
