@@ -68,7 +68,14 @@
  * _Static_asserts after them, so the emitter and the consumer
  * cannot disagree about a byte and both build. */
 #define OBS_ENTRY_CAP 256
-#define OBS_INSTANCE_CAP 4096
+/* Live loci the instance table can name at once. A dissolved locus
+ * gives its slot back (see `g_inst_free`), so this bounds the loci
+ * ALIVE together, not the loci born over the process's life: it used
+ * to be the latter, and a program that instantiated its 4,097th locus
+ * kept emitting births whose dissolves were then dropped for want of
+ * an id to name (the dissolve probe finds the id by looking the
+ * instance up here). */
+#define OBS_INSTANCE_CAP 16384
 
 /* ekinds (PROTOCOL §8) — this file's short names for the header's. */
 #define EK_EPOCH OBS_EK_EPOCH
@@ -427,7 +434,11 @@ static _Atomic int g_topic_count = 0;
 typedef struct { void *self; uint32_t id, type_id, parent; int live; }
     obs_inst_t;
 static obs_inst_t g_inst[OBS_INSTANCE_CAP];
-static _Atomic int g_inst_count = 0;
+static _Atomic int g_inst_count = 0;   /* high-water mark of slots used */
+/* Slots whose locus dissolved, most recent last; guarded by
+ * g_obs_lock like every writer of the table. */
+static int g_inst_free[OBS_INSTANCE_CAP];
+static int g_inst_free_n = 0;
 static _Atomic uint32_t g_next_inst_id = 1;
 
 /* per-thread ring assignment (SPSC: one producer per ring). */
@@ -3192,7 +3203,17 @@ void lotus_obs_locus_birth(void *self, const char *type_name,
       atomic_fetch_add(&g_next_inst_id, 1) & 0xFFFFFu;
   uint32_t parent = parent_self ? obs_inst_id_of(parent_self) : 0;
   int n = atomic_load(&g_inst_count);
-  if (n < OBS_INSTANCE_CAP) {
+  if (g_inst_free_n > 0) {
+    /* A dissolved locus's slot. Readers do not take the lock, and skip
+     * a slot until it says live, so the fields go in first and `live`
+     * is the release that publishes them. */
+    int slot = g_inst_free[--g_inst_free_n];
+    g_inst[slot].self = self;
+    g_inst[slot].id = inst_id;
+    g_inst[slot].type_id = type_id;
+    g_inst[slot].parent = parent;
+    __atomic_store_n(&g_inst[slot].live, 1, __ATOMIC_RELEASE);
+  } else if (n < OBS_INSTANCE_CAP) {
     g_inst[n] = (obs_inst_t){ .self = self, .id = inst_id,
                               .type_id = type_id, .parent = parent,
                               .live = 1 };
@@ -3211,8 +3232,9 @@ void lotus_obs_locus_dissolve(void *self, int64_t reason) {
   int n = atomic_load(&g_inst_count);
   for (int i = 0; i < n; i++) {
     if (g_inst[i].self == self && g_inst[i].live) {
-      g_inst[i].live = 0;
       inst_id = g_inst[i].id;
+      __atomic_store_n(&g_inst[i].live, 0, __ATOMIC_RELEASE);
+      g_inst_free[g_inst_free_n++] = i;
       break;
     }
   }
