@@ -1,0 +1,10 @@
+# Systems control
+
+Everything so far has been about what a program is. This part is about how it runs, and how much of that you choose to see. Nothing here changes the meaning of a program you already wrote. It shows the machinery under it and hands you its controls.
+
+- **Memory.** A locus owns an arena, and a whole region frees at once when the locus dissolves. There is no garbage collector and no borrow checker, because no pointer crosses sideways ([Memory & lifetime](../systems/memory.md)). [Performance](../systems/performance.md) names the few patterns that can still grow a long-running process, and how to see them.
+- **Layout.** `@form(vec)` and its siblings are compiled per element type, not wrapped in a generic container ([Forms under the hood](../systems/forms.md)). A same-machine route that carries hundreds of thousands of messages a second can skip the copy at the locus boundary with a shared-memory ring ([Zero-copy & the high-frequency bus](../systems/zero-copy-bus.md)). [Modes](../systems/modes.md) asks for a different execution strategy over the same state.
+- **Other worlds.** C symbols through `@ffi("c")` and a small glue file ([Binding C](../systems/binding-c.md)). The same program as `.wasm` with an `.mjs` loader, in the browser ([WebAssembly & the browser](../systems/webassembly.md)).
+- **Watching it run.** `LOTUS_OBS=1` makes any binary publish what it is doing ([Operations & debugging](../systems/operations.md)). Iris attaches to every such process on the machine and shows one live graph of them ([Iris](../systems/iris.md)). A recording can be replayed to the first divergence ([Record & replay](../systems/replay.md)).
+
+**What the next part adds.** Up to here, a program is something you write, check, build and run. [The organism](./organism.md) is a program that is also governed. It keeps a record of every decision made about it, proposes its own changes, proves them with this toolchain, asks the people with authority, applies exactly what they approved, and watches that it worked.
