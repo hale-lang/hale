@@ -91,9 +91,9 @@ main locus App {
 
         // the organization declares them over the project's record
         self.core = dna::Dna { journal: dna::GitJournal { repo: app }, org_id: "cli", planned: true };
-        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", definition: "ask-person", args: "{\"objective\": \"reconcile the day's records\"}", convener: "position:leader" }), "", "a nightly cron is declared");
-        std::test::assert_eq_str(self.core.schedule(dna::Schedule { id: "weekly", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"export last week's ledger\"}", convener: "position:leader" }), "", "an interval is declared");
-        let broken = self.core.schedule(dna::Schedule { id: "broken", cron: "0 25 * * *", definition: "ask-person", args: "{\"objective\": \"never\"}", convener: "position:leader" });
+        std::test::assert_eq_str(self.core.scheduler.declare(dna::Schedule { id: "nightly", cron: "0 2 * * *", definition: "ask-person", args: "{\"objective\": \"reconcile the day's records\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client), "", "a nightly cron is declared");
+        std::test::assert_eq_str(self.core.scheduler.declare(dna::Schedule { id: "weekly", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"export last week's ledger\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client), "", "an interval is declared");
+        let broken = self.core.scheduler.declare(dna::Schedule { id: "broken", cron: "0 25 * * *", definition: "ask-person", args: "{\"objective\": \"never\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client);
         std::test::assert(std::str::contains(broken, "cron `0 25 * * *`: `25` is outside 0-23 in hour"), "a malformed cron is refused at declaration: " + broken);
 
         let list = dna_cli(app, "schedule");
