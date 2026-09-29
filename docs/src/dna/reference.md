@@ -38,8 +38,9 @@ hale dna nerves migrate [dir]
                              create the organization's NATS JetStream stream with the owner's URL
                              (HALE_DNA_NATS_URL_OWNER, or dna/compose.yaml) and print its token, each
                              role's URL, nats://host:port alone (HALE_DNA_NATS_ORG=…,
-                             HALE_DNA_NATS_URL_SPINE=…, …), and the vault names the application and
-                             the reflexes present (HALE_DNA_NATS_VAULT_APP=…, …_REFLEXES=…)
+                             HALE_DNA_NATS_URL_SPINE=…, …), the reflexes' vault name, and the attached
+                             application's own user and vault name (HALE_DNA_NATS_USER_APP=app-<name>,
+                             HALE_DNA_NATS_VAULT_APP=…)
 hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
@@ -130,6 +131,9 @@ hale dna secret set <NAME> [--body <user@host>]
                              record gets `secret.rotated` only
 hale dna secrets [dir]       every secret the organism requires, whether the vault holds it, and what
                              provides a missing one (never a value)
+hale dna application remove [project] [--as <who>]
+                             the attached application removed (`application.detached` in the record)
+                             and its broker account revoked: its user, its password, its vault entry
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one
 hale dna concern raise <source> <what…> [--severity N]
@@ -187,9 +191,11 @@ runs the organism is handed and the organization inherits;
 `HALE_DNA_NATS_URL_HEAD` and `HALE_DNA_NATS_URL_APP`, a head's and an
 application's (the face's head, without its own, subscribes as the head
 on the owner's server or the project's compose `nerves`). No URL carries
-a password: each role's is the vault's `nats-<org>-<role>`, and a program
-that is not the host is handed the name of its entry
-(`HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_VAULT_REFLEXES`). The host
+a password: each role's is the vault's `nats-<org>-<role>`, the attached
+application's `nats-<org>-app-<name>` under its own user `app-<name>`
+(`HALE_DNA_NATS_USER_APP`), and a program that is not the host is handed
+the name of its entry (`HALE_DNA_NATS_VAULT_APP`,
+`HALE_DNA_NATS_VAULT_REFLEXES`). The host
 hands its organization its body lease as `HALE_DNA_LEASE` /
 `HALE_DNA_LEASE_TOKEN` once the ledger is adopted.
 `LOTUS_DRAIN_GRACE_MS` is how long a node has to drain on SIGTERM —
@@ -220,7 +226,8 @@ sequence either way — see [The record](./record.md).
 
 | kind | memory | entity | body |
 |---|---|---|---|
-| `application.attached` | record | the seed | the entrypoint, the artifact's digests, the toolchain |
+| `application.attached` | record | the seed | the entrypoint, the artifact's digests, the toolchain, and `name`: the project's name, which its broker account carries |
+| `application.detached` | record | the seed | `name` and `by`: the application removed, its broker account revoked |
 | `structure.observed` | record | `locus:X`, `topic:X`, `claim:X`, … | the compiler's model of it, `provenance: observed` |
 | `graph.node` | record | `<kind>:<name>` (`process:api`) | a node of the repository's graph: `kind`, `name`, `text`, `source` |
 | `graph.edge` | record | `<kind>:<anchor>` or `<kind>:<anchor>\|<second>` | a hyperedge: `kind`, `members` (`role`, `node`) in order, `via`, `outside` |

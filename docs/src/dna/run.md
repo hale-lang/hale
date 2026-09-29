@@ -261,16 +261,20 @@ main locus Api {
 }
 ```
 
-It imports nothing of DNA. It connects as the `app` user to the server
-`HALE_DNA_NATS_URL_APP` names, presenting the vault's entry
-`HALE_DNA_NATS_VAULT_APP` names (`user: "app"`, `credential:
-std::secret::Credential { vault: … }` on its `NatsConn`; `hale dna nerves
-migrate` prints both, and no URL carries a password), with
-the organization's token and a dot (`HALE_DNA_NATS_ORG`) as its
-connection's `subject_prefix`, and `jetstream: true`, so the
-organization's stream acknowledges each event. Today you hand it those
-two yourself: neither `dev` nor a node passes them to the application
-it starts. The host reads every application's events through one
+It imports nothing of DNA. An application publishes under its
+project's name: `<app>` is the project's name as a subject token, which
+the record attaches it by, and its own user may publish there and
+nowhere else. It connects as that user (`HALE_DNA_NATS_USER_APP`,
+`app-<name>`) to the server `HALE_DNA_NATS_URL_APP` names, presenting
+the vault's entry `HALE_DNA_NATS_VAULT_APP` names (`user`, and
+`credential: std::secret::Credential { vault: … }` on its `NatsConn`;
+`hale dna nerves migrate` prints all three, and no URL carries a
+password), with the organization's token and a dot
+(`HALE_DNA_NATS_ORG`) as its connection's `subject_prefix`, and
+`jetstream: true`, so the organization's stream acknowledges each
+event. `dev` hands them to the application it starts, and a node to
+each instance. `hale dna application remove` detaches the application
+and revokes its account. The host reads every application's events through one
 durable, `heart`, and records each as a `reading.recorded` row,
 `<app>/<event>/<id>`, before anything acts on it:
 
