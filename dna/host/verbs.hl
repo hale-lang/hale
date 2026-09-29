@@ -616,7 +616,32 @@ fn board_verb(p: Projection) -> Answer {
     // GH #989: each secret the organism requires that the vault lacks (the
     // model's keys are the body's to report, above)
     out = out + secrets_board(p.root);
+    // GH #989: the closures the organism absorbed, the latest few
+    out = out + violations_board(p);
     return answer(out + "decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one\n");
+}
+
+// The latest violations the organism absorbed (GH #989, `violation.recorded`:
+// an adapter that could not deliver, a leg that did not settle within its
+// lease, a heart whose pulse stopped), newest last, at most five, and how
+// many there are in all. "" when there are none.
+@unbounded
+fn violations_board(p: Projection) -> String {
+    let total = p.count(dna::VIOLATION_KIND);
+    if total == 0 { return ""; }
+    let mut out = "violations: " + to_string(total) + " recorded, each absorbed by its owner (the latest last)\n";
+    let mut shown = 0;
+    let mut i = p.rows() - 1;
+    let mut lines = "";
+    while i >= 0 && shown < 5 {
+        let e = p.row(i);
+        if e.kind == dna::VIOLATION_KIND {
+            lines = "  " + std::json::find_string_field(e.body, "kind") + " " + std::json::find_string_field(e.body, "subject") + " (" + std::json::find_string_field(e.body, "owner") + "): " + std::json::find_string_field(e.body, "detail") + "\n" + lines;
+            shown = shown + 1;
+        }
+        i = i - 1;
+    }
+    return out + lines;
 }
 
 // ---- report ---------------------------------------------------------

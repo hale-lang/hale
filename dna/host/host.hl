@@ -887,6 +887,7 @@ main locus Host {
         };
         readings: Int = 0; // readings this host landed (GH #987)
         readings_waiting: Bool = false; // said once that readings wait
+        pulse_stopped: Bool = false; // GH #989: this outage of the heart's pulse is recorded
         nerves_on: Bool = false;
         relay: NodeRelay = NodeRelay { };
         // when this node last stopped an organization (monotonic ns; 0
@@ -915,7 +916,9 @@ main locus Host {
         dna::RowLanded: nats::NatsAdapter { };
     }
     // A publish the stream did not acknowledge within the connection's
-    // window collapses it here: a `nerves.lost` row says why, and the node
+    // window collapses it here: an adapter that cannot deliver, a closure
+    // (GH #989) this host absorbs. A `violation.recorded` row
+    // (`adapter_undeliverable`) says why, and the node
     // stops cleanly and exits with NODE_RESTART for its unit to start it
     // again: a fresh process, its connection and its organization's both
     // new, rather than one connection restarted in place beside an
@@ -925,10 +928,25 @@ main locus Host {
     on_failure(c: nats::NatsConn, err: ClosureViolation) {
         let why = c.last_error;
         self.say("nerves: " + why + "; stopping for the unit to start this node again");
-        let ok = append_as(self.root, "nerves.lost", self.holder, "{\"why\": " + quote(why) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host", self.memory);
+        let ok = append_as(self.root, dna::VIOLATION_KIND, "adapter_undeliverable/" + self.holder, dna::violation_body("adapter_undeliverable", "nerves", self.holder, why), "host", self.memory);
         self.stop_to_restart("nerves", dna::NODE_RESTART);
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
+    // GH #989: a heart whose pulse stops, a closure the spine absorbs. The
+    // heart's pull refused while the connection holds (its durable, or the
+    // stream, gone) is recorded once per outage, a `violation.recorded`
+    // row (`pulse_stopped`). The connection makes the durable again and
+    // pulls on, and the organism goes on. A pull answered again ends the
+    // outage, so the next one is a row of its own.
+    fn read_pulse() {
+        if self.verb == "node" || !self.nerves_on { return; }
+        if self.nerves.pull_refused == 0 { self.pulse_stopped = false; return; }
+        if self.pulse_stopped { return; }
+        self.pulse_stopped = true;
+        let why = "the heart's pull on its durable " + dna::NERVES_HEART_DURABLE + " was refused " + to_string(self.nerves.pull_refused) + " time(s) while the connection held: the durable, or its stream, is gone; it is made again";
+        self.say(why);
+        let ok = append_as(self.root, dna::VIOLATION_KIND, "pulse_stopped/" + self.holder + "@" + to_string(std::time::now()), dna::violation_body("pulse_stopped", "heart", self.holder, why), "host", self.memory);
+    }
     // GH #987: an application's event, landed as a reading row before
     // anything acts on it (dna/host/pulse.hl), and acknowledged to the
     // durable only then — or once refused for good: a duplicate, or not a
@@ -1858,6 +1876,7 @@ main locus Host {
         // what the view gained — this tick's rows, the sync's and memory's
         // — onto the nerves for the heads
         let told = self.relay.announce(self.memory);
+        self.read_pulse();
         self.read_model_calls();
         std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("spine")).set(dna::senses_now());
         self.write_status();

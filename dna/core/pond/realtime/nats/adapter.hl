@@ -138,6 +138,13 @@ locus NatsConn {
         ack_sid: Int = 0;
         pull_sid: Int = 0;
         pull_open: Bool = false;
+        // pulls in a row the server refused (a 503: the durable, or its
+        // stream, gone while the connection holds). The owner reads it:
+        // positive is a pulse stopped, back to 0 the pulse again. The
+        // durable is made again on the next step, and the next pull, a
+        // pull's life later, says whether it took.
+        pull_refused: Int = 0;
+        recreate_consumer: Bool = false;
         pull_left: Int = 0;
         pull_deadline_ns: Int = 0;
         // core mode: pending entries below this are covered by the PING
@@ -283,12 +290,22 @@ locus NatsConn {
         if f.op == "HMSG" {
             let status = header_status(f.headers);
             if len(status) > 0 {
-                // 404 no messages / 408 expired / 409 limits: pull again;
-                // 100 is an idle heartbeat
-                if !std::str::starts_with(status, "100") { self.pull_open = false; }
+                // 503: nothing answers the pull while the connection holds
+                // (the durable or its stream is gone). Counted for the
+                // owner, made again on the next step, and pulled again at
+                // the pull's deadline rather than at once
+                if std::str::starts_with(status, "503") {
+                    self.pull_refused = self.pull_refused + 1;
+                    self.recreate_consumer = true;
+                    return;
+                }
+                // 404 no messages / 408 expired / 409 limits: the durable
+                // answered, pull again; 100 is an idle heartbeat
+                if !std::str::starts_with(status, "100") { self.pull_open = false; self.pull_refused = 0; }
                 return;
             }
         }
+        self.pull_refused = 0;
         self.received = self.received + 1;
         if self.is_untyped(f.subject) {
             NatsInbound <- Inbound { subject: f.subject, data: f.data, reply: f.reply };
@@ -380,6 +397,10 @@ locus NatsConn {
                 self.retry_at_ns = now + self.backoff_ms * 1000000;
                 return;
             }
+        }
+        if self.recreate_consumer && len(self.stream) > 0 && len(self.consumer.durable) > 0 {
+            self.recreate_consumer = false;
+            js_consumer_create(self.client, self.stream, self.consumer) or discard;
         }
         if self.pull_sid > 0 && (!self.pull_open || now > self.pull_deadline_ns) { self.pull(); }
         let mut n = 0;

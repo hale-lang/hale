@@ -59,6 +59,35 @@ main locus App {
     fn lend(scratch: String, entry: String) -> Bool {
         return dna::run_tool("sh\n-c\nmkdir -p \"$2\" && cp \"$1/$3\" \"$2/$3\" && chmod 600 \"$2/$3\"\nsh\n" + scratch + "/vault\n" + std::secret::vault_local_dir() + "\n" + entry).code == 0;
     }
+    // The heart's durable deleted, as the owner over compose's nerves (`hp`,
+    // host:port), under this file's own vault, given the owner's entry
+    // alone: "" when done, else why.
+    fn stop_the_heart(org: String, scratch: String, hp: String) -> String {
+        let entry = dna::nerves_vault_name(org, "owner");
+        let copied = dna::run_tool("sh\n-c\numask 077 && cp \"$1/vault/$3\" \"$2/$3\"\nsh\n" + scratch + "\n" + std::secret::vault_local_dir() + "\n" + entry);
+        if copied.code != 0 { return "the owner's entry: " + copied.stderr; }
+        let c = nats::NatsClient { url: "nats://" + hp, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "fixture-owner", timeout: 2s };
+        if !c.open() { return "no owner connection: " + c.last_error; }
+        let r = nats::js_call(c, "$JS.API.CONSUMER.DELETE." + dna::nerves_stream(org) + "." + dna::NERVES_HEART_DURABLE, "") or "";
+        c.close();
+        return if std::str::contains(r, "\"success\":true") { "" } else { "the delete answered: " + r + " " + c.last_error };
+    }
+    // Whether the heart's durable is there again within ten seconds.
+    @unbounded
+    fn heart_again(org: String, hp: String) -> Bool {
+        let c = nats::NatsClient { url: "nats://" + hp, user: "owner", credential: std::secret::Credential { vault: dna::nerves_vault_name(org, "owner") }, name: "fixture-owner", timeout: 2s };
+        if !c.open() { return false; }
+        let mut tries = 0;
+        let mut there = false;
+        while !there && tries < 40 {
+            let r = nats::js_call(c, "$JS.API.CONSUMER.INFO." + dna::nerves_stream(org) + "." + dna::NERVES_HEART_DURABLE, "") or "";
+            there = std::str::contains(r, "\"name\":\"" + dna::NERVES_HEART_DURABLE + "\"");
+            if !there { std::time::sleep(250ms); }
+            tries = tries + 1;
+        }
+        c.close();
+        return there;
+    }
     fn log() -> String { return std::io::fs::read_file(self.app + "/.hale/dev.log") or ""; }
     // Whether the host's log comes to say `text` within `secs`.
     @unbounded
@@ -123,9 +152,17 @@ main locus App {
         let reading = self.logged("the organization reads its facts from the nerves", 300, host);
         let asked = if reading { in_dir(self.app, toolchain() + "\ndna\ntask\ncreate\nsay hello to the nerves") } else { dna::RunResult { code: -1 } };
 
+        // ---- the heart's pulse stops (GH #989): its durable deleted, as the
+        // owner, while the spine's connection holds. The spine records it
+        // once, makes the durable again, and goes on
+        let hp = dna::trim_nl(in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\nport\nnerves\n4222").stdout);
+        let stopped_the_heart = if reading { self.stop_the_heart(org, scratch, hp) } else { "not reading" };
+        let pulse_said = reading && len(stopped_the_heart) == 0 && self.logged("the heart's pull on its durable heart was refused", 60, host);
+        let board = in_dir(self.app, toolchain() + "\ndna\nboard\n.");
+        let remade = reading && len(stopped_the_heart) == 0 && self.heart_again(org, hp);
+
         // ---- GH #989: the application's own account publishes under its
         // name and under no other application's; removed, it is revoked
-        let hp = dna::trim_nl(in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\nport\nnerves\n4222").stdout);
         let lent = reading && self.lend(scratch, dna::nerves_app_vault(org, app_name));
         let own = if lent { self.app_publish(org, app_name, hp, app_name) } else { -3 };
         let other = if lent { self.app_publish(org, app_name, hp, "someone") } else { -3 };
@@ -146,7 +183,11 @@ main locus App {
 
         std::test::assert(reading, "the organization reads its facts from compose's nerves, as the spine: " + self.log());
         std::test::assert(std::str::contains(asked.stdout, "born for intent"), "a task asked from the clone is born over them: " + asked.stdout + asked.stderr + self.log());
-        std::test::assert(!std::str::contains(self.log(), "nerves.lost") && !std::str::contains(self.log(), "Permissions Violation"), "no publish or pull was refused: " + self.log());
+        std::test::assert(!std::str::contains(self.log(), "adapter_undeliverable") && !std::str::contains(self.log(), "Permissions Violation"), "no publish was refused: " + self.log());
+        std::test::assert_eq_str(stopped_the_heart, "", "the owner deleted the heart's durable");
+        std::test::assert(pulse_said, "the spine names the pulse stopped: " + self.log());
+        std::test::assert(std::str::contains(board.stdout, "pulse_stopped heart (") && std::str::contains(board.stdout, "violations: 1 recorded"), "the board shows the violation, recorded once: " + board.stdout + board.stderr);
+        std::test::assert(remade, "and the durable is made again: " + self.log());
         std::test::assert(dropped.code == 0 && std::str::contains(dropped.stdout, "dropped DNA_"), "the owner drops the stream, presenting its credential: " + dropped.stdout + dropped.stderr);
         std::test::assert(own > 0, "the application publishes under its own name (" + to_string(own) + "): " + self.refused);
         std::test::assert_eq_int(other, -1, "and not under another application's");

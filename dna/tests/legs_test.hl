@@ -194,6 +194,19 @@ locus App {
         return n;
     }
     fn has_row(kind: String, entity: String) -> Bool { return self.count_rows(kind, entity) > 0; }
+    // The `violation.recorded` rows of `kind` whose subject is `subject`,
+    // owned by the spine (GH #989).
+    @unbounded
+    fn violations_of(kind: String, subject: String) -> Int {
+        let moved = self.journal.refresh();
+        let mut n = 0; let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == dna::VIOLATION_KIND && std::json::find_string_field(e.body, "kind") == kind && std::json::find_string_field(e.body, "subject") == subject && std::json::find_string_field(e.body, "owner") == "spine" { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
     // An attempt's outcome is requested, once, and not yet answered.
     fn outcome_waits(attempt: String) -> Bool {
         return self.count_rows("attempt.outcome_requested", attempt) == 1 && !self.has_row("attempt.outcome", attempt) && !self.has_row("attempt.outcome_refused", attempt);
@@ -525,6 +538,10 @@ locus App {
         let mut t10 = 0;
         while t10 < 60 * dna::wait_scale() && !self.has_row("effect.redelivered", "attempt:" + a10) { let n = self.core.redrive(); std::time::sleep(250ms); t10 = t10 + 1; }
         std::test::assert(self.has_row("effect.redelivered", "attempt:" + a10), "the lease expired with no outcome: the owner asks again");
+        // GH #989: a closure the owner absorbed, named in the record once for
+        // the lease, before the attempt was asked again
+        let v10 = self.violations_of("lease_unsettled", a10);
+        std::test::assert(v10 == 1, "the lease unsettled is recorded once, owned by the spine: " + to_string(v10) + " " + self.attempt_rows(a10));
         // (the leader: the editor still holds a lease from the single pass, and a
         // claim by the same position would be that lease)
         let again = self.work("next\n--as\nposition:leader\n--kind\nagent");
