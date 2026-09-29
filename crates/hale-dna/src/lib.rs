@@ -96,6 +96,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "record_rows",
     "scheduler",
     "review",
+    "reviews",
     "roles",
     "route",
     "routing",
