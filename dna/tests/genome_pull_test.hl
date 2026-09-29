@@ -173,24 +173,17 @@ main locus App {
 // once none is left, else the pids still running. This shell and the
 // fixture that runs it are not among them.
 fn quiet_under(dir: String, secs: Int) -> String {
-    let script = "d=\"$1\"; me=$$; parent=$PPID; n=$(($2 * 10)); kill_at=$(($n * 2 / 3))\n"
-        + "under() {\n"
-        + "  if [ -d /proc/self ]; then\n"
-        + "    for p in /proc/[0-9]*; do\n"
-        + "      q=${p#/proc/}; { [ \"$q\" = \"$me\" ] || [ \"$q\" = \"$parent\" ]; } && continue\n"
-        + "      c=$(readlink \"$p/cwd\" 2>/dev/null); a=$({ tr '\\000' ' ' < \"$p/cmdline\"; } 2>/dev/null)\n"
-        + "      case \"$c/ $a\" in *\"$d/\"*) echo \"$q\";; esac\n"
-        + "    done\n"
-        + "  else\n"
-        + "    ps -eo pid=,args= | awk -v d=\"$d\" -v me=\"$me\" -v parent=\"$parent\" 'BEGIN { d = d \"/\" } $1 != me && $1 != parent && index($0, d) { print $1 }'\n"
-        + "  fi\n"
-        + "}\n"
-        + "i=0; while [ $i -lt $n ]; do\n"
-        + "  left=$(under); [ -z \"$left\" ] && exit 0\n"
-        + "  [ $i -eq $kill_at ] && kill -KILL $left 2>/dev/null\n"
-        + "  sleep 0.1; i=$(($i + 1))\n"
-        + "done\n"
-        + "echo $(under); exit 1";
+    // one line: run_tool passes each line of its argument as an argument of
+    // its own, so a newline would end `sh -c`'s script there
+    let script = "d=\"$1\"; me=$$; parent=$PPID; n=$(($2 * 10)); kill_at=$(($n * 2 / 3)); "
+        + "under() { if [ -d /proc/self ]; then for p in /proc/[0-9]*; do q=${p#/proc/}; "
+        + "{ [ \"$q\" = \"$me\" ] || [ \"$q\" = \"$parent\" ]; } && continue; "
+        + "c=$(readlink \"$p/cwd\" 2>/dev/null); a=$({ tr '\\000' ' ' < \"$p/cmdline\"; } 2>/dev/null); "
+        + "case \"$c/ $a\" in *\"$d/\"*) echo \"$q\";; esac; done; "
+        + "else ps -eo pid=,args= | awk -v d=\"$d\" -v me=\"$me\" -v parent=\"$parent\" 'BEGIN { d = d \"/\" } $1 != me && $1 != parent && index($0, d) { print $1 }'; "
+        + "fi; }; i=0; while [ $i -lt $n ]; do left=$(under); [ -z \"$left\" ] && exit 0; "
+        + "[ $i -eq $kill_at ] && kill -KILL $left 2>/dev/null; sleep 0.1; i=$(($i + 1)); done; echo $(under); "
+        + "exit 1";
     let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "\n" + to_string(secs));
     return if r.code == 0 { "" } else { dna::trim_nl(r.stdout) };
 }
