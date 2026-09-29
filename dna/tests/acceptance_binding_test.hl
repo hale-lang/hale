@@ -55,9 +55,9 @@ main locus App {
         let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "An expense closes with its receipt.\nevidence: required", author: "org", name: "acceptance/expense-receipt" }, "org");
         let digest = "sha256:" + self.one.verification.receipts.store(doc);
         let p = self.one.journal.append(self.one.journal.revision(), "knowledge.proposed", digest, "{\"digest\": \"" + digest + "\", \"name\": \"acceptance/expense-receipt\"}");
-        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "proposed is not in force");
+        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), "", "proposed is not in force");
         let r = self.one.journal.append(self.one.journal.revision(), "knowledge.ratified", digest, "{}");
-        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), digest, "ratified is in force");
+        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), digest, "ratified is in force");
 
         let a1 = self.one.ask(dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "riley" });
         let t = self.admitted("i1") + ".s0.p";
@@ -67,7 +67,7 @@ main locus App {
 
         // retired: in force no more, and the next job is handed without a condition
         let x = self.one.journal.append(self.one.journal.revision(), "knowledge.retired", digest, "{\"by\": \"sha256:next\"}");
-        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "retired is not in force");
+        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), "", "retired is not in force");
         let a2 = self.one.ask(dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "riley" });
         let t2 = self.admitted("i2") + ".s0.p";
         self.until_handed(t2);

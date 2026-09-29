@@ -63,7 +63,7 @@ locus PracticeProvenanceCases {
         self.append(j, "knowledge.proposed", digest, "{\"name\":\"acceptance/legacy\"" + (if mode == "explicit" { ",\"kind\":\"idea\"" } else if mode == "empty" { ",\"kind\":\"\"" } else { "" }) + "}");
         self.append(j, "knowledge.ratified", digest, "{}");
         let verification = dna::HaleVerification { receipts: receipts }; let body = dna::Dna { planned: true, journal: j, verification: verification };
-        std::test::assert_eq_str(body.practice_in_force("acceptance/legacy"), if mode == "valid" { digest } else { "" }, "hash-checked legacy missing-kind boundary " + mode);
+        std::test::assert_eq_str(body.knowledge_record.practice_in_force("acceptance/legacy"), if mode == "valid" { digest } else { "" }, "hash-checked legacy missing-kind boundary " + mode);
     }
     fn run_cases() {
         let names = "valid invalid started missing ack foreign conflict private support legacy receipt"; let mut i = 0;

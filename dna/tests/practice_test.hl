@@ -55,7 +55,7 @@ main locus App {
         std::test::assert(std::str::contains(knowledge, "\"name\": \"acceptance/expense-receipt\"") && std::str::contains(knowledge, "\"kind\": \"practice\"") && std::str::contains(knowledge, "\"target\": \"org\""), "a named practice for the organization: " + knowledge);
         let review = self.last("review.requested", "review:" + dna::knowledge_review_id(digest));
         std::test::assert(std::str::contains(review, "\"required_authority\": \"board\""), "the Board's Review: " + review);
-        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "not in force until the Board ratifies it");
+        std::test::assert_eq_str(self.one.knowledge_record.practice_in_force("acceptance/expense-receipt"), "", "not in force until the Board ratifies it");
 
         dna::PracticeRequested <- dna::PracticeRequest { request_id: "p2", name: "acceptance/empty", text: "", by: "riley" };
         std::time::sleep(300ms);

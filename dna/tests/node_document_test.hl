@@ -57,8 +57,8 @@ main locus App {
             verdict: "approve", reviewer: "board-member", authority: "board", comment: "Approve exact native bytes."
         };
         let mut ticks = 0;
-        while !body.knowledge_ratified(digest) && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
-        std::test::assert(body.knowledge_ratified(digest), "real Review ratified the exact native candidate");
+        while !body.knowledge_record.ratified(digest) && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
+        std::test::assert(body.knowledge_record.ratified(digest), "real Review ratified the exact native candidate");
         let ratified = ops::apply_record(store, j, receipts);
         std::test::assert_eq_str(ratified.error, "", "native ratification projects");
         self.matches(store, digest, text, true);

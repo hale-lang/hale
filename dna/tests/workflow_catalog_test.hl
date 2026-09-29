@@ -158,7 +158,7 @@ main locus App {
         let ratification = self.one.workflow_admission_of("ratify:" + digest, self.one.journal.revision());
         std::test::assert(len(ratification) > 0, "the decision is admitted as practice-ratify");
         std::test::assert(self.wait_rows("workflow.settled", ratification, 1), "and settles");
-        std::test::assert(self.one.knowledge_ratified(digest), "ratified by its first step");
+        std::test::assert(self.one.knowledge_record.ratified(digest), "ratified by its first step");
         std::test::assert(std::str::contains(self.last("attempt.outcome", ratification + "/wf1/s1/hat/a0"), "no memory is named (HALE_DNA_TEST_NO_MEMORY is not set)"), "the hat fails with the reason, never waits for nothing: " + self.last("attempt.outcome", ratification + "/wf1/s1/hat/a0"));
         std::test::assert(std::str::contains(self.last("workflow.settled", ratification), "failed"), "and the chain settles failed: " + self.last("workflow.settled", ratification));
 

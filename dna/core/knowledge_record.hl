@@ -1,0 +1,407 @@
+// The organization's knowledge as the record holds it (C3, family 3): a
+// proposal's rows, whether the Board ratified it and what retired it, the
+// practice in force by name, and a node's, a binding's or a relationship's
+// change from its request to its effect. It was part of the assembly; as a
+// locus of its own it holds the policy syntax a binding is read with and
+// the direct edge facts a relationship's basis is read from, with the
+// journal and receipt store the assembly lends it at birth. Whose a request
+// is, and the Board's Review a proposal asks for, stay the assembly's: it
+// asks this family for the rows up to `review.requested`, births the
+// Review, then asks for the `*.proposed` row, so the rows land in the order
+// they always did (dna/core/record_rows.hl).
+locus KnowledgeRecord {
+    params {
+        journal: Journal = MemJournal { }; // the assembly's, lent at its birth
+        receipts: Receipts = FileReceipts { }; // the verification's store, lent the same way
+        binding_policy_syntax: KnowledgeBindingPolicySyntax = NoKnowledgeBindingPolicySyntax { };
+        edge_facts: KnowledgeDirectEdgeFacts = NoKnowledgeDirectEdgeFacts { };
+    }
+    fn bind(j: Journal, receipts: Receipts) {
+        self.journal = j;
+        self.receipts = receipts;
+    }
+    // A proposal's rows: `knowledge.proposed` with its receipt stored, and
+    // the `review.requested` that asks the Board; or `knowledge.refused`
+    // when it is lateral. Its digest, "" when refused or not yet written.
+    fn propose(i: Idea, target: String) -> String {
+        let class = classify_binding(i.author, target);
+        if class == "lateral" {
+            let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "lateral: `" + i.author + "` may not bind knowledge to `" + target + "` (siblings do not privately coordinate)");
+            return "";
+        }
+        let doc = knowledge_document(i, target);
+        let raw = self.receipts.store(doc);
+        if len(raw) != 64 || self.receipts.read(raw) != doc { return ""; }
+        let digest = "sha256:" + raw;
+        let review_id = knowledge_review_id(digest);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", review_id);
+        b.string_field("kind", i.kind);
+        b.string_field("author", i.author);
+        b.string_field("target", target);
+        b.string_field("class", class);
+        if len(i.name) > 0 { b.string_field("name", i.name); }
+        if len(i.supersedes) > 0 { b.string_field("supersedes", i.supersedes); }
+        b.int_field("at", std::time::now());
+        b.end_object();
+        if !append_once(self.journal, "knowledge.proposed", digest, b.result()) { return ""; }
+        let question = knowledge_question(i, target);
+        let q = std::json::Builder { };
+        q.begin_object();
+        q.field("question", record_json_quote(question));
+        q.string_field("subject_digest", digest);
+        q.string_field("required_authority", "board");
+        q.string_field("author", i.author);
+        q.string_field("knowledge_digest", digest);
+        q.string_field("kind", i.kind);
+        q.string_field("target", target);
+        q.string_field("class", class);
+        q.end_object();
+        if !append_once(self.journal, "review.requested", "review:" + review_id, q.result()) { return ""; }
+        return digest;
+    }
+    // The `review.requested` body of a knowledge proposal's Review, ""
+    // for any other.
+    @unbounded
+    fn request_of(review_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"knowledge_digest\"") { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // A ratified successor reserves its predecessor before the separate
+    // retirement row lands. A crash between those writes must not admit a
+    // second successor while the first one's retirement is being resumed.
+    @unbounded
+    fn replacing_digest(digest: String) -> String {
+        let retired = self.retired_by(digest);
+        if len(retired) > 0 { return retired; }
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.ratified" {
+                let proposal = first_row(self.journal, "knowledge.proposed", e.entity);
+                if native_json_string(proposal.body, "supersedes") == digest { return e.entity; }
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn resume_result(review_id: String, outcome: String, reviewer: String) -> Bool {
+        let req = self.request_of(review_id);
+        let digest = native_json_string(req, "knowledge_digest");
+        if len(digest) == 0 || digest != native_json_string(req, "subject_digest") { return false; }
+        if outcome != "approve" && outcome != "reject" && outcome != "revise" { return false; }
+        let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let doc = self.receipts.read(raw);
+        if len(doc) == 0 || digest_of(doc) != digest { return false; }
+        let old = native_json_string(doc, "supersedes");
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let revision = self.journal.revision();
+            let settled = first_row(self.journal, "review.settled", review_id);
+            if settled.body != outcome + " by " + reviewer { return false; }
+            if self.ratified(digest) {
+                if outcome != "approve" { return false; }
+                if len(old) == 0 { return true; }
+                let rb = std::json::Builder { };
+                rb.begin_object();
+                rb.string_field("digest", old);
+                rb.string_field("by", digest);
+                rb.string_field("review_id", review_id);
+                rb.string_field("decided_by", reviewer);
+                rb.end_object();
+                return append_once(self.journal, "knowledge.retired", old, rb.result());
+            }
+            if len(first_row(self.journal, "knowledge.refused", digest).kind) > 0 { return true; }
+            if len(first_row(self.journal, "knowledge.declined", digest).kind) > 0 { return outcome != "approve"; }
+            let gone = if len(old) > 0 { self.replacing_digest(old) } else { "" };
+            let refused = outcome == "approve" && len(old) > 0 && (len(gone) > 0 || !self.ratified(old));
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("digest", digest);
+            b.string_field("review_id", review_id);
+            b.string_field("decided_by", reviewer);
+            if refused {
+                b.string_field("supersedes", old);
+                b.string_field("retired_by", gone);
+                b.string_field("why", if len(gone) > 0 { "supersedes a version already retired by " + gone + "; not ratified — propose again against the active version" } else { "supersedes a version that is not ratified; not ratified — propose again against the active version" });
+            } else {
+                b.string_field("outcome", outcome);
+                b.string_field("kind", native_json_string(req, "kind"));
+                b.string_field("target", native_json_string(req, "target"));
+                b.string_field("class", native_json_string(req, "class"));
+                if len(old) > 0 { b.string_field("supersedes", old); }
+                b.int_field("at", std::time::now());
+            }
+            b.end_object();
+            let kind = if refused { "knowledge.refused" } else if outcome == "approve" { "knowledge.ratified" } else { "knowledge.declined" };
+            let appended = self.journal.append_exact(revision, kind, digest, b.result());
+            if !appended.ok {
+                let refreshed = self.journal.refresh();
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, digest).kind) == 0 { return false; }
+            }
+            tries = tries + 1;
+        }
+        return false;
+    }
+    // GH #604: whether the Board ratified the knowledge at `digest`.
+    @unbounded
+    fn ratified(digest: String) -> Bool {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.ratified" && e.entity == digest { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // GH #604: the digest of the practice named `name` that is ratified
+    // and not retired ("" when none is in force).
+    @unbounded
+    fn practice_in_force(name: String) -> String {
+        let n = self.journal.revision();
+        let mut found = "";
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.proposed" && native_json_string(e.body, "name") == name && self.ratified(e.entity) && len(self.retired_by(e.entity)) == 0 {
+                let kind = native_json_string(e.body, "kind");
+                let mut practice = kind == "practice";
+                // Older proposal rows can omit kind. Only their exact retained
+                // canonical Practice document can supply that missing fact;
+                // an explicit retirement or other kind never falls back.
+                if std::json::find_field_raw(e.body, "kind") == "" && digest_well_formed(e.entity) {
+                    let doc = self.receipts.read(e.entity[7..len(e.entity)]);
+                    let idea = Idea { kind: native_json_string(doc, "kind"), name: native_json_string(doc, "name"), text: native_json_string(doc, "text"),
+                        author: native_json_string(doc, "author"), provenance: native_json_string(doc, "provenance"), supersedes: native_json_string(doc, "supersedes") };
+                    practice = len(doc) > 0 && digest_of(doc) == e.entity && idea.kind == "practice" && idea.name == name
+                        && knowledge_document(idea, native_json_string(doc, "target")) == doc;
+                }
+                if practice { found = e.entity; }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    // The digest that retired `digest` (`knowledge.retired <digest>`,
+    // its `by`), "" while it is not retired.
+    @unbounded
+    fn retired_by(digest: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.retired" && e.entity == digest { out = std::json::find_string_field(e.body, "by"); }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // GH #1026: a node request that is neither answered nor started under
+    // another body, the rows the family reads before its owner's check.
+    fn node_fresh(r: KnowledgeNodeRequest) -> Bool {
+        let codec = KnowledgeNodeRequestCodec { };
+        let proposed = first_row(self.journal, "knowledge.node.proposed", r.request_id);
+        let refused = first_row(self.journal, "knowledge.node.refused", r.request_id);
+        if len(proposed.kind) > 0 || len(refused.kind) > 0 { return false; }
+        let started = first_row(self.journal, "knowledge.node.started", r.request_id);
+        return len(started.kind) == 0 || started.body == codec.started(r);
+    }
+    // A node request its owner admits: refused when its candidate is not
+    // the exact document or it binds laterally, else started. Whether it
+    // is started.
+    fn node_started(r: KnowledgeNodeRequest) -> Bool {
+        let codec = KnowledgeNodeRequestCodec { };
+        if digest_of(codec.document(r)) != r.candidate_digest {
+            let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "candidate digest does not match the exact native knowledge document"));
+            return false;
+        }
+        if classify_binding(r.author, r.target) == "lateral" {
+            let x = append_once(self.journal, "knowledge.node.refused", r.request_id, codec.refused(r, "lateral knowledge binding is not permitted"));
+            return false;
+        }
+        return append_once(self.journal, "knowledge.node.started", r.request_id, codec.started(r));
+    }
+    fn node_proposed(r: KnowledgeNodeRequest) -> Bool {
+        let codec = KnowledgeNodeRequestCodec { };
+        return append_once(self.journal, "knowledge.node.proposed", r.request_id, codec.proposed(r));
+    }
+    // A binding request this organization received and has not answered,
+    // the rows read before its owner's check.
+    @unbounded
+    fn binding_fresh(r: KnowledgeBindingRequest) -> Bool {
+        let codec = KnowledgeBindingCodec { };
+        if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return false; }
+        let incoming = codec.fact(self.journal, "knowledge.binding.requested", r.request_id, self.journal.revision());
+        if incoming.kind != "knowledge.binding.requested" || codec.started(codec.decode(incoming.body)) != codec.started(r) { return false; }
+        if len(first_row(self.journal, "knowledge.binding.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "knowledge.binding.refused", r.request_id).kind) > 0 { return false; }
+        let started = first_row(self.journal, "knowledge.binding.started", r.request_id);
+        return len(started.kind) == 0 || started.body == codec.started(r);
+    }
+    // A binding request its owner admits, up to the Board's Review:
+    // refused, or started with its candidate stored and the
+    // `review.requested` written. Whether the Review is asked.
+    @unbounded
+    fn binding_asked(r: KnowledgeBindingRequest) -> Bool {
+        let codec = KnowledgeBindingCodec { };
+        let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
+        let lateral = classify_binding(r.author, r.target) == "lateral";
+        if wrong_digest || lateral {
+            let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r,
+                if wrong_digest { "candidate_mismatch" } else { "lateral_binding" },
+                if wrong_digest { "The exact binding candidate digest does not match." } else { "Lateral knowledge binding is not permitted." }));
+            return false;
+        }
+        if !append_once(self.journal, "knowledge.binding.started", r.request_id, codec.started(r)) { return false; }
+        if !codec.visible(self.journal, self.binding_policy_syntax, r.idea_id, self.journal.revision()) || !codec.visible(self.journal, self.binding_policy_syntax, r.candidate_digest, self.journal.revision()) { return false; }
+        let subject = codec.subject(self.journal, self.receipts, r.idea_id);
+        if !subject.ok { return false; }
+        if !subject.ratified || (r.operation == "dna.knowledge.binding.bind" && !subject.active) {
+            let refused = append_once(self.journal, "knowledge.binding.refused", r.request_id, codec.refused(r, "subject_inactive", "The binding subject is no longer eligible."));
+            return false;
+        }
+        let doc = codec.document(r); let raw = self.receipts.store(doc);
+        if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
+        return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
+    }
+    fn binding_proposed(r: KnowledgeBindingRequest) -> Bool {
+        let codec = KnowledgeBindingCodec { };
+        return append_once(self.journal, "knowledge.binding.proposed", r.request_id, codec.proposed(r));
+    }
+    // A settled binding Review's effect, written once: bound or unbound,
+    // declined, or refused because the binding or its subject moved.
+    @unbounded
+    fn binding_result(r: KnowledgeBindingRequest, review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
+        let codec = KnowledgeBindingCodec { };
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh(); let revision = self.journal.revision();
+            let mut found = Event { }; let mut k = 0;
+            while k < 4 {
+                let kind = nth_word("knowledge.binding.bound knowledge.binding.unbound knowledge.binding.declined knowledge.binding.apply_refused", k);
+                let e = codec.fact(self.journal, kind, r.request_id, revision);
+                if len(e.kind) > 0 { if len(found.kind) > 0 { return false; } found = e; }
+                k = k + 1;
+            }
+            if len(found.kind) > 0 { return codec.effect_of(self.journal, found).ok; }
+            if !codec.visible(self.journal, self.binding_policy_syntax, r.idea_id, revision) || !codec.visible(self.journal, self.binding_policy_syntax, r.candidate_digest, revision) { return false; }
+            let doc = self.receipts.read(r.candidate_digest[7..len(r.candidate_digest)]);
+            if doc != codec.document(r) { return false; }
+            if first_row(self.journal, "review.settled", review_id).body != outcome + " by " + reviewer || first_row(self.journal, "knowledge.binding.proposed", r.request_id).body != codec.proposed(r) { return false; }
+            let basis = codec.basis(self.journal, self.receipts, r, revision);
+            let subject = codec.subject(self.journal, self.receipts, r.idea_id);
+            if !basis.ok || !subject.ok { return false; }
+            let refused = outcome == "approve" && (basis.event_id != r.binding_basis || !subject.ratified || (r.operation == "dna.knowledge.binding.bind" && !subject.active));
+            let code = if basis.event_id != r.binding_basis { "binding_changed" } else { "subject_inactive" };
+            let kind = if outcome != "approve" { "knowledge.binding.declined" } else if refused { "knowledge.binding.apply_refused" } else if r.operation == "dna.knowledge.binding.bind" { "knowledge.binding.bound" } else { "knowledge.binding.unbound" };
+            let body = if outcome != "approve" { codec.declined(r, decision, reviewer, outcome) } else if refused { codec.apply_refused(r, decision, reviewer, code, basis.event_id) } else { codec.effect(r, decision, reviewer) };
+            let appended = self.journal.append_exact(revision, kind, r.request_id, body);
+            if !appended.ok {
+                let refreshed = self.journal.refresh();
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, r.request_id).kind) == 0 { return false; }
+            }
+            tries = tries + 1;
+        }
+        return false;
+    }
+    // A relationship request this organization received and has not
+    // answered, the rows read before its owner's check.
+    @unbounded
+    fn edge_fresh(r: KnowledgeEdgeRequest) -> Bool {
+        let codec = KnowledgeEdgeCodec { };
+        if self.journal.revision() == 0 || self.journal.read(0).digest != r.application_id { return false; }
+        let incoming = codec.fact(self.journal, "knowledge.edge.requested", r.request_id, self.journal.revision());
+        if incoming.kind != "knowledge.edge.requested" || codec.started(codec.decode(incoming.body)) != codec.started(r) { return false; }
+        if len(first_row(self.journal, "knowledge.edge.proposed", r.request_id).kind) > 0 || len(first_row(self.journal, "knowledge.edge.refused", r.request_id).kind) > 0 { return false; }
+        let started = first_row(self.journal, "knowledge.edge.started", r.request_id);
+        return len(started.kind) == 0 || started.body == codec.started(r);
+    }
+    // The endpoints a relationship request names, as the record and the
+    // receipts hold them: whose they are is the owner's check.
+    @unbounded
+    fn edge_endpoints(r: KnowledgeEdgeRequest) -> KnowledgeEdgeEndpoints {
+        let codec = KnowledgeEdgeCodec { };
+        return codec.endpoints(self.journal, self.receipts, r, self.journal.revision());
+    }
+    // A relationship request its owner admits, up to the Board's Review:
+    // refused, or started with its candidate stored and the
+    // `review.requested` written. Whether the Review is asked.
+    @unbounded
+    fn edge_asked(r: KnowledgeEdgeRequest) -> Bool {
+        let codec = KnowledgeEdgeCodec { };
+        let wrong_digest = digest_of(codec.document(r)) != r.candidate_digest;
+        if wrong_digest {
+            let refused = append_once(self.journal, "knowledge.edge.refused", r.request_id, codec.refused(r,
+                "candidate_mismatch", "The exact relationship candidate digest does not match."));
+            return false;
+        }
+        if !append_once(self.journal, "knowledge.edge.started", r.request_id, codec.started(r)) { return false; }
+        if !codec.visible(self.journal, self.binding_policy_syntax, r, self.journal.revision()) { return false; }
+        let subject = codec.endpoints(self.journal, self.receipts, r, self.journal.revision());
+        if !subject.ok { return false; }
+        if !subject.ratified || (r.operation == "dna.knowledge.edge.link" && !subject.active) {
+            let refused = append_once(self.journal, "knowledge.edge.refused", r.request_id, codec.refused(r, "subject_inactive", "The relationship endpoints are no longer eligible."));
+            return false;
+        }
+        let doc = codec.document(r); let raw = self.receipts.store(doc);
+        if len(raw) != 64 || "sha256:" + raw != r.candidate_digest || self.receipts.read(raw) != doc { return false; }
+        return append_once(self.journal, "review.requested", "review:" + codec.review_id(r.candidate_digest), codec.review_request(r));
+    }
+    fn edge_proposed(r: KnowledgeEdgeRequest) -> Bool {
+        let codec = KnowledgeEdgeCodec { };
+        return append_once(self.journal, "knowledge.edge.proposed", r.request_id, codec.proposed(r));
+    }
+    // A settled relationship Review's effect, written once: linked or
+    // unlinked, declined, or refused because the edge or its endpoints
+    // moved.
+    @unbounded
+    fn edge_result(r: KnowledgeEdgeRequest, review_id: String, outcome: String, reviewer: String, decision: String) -> Bool {
+        let codec = KnowledgeEdgeCodec { };
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh(); let revision = self.journal.revision();
+            let mut found = Event { }; let mut k = 0;
+            while k < 4 {
+                let kind = nth_word("knowledge.edge.reviewed_linked knowledge.edge.reviewed_unlinked knowledge.edge.declined knowledge.edge.apply_refused", k);
+                let e = codec.fact(self.journal, kind, r.request_id, revision);
+                if len(e.kind) > 0 { if len(found.kind) > 0 { return false; } found = e; }
+                k = k + 1;
+            }
+            if len(found.kind) > 0 { return codec.effect_of(self.journal, found).ok; }
+            if !codec.visible(self.journal, self.binding_policy_syntax, r, revision) { return false; }
+            let doc = self.receipts.read(r.candidate_digest[7..len(r.candidate_digest)]);
+            if doc != codec.document(r) { return false; }
+            if first_row(self.journal, "review.settled", review_id).body != outcome + " by " + reviewer || first_row(self.journal, "knowledge.edge.proposed", r.request_id).body != codec.proposed(r) { return false; }
+            let basis = codec.basis(self.journal, self.receipts, self.edge_facts, r, revision);
+            let subject = codec.endpoints(self.journal, self.receipts, r, self.journal.revision());
+            if !basis.ok || !subject.ok { return false; }
+            let refused = outcome == "approve" && (basis.event_id != r.edge_basis || !subject.ratified || (r.operation == "dna.knowledge.edge.link" && !subject.active));
+            let code = if basis.event_id != r.edge_basis { "edge_changed" } else { "subject_inactive" };
+            let kind = if outcome != "approve" { "knowledge.edge.declined" } else if refused { "knowledge.edge.apply_refused" } else if r.operation == "dna.knowledge.edge.link" { "knowledge.edge.reviewed_linked" } else { "knowledge.edge.reviewed_unlinked" };
+            let body = if outcome != "approve" { codec.declined(r, decision, reviewer, outcome) } else if refused { codec.apply_refused(r, decision, reviewer, code, basis.event_id) } else { codec.effect(r, decision, reviewer) };
+            let appended = self.journal.append_exact(revision, kind, r.request_id, body);
+            if !appended.ok {
+                let refreshed = self.journal.refresh();
+                if appended.error != "stale_revision" && len(first_row(self.journal, kind, r.request_id).kind) == 0 { return false; }
+            }
+            tries = tries + 1;
+        }
+        return false;
+    }
+}
+// The question a knowledge proposal's Review asks the Board.
+fn knowledge_question(i: Idea, target: String) -> String {
+    return "ratify " + i.kind + " `" + i.text + "` as a " + classify_binding(i.author, target) + " for " + target + "?";
+}

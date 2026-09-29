@@ -41,7 +41,7 @@ fn body_once(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingReque
     body.reconcile_governance();
 }
 fn configured_body_once(repo: String, j: BindingStageJournal) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, binding_policy_syntax: ops::OrganizationJson { } };
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: ops::OrganizationJson { } } };
     body.reconcile_governance();
 }
 fn capture_request(req: dna::WorkRequest) -> String { let b = std::json::Builder { }; b.begin_object(); dna::request_json(b, req); b.end_object(); return b.result(); }
