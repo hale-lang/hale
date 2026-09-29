@@ -41,6 +41,20 @@ fn unique_tag(label: &str) -> String {
 
 fn build_binary(src: &str, label: &str) -> PathBuf {
     let prog = hale_syntax::parse_source(src).expect("parse");
+    // Through the checker `hale build` runs, not around it: this test
+    // built the program with `build_executable`, which skips the
+    // checker, and so passed for as long as `hale build` refused the
+    // same program with "unknown type `Drain`" (`Drain<T>` was declared
+    // by no one the strict annotation check consults).
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("main".to_string(), &prog);
+    let bundle = hale_types::Bundle::new(programs);
+    let errors: Vec<String> = hale_types::check_bundle_for_build(&bundle, false)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(errors.is_empty(), "`hale build` refuses this program: {errors:?}");
     let bin = harness::unique_bin(&format!("lotus_shm_drain_{}.bin", unique_tag(label)));
     build_executable_with_options(&prog, &bin, &[], &build_opts::options()).expect("build");
     bin
