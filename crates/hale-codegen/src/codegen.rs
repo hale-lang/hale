@@ -5904,14 +5904,6 @@ pub(crate) struct LocusInfo<'ctx> {
     /// lowering and child-instantiation sites (which must call
     /// parent.accept before child.birth, per F.7).
     pub(crate) accept_param: Option<(String, String)>,
-    /// True when the accept param's type is not spelled as the bare
-    /// name of the locus it resolves to: an alias (`accept(c: Kid)`
-    /// for `type Kid = Child`), generic arguments (`accept(c:
-    /// Cell<Int>)`, which lowers as `Cell_Int`) or a `std::` path. The
-    /// ownership graph records the spelling, so its `accepts` row does
-    /// not name the child lowering sees; `lower_locus_instantiation`
-    /// reads `accept_param` for such a locus instead.
-    pub(crate) accept_param_respelled: bool,
     /// For loci that declare `release(child: ChildLocus)` (2026-05-30,
     /// the death-side bookend), the child param's (binding name, child
     /// locus name). None otherwise. Its presence marks `ChildLocus` a

@@ -567,7 +567,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["locus declarations (params, accept, release)", "bodies (let, assign, return, field initialisers, placement entries)", "fresh factories (one producer)", "returned bindings"],
         producer: Some(site(TY_OWN, "resolve_owners")),
         legacy: &[
-            legacy(OWNERSHIP_GRAPH, "build_ownership_graph", "which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; built once in the resolved program for lowering and once more by the model builder inside `hale check`, over the un-desugared bundle", "one ownership table with both relations (phase 1.3); the model reads it when the check runs over the resolved program (phase 2)"),
+            legacy(OWNERSHIP_GRAPH, "build_ownership_graph", "which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name, the child type resolved by `child_locus_name`; built once in the resolved program for lowering and once more by the model builder inside `hale check`, over the un-desugared bundle", "one ownership table with both relations (phase 1.3); the model reads it when the check runs over the resolved program (phase 2)"),
             legacy(MODEL_BUILDER, "Owns", "the model's params-field tree from main, a third ownership account", "projected from the one table"),
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
             legacy(OWNERSHIP_GRAPH, "classify_owner_kind", "owner classification for the bubble plan", "phase 1.3"),

@@ -1,11 +1,12 @@
 // A locus accepts the children its `accept` names however the child
 // type is spelled, and a monomorphised locus accepts like its template.
 // Lowering asks the ownership graph which child type a locus accepts,
-// and the graph records the type as written, over the loci the program
-// declares: an alias, generic arguments and a monomorph (`Holder<Int>`
-// lowered as `Holder_Int`) are the shapes where that record does not
-// name the child lowering sees, and they keep the lowering's own
-// resolved read (F.40 phase 1.3). Each parent here counts its accepts.
+// and the graph resolves the type with the one child resolver
+// (`child_locus_name`, F.40 phase 1.4), so an alias and generic
+// arguments name the locus lowering sees. The graph's rows are per
+// declaration: a monomorph (`Holder<Int>` lowered as `Holder_Int`) has
+// none and keeps the lowering's own read. Each parent here counts its
+// accepts.
 
 locus Child {
     params { n: Int = 1; }

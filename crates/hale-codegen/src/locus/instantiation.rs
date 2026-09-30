@@ -447,25 +447,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         //
         // "The current self accepts this locus" is the ownership
         // graph's `accepts` relation, from the resolved program: the
-        // child type a locus declares `accept(_: T)` for, the same
+        // child type a locus declares `accept(_: T)` for, resolved by
+        // `child_locus_name` to the locus lowering resolves (an alias,
+        // generic arguments and a `std::` path included), the same
         // relation `accept_param` spells (the checker admits one
-        // `accept` per locus). The graph records the child type as
-        // written and knows only the loci the program declares, so
-        // two shapes keep the lowering's own read, where the child
-        // type is resolved: a locus codegen monomorphised (`Holder<T>`
-        // lowered as `Holder_Int`, which has no graph row), and an
-        // accept param spelled other than the locus it resolves to
-        // (`accept_param_respelled`: an alias, generic arguments, a
-        // `std::` path).
+        // `accept` per locus). The graph's rows are per declaration, so
+        // a locus codegen monomorphised (`Holder<T>` lowered as
+        // `Holder_Int`) has none, and keeps the lowering's own read.
         let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
-            let parent = self.user_loci.get(&cs.locus_name);
             match self.ownership_accepts.get(&cs.locus_name) {
-                Some(accepts)
-                    if !parent.is_some_and(|p| p.accept_param_respelled) =>
-                {
-                    accepts.contains(locus_name)
-                }
-                _ => parent
+                Some(accepts) => accepts.contains(locus_name),
+                None => self
+                    .user_loci
+                    .get(&cs.locus_name)
                     .and_then(|p| p.accept_param.as_ref())
                     .is_some_and(|(_, child_ty)| child_ty == locus_name),
             }

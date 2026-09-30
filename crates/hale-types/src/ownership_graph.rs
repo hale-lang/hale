@@ -38,6 +38,7 @@ use hale_syntax::ast::*;
 use hale_syntax::Span;
 
 use crate::bus_graph::Placement;
+use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
 use crate::resolve::TopScope;
 use crate::symbol::Bundle;
 
@@ -148,7 +149,9 @@ pub struct OwnedSite {
 pub struct OwnershipGraph {
     /// Every resolved instantiation site, in walk order.
     pub sites: Vec<OwnedSite>,
-    /// locus type → the child types it declares `accept(_: T)` for.
+    /// locus type → the child types it declares `accept(_: T)` for, each
+    /// the locus `child_locus_name` resolves it to: an alias followed,
+    /// generic arguments mangled, a `std::` or cross-seed path renamed.
     pub accepts: BTreeMap<String, BTreeSet<String>>,
     /// child locus type → the set of locus types that instantiate it
     /// in a method body (the ancestor-edge relation).
@@ -355,7 +358,9 @@ fn collect_forwarding(
 /// One locus's ownership-relevant facts, collected in a single walk.
 #[derive(Default)]
 struct LocusFacts {
-    /// Child types this locus declares `accept(_: T)` for.
+    /// Child types this locus declares `accept(_: T)` for, resolved by
+    /// `child_locus_name` (a type that names no locus is accepted by
+    /// no one).
     accepts: BTreeSet<String>,
     /// Locus-typed literals born in this locus's method bodies.
     instantiates: Vec<RawSite>,
@@ -412,11 +417,20 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         })
     });
 
+    // The child an `accept` names is resolved by the one resolver the
+    // handler rows use, so an alias, generic arguments or a `std::` path
+    // name the locus lowering resolves (F.40 phase 1.4).
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let declared = DeclaredNames::of(&programs);
+    let renames = bundle.import_renames.as_slice();
+
     // Pass 2: per-locus facts.
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
     fn walk(
         items: &[TopDecl],
         locus_types: &BTreeSet<String>,
+        declared: &DeclaredNames,
+        renames: &[(Vec<String>, String)],
         facts: &mut BTreeMap<String, LocusFacts>,
     ) {
         for item in items {
@@ -436,7 +450,9 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                             LocusMember::Lifecycle(ld) => {
                                 if ld.kind == LifecycleKind::Accept {
                                     for p in &ld.params {
-                                        if let Some(name) = named_type(&p.ty) {
+                                        if let ChildRef::Locus(name) =
+                                            child_locus_name(&p.ty, declared, renames)
+                                        {
                                             entry.accepts.insert(name);
                                         }
                                     }
@@ -486,13 +502,15 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, locus_types, facts),
+                TopDecl::Module(m) => {
+                    walk(&m.items, locus_types, declared, renames, facts)
+                }
                 _ => {}
             }
         }
     }
-    for program in bundle.programs.values() {
-        walk(&program.items, &locus_types, &mut facts);
+    for program in &programs {
+        walk(&program.items, &locus_types, &declared, renames, &mut facts);
     }
 
     OwnershipWalk {
