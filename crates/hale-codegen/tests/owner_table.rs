@@ -1019,7 +1019,7 @@ fn build_resolved_refuses_options_whose_api_disagrees_with_the_envelope() {
     let mut options = build_opts::options();
     options.api_roles = Some("admin".to_string());
     let bin = harness::unique_bin("ownertab_api_mismatch");
-    let r = hale_codegen::build_resolved(resolved, &bin, &options);
+    let r = hale_codegen::build_resolved(&resolved, &bin, &options);
     let _ = std::fs::remove_file(&bin);
     match r {
         Err(hale_codegen::CodegenError::Unsupported(msg)) => {

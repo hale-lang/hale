@@ -690,7 +690,7 @@ pub(crate) fn exec_digest(
 /// other.
 pub(crate) fn model_identity(
     bundle: &hale_types::Bundle<'_>,
-    resolved: &hale_types::resolved::ResolvedProgram,
+    resolved: &hale_types::resolved::LoweringView,
     options: &hale_codegen::BuildOptions,
 ) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
     let model = hale_types::model_builder::derive_application_model(bundle);

@@ -11,6 +11,8 @@
 //! - [`Snapshot::demand_check`]: what the checker reports — the scope's
 //!   and the typing's diagnostics, and the laws judged over the model
 //!   when the program declares any.
+//! - [`Snapshot::demand_lowering`]: the view codegen lowers
+//!   ([`LoweringView`]), after a check that reported no error.
 //!
 //! Four contracts hold, and `crates/hale-types/tests/demand_gate.rs`
 //! pins each:
@@ -21,8 +23,9 @@
 //! 2. A family nobody demands is never computed: a program with no
 //!    claim surface checks without a model.
 //! 3. A family whose prerequisite reported errors is [`Blocked`], not
-//!    computed: a seed with a file that did not parse has no scope, and
-//!    a program that does not typecheck has no model.
+//!    computed: a seed with a file that did not parse has no scope, a
+//!    program that does not typecheck has no model, and a program whose
+//!    check reported an error is not lowered.
 //! 4. A changed entry, target, config or overlay is a different
 //!    snapshot ([`SnapshotKey`]); two snapshots share no result.
 //!
@@ -37,19 +40,22 @@ use hale_model::ApplicationModel;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::resolve::TopScope;
+use hale_types::resolved::LoweringView;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
 use crate::frontend::{
-    collect_ap_files, collect_checkable, source_map, source_map_as_spelled, CheckableFailure,
-    LoadMode,
+    collect_ap_files, collect_checkable, merge_programs, source_map, source_map_as_spelled,
+    CheckableFailure, LoadMode,
 };
 use crate::imports::ImportRenames;
 use crate::source::SourceProvider;
 
-/// The families a snapshot produces, in the order a check demands them.
-/// The names are the registry's (`spec/registry.md`).
-pub const FAMILIES: [&str; 7] = [
+/// The families a snapshot produces, in the order a build demands them.
+/// The names are the registry's (`spec/registry.md`); `lowering_view`
+/// is the `demand` family's own, the view whose tables are the
+/// ownership, bus-graph, dispatch and handler-routing families'.
+pub const FAMILIES: [&str; 8] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -57,6 +63,7 @@ pub const FAMILIES: [&str; 7] = [
     "expression_typing",
     "model",
     "claims",
+    "lowering_view",
 ];
 
 /// The target a snapshot is checked for: what `where async_io` may
@@ -171,6 +178,11 @@ pub struct SnapshotKey {
 pub struct Blocked {
     pub family: &'static str,
     pub because: Vec<Diag>,
+    /// The family's own producer refused, with no position to report
+    /// it at: the lowering view's `resolve_program` (a bundled stdlib
+    /// that does not parse, a site the mint left unnumbered). `None`
+    /// when a prerequisite blocked it, whose errors are `because`.
+    pub refused: Option<String>,
 }
 
 /// Why a snapshot could not be made.
@@ -218,6 +230,7 @@ pub struct Snapshot {
     typing: OnceCell<Result<Vec<Diag>, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
+    lowering: OnceCell<Result<LoweringView, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
 }
 
@@ -285,6 +298,7 @@ impl Snapshot {
             typing: OnceCell::new(),
             model: OnceCell::new(),
             check: OnceCell::new(),
+            lowering: OnceCell::new(),
             builds,
         };
         snap.count("seed_loading");
@@ -446,6 +460,7 @@ impl Snapshot {
                     return Err(Blocked {
                         family: "top_scope",
                         because: self.unparsed.values().flatten().cloned().collect(),
+                        refused: None,
                     });
                 }
                 self.count("top_scope");
@@ -495,6 +510,7 @@ impl Snapshot {
                             .filter(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
                             .cloned()
                             .collect(),
+                        refused: None,
                     });
                 }
                 let scope = self.scope().map_err(Clone::clone)?;
@@ -526,6 +542,45 @@ impl Snapshot {
                 }
                 hale_types::finish_check_diags(&mut diags);
                 Ok(Checked { diags })
+            })
+            .as_ref()
+    }
+
+    /// The view codegen lowers: the check first, then
+    /// [`hale_types::resolved::resolve_program`] over the snapshot's
+    /// program, source map, renames and api config — the two lowering
+    /// rewrites as relations, the stdlib merge, the mint over the
+    /// merged program, and the tables. A check that reported an error
+    /// blocks it, with the errors as the reason; a warning does not.
+    pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
+        self.lowering
+            .get_or_init(|| {
+                let checked = self.demand_check().map_err(Clone::clone)?;
+                let errors: Vec<Diag> =
+                    checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
+                if !errors.is_empty() {
+                    return Err(Blocked { family: "lowering_view", because: errors, refused: None });
+                }
+                // A whole seed's load holds one program; the editor's
+                // holds one per file, merged here as a directory build
+                // merges them.
+                let merged;
+                let program = match self.programs.len() {
+                    1 => self.programs.values().next().expect("one program"),
+                    _ => {
+                        merged = merge_programs(self.programs.values()).expect("a checked snapshot holds a program");
+                        &merged
+                    }
+                };
+                self.count("lowering_view");
+                hale_types::resolved::resolve_program(
+                    program,
+                    &self.source_map,
+                    &self.import_renames,
+                    self.config.api.as_deref(),
+                    self.config.api_roles.as_deref(),
+                )
+                .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })
             .as_ref()
     }
@@ -756,7 +811,9 @@ mod tests {
         assert_eq!(s.demand_model().expect_err("no model either").family, "top_scope");
         let builds = s.builds();
         assert_eq!(builds["seed_loading"], 1);
-        for f in ["desugar_sequence", "snapshot_identity", "top_scope", "expression_typing", "model", "claims"] {
+        let Err(blocked) = s.demand_lowering() else { panic!("nor a lowering view") };
+        assert_eq!(blocked.family, "top_scope");
+        for f in ["desugar_sequence", "snapshot_identity", "top_scope", "expression_typing", "model", "claims", "lowering_view"] {
             assert_eq!(builds[f], 0, "{f} ran for a seed that did not parse");
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -774,6 +831,38 @@ mod tests {
         assert_eq!(blocked.family, "model");
         assert!(blocked.because.iter().all(|d| d.is_error()) && !blocked.because.is_empty());
         assert_eq!(s.builds()["model"], 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Contract 3 at lowering: a check that reported an error blocks
+    /// the lowering view, with the errors as the reason.
+    #[test]
+    fn a_check_with_errors_blocks_the_lowering_view() {
+        let d = scratch("unlowered");
+        std::fs::write(d.join("app.hl"), MISTYPED).unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        let Err(blocked) = s.demand_lowering() else { panic!("a mistyped program is not lowered") };
+        assert_eq!(blocked.family, "lowering_view");
+        assert!(!blocked.because.is_empty() && blocked.because.iter().all(|d| d.is_error()));
+        assert!(blocked.refused.is_none());
+        assert_eq!(s.builds()["lowering_view"], 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Contract 1 at lowering: the view is resolved once, after the
+    /// check it is gated on, however often it is demanded.
+    #[test]
+    fn the_lowering_view_is_resolved_once_after_the_check() {
+        let d = scratch("lowered");
+        std::fs::write(d.join("app.hl"), CLEAN).unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        let first = s.demand_lowering().expect("a clean program is lowered") as *const LoweringView;
+        let again = s.demand_lowering().expect("still lowered") as *const LoweringView;
+        assert_eq!(first, again, "the second demand reads the first result");
+        let builds = s.builds();
+        assert_eq!(builds["expression_typing"], 1);
+        assert_eq!(builds["lowering_view"], 1);
+        assert_eq!(builds["model"], 0, "a program with no claims lowers without a model");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -40,7 +40,7 @@ fn resolve_checked(
     options: &hale_codegen::BuildOptions,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
-) -> Result<hale_types::resolved::ResolvedProgram, ExitCode> {
+) -> Result<hale_types::resolved::LoweringView, ExitCode> {
     hale_types::resolved::resolve_program(
         program,
         source_map,
@@ -60,7 +60,7 @@ fn resolve_checked(
 /// This is the whole of `hale run` — the same codegen backend as
 /// `hale build`, so there is no `run`-vs-`build` behavioral divergence.
 pub(crate) fn compile_and_exec(
-    resolved: hale_types::resolved::ResolvedProgram,
+    resolved: hale_types::resolved::LoweringView,
     user_args: &[String],
     // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
     observe: bool,
@@ -92,7 +92,7 @@ pub(crate) fn compile_and_exec(
         obs_entity_ids,
         ..options
     };
-    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {
+    if let Err(e) = hale_codegen::build_resolved(&resolved, &bin, &options) {
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }

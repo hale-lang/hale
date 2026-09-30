@@ -50,7 +50,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance. |
-| `demand` | Identity | Migrating | derivation | `Snapshot` | 7 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check), each at most once, blocking a family whose prerequisite reported errors. |
+| `demand` | Identity | Migrating | derivation | `Snapshot` | 7 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -162,7 +162,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
-- `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
+- `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
 - `desugar_intra_locus_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `build_executable_with_options(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1
 
@@ -484,7 +484,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/model_builder.rs` · `build_bus_graph` — rebuilt for the model. *Removed when:* phase 2 (the check over the resolved program).
 - `crates/hale-lsp/src/lib.rs` · `build_bus_graph` — rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass. *Removed when:* phase 2.
 - `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the model and the LSP still build their own over the un-desugared bundle, and the checker's rule 9 walks the bus itself. *Removed when:* one graph per snapshot (phase 2: the check over the resolved program).
-- `crates/hale-codegen/src/codegen.rs` · `intra_locus_publish_target` — lowering classifies a handler-named method call with a struct argument as a rewritten publish for the probes and the reclaimed subregion, re-deriving the relation the resolved program records. *Removed when:* lowering reads `ResolvedProgram::intra_locus` by the call's id, shadowed against this classification over the corpus (phase 2).
+- `crates/hale-codegen/src/codegen.rs` · `intra_locus_publish_target` — lowering classifies a handler-named method call with a struct argument as a rewritten publish for the probes and the reclaimed subregion, re-deriving the relation the resolved program records. *Removed when:* lowering reads `LoweringView::intra_locus` by the call's id, shadowed against this classification over the corpus (phase 2).
 
 **Also owned.** `crates/hale-types/src/bus_graph.rs` · `dispatch_gates`
 
@@ -1317,7 +1317,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `demand` — Migrating · derivation
 
-**Answers.** Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check), each at most once, blocking a family whose prerequisite reported errors.
+**Answers.** Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors.
 
 **Inputs.** seed_loading; desugar_sequence; snapshot_identity; the config (target, api, api roles, environment, the check's rules); editor overlays (LSP); a consumer's request
 
@@ -1333,7 +1333,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-lsp/src/lib.rs` · `analyze_seed` — the LSP's request handlers (hover, completion, definition, references, the bus graph, placement): their own load per request, and a top scope each. *Removed when:* 2.3, step 5.
 - `crates/hale-types/src/topology.rs` · `dump_topology` — the artifact derives its own model (`derive_application_model`), outside the snapshot, so `hale check --dump-topology` of a program with claims derives two. *Removed when:* 2.3: the artifact demands the snapshot's model.
 
-**Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
+**Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `demand_lowering`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
 
 **Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
 
@@ -1341,13 +1341,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's producer runs, and no count exceeds one on any consumer on the snapshot
 - a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1)
-- a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a file that did not parse has no scope, a program that does not typecheck has no model; a ready result may still hold typed holes
+- a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a file that did not parse has no scope, a program that does not typecheck has no model, a program whose check reported an error has no lowering view; a ready result may still hold typed holes
+- the lowering view (`LoweringView`, the `lowering_view` count) is a family: `demand_lowering` demands the check, then runs `resolve_program` once over the snapshot's program, source map, renames and api config; `build_resolved` reads it by reference
 - a changed entry, target, config or overlay is a distinct snapshot (`SnapshotKey`); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)
 - the bundle is a borrowed view (`Snapshot::bundle`), built per call, never stored
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/demand_gate.rs; crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, a_program_that_does_not_typecheck_blocks_the_model)
+**Focused tests.** crates/hale-types/tests/demand_gate.rs; crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, a_program_that_does_not_typecheck_blocks_the_model, a_check_with_errors_blocks_the_lowering_view, the_lowering_view_is_resolved_once_after_the_check)
 
 **Spec.** spec/decisions.md F.40; RFC #1212 § phase 2 (demand and readiness)
 

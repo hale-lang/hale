@@ -19,7 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
-use hale_types::resolved::ResolvedProgram;
+use hale_types::resolved::LoweringView;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
 // during the codegen model-organization refactor (Round 1). Bringing
@@ -1049,9 +1049,8 @@ fn compile_cached_runtime_object_with(
 /// harness): it runs the desugar sequence the verbs run before their
 /// check (`hale_types::desugar_sequence::desugar_before_check`), resolves
 /// the program through `hale_types::resolved::resolve_program` and
-/// lowers the envelope with
-/// [`build_resolved`]. The verbs resolve the program themselves and
-/// call [`build_resolved`].
+/// lowers the view with [`build_resolved`]. The verbs demand the view
+/// from their snapshot and call [`build_resolved`].
 pub fn build_executable_with_options(
     program: &Program,
     output_path: &Path,
@@ -1080,18 +1079,20 @@ pub fn build_executable_with_options(
         options.api_roles.as_deref(),
     )
     .map_err(CodegenError::Unsupported)?;
-    build_resolved(resolved, output_path, options)
+    build_resolved(&resolved, output_path, options)
 }
 
-/// Lower the resolved program the frontend produced
-/// (`hale_types::resolved::ResolvedProgram`) to an executable at
-/// `output_path`. The cross-seed rename table is the one the envelope
-/// was resolved with; `options` has to carry the envelope's `--api`
-/// path and roles, or the build is refused (the api surface was shaped
-/// by the envelope's, and lowering it under another would describe a
-/// program nobody resolved). See [`build_executable_with_options`].
+/// Lower the view the frontend produced
+/// (`hale_types::resolved::LoweringView`, a snapshot's `lowering_view`
+/// family) to an executable at `output_path`. The view is read, never
+/// taken apart: the snapshot that demanded it keeps it. The cross-seed
+/// rename table is the one the view was resolved with; `options` has to
+/// carry the view's `--api` path and roles, or the build is refused (the
+/// api surface was shaped by the view's, and lowering it under another
+/// would describe a program nobody resolved). See
+/// [`build_executable_with_options`].
 pub fn build_resolved(
-    resolved: ResolvedProgram,
+    resolved: &LoweringView,
     output_path: &Path,
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
@@ -1128,11 +1129,11 @@ pub fn build_resolved(
     // `program_has_offthread` below for why it matters.
     let has_offthread_placement =
         hale_types::bus_graph::has_offthread_placement(&resolved.bundle());
-    // The envelope the frontend produced (`hale_types::resolved`):
-    // `user` is the desugared program before the stdlib merge, which
-    // only the tier-1 bus-inert scan below reads; `merged` is what
-    // lowering walks.
-    let ResolvedProgram {
+    // The view the frontend produced (`hale_types::resolved`): `user`
+    // is the desugared program before the stdlib merge, which only the
+    // tier-1 bus-inert scan below reads; `merged` is what lowering
+    // walks.
+    let LoweringView {
         user,
         merged,
         owner_table,
@@ -1144,7 +1145,7 @@ pub fn build_resolved(
         import_renames,
         ..
     } = resolved;
-    let program = &user;
+    let program = user;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
@@ -1226,7 +1227,7 @@ pub fn build_resolved(
     let plan = if options.no_bus_devirt {
         hale_model::dispatch_plan::DispatchPlan::default()
     } else {
-        plan
+        plan.clone()
     };
     if options.dispatch_trace {
         for s in &plan.subjects {
@@ -1273,7 +1274,7 @@ pub fn build_resolved(
     let bubble = if options.no_ownership_bubble {
         hale_types::ownership_graph::BubblePlans::default()
     } else {
-        bubble
+        bubble.clone()
     };
 
     let context = Context::create();
@@ -1438,7 +1439,7 @@ pub fn build_resolved(
         current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
-        program: &merged,
+        program: merged,
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
@@ -1479,8 +1480,8 @@ pub fn build_resolved(
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
-        ownership_accepts: ownership.accepts,
-        handlers,
+        ownership_accepts: ownership.accepts.clone(),
+        handlers: handlers.clone(),
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
@@ -4004,7 +4005,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #383: fn name -> (locus it freshly returns, the let-binding
     /// it returns if any). See `fresh_factories`.
     pub(crate) fresh_locus_factories:
-        std::collections::BTreeMap<String, (String, Option<String>)>,
+        &'p std::collections::BTreeMap<String, (String, Option<String>)>,
     /// GH #767: fn name -> stack bytes already handed to array
     /// literals in that fn, so the per-fn cap
     /// (`STACK_ARRAY_MAX_BYTES`) counts the whole frame and not one
@@ -4039,7 +4040,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// was given by the pre-pass, before lowering. Lowering READS it
     /// — a locus instantiation with no row in it is a
     /// `CodegenError`, which is F.39's rule.
-    pub(crate) owner_table: crate::ownership::OwnerTable,
+    pub(crate) owner_table: &'p crate::ownership::OwnerTable,
     /// GH #921 A2: where the value about to be instantiated came
     /// from. One-shot, taken at the top of
     /// `lower_locus_instantiation` exactly like the flags it shadows,

@@ -555,7 +555,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             &build_env::options_fingerprint(&options),
             plan_digest,
         ));
-        hale_codegen::build_resolved(resolved, &output, &options)
+        hale_codegen::build_resolved(&resolved, &output, &options)
     }) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
