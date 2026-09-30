@@ -22,6 +22,9 @@ use crate::ty::Ty;
 #[derive(Debug, Default)]
 pub struct TopScope {
     pub symbols: BTreeMap<String, TopSymbol>,
+    /// F.40 phase 2.1b: the bundle's topic rows, built once here; the
+    /// checker reads a bus subject through them.
+    pub topics: crate::topic_identity::TopicRows,
 }
 
 impl TopScope {
@@ -331,25 +334,22 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // a spelling, not a type.
     resolve_alias_targets(bundle, &mut known_names, &mut diags);
 
-    // Pre-pass: build a name → ResolvedTopic table for every
-    // declared topic, including parent chain + wire subject.
+    // Pre-pass: the topic rows (F.40 phase 2.1b), every declared
+    // topic with its parent chain and wire subject, once per bundle.
     // Loci that reference topics in their bus blocks resolve
-    // through this table during the main register pass below, so
+    // through them during the main register pass below, so
     // iteration order between locus and topic decls doesn't
     // matter. Diagnostics for unknown parents / cycles / dup
     // subjects also originate here.
-    let mut topics_resolved: BTreeMap<String, ResolvedTopic> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        collect_topic_decls(&program.items, &known_names, &mut topics_resolved, &mut diags);
-    }
-    finalize_topic_chain(&mut topics_resolved, &mut diags);
+    let topics = crate::topic_identity::TopicRows::of(bundle.programs.values().copied());
+    report_topic_chains(&topics, &mut diags);
 
     // Second pass: resolve and emit full TopSymbol entries.
     for program in bundle.programs.values() {
         register_top_decls(
             &program.items,
             &known_names,
-            &topics_resolved,
+            &topics,
             &mut scope,
             &mut diags,
         );
@@ -366,7 +366,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             register_top_decls(
                 std::slice::from_ref(it),
                 &known_names,
-                &topics_resolved,
+                &topics,
                 &mut scope,
                 &mut stdlib_diags,
             );
@@ -417,6 +417,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     let stdlib_usage = scan_stdlib_error_usage(bundle);
     check_stdlib_error_shadowing(&scope, &stdlib_usage, &mut diags);
 
+    scope.topics = topics;
     (scope, diags)
 }
 
@@ -572,178 +573,65 @@ fn insert_name(
     known.insert(ident.name.clone(), ident.span);
 }
 
-/// Pre-resolved topic data. Built before the main register pass
-/// so locus `bus { subscribe T as h; }` and `bindings { T: ... }`
-/// can resolve regardless of source order. `wire_subject` is
-/// finalized post-collect by `finalize_topic_chain` (which walks
-/// the parent chain and concatenates segments).
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedTopic {
-    pub name: String,
-    pub payload: Ty,
-    pub parent: Option<String>,
-    /// Own subject segment — explicit `subject: "..."` else a
-    /// lowercased default of the topic name.
-    pub subject: String,
-    /// Materialized dot-path; `String::new()` until
-    /// `finalize_topic_chain` runs (or if the topic is part of an
-    /// unresolved cycle).
-    pub wire_subject: String,
-    pub span: Span,
-}
-
-/// Walk every `topic Foo : Parent { payload: T; subject: "..."; }`
-/// decl in `items` and record the resolved payload + parent +
-/// subject. Diagnostics emitted for missing-payload / dup-subject
-/// among siblings are deferred to the typecheck pass; here we
-/// only record what's syntactically present.
-fn collect_topic_decls(
-    items: &[TopDecl],
-    known: &KnownNames,
-    topics: &mut BTreeMap<String, ResolvedTopic>,
-    _diags: &mut Vec<Diag>,
-) {
-    for item in items {
-        match item {
-            TopDecl::Topic(t) => {
-                let payload = resolve_type_expr(&t.payload, known);
-                let subject = t
-                    .subject
-                    .clone()
-                    .unwrap_or_else(|| default_subject_segment(&t.name.name));
-                topics.insert(
-                    t.name.name.clone(),
-                    ResolvedTopic {
-                        name: t.name.name.clone(),
-                        payload,
-                        parent: t.parent.as_ref().map(|p| p.name.clone()),
-                        subject,
-                        wire_subject: String::new(),
-                        span: t.span,
-                    },
-                );
-            }
-            TopDecl::Module(m) => {
-                collect_topic_decls(&m.items, known, topics, _diags);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Default wire subject segment when the user didn't write
-/// `subject: "..."`. Verbatim topic name — preserves Phase 1
-/// behavior where `topic Ticks` desugars to literal subject
-/// "Ticks". Style guides can choose to be explicit
-/// (`subject: "ticks"`).
-fn default_subject_segment(name: &str) -> String {
-    name.to_string()
-}
-
-/// Walk parent chains, detect cycles + missing parents, and
-/// materialize each topic's `wire_subject` (dot-joined ancestor
-/// subjects). Topics that hit a missing-parent or cycle keep
-/// `wire_subject = ""` and trigger diagnostics; downstream code
-/// treats an empty wire subject as "skip codegen-side wiring".
-fn finalize_topic_chain(
-    topics: &mut BTreeMap<String, ResolvedTopic>,
+/// Report every topic whose parent chain is broken — a cycle or an
+/// undeclared parent, once per chain — and every wire subject two
+/// topics carry, once per topic that carries it. The wire subjects
+/// themselves are the topic rows' ([`crate::topic_identity::TopicRows`]);
+/// a broken chain's topics are registered with an empty one, which
+/// downstream reads as "skip codegen-side wiring".
+fn report_topic_chains(
+    topics: &crate::topic_identity::TopicRows,
     diags: &mut Vec<Diag>,
 ) {
-    // Snapshot keys so we can mutably index `topics` while looping.
-    let names: Vec<String> = topics.keys().cloned().collect();
-    let mut wire: BTreeMap<String, String> = BTreeMap::new();
-    for name in &names {
-        if wire.contains_key(name) {
+    let span_of = |n: &str| topics.named(n).map(|t| t.span).unwrap_or(Span::new(0, 0));
+    let mut walked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for row in topics.iter() {
+        if walked.contains(&row.name) {
             continue;
         }
         let mut chain: Vec<String> = Vec::new();
-        let mut cur = name.clone();
-        let mut bad = false;
+        let mut cur = row.name.clone();
         loop {
             if chain.contains(&cur) {
-                let span = topics.get(&cur).map(|t| t.span).unwrap_or(Span::new(0, 0));
                 diags.push(Diag::ty(
-                    span,
+                    span_of(&cur),
                     format!("topic `{}` parent chain forms a cycle", cur),
                 ));
-                bad = true;
                 break;
             }
             chain.push(cur.clone());
-            let parent = match topics.get(&cur).and_then(|t| t.parent.clone()) {
+            let parent = match topics.named(&cur).and_then(|t| t.parent.clone()) {
                 Some(p) => p,
                 None => break,
             };
-            if !topics.contains_key(&parent) {
-                let span = topics.get(&cur).map(|t| t.span).unwrap_or(Span::new(0, 0));
+            if topics.named(&parent).is_none() {
                 diags.push(Diag::ty(
-                    span,
+                    span_of(&cur),
                     format!(
                         "topic `{}` declares unknown parent topic `{}`",
                         cur, parent
                     ),
                 ));
-                bad = true;
                 break;
             }
             cur = parent;
         }
-        if bad {
-            for n in chain {
-                wire.entry(n).or_insert_with(String::new);
-            }
-            continue;
-        }
-        // chain is leaf-to-root; reverse to root-to-leaf and join
-        // each topic's own `subject` segment.
-        chain.reverse();
-        let segments: Vec<String> = chain
-            .iter()
-            .map(|n| topics[n].subject.clone())
-            .collect();
-        // Now record wire_subject for every prefix so siblings
-        // sharing ancestors don't recompute.
-        let mut acc: Vec<String> = Vec::new();
-        for (i, seg) in segments.iter().enumerate() {
-            acc.push(seg.clone());
-            wire.entry(chain[i].clone())
-                .or_insert_with(|| acc.join("."));
-        }
-    }
-    for (n, w) in wire {
-        if let Some(t) = topics.get_mut(&n) {
-            t.wire_subject = w;
-        }
+        walked.extend(chain);
     }
 
-    // Duplicate-wire-subject check: two distinct topic names with
-    // the same materialized subject would route ambiguously on a
-    // path-shaped transport. Skip empty wire subjects (those are
-    // already errored out above).
-    let mut by_wire: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (n, t) in topics.iter() {
-        if t.wire_subject.is_empty() {
-            continue;
-        }
-        by_wire
-            .entry(t.wire_subject.clone())
-            .or_default()
-            .push(n.clone());
-    }
-    for (w, owners) in by_wire {
-        if owners.len() > 1 {
-            for n in &owners {
-                let span = topics[n].span;
-                diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "topic `{}` shares wire subject `{}` with: {}",
-                        n,
-                        w,
-                        owners.iter().filter(|x| *x != n).cloned().collect::<Vec<_>>().join(", ")
-                    ),
-                ));
-            }
+    // Two distinct topic names with the same materialized subject
+    // would route ambiguously on a path-shaped transport.
+    for (w, owners) in topics.shared_wires() {
+        for n in owners {
+            diags.push(Diag::ty(
+                span_of(n),
+                format!(
+                    "topic `{}` shares wire subject `{}` with: {}",
+                    n,
+                    w,
+                    owners.iter().filter(|x| *x != n).cloned().collect::<Vec<_>>().join(", ")
+                ),
+            ));
         }
     }
 }
@@ -769,7 +657,7 @@ fn stdlib_top_decls() -> impl Iterator<Item = &'static TopDecl> {
 fn register_top_decls(
     items: &[TopDecl],
     known: &KnownNames,
-    topics: &BTreeMap<String, ResolvedTopic>,
+    topics: &crate::topic_identity::TopicRows,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -784,7 +672,7 @@ fn register_top_decls(
                 register_top_decls(&m.items, known, topics, scope, diags);
             }
             TopDecl::Interface(i) => register_interface(i, known, scope, diags),
-            TopDecl::Topic(t) => register_topic(t, topics, scope, diags),
+            TopDecl::Topic(t) => register_topic(t, known, topics, scope, diags),
             TopDecl::RingLayout(r) => register_ring_layout(r, scope, diags),
             TopDecl::Target(_) => {
                 // FUv0.8.2 #7 (2026-05-25): target capability
@@ -832,7 +720,7 @@ fn resolve_bus_subject(
     subject: &BusSubject,
     ty: Option<&TypeExpr>,
     known: &KnownNames,
-    topics: &BTreeMap<String, ResolvedTopic>,
+    topics: &crate::topic_identity::TopicRows,
     diags: &mut Vec<Diag>,
     ctx: &'static str,
 ) -> (String, Ty) {
@@ -855,8 +743,8 @@ fn resolve_bus_subject(
                     ),
                 ));
             }
-            match topics.get(&ident.name) {
-                Some(t) => (ident.name.clone(), t.payload.clone()),
+            match topics.named(&ident.name) {
+                Some(t) => (ident.name.clone(), resolve_type_expr(&t.payload, known)),
                 None => {
                     diags.push(Diag::ty(
                         ident.span,
@@ -906,23 +794,21 @@ fn resolve_bus_subject(
 
 fn register_topic(
     decl: &TopicDecl,
-    topics: &BTreeMap<String, ResolvedTopic>,
+    known: &KnownNames,
+    topics: &crate::topic_identity::TopicRows,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
-    // Pre-pass collected payload + parent + subject + wire_subject;
-    // just lift it into a TopSymbol. Parent/cycle/dup-subject diags
-    // already fired during finalize_topic_chain.
-    let r = match topics.get(&decl.name.name) {
-        Some(r) => r.clone(),
-        None => return,
-    };
+    // The topic row carries payload + parent + subject + wire
+    // subject; lift it into a TopSymbol. Parent/cycle/dup-subject
+    // diags already fired in `report_topic_chains`.
+    let Some(r) = topics.named(&decl.name.name) else { return };
     let info = crate::symbol::TopicInfo {
-        name: r.name,
-        payload: r.payload,
-        parent: r.parent,
-        subject: r.subject,
-        wire_subject: r.wire_subject,
+        name: r.name.clone(),
+        payload: resolve_type_expr(&r.payload, known),
+        parent: r.parent.clone(),
+        subject: r.subject.clone(),
+        wire_subject: if r.broken { String::new() } else { r.wire.clone() },
         keyed_by: decl.keyed_by.as_ref().map(|i| i.name.clone()),
         on_unmatched: decl.on_unmatched,
         bounded: decl.bounded.map(|(n, _)| n),
@@ -1002,7 +888,7 @@ fn register_interface(
 fn register_locus(
     decl: &LocusDecl,
     known: &KnownNames,
-    topics: &BTreeMap<String, ResolvedTopic>,
+    topics: &crate::topic_identity::TopicRows,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
