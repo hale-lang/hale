@@ -94,11 +94,14 @@ the horizon, and the laws that relate it to what the compiler
 derives, or it is not designed yet.
 
 Each derived fact — who owns whom, which handlers a publish reaches,
-which pool an instance runs in — has one authoritative producer
-inside the compiler, listed in the **graph registry**
+which pool an instance runs in — has one producer named in the
+**graph registry**
 ([`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md))
-with its consumers, invariants and tests. That registry is what
-lets [the model](the-model.md) promise that a fact is derived once.
+with its consumers, invariants and tests, and beside it every site
+that still derives the same fact for itself, each with the condition
+for its removal. That registry is what lets [the model](the-model.md)
+promise that a fact is derived once, and say exactly where it is not
+yet.
 
 ## Going deeper
 

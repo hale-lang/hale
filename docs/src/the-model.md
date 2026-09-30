@@ -3,7 +3,8 @@
 Most compilers have an IR that describes *how the program runs* —
 blocks, instructions, registers. Hale has one of those too. This is
 about the other one: a typed description of what the program **is**,
-derived once and read by everything downstream.
+derived once per snapshot by the frontend and read by everything
+downstream (the graph registry names what still derives its own).
 
 ## Derive a fact once
 
