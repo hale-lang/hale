@@ -47,15 +47,18 @@ pub enum LoadMode {
     /// above then follow every `import` it declares
     /// ([`collect_checkable`]).
     WholeSeed,
-    /// The LSP, until it loads through the whole-seed path (F.40 phase
-    /// 2.3, step 5): a FILE target stands for the directory around it
-    /// (the F.19 seed of the file being edited), and it is a member of
-    /// that directory even when it exists only as an editor buffer. No
-    /// `import` is followed — the LSP parses these files and checks
-    /// them as they are, so a name reached through an imported seed is
-    /// not seen, and the editor can disagree with `hale check` on a
-    /// seed that imports.
-    SeedDirectoryOnly,
+    /// The LSP's: the whole seed as `hale check <dir>` lists it, from a
+    /// file being edited. A FILE target stands for the directory around
+    /// it (the F.19 seed of the file), and it is a member of that
+    /// directory even when it exists only as an editor buffer; every
+    /// `import` is then followed as [`LoadMode::WholeSeed`] follows it
+    /// ([`link_checkable`]), through the same source provider, so a
+    /// buffer wins over its file wherever the load reaches it. Where
+    /// the CLI's load fails, the editor's keeps what it read: a member
+    /// that does not parse or will not read is recorded
+    /// (`Snapshot::unparsed`, `Snapshot::unreadable`), no import is
+    /// followed, and the snapshot's scope is blocked.
+    Editor,
 }
 
 /// The `.hl` files a load starts from: see [`LoadMode`].
@@ -78,8 +81,8 @@ pub fn collect_ap_files(
             }
             Err(format!("not a file or directory: {}", target.display()))
         }
-        LoadMode::SeedDirectoryOnly => {
-            let dir = target.parent().unwrap_or(Path::new("."));
+        LoadMode::Editor => {
+            let dir = seed_dir_of(target);
             // A directory that will not list leaves the target alone:
             // the file being edited is always checked.
             let mut out = src.hl_files(dir).unwrap_or_default();
@@ -89,6 +92,15 @@ pub fn collect_ap_files(
             }
             Ok(out)
         }
+    }
+}
+
+/// The directory a file target's seed is: its parent, `.` for a bare
+/// file name.
+pub fn seed_dir_of(file: &Path) -> &Path {
+    match file.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
     }
 }
 
@@ -371,7 +383,36 @@ pub fn collect_checkable(
     // from here arrived through an `import`.
     let own: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+    link_checkable(target, &files, own, programs, sources, file_bases, src)
+}
 
+/// The second half of a whole seed's load, over its own files already
+/// parsed: merge them, follow every `import` they declare, and scope
+/// the aliases. [`collect_checkable`] calls it after its parse, and the
+/// editor's load ([`LoadMode::Editor`]) after its own, so the two loads
+/// link a seed by one path. `target` is the seed (the directory, or
+/// the one file), `own` the target's files as the caller canonicalized
+/// them.
+#[allow(clippy::type_complexity)]
+pub fn link_checkable(
+    target: &Path,
+    files: &[PathBuf],
+    own: std::collections::BTreeSet<PathBuf>,
+    programs: BTreeMap<PathBuf, Program>,
+    sources: BTreeMap<PathBuf, String>,
+    file_bases: Vec<(u32, PathBuf, u32)>,
+    src: &dyn SourceProvider,
+) -> Result<
+    (
+        BTreeMap<PathBuf, Program>,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+        ImportRenames,
+        std::collections::BTreeSet<PathBuf>,
+        Vec<hale_syntax::ast::Import>,
+    ),
+    CheckableFailure,
+> {
     // A single file with no imports: the old behaviour, exactly.
     // A MULTI-file seed merges below even without imports —
     // downstream handoff: the per-file programs sent each file
@@ -627,40 +668,6 @@ pub fn source_map(
             hale_types::symbol::SourceFile {
                 id: i as u32,
                 path: rel,
-                digest,
-                base: *base,
-                len: *len,
-            }
-        })
-        .collect()
-}
-
-/// The LSP's source map: one unit per file of `file_bases`, in base
-/// order, each path as the load spelled it rather than relative to a
-/// workspace — the editor's provenance resolves within one process.
-/// (It moves to [`source_map`] when the LSP loads the whole seed, 2.3.)
-pub fn source_map_as_spelled(
-    file_bases: &[(u32, PathBuf, u32)],
-    sources: &BTreeMap<PathBuf, String>,
-) -> Vec<hale_types::symbol::SourceFile> {
-    file_bases
-        .iter()
-        .enumerate()
-        .map(|(i, (base, path, len))| {
-            let digest = sources
-                .get(path)
-                .map(|src| {
-                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                    for b in src.as_bytes() {
-                        h ^= *b as u64;
-                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    format!("{:016x}", h)
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            hale_types::symbol::SourceFile {
-                id: i as u32,
-                path: path.display().to_string(),
                 digest,
                 base: *base,
                 len: *len,

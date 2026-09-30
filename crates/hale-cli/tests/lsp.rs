@@ -1209,39 +1209,230 @@ type Finding = (String, u64, u64, String);
 ///    is whatever the server's source provider lists) and over STALE
 ///    disk copies (every buffer must win over its file).
 ///
-/// The seed is two files in one directory, and `b.hl` calls a `fn`
+/// The seed is three files in one directory, and `b.hl` calls a `fn`
 /// declared in `a.hl`, so a file the server failed to load shows up as
-/// an unresolved name, not as silence. It has no `import`: the LSP
-/// loads `LoadMode::SeedDirectoryOnly` (the changed file's directory,
-/// no import followed) until it loads the whole seed with its imports
-/// (phase 2.3, step 5), so a seed that imports would differ between
-/// the server and `hale check` for that reason alone. The import case
-/// joins this fixture then.
+/// an unresolved name, not as silence. `c.hl` holds one of each rule
+/// `hale check` runs beside its check — a borrow that does not outlive
+/// its holder and a bare fallible call — which the editor's check
+/// carries as the build rules (`Config::editor`): asserted here, not
+/// trusted.
 #[test]
 fn lsp_overlays_lsp_on_disk_and_check_agree() {
     const A: &str = "fn helper(n: Int) -> Int {\n    let s: String = n;\n    return n + 1;\n}\n";
-    const B: &str = "fn main() {\n    let x: Int = helper(1);\n    let y: Int = \"not an int\";\n    println(x);\n}\n";
-    const STALE: &str = "fn main() { }\n";
+    const B: &str = "fn main() {\n    let x: Int = helper(1);\n    let y: Int = \"not an int\";\n    println(x);\n    save();\n    Work { };\n}\n";
+    const C: &str = "interface Performer { fn perform(x: Int) -> Int; }\n\
+locus Doubler { fn perform(x: Int) -> Int { return x * 2; } }\n\
+locus Rt { params { performer: Performer = Doubler { }; } fn go() -> Int { return self.performer.perform(2); } }\n\
+locus Work {\n    params { rt: Rt = Rt { }; }\n    fn rewire() { let d = Doubler { }; self.rt = Rt { performer: d }; }\n    run() { self.rewire(); }\n}\n\
+fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity\", \"x\");\n}\n";
 
-    let root = std::env::temp_dir().join(format!("hale_lsp_parity_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mkdir = |name: &str| {
-        let d = root.join(name);
-        std::fs::create_dir_all(&d).expect("mkdir");
-        d.canonicalize().expect("canonical dir")
+    let check = agree_three_ways("plain", &[("a.hl", A), ("b.hl", B), ("c.hl", C)], &[]);
+    // Not vacuous: a finding in each file, the cross-file call among
+    // none (the whole seed was loaded), and one of each build rule.
+    for f in ["a.hl", "b.hl", "c.hl"] {
+        assert!(check.iter().any(|(file, ..)| file == f), "hale check found nothing in {f}: {check:?}");
+    }
+    for rule in [
+        "would hold a borrow that does not outlive it",
+        "can fail (IoError) and this call says nothing about it",
+    ] {
+        assert!(check.iter().any(|(.., m)| m.contains(rule)), "no `{rule}` finding: {check:?}");
+    }
+}
+
+/// The overlay parity fixture over a seed that `import`s a sibling
+/// library (F.40 phase 2.3): the editor loads the whole seed as `hale
+/// check <dir>` does, every import followed through the buffers, so
+/// the two answer alike. The call's result type comes from the library
+/// alone: a server that did not follow the import would not see the
+/// mismatch.
+#[test]
+fn lsp_and_check_agree_over_a_seed_that_imports() {
+    const APP: &str = "import \"lib\" as lib;\n\nfn main() {\n    let x: String = lib::helper(1);\n    println(x);\n}\n";
+    const LIB: &str = "fn helper(n: Int) -> Int {\n    return n + 1;\n}\n";
+
+    let check = agree_three_ways("import", &[("main.hl", APP)], &[("lib.hl", LIB)]);
+    assert!(
+        check.iter().any(|(file, line, ..)| file == "main.hl" && *line == 4),
+        "hale check found no mismatch at the imported call: {check:?}"
+    );
+}
+
+/// A seed member that will not read (a dangling symlink here; any
+/// unreadable `.hl` member is the same case): `hale check` refuses the
+/// load, and the editor says so instead of publishing a clean seed —
+/// `seed member <name>: <the OS error>`, against the member and against
+/// the file being edited, and no checker diagnostic over the partial
+/// seed (outside review of #1282, finding 2).
+#[cfg(unix)]
+#[test]
+fn lsp_reports_an_unreadable_seed_member_as_check_does() {
+    const MAIN: &str = "fn main() {\n    let y: Int = \"not an int\";\n    println(y);\n}\n";
+    let root = scratch_root("unreadable");
+    let dir = root.join("seed");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = dir.canonicalize().expect("canonical dir");
+    std::fs::write(dir.join("main.hl"), MAIN).expect("write main");
+    std::os::unix::fs::symlink("absent.hl", dir.join("missing.hl")).expect("symlink");
+
+    let (check, status) = check_json(&dir);
+    assert!(!status, "hale check must refuse the load: {check:?}");
+    let [(file, _, _, os_error)] = check.as_slice() else {
+        panic!("hale check reports the unreadable member alone: {check:?}");
     };
-    let on_disk = mkdir("disk");
-    std::fs::write(on_disk.join("a.hl"), A).expect("write a");
-    std::fs::write(on_disk.join("b.hl"), B).expect("write b");
-    let empty = mkdir("empty");
-    let stale = mkdir("stale");
-    std::fs::write(stale.join("a.hl"), STALE).expect("write stale a");
-    std::fs::write(stale.join("b.hl"), STALE).expect("write stale b");
+    assert_eq!(file, "missing.hl", "{check:?}");
+    let want = format!("seed member missing.hl: {os_error}");
 
-    // 1. `hale check --json`.
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": { "textDocument": { "uri": uri(&dir.join("main.hl")) } }
+    }));
+    let disk = lsp.published();
+    lsp.lsp.send(open(&dir.join("main.hl"), MAIN));
+    let buffered = lsp.published();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let expected: Vec<Finding> = vec![
+        ("main.hl".to_string(), 1, 1, want.clone()),
+        ("missing.hl".to_string(), 1, 1, want.clone()),
+    ];
+    assert_eq!(disk, expected, "the LSP on disk: the member's error, and no checker finding");
+    assert_eq!(buffered, expected, "the LSP with a buffer: the member's error, and no checker finding");
+}
+
+/// A library that leaves the seed's import graph is published EMPTY
+/// (outside review of #1286, finding 1). The import-failure pass
+/// publishes the library's parse error against the library; once the
+/// app stops importing it, the next pass has no reason of its own to
+/// name the library, and a client keeps a URI's diagnostics until the
+/// URI is published again — so the server clears it from what it sent
+/// before.
+#[test]
+fn lsp_clears_a_library_the_seed_stops_importing() {
+    let root = scratch_root("unimported");
+    std::fs::create_dir_all(root.join("app").join("lib")).expect("mkdir");
+    let dir = root.join("app").canonicalize().expect("canonical dir");
+    let (main, lib) = (dir.join("main.hl"), dir.join("lib").join("lib.hl"));
+    std::fs::write(&lib, "fn helper( {\n").expect("write lib");
+
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, "import \"lib\" as lib;\n\nfn main() { }\n"));
+    let importing = lsp.publications();
+    lsp.lsp.send(change(&main, 2, "fn main() { }\n"));
+    let unimported = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let [(lib_uri, lib_msgs), (main_uri, main_msgs)] = importing.as_slice() else {
+        panic!("the importing pass publishes the library and the app: {importing:?}");
+    };
+    assert_eq!((lib_uri, main_uri), (&uri(&lib), &uri(&main)), "{importing:?}");
+    assert!(
+        lib_msgs.len() == 1 && lib_msgs[0].contains("expected parameter name"),
+        "the library's parse error, against the library: {importing:?}"
+    );
+    assert!(main_msgs.is_empty(), "{importing:?}");
+    assert_eq!(
+        unimported,
+        vec![(uri(&lib), vec![]), (uri(&main), vec![])],
+        "the pass after the import is removed clears the library"
+    );
+}
+
+/// The app of the dependent-recheck tests: its one finding comes from
+/// the imported `helper`'s result type.
+const DEPENDENT_APP: &str =
+    "import \"lib\" as lib;\n\nfn main() {\n    let x: String = lib::helper(1);\n    println(x);\n}\n";
+const HELPER_INT: &str = "fn helper(n: Int) -> Int {\n    return n + 1;\n}\n";
+const HELPER_STRING: &str = "fn helper(n: Int) -> String {\n    return \"ok\";\n}\n";
+const MISMATCH: &str = "let `x`: expected `String`, got `Int`";
+
+/// An app and the library it imports, both open, the library's disk
+/// copy `lib_on_disk`; the sequences of the two opens are asserted
+/// here. Each event checks its file's seed, then every other open seed.
+fn open_app_and_library(tag: &str, lib_on_disk: &str) -> (LspSession, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let root = scratch_root(tag);
+    std::fs::create_dir_all(root.join("app").join("lib")).expect("mkdir");
+    let dir = root.join("app").canonicalize().expect("canonical dir");
+    let (main, lib) = (dir.join("main.hl"), dir.join("lib").join("lib.hl"));
+    std::fs::write(&lib, lib_on_disk).expect("write lib");
+
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&lib, HELPER_INT));
+    assert_eq!(lsp.publications(), vec![(uri(&lib), vec![])], "the library alone");
+    lsp.lsp.send(open(&main, DEPENDENT_APP));
+    assert_eq!(
+        lsp.publications(),
+        vec![(uri(&main), vec![MISMATCH.to_string()]), (uri(&lib), vec![])],
+        "the app's seed, then the library's, the other open seed"
+    );
+    (lsp, root, main, lib)
+}
+
+/// An edit to an imported library's buffer rechecks the open app that
+/// imports it (outside review of #1286, finding 2): the snapshot reads
+/// the library from the buffer, so the edit changes the app's program.
+/// The library's seed publishes first, then the app's.
+#[test]
+fn lsp_rechecks_an_open_dependent_when_a_library_buffer_changes() {
+    let (mut lsp, root, main, lib) = open_app_and_library("dependent_change", HELPER_INT);
+    lsp.lsp.send(change(&lib, 2, HELPER_STRING));
+    let cleared = lsp.publications();
+    lsp.lsp.send(change(&lib, 3, HELPER_INT));
+    let reintroduced = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        cleared,
+        vec![(uri(&lib), vec![]), (uri(&main), vec![])],
+        "a library edit that clears the app's error publishes the app empty"
+    );
+    assert_eq!(
+        reintroduced,
+        vec![(uri(&lib), vec![]), (uri(&main), vec![MISMATCH.to_string()])],
+        "a library edit that introduces the error publishes it on the app"
+    );
+}
+
+/// Closing an imported library's buffer rechecks the open app against
+/// the library's disk copy (outside review of #1286, finding 2). The
+/// disk copy differs from the buffer — it returns the `String` the app
+/// wants — so the recheck is visible: the app's error clears.
+#[test]
+fn lsp_rechecks_an_open_dependent_when_a_library_buffer_closes() {
+    let (mut lsp, root, main, lib) = open_app_and_library("dependent_close", HELPER_STRING);
+    lsp.lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didClose",
+        "params": { "textDocument": { "uri": uri(&lib) } }
+    }));
+    let closed = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        closed,
+        vec![(uri(&lib), vec![]), (uri(&main), vec![])],
+        "the library's seed from disk, then the app against the disk copy"
+    );
+}
+
+/// A scratch root of this test's own, empty.
+fn scratch_root(tag: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("hale_lsp_parity_{}_{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("mkdir");
+    root
+}
+
+/// `hale check --json <dir>`'s records as findings, sorted, and whether
+/// it passed.
+fn check_json(dir: &std::path::Path) -> (Vec<Finding>, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["check", "--json"])
-        .arg(&on_disk)
+        .arg(dir)
         .output()
         .expect("run hale check");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1264,60 +1455,146 @@ fn lsp_overlays_lsp_on_disk_and_check_agree() {
         })
         .collect();
     check.sort();
-    // Not vacuous: a finding in each file, the cross-file call among
-    // neither (the whole seed was loaded).
-    for f in ["a.hl", "b.hl"] {
-        assert!(
-            check.iter().any(|(file, ..)| file == f),
-            "hale check found nothing in {f}: {check:?}\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+    (check, out.status.success())
+}
+
+/// One seed, checked three ways, one answer; `hale check`'s findings
+/// are handed back for the caller's own assertions.
+///
+/// 1. `hale check --json` on the directory.
+/// 2. The LSP with the files on disk and no buffer open: a `didSave`
+///    without text checks from the disk alone.
+/// 3. The LSP with every one of `app`'s files supplied as a buffer,
+///    twice: over a directory with none of them (the files exist only
+///    as buffers, so the seed is whatever the server's source provider
+///    lists) and over STALE disk copies (every buffer must win over its
+///    file).
+///
+/// `lib` is a library the app imports as `"lib"`: its files are on disk
+/// in `lib/` beside every one of the three copies, and never a buffer.
+fn agree_three_ways(tag: &str, app: &[(&str, &str)], lib: &[(&str, &str)]) -> Vec<Finding> {
+    const STALE: &str = "fn main() { }\n";
+    let root = scratch_root(tag);
+    let mkdir = |name: &str| {
+        let d = root.join(name);
+        std::fs::create_dir_all(d.join("lib")).expect("mkdir");
+        for (f, text) in lib {
+            std::fs::write(d.join("lib").join(f), text).expect("write lib");
+        }
+        d.canonicalize().expect("canonical dir")
+    };
+    let on_disk = mkdir("disk");
+    for (f, text) in app {
+        std::fs::write(on_disk.join(f), text).expect("write app");
+    }
+    let empty = mkdir("empty");
+    let stale = mkdir("stale");
+    for (f, _) in app {
+        std::fs::write(stale.join(f), STALE).expect("write stale");
     }
 
+    // 1. `hale check --json`.
+    let (check, _) = check_json(&on_disk);
+
     // 2. The LSP on disk: no buffer, a save without text.
-    let mut lsp = Lsp::start();
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": { "capabilities": {} }
-    }));
-    let _ = lsp.recv();
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "method": "initialized", "params": {}
-    }));
-    lsp.send(serde_json::json!({
+    let mut lsp = LspSession::start();
+    let (last, _) = app.last().expect("an app file");
+    lsp.lsp.send(serde_json::json!({
         "jsonrpc": "2.0", "method": "textDocument/didSave",
-        "params": { "textDocument": { "uri": uri(&on_disk.join("b.hl")) } }
+        "params": { "textDocument": { "uri": uri(&on_disk.join(last)) } }
     }));
-    let disk = published(&mut lsp, 10);
+    let disk = lsp.published();
 
     // 3. The LSP with every file as a buffer, over an empty directory
-    // and over stale copies. The first open checks the seed with one
-    // buffer in it; the second has both, and that check is the answer.
-    let mut fence = 20;
-    let mut buffered = |lsp: &mut Lsp, dir: &std::path::Path| -> Vec<Finding> {
-        lsp.send(open(&dir.join("a.hl"), A));
-        fence += 1;
-        let _ = published(lsp, fence);
-        lsp.send(open(&dir.join("b.hl"), B));
-        fence += 1;
-        published(lsp, fence)
+    // and over stale copies. Each open checks the seed with the buffers
+    // opened so far; the last has them all, and that check is the
+    // answer (the opens over the stale copies recheck the empty
+    // directory's seed too, still open, so the answer is the files
+    // under `dir`).
+    let buffered = |lsp: &mut LspSession, dir: &std::path::Path| -> Vec<Finding> {
+        let mut answer = Vec::new();
+        for (f, text) in app {
+            lsp.lsp.send(open(&dir.join(f), text));
+            answer = lsp.published_under(dir);
+        }
+        answer
     };
     let over_empty = buffered(&mut lsp, &empty);
     let over_stale = buffered(&mut lsp, &stale);
-
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null
-    }));
-    let _ = lsp.recv();
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "method": "exit", "params": null
-    }));
-    let _ = lsp.child.wait();
+    lsp.close();
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(disk, check, "the LSP on disk and `hale check` disagree");
     assert_eq!(over_empty, check, "the LSP with buffers over an empty directory and `hale check` disagree");
     assert_eq!(over_stale, check, "the LSP with buffers over stale files and `hale check` disagree");
+    check
+}
+
+/// An initialized `hale lsp`, and the fence ids its reads use.
+struct LspSession {
+    lsp: Lsp,
+    fence: u64,
+}
+
+impl LspSession {
+    fn start() -> Self {
+        let mut lsp = Lsp::start();
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "capabilities": {} }
+        }));
+        let _ = lsp.recv();
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "method": "initialized", "params": {}
+        }));
+        LspSession { lsp, fence: 10 }
+    }
+
+    /// Every publish of the check the last notification started.
+    fn published(&mut self) -> Vec<Finding> {
+        self.fence += 1;
+        published(&mut self.lsp, self.fence)
+    }
+
+    /// Every publish of the check the last notification started on a
+    /// file under `dir`: an event also rechecks every other open seed,
+    /// whose files are not this read's answer.
+    fn published_under(&mut self, dir: &std::path::Path) -> Vec<Finding> {
+        self.fence += 1;
+        let prefix = format!("{}/", uri(dir));
+        let pubs = publications(&mut self.lsp, self.fence);
+        findings(pubs.into_iter().filter(|(u, _)| u.starts_with(&prefix)).collect())
+    }
+
+    /// Every publish of the check the last notification started, in
+    /// the order sent, as URI and messages.
+    fn publications(&mut self) -> Vec<(String, Vec<String>)> {
+        self.fence += 1;
+        messages(publications(&mut self.lsp, self.fence))
+    }
+
+    /// A request's answer: the `result` of the reply to it.
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.fence += 1;
+        let id = self.fence;
+        self.lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": method, "params": params
+        }));
+        loop {
+            let msg = self.lsp.recv();
+            if msg.get("id").and_then(|i| i.as_u64()) == Some(id) {
+                return msg.get("result").cloned().unwrap_or(serde_json::Value::Null);
+            }
+        }
+    }
+
+    fn close(mut self) {
+        self.request("shutdown", serde_json::Value::Null);
+        self.lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "method": "exit", "params": null
+        }));
+        let _ = self.lsp.child.wait();
+    }
 }
 
 fn uri(path: &std::path::Path) -> String {
@@ -1333,6 +1610,16 @@ fn open(path: &std::path::Path, text: &str) -> serde_json::Value {
     })
 }
 
+fn change(path: &std::path::Path, version: u64, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri(path), "version": version },
+            "contentChanges": [{ "text": text }]
+        }
+    })
+}
+
 /// Every publish of the check the last notification started, as
 /// findings, in 1-based lines and columns (the server's are 0-based,
 /// in UTF-16 units; the fixture is ASCII, so a unit is a character).
@@ -1343,25 +1630,15 @@ fn open(path: &std::path::Path, text: &str) -> serde_json::Value {
 /// a file the server failed to load is missing from the result, not a
 /// read that never returns.
 fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "id": fence, "method": "hale/testFence", "params": null
-    }));
+    findings(publications(lsp, fence))
+}
+
+/// Publications as findings, sorted.
+fn findings(pubs: Vec<(String, Vec<serde_json::Value>)>) -> Vec<Finding> {
     let mut out = Vec::new();
-    loop {
-        let msg = lsp.recv();
-        if msg.get("id").and_then(|i| i.as_u64()) == Some(fence) {
-            break;
-        }
-        if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
-            continue;
-        }
-        let file = msg
-            .pointer("/params/uri")
-            .and_then(|u| u.as_str())
-            .and_then(|u| u.rsplit('/').next())
-            .unwrap_or("")
-            .to_string();
-        for d in msg.pointer("/params/diagnostics").and_then(|d| d.as_array()).into_iter().flatten() {
+    for (uri, diags) in pubs {
+        let file = uri.rsplit('/').next().unwrap_or("").to_string();
+        for d in diags {
             out.push((
                 file.clone(),
                 d["range"]["start"]["line"].as_u64().unwrap_or(u64::MAX) + 1,
@@ -1372,4 +1649,37 @@ fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
     }
     out.sort();
     out
+}
+
+/// Every `publishDiagnostics` of the check the last notification
+/// started, in the order the server sent them: each URI with its list,
+/// read up to the fence as `published` reads.
+fn publications(lsp: &mut Lsp, fence: u64) -> Vec<(String, Vec<serde_json::Value>)> {
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": fence, "method": "hale/testFence", "params": null
+    }));
+    let mut out = Vec::new();
+    loop {
+        let msg = lsp.recv();
+        if msg.get("id").and_then(|i| i.as_u64()) == Some(fence) {
+            return out;
+        }
+        if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
+            continue;
+        }
+        let uri = msg.pointer("/params/uri").and_then(|u| u.as_str()).unwrap_or("").to_string();
+        let diags = msg.pointer("/params/diagnostics").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+        out.push((uri, diags));
+    }
+}
+
+/// A sequence of publications as URI and messages, the shape the
+/// sequence tests compare.
+fn messages(pubs: Vec<(String, Vec<serde_json::Value>)>) -> Vec<(String, Vec<String>)> {
+    pubs.into_iter()
+        .map(|(uri, diags)| {
+            let msgs = diags.iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect();
+            (uri, msgs)
+        })
+        .collect()
 }

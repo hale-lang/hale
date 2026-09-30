@@ -7,8 +7,10 @@
 //! incrementality — every document event re-parses and re-checks
 //! the changed file's whole SEED (its directory, per the F.19
 //! per-directory model) with the in-memory overlay text, then
-//! publishes diagnostics for every file in the seed (publishing
-//! empties clears stale squiggles without bookkeeping).
+//! publishes diagnostics for every file in the seed (an empty list
+//! clears a file's stale squiggles; one bookkeeping map, the files each
+//! seed's last publication covered, clears a file that has left the
+//! seed's import graph — `check_and_publish`).
 //!
 //! Protocol surface v1:
 //!   - initialize / initialized / shutdown / exit
@@ -32,15 +34,15 @@
 //! column positions per the LSP default encoding.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
-use hale_frontend::frontend::{collect_ap_files, source_map_as_spelled, LoadMode};
-use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::frontend::{retain_owned_advisories, seed_dir_of, LoadMode};
+use hale_frontend::snapshot::{unreadable_message, Config, LoadError, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
@@ -51,10 +53,16 @@ pub fn run_lsp() -> ExitCode {
 }
 
 /// The editor's live state: uri-decoded path → buffer text (wins over
-/// the disk copy for that file), and whether `shutdown` was asked.
+/// the disk copy for that file), what each seed's last publication
+/// covered, and whether `shutdown` was asked.
 #[derive(Default)]
 struct State {
     overlays: BTreeMap<PathBuf, String>,
+    /// Per checked seed (its directory, `seed_key`): the files its last
+    /// publication covered, so the next one can clear a file that has
+    /// left the seed's graph. The snapshot describes the current graph;
+    /// clearing needs what the client saw before.
+    published: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     shutdown_requested: bool,
 }
 
@@ -247,7 +255,7 @@ fn dispatch(
             "textDocument/didOpen" => {
                 if let Some((path, text)) = did_open_params(&msg) {
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didChange" => {
@@ -257,7 +265,7 @@ fn dispatch(
                         panic!("injected checker panic");
                     }
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didSave" => {
@@ -271,15 +279,16 @@ fn dispatch(
                     {
                         overlays.insert(path.clone(), text.to_string());
                     }
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didClose" => {
                 if let Some(path) = text_document_path(&msg) {
                     overlays.remove(&path);
                     // Re-check from disk so remaining files' diags
-                    // reflect the on-disk truth again.
-                    check_and_publish(&mut writer, &path, &overlays);
+                    // reflect the on-disk truth again — in this seed and
+                    // in every open seed that imported the buffer.
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/completion" => {
@@ -470,8 +479,6 @@ fn path_to_uri(path: &Path) -> String {
 
 // ---- check + publish -------------------------------------------------
 
-/// Re-parse and re-check the SEED containing `changed`, then publish
-/// diagnostics for every .hl file in it (empties clear stale ones).
 /// Is this path inside the materialized stdlib cache
 /// (`<cache>/hale/stdlib-<version>/`)? Those files are read-only
 /// jump targets, not user seeds: analyzed standalone they spray
@@ -493,46 +500,125 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
             .starts_with("stdlib-")
 }
 
+/// A document event for `changed`: check its seed, then every OTHER
+/// seed an open buffer sits in, each through `check_and_publish`. The
+/// snapshot reads an imported file from its buffer, so editing a
+/// library's buffer changes the program of every open seed that imports
+/// it, and closing that buffer changes it again (the importer then
+/// reads the disk copy). Every open seed is rechecked, not only the
+/// ones that import `changed`: at ~10 ms a load, a reverse-dependency
+/// index would buy nothing yet.
+fn check_open_seeds(writer: &mut impl Write, changed: &Path, state: &mut State) {
+    // (seed key, the file it is checked through): `changed`'s first,
+    // then each other seed through one of its open buffers, so a
+    // file-level diagnostic lands on a file the editor has open.
+    let mut seeds = vec![(seed_key(changed), changed.to_path_buf())];
+    for path in state.overlays.keys() {
+        if is_stdlib_cache_path(path) {
+            continue;
+        }
+        let key = seed_key(path);
+        if !seeds.iter().any(|(k, _)| *k == key) {
+            seeds.push((key, path.clone()));
+        }
+    }
+    let checked: BTreeSet<PathBuf> = seeds.iter().map(|(k, _)| k.clone()).collect();
+    for (_, via) in &seeds {
+        check_and_publish(writer, via, &state.overlays, &mut state.published, &checked);
+    }
+}
+
+/// Check the seed of `changed` and publish it: every file the check
+/// placed a list on, and, EMPTY, every file the last publication for
+/// this seed covered that this one does not — a library the seed no
+/// longer imports, or one it no longer reaches because a parse hole
+/// stops the imports from being followed. A client keeps a URI's
+/// diagnostics until that URI is published again, so what is cleared
+/// is decided by what the client was sent (`published`, keyed by the
+/// seed's directory), not by the graph the snapshot now describes.
+///
+/// A file whose own seed is among `checked` (the seeds this event
+/// checks) is that seed's to publish, and this one neither publishes
+/// nor clears it: the passes of one event would otherwise overwrite
+/// each other's answer for one file — an importer drops a library's
+/// own advisories, and would clear them.
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
+    published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    checked: &BTreeSet<PathBuf>,
 ) {
+    let own = seed_key(changed);
+    let ours = |p: &Path| {
+        let key = seed_key(p);
+        key == own || !checked.contains(&key)
+    };
+    let mut per_file = seed_diagnostics(changed, overlays);
+    per_file.retain(|p, _| ours(p));
+    let covered: BTreeSet<PathBuf> = per_file.keys().cloned().collect();
+    let before = published.insert(own.clone(), covered).unwrap_or_default();
+    for gone in before.into_iter().filter(|p| ours(p)) {
+        per_file.entry(gone).or_default();
+    }
+    publish_all(writer, per_file);
+}
+
+/// A seed's key in the server's memory: its directory, canonical when
+/// it is on disk, so two spellings of one directory are one seed.
+fn seed_key(file: &Path) -> PathBuf {
+    let dir = seed_dir_of(file);
+    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
+}
+
+/// The seed of `changed`, checked: path → the diagnostics to publish on
+/// it, an EMPTY list for every seed file the check found clean.
+fn seed_diagnostics(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> BTreeMap<PathBuf, Vec<Value>> {
     // A file inside the stdlib cache gets an EMPTY publish — it is
     // a definition-jump target, not a seed member, and clearing
     // (rather than skipping) removes anything a client already
     // showed for it.
     if is_stdlib_cache_path(changed) {
-        notify(
-            writer,
-            "textDocument/publishDiagnostics",
-            json!({
-                "uri": path_to_uri(changed),
-                "diagnostics": []
-            }),
-        );
-        return;
+        return BTreeMap::from([(changed.to_path_buf(), Vec::new())]);
     }
-    // F.40 phase 2.2a: the seed as the editor loads it (the buffers
-    // over the disk, `LoadMode::SeedDirectoryOnly`), shaped and minted
+    // F.40 phase 2.3: the seed as `hale check <dir>` loads it — the
+    // file's directory and every seed its imports reach — read through
+    // the buffers over the disk (`LoadMode::Editor`), shaped and minted
     // once, and the check demanded from it. The editor's config holds
-    // the whole-program rules (GH #721): the snapshot checks only a
-    // seed whose every file parsed, so it holds a whole program and
-    // answers `hale check <dir>` exactly — including an identifier
-    // that binds nothing, a typo the editor shows while it is typed.
-    // The model is demanded only by a program that declares a law.
-    let src = Overlay::new(overlays);
-    let Ok(snap) = Snapshot::load(changed, LoadMode::SeedDirectoryOnly, &src, Config::editor())
-    else {
-        // The editor's load takes no environment and no `--api`, so
-        // nothing refuses it: publish nothing rather than guess.
-        return;
-    };
-    let (sources, file_bases) = (snap.sources(), snap.file_bases());
-
+    // the whole-program rules (GH #721) and the build rules `hale
+    // check` runs beside its check: the snapshot checks only a seed
+    // whose every member read and parsed, so it answers `hale check
+    // <dir>` exactly — including an identifier that binds nothing, a
+    // typo the editor shows while it is typed. The model is demanded
+    // only by a program that declares a law.
     // path → published diagnostics (start EMPTY for every file so a
     // clean pass clears old squiggles).
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
+    let snap = match editor_snapshot(changed, overlays) {
+        Ok(snap) => snap,
+        // The import graph refused the seed (an import that does not
+        // resolve, a library that does not parse or read): what `hale
+        // check` prints, placed as it would place it.
+        Err(LoadError::Load(f)) => {
+            for (_, p, _) in &f.file_bases {
+                per_file.insert(p.clone(), Vec::new());
+            }
+            per_file.entry(changed.to_path_buf()).or_default();
+            place_checker_diags(&f.diags, &f.file_bases, &f.sources, &mut per_file);
+            for io in &f.io {
+                publish_file_level(&mut per_file, &io.path, changed, &io.text);
+            }
+            return per_file;
+        }
+        Err(LoadError::Refused(msg)) => {
+            per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(&msg));
+            return per_file;
+        }
+    };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
     for f in snap.files() {
         per_file.insert(f.clone(), Vec::new());
     }
@@ -540,12 +626,19 @@ fn check_and_publish(
         Ok(checked) => {
             let mut diags = checked.diags.clone();
             diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), true));
+            // What `hale check` does last: every name in the author's
+            // spelling, and an advisory about a seed the target imports
+            // left to that seed's own check.
+            hale_types::stdlib_bodies::demangle_imports(&mut diags, snap.import_renames());
+            retain_owned_advisories(&mut diags, snap.own_files(), file_bases);
             place_checker_diags(&diags, file_bases, sources, &mut per_file);
         }
-        // A seed with a file that did not parse is not checked (a parse
-        // hole would cascade phantom errors): its parse diagnostics are
-        // published against the files that hold them, un-shifted to
-        // file-local offsets.
+        // A seed with a member that did not parse or read is not checked
+        // (a hole would cascade phantom errors), as `hale check` checks
+        // none. Its parse diagnostics are published against the files
+        // that hold them, un-shifted to file-local offsets; a member
+        // that would not read is a file-level diagnostic against itself
+        // and against the file being edited, which is open.
         Err(_) => {
             for (f, diags) in snap.unparsed() {
                 let base = file_bases
@@ -558,9 +651,56 @@ fn check_and_publish(
                     out.push(diag_to_lsp(&d.clone().shifted(base.wrapping_neg()), src));
                 }
             }
+            for (f, os_error) in snap.unreadable() {
+                publish_file_level(&mut per_file, f, changed, &unreadable_message(f, os_error));
+            }
         }
     }
+    per_file
+}
 
+/// The snapshot every document event and every request reads: the seed
+/// of `changed` as `hale check <dir>` loads it, through the buffers over
+/// the disk (`LoadMode::Editor`), under the editor's config. One load
+/// per event or request — the ~10 ms frontend makes a cache pointless,
+/// and the snapshot's key is what would say whether one is sound.
+fn editor_snapshot(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<Snapshot, LoadError> {
+    Snapshot::load(changed, LoadMode::Editor, &Overlay::new(overlays), Config::editor())
+}
+
+/// A diagnostic about a whole file (one that would not read has no
+/// position): the range 0:0–0:0, an error.
+fn file_level_diag(message: &str) -> Value {
+    json!({
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end":   { "line": 0, "character": 0 }
+        },
+        "severity": 1,
+        "source": "hale",
+        "code": "io error",
+        "message": message
+    })
+}
+
+/// Publish a file-level diagnostic against `file` and against the file
+/// being edited, so an editor that has only that one open still shows it.
+fn publish_file_level(
+    per_file: &mut BTreeMap<PathBuf, Vec<Value>>,
+    file: &Path,
+    changed: &Path,
+    message: &str,
+) {
+    per_file.entry(file.to_path_buf()).or_default().push(file_level_diag(message));
+    if !same_file(file, changed) {
+        per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(message));
+    }
+}
+
+fn publish_all(writer: &mut impl Write, per_file: BTreeMap<PathBuf, Vec<Value>>) {
     for (path, diags) in per_file {
         notify(
             writer,
@@ -670,16 +810,6 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The files of the changed file's seed, as the LSP loads it today:
-/// the frontend's [`LoadMode::SeedDirectoryOnly`] — the file's own
-/// directory, the file itself even when it exists only as a buffer, and
-/// no `import` followed. A directory that will not list leaves the file
-/// alone.
-fn seed_files(changed: &Path, src: &Overlay<'_>) -> Vec<PathBuf> {
-    collect_ap_files(changed, LoadMode::SeedDirectoryOnly, src)
-        .unwrap_or_else(|_| vec![changed.to_path_buf()])
-}
-
 /// A merged-coordinate related span → LSP `DiagnosticRelatedInformation`,
 /// resolved to its own file through the file-base table.
 ///
@@ -756,68 +886,54 @@ fn offset_to_lsp_pos(src: &str, offset: usize) -> (u32, u32) {
     (line, col)
 }
 
-// ---- v2: shared seed analysis ---------------------------------------
+// ---- v2: the requests read the snapshot --------------------------------
+//
+// F.40 phase 2.3: every request loads the snapshot `check_and_publish`
+// loads (`editor_snapshot`) and demands the family it answers from —
+// the scope, the editor's scope, the bus graph — so an answer and the
+// diagnostics describe one program. A request whose family the snapshot
+// did not build (a seed with a hole, a load the import graph refused)
+// does not answer from a scope of its own; the requests that answered
+// while the user types (completion, hover, enforcement, references)
+// answer from the editor's scope over the members that parsed.
 
-/// One parsed seed (overlay-aware). Built on demand per request —
-/// the ~10 ms front-end makes caching pointless.
-struct SeedAnalysis {
-    sources: BTreeMap<PathBuf, String>,
-    file_bases: Vec<(u32, PathBuf, u32)>,
-    programs: BTreeMap<PathBuf, Program>,
-    parse_ok: bool,
+/// The base of `path`'s window in the snapshot's bundle-global spans.
+fn base_of(snap: &Snapshot, path: &Path) -> Option<u32> {
+    snap.file_bases()
+        .iter()
+        .find(|(_, p, _)| same_file(p, path))
+        .map(|(b, _, _)| *b)
 }
 
-fn analyze_seed(
-    changed: &Path,
-    overlays: &BTreeMap<PathBuf, String>,
-) -> SeedAnalysis {
-    let src = Overlay::new(overlays);
-    let files = seed_files(changed, &src);
+/// The text the snapshot read for `path`, however the path is spelled.
+fn source_of<'s>(snap: &'s Snapshot, path: &Path) -> Option<&'s String> {
+    snap.sources().get(path).or_else(|| {
+        let canon = path.canonicalize().ok()?;
+        snap.sources().get(&canon)
+    })
+}
 
-    let mut sources = BTreeMap::new();
-    let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
-    let mut programs = BTreeMap::new();
-    let mut parse_ok = true;
-    for f in &files {
-        let source = match src.read(f) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let base = file_bases
-            .last()
-            .map(|(b, _, l)| b + l + 1)
-            .unwrap_or(0);
-        file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
-            Ok(p) => {
-                programs.insert(f.clone(), p);
-            }
-            Err(_) => {
-                parse_ok = false;
-            }
+/// The file a bundle-global offset falls in, with its text and base.
+fn file_at(snap: &Snapshot, offset: usize) -> Option<(&PathBuf, &String, u32)> {
+    let (base, path, _) = snap
+        .file_bases()
+        .iter()
+        .find(|(base, _, len)| hale_syntax::file_owns_offset(*base, *len, offset as u32))?;
+    Some((path, snap.sources().get(path)?, *base))
+}
+
+/// The locus whose declaration spans the bundle-global `offset`.
+fn enclosing_locus<'t>(
+    top: &'t hale_types::resolve::TopScope,
+    offset: usize,
+) -> Option<&'t hale_types::symbol::LocusInfo> {
+    top.symbols.values().find_map(|sym| match sym {
+        hale_types::symbol::TopSymbol::Locus(l) => {
+            let sp = sym.span();
+            (sp.start.as_usize() <= offset && offset < sp.end.as_usize()).then_some(l)
         }
-        sources.insert(f.clone(), source);
-    }
-    SeedAnalysis { sources, file_bases, programs, parse_ok }
-}
-
-impl SeedAnalysis {
-    fn base_of(&self, path: &Path) -> Option<u32> {
-        self.file_bases
-            .iter()
-            .find(|(_, p, _)| same_file(p, path))
-            .map(|(b, _, _)| *b)
-    }
-    fn bundle(&self) -> hale_types::Bundle<'_> {
-        let mut b = hale_types::Bundle::new(
-            self.programs
-                .iter()
-                .map(|(p, prog)| (p.display().to_string(), prog))
-                .collect(),
-        );
-        b.sources = source_map_as_spelled(&self.file_bases, &self.sources);
-        b
-    }
+        _ => None,
+    })
 }
 
 /// LSP (0-based line, UTF-16 col) → byte offset.
@@ -849,7 +965,7 @@ fn lsp_pos_to_offset(src: &str, line: u32, character: u32) -> usize {
 //
 // The custom requests, callable without a JSON-RPC transport: the
 // MCP subcommand exposes these as agent tools by direct library
-// call — same seed re-analysis, no drift possible.
+// call — the same snapshot and families, no drift possible.
 
 fn doc_msg(path: &Path) -> Value {
     json!({ "params": { "textDocument": {
@@ -1061,19 +1177,31 @@ fn enforcement(
     msg: &Value,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
-    use hale_syntax::ast::{LocusMember, TopDecl};
     let path = text_document_path(msg)?;
-    let analysis = analyze_seed(&path, overlays);
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    Some(enforcement_of(&snap))
+}
+
+/// `hale/enforcement` over one snapshot: every fn of the programs the
+/// editor's scope was built over (a hole leaves the members that
+/// parsed), in the file each was written in. A fn the load generated
+/// or an import renamed (`__`) is not the author's to certify.
+fn enforcement_of(snap: &Snapshot) -> Value {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    if snap.demand_editor_scope().is_err() {
+        return json!({ "fns": [], "parseErrors": true });
+    }
     let mut fns: Vec<Value> = Vec::new();
-    for (fpath, program) in &analysis.programs {
-        let Some(src) = analysis.sources.get(fpath) else { continue };
-        let base = analysis.base_of(fpath).unwrap_or(0) as usize;
+    for program in snap.programs().values() {
         let mut push_fn = |f: &hale_syntax::ast::FnDecl,
                            locus: Option<&str>| {
             if f.name.name.starts_with("__") {
                 return;
             }
-            let local = f.name.span.start.as_usize().saturating_sub(base);
+            let Some((fpath, src, base)) = file_at(snap, f.name.span.start.as_usize()) else {
+                return;
+            };
+            let local = f.name.span.start.as_usize().saturating_sub(base as usize);
             let (line, _) = offset_to_lsp_pos(src, local);
             fns.push(json!({
                 "name": match locus {
@@ -1102,14 +1230,14 @@ fn enforcement(
             }
         }
     }
-    Some(json!({ "fns": fns }))
+    json!({ "fns": fns })
 }
 
 // ---- v4: completion --------------------------------------------------
 //
 // Same design as everything else in this server: no index, no
 // incremental state — every request re-derives what it needs from
-// the overlay text + a fresh seed analysis (the ~10 ms front-end).
+// the overlay text + a fresh snapshot (the ~10 ms front-end).
 // Context comes from the RAW TEXT left of the cursor (robust
 // mid-keystroke, when the buffer usually doesn't parse):
 //
@@ -1133,15 +1261,7 @@ fn completion(
     let character =
         msg.pointer("/params/position/character")?.as_u64()? as u32;
 
-    let analysis = analyze_seed(&path, overlays);
-    let src = analysis
-        .sources
-        .get(&path)
-        .or_else(|| {
-            let canon = path.canonicalize().ok()?;
-            analysis.sources.get(&canon)
-        })?
-        .clone();
+    let src = Overlay::new(overlays).read(&path).ok()?;
     let offset = lsp_pos_to_offset(&src, line, character);
     let before = &src[..offset.min(src.len())];
 
@@ -1153,26 +1273,28 @@ fn completion(
     let partial = &before[word_start..];
     let ctx = &before[..word_start];
 
-    // Mid-keystroke the overlay usually does NOT parse (that's when
-    // completion fires) — fall back to the on-disk seed for the
-    // SYMBOL side while keeping the cursor context from the overlay.
-    // Offsets differ by the in-flight edit's byte delta, which is
-    // small; enclosing-locus detection is span-containment and
-    // tolerates it.
-    let disk_fallback;
-    let sym_analysis: &SeedAnalysis = if analysis.parse_ok {
-        &analysis
-    } else {
-        disk_fallback = analyze_seed(&path, &BTreeMap::new());
-        &disk_fallback
+    // Mid-keystroke the buffer usually does NOT parse (that's when
+    // completion fires): `self.` or a half-typed word is not a
+    // statement. The snapshot reads the buffer with that fragment
+    // blanked — spaces, byte for byte, so every offset holds — which
+    // is the program around the cursor as it parses. Where it still
+    // does not (a hole elsewhere), the editor's scope covers the
+    // members that did.
+    let typed = |from: usize| -> Option<Snapshot> {
+        let mut masked = overlays.clone();
+        let mut text = src.clone();
+        text.replace_range(from..offset, &" ".repeat(offset - from));
+        masked.insert(path.clone(), text);
+        editor_snapshot(&path, &masked).ok()
     };
 
     let mut items: Vec<Value> = Vec::new();
 
     if ctx.ends_with("self.") {
-        complete_self_members(
-            sym_analysis, &path, offset, partial, &mut items,
-        );
+        let snap = typed(word_start - "self.".len());
+        if let Some(snap) = &snap {
+            complete_self_members(snap, &path, offset, partial, &mut items);
+        }
     } else if ctx.ends_with("::") {
         // Collect the `::`-joined path segments left of the cursor.
         let mut segs: Vec<String> = Vec::new();
@@ -1193,11 +1315,13 @@ fn completion(
                 break;
             }
         }
+        // The stdlib's surface table answers; no family is read.
         if segs.first().map(String::as_str) == Some("std") {
             complete_std_path(&segs[1..], partial, &mut items);
         }
     } else {
-        complete_top_level(sym_analysis, partial, &mut items);
+        let snap = typed(word_start);
+        complete_top_level(snap.as_ref(), partial, &mut items);
     }
 
     Some(json!({ "isIncomplete": false, "items": items }))
@@ -1231,56 +1355,45 @@ fn push_item(
     items.push(v);
 }
 
+/// `self.` members: the enclosing locus's params, from the editor's
+/// scope, and its declared methods, from the programs that scope was
+/// built over (the scope carries no method lists).
 fn complete_self_members(
-    analysis: &SeedAnalysis,
+    snap: &Snapshot,
     path: &Path,
     offset: usize,
     partial: &str,
     items: &mut Vec<Value>,
 ) {
-    if !analysis.parse_ok {
-        return;
-    }
-    let Some(base) = analysis.base_of(path) else { return };
-    let merged = base as usize + offset;
-    let bundle = analysis.bundle();
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let Ok(scope) = snap.demand_editor_scope() else { return };
+    let Some(base) = base_of(snap, path) else { return };
     // Enclosing locus by span containment.
-    let mut locus_name: Option<String> = None;
-    for sym in top.symbols.values() {
-        if let hale_types::symbol::TopSymbol::Locus(l) = sym {
-            let sp = sym.span();
-            if sp.start.as_usize() <= merged && merged < sp.end.as_usize() {
-                for p in &l.params {
-                    if p.name.starts_with(partial) {
-                        push_item(
-                            items,
-                            &p.name,
-                            ci_kind::FIELD,
-                            Some(p.ty.display()),
-                        );
-                    }
-                }
-                locus_name = Some(l.name.clone());
-            }
+    let Some(l) = enclosing_locus(scope.top, base as usize + offset) else { return };
+    for p in &l.params {
+        if p.name.starts_with(partial) {
+            push_item(
+                items,
+                &p.name,
+                ci_kind::FIELD,
+                Some(p.ty.display()),
+            );
         }
     }
-    // User-declared methods from the AST decl (TopScope doesn't
-    // carry method lists).
-    let Some(lname) = locus_name else { return };
-    for prog in analysis.programs.values() {
+    let lname = &l.name;
+    for prog in snap.programs().values() {
         for item in &prog.items {
             let hale_syntax::ast::TopDecl::Locus(l) = item else {
                 continue;
             };
-            if l.name.name != lname {
+            if &l.name.name != lname {
                 continue;
             }
             for m in &l.members {
                 let hale_syntax::ast::LocusMember::Fn(f) = m else {
                     continue;
                 };
-                if !f.name.name.starts_with(partial) {
+                // A method the load generated is not the author's.
+                if !f.name.name.starts_with(partial) || f.name.name.starts_with("__") {
                     continue;
                 }
                 let ps = f
@@ -1384,16 +1497,17 @@ fn complete_std_path(
     }
 }
 
+/// Bare words: the editor's scope's top-level symbols (none when the
+/// seed did not load, or no member parsed), then keywords, primitive
+/// type names and the std root.
 fn complete_top_level(
-    analysis: &SeedAnalysis,
+    snap: Option<&Snapshot>,
     partial: &str,
     items: &mut Vec<Value>,
 ) {
     use hale_types::symbol::{TopSymbol, TypeKind};
-    if analysis.parse_ok {
-        let bundle = analysis.bundle();
-        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-        for (name, sym) in &top.symbols {
+    if let Some(scope) = snap.and_then(|s| s.demand_editor_scope().ok()) {
+        for (name, sym) in &scope.top.symbols {
             if !name.starts_with(partial) || name.starts_with("__") {
                 continue;
             }
@@ -1477,51 +1591,30 @@ fn hover(msg: &Value, overlays: &BTreeMap<PathBuf, String>) -> Option<Value> {
     let character =
         msg.pointer("/params/position/character")?.as_u64()? as u32;
 
-    let analysis = analyze_seed(&path, overlays);
-    let src = analysis.sources.get(&path).or_else(|| {
-        let canon = path.canonicalize().ok()?;
-        analysis.sources.get(&canon)
-    })?.clone();
-    let offset = lsp_pos_to_offset(&src, line, character);
+    let src = Overlay::new(overlays).read(&path).ok()?;
+    let snap = editor_snapshot(&path, overlays).ok();
+    hover_at(snap.as_ref(), &path, &src, line, character)
+}
 
+/// Hover at a position of `path`, whose text is `src`: a `std::` path
+/// from the stdlib's table, anything else from the editor's scope of
+/// `snap` (a hole leaves the members that parsed). `None` for a seed
+/// that did not load answers only the `std::` paths.
+fn hover_at(
+    snap: Option<&Snapshot>,
+    path: &Path,
+    src: &str,
+    line: u32,
+    character: u32,
+) -> Option<Value> {
+    let offset = lsp_pos_to_offset(src, line, character);
     // Token at position (file-local lex; parse errors don't matter).
-    let tokens = hale_syntax::lexer::lex(&src).ok()?;
-    let idx = tokens.iter().position(|t| {
-        t.span.start.as_usize() <= offset && offset < t.span.end.as_usize()
-    })?;
+    let (tokens, idx, word, segs) = token_context(src, offset)?;
     let tok = &tokens[idx];
-    let word = match &tok.kind {
-        hale_syntax::lexer::TokenKind::Ident(name) => name.clone(),
-        _ => return None,
-    };
 
-    // Assemble a `::`-joined path around the token.
-    let mut lo = idx;
-    while lo >= 2
-        && matches!(tokens[lo - 1].kind, hale_syntax::lexer::TokenKind::ColonColon)
-        && matches!(tokens[lo - 2].kind, hale_syntax::lexer::TokenKind::Ident(_))
-    {
-        lo -= 2;
-    }
-    let mut hi = idx;
-    while hi + 2 < tokens.len()
-        && matches!(tokens[hi + 1].kind, hale_syntax::lexer::TokenKind::ColonColon)
-        && matches!(tokens[hi + 2].kind, hale_syntax::lexer::TokenKind::Ident(_))
-    {
-        hi += 2;
-    }
-    let mut segs: Vec<String> = Vec::new();
-    let mut k = lo;
-    while k <= hi {
-        if let hale_syntax::lexer::TokenKind::Ident(n) = &tokens[k].kind {
-            segs.push(n.clone());
-        }
-        k += 2;
-    }
-
-    let text = hover_text(&analysis, &path, &tokens, idx, &word, &segs)?;
-    let (sl, sc) = offset_to_lsp_pos(&src, tok.span.start.as_usize());
-    let (el, ec) = offset_to_lsp_pos(&src, tok.span.end.as_usize());
+    let text = hover_text(snap, path, &tokens, idx, &word, &segs)?;
+    let (sl, sc) = offset_to_lsp_pos(src, tok.span.start.as_usize());
+    let (el, ec) = offset_to_lsp_pos(src, tok.span.end.as_usize());
     Some(json!({
         "contents": { "kind": "markdown", "value": text },
         "range": {
@@ -1532,7 +1625,7 @@ fn hover(msg: &Value, overlays: &BTreeMap<PathBuf, String>) -> Option<Value> {
 }
 
 fn hover_text(
-    analysis: &SeedAnalysis,
+    snap: Option<&Snapshot>,
     path: &Path,
     tokens: &[hale_syntax::lexer::Token],
     idx: usize,
@@ -1570,47 +1663,30 @@ fn hover_text(
         return Some(format!("`{}` — stdlib surface", segs.join("::")));
     }
 
+    // Everything else is the seed's: the editor's scope.
+    let snap = snap?;
+    let scope = snap.demand_editor_scope().ok()?;
+
     // `self.<field>` — the enclosing locus's param.
     if idx >= 2
         && matches!(tokens[idx - 1].kind, TK::Dot)
         && matches!(tokens[idx - 2].kind, TK::KwSelf)
     {
-        if analysis.parse_ok {
-            let base = analysis.base_of(path)?;
-            let merged = base as usize + tokens[idx].span.start.as_usize();
-            let bundle = analysis.bundle();
-            let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-            for sym in top.symbols.values() {
-                if let hale_types::symbol::TopSymbol::Locus(l) = sym {
-                    let sp = sym.span();
-                    if sp.start.as_usize() <= merged
-                        && merged < sp.end.as_usize()
-                    {
-                        if let Some(p) =
-                            l.params.iter().find(|p| p.name == word)
-                        {
-                            return Some(format!(
-                                "```hale\nself.{}: {}\n```\n\nparam of \
-                                 `locus {}`",
-                                p.name,
-                                p.ty.display(),
-                                l.name
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-        return None;
+        let base = base_of(snap, path)?;
+        let merged = base as usize + tokens[idx].span.start.as_usize();
+        let l = enclosing_locus(scope.top, merged)?;
+        let p = l.params.iter().find(|p| p.name == word)?;
+        return Some(format!(
+            "```hale\nself.{}: {}\n```\n\nparam of \
+             `locus {}`",
+            p.name,
+            p.ty.display(),
+            l.name
+        ));
     }
 
     // Top-level symbol lookup.
-    if !analysis.parse_ok {
-        return None;
-    }
-    let bundle = analysis.bundle();
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let sym = top.lookup(word)?;
+    let sym = scope.top.lookup(word)?;
     use hale_types::symbol::{TopSymbol, TypeKind};
     let text = match sym {
         TopSymbol::Fn(f) => {
@@ -1633,7 +1709,7 @@ fn hover_text(
                 // AST decl.
                 let mut shown = e.display();
                 if shown == "?" {
-                    for prog in analysis.programs.values() {
+                    for prog in snap.programs().values() {
                         for item in &prog.items {
                             if let hale_syntax::ast::TopDecl::Fn(fd) = item {
                                 if fd.name.name == f.name {
@@ -1651,7 +1727,7 @@ fn hover_text(
                 ));
             }
             // Enforcement status from the AST decl.
-            for prog in analysis.programs.values() {
+            for prog in snap.programs().values() {
                 for item in &prog.items {
                     if let hale_syntax::ast::TopDecl::Fn(fd) = item {
                         if fd.name.name == f.name {
@@ -1812,13 +1888,18 @@ fn bus_graph(
             None
         }
     })?;
-    let analysis = analyze_seed(&path, overlays);
-    if !analysis.parse_ok {
-        return Some(json!({ "subjects": [], "parseErrors": true }));
-    }
-    let bundle = analysis.bundle();
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    Some(bus_graph_of(&snap))
+}
+
+/// `hale/busGraph` over one snapshot: the bus graph the model reads
+/// (`demand_bus_graph`, over the checked programs), so a subject's
+/// eligibility here is the diagnostics pass's. A seed with a hole has
+/// no graph.
+fn bus_graph_of(snap: &Snapshot) -> Value {
+    let Ok(graph) = snap.demand_bus_graph() else {
+        return json!({ "subjects": [], "parseErrors": true });
+    };
     let subjects: Vec<Value> = graph
         .subjects
         .iter()
@@ -1842,7 +1923,7 @@ fn bus_graph(
             })
         })
         .collect();
-    Some(json!({ "subjects": subjects }))
+    json!({ "subjects": subjects })
 }
 
 // ---- v3: shared token context ---------------------------------------
@@ -1888,13 +1969,13 @@ fn token_context(
 
 /// Merged-bundle span → (file, LSP range).
 fn merged_span_to_location(
-    analysis: &SeedAnalysis,
+    snap: &Snapshot,
     span: hale_syntax::Span,
 ) -> Option<Value> {
     let off = span.start.as_usize() as u32;
-    for (base, path, len) in &analysis.file_bases {
+    for (base, path, len) in snap.file_bases() {
         if hale_syntax::file_owns_offset(*base, *len, off) {
-            let src = analysis.sources.get(path)?;
+            let src = snap.sources().get(path)?;
             let local_start = span.start.as_usize() - *base as usize;
             let local_end =
                 (span.end.as_usize() - *base as usize).min(src.len());
@@ -1922,16 +2003,13 @@ fn definition(
     let line = msg.pointer("/params/position/line")?.as_u64()? as u32;
     let character =
         msg.pointer("/params/position/character")?.as_u64()? as u32;
-    let analysis = analyze_seed(&path, overlays);
-    if !analysis.parse_ok {
-        return None;
-    }
-    let src = analysis.sources.get(&path).or_else(|| {
-        let canon = path.canonicalize().ok()?;
-        analysis.sources.get(&canon)
-    })?.clone();
-    let offset = lsp_pos_to_offset(&src, line, character);
-    let (tokens, idx, word, segs) = token_context(&src, offset)?;
+    // A definition is a location in the program the snapshot scoped:
+    // a seed with a hole has none to give.
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    let top = snap.demand_scope().ok()?;
+    let src = source_of(&snap, &path)?;
+    let offset = lsp_pos_to_offset(src, line, character);
+    let (tokens, idx, word, segs) = token_context(src, offset)?;
 
     // std:: paths resolve into the EMBEDDED stdlib source
     // (downstream handoff, 2026-08-11): the rename table maps the
@@ -1946,34 +2024,21 @@ fn definition(
         return stdlib_definition(&segs);
     }
 
-    let bundle = analysis.bundle();
-    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-
     // self.<field> → the param decl on the enclosing locus.
     use hale_syntax::lexer::TokenKind as TK;
     if idx >= 2
         && matches!(tokens[idx - 1].kind, TK::Dot)
         && matches!(tokens[idx - 2].kind, TK::KwSelf)
     {
-        let base = analysis.base_of(&path)?;
+        let base = base_of(&snap, &path)?;
         let merged = base as usize + tokens[idx].span.start.as_usize();
-        for sym in top.symbols.values() {
-            if let hale_types::symbol::TopSymbol::Locus(l) = sym {
-                let sp = sym.span();
-                if sp.start.as_usize() <= merged && merged < sp.end.as_usize()
-                {
-                    if let Some(p) = l.params.iter().find(|p| p.name == word)
-                    {
-                        return merged_span_to_location(&analysis, p.span);
-                    }
-                }
-            }
-        }
-        return None;
+        let l = enclosing_locus(top, merged)?;
+        let p = l.params.iter().find(|p| p.name == word)?;
+        return merged_span_to_location(&snap, p.span);
     }
 
     let sym = top.lookup(&word)?;
-    merged_span_to_location(&analysis, sym.span())
+    merged_span_to_location(&snap, sym.span())
 }
 
 /// The stdlib AST, parsed once per process from the embedded
@@ -2095,33 +2160,30 @@ fn references(
         .pointer("/params/context/includeDeclaration")
         .and_then(Value::as_bool)
         .unwrap_or(true);
-    let analysis = analyze_seed(&path, overlays);
-    let src = analysis.sources.get(&path).or_else(|| {
-        let canon = path.canonicalize().ok()?;
-        analysis.sources.get(&canon)
-    })?.clone();
-    let offset = lsp_pos_to_offset(&src, line, character);
-    let (_, _, word, _) = token_context(&src, offset)?;
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    let src = source_of(&snap, &path)?;
+    let offset = lsp_pos_to_offset(src, line, character);
+    let (_, _, word, _) = token_context(src, offset)?;
 
-    // The declaration's merged span, for includeDeclaration=false.
-    let decl_span = if analysis.parse_ok {
-        let bundle = analysis.bundle();
-        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
-        top.lookup(&word).map(|s| s.span())
-    } else {
-        None
-    };
+    // The declaration's merged span, for includeDeclaration=false:
+    // the editor's scope (a hole leaves the members that parsed).
+    let decl_span = snap
+        .demand_editor_scope()
+        .ok()
+        .and_then(|scope| scope.top.lookup(&word).map(|s| s.span()));
 
     // Name-scoped scan of every file's Ident tokens. Honest v3
     // semantics: references-by-name across the seed (hale's flat
     // per-seed namespace makes this accurate for top-level symbols;
     // shadowing locals will over-report — a documented limitation).
+    // The files are the snapshot's: the seed and every seed its
+    // imports reach.
     let mut out: Vec<Value> = Vec::new();
-    for (file, source) in &analysis.sources {
+    for (file, source) in snap.sources() {
         let Ok(tokens) = hale_syntax::lexer::lex(source) else {
             continue;
         };
-        let base = analysis.base_of(file).unwrap_or(0);
+        let base = base_of(&snap, file).unwrap_or(0);
         for t in &tokens {
             if let hale_syntax::lexer::TokenKind::Ident(n) = &t.kind {
                 if n == &word {
@@ -2193,12 +2255,19 @@ fn placement(
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     let path = text_document_path(msg)?;
-    let analysis = analyze_seed(&path, overlays);
-    if !analysis.parse_ok {
-        return Some(json!({ "fields": [], "parseErrors": true }));
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    Some(placement_of(&snap))
+}
+
+/// `hale/placement` over one snapshot: the main locus of the program
+/// the snapshot scoped, its params and its `placement` block. A seed
+/// with a hole has no scope, and no main locus to read.
+fn placement_of(snap: &Snapshot) -> Value {
+    if snap.demand_scope().is_err() {
+        return json!({ "fields": [], "parseErrors": true });
     }
     use hale_syntax::ast::{LocusMember, TopDecl};
-    for prog in analysis.programs.values() {
+    for prog in snap.programs().values() {
         for item in &prog.items {
             let TopDecl::Locus(l) = item else { continue };
             if !l.is_main {
@@ -2245,13 +2314,13 @@ fn placement(
                     })
                 })
                 .collect();
-            return Some(json!({
+            return json!({
                 "mainLocus": l.name.name,
                 "fields": fields
-            }));
+            });
         }
     }
-    Some(json!({ "fields": [], "noMainLocus": true }))
+    json!({ "fields": [], "noMainLocus": true })
 }
 
 pub fn type_expr_str(t: &hale_syntax::ast::TypeExpr) -> String {
@@ -2275,17 +2344,24 @@ fn alloc_summary(
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     let path = text_document_path(msg)?;
-    let analysis = analyze_seed(&path, overlays);
-    if !analysis.parse_ok {
-        return Some(json!({ "leakSites": [], "parseErrors": true }));
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    Some(alloc_summary_of(&snap))
+}
+
+/// `hale/allocSummary` over one snapshot: the survey over the programs
+/// the snapshot scoped, the bundle the diagnostics pass's
+/// unbounded-allocation warnings read. A seed with a hole has none.
+fn alloc_summary_of(snap: &Snapshot) -> Value {
+    if snap.demand_scope().is_err() {
+        return json!({ "leakSites": [], "parseErrors": true });
     }
-    let progs: Vec<&Program> = analysis.programs.values().collect();
+    let progs: Vec<&Program> = snap.programs().values().collect();
     let summary = hale_types::alloc_summary::summarize_programs(&progs);
     let sites: Vec<Value> = summary
         .leak_sites()
         .iter()
         .filter_map(|site| {
-            let loc = merged_span_to_location(&analysis, site.span)?;
+            let loc = merged_span_to_location(snap, site.span)?;
             Some(json!({
                 "fn": site.owner.display(),
                 "kind": format!("{:?}", site.kind),
@@ -2295,11 +2371,10 @@ fn alloc_summary(
             }))
         })
         .collect();
-    let bundle = analysis.bundle();
-    Some(json!({
+    json!({
         "leakSites": sites,
-        "text": hale_types::dump_alloc_summary(&bundle),
-    }))
+        "text": hale_types::dump_alloc_summary(&snap.bundle()),
+    })
 }
 
 #[cfg(test)]
@@ -2511,6 +2586,92 @@ mod tests {
             v
         );
     }
+    // ---- demand accounting --------------------------------------------
+
+    /// A seed with a keyed topic and no claims.
+    const BUS_SRC: &str = "type Msg { room: String; text: String; }\n\
+topic Posted { payload: Msg; subject: \"posted\"; keyed_by room; }\n\
+locus Room {\n    params { name: String = \"lobby\"; }\n    bus { subscribe Posted as on_post where key == self.name; }\n    fn on_post(m: Msg) { println(self.name, m.text); }\n}\n\
+main locus App {\n    params { r: Room = Room { }; }\n    bus { publish Posted; }\n    run() { Posted <- Msg { room: \"lobby\", text: \"t\" }; }\n}\n\
+fn main() { App { }; }\n";
+
+    /// The editor's snapshot of `file`'s seed, from the disk.
+    fn load(file: &Path) -> Snapshot {
+        match editor_snapshot(file, &BTreeMap::new()) {
+            Ok(s) => s,
+            Err(_) => panic!("the editor's load of {} failed", file.display()),
+        }
+    }
+
+    /// F.40 phase 2.3: a request demands the families it reads and
+    /// nothing else. `hale/busGraph` builds the scope once and the bus
+    /// graph once (the model's graph, not one of its own) and no check;
+    /// a hover builds the scope and, on a seed with no claims, no model.
+    #[test]
+    fn a_request_builds_only_the_families_it_reads() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_demand_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, BUS_SRC).unwrap();
+        let unread = ["expression_typing", "ownership", "handler_routing", "model", "claims", "lowering_view"];
+
+        let snap = load(&file);
+        let graph = bus_graph_of(&snap);
+        assert_eq!(graph["subjects"][0]["subject"], "Posted", "{graph}");
+        assert_eq!(graph["subjects"][0]["staticDispatchEligible"], false, "{graph}");
+        let builds = snap.builds();
+        assert_eq!(builds["top_scope"], 1, "{builds:?}");
+        assert_eq!(builds["bus_graph"], 1, "{builds:?}");
+        for f in unread {
+            assert_eq!(builds[f], 0, "hale/busGraph built {f}: {builds:?}");
+        }
+
+        let snap = load(&file);
+        let line = BUS_SRC.lines().position(|l| l.contains("r: Room")).unwrap() as u32;
+        let character = BUS_SRC.lines().nth(line as usize).unwrap().find("Room").unwrap() as u32;
+        let h = hover_at(Some(&snap), &file, BUS_SRC, line, character).expect("a hover");
+        assert!(h["contents"]["value"].as_str().unwrap_or("").contains("locus Room"), "{h}");
+        let builds = snap.builds();
+        assert_eq!(builds["top_scope"], 1, "{builds:?}");
+        assert_eq!(builds["bus_graph"], 0, "{builds:?}");
+        for f in unread {
+            assert_eq!(builds[f], 0, "a hover built {f}: {builds:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While a member does not parse, completion and hover answer from
+    /// the editor's scope over the members that did, and nothing is
+    /// checked; the requests that read a whole program say so.
+    #[test]
+    fn a_request_over_a_seed_with_a_hole_answers_from_the_members_that_parsed() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_hole_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, BUS_SRC).unwrap();
+        std::fs::write(dir.join("broken.hl"), "fn broken( {\n").unwrap();
+
+        let snap = load(&file);
+        let line = BUS_SRC.lines().position(|l| l.contains("r: Room")).unwrap() as u32;
+        let character = BUS_SRC.lines().nth(line as usize).unwrap().find("Room").unwrap() as u32;
+        let h = hover_at(Some(&snap), &file, BUS_SRC, line, character).expect("a hover");
+        assert!(h["contents"]["value"].as_str().unwrap_or("").contains("locus Room"), "{h}");
+        let mut items = Vec::new();
+        complete_top_level(Some(&snap), "Ro", &mut items);
+        assert!(items.iter().any(|i| i["label"] == "Room"), "{items:?}");
+        assert_eq!(bus_graph_of(&snap)["parseErrors"], true);
+        assert_eq!(placement_of(&snap)["parseErrors"], true);
+        assert_eq!(alloc_summary_of(&snap)["parseErrors"], true);
+        assert!(enforcement_of(&snap)["fns"].as_array().is_some_and(|f| !f.is_empty()));
+        let builds = snap.builds();
+        assert_eq!(builds["top_scope"], 1, "the scope over the members that parsed, once: {builds:?}");
+        assert_eq!(builds["expression_typing"], 0, "nothing is checked: {builds:?}");
+        assert_eq!(builds["bus_graph"], 0, "{builds:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ---- panic containment --------------------------------------------
 
     fn frame(v: Value) -> Vec<u8> {
