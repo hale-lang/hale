@@ -228,12 +228,18 @@ pub fn check_bundle_for_build(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let mut diags = check_bundle_opts_whole_program(bundle, allow_unowned_subscriber);
+    diags.extend(build_rule_diags(bundle));
+    diags
+}
+
+/// The rules a build refuses beside the check, after it: the borrow
+/// rule (GH #730, #1048) and, GH #738, a bare fallible stdlib call — an
+/// error on every build path, as it is in `hale check`. The snapshot's
+/// check appends them for a build's config (`Config::build_rules`).
+pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let mut borrow = borrow_lifetime::borrow_lifetime_diags_with_renames(&programs, &bundle.import_renames);
-    stdlib_bodies::demangle_imports(&mut borrow, &[]);
-    diags.extend(borrow);
-    // GH #738: a bare fallible stdlib call is an error on every build
-    // path, as it is in `hale check`.
+    let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(&programs, &bundle.import_renames);
+    stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags.extend(bare_fallible::bare_fallible_calls(&programs));
     diags
 }

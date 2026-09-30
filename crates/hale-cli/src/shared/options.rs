@@ -506,20 +506,57 @@ pub(crate) fn bind_build_env(
         }
     }
     let surface = hale_syntax::api_gen::generate_api(&mut [program], options.api_roles.as_deref());
-    if let Some(surface) = surface {
-        let gated = surface.commands.iter().filter(|c| c.role.is_some()).count()
-            + surface.reads.iter().filter(|r| r.role.is_some()).count()
-            + surface.streams.iter().filter(|s| s.role.is_some()).count();
-        if gated > 0 && options.api_roles.is_none() && surface.binding.roles.is_none() {
-            eprintln!(
-                "note: {} gated operation(s) and no role table: pass `--env <name>` to bake \
-                 `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run \
-                 time; until then every gate refuses",
-                gated
-            );
-        }
-    }
+    note_unmapped_roles(surface.as_ref(), options);
     Ok(())
+}
+
+/// GH #1109: the config a build's snapshot is loaded with, from its
+/// flags: the target it compiles for, `--api`, and `--env`'s role
+/// table and constitutions (resolved by [`resolve_build_env`]). The
+/// environment is a pass of the snapshot's load and part of its key.
+pub(crate) fn build_config(
+    options: &hale_codegen::BuildOptions,
+    env_spec: &Option<(crate::pkg::EnvSpec, Option<String>)>,
+) -> hale_frontend::snapshot::Config {
+    let spec = options.target.spec();
+    let target = hale_frontend::snapshot::Target {
+        name: match options.target {
+            hale_codegen::CompileTarget::Native => "host".to_string(),
+            _ => spec.triple.to_string(),
+        },
+        has_async_io: spec.has_async_io(),
+        label: spec.platform_label(),
+    };
+    let mut config = hale_frontend::snapshot::Config::build(target);
+    config.api = options.api.clone();
+    config.api_roles = options.api_roles.clone();
+    config.environment = env_spec.as_ref().map(|(spec, base)| hale_frontend::snapshot::Environment {
+        name: options.env.clone().unwrap_or_default(),
+        adopt: env_adopts(spec, base),
+    });
+    config.allow_unowned_subscriber =
+        std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    config
+}
+
+/// Say so, once, when the api binding the sequence generated gates an
+/// operation and no environment mapped its roles.
+pub(crate) fn note_unmapped_roles(
+    surface: Option<&hale_syntax::api_gen::ApiSurface>,
+    options: &hale_codegen::BuildOptions,
+) {
+    let Some(surface) = surface else { return };
+    let gated = surface.commands.iter().filter(|c| c.role.is_some()).count()
+        + surface.reads.iter().filter(|r| r.role.is_some()).count()
+        + surface.streams.iter().filter(|s| s.role.is_some()).count();
+    if gated > 0 && options.api_roles.is_none() && surface.binding.roles.is_none() {
+        eprintln!(
+            "note: {} gated operation(s) and no role table: pass `--env <name>` to bake \
+             `[environments.<name>.roles]` from hale.toml, or set LOTUS_API_ROLES at run \
+             time; until then every gate refuses",
+            gated
+        );
+    }
 }
 
 /// Which constitution does environment `env` require? Walks up from
@@ -674,12 +711,13 @@ pub(crate) fn exec_digest(
 /// into the execution identity by [`exec_digest`]) and the canonical
 /// entity ids codegen stamps into the observation manifest.
 ///
-/// The plan is the resolved program's (F.40 phase 1.5): the one
-/// codegen reads, over the program it lowers, so the digest names
-/// exactly the lowering the binary carries. The model is still
-/// derived here, from the checked bundle, for a different concern:
-/// the observation entity ids are the model's identities, which a
-/// consumer joins the live manifest to.
+/// The plan is the lowering view's (F.40 phase 1.5): the one codegen
+/// reads, over the program it lowers, so the digest names exactly the
+/// lowering the binary carries. The model is the snapshot's, demanded
+/// here for a different concern: the observation entity ids are the
+/// model's identities, which a consumer joins the live manifest to. A
+/// checked program denotes a model, so the build's snapshot always
+/// has one; a blocked model is the caller's to report.
 ///
 /// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
 /// harness's control arm) makes codegen emit the empty plan — every
@@ -688,7 +726,23 @@ pub(crate) fn exec_digest(
 /// would share a build identity while running different lowerings,
 /// and a recording taken under one would be admitted against the
 /// other.
-pub(crate) fn model_identity(
+pub(crate) fn model_identity<'s>(
+    snap: &'s hale_frontend::snapshot::Snapshot,
+    resolved: &hale_types::resolved::LoweringView,
+    options: &hale_codegen::BuildOptions,
+) -> Result<(u64, Vec<hale_model::obs_ids::ObsEntityId>), &'s hale_frontend::snapshot::Blocked> {
+    let model = snap.demand_model()?;
+    let plan_digest = if options.no_bus_devirt {
+        hale_model::dispatch_plan::DispatchPlan::default().digest()
+    } else {
+        resolved.plan.digest()
+    };
+    Ok((plan_digest, hale_model::obs_ids::obs_entity_ids(model)))
+}
+
+/// [`model_identity`] for the verbs not yet on a snapshot (`run`,
+/// `replay`): the model derived from their own checked bundle.
+pub(crate) fn model_identity_of_bundle(
     bundle: &hale_types::Bundle<'_>,
     resolved: &hale_types::resolved::LoweringView,
     options: &hale_codegen::BuildOptions,

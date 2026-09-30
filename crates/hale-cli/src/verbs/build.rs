@@ -3,38 +3,25 @@ use crate::shared::options::parse_exec_build_options;
 use super::run::run_program;
 use crate::shared::options::split_target_args;
 use super::help::usage;
-use crate::shared::imports::AliasScopes;
-use std::collections::BTreeMap;
-use crate::EffectTable;
-use crate::shared::frontend::EntryCtx;
 use std::process::ExitCode;
-use crate::shared::imports::FileClaims;
-use crate::shared::imports::ImportDiag;
-use crate::shared::imports::ImportRenames;
 use std::path::Path;
 use std::path::PathBuf;
-use hale_syntax::ast::Program;
-use crate::shared::options::bind_build_env;
 use crate::build_env;
-use crate::shared::frontend::collect_ap_files;
 use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
+use crate::shared::options::build_config;
 use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
-use crate::shared::frontend::merge_programs;
 use crate::shared::options::model_identity;
+use crate::shared::options::note_unmapped_roles;
 use crate::shared::options::parse_build_options;
-use crate::shared::frontend::parse_files;
-use crate::shared::frontend::parse_with_imports;
+use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
-use crate::shared::diag::report_import_diags;
 use crate::shared::options::resolve_build_env;
-use crate::shared::imports::resolve_imports;
-use crate::shared::imports::scope_import_aliases;
 use crate::shared::options::take_output_flag;
-use crate::shared::imports::unscoped_alias_uses;
+use hale_frontend::snapshot::{LoadError, Snapshot};
 pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     let (flags_without_out, out_override) = match take_output_flag(flags) {
         Ok(x) => x,
@@ -55,194 +42,16 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // the dispatcher runs it for every source-reading command, this
     // one included, so it is not run again here.
 
-    // File targets follow `import "..."` directives starting from
-    // the entry's directory; directory targets bundle every .hl
-    // file in the directory as one seed (the per-dir package
-    // model — myapp/{main,render,topology}.hl → one binary). The
-    // directory shape is the user-facing answer to the
-    // single-file-app-monolith friction; the file shape stays for
-    // backwards compatibility and for one-off scripts.
-    let (mut program, renames, sources, file_bases, output, entry_ctx) = if target.is_file() {
-        let (program, renames, sources, file_bases, ctx) = match parse_with_imports(target, &Disk) {
-            Ok(x) => x,
-            Err(errors) => return report_import_diags(&errors),
-        };
-        // hello-world.hl → hello-world
-        let output = target.with_extension("");
-        (program, renames, sources, file_bases, output, ctx)
-    } else if target.is_dir() {
-        let files = match collect_ap_files(target, LoadMode::WholeSeed, &Disk) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("{}", e);
-                return ExitCode::from(1);
-            }
-        };
-        let (programs, sources, mut dir_file_bases) = match parse_files(&files, &Disk) {
-            Ok(x) => x,
-            // As for `run`: located text, unchanged (GH #777).
-            Err(f) => return f.report_text(),
-        };
-        // Collect the union of all imports across the bundle's
-        // files. Multiple files in one seed may share an import
-        // alias (e.g. both reference `lib/foo`); the visited-set
-        // inside resolve_imports dedupes by canonical file path,
-        // so the same import resolved twice is a no-op.
-        let mut union_imports: Vec<hale_syntax::ast::Import> = Vec::new();
-        for prog in programs.values() {
-            for imp in &prog.imports {
-                union_imports.push(imp.clone());
-            }
-        }
-        let merged = match merge_programs(programs.values()) {
-            Some(m) => m,
-            None => {
-                eprintln!("no .hl files in {}", target.display());
-                return ExitCode::from(1);
-            }
-        };
-        // Resolve the union of imports against the directory's
-        // own dir as the importer dir + the workspace fallback.
-        let workspace_root = find_workspace_root(target);
-        let mut effects = EffectTable::from_seed(&merged);
-    let mut merged_items = merged.items;
-        // Identity-seeded: `merged`'s items are already merged.
-        let mut renames: ImportRenames = Vec::new();
-    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
-        let mut path_sources: BTreeMap<PathBuf, String> =
-            sources.into_iter().collect();
-        let mut visited: std::collections::BTreeSet<PathBuf> =
-            std::collections::BTreeSet::new();
-        for f in &files {
-            if let Ok(c) = f.canonicalize() {
-                visited.insert(c);
-            } else {
-                visited.insert(f.clone());
-            }
-        }
-        // GH #820: as on the entry path — the seed being run is not
-        // one of the libraries its imports name.
-        let mut claims: FileClaims = FileClaims::new();
-        let mut import_errors: Vec<ImportDiag> = Vec::new();
-        // GH #746: the directory is one seed; its aliases are scoped
-        // to it.
-        let target_scope =
-            target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-        let mut alias_scopes = AliasScopes::default();
-        alias_scopes.record_files(
-            &target_scope,
-            files
-                .iter()
-                .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
-                .collect(),
-        );
-        if resolve_imports(
-            &union_imports,
-            target,
-            workspace_root.as_deref(),
-            &mut visited,
-            &mut claims,
-            &mut path_sources,
-            &mut dir_file_bases,
-            &mut import_errors,
-            &mut merged_items,
-            &mut renames,
-            &mut seed_cache,
-            &mut effects,
-            &target_scope,
-            &mut alias_scopes,
-            &Disk,
-        )
-        .is_err()
-            || !import_errors.is_empty()
-        {
-            return report_import_diags(&import_errors);
-        }
-        let mut with_imports = Program {
-            declared_effects: effects.declared_indices(),
-            effect_defs: effects.defs,
-            effect_names: effects.names,
-            imports: Vec::new(),
-            items: merged_items,
-            span: merged.span,
-        };
-        // GH #762: refuse a reference to an alias this seed never
-        // declared, the same as `check` does.
-        let unscoped = unscoped_alias_uses(
-            &with_imports,
-            &dir_file_bases,
-            &path_sources,
-            &alias_scopes,
-            &seed_cache,
-        );
-        if !unscoped.is_empty() {
-            for u in &unscoped {
-                eprintln!(
-                    "{}",
-                    render_located(&u.diag, &dir_file_bases, &path_sources)
-                );
-            }
-            return ExitCode::from(1);
-        }
-        // GH #746: scope a contested alias to its declaring seed.
-        scope_import_aliases(
-            &mut with_imports,
-            &mut renames,
-            &dir_file_bases,
-            &alias_scopes,
-            &seed_cache,
-        );
-        // brained F.1: rewrite qualified-path TypeExprs in the
-        // entry program before typecheck (see parse_with_imports
-        // for the rationale).
-        hale_codegen::mangle::apply_qualified_path_renames(
-            &mut with_imports,
-            &renames,
-        );
-        // myapp/ → myapp; output lands next to target. When the
-        // user passes `.` (or any path without a useful trailing
-        // component — `./`, `..`), `Path::file_name` returns None;
-        // canonicalize to recover the actual directory name so the
-        // emitted binary is `<dir>/<dir>` instead of `<dir>/main`.
-        let bin_name = target
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .or_else(|| {
-                target.canonicalize().ok().and_then(|p| {
-                    p.file_name().map(|s| s.to_string_lossy().into_owned())
-                })
-            })
-            .unwrap_or_else(|| "main".to_string());
-        let mut output = target.to_path_buf();
-        output.push(&bin_name);
-        let ctx = EntryCtx {
-            entry_dir: target.to_path_buf(),
-            workspace_root,
-            imports: union_imports,
-        };
-        (with_imports, renames, path_sources, dir_file_bases, output, ctx)
-    } else {
-        eprintln!("not a file or directory: {}", target.display());
-        return ExitCode::from(1);
-    };
-
-    // FUv0.8.2 #4 (2026-05-25): auto-apply sync inference
-    // BEFORE typecheck. Walks the program, runs F.32-1∞ on
-    // `@form(hashmap)` loci without explicit `sync = `, and
-    // injects the picked discipline as a synthetic FormArg.
-    // The subsequent typecheck sees an explicit sync and the
-    // F.32-0 cross-pool diagnostic stays quiet for auto-
-    // inferable cases. Loci with existing sync kwarg or
-    // single-pool use are left alone.
-
     // `--wrap-main` (browser playground): synthesize the wasm `@export`
     // entry from a bare `fn main` on the AST, BEFORE typecheck — so the
     // checker sees the synthesized `target wasm` gate + `@export` locus,
     // and every diagnostic keeps the user's original line/col (no textual
     // wrap, no offset). Wasm-only: there is no native entry inversion to
     // wrap, so on a native build it is a hard error rather than a silent
-    // no-op (which would mask a misconfigured playground build).
-    if std::env::args().any(|a| a == "--wrap-main") {
+    // no-op (which would mask a misconfigured playground build). The
+    // wrap itself is a pass of the snapshot's load (`Config::wrap_main`).
+    let wrap_main = std::env::args().any(|a| a == "--wrap-main");
+    if wrap_main {
         let args: Vec<String> = std::env::args().collect();
         let target_wasm = args.windows(2).any(|w| {
             w[0] == "--target" && (w[1] == "wasm32" || w[1] == "wasm")
@@ -255,13 +64,11 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        hale_syntax::desugar::wrap_main_as_wasm_export(&mut program);
     }
 
-    hale_syntax::json_gen::generate_json_parsers(&mut program);
     // Options first: the check answers target questions (GH #970), so
     // it has to know the target, and `--api` (GH #1106) shapes the
-    // program before the bundle borrows it.
+    // program the snapshot loads.
     let mut options = match parse_build_options("build", flags) {
         Ok(o) => o,
         Err(msg) => {
@@ -277,69 +84,51 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if let Some(path) = &options.api {
-        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program, path) {
+    let mut config = build_config(&options, &env_spec);
+    config.wrap_main = wrap_main;
+
+    // F.40 phase 2.2b: one snapshot, and the lowering view demanded
+    // from it. File targets follow `import "..."` directives starting
+    // from the entry's directory; directory targets bundle every .hl
+    // file in the directory as one seed (the per-dir package model —
+    // myapp/{main,render,topology}.hl → one binary) and resolve the
+    // union of their imports. The load then runs the one sequence
+    // `check` runs before its check: the wasm entry wrap, the
+    // environment's constitutions, sync inference, the desugars (the
+    // JSON parsers and the api binding with the environment's roles
+    // among them), the mint.
+    let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => s,
+        Err(LoadError::Load(f)) => {
+            eprintln!("{}", f.text());
+            return ExitCode::from(f.code);
+        }
+        Err(LoadError::Refused(msg)) => {
             eprintln!("{}", msg);
             return ExitCode::from(2);
         }
-    }
-    if let Err(msg) = bind_build_env(&mut program, &env_spec, &options) {
-        eprintln!("{}", msg);
-        return ExitCode::from(2);
-    }
-    // Pre-pass diags are re-raised by `check_bundle_opts` below
-    // through the normal rendering — bailing here double-reported
-    // (see the `check` site for the full story).
-    let _ = hale_types::apply_sync_inference(&mut program);
-    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
-    // entry point runs before its check. The api pass finds the binding
-    // `bind_build_env` generated and leaves it alone.
-    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence {
-            import_renames: &renames,
-            api: options.api.as_deref(),
-            api_roles: options.api_roles.as_deref(),
-        },
-    ) {
-        eprintln!("{}", msg);
-        return ExitCode::from(2);
-    }
-    // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
-    // by the same source map `check` mints with; the resolved program
-    // below mints its merged program with it too.
-    let target_name = target.display().to_string();
-    let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
-    let snapshot =
-        hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
+    };
+    note_unmapped_roles(snap.api_surface(), &options);
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
 
-    // Typecheck before lowering. Render diagnostics against the
-    // entry-file's source — diagnostic spans currently point into
-    // the merged item stream which doesn't have a single source
-    // string; this is good enough for v0.
-    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bundle_programs.insert(target.display().to_string(), &program);
-    // The rename table must reach the analysis here too, not only in
-    // `check`. Without it a cross-seed call is an unresolved edge, so
-    // an effect assertion violated one seed away compiles, links and
-    // ships — a downstream fleet gates on `build` across 109 binaries,
-    // and "it built" must not be weaker than "it checked" on a
-    // contract the compiler already knows how to evaluate.
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = renames.clone();
-    // The map the snapshot minted with, as `check` hands it over: a
-    // check that places a span in its file (a pin's module) reads the
-    // same file on every entry point.
-    bundle.sources = source_map.clone();
-    bundle.snapshot = snapshot;
-    bundle.target_has_async_io = options.target.spec().has_async_io();
-    bundle.target_label = options.target.spec().platform_label();
-    let allow_unowned =
-        std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
+    // Typecheck before lowering, with the build's rules beside it (the
+    // borrow rule, bare fallible calls). The rename table reaches the
+    // analysis through the snapshot's bundle, not only in `check`:
+    // without it a cross-seed call is an unresolved edge, so an effect
+    // assertion violated one seed away compiles, links and ships — a
+    // downstream fleet gates on `build` across 109 binaries, and "it
+    // built" must not be weaker than "it checked" on a contract the
+    // compiler already knows how to evaluate.
+    let diags = match snap.demand_check() {
+        Ok(c) => &c.diags,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
     if !diags.is_empty() {
-        for d in &diags {
-            eprintln!("{}", render_located(d, &file_bases, &sources));
+        for d in diags {
+            eprintln!("{}", render_located(d, file_bases, sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -348,8 +137,26 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked into
     // the binary, for the observation segment header.
-    options.model_hash =
-        Some(hale_types::topology::model_shape_hash(&bundle));
+    options.model_hash = Some(hale_types::topology::model_shape_hash(&snap.bundle()));
+    // hello-world.hl → hello-world. myapp/ → myapp; output lands next to
+    // target. When the user passes `.` (or any path without a useful
+    // trailing component — `./`, `..`), `Path::file_name` returns None;
+    // canonicalize to recover the actual directory name so the emitted
+    // binary is `<dir>/<dir>` instead of `<dir>/main`.
+    let output = if target.is_dir() {
+        let bin_name = target
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| {
+                target.canonicalize().ok().and_then(|p| {
+                    p.file_name().map(|s| s.to_string_lossy().into_owned())
+                })
+            })
+            .unwrap_or_else(|| "main".to_string());
+        target.join(bin_name)
+    } else {
+        target.with_extension("")
+    };
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
     // Output naming is a property of the target, not a special case
@@ -432,7 +239,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             },
             None => None,
         };
-    let any_locality_annotation = program.items.iter().any(|item| {
+    // The whole seed's program: the one a whole-seed load holds.
+    let items: &[hale_syntax::ast::TopDecl] =
+        snap.program().map(|p| p.items.as_slice()).unwrap_or(&[]);
+    let any_locality_annotation = items.iter().any(|item| {
         matches!(item, hale_syntax::ast::TopDecl::Locus(l) if l.locality.is_some())
     });
     if strict && global_target.is_none() && !any_locality_annotation {
@@ -452,10 +262,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // a hard contract and need checking. The early exit when
     // there's nothing to evaluate is cheap.
     if want_report || global_target.is_some() || any_locality_annotation {
-        let map =
-            hale_types::working_set::compute_program_working_set(
-                &program.items,
-            );
+        let map = hale_types::working_set::compute_program_working_set(items);
         if want_report {
             eprint!(
                 "{}",
@@ -465,7 +272,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         let breaches =
             hale_types::working_set::breaches_with_per_locus_budgets(
                 &map,
-                &program.items,
+                items,
                 global_target,
             );
         if !breaches.is_empty() {
@@ -487,10 +294,17 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // escape hatch); toml-sourced flags append. Duplicates are
     // tolerated — clang's `-lX -lX` is harmless, and the linker
     // dedupes csrc translation-unit contents at symbol level.
+    // The imports are the target's own, resolved against the
+    // directory they were written in.
+    let entry_dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
     let toml_opts = collect_ffi_from_imports(
-        &entry_ctx.imports,
-        &entry_ctx.entry_dir,
-        entry_ctx.workspace_root.as_deref(),
+        snap.entry_imports(),
+        &entry_dir,
+        find_workspace_root(target).as_deref(),
     );
     options.link_libs.extend(toml_opts.link_libs);
     options.csrc_files.extend(toml_opts.csrc_files);
@@ -533,30 +347,33 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // be refused against a differently-lowered sibling, which is
     // exactly what the identity is for.
     //
-    // The program is resolved first: the dispatch plan the digest
-    // frames is the resolved program's, the one codegen lowers
-    // (F.40 phase 1.5). GH #476 Change 8: the canonical entity ids a
-    // consumer joins the live manifest to the model with come from the
-    // same call.
-    match hale_types::resolved::resolve_program(
-        &program,
-        &source_map,
-        &renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(hale_codegen::CodegenError::Unsupported)
-    .and_then(|resolved| {
-        let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
-        options.obs_entity_ids = obs_ids;
-        options.exec_digest = Some(exec_digest(
-            &sources,
-            target,
-            &build_env::options_fingerprint(&options),
-            plan_digest,
-        ));
-        hale_codegen::build_resolved(&resolved, &output, &options)
-    }) {
+    // The lowering view is demanded first: the dispatch plan the
+    // digest frames is the view's, the one codegen lowers (F.40 phase
+    // 1.5). GH #476 Change 8: the canonical entity ids a consumer
+    // joins the live manifest to the model with come from the
+    // snapshot's model.
+    let view = match snap.demand_lowering() {
+        Ok(v) => v,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
+    let (plan_digest, obs_ids) = match model_identity(&snap, view, &options) {
+        Ok(x) => x,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
+    options.obs_entity_ids = obs_ids;
+    options.exec_digest = Some(exec_digest(
+        sources,
+        target,
+        &build_env::options_fingerprint(&options),
+        plan_digest,
+    ));
+    match hale_codegen::build_resolved(view, &output, &options) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {
@@ -579,7 +396,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             // now reports through.
             eprintln!(
                 "{}",
-                render_codegen_error(&e, &file_bases, &sources)
+                render_codegen_error(&e, file_bases, sources)
             );
             ExitCode::from(1)
         }

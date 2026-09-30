@@ -37,7 +37,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use hale_model::ApplicationModel;
-use hale_syntax::ast::{Program, TopDecl};
+use hale_syntax::api_gen::ApiSurface;
+use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::LoweringView;
@@ -114,6 +115,15 @@ pub struct Config {
     pub whole_program: bool,
     /// `--allow-unowned-subscriber`.
     pub allow_unowned_subscriber: bool,
+    /// `--wrap-main` (the browser playground's wasm build): the load
+    /// wraps a bare `fn main` as the wasm `@export` entry before
+    /// anything else shapes the program.
+    pub wrap_main: bool,
+    /// The rules a build refuses beside the check (the borrow rule and
+    /// bare fallible calls, `hale_types::build_rule_diags`), appended to
+    /// the check's diagnostics, so they block lowering. `hale check`
+    /// runs them itself, beside its reports.
+    pub build_rules: bool,
 }
 
 impl Config {
@@ -126,6 +136,25 @@ impl Config {
             environment: None,
             whole_program,
             allow_unowned_subscriber,
+            wrap_main: false,
+            build_rules: false,
+        }
+    }
+
+    /// A build's, for `target`: a build compiles exactly what it
+    /// loaded, so it holds a whole program (GH #721), and it refuses
+    /// the build rules. The caller sets the api, the roles and the
+    /// environment its flags name.
+    pub fn build(target: Target) -> Self {
+        Config {
+            target,
+            api: None,
+            api_roles: None,
+            environment: None,
+            whole_program: true,
+            allow_unowned_subscriber: false,
+            wrap_main: false,
+            build_rules: true,
         }
     }
 
@@ -155,6 +184,8 @@ impl Config {
         }
         d.flag(self.whole_program);
         d.flag(self.allow_unowned_subscriber);
+        d.flag(self.wrap_main);
+        d.flag(self.build_rules);
         d.finish()
     }
 }
@@ -221,8 +252,12 @@ pub struct Snapshot {
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     import_renames: ImportRenames,
+    /// The target's own `import`s, as written.
+    entry_imports: Vec<Import>,
     source_map: Vec<SourceFile>,
     identities: hale_types::snapshot::Snapshot,
+    /// The api surface the sequence generated a binding for, if any.
+    api_surface: Option<ApiSurface>,
     /// The files that did not parse, with their diagnostics (bundle-
     /// global spans). A load that leaves any blocks the scope.
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
@@ -242,14 +277,16 @@ struct Loaded {
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     import_renames: ImportRenames,
+    entry_imports: Vec<Import>,
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
 }
 
 impl Snapshot {
     /// Load `entry` as `mode` loads it, through `src`, and shape it as
-    /// `config` says: the environment's constitutions, sync inference,
-    /// the desugar sequence, then the identities minted with the
-    /// source map. No family is computed yet.
+    /// `config` says: the wasm entry wrap, the environment's
+    /// constitutions, sync inference, the desugar sequence, then the
+    /// identities minted with the source map. No family is computed
+    /// yet.
     ///
     /// [`LoadMode::WholeSeed`] fails on a file that does not parse;
     /// [`LoadMode::SeedDirectoryOnly`] (the editor's) keeps the files
@@ -291,8 +328,10 @@ impl Snapshot {
             sources: loaded.sources,
             file_bases: loaded.file_bases,
             import_renames: loaded.import_renames,
+            entry_imports: loaded.entry_imports,
             source_map: Vec::new(),
             identities: hale_types::snapshot::Snapshot::default(),
+            api_surface: None,
             unparsed: loaded.unparsed,
             scope: OnceCell::new(),
             typing: OnceCell::new(),
@@ -302,6 +341,16 @@ impl Snapshot {
             builds,
         };
         snap.count("seed_loading");
+        if snap.config.wrap_main {
+            // `--wrap-main`: the wasm `@export` entry synthesized from
+            // a bare `fn main` on the AST, before anything else reads
+            // the program, so the checker sees the synthesized `target
+            // wasm` gate and `@export` locus and every diagnostic keeps
+            // the user's own line and column.
+            for prog in snap.programs.values_mut() {
+                hale_syntax::desugar::wrap_main_as_wasm_export(prog);
+            }
+        }
         if let Some(env) = &snap.config.environment {
             // An environment binds law to an ENTRYPOINT, so the target
             // must be one — whether or not the environment contributes
@@ -344,7 +393,7 @@ impl Snapshot {
             // the api binding (GH #1106, bundle-wide), then the passes
             // that shape a declaration.
             let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
-            hale_types::desugar_sequence::desugar_before_check(
+            snap.api_surface = hale_types::desugar_sequence::desugar_before_check(
                 &mut refs,
                 &hale_types::desugar_sequence::Sequence {
                     import_renames: &snap.import_renames,
@@ -406,6 +455,28 @@ impl Snapshot {
 
     pub fn import_renames(&self) -> &ImportRenames {
         &self.import_renames
+    }
+
+    /// The target's own `import`s, as written: what a build reads each
+    /// library's `[ffi]` surface from. Empty for the editor's load.
+    pub fn entry_imports(&self) -> &[Import] {
+        &self.entry_imports
+    }
+
+    /// The api surface the desugar sequence generated a binding for,
+    /// if the program (or `--api`) declared an entry.
+    pub fn api_surface(&self) -> Option<&ApiSurface> {
+        self.api_surface.as_ref()
+    }
+
+    /// The whole seed's program: a [`LoadMode::WholeSeed`] load holds
+    /// exactly one, the target's files and every seed its imports
+    /// reach, merged. `None` for the editor's load of several files.
+    pub fn program(&self) -> Option<&Program> {
+        match self.programs.len() {
+            1 => self.programs.values().next(),
+            _ => None,
+        }
     }
 
     pub fn source_map(&self) -> &[SourceFile] {
@@ -526,7 +597,8 @@ impl Snapshot {
     /// The check: the typing's diagnostics, and — when the program
     /// denotes a model and declares a law — the laws judged over the
     /// model. A program that swears to nothing demands no model (the
-    /// epic's demand rule, GH #476 criterion 1).
+    /// epic's demand rule, GH #476 criterion 1). A build's config
+    /// ([`Config::build_rules`]) appends the build rules after them.
     pub fn demand_check(&self) -> Result<&Checked, &Blocked> {
         self.check
             .get_or_init(|| {
@@ -541,6 +613,9 @@ impl Snapshot {
                     }
                 }
                 hale_types::finish_check_diags(&mut diags);
+                if self.config.build_rules {
+                    diags.extend(hale_types::build_rule_diags(&bundle));
+                }
                 Ok(Checked { diags })
             })
             .as_ref()
@@ -565,10 +640,11 @@ impl Snapshot {
                 // holds one per file, merged here as a directory build
                 // merges them.
                 let merged;
-                let program = match self.programs.len() {
-                    1 => self.programs.values().next().expect("one program"),
-                    _ => {
-                        merged = merge_programs(self.programs.values()).expect("a checked snapshot holds a program");
+                let program = match self.program() {
+                    Some(p) => p,
+                    None => {
+                        merged = merge_programs(self.programs.values())
+                            .expect("a checked snapshot holds a program");
                         &merged
                     }
                 };
@@ -588,7 +664,7 @@ impl Snapshot {
 
 /// `hale check`'s load: the target and every seed its imports reach.
 fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
-    let (programs, sources, file_bases, import_renames, own_files) =
+    let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
         collect_checkable(entry, src)?;
     Ok(Loaded {
         files: own_files.iter().cloned().collect(),
@@ -597,6 +673,7 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
         sources,
         file_bases,
         import_renames,
+        entry_imports,
         unparsed: BTreeMap::new(),
     })
 }
@@ -634,6 +711,7 @@ fn load_seed_directory(entry: &Path, src: &dyn SourceProvider) -> Loaded {
         sources,
         file_bases,
         import_renames: Vec::new(),
+        entry_imports: Vec::new(),
         unparsed,
     }
 }
@@ -772,6 +850,17 @@ mod tests {
 
         let one_file = load(&app, &Disk, Config::check(false, false));
         assert_ne!(disk.key().config_digest, one_file.key().config_digest);
+
+        // A build of the same seed refuses the build rules; an
+        // environment and a wrapped entry are passes of its load.
+        let build = load(&app, &Disk, Config::build(Target::host()));
+        assert_ne!(disk.key().config_digest, build.key().config_digest);
+        let mut deployed = Config::build(Target::host());
+        deployed.environment = Some(Environment { name: "prod".to_string(), adopt: Vec::new() });
+        assert_ne!(build.key().config_digest, deployed.digest());
+        let mut wrapped = Config::build(Target::host());
+        wrapped.wrap_main = true;
+        assert_ne!(build.key().config_digest, wrapped.digest());
 
         let mut musl = Config::editor();
         musl.target = Target {

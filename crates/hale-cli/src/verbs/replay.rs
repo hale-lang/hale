@@ -6,7 +6,7 @@ use crate::shared::process::RunScratch;
 use crate::shared::options::VALUE_FLAGS;
 use crate::build_env;
 use crate::shared::options::exec_digest;
-use crate::shared::options::model_identity;
+use crate::shared::options::model_identity_of_bundle;
 use crate::shared::options::parse_exec_build_options;
 use crate::shared::frontend::parse_with_imports;
 use crate::shared::source::Disk;
@@ -270,7 +270,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         }
     };
     let options_fp = build_env::options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &build_options);
+    let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &build_options);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no

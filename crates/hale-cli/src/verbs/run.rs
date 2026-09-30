@@ -18,7 +18,7 @@ use crate::shared::process::dies_with_us;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
 use crate::shared::frontend::merge_programs;
-use crate::shared::options::model_identity;
+use crate::shared::options::model_identity_of_bundle;
 use crate::shared::frontend::parse_files;
 use crate::shared::frontend::parse_with_imports;
 use crate::shared::diag::render_codegen_error;
@@ -236,7 +236,7 @@ pub(crate) fn run_program(
             Err(code) => return code,
         };
         let options_fp = build_env::options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
+        let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &options);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
@@ -457,7 +457,7 @@ pub(crate) fn run_program(
             Err(code) => return code,
         };
     let options_fp = build_env::options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
+    let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &options);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(

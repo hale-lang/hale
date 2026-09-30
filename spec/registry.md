@@ -2,15 +2,15 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 3 canonical, 37 migrating (with 174 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 3 canonical, 37 migrating (with 171 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
 | family | layer | state | kind | producer | legacy | answers |
 |---|---|---|---|---|---|---|
-| `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
+| `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 4 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
-| `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 7 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
+| `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 6 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
 | `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 2 | What every top-level name denotes: the symbol table over the merged program. |
@@ -50,7 +50,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance. |
-| `demand` | Identity | Migrating | derivation | `Snapshot` | 7 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
+| `demand` | Identity | Migrating | derivation | `Snapshot` | 6 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -66,7 +66,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-frontend/src/frontend.rs` · `collect_checkable` — the directory entry for `hale check`; short-circuits a single file with no imports. *Removed when:* phase 2.
-- `crates/hale-cli/src/verbs/build.rs` · `run_build` — a hand-copied directory body inside the build verb. *Removed when:* phase 2: one loader.
 - `crates/hale-cli/src/verbs/run.rs` · `run_program` — a hand-copied directory body inside the run verb. *Removed when:* phase 2: one loader.
 - `crates/hale-frontend/src/frontend.rs` · `SeedDirectoryOnly` — the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request. *Removed when:* the LSP loads the whole seed with imports (2.3, step 5).
 - `crates/hale-lsp/src/lib.rs` · `analyze_seed` — parses the files `seed_files` names at their own bases with its own loop, a copy of the snapshot's editor load (`load_seed_directory`, which `check_and_publish` demands through); neither goes through `parse_files`. *Removed when:* the LSP loads the whole seed with imports (2.3, step 5).
@@ -129,8 +128,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-frontend/src/snapshot.rs` · `apply_sync_inference` — check and the LSP, through the snapshot's load: sync inference per program, outside the sequence, before it. *Removed when:* phase 2: sync inference is a pass of the sequence.
-- `crates/hale-cli/src/verbs/build.rs` · `run_build` — build: json_gen, inject_api_entry, bind_build_env (roles, constitution adoption), then sync inference, all before the sequence, whose JSON and api passes then find nothing left to do. *Removed when:* phase 2.
+- `crates/hale-frontend/src/snapshot.rs` · `apply_sync_inference` — check, build and the LSP, through the snapshot's load: sync inference per program, outside the sequence, before it. *Removed when:* phase 2: sync inference is a pass of the sequence.
 - `crates/hale-cli/src/verbs/run.rs` · `compile_and_exec` — run <file>: `desugar_before_check`, but no sync inference before the check; run <dir>: build's own prefix. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/test.rs` · `compile_test_binary` — test: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
@@ -159,10 +157,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `desugar_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
-- `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
+- `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
 - `desugar_intra_locus_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `build_executable_with_options(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1
 
@@ -176,7 +174,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/lib.rs` · `apply_sync_inference` — injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives, and only when a verb ran it (check, build, run <dir>, the LSP per file; never run <file>, test, replay, bench). *Removed when:* the inferred discipline is a row lowering reads; no AST mutation.
+- `crates/hale-types/src/lib.rs` · `apply_sync_inference` — injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives, and only when a verb ran it (check, build and the LSP through the snapshot's load, run <dir>; never run <file>, test, replay, bench). *Removed when:* the inferred discipline is a row lowering reads; no AST mutation.
 - `crates/hale-types/src/check.rs` · `form_has_explicit_sync_discipline` — the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check). *Removed when:* one predicate over the form rows.
 - `crates/hale-types/src/sync_inference.rs` · `form_has_explicit_sync` — sync inference's own predicate, which counts `sync = none` where the checker's does not. *Removed when:* one predicate over the form rows.
 
@@ -194,7 +192,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `effect_class_table` — Migrating · derivation
 
@@ -236,7 +234,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker of a caller not yet on the snapshot (the build path's `check_bundle_for_build`, `check_program`, tests) and passed on to nothing: the model's direct callers (`derive_application_model`), sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP's request handlers (seven times) rebuild it. `hale check` and the LSP's diagnostics build one per snapshot (`demand_scope`) and pass it to the checker and the model. *Removed when:* every consumer demands the scope from a snapshot (2.2b, 2.3).
 - `crates/hale-types/src/check.rs` · `collect_known_names` — a second name table the checker keeps beside the scope. *Removed when:* one table.
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); demand (check and the LSP's diagnostics: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (request handlers) (`crates/hale-lsp/src/lib.rs` · `build_top_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); demand (check, build and the LSP's diagnostics: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (request handlers) (`crates/hale-lsp/src/lib.rs` · `build_top_scope`)
 
 **Invariants.**
 
@@ -1212,7 +1210,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/model_builder.rs` · `derive_application_model_in`
 
-**Consumers.** demand (check and the LSP: the claims, over the snapshot's scope) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_in`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); dispatch, obs ids (`crates/hale-cli/src/shared/options.rs` · `derive_application_model`); fleet (admits the artifact, never the model)
+**Consumers.** demand (check, build and the LSP: the claims, over the snapshot's scope) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_in`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); obs ids (build: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); obs ids (run, replay: their own bundle's) (`crates/hale-cli/src/shared/options.rs` · `derive_application_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
 
@@ -1303,7 +1301,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)
 - snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem
 - canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate
-- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step, over the user program before the intra-locus rewrite (the rewrite moves a send's id onto its call and records it) and over the merged program, each numbering only what an earlier mint did not see (phase 1.1b); every entry point calls it after its last desugar with its source map and the bundle carries the result (check and the LSP through the snapshot's load, build, run, test, replay and bench for themselves); the resolved program mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error
+- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step, over the user program before the intra-locus rewrite (the rewrite moves a send's id onto its call and records it) and over the merged program, each numbering only what an earlier mint did not see (phase 1.1b); every entry point calls it after its last desugar with its source map and the bundle carries the result (check, build and the LSP through the snapshot's load, run, test, replay and bench for themselves); the resolved program mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error
 
 **Missing data.** a missing required row is a compiler error
 
@@ -1313,7 +1311,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `demand` — Migrating · derivation
 
@@ -1325,7 +1323,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/verbs/build.rs` · `run_build` — build: its own load, sequence, mint and check, in its own order. *Removed when:* 2.2b: build demands the lowering view from a snapshot.
 - `crates/hale-cli/src/verbs/run.rs` · `compile_and_exec` — run: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
 - `crates/hale-cli/src/verbs/test.rs` · `compile_test_binary` — test: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
@@ -1335,7 +1332,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `demand_lowering`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
 
-**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
+**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); build (`crates/hale-cli/src/verbs/build.rs` · `demand_lowering`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
 
 **Invariants.**
 
@@ -1354,7 +1351,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `Snapshot::load(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
+- `Snapshot::load(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `digests` — Migrating · digest
 
@@ -1375,7 +1372,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-iris/src/lib.rs` · `toolchain_hash` — the cache key itself (version, compiler sources and manifests, stdlib, embedded iris and DNA trees). *Removed when:* the cache key is derived from the snapshot identity.
 - `crates/hale-dna/src/digest.rs` · `EMBEDDED_DIRS` — DNA's embedded-source identity, its own directory list. *Removed when:* one inventory of what each identity covers.
 - `crates/hale-types/src/evidence.rs` · `analysis_inputs_digest` — the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry). *Removed when:* same.
-- `crates/hale-frontend/src/snapshot.rs` · `b.sources` — per-file FNV digests, set by the snapshot: rooted at hale.toml for check, paths as spelled for the LSP; build leaves it empty. *Removed when:* one source map per snapshot.
+- `crates/hale-frontend/src/snapshot.rs` · `b.sources` — per-file FNV digests, set by the snapshot: rooted at hale.toml for check and build, paths as spelled for the LSP. *Removed when:* one source map per snapshot.
 - `crates/hale-frontend/src/frontend.rs` · `source_map_as_spelled` — the LSP's own source map (paths as the load spelled them, beside `source_map`'s workspace-relative ones): the snapshot builds the editor's with it, and the LSP's request handlers theirs. *Removed when:* the LSP loads the whole seed (2.3, step 5), and one source map serves every entry point.
 - `crates/hale-model/src/obs_ids.rs` · `fn digest` — the observed entity-id digest, keyed by (kind, name). *Removed when:* keyed by snapshot identity.
 

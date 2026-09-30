@@ -464,6 +464,19 @@ impl CheckableFailure {
         }
     }
 
+    /// The located text a command with no machine-readable channel
+    /// prints (`build`, `run`, `test`, `replay`, `bench`): the
+    /// unreadable inputs first, then the diagnostics, one per line —
+    /// what [`Self::report`] prints on stderr outside `--json`.
+    pub fn text(&self) -> String {
+        self.io
+            .iter()
+            .map(|io| io.text.clone())
+            .chain(self.diags.iter().map(|d| render_located(d, &self.file_bases, &self.sources)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Render through the same two helpers the checker's own findings
     /// go through — so `--json` carries the offending file, line and
     /// message, and a span resolves against the file it actually lives
@@ -506,6 +519,8 @@ impl CheckableFailure {
 /// directory bundles its `.hl` files as one seed and resolves the
 /// union of their imports — the same shapes `hale build` handles, so
 /// `check` and `build` finally agree about what a program contains.
+/// The last element is that union as written, the target's own
+/// `import`s (the build reads each library's `[ffi]` from it).
 #[allow(clippy::type_complexity)]
 pub fn collect_checkable(
     target: &Path,
@@ -517,6 +532,7 @@ pub fn collect_checkable(
         Vec<(u32, PathBuf, u32)>,
         ImportRenames,
         std::collections::BTreeSet<PathBuf>,
+        Vec<hale_syntax::ast::Import>,
     ),
     CheckableFailure,
 > {
@@ -551,7 +567,7 @@ pub fn collect_checkable(
     // `check` while `build` (which merges the seed) resolved it.
     let has_imports = programs.values().any(|p| !p.imports.is_empty());
     if !has_imports && programs.len() <= 1 {
-        return Ok((programs, sources, file_bases, Vec::new(), own));
+        return Ok((programs, sources, file_bases, Vec::new(), own, Vec::new()));
     }
 
     let union_imports: Vec<hale_syntax::ast::Import> = programs
@@ -702,7 +718,7 @@ pub fn collect_checkable(
 
     let mut out: BTreeMap<PathBuf, Program> = BTreeMap::new();
     out.insert(target.to_path_buf(), program);
-    Ok((out, path_sources, file_bases, renames, own))
+    Ok((out, path_sources, file_bases, renames, own, union_imports))
 }
 
 /// GH #408 Phase 0: the bundle's source map, one unit per file of

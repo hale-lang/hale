@@ -61,12 +61,14 @@ pub struct Sequence<'a> {
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness), or that ran a pass itself first (a
 /// verb that reports a refused `--api` in its own words), may run it
-/// again. The error is a refused `--api` injection: no main locus to
-/// carry the entry.
+/// again. The value is the api surface the sequence generated a binding
+/// for, if it generated one (a second run finds the binding and
+/// generates none). The error is a refused `--api` injection: no main
+/// locus to carry the entry.
 pub fn desugar_before_check(
     programs: &mut [&mut Program],
     seq: &Sequence<'_>,
-) -> Result<(), String> {
+) -> Result<Option<hale_syntax::api_gen::ApiSurface>, String> {
     for p in programs.iter_mut() {
         hale_syntax::json_gen::generate_json_parsers(p);
     }
@@ -81,14 +83,14 @@ pub fn desugar_before_check(
             hale_syntax::api_gen::inject_api_entry(p, path)?;
         }
     }
-    hale_syntax::api_gen::generate_api(programs, seq.api_roles);
+    let surface = hale_syntax::api_gen::generate_api(programs, seq.api_roles);
     // The bundled stdlib is what a bundle-wide pass reads besides the
     // bundle: the declarations an alias may end at. A stdlib that does
     // not parse is reported where it is appended (`resolve_program`);
     // here the passes run without it.
     let stdlib = bundled_stdlib().ok();
     shape(programs, seq, stdlib.as_slice());
-    Ok(())
+    Ok(surface)
 }
 
 /// The passes that shape a declaration, in order. `context` is read and
