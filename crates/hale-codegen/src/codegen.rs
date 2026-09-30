@@ -1080,7 +1080,9 @@ pub fn build_resolved(
     // `HALE_TIME`) prints per-phase wall times to stderr — the
     // profiling surface the incremental design reads.
     let time_phases = options.time_phases;
-    let t_start = std::time::Instant::now();
+    // The clock starts when the frontend started resolving, so the
+    // first mark is the resolve step and the totals include it.
+    let t_start = std::time::Instant::now() - resolved.resolved_in;
     let mut t_last = t_start;
     let phase = |name: &str, t_last: &mut std::time::Instant| {
         if time_phases {
@@ -1094,6 +1096,7 @@ pub fn build_resolved(
             *t_last = now;
         }
     };
+    phase("resolve", &mut t_last);
     // The envelope the frontend produced (`hale_types::resolved`):
     // `user` is the desugared program before the stdlib merge, which
     // only the tier-1 bus-inert scan below reads; `merged` is what

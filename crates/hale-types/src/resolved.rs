@@ -44,6 +44,10 @@ pub struct ResolvedProgram {
     /// Fresh factories, extended by the carrier-return fold.
     pub fresh_locus_factories: BTreeMap<String, (String, Option<String>)>,
     pub returned_bindings: BTreeMap<String, ReturnedBindings>,
+    /// What producing the envelope cost, so a build's phase timing
+    /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
+    /// resolve step beside the phases codegen times itself.
+    pub resolved_in: std::time::Duration,
 }
 
 /// Resolve `program` into the envelope codegen lowers.
@@ -71,6 +75,7 @@ pub fn resolve_program(
     // pass uses the topic's declared wire subject. The fallback
     // keeps the leaf segment name so a downstream "unknown topic"
     // diagnostic has something to cite.
+    let t_start = std::time::Instant::now();
     let mut program_owned = program.clone();
     resolve_qualified_bus_subjects(&mut program_owned, import_renames);
     // Topic-reference desugaring: rewrite `BusSubject::Topic`
@@ -192,6 +197,7 @@ pub fn resolve_program(
         owner_table,
         fresh_locus_factories,
         returned_bindings,
+        resolved_in: t_start.elapsed(),
     })
 }
 
