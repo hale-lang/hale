@@ -245,7 +245,7 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let artifact = hale_types::topology::dump_topology(&bundle);
+        let artifact = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         match &dump_topology_to {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &artifact) {
@@ -368,7 +368,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = shape_gate {
-        let current = hale_types::topology::dump_topology(&bundle);
+        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         // The hash VALUE, not the raw line — the gate's whole point
         // is that this is the model's identity, and a diagnostic
         // that makes you read past `"shape_hash": ` and a trailing
@@ -441,7 +441,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = check_topology_path {
-        let current = hale_types::topology::dump_topology(&bundle);
+        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
                 if expected != current {

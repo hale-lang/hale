@@ -210,15 +210,40 @@ impl Config {
 
 /// What identifies a snapshot. Two snapshots with different keys were
 /// loaded from different inputs, and share no result.
+/// FNV-1a/64 over whatever the key hashes.
+struct Fnv(u64);
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= *b as u64;
+            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SnapshotKey {
     /// The target the load started from, canonical where it exists.
     pub entry: PathBuf,
+    /// How the target was loaded (the whole seed with its imports, or
+    /// the editor's directory); `None` for a bare program.
+    pub mode: Option<LoadMode>,
     pub target: String,
     pub config_digest: u64,
     /// The editor buffers the load read over the disk; the disk alone
     /// is [`SourceProvider::overlay_digest`]'s zero.
     pub overlay_digest: u64,
+    /// What the load actually read: every source unit's path and text
+    /// (imports included), or a bare program's rendering and its rename
+    /// table. Two loads that read different programs never share a key
+    /// (outside review of #1283, finding 2).
+    pub sources_digest: u64,
 }
 
 /// A family that was not computed because a prerequisite reported
@@ -262,6 +287,10 @@ struct Scope {
 
 /// One load's inputs, and the families derived from them.
 pub struct Snapshot {
+    /// The environment this snapshot's claims are checked for and its
+    /// artifact is labelled with; bound around each demand and each
+    /// serialization by [`Snapshot::with_env`].
+    env: hale_types::claims::EnvBinding,
     key: SnapshotKey,
     config: Config,
     files: Vec<PathBuf>,
@@ -320,15 +349,25 @@ impl Snapshot {
         src: &dyn SourceProvider,
         config: Config,
     ) -> Result<Snapshot, LoadError> {
-        let key = SnapshotKey {
-            entry: entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf()),
-            target: config.target.name.clone(),
-            config_digest: config.digest(),
-            overlay_digest: src.overlay_digest(),
-        };
         let loaded = match mode {
             LoadMode::WholeSeed => load_whole_seed(entry, src).map_err(LoadError::Load)?,
             LoadMode::SeedDirectoryOnly => load_seed_directory(entry, src),
+        };
+        // the key names what was read, so it is computed after the load
+        let mut h = Fnv::new();
+        for (path, text) in &loaded.sources {
+            h.write(path.to_string_lossy().as_bytes());
+            h.write(b"\0");
+            h.write(text.as_bytes());
+            h.write(b"\0");
+        }
+        let key = SnapshotKey {
+            entry: entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf()),
+            mode: Some(mode),
+            target: config.target.name.clone(),
+            config_digest: config.digest(),
+            overlay_digest: src.overlay_digest(),
+            sources_digest: h.finish(),
         };
         Snapshot::shape(entry, Some(mode), key, config, loaded)
     }
@@ -345,11 +384,21 @@ impl Snapshot {
         config: Config,
     ) -> Result<Snapshot, LoadError> {
         let entry = PathBuf::from(BARE_PROGRAM);
+        let mut h = Fnv::new();
+        h.write(format!("{:?}", program).as_bytes());
+        for (path, mangled) in &import_renames {
+            h.write(path.join("::").as_bytes());
+            h.write(b"=");
+            h.write(mangled.as_bytes());
+            h.write(b"\0");
+        }
         let key = SnapshotKey {
             entry: entry.clone(),
+            mode: None,
             target: config.target.name.clone(),
             config_digest: config.digest(),
             overlay_digest: 0,
+            sources_digest: h.finish(),
         };
         let loaded = Loaded {
             files: Vec::new(),
@@ -376,18 +425,22 @@ impl Snapshot {
         loaded: Loaded,
     ) -> Result<Snapshot, LoadError> {
         // GH #409: the claims name the environment they were checked
-        // for; its label travels beside the evaluation.
-        hale_types::claims::set_env_binding(hale_types::claims::EnvBinding {
+        // for; its label travels beside the evaluation. The binding is
+        // the snapshot's own and is scoped around each demand and each
+        // serialization ([`Snapshot::with_env`]), never left on the
+        // thread for the next snapshot to read.
+        let env = hale_types::claims::EnvBinding {
             name: config.environment.as_ref().map(|e| e.name.clone()),
             injected: config
                 .environment
                 .as_ref()
                 .map(|e| e.adopt.clone())
                 .unwrap_or_default(),
-        });
+        };
         let builds: [Cell<u32>; FAMILIES.len()] = Default::default();
         let mut snap = Snapshot {
             key,
+            env,
             config,
             files: loaded.files,
             own_files: loaded.own_files,
@@ -578,6 +631,15 @@ impl Snapshot {
 
     /// How many times each family's producer ran for this snapshot:
     /// every family of [`FAMILIES`], zero when never demanded.
+    /// Run `f` with this snapshot's environment bound: what a demand
+    /// runs under, and what a caller serializing this snapshot's
+    /// artifact (`hale check --dump-topology`) wraps the serialization
+    /// in, so the label and the claims' explanations are this
+    /// snapshot's whatever was loaded since.
+    pub fn with_env<R>(&self, f: impl FnOnce() -> R) -> R {
+        hale_types::claims::with_env_binding(&self.env, f)
+    }
+
     pub fn builds(&self) -> BTreeMap<&'static str, u32> {
         FAMILIES
             .iter()
@@ -641,7 +703,7 @@ impl Snapshot {
     /// checker reports an error other than a claim's.
     pub fn demand_model(&self) -> Result<&ApplicationModel, &Blocked> {
         self.model
-            .get_or_init(|| {
+            .get_or_init(|| self.with_env(|| {
                 let typed = self.typing().map_err(Clone::clone)?;
                 if !hale_types::denotes_a_model(typed) {
                     return Err(Blocked {
@@ -660,7 +722,7 @@ impl Snapshot {
                     &self.bundle(),
                     &scope.top,
                 ))
-            })
+            }))
             .as_ref()
     }
 
@@ -671,7 +733,7 @@ impl Snapshot {
     /// ([`Config::build_rules`]) appends the build rules after them.
     pub fn demand_check(&self) -> Result<&Checked, &Blocked> {
         self.check
-            .get_or_init(|| {
+            .get_or_init(|| self.with_env(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
                 let bundle = self.bundle();
                 if hale_types::denotes_a_model(&diags)
@@ -687,7 +749,7 @@ impl Snapshot {
                     diags.extend(hale_types::build_rule_diags(&bundle));
                 }
                 Ok(Checked { diags })
-            })
+            }))
             .as_ref()
     }
 

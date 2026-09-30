@@ -237,7 +237,7 @@ pub fn collect_target_files(
 ///
 /// One mode per entry-point shape, so the difference between the CLI's
 /// load and the LSP's is this enum, not two walks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LoadMode {
     /// The CLI (`check`, `build`, `run`, ...): the target as named — a
     /// directory is the seed, a file is a seed of one — and the loaders

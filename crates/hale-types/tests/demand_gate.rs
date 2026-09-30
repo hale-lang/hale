@@ -243,3 +243,57 @@ fn the_harness_snapshot_lowers_without_a_check() {
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");
 }
+
+/// The key names what was loaded, not only what was asked: the same
+/// entry through the whole-seed load and the editor's directory load
+/// reads different program sets and gets different keys; editing a
+/// file on disk changes the key; two bare programs differ (outside
+/// review of #1283, finding 2).
+#[test]
+fn a_snapshot_key_tells_different_loads_apart() {
+    let d = seed("key", NO_CLAIMS);
+    std::fs::write(d.join("sibling.hl"), "fn helper() -> Int { return 1; }\n").unwrap();
+    let entry = d.join("app.hl");
+    let whole = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
+    let editor_load = load(&entry, LoadMode::SeedDirectoryOnly, &Disk, Config::editor());
+    assert_ne!(whole.programs().len(), editor_load.programs().len(), "the modes read different sets");
+    assert_ne!(whole.key(), editor_load.key(), "different loads, different keys");
+    let again = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
+    assert_eq!(whole.key(), again.key(), "the same load, the same key");
+    std::fs::write(&entry, format!("{NO_CLAIMS}\n// edited\n")).unwrap();
+    let edited = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
+    assert_ne!(whole.key(), edited.key(), "an edit on disk is a different snapshot");
+    let a = hale_syntax::parse_source("fn main() { }").unwrap();
+    let b = hale_syntax::parse_source("fn main() { let x = 1; }").unwrap();
+    let bare = |p| match Snapshot::from_program(p, Vec::new(), Config::build(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program shapes"),
+    };
+    let ka = bare(a);
+    let kb = bare(b);
+    assert_ne!(ka.key(), kb.key(), "two bare programs, two keys");
+}
+
+/// The environment a snapshot's claims are checked for is the
+/// snapshot's own: loading a second snapshot for another environment
+/// afterwards changes nothing about the first's diagnostics or its
+/// artifact's label (outside review of #1283, finding 1).
+#[test]
+fn a_demand_reads_its_own_snapshots_environment_not_the_last_loaded() {
+    use hale_frontend::snapshot::Environment;
+    let d = seed("env", NO_CLAIMS);
+    let mut dev = Config::build(Target::host());
+    dev.environment = Some(Environment { name: "dev".into(), adopt: vec!["Missing".into()] });
+    let mut prod = Config::build(Target::host());
+    prod.environment = Some(Environment { name: "prod".into(), adopt: Vec::new() });
+    let first = load(&d, LoadMode::WholeSeed, &Disk, dev);
+    let _second = load(&d, LoadMode::WholeSeed, &Disk, prod);
+    let checked = first.demand_check().expect("a claims error does not block the check");
+    let msgs: Vec<&String> = checked.diags.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("unknown constitution `Missing`") && m.contains("`[environments.dev]` in hale.toml requires it")),
+        "the first snapshot's claims are explained by ITS environment: {msgs:?}"
+    );
+    let artifact = first.with_env(|| hale_types::topology::dump_topology(&first.bundle()));
+    assert!(artifact.contains("\"environment\": \"dev\""), "the artifact carries the first snapshot's label: {}", &artifact[..artifact.len().min(400)]);
+}
