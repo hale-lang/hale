@@ -13973,6 +13973,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ]),
             span,
             id: NodeId::NONE,
+            synthetic: true,
         };
         let option_decl = TypeDecl {
             display: None,
@@ -13992,6 +13993,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ]),
             span,
             id: NodeId::NONE,
+            synthetic: true,
         };
         vec![result_decl, option_decl]
     }
@@ -14245,7 +14247,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bounded: template.bounded,
             members: new_members,
             span: template.span.clone(),
-            id: NodeId::NONE,
+            // A monomorph is the template's site instantiated: it
+            // keeps the template's identity, the way a cloned Expr
+            // keeps its id.
+            id: template.id,
         })
     }
 
@@ -14265,7 +14270,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }),
                         init: p.init.clone(),
                         span: p.span.clone(),
-                        id: NodeId::NONE,
+                        id: p.id,
                     })
                     .collect(),
                 span: pb.span.clone(),
@@ -14282,7 +14287,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             key_filter,
                             bound,
                             span,
-                            ..
+                            id,
                         } => {
                             BusMember::Subscribe {
                                 subject: subject.clone(),
@@ -14293,10 +14298,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 key_filter: key_filter.clone(),
                                 bound: *bound,
                                 span: span.clone(),
-                                id: NodeId::NONE,
+                                id: *id,
                             }
                         }
-                        BusMember::Publish { subject, ty, alias, gated, span, .. } => {
+                        BusMember::Publish { subject, ty, alias, gated, span, id } => {
                             BusMember::Publish {
                                 subject: subject.clone(),
                                 ty: ty.as_ref().map(|t| {
@@ -14305,7 +14310,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 alias: alias.clone(),
                                 gated: gated.clone(),
                                 span: span.clone(),
-                                id: NodeId::NONE,
+                                id: *id,
                             }
                         }
                     })
@@ -14335,7 +14340,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &lc.body, subst,
                     ),
                     span: lc.span.clone(),
-                    id: NodeId::NONE,
+                    id: lc.id,
                 },
             ),
             LocusMember::Fn(fd) => LocusMember::Fn(FnDecl {
@@ -14376,14 +14381,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &fd.body, subst,
                 ),
                 span: fd.span.clone(),
-                id: NodeId::NONE,
+                id: fd.id,
             }),
             LocusMember::Const(c) => LocusMember::Const(ConstDecl {
                 name: c.name.clone(),
                 ty: Self::substitute_type_expr(&c.ty, subst),
                 value: c.value.clone(),
                 span: c.span.clone(),
-                id: NodeId::NONE,
+                id: c.id,
             }),
             // Mode, Failure, Closure, Contract, Type pass through
             // unchanged at v0.1; m63b can extend them when a
@@ -14628,7 +14633,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             decorators: Vec::new(),
             body: new_body,
             span: template.span.clone(),
-            id: NodeId::NONE,
+            id: template.id,
         })
     }
 
@@ -14660,7 +14665,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         subst: &BTreeMap<String, TypeExpr>,
     ) -> Stmt {
         match stmt {
-            Stmt::Let { is_mut, name, ty, value, span, .. } => Stmt::Let {
+            Stmt::Let { is_mut, name, ty, value, span, id } => Stmt::Let {
                 is_mut: *is_mut,
                 name: name.clone(),
                 ty: ty
@@ -14668,9 +14673,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map(|t| Self::substitute_type_expr(t, subst)),
                 value: value.clone(),
                 span: span.clone(),
-                id: NodeId::NONE,
+                id: *id,
             },
-            Stmt::LetTuple { is_mut, names, ty, value, span, .. } => {
+            Stmt::LetTuple { is_mut, names, ty, value, span, id } => {
                 Stmt::LetTuple {
                     is_mut: *is_mut,
                     names: names.clone(),
@@ -14679,7 +14684,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map(|t| Self::substitute_type_expr(t, subst)),
                     value: value.clone(),
                     span: span.clone(),
-                    id: NodeId::NONE,
+                    id: *id,
                 }
             }
             other => other.clone(),
@@ -15212,7 +15217,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             generics: Vec::new(),
             body: new_body,
             span: template.span.clone(),
-            id: NodeId::NONE,
+            id: template.id,
+            synthetic: template.synthetic,
         })
     }
 

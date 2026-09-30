@@ -1253,7 +1253,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)
 - snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem
 - canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate
-- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches, once, after desugar, with one counter over the merged program (phase 1.1b); the verbs and the LSP call it, and the F.39 pre-pass keeps what it minted
+- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches, once, after desugar, with one counter over the merged program (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar and the bundle carries the result; a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass keeps what was minted and numbers past it
 
 **Missing data.** a missing required row is a compiler error
 

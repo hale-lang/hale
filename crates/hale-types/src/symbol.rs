@@ -61,6 +61,11 @@ pub struct Bundle<'a> {
     /// The target's platform as the `async_io` diagnostic names it
     /// ("macOS", "musl Linux"). Set beside `target_has_async_io`.
     pub target_label: &'static str,
+    /// F.40 phase 1.1b-iii: the identities minted for this bundle's
+    /// programs (`snapshot::mint`, run by every entry point after its
+    /// last desugar). Empty on a path that has not minted (a harness
+    /// build).
+    pub snapshot: crate::snapshot::Snapshot,
 }
 
 /// One file's slice of the bundle-global offset space.
@@ -92,6 +97,7 @@ impl<'a> Bundle<'a> {
             // The host is the target unless a build says otherwise.
             target_has_async_io: true,
             target_label: if cfg!(target_os = "macos") { "macOS" } else { "Linux" },
+            snapshot: crate::snapshot::Snapshot::default(),
         }
     }
 }

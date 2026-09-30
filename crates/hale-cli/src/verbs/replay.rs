@@ -210,15 +210,21 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     }
     // Same compile pipeline as `hale run` (parse → check → model
     // hash), so a recording is admitted against exactly what runs.
-    let (program, renames, sources, file_bases, _ctx) =
+    let (mut program, renames, sources, file_bases, _ctx) =
         match parse_with_imports(&prog) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
+    // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
+    // before the check, so it mints straight after the load; with no
+    // source map here, the seed is the program's ordinal.
+    let prog_name = prog.display().to_string();
+    let snapshot = hale_types::snapshot::mint([(prog_name.as_str(), &mut program)], &[]);
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bundle_programs.insert(prog.display().to_string(), &program);
+    bundle_programs.insert(prog_name.clone(), &program);
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    bundle.snapshot = snapshot;
     let diags = hale_types::check_bundle_for_build(&bundle, false);
     if !diags.is_empty() {
         for d in &diags {

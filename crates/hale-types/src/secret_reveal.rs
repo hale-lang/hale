@@ -59,7 +59,7 @@ use hale_syntax::Span;
 /// fns refuses it until the pin is updated here, so the exemption covers
 /// the reviewed code and nothing added to it.
 const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
-    ("memory_schema", "", "role_password", "dna::role_password", "93bd878894a48ac8"),
+    ("memory_schema", "", "role_password", "dna::role_password", "e6d7377c6a5419e1"),
     (
         "infra",
         "ReferenceInfrastructure",
@@ -67,7 +67,7 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
         "dna::ReferenceInfrastructure.knowledge_database",
         "d01049660533208d",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "5a034981d05a9a88"),
+    ("scram", "", "salted_password", "pq::salted_password", "d24ec5bf7038d77d"),
     ("scram", "", "compute_client_final", "pq::compute_client_final", "a2a01932b10406e3"),
 ];
 

@@ -75,7 +75,7 @@ pub(crate) fn compile_test_binary(
     entry: &Path,
     scratch: &RunScratch,
 ) -> Result<PathBuf, String> {
-    let (program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
+    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
         Ok(x) => x,
         Err(errors) => {
             let mut msg = String::new();
@@ -86,8 +86,13 @@ pub(crate) fn compile_test_binary(
             return Err(msg.trim_end().to_string());
         }
     };
+    // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
+    // before the check, so it mints straight after the load; with no
+    // source map here, the seed is the program's ordinal.
+    let entry_name = entry.display().to_string();
+    let snapshot = hale_types::snapshot::mint([(entry_name.as_str(), &mut program)], &[]);
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bundle_programs.insert(entry.display().to_string(), &program);
+    bundle_programs.insert(entry_name.clone(), &program);
     // The rename table must reach the analysis here too, not only in
     // `check`. Without it a cross-seed call is an unresolved edge, so
     // an effect assertion violated one seed away compiles, links and
@@ -96,6 +101,7 @@ pub(crate) fn compile_test_binary(
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    bundle.snapshot = snapshot;
     let diags = hale_types::check_bundle_for_build(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();

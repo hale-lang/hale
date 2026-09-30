@@ -5,7 +5,7 @@
 
 use hale_graph::ids::SeedId;
 use hale_syntax::sites::{for_each_site, SiteKind};
-use hale_types::snapshot::mint;
+use hale_types::snapshot::{mint, Origin};
 use hale_types::symbol::SourceFile;
 
 fn parse(src: &str) -> hale_syntax::ast::Program {
@@ -131,4 +131,157 @@ fn main() { let o = Order { id: 1 }; }
         out
     };
     assert!(kinds.contains(&SiteKind::Module) && kinds.contains(&SiteKind::Locus));
+}
+
+/// The sites of `item`, by index.
+fn item_sites(item: &hale_syntax::ast::TopDecl) -> Vec<u32> {
+    let mut out = Vec::new();
+    hale_syntax::sites::for_each_site_in_item(item, &mut |_, _, id| out.push(id.0));
+    out
+}
+
+fn origin_at(snap: &hale_types::snapshot::Snapshot, index: u32) -> Option<Origin> {
+    snap.origins.iter().find(|(s, _)| s.index == index).map(|(_, o)| *o)
+}
+
+/// F.40 phase 1.1b-iii: a bundle built the way `hale check` builds one
+/// (parse, the JSON parsers, sync inference, the api surface, then the
+/// mint over the source map) carries its snapshot, and every
+/// declaration the desugars generated has an origin row, as does every
+/// site inside it.
+#[test]
+fn a_check_shaped_bundle_carries_its_snapshot_and_every_generated_declaration_has_an_origin() {
+    let src = r#"
+type Order { id: Int `json:"id"`; note: String `json:"note"`; }
+type Verdict { review_id: Int; verdict: String; }
+type VerdictResult { ok: Bool; note: String; }
+topic Verdicts { payload: Verdict; subject: "app.verdict"; }
+locus Billing {
+    params { seen: Int = 0; }
+    bus { subscribe Verdicts as on_verdict; }
+    fn on_verdict(v: Verdict) -> VerdictResult {
+        self.seen = self.seen + 1;
+        return VerdictResult { ok: true, note: v.verdict };
+    }
+}
+main locus App {
+    params { billing: Billing = Billing { }; }
+    bindings { api: unix("/tmp/t.sock", bound: 8, on_full: refuse); }
+}
+fn main() {
+    let o = Order::from_json("{\"id\": 1, \"note\": \"n\"}") or Order { id: 0, note: "" };
+    println(o.note);
+    App { };
+}
+"#;
+    let path = std::path::PathBuf::from("app.hl");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert(path.clone(), parse(src));
+    for prog in programs.values_mut() {
+        hale_syntax::json_gen::generate_json_parsers(prog);
+        let _ = hale_types::apply_sync_inference(prog);
+    }
+    {
+        let mut refs: Vec<&mut hale_syntax::ast::Program> = programs.values_mut().collect();
+        assert!(
+            hale_syntax::api_gen::generate_api(&mut refs, None).is_some(),
+            "the api binding lowers"
+        );
+    }
+    let sources = vec![SourceFile {
+        id: 0,
+        path: "app.hl".into(),
+        digest: "0".into(),
+        base: 0,
+        len: src.len() as u32,
+    }];
+    let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
+    let snapshot = mint(names.iter().map(String::as_str).zip(programs.values_mut()), &sources);
+    let bundle_programs: std::collections::BTreeMap<String, &hale_syntax::ast::Program> =
+        programs.iter().map(|(p, prog)| (p.display().to_string(), prog)).collect();
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.sources = sources;
+    bundle.snapshot = snapshot;
+
+    assert!(bundle.snapshot.len() > 0);
+    let prog = &programs[&path];
+    let mut json = 0;
+    let mut api = 0;
+    for item in &prog.items {
+        use hale_syntax::ast::TopDecl;
+        let expected = match item {
+            TopDecl::Fn(fd)
+                if fd.name.name.starts_with("__json_parse_")
+                    || fd.name.name.starts_with("__json_to_json_") =>
+            {
+                Some(Origin::JsonParsers)
+            }
+            TopDecl::Type(t) if t.synthetic => Some(Origin::JsonParsers),
+            TopDecl::Fn(fd)
+                if fd.name.name.starts_with("__api_decode_")
+                    || fd.name.name.starts_with("__api_encode_") =>
+            {
+                Some(Origin::ApiSurface)
+            }
+            other if other.span().start.0 >= hale_syntax::api_gen::API_SYNTH_BASE => {
+                Some(Origin::ApiSurface)
+            }
+            _ => None,
+        };
+        let sites = item_sites(item);
+        match expected {
+            Some(origin) => {
+                match origin {
+                    Origin::JsonParsers => json += 1,
+                    _ => api += 1,
+                }
+                assert!(!sites.is_empty());
+                for index in sites {
+                    assert_eq!(
+                        origin_at(&bundle.snapshot, index),
+                        Some(origin),
+                        "site {index} of a generated declaration: {:?}",
+                        bundle.snapshot.site(hale_graph::ids::SiteId::new(SeedId(0), index))
+                    );
+                }
+            }
+            None => {
+                // A written declaration's own site has no row; its
+                // generated members (the api subscriber) may.
+                assert_eq!(origin_at(&bundle.snapshot, sites[0]), None);
+            }
+        }
+    }
+    assert!(json >= 3, "JsonError and Order's parser and emitter ({json})");
+    assert!(api > 0, "the api surface's declarations ({api})");
+    // The subscriber member the api surface adds to a written locus.
+    let generated_subscribe = bundle.snapshot.sites.iter().any(|s| {
+        s.kind == SiteKind::Subscribe
+            && s.span.start.0 >= hale_syntax::api_gen::API_SYNTH_BASE
+            && bundle.snapshot.origin(s.id) == Some(Origin::ApiSurface)
+    });
+    assert!(generated_subscribe);
+}
+
+/// The per-site markers: the `run` the omitted-run desugar adds, and
+/// the bindings the chains rewrite introduces.
+#[test]
+fn the_omitted_run_and_the_chain_bindings_have_origins() {
+    let mut p = parse(
+        r#"
+locus L { params { n: Int = 0; } }
+fn count(xs: Vec<Int>) -> Int { let c = xs.filter(it > 2).count(); return c; }
+fn main() { L { }; }
+"#,
+    );
+    hale_syntax::desugar::desugar_omitted_run(&mut p);
+    let snap = mint([("app.hl", &mut p)], &[]);
+    let of = |kind: SiteKind| -> Vec<Option<Origin>> {
+        snap.sites.iter().filter(|s| s.kind == kind).map(|s| snap.origin(s.id)).collect()
+    };
+    assert_eq!(of(SiteKind::Lifecycle), vec![Some(Origin::OmittedRun)]);
+    assert_eq!(of(SiteKind::Locus), vec![None]);
+    let lets = of(SiteKind::Let);
+    assert!(lets.contains(&Some(Origin::ChainDesugar)), "{lets:?}");
+    assert!(lets.contains(&None), "the written `let c`: {lets:?}");
 }

@@ -243,7 +243,7 @@ pub(crate) fn run_bench_file(
 
     let bench_scratch = RunScratch::new("bench")?;
     let compile = (|| -> Result<PathBuf, String> {
-        let (prog, renames, sources, file_bases, ctx) =
+        let (mut prog, renames, sources, file_bases, ctx) =
             match parse_with_imports(&tmp_src) {
                 Ok(x) => x,
                 Err(errors) => {
@@ -255,6 +255,14 @@ pub(crate) fn run_bench_file(
                     return Err(msg);
                 }
             };
+        // F.40 phase 1.1b-iii: the snapshot, straight after the load
+        // (bench runs no desugar of its own). Bench builds no bundle
+        // and runs no check, so nothing holds the table; what stays is
+        // the identities on the program codegen receives, the same as
+        // every other entry point hands it. No source map here, so the
+        // seed is the program's ordinal.
+        let entry_name = entry.display().to_string();
+        let _ = hale_types::snapshot::mint([(entry_name.as_str(), &mut prog)], &[]);
         // GH #848: the compile runs against a temp COPY of the bench
         // file with the synthesized driver appended, and that copy is
         // deleted a moment later — so a located codegen error would

@@ -2122,6 +2122,13 @@ pub struct TypeDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// Synthesized rather than written: the `JsonError` that `json_gen`
+    /// declares when the program has none, and codegen's builtin
+    /// `Result` / `Option` templates. `JsonError` is a name a program
+    /// may declare itself and the generated one's span sits in the
+    /// generated text's own coordinates, so nothing else tells the two
+    /// apart; the snapshot reads this to record the site's origin.
+    pub synthetic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

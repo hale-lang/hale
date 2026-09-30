@@ -288,6 +288,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 1.1b-iii: the snapshot, after the last desugar. This
+    // path builds no source map, so the seed is the program's ordinal.
+    let target_name = target.display().to_string();
+    let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
 
     // Typecheck before lowering. Render diagnostics against the
     // entry-file's source — diagnostic spans currently point into
@@ -303,6 +307,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    bundle.snapshot = snapshot;
     bundle.target_has_async_io = options.target.spec().has_async_io();
     bundle.target_label = options.target.spec().platform_label();
     let allow_unowned =

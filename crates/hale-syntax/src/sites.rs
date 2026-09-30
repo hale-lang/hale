@@ -56,7 +56,7 @@ pub fn for_each_site_mut(
     program: &mut Program,
     f: &mut dyn FnMut(SiteKind, Span, &mut NodeId),
 ) {
-    mutable::program(program, f);
+    mutable::program(program, &mut |kind, span, _, id| f(kind, span, id));
 }
 
 /// The same traversal, read-only.
@@ -64,7 +64,31 @@ pub fn for_each_site(
     program: &Program,
     f: &mut dyn FnMut(SiteKind, Span, NodeId),
 ) {
-    shared::program(program, &mut |kind, span, id: &NodeId| {
+    shared::program(program, &mut |kind, span, _, id: &NodeId| {
+        f(kind, span, *id)
+    });
+}
+
+/// The same traversal, read-only, with each site's name where the node
+/// carries one as a plain identifier: a declaration's name, the binding
+/// of a `let` or `for`, the head of an assignment's target. `None` for
+/// the sites that have none (a lifecycle, a publish, a call).
+pub fn for_each_named_site(
+    program: &Program,
+    f: &mut dyn FnMut(SiteKind, Span, Option<&str>, NodeId),
+) {
+    shared::program(program, &mut |kind, span, name, id: &NodeId| {
+        f(kind, span, name, *id)
+    });
+}
+
+/// The read-only traversal of one top-level declaration: the sites
+/// `for_each_site` visits for it, in the same order.
+pub fn for_each_site_in_item(
+    item: &TopDecl,
+    f: &mut dyn FnMut(SiteKind, Span, NodeId),
+) {
+    shared::top_decl(item, &mut |kind, span, _, id: &NodeId| {
         f(kind, span, *id)
     });
 }
@@ -77,7 +101,8 @@ macro_rules! walk {
         mod $module {
             use super::*;
 
-            type Visit<'v> = dyn FnMut(SiteKind, Span, & $($m)? NodeId) + 'v;
+            type Visit<'v> =
+                dyn FnMut(SiteKind, Span, Option<&str>, & $($m)? NodeId) + 'v;
 
             pub(super) fn program(p: & $($m)? Program, f: &mut Visit<'_>) {
                 items(& $($m)? p.items, f);
@@ -89,11 +114,11 @@ macro_rules! walk {
                 }
             }
 
-            fn top_decl(d: & $($m)? TopDecl, f: &mut Visit<'_>) {
+            pub(super) fn top_decl(d: & $($m)? TopDecl, f: &mut Visit<'_>) {
                 match d {
                     TopDecl::Locus(l) => locus(l, f),
                     TopDecl::Perspective(p) => {
-                        f(SiteKind::Perspective, p.span, & $($m)? p.id);
+                        f(SiteKind::Perspective, p.span, Some(p.name.name.as_str()), & $($m)? p.id);
                         generics(& $($m)? p.generics, f);
                         for member in & $($m)? p.members {
                             match member {
@@ -109,11 +134,11 @@ macro_rules! walk {
                     TopDecl::Const(c) => const_decl(c, f),
                     TopDecl::Fn(fd) => fn_decl(fd, f),
                     TopDecl::Module(md) => {
-                        f(SiteKind::Module, md.span, & $($m)? md.id);
+                        f(SiteKind::Module, md.span, Some(md.name.name.as_str()), & $($m)? md.id);
                         items(& $($m)? md.items, f);
                     }
                     TopDecl::Interface(i) => {
-                        f(SiteKind::Interface, i.span, & $($m)? i.id);
+                        f(SiteKind::Interface, i.span, Some(i.name.name.as_str()), & $($m)? i.id);
                         for sig in & $($m)? i.methods {
                             params(& $($m)? sig.params, f);
                             opt_ty(& $($m)? sig.ret, f);
@@ -121,11 +146,11 @@ macro_rules! walk {
                         }
                     }
                     TopDecl::Topic(t) => {
-                        f(SiteKind::Topic, t.span, & $($m)? t.id);
+                        f(SiteKind::Topic, t.span, Some(t.name.name.as_str()), & $($m)? t.id);
                         ty(& $($m)? t.payload, f);
                     }
                     TopDecl::Group(g) => {
-                        f(SiteKind::Group, g.span, & $($m)? g.id);
+                        f(SiteKind::Group, g.span, Some(g.name.name.as_str()), & $($m)? g.id);
                     }
                     // No identity and no expression inside.
                     TopDecl::RingLayout(_)
@@ -137,7 +162,7 @@ macro_rules! walk {
             }
 
             fn locus(l: & $($m)? LocusDecl, f: &mut Visit<'_>) {
-                f(SiteKind::Locus, l.span, & $($m)? l.id);
+                f(SiteKind::Locus, l.span, Some(l.name.name.as_str()), & $($m)? l.id);
                 generics(& $($m)? l.generics, f);
                 if let Some(form) = & $($m)? l.form {
                     for arg in & $($m)? form.args {
@@ -162,24 +187,24 @@ macro_rules! walk {
                     },
                     LocusMember::Bus(bb) => bus(bb, f),
                     LocusMember::Lifecycle(ld) => {
-                        f(SiteKind::Lifecycle, ld.span, & $($m)? ld.id);
+                        f(SiteKind::Lifecycle, ld.span, None, & $($m)? ld.id);
                         params(& $($m)? ld.params, f);
                         opt_ty(& $($m)? ld.ret, f);
                         block(& $($m)? ld.body, f);
                     }
                     LocusMember::Mode(md) => {
-                        f(SiteKind::Mode, md.span, & $($m)? md.id);
+                        f(SiteKind::Mode, md.span, None, & $($m)? md.id);
                         params(& $($m)? md.params, f);
                         opt_ty(& $($m)? md.ret, f);
                         block(& $($m)? md.body, f);
                     }
                     LocusMember::Failure(fd) => {
-                        f(SiteKind::Failure, fd.span, & $($m)? fd.id);
+                        f(SiteKind::Failure, fd.span, None, & $($m)? fd.id);
                         params(& $($m)? fd.params, f);
                         block(& $($m)? fd.body, f);
                     }
                     LocusMember::Closure(cd) => {
-                        f(SiteKind::Closure, cd.span, & $($m)? cd.id);
+                        f(SiteKind::Closure, cd.span, Some(cd.name.name.as_str()), & $($m)? cd.id);
                         if let Some(a) = & $($m)? cd.assertion {
                             expr(& $($m)? a.left, f);
                             expr(& $($m)? a.right, f);
@@ -212,7 +237,7 @@ macro_rules! walk {
                     }
                     LocusMember::Bindings(bb) => {
                         for entry in & $($m)? bb.entries {
-                            f(SiteKind::BindingEntry, entry.span, & $($m)? entry.id);
+                            f(SiteKind::BindingEntry, entry.span, None, & $($m)? entry.id);
                             match & $($m)? entry.transport {
                                 TransportSpec::Adapter { inits, .. } => {
                                     struct_inits(inits, f)
@@ -240,7 +265,12 @@ macro_rules! walk {
                     }
                     LocusMember::Placement(pb) => {
                         for entry in & $($m)? pb.entries {
-                            f(SiteKind::PlacementEntry, entry.span, & $($m)? entry.id);
+                            f(
+                                SiteKind::PlacementEntry,
+                                entry.span,
+                                Some(entry.field.name.as_str()),
+                                & $($m)? entry.id,
+                            );
                         }
                     }
                     LocusMember::BirthCheck(bc) => {
@@ -254,7 +284,7 @@ macro_rules! walk {
 
             fn params_block(pb: & $($m)? ParamsBlock, f: &mut Visit<'_>) {
                 for p in & $($m)? pb.params {
-                    f(SiteKind::Param, p.span, & $($m)? p.id);
+                    f(SiteKind::Param, p.span, Some(p.name.name.as_str()), & $($m)? p.id);
                     opt_ty(& $($m)? p.ty, f);
                     match & $($m)? p.init {
                         ParamInit::Value(e) => expr(e, f),
@@ -267,7 +297,7 @@ macro_rules! walk {
                 for member in & $($m)? bb.members {
                     match member {
                         BusMember::Subscribe { ty: t, key_filter, span, id, .. } => {
-                            f(SiteKind::Subscribe, *span, id);
+                            f(SiteKind::Subscribe, *span, None, id);
                             opt_ty(t, f);
                             if let Some(kf) = key_filter {
                                 match kf {
@@ -278,7 +308,7 @@ macro_rules! walk {
                             }
                         }
                         BusMember::Publish { ty: t, span, id, .. } => {
-                            f(SiteKind::Publish, *span, id);
+                            f(SiteKind::Publish, *span, None, id);
                             opt_ty(t, f);
                         }
                     }
@@ -286,7 +316,7 @@ macro_rules! walk {
             }
 
             fn fn_decl(fd: & $($m)? FnDecl, f: &mut Visit<'_>) {
-                f(SiteKind::Fn, fd.span, & $($m)? fd.id);
+                f(SiteKind::Fn, fd.span, Some(fd.name.name.as_str()), & $($m)? fd.id);
                 generics(& $($m)? fd.generics, f);
                 params(& $($m)? fd.params, f);
                 opt_ty(& $($m)? fd.ret, f);
@@ -295,7 +325,7 @@ macro_rules! walk {
             }
 
             fn type_decl(t: & $($m)? TypeDecl, f: &mut Visit<'_>) {
-                f(SiteKind::Type, t.span, & $($m)? t.id);
+                f(SiteKind::Type, t.span, Some(t.name.name.as_str()), & $($m)? t.id);
                 generics(& $($m)? t.generics, f);
                 match & $($m)? t.body {
                     TypeDeclBody::Alias(a) => ty(a, f),
@@ -316,7 +346,7 @@ macro_rules! walk {
             }
 
             fn const_decl(c: & $($m)? ConstDecl, f: &mut Visit<'_>) {
-                f(SiteKind::Const, c.span, & $($m)? c.id);
+                f(SiteKind::Const, c.span, Some(c.name.name.as_str()), & $($m)? c.id);
                 ty(& $($m)? c.ty, f);
                 expr(& $($m)? c.value, f);
             }
@@ -381,18 +411,18 @@ macro_rules! walk {
 
             fn stmt(s: & $($m)? Stmt, f: &mut Visit<'_>) {
                 match s {
-                    Stmt::Let { ty: t, value, span, id, .. } => {
-                        f(SiteKind::Let, *span, id);
+                    Stmt::Let { name, ty: t, value, span, id, .. } => {
+                        f(SiteKind::Let, *span, Some(name.name.as_str()), id);
                         opt_ty(t, f);
                         expr(value, f);
                     }
                     Stmt::LetTuple { ty: t, value, span, id, .. } => {
-                        f(SiteKind::LetTuple, *span, id);
+                        f(SiteKind::LetTuple, *span, None, id);
                         opt_ty(t, f);
                         expr(value, f);
                     }
                     Stmt::Assign { target, value, span, id, .. } => {
-                        f(SiteKind::Assign, *span, id);
+                        f(SiteKind::Assign, *span, Some(target.head.name.as_str()), id);
                         for seg in & $($m)? target.tail {
                             match seg {
                                 LValueSeg::Index(e) => expr(e, f),
@@ -403,8 +433,8 @@ macro_rules! walk {
                     }
                     Stmt::If(i) => if_stmt(i, f),
                     Stmt::Match(ms) => match_stmt(ms, f),
-                    Stmt::For { iter, body, span, id, .. } => {
-                        f(SiteKind::For, *span, id);
+                    Stmt::For { name, iter, body, span, id } => {
+                        f(SiteKind::For, *span, Some(name.name.as_str()), id);
                         expr(iter, f);
                         block(body, f);
                     }
@@ -429,7 +459,7 @@ macro_rules! walk {
                     }
                     Stmt::Violate { payload, .. } => opt_expr(payload, f),
                     Stmt::Send { subject, value, or_disposition, span, id } => {
-                        f(SiteKind::Send, *span, id);
+                        f(SiteKind::Send, *span, None, id);
                         expr(subject, f);
                         expr(value, f);
                         if let Some(d) = or_disposition {
@@ -495,14 +525,14 @@ macro_rules! walk {
             fn expr(e: & $($m)? Expr, f: &mut Visit<'_>) {
                 match e {
                     Expr::Call { callee, args, span, id } => {
-                        f(SiteKind::Call, *span, id);
+                        f(SiteKind::Call, *span, None, id);
                         expr(callee, f);
                         for a in args {
                             expr(a, f);
                         }
                     }
                     Expr::Struct { inits, span, id, .. } => {
-                        f(SiteKind::StructLiteral, *span, id);
+                        f(SiteKind::StructLiteral, *span, None, id);
                         struct_inits(inits, f);
                     }
                     Expr::Binary { left, right, .. } => {

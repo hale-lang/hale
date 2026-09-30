@@ -5926,6 +5926,7 @@ impl Parser {
                     body: TypeDeclBody::Enum(variants),
                     span: kw.span.merge(close.span),
                     id: NodeId::NONE,
+                    synthetic: false,
                 });
             }
             // alias. It is the one `type` form that takes no generic
@@ -5956,6 +5957,7 @@ impl Parser {
                 body: TypeDeclBody::Alias(ty),
                 span: kw.span.merge(semi.span),
                 id: NodeId::NONE,
+                synthetic: false,
             })
         } else {
             // struct form: type X { fields }
@@ -5972,6 +5974,7 @@ impl Parser {
                 body: TypeDeclBody::Struct(fields),
                 span: kw.span.merge(close.span),
                 id: NodeId::NONE,
+                synthetic: false,
             })
         }
     }
