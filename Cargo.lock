@@ -163,6 +163,7 @@ name = "hale-types"
 version = "0.22.0"
 dependencies = [
  "hale-corpus",
+ "hale-graph",
  "hale-model",
  "hale-stdlib",
  "hale-syntax",

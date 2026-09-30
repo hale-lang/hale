@@ -44,6 +44,7 @@
 
 pub mod identity;
 pub mod registry;
+pub mod shadow;
 
 pub use registry::{
     families, family, render_markdown, rules, Consumer, DebugScan, Family, Kind, Layer, Legacy,

@@ -3585,7 +3585,16 @@ family, source site, old and new fact, deciding witnesses, smallest
 dependent slice, and a classification — migration regression, known
 old bug, intentional correction, unresolved spec disagreement. The
 current compiler is a compatibility reference, not a correctness
-oracle. Phase 1 migrates ownership first, then handler selection,
+oracle. The facility is `hale_graph::shadow` (phase 0): a report
+over a corpus, a classified fixture beside the test, and the gate
+"no unexplained divergences"; its first instance runs the checker's
+placement map beside the bus graph's over the whole corpus
+(`crates/hale-types/tests/shadow_placement.rs`) over the programs
+that check clean and classified 20 divergences, all known old bugs:
+the checker's map has no row for a qualified locus type, and the bus
+graph's walk does not inherit a nested locus's placement from its
+owner while `direct_call_eligible` reads it. Phase 1 migrates
+ownership first, then handler selection,
 then bus facts and dispatch. Phase 2 puts every entry point through
 one frontend: `check`, `build`, `run`, `test`, `replay`,
 `--dump-topology` and the LSP run the same layers, `build` stops
