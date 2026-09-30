@@ -286,7 +286,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &[".hl files", "import directives", "the workspace root (hale.toml)", "editor overlays (LSP)"],
         producer: Some(site(FRONTEND, "collect_checkable")),
         legacy: &[
-            legacy(FRONTEND, "parse_with_imports", "the single-file loader every verb but `check` used before 2.2b; since then no entry point calls it (every verb loads through `collect_checkable`, from the snapshot's `load_whole_seed`), and specs and the agent brief still describe it", "deleted with its mentions in spec/projects.md, spec/packages.md and agents/compiler-dev.md"),
             legacy(FRONTEND, "SeedDirectoryOnly", "the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request", "the LSP loads the whole seed with imports (2.3, step 5)"),
             legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the snapshot's editor load (`load_seed_directory`, which `check_and_publish` demands through); neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
         ],
@@ -1318,7 +1317,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site(TOPOLOGY, "model_shape_hash")),
         legacy: &[
-            legacy(V_CHECK, "--check-topology-shape", "scrapes `shape_hash` from text a second time", "same"),
             legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
             legacy(CLI_BUILD_RS, "toolchain_digest", "the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk", "phase 2"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),

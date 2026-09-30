@@ -66,9 +66,9 @@ hale-ts-shim  staticlib; no dependents; linked by path
 
 ## The pipeline
 
-1. **Load**: `hale-cli/src/main.rs` `parse_with_imports` (file
-   target) or `collect_ap_files` + `parse_files` (a dir is one seed);
-   cross-seed names are mangled here.
+1. **Load**: `hale-frontend/src/snapshot.rs` `Snapshot::load`
+   (`load_whole_seed`: a file target stands for its seed, a dir is one
+   seed, every `import` followed); cross-seed names are mangled here.
 2. **Parse**: `hale-syntax/src/lexer.rs`, `parser.rs`. Parse-time
    sugar: `@no_*` (`effect_assert_for`), chains
    (`chains::desugar_chains`).

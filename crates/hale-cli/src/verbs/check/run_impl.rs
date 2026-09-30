@@ -44,20 +44,25 @@ fn topology_artifact<'c>(
                 let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model));
                 let _ = cell.set(art);
             }
-            Err(b) => {
-                eprintln!(
-                    "refusing to {}: `{}` does not typecheck, so its model \
-                     is not a truthful description of any program. Fix the \
-                     {} first.",
-                    doing,
-                    target.display(),
-                    b.because.first().map_or("error", |d| d.kind_str())
-                );
-                return Err(1);
-            }
+            Err(b) => return Err(refuse_without_model(target, doing, b)),
         }
     }
     Ok(cell.get().map(String::as_str).unwrap_or_default())
+}
+
+/// The refusal every flag that needs the model prints when the
+/// program does not typecheck: exit 1, the program named, the kind of
+/// the first error.
+fn refuse_without_model(target: &Path, doing: &str, b: &hale_frontend::snapshot::Blocked) -> u8 {
+    eprintln!(
+        "refusing to {}: `{}` does not typecheck, so its model \
+         is not a truthful description of any program. Fix the \
+         {} first.",
+        doing,
+        target.display(),
+        b.because.first().map_or("error", |d| d.kind_str())
+    );
+    1
 }
 
 pub(crate) fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
@@ -411,9 +416,17 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = shape_gate {
-        let current = match topology_artifact(&artifact_cell, &snap, target, "compare a topology baseline") {
-            Ok(a) => a,
-            Err(code) => return code,
+        // The current side is the model's identity read from the
+        // model (`project_shape_hash`, the value the artifact stamps),
+        // rendered as the artifact renders it; only the baseline, a
+        // file, is read from text (F.40 phase 2.4). A program that
+        // does not typecheck has no model to compare, and is refused
+        // by name as the artifact gate refuses it.
+        let current = match snap.demand_model() {
+            Ok(model) => {
+                format!("{:016x}", hale_types::topology_projection::project_shape_hash(model))
+            }
+            Err(b) => return refuse_without_model(target, "compare a topology baseline", b),
         };
         // The hash VALUE, not the raw line — the gate's whole point
         // is that this is the model's identity, and a diagnostic
@@ -447,7 +460,7 @@ pub(crate) fn run_check_impl_labelled(
                 );
                 return 2;
             }
-            Ok(expected) => match (hash_of(&expected), hash_of(current)) {
+            Ok(expected) => match (hash_of(&expected), Some(current)) {
                 (Some(a), Some(b)) if a != b => {
                     eprintln!(
                         "topology SHAPE changed — the program's \

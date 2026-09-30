@@ -686,11 +686,13 @@ demonstrates the need.
 
 The project / import surface lives in three places:
 
-- `crates/hale-cli/src/main.rs` — `find_workspace_root`,
+- `crates/hale-frontend/src/frontend.rs` — `find_workspace_root`,
   `resolve_import`, `collect_target_files`, `resolve_imports`,
-  `parse_with_imports`, `collect_ap_files`. The CLI does file
-  resolution + mangling + merging; passes the resulting
-  per-build path-rename table to
+  `collect_ap_files`; `crates/hale-frontend/src/snapshot.rs` —
+  `load_whole_seed`, the one load every verb runs (a file target
+  stands for its seed). The frontend does file resolution +
+  mangling + merging once per snapshot; the snapshot's lowering
+  view carries the per-build path-rename table into
   `hale_types::resolved::resolve_program`, which lowering reads
   through `hale_codegen::build_resolved`.
 - `crates/hale-types/src/mangle.rs` — `mangle_program`,
