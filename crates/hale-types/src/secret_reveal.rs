@@ -59,7 +59,7 @@ use hale_syntax::Span;
 /// fns refuses it until the pin is updated here, so the exemption covers
 /// the reviewed code and nothing added to it.
 const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
-    ("memory_schema", "", "role_password", "dna::role_password", "e6d7377c6a5419e1"),
+    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333"),
     (
         "infra",
         "ReferenceInfrastructure",
@@ -67,7 +67,7 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
         "dna::ReferenceInfrastructure.knowledge_database",
         "d01049660533208d",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "d24ec5bf7038d77d"),
+    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c"),
     ("scram", "", "compute_client_final", "pq::compute_client_final", "a2a01932b10406e3"),
 ];
 
@@ -544,8 +544,8 @@ pub fn secret_reveal_diags(programs: &BTreeMap<String, &Program>, renames: &[(Ve
 /// the same checked as its own seed, imported under any alias, or from
 /// any directory.
 fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
-    // positions (`Pos(12)`) and the ownership pre-pass's numbering
-    // (`NodeId(7)`) depend on where the text sits, not what it says
+    // positions (`Pos(12)`) and the snapshot's numbering (`NodeId(7)`)
+    // depend on where the text sits, not what it says
     let mut text = format!("{:?}", fd);
     for open in ["Pos(", "NodeId("] {
         let mut out = String::with_capacity(text.len());
@@ -558,6 +558,13 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
         }
         out.push_str(rest);
         text = out;
+    }
+    // F.40 1.1b: every declaration, member and statement carries a
+    // snapshot identity field, `id: NodeId(..)`, which says where the
+    // site is, not what the body says. The field text goes too, so a
+    // change to identity never reads as a change to a secret's body.
+    for field in ["id: NodeId(), ", ", id: NodeId()"] {
+        text = text.replace(field, "");
     }
     // an imported seed's names arrive mangled (`__lib_<id>_<stem>_<name>`)
     for (path, mangled) in renames {
