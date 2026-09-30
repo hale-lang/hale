@@ -144,6 +144,15 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     if source.contains("import \"") {
         return Verdict::Skipped("imports a sibling seed");
     }
+    // An `@ffi` declaration names a symbol the program's HOST side
+    // provides (a C object the test compiles beside it, a wasm loader's
+    // import); the sweep links none of those, so such a program cannot
+    // build here whatever the checker says, and its link failure would
+    // only shout in the log as if something broke. Matched on the source
+    // like the import above: the annotation is on the declaration.
+    if source.contains("@ffi(") {
+        return Verdict::Skipped("declares an @ffi host import, whose host side is the test's");
+    }
     // GH #829: no entry point is not a reason to skip; it is a
     // reason to add one.
     let program = with_synthetic_main(&program);
