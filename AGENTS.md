@@ -48,22 +48,28 @@ invariants:
                     floating-q ⟹ modeling-error
   I5 form-content : form claims are perspective-invariant;
                     content reduction claims are perspective-conditioned
+  ; I6 is reserved for the unit graph (GH #1076)
+  I7 lower-reads  : lowering consumes rows, never derives them
+  I8 dialect      : every dialect's graph is closed at a named horizon;
+                    past it is a hole, never an assumption
 
 hale ≜ operationalization(DESIGN, substrate=language)
-map:
-  locus               ↔ Σ
-  type                ↔ Σ-proto (no lifecycle/flow)
-  contract            ↔ Π@depth-edge
-  expose | consume    ↔ Π↑ | Π↓
-  capacity{pool,heap} ↔ K-tuple, slot-0 implicit Arena
-  on_failure          ↔ ↑
-  drain (cascade)     ↔ ∥ depth-first
-  projection class    ↔ K-conditioned Π-resolution (rich|chunked|recognition)
-  bus                 ↔ Δ-composed channel, ⋈ when bound to transport
-  closure-test        ↔ I3 local check at Σ
-  perspective T       ↔ Π serialized across processes
-  fallible(E)         ↔ value-channel Π↑ (orthogonal to ↑)
-  @form(...)          ↔ K-discipline lowering, application-layer Σ
+map:                                        ; ⊥ = where the construct's graph closes (I8)
+  locus               ↔ Σ                                  ; ⊥ the entry's root
+  type                ↔ Σ-proto (no lifecycle/flow)         ; ⊥ its declaration
+  contract            ↔ Π@depth-edge                        ; ⊥ the contract's edge
+  expose | consume    ↔ Π↑ | Π↓                             ; ⊥ the contract's edge
+  capacity{pool,heap} ↔ K-tuple, slot-0 implicit Arena      ; ⊥ the locus
+  on_failure          ↔ ↑                                   ; ⊥ the owner's root
+  drain (cascade)     ↔ ∥ depth-first                       ; ⊥ the locus's subtree
+  projection class    ↔ K-conditioned Π-resolution (rich|chunked|recognition) ; ⊥ the locus
+  bus                 ↔ Δ-composed channel, ⋈ when bound to transport ; ⊥ the seed (a library seed closes nothing)
+  closure-test        ↔ I3 local check at Σ                 ; ⊥ the locus
+  perspective T       ↔ Π serialized across processes       ; ⊥ the process edge
+  fallible(E)         ↔ value-channel Π↑ (orthogonal to ↑)  ; ⊥ the call
+  @form(...)          ↔ K-discipline lowering, application-layer Σ ; ⊥ the locus (the slot's operation set)
+  claims | constitution ↔ laws over the derived graph        ; ⊥ the adopting main
+  placement | bindings ↔ a partition of Σ-instances, a labelling of ⋈ ; ⊥ main
 
 hale.root: ⊥(language-graph) = DESIGN itself
 ```
