@@ -7,8 +7,10 @@
 //! incrementality — every document event re-parses and re-checks
 //! the changed file's whole SEED (its directory, per the F.19
 //! per-directory model) with the in-memory overlay text, then
-//! publishes diagnostics for every file in the seed (publishing
-//! empties clears stale squiggles without bookkeeping).
+//! publishes diagnostics for every file in the seed (an empty list
+//! clears a file's stale squiggles; one bookkeeping map, the files each
+//! seed's last publication covered, clears a file that has left the
+//! seed's import graph — `check_and_publish`).
 //!
 //! Protocol surface v1:
 //!   - initialize / initialized / shutdown / exit
@@ -32,14 +34,14 @@
 //! column positions per the LSP default encoding.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
-use hale_frontend::frontend::{retain_owned_advisories, LoadMode};
+use hale_frontend::frontend::{retain_owned_advisories, seed_dir_of, LoadMode};
 use hale_frontend::snapshot::{unreadable_message, Config, LoadError, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
@@ -51,10 +53,16 @@ pub fn run_lsp() -> ExitCode {
 }
 
 /// The editor's live state: uri-decoded path → buffer text (wins over
-/// the disk copy for that file), and whether `shutdown` was asked.
+/// the disk copy for that file), what each seed's last publication
+/// covered, and whether `shutdown` was asked.
 #[derive(Default)]
 struct State {
     overlays: BTreeMap<PathBuf, String>,
+    /// Per checked seed (its directory, `seed_key`): the files its last
+    /// publication covered, so the next one can clear a file that has
+    /// left the seed's graph. The snapshot describes the current graph;
+    /// clearing needs what the client saw before.
+    published: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     shutdown_requested: bool,
 }
 
@@ -247,7 +255,7 @@ fn dispatch(
             "textDocument/didOpen" => {
                 if let Some((path, text)) = did_open_params(&msg) {
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
                 }
             }
             "textDocument/didChange" => {
@@ -257,7 +265,7 @@ fn dispatch(
                         panic!("injected checker panic");
                     }
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
                 }
             }
             "textDocument/didSave" => {
@@ -271,7 +279,7 @@ fn dispatch(
                     {
                         overlays.insert(path.clone(), text.to_string());
                     }
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
                 }
             }
             "textDocument/didClose" => {
@@ -279,7 +287,7 @@ fn dispatch(
                     overlays.remove(&path);
                     // Re-check from disk so remaining files' diags
                     // reflect the on-disk truth again.
-                    check_and_publish(&mut writer, &path, &overlays);
+                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
                 }
             }
             "textDocument/completion" => {
@@ -470,8 +478,6 @@ fn path_to_uri(path: &Path) -> String {
 
 // ---- check + publish -------------------------------------------------
 
-/// Re-parse and re-check the SEED containing `changed`, then publish
-/// diagnostics for every .hl file in it (empties clear stale ones).
 /// Is this path inside the materialized stdlib cache
 /// (`<cache>/hale/stdlib-<version>/`)? Those files are read-only
 /// jump targets, not user seeds: analyzed standalone they spray
@@ -493,25 +499,48 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
             .starts_with("stdlib-")
 }
 
+/// Check the seed of `changed` and publish it: every file the check
+/// placed a list on, and, EMPTY, every file the last publication for
+/// this seed covered that this one does not — a library the seed no
+/// longer imports, or one it no longer reaches because a parse hole
+/// stops the imports from being followed. A client keeps a URI's
+/// diagnostics until that URI is published again, so what is cleared
+/// is decided by what the client was sent (`published`, keyed by the
+/// seed's directory), not by the graph the snapshot now describes.
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
+    published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
 ) {
+    let mut per_file = seed_diagnostics(changed, overlays);
+    let covered: BTreeSet<PathBuf> = per_file.keys().cloned().collect();
+    let before = published.insert(seed_key(changed), covered).unwrap_or_default();
+    for gone in before {
+        per_file.entry(gone).or_default();
+    }
+    publish_all(writer, per_file);
+}
+
+/// A seed's key in the server's memory: its directory, canonical when
+/// it is on disk, so two spellings of one directory are one seed.
+fn seed_key(file: &Path) -> PathBuf {
+    let dir = seed_dir_of(file);
+    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
+}
+
+/// The seed of `changed`, checked: path → the diagnostics to publish on
+/// it, an EMPTY list for every seed file the check found clean.
+fn seed_diagnostics(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> BTreeMap<PathBuf, Vec<Value>> {
     // A file inside the stdlib cache gets an EMPTY publish — it is
     // a definition-jump target, not a seed member, and clearing
     // (rather than skipping) removes anything a client already
     // showed for it.
     if is_stdlib_cache_path(changed) {
-        notify(
-            writer,
-            "textDocument/publishDiagnostics",
-            json!({
-                "uri": path_to_uri(changed),
-                "diagnostics": []
-            }),
-        );
-        return;
+        return BTreeMap::from([(changed.to_path_buf(), Vec::new())]);
     }
     // F.40 phase 2.3: the seed as `hale check <dir>` loads it — the
     // file's directory and every seed its imports reach — read through
@@ -540,13 +569,11 @@ fn check_and_publish(
             for io in &f.io {
                 publish_file_level(&mut per_file, &io.path, changed, &io.text);
             }
-            publish_all(writer, per_file);
-            return;
+            return per_file;
         }
         Err(LoadError::Refused(msg)) => {
             per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(&msg));
-            publish_all(writer, per_file);
-            return;
+            return per_file;
         }
     };
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
@@ -587,7 +614,7 @@ fn check_and_publish(
             }
         }
     }
-    publish_all(writer, per_file);
+    per_file
 }
 
 /// The snapshot every document event and every request reads: the seed

@@ -1302,6 +1302,45 @@ fn lsp_reports_an_unreadable_seed_member_as_check_does() {
     assert_eq!(buffered, expected, "the LSP with a buffer: the member's error, and no checker finding");
 }
 
+/// A library that leaves the seed's import graph is published EMPTY
+/// (outside review of #1286, finding 1). The import-failure pass
+/// publishes the library's parse error against the library; once the
+/// app stops importing it, the next pass has no reason of its own to
+/// name the library, and a client keeps a URI's diagnostics until the
+/// URI is published again — so the server clears it from what it sent
+/// before.
+#[test]
+fn lsp_clears_a_library_the_seed_stops_importing() {
+    let root = scratch_root("unimported");
+    std::fs::create_dir_all(root.join("app").join("lib")).expect("mkdir");
+    let dir = root.join("app").canonicalize().expect("canonical dir");
+    let (main, lib) = (dir.join("main.hl"), dir.join("lib").join("lib.hl"));
+    std::fs::write(&lib, "fn helper( {\n").expect("write lib");
+
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, "import \"lib\" as lib;\n\nfn main() { }\n"));
+    let importing = lsp.publications();
+    lsp.lsp.send(change(&main, 2, "fn main() { }\n"));
+    let unimported = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let [(lib_uri, lib_msgs), (main_uri, main_msgs)] = importing.as_slice() else {
+        panic!("the importing pass publishes the library and the app: {importing:?}");
+    };
+    assert_eq!((lib_uri, main_uri), (&uri(&lib), &uri(&main)), "{importing:?}");
+    assert!(
+        lib_msgs.len() == 1 && lib_msgs[0].contains("expected parameter name"),
+        "the library's parse error, against the library: {importing:?}"
+    );
+    assert!(main_msgs.is_empty(), "{importing:?}");
+    assert_eq!(
+        unimported,
+        vec![(uri(&lib), vec![]), (uri(&main), vec![])],
+        "the pass after the import is removed clears the library"
+    );
+}
+
 /// A scratch root of this test's own, empty.
 fn scratch_root(tag: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("hale_lsp_parity_{}_{tag}", std::process::id()));
@@ -1437,6 +1476,13 @@ impl LspSession {
         published(&mut self.lsp, self.fence)
     }
 
+    /// Every publish of the check the last notification started, in
+    /// the order sent, as URI and messages.
+    fn publications(&mut self) -> Vec<(String, Vec<String>)> {
+        self.fence += 1;
+        messages(publications(&mut self.lsp, self.fence))
+    }
+
     /// A request's answer: the `result` of the reply to it.
     fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
         self.fence += 1;
@@ -1474,6 +1520,16 @@ fn open(path: &std::path::Path, text: &str) -> serde_json::Value {
     })
 }
 
+fn change(path: &std::path::Path, version: u64, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": uri(path), "version": version },
+            "contentChanges": [{ "text": text }]
+        }
+    })
+}
+
 /// Every publish of the check the last notification started, as
 /// findings, in 1-based lines and columns (the server's are 0-based,
 /// in UTF-16 units; the fixture is ASCII, so a unit is a character).
@@ -1484,25 +1540,10 @@ fn open(path: &std::path::Path, text: &str) -> serde_json::Value {
 /// a file the server failed to load is missing from the result, not a
 /// read that never returns.
 fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
-    lsp.send(serde_json::json!({
-        "jsonrpc": "2.0", "id": fence, "method": "hale/testFence", "params": null
-    }));
     let mut out = Vec::new();
-    loop {
-        let msg = lsp.recv();
-        if msg.get("id").and_then(|i| i.as_u64()) == Some(fence) {
-            break;
-        }
-        if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
-            continue;
-        }
-        let file = msg
-            .pointer("/params/uri")
-            .and_then(|u| u.as_str())
-            .and_then(|u| u.rsplit('/').next())
-            .unwrap_or("")
-            .to_string();
-        for d in msg.pointer("/params/diagnostics").and_then(|d| d.as_array()).into_iter().flatten() {
+    for (uri, diags) in publications(lsp, fence) {
+        let file = uri.rsplit('/').next().unwrap_or("").to_string();
+        for d in diags {
             out.push((
                 file.clone(),
                 d["range"]["start"]["line"].as_u64().unwrap_or(u64::MAX) + 1,
@@ -1513,4 +1554,37 @@ fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
     }
     out.sort();
     out
+}
+
+/// Every `publishDiagnostics` of the check the last notification
+/// started, in the order the server sent them: each URI with its list,
+/// read up to the fence as `published` reads.
+fn publications(lsp: &mut Lsp, fence: u64) -> Vec<(String, Vec<serde_json::Value>)> {
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": fence, "method": "hale/testFence", "params": null
+    }));
+    let mut out = Vec::new();
+    loop {
+        let msg = lsp.recv();
+        if msg.get("id").and_then(|i| i.as_u64()) == Some(fence) {
+            return out;
+        }
+        if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
+            continue;
+        }
+        let uri = msg.pointer("/params/uri").and_then(|u| u.as_str()).unwrap_or("").to_string();
+        let diags = msg.pointer("/params/diagnostics").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+        out.push((uri, diags));
+    }
+}
+
+/// A sequence of publications as URI and messages, the shape the
+/// sequence tests compare.
+fn messages(pubs: Vec<(String, Vec<serde_json::Value>)>) -> Vec<(String, Vec<String>)> {
+    pubs.into_iter()
+        .map(|(uri, diags)| {
+            let msgs = diags.iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect();
+            (uri, msgs)
+        })
+        .collect()
 }
