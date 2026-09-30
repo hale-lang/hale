@@ -38,8 +38,9 @@ every semantic fact the compiler acts on, in every crate, through the
 graph, dispatch, placement, effects, allocation, lifecycle order and
 the rest — naming its authoritative producer, the legacy producers
 still permitted while it migrates, its consumers and its tests. A
-build fails when the tree grows a derivation the registry does not
-name. The rendered index is
+build fails when the tree grows a derivation-shaped function, a new
+reference to a guarded producer, or a bare Debug rendering the
+registry does not name. The rendered index is
 [`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md);
 the contract is `spec/model.md` § *The graph registry*.
 

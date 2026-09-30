@@ -48,7 +48,7 @@ invariants:
                     floating-q ⟹ modeling-error
   I5 form-content : form claims are perspective-invariant;
                     content reduction claims are perspective-conditioned
-                    ; I6 is reserved for the unit graph (GH #1076)
+  ; I6 is reserved for the unit graph (GH #1076)
   I7 lower-reads  : lowering consumes rows, never derives them
   I8 dialect      : every dialect's graph is closed at a named horizon;
                     past it is a hole, never an assumption
