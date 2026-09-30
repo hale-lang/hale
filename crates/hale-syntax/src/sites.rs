@@ -93,6 +93,27 @@ pub fn for_each_site_in_item(
     });
 }
 
+/// Make a copied expression a new site: every identity field in the
+/// subtree becomes `NodeId::NONE`, so the next mint numbers it instead
+/// of finding the original's id on two sites (a panic). Built on the
+/// walk, so a site kind added there is cleared here too.
+pub fn clear_ids_in_expr(e: &mut Expr) {
+    mutable::expr(e, &mut |_, _, _, id| *id = NodeId::NONE);
+}
+
+/// `clear_ids_in_expr` for a copied type expression: an array type's
+/// size is an expression and may hold a call.
+pub fn clear_ids_in_type(t: &mut TypeExpr) {
+    mutable::ty(t, &mut |_, _, _, id| *id = NodeId::NONE);
+}
+
+/// `clear_ids_in_expr` for a copied bus member: the member's own id and
+/// every identity inside it (a key filter's expression, the payload
+/// type).
+pub fn clear_ids_in_bus_member(m: &mut BusMember) {
+    mutable::bus_member(m, &mut |_, _, _, id| *id = NodeId::NONE);
+}
+
 /// The walk, written once. `$m` is `mut` for the mutable instance and
 /// empty for the read-only one; match ergonomics carry it from the
 /// scrutinee into every binding.
@@ -295,22 +316,26 @@ macro_rules! walk {
 
             fn bus(bb: & $($m)? BusBlock, f: &mut Visit<'_>) {
                 for member in & $($m)? bb.members {
-                    match member {
-                        BusMember::Subscribe { ty: t, key_filter, span, id, .. } => {
-                            f(SiteKind::Subscribe, *span, None, id);
-                            opt_ty(t, f);
-                            if let Some(kf) = key_filter {
-                                match kf {
-                                    KeyFilter::Specific { expr: e, .. } => expr(e, f),
-                                    KeyFilter::Unmatched { .. }
-                                    | KeyFilter::Replica { .. } => {}
-                                }
+                    bus_member(member, f);
+                }
+            }
+
+            pub(super) fn bus_member(member: & $($m)? BusMember, f: &mut Visit<'_>) {
+                match member {
+                    BusMember::Subscribe { ty: t, key_filter, span, id, .. } => {
+                        f(SiteKind::Subscribe, *span, None, id);
+                        opt_ty(t, f);
+                        if let Some(kf) = key_filter {
+                            match kf {
+                                KeyFilter::Specific { expr: e, .. } => expr(e, f),
+                                KeyFilter::Unmatched { .. }
+                                | KeyFilter::Replica { .. } => {}
                             }
                         }
-                        BusMember::Publish { ty: t, span, id, .. } => {
-                            f(SiteKind::Publish, *span, None, id);
-                            opt_ty(t, f);
-                        }
+                    }
+                    BusMember::Publish { ty: t, span, id, .. } => {
+                        f(SiteKind::Publish, *span, None, id);
+                        opt_ty(t, f);
                     }
                 }
             }
@@ -370,7 +395,7 @@ macro_rules! walk {
                 }
             }
 
-            fn ty(t: & $($m)? TypeExpr, f: &mut Visit<'_>) {
+            pub(super) fn ty(t: & $($m)? TypeExpr, f: &mut Visit<'_>) {
                 match t {
                     TypeExpr::Named { generic_args, .. } => {
                         for a in generic_args {
@@ -522,7 +547,7 @@ macro_rules! walk {
                 }
             }
 
-            fn expr(e: & $($m)? Expr, f: &mut Visit<'_>) {
+            pub(super) fn expr(e: & $($m)? Expr, f: &mut Visit<'_>) {
                 match e {
                     Expr::Call { callee, args, span, id } => {
                         f(SiteKind::Call, *span, None, id);

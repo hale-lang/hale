@@ -377,7 +377,14 @@ fn collect_topics(items: &[TopDecl], topics: &mut BTreeMap<String, TopicEntry>) 
         topics.insert(
             name.clone(),
             TopicEntry {
-                payload: r.payload.clone(),
+                // Copied into every bus member that names the topic, a
+                // new site each time: an array size is an expression
+                // and may hold a call, whose id stays on the topic.
+                payload: {
+                    let mut t = r.payload.clone();
+                    crate::sites::clear_ids_in_type(&mut t);
+                    t
+                },
                 wire_subject: chain.join("."),
             },
         );

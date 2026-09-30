@@ -263,6 +263,77 @@ fn main() {
     assert!(generated_subscribe);
 }
 
+/// Review of phase 1, finding 19: the file-entry verbs mint before any
+/// desugar, and the api surface then copies the entry's expressions
+/// (the socket path, `roles:`, `principals:`, the HTTP host and port,
+/// a subscriber's key filter) into what it generates while the entry
+/// stays. Every copy is a new site: the second mint neither panics on
+/// a shared id nor lends a copy the original's.
+#[test]
+fn the_api_surface_copies_the_entry_expressions_as_new_sites() {
+    let src = r#"
+fn sock() -> String { return "/tmp/api.sock"; }
+fn port() -> Int { return 8080; }
+fn which() -> String { return "k"; }
+locus Table { fn holds(p: std::api::Principal, r: String) -> Bool { return true; } }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "" }; }
+    fn refused() -> String { return "no"; }
+}
+type Ping { key: String = ""; }
+topic Pings { payload: Ping; subject: "t.ping"; keyed_by key; }
+locus Echo {
+    bus { subscribe Pings as on_ping where key == which(); }
+    fn on_ping(p: Ping) -> Ping { return p; }
+}
+main locus App {
+    params { echo: Echo = Echo { }; }
+    bindings {
+        api: unix(sock(), bound: 8, on_full: refuse, roles: Table { }),
+            http("127.0.0.1", port(), principals: Tokens { });
+    }
+}
+fn main() { App { }; }
+"#;
+    let mut p = parse(src);
+    mint([("app.hl", &mut p)], &[]);
+    let first: std::collections::BTreeSet<u32> = ids(&p).into_iter().collect();
+    {
+        let mut refs = vec![&mut p];
+        assert!(hale_syntax::api_gen::generate_api(&mut refs, None).is_some(), "the api binding lowers");
+    }
+    // Two sites with one id is a panic here.
+    let snap = mint([("app.hl", &mut p)], &[]);
+    let after = ids(&p);
+    assert!(after.iter().all(|i| *i != u32::MAX), "every site is numbered");
+    // Each copied expression is two sites at one span: the entry's,
+    // keeping its id, and the copy's, with an id the first mint never
+    // gave out.
+    for (text, kind) in [
+        ("sock()", SiteKind::Call),
+        ("port()", SiteKind::Call),
+        ("which()", SiteKind::Call),
+        ("Table { }", SiteKind::StructLiteral),
+        ("Tokens { }", SiteKind::StructLiteral),
+    ] {
+        let start = src.find(&format!("{text},")).or_else(|| src.find(&format!("{text})")))
+            .or_else(|| src.find(&format!("{text};")))
+            .expect(text) as u32;
+        let at: Vec<u32> = snap
+            .sites
+            .iter()
+            .filter(|s| s.kind == kind && s.span.start.0 == start)
+            .map(|s| s.id.index)
+            .collect();
+        assert_eq!(at.len(), 2, "`{text}`: the entry's site and its copy's ({at:?})");
+        assert_eq!(
+            at.iter().filter(|i| first.contains(i)).count(),
+            1,
+            "`{text}`: the copy's id is fresh ({at:?}, first mint {first:?})"
+        );
+    }
+}
+
 /// The per-site markers: the `run` the omitted-run desugar adds, and
 /// the bindings the chains rewrite introduces.
 #[test]
