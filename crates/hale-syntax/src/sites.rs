@@ -3,8 +3,10 @@
 //! Every declaration, member and statement site that the snapshot
 //! numbers carries an `id: NodeId`, as do the two expression shapes
 //! the ownership pre-pass keys its rows by (`Expr::Struct`,
-//! `Expr::Call`) and every identifier expression (`Expr::Ident`, a
-//! `Use`, whose id is its `Ident`'s). This module is the traversal that reaches all of
+//! `Expr::Call`), every identifier expression (`Expr::Ident`, a `Use`)
+//! and every name a declaration with no site of its own binds (a
+//! parameter, a pattern binding: a `Binder`), those two by their
+//! `Ident`'s id. This module is the traversal that reaches all of
 //! them, so the minting pass and every later reader agree on which
 //! sites exist and in what order.
 //!
@@ -49,6 +51,11 @@ pub enum SiteKind {
     /// An identifier expression (`Expr::Ident`): a name spelled where a
     /// value is read (F.40 phase 2, use-site identity).
     Use,
+    /// A name bound by a declaration that has no site of its own: a
+    /// parameter of a fn or a hook, a match pattern's binding, a tuple
+    /// `let`'s names, a `shm_write` binding. Its id is its `Ident`'s. A
+    /// `let` and a `for` bind one name each and are their own sites.
+    Binder,
 }
 
 /// Visit every identity field of the program in pre-order (a
@@ -214,19 +221,19 @@ macro_rules! walk {
                     LocusMember::Bus(bb) => bus(bb, f),
                     LocusMember::Lifecycle(ld) => {
                         f(SiteKind::Lifecycle, ld.span, None, & $($m)? ld.id);
-                        params(& $($m)? ld.params, f);
+                        bound_params(& $($m)? ld.params, f);
                         opt_ty(& $($m)? ld.ret, f);
                         block(& $($m)? ld.body, f);
                     }
                     LocusMember::Mode(md) => {
                         f(SiteKind::Mode, md.span, None, & $($m)? md.id);
-                        params(& $($m)? md.params, f);
+                        bound_params(& $($m)? md.params, f);
                         opt_ty(& $($m)? md.ret, f);
                         block(& $($m)? md.body, f);
                     }
                     LocusMember::Failure(fd) => {
                         f(SiteKind::Failure, fd.span, None, & $($m)? fd.id);
-                        params(& $($m)? fd.params, f);
+                        bound_params(& $($m)? fd.params, f);
                         block(& $($m)? fd.body, f);
                     }
                     LocusMember::Closure(cd) => {
@@ -348,7 +355,7 @@ macro_rules! walk {
             fn fn_decl(fd: & $($m)? FnDecl, f: &mut Visit<'_>) {
                 f(SiteKind::Fn, fd.span, Some(fd.name.name.as_str()), & $($m)? fd.id);
                 generics(& $($m)? fd.generics, f);
-                params(& $($m)? fd.params, f);
+                bound_params(& $($m)? fd.params, f);
                 opt_ty(& $($m)? fd.ret, f);
                 opt_ty(& $($m)? fd.fallible, f);
                 block(& $($m)? fd.body, f);
@@ -387,10 +394,38 @@ macro_rules! walk {
                 }
             }
 
+            /// A signature's parameters, which bind nothing (an
+            /// interface method's).
             fn params(ps: & $($m)? [Param], f: &mut Visit<'_>) {
                 for p in ps {
                     ty(& $($m)? p.ty, f);
                     opt_expr(& $($m)? p.default, f);
+                }
+            }
+
+            /// The parameters of a declaration with a body: each name
+            /// is a binder.
+            fn bound_params(ps: & $($m)? [Param], f: &mut Visit<'_>) {
+                for p in ps {
+                    binder(& $($m)? p.name, f);
+                    ty(& $($m)? p.ty, f);
+                    opt_expr(& $($m)? p.default, f);
+                }
+            }
+
+            fn binder(i: & $($m)? Ident, f: &mut Visit<'_>) {
+                f(SiteKind::Binder, i.span, Some(i.name.as_str()), & $($m)? i.id);
+            }
+
+            fn pattern(p: & $($m)? Pattern, f: &mut Visit<'_>) {
+                match p {
+                    Pattern::Binding(i) => binder(i, f),
+                    Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                        for a in args {
+                            pattern(a, f);
+                        }
+                    }
+                    Pattern::Literal(..) | Pattern::Wildcard(_) => {}
                 }
             }
 
@@ -446,8 +481,11 @@ macro_rules! walk {
                         opt_ty(t, f);
                         expr(value, f);
                     }
-                    Stmt::LetTuple { ty: t, value, span, id, .. } => {
+                    Stmt::LetTuple { names, ty: t, value, span, id, .. } => {
                         f(SiteKind::LetTuple, *span, None, id);
+                        for n in names {
+                            binder(n, f);
+                        }
                         opt_ty(t, f);
                         expr(value, f);
                     }
@@ -496,8 +534,9 @@ macro_rules! walk {
                             disposition(d, f);
                         }
                     }
-                    Stmt::ShmWrite { max, body, .. } => {
+                    Stmt::ShmWrite { max, binding, body, .. } => {
                         expr(max, f);
+                        binder(binding, f);
                         block(body, f);
                     }
                     Stmt::Expr(e) => expr(e, f),
@@ -523,6 +562,7 @@ macro_rules! walk {
             fn match_stmt(ms: & $($m)? MatchStmt, f: &mut Visit<'_>) {
                 expr(& $($m)? ms.scrutinee, f);
                 for arm in & $($m)? ms.arms {
+                    pattern(& $($m)? arm.pattern, f);
                     opt_expr(& $($m)? arm.guard, f);
                     match & $($m)? arm.body {
                         MatchArmBody::Expr(e) => expr(e, f),

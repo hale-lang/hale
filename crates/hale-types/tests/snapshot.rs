@@ -392,6 +392,95 @@ fn main() { L { }; }
     assert!(uses.contains(&None), "the written `return c`: {uses:?}");
 }
 
+/// Each use, in walk order, with the text of the declaration
+/// `binding_of` resolves it to, if any.
+fn resolved_uses(src: &str) -> Vec<(String, Option<String>)> {
+    let mut p = parse(src);
+    let snap = mint([("app.hl", &mut p)], &[]);
+    let mut out = Vec::new();
+    hale_syntax::sites::for_each_named_site(&p, &mut |kind, _, name, id| {
+        if matches!(kind, SiteKind::Use | SiteKind::Assign) {
+            let decl = snap
+                .declaration_of(id)
+                .and_then(|d| snap.site(d))
+                .map(|s| src[s.span.start.0 as usize..s.span.end.0 as usize].to_string());
+            out.push((name.unwrap_or_default().to_string(), decl));
+        }
+    });
+    out
+}
+
+/// F.40 phase 2, use-site identity: `binding_of` resolves each use to
+/// its declaration by the checker's scoping (`check::ScopeStack`), and
+/// leaves out a use that names no local binding.
+#[test]
+fn each_use_resolves_to_the_declaration_in_scope() {
+    let src = r#"
+type E { kind: String; }
+const K: Int = 3;
+fn helper() -> Int { return K; }
+fn fal(ok: Bool) -> Int fallible(E) {
+    if !ok { fail E { kind: "no" }; }
+    return 1;
+}
+fn f(a: Int, t: Bool) -> Int {
+    let r = a;
+    let r = r + 1;
+    if t {
+        let r = 7;
+        helper();
+        return r;
+    }
+    let mut n = 0;
+    for i in 0..3 {
+        n = n + i;
+    }
+    let (u, v) = (r, n);
+    let err = 5;
+    let w = fal(t) or err;
+    match u {
+        r -> { return r + v + w; }
+    }
+}
+locus L {
+    params { n: Int = 0; }
+    fn g(n: Int) -> Int { return n; }
+    birth { let z = 1; self.n = z; }
+}
+fn main() { f(1, true); }
+"#;
+    let got = resolved_uses(src);
+    let row = |name: &str, decl: Option<&str>| (name.to_string(), decl.map(str::to_string));
+    assert_eq!(
+        got,
+        vec![
+            row("K", None),                            // a const: no local
+            row("ok", Some("ok")),                     // a fn parameter
+            row("a", Some("a")),
+            row("r", Some("let r = a;")),              // the value is read before the name binds
+            row("t", Some("t")),
+            row("helper", None),                       // a top-level fn
+            row("r", Some("let r = 7;")),              // the inner shadow
+            row("n", Some("let mut n = 0;")),          // a bare `=` names its head's binding
+            row("n", Some("let mut n = 0;")),
+            row("i", Some("for i in 0..3 {\n        n = n + i;\n    }")),
+            row("r", Some("let r = r + 1;")),          // the block that shadowed it has ended
+            row("n", Some("let mut n = 0;")),
+            row("fal", None),
+            row("t", Some("t")),
+            row("err", None),                          // the `or` substitute's implicit `err`
+            row("u", Some("u")),                       // a tuple `let`'s name
+            row("r", Some("r")),                       // the match arm's binding
+            row("v", Some("v")),
+            row("w", Some("let w = fal(t) or err;")),
+            row("n", Some("n")),                       // the parameter, not the field
+            row("self", None),                         // `self.n = z` writes state, no binding
+            row("z", Some("let z = 1;")),
+            row("f", None),
+        ]
+    );
+}
+
 /// F.40 phase 2, use-site identity: every identifier expression is a
 /// `Use` site, numbered in walk order with the rest, its id on its
 /// `Ident`; an identifier that is not an expression (a declaration's

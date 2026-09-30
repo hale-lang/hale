@@ -208,8 +208,10 @@ pub fn resolve_program(
     // harness adapter, `build_executable_with_options`) would otherwise
     // get a relation of `NodeId::NONE` sends no call can be joined to.
     // Idempotent: the ids a bundle already minted are kept, and the
-    // mint over the merged program below keeps these and continues.
-    crate::snapshot::mint([("program", &mut program_owned)], sources);
+    // mint over the merged program below keeps these and continues. A
+    // numbering, not a mint: nothing reads rows of the user program on
+    // its own, so no snapshot is made of it.
+    crate::snapshot::number([&mut program_owned]);
     let intra_locus =
         hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     let topic_rewrites = hale_syntax::desugar::desugar_topics(&mut program_owned);

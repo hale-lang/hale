@@ -1667,7 +1667,7 @@ crates/hale-types/tests/snapshot.rs#0 36036aa68555ae99
 crates/hale-types/tests/snapshot.rs#1 79c6c4f8b494f43b
 crates/hale-types/tests/snapshot.rs#2 1f96e49150c2e742
 crates/hale-types/tests/snapshot.rs#3 5f83591c48309969
-crates/hale-types/tests/snapshot.rs#5 775b54d5615f0d98
+crates/hale-types/tests/snapshot.rs#6 775b54d5615f0d98
 crates/hale-types/tests/stdlib_name_check.rs#2 865d341109268295
 crates/hale-types/tests/stdlib_name_check.rs#4 7ba49c53bd84fd5d
 crates/hale-types/tests/stdlib_name_check.rs#5 f2c1228edb650960
