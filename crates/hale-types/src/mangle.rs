@@ -33,6 +33,7 @@
 use std::collections::{HashMap, HashSet};
 
 use hale_syntax::ast::*;
+use hale_syntax::Span;
 
 /// Rewrite `prog` in place so its top-level decls and any
 /// intra-seed references carry the `__lib_<alias>_<file_stem>_*`
@@ -449,7 +450,7 @@ fn construction_alias_targets(
             // The monomorph codegen synthesizes for the
             // instantiation, and the `Ty` the checker resolves the
             // alias to.
-            crate::codegen::Cx::mangle_generic_name(&name, generic_args)
+            mangle_generic_name(&name, generic_args)
                 .ok()
                 .map(|m| (m, true))
         }
@@ -2212,6 +2213,70 @@ impl<'a> Mangler<'a> {
                 }
             }
         }
+    }
+}
+
+/// m61: produce the mangled name for a generic instantiation.
+/// `Box<Int>` → `"Box_Int"`, `Pair<Int, String>` →
+/// `"Pair_Int_String"`. Recurses into nested generics so
+/// `Box<Pair<Int, String>>` → `"Box_Pair_Int_String"`. Each
+/// arg must be a primitive or a non-generic user type at this
+/// milestone (or itself a generic instantiation, which mangles
+/// recursively).
+///
+/// The refusal is the message and the span of the argument it
+/// refuses; codegen carries the pair as `CodegenError::UnsupportedAt`.
+pub fn mangle_generic_name(
+    template: &str,
+    args: &[TypeExpr],
+) -> Result<String, (String, Span)> {
+    let mut tokens: Vec<String> = Vec::with_capacity(args.len());
+    for a in args {
+        tokens.push(type_expr_mangle_token(a)?);
+    }
+    Ok(format!("{}_{}", template, tokens.join("_")))
+}
+
+/// m61: produce a single-token mangle for one generic arg.
+/// Primitives use their canonical name (`Int`, `String`,
+/// ...); a non-generic Named ref uses the bare name; a
+/// generic ref recurses through `mangle_generic_name`.
+///
+/// GH #911 B3 (#907): the primitive half of the vocabulary is
+/// `hale_types::ty::GENERIC_ARG_PRIMS`, which the CHECKER also
+/// reads — it refuses an unnameable argument at its span, so this
+/// arm is the layer of last resort rather than the first place the
+/// author hears about it. It used to name seven primitives while
+/// `Bytes` / `BytesView` / `BytesMut` / `StringView` were ordinary
+/// field types everywhere else in the language, which is why
+/// `Box<Bytes>` checked clean and refused to build.
+fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, (String, Span)> {
+    match t {
+        TypeExpr::Primitive(p, span) => {
+            match crate::ty::generic_arg_mangle_token(*p) {
+                Some(token) => Ok(token.into()),
+                // GH #241: user-reachable — carry the arg's span.
+                None => Err((crate::ty::generic_arg_refusal(*p), *span)),
+            }
+        }
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 =>
+        {
+            if generic_args.is_empty() {
+                Ok(path.segments[0].name.clone())
+            } else {
+                mangle_generic_name(&path.segments[0].name, generic_args)
+            }
+        }
+        // GH #241: user-reachable — carry the arg's span.
+        other => Err((
+            format!(
+                "{} as a generic argument (v0 supports primitives \
+                 and named types)",
+                other.form_name()
+            ),
+            other.span(),
+        )),
     }
 }
 

@@ -219,6 +219,7 @@ const MODEL_BUILDER: &str = "crates/hale-types/src/model_builder.rs";
 const BUS_GRAPH: &str = "crates/hale-types/src/bus_graph.rs";
 const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
+const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -233,7 +234,6 @@ const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
-const CG_MANGLE: &str = "crates/hale-codegen/src/mangle.rs";
 const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 const CG_DECL: &str = "crates/hale-codegen/src/locus/decl.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
@@ -311,7 +311,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(IMPORTS, "lib_canonical_id", "library identity by path, falling back to the file name outside a workspace (can collide)", "the snapshot identity names seeds (phase 1.1)"),
             legacy(CHECK, "construction_target", "one alias hop in the top scope", "one alias resolution shared by checker and lowering"),
-            legacy(CG_MANGLE, "resolve_construction_aliases", "rewrites construction sites to the target name inside codegen", "codegen reads the resolved program"),
+            legacy(TY_MANGLE, "resolve_construction_aliases", "rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`", "one alias resolution shared by checker and lowering"),
             legacy(CG, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in codegen's own clone of the program", "codegen reads the resolved program"),
             legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
             legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),

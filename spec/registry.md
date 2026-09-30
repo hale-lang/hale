@@ -95,7 +95,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-cli/src/shared/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* the snapshot identity names seeds (phase 1.1).
 - `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope. *Removed when:* one alias resolution shared by checker and lowering.
-- `crates/hale-codegen/src/mangle.rs` · `resolve_construction_aliases` — rewrites construction sites to the target name inside codegen. *Removed when:* codegen reads the resolved program.
+- `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases` — rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`. *Removed when:* one alias resolution shared by checker and lowering.
 - `crates/hale-codegen/src/codegen.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in codegen's own clone of the program. *Removed when:* codegen reads the resolved program.
 - `crates/hale-types/src/resolve.rs` · `resolve_bus_subject` — the checker's resolution of the same subjects. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/check.rs` · `imported_fn` — an imported fn's signature by path-string vector. *Removed when:* one resolution, shared.

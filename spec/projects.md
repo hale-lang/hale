@@ -692,7 +692,7 @@ The project / import surface lives in three places:
   resolution + mangling + merging; passes the resulting
   per-build path-rename table to
   `build_executable_with_imports`.
-- `crates/hale-codegen/src/mangle.rs` — `mangle_program`,
+- `crates/hale-types/src/mangle.rs` — `mangle_program`,
   `build_seed_renames`, `mangle_with_renames`. The AST walker
   rewrites decl sites and use sites with a scope-aware
   shadowing stack.

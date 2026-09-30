@@ -35,6 +35,7 @@ pub mod claim_lowering;
 pub mod claims;
 pub mod model;
 pub mod judgment;
+pub mod mangle;
 pub mod model_builder;
 pub mod model_query;
 pub mod topic_identity;

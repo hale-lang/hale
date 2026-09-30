@@ -13718,71 +13718,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// m61: produce the mangled name for a generic instantiation.
-    /// `Box<Int>` → `"Box_Int"`, `Pair<Int, String>` →
-    /// `"Pair_Int_String"`. Recurses into nested generics so
-    /// `Box<Pair<Int, String>>` → `"Box_Pair_Int_String"`. Each
-    /// arg must be a primitive or a non-generic user type at this
-    /// milestone (or itself a generic instantiation, which mangles
-    /// recursively).
+    /// m61: the mangled name for a generic instantiation —
+    /// `crate::mangle::mangle_generic_name`, its refusal carried as
+    /// the `UnsupportedAt` it always was.
     pub(crate) fn mangle_generic_name(
         template: &str,
         args: &[TypeExpr],
     ) -> Result<String, CodegenError> {
-        let mut tokens: Vec<String> = Vec::with_capacity(args.len());
-        for a in args {
-            tokens.push(Self::type_expr_mangle_token(a)?);
-        }
-        Ok(format!("{}_{}", template, tokens.join("_")))
-    }
-
-    /// m61: produce a single-token mangle for one generic arg.
-    /// Primitives use their canonical name (`Int`, `String`,
-    /// ...); a non-generic Named ref uses the bare name; a
-    /// generic ref recurses through `mangle_generic_name`.
-    ///
-    /// GH #911 B3 (#907): the primitive half of the vocabulary is
-    /// `hale_types::ty::GENERIC_ARG_PRIMS`, which the CHECKER also
-    /// reads — it refuses an unnameable argument at its span, so this
-    /// arm is the layer of last resort rather than the first place the
-    /// author hears about it. It used to name seven primitives while
-    /// `Bytes` / `BytesView` / `BytesMut` / `StringView` were ordinary
-    /// field types everywhere else in the language, which is why
-    /// `Box<Bytes>` checked clean and refused to build.
-    fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, CodegenError> {
-        match t {
-            TypeExpr::Primitive(p, span) => {
-                match hale_types::ty::generic_arg_mangle_token(*p) {
-                    Some(token) => Ok(token.into()),
-                    // GH #241: user-reachable — carry the arg's span.
-                    None => Err(CodegenError::UnsupportedAt(
-                        hale_types::ty::generic_arg_refusal(*p),
-                        *span,
-                    )),
-                }
-            }
-            TypeExpr::Named { path, generic_args, .. }
-                if path.segments.len() == 1 =>
-            {
-                if generic_args.is_empty() {
-                    Ok(path.segments[0].name.clone())
-                } else {
-                    Self::mangle_generic_name(
-                        &path.segments[0].name,
-                        generic_args,
-                    )
-                }
-            }
-            // GH #241: user-reachable — carry the arg's span.
-            other => Err(CodegenError::UnsupportedAt(
-                format!(
-                    "{} as a generic argument (v0 supports primitives \
-                     and named types)",
-                    other.form_name()
-                ),
-                other.span(),
-            )),
-        }
+        crate::mangle::mangle_generic_name(template, args)
+            .map_err(|(msg, span)| CodegenError::UnsupportedAt(msg, span))
     }
 
     /// m61: substitute generic param refs (`T`, `U`, ...) inside a

@@ -51,7 +51,7 @@ pub(crate) mod channels;
 pub mod codegen;
 pub(crate) mod form;
 pub(crate) mod locus;
-pub mod mangle;
+pub use hale_types::mangle;
 pub use hale_types::ownership;
 pub mod target;
 pub(crate) mod shared;
