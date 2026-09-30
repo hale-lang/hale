@@ -66,10 +66,39 @@ fn the_correction_on_probes() {
         );
         let program = hale_syntax::parse_source(&src)
             .unwrap_or_else(|d| panic!("probe `{what}` does not parse: {d:?}"));
-        let fresh = fresh_factories(&[&program], &[]).contains_key("make");
+        let rows = fresh_factories(&[&program], &[]);
+        let Some(row) = rows.get("make") else {
+            wrong.push(format!("{what}: no row"));
+            continue;
+        };
+        let fresh = row.fresh.is_some();
         if fresh != *expected {
             wrong.push(format!("{what}: {fresh} (expected {expected})"));
         }
+        // What `make` constructs is the same answer whichever way the
+        // escape walk goes (outside review of #1276, finding 1).
+        if row.products != [("Node".to_string(), vec!["n".to_string()])] {
+            wrong.push(format!("{what}: products {:?}", row.products));
+        }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The fresh half follows the factories it hands back: `wrap` returns
+/// a call to `leaky`, whose binding escapes, so `wrap` constructs what
+/// `leaky` does but is no more fresh than it.
+#[test]
+fn a_call_to_an_escaping_factory_is_not_fresh() {
+    let src = "locus Node { params { n: Int = 0; } }\n\
+               fn keep(x: Node) -> Int { return 0; }\n\
+               fn leaky() -> Node { let n = Node { n: 1 }; keep(n); return n; }\n\
+               fn wrap() -> Node { return leaky(); }\n\
+               fn bound() -> Node { let m = leaky(); return m; }\n";
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let rows = fresh_factories(&[&program], &[]);
+    for f in ["leaky", "wrap", "bound"] {
+        let row = rows.get(f).unwrap_or_else(|| panic!("`{f}` has a row"));
+        assert_eq!(row.products, [("Node".to_string(), vec!["n".to_string()])], "{f}");
+        assert!(row.fresh.is_none(), "`{f}` is not fresh: {row:?}");
+    }
 }

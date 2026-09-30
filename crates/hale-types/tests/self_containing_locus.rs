@@ -262,6 +262,58 @@ fn a_factory_that_returns_a_binding_is_reported() {
     assert_eq!(containment(&ds).len(), 1, "one report: {:?}", ds);
 }
 
+/// Outside review of #1276, finding 1: what a factory constructs does
+/// not depend on whether its returned binding escapes. `make` passes
+/// `fresh` to `touch` before returning it, which makes it no fresh
+/// factory for ownership (the caller cannot own what `touch` may have
+/// kept) — but it still builds a `Node` per call, and the program
+/// checked clean and died of SIGSEGV in the recursive construction.
+/// The rule reads the row's products, which the escape walk no longer
+/// withholds: the escaping program and its non-escaping control are
+/// both refused, and an accessor that builds nothing is still
+/// accepted with the same `touch` in it.
+#[test]
+fn a_factory_whose_returned_binding_escapes_is_still_reported() {
+    let escaping = r#"
+        locus Node { params { next: Node = make(); } }
+        fn touch(n: Node) { }
+        fn make() -> Node {
+            let fresh = Node { };
+            touch(fresh);
+            return fresh;
+        }
+        fn main() { Node { }; }
+    "#;
+    let ds = diags(escaping);
+    assert_eq!(containment(&ds).len(), 1, "the escaping factory is refused: {:?}", ds);
+
+    let control = r#"
+        locus Node { params { next: Node = make(); } }
+        fn touch(n: Node) { }
+        fn make() -> Node {
+            let fresh = Node { };
+            return fresh;
+        }
+        fn main() { Node { }; }
+    "#;
+    let ds = diags(control);
+    assert_eq!(containment(&ds).len(), 1, "the non-escaping control is refused: {:?}", ds);
+
+    let accessor = r#"
+        locus Depot { params { node: Node = Node { n: 7 }; } }
+        locus Node { params { n: Int = 0; next: Node = pick(); } }
+        fn touch(n: Node) { }
+        fn pick() -> Node {
+            let d = Depot { };
+            touch(d.node);
+            return d.node;
+        }
+        fn main() { println("declared"); }
+    "#;
+    let ds = diags(accessor);
+    assert!(containment(&ds).is_empty(), "an accessor builds nothing: {:?}", ds);
+}
+
 /// A two-type ring where BOTH edges are factory calls: one report,
 /// naming the ring, exactly as the literal spelling gets.
 #[test]

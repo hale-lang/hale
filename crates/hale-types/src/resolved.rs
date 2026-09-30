@@ -284,11 +284,12 @@ pub fn resolve_program(
     // the two sides of every ownership decision computed once.
     //
     // F.40 phase 1.2c: the rows are the checker's too; the pre-pass
-    // reads the locus and the returned binding of each.
+    // reads the fresh half, the locus and the returned binding of each
+    // row the escape walk passed.
     let mut fresh_locus_factories: BTreeMap<String, (String, Option<String>)> =
         crate::ownership::fresh_factories(&[&merged], import_renames)
             .into_iter()
-            .map(|(f, row)| (f, (row.locus, row.returned_binding)))
+            .filter_map(|(f, row)| Some((f, (row.locus, row.fresh?.returned_binding))))
             .collect();
     let mut owner_table = crate::ownership::resolve_owners(
         &merged,
