@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::handler_routing::ChildRef;
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
@@ -603,6 +604,7 @@ pub fn check_bundle_scoped(
             generic_fns,
             generic_types,
             generic_loci,
+            handlers: crate::handler_routing::handler_rows(program, &bundle.import_renames),
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -741,7 +743,10 @@ pub fn check_bundle_scoped(
             // denotes a valid model — see the note there. Selection
             // stays here: it reads the claim surface directly and is
             // meaningful even for a program that does not typecheck.
-            diags.extend(crate::frontier::supervised_diags(&programs_vec));
+            diags.extend(crate::frontier::supervised_diags(
+                &programs_vec,
+                &bundle.import_renames,
+            ));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
         }
         for d in &mut diags[law_start..] {
@@ -8196,6 +8201,9 @@ struct Checker<'a> {
     /// checker). A locus's `params` are its fields — the monomorph's
     /// are the template's with the arguments substituted.
     generic_loci: BTreeMap<String, &'a LocusDecl>,
+    /// F.40 phase 1.4: the `on_failure` handler rows of the program
+    /// being checked, the child type resolved as lowering resolves it.
+    handlers: crate::handler_routing::HandlerRouting,
     /// GH #255 phase 1: topic names with a declared transport
     /// binding (any `bindings { }` entry, bundle-wide). Gates
     /// `or wait` on publishes — the loss window it waits out
@@ -9716,31 +9724,38 @@ impl<'a> Checker<'a> {
     /// that type is the one that runs. A second handler for the same
     /// type can never run, whatever its body or its error param says,
     /// so it is refused where it stands, pointing at the first.
+    ///
+    /// A law over the handler rows (F.40 phase 1.4): two rows of one
+    /// parent naming one child locus. A row whose child is no locus
+    /// (`External`) is skipped, as a child the checker typed `Unknown`
+    /// was.
     fn check_duplicate_failure_handlers(&mut self, decl: &LocusDecl) {
-        let mut first: Vec<(String, Span)> = Vec::new();
-        for member in &decl.members {
-            let LocusMember::Failure(fd) = member else { continue };
-            // a handler the signature rules already refuse takes no
-            // slot: it is not the one that runs
-            if fd.params.len() != 2 {
-                continue;
-            }
-            // the same test the signature rule refuses by
+        // The rows' declarations, by ordinal: the locus's two-param
+        // handlers in order.
+        let handler_decls: Vec<&FailureDecl> = decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd),
+                _ => None,
+            })
+            .collect();
+        let mut first: Vec<(&str, Span)> = Vec::new();
+        for row in self.handlers.handlers_of(&decl.name.name) {
+            let ChildRef::Locus(key) = &row.child else { continue };
+            // a handler the signature rule refuses (its error is not
+            // `ClosureViolation`) takes no slot: it is not the one
+            // that runs
+            let Some(fd) = handler_decls.get(row.ordinal as usize) else { continue };
             let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
             let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
             if !is_violation && !matches!(err_ty, Ty::Unknown) {
                 continue;
             }
-            let child = &fd.params[0];
-            let child_ty = resolve_type_expr(&child.ty, self.known);
-            if matches!(child_ty, Ty::Unknown) {
-                continue;
-            }
-            let key = child_ty.display();
-            if let Some((_, at)) = first.iter().find(|(k, _)| *k == key) {
+            if let Some((_, at)) = first.iter().find(|(k, _)| *k == key.as_str()) {
                 self.diags.push(
                     Diag::ty(
-                        fd.span,
+                        row.span,
                         format!(
                             "locus `{}` already has an `on_failure` for `{}`: a failing child reaches the first handler declared for its type, so this one can never run. Handle every failure of a `{}` in the one handler",
                             decl.name.name, key, key
@@ -9749,7 +9764,7 @@ impl<'a> Checker<'a> {
                     .with_related(*at, "the handler that runs"),
                 );
             } else {
-                first.push((key, fd.span));
+                first.push((key, row.span));
             }
         }
     }

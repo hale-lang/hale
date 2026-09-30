@@ -221,6 +221,7 @@ const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
 const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
+const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -698,23 +699,20 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "Which `on_failure` handler a failing child's locus type reaches, and from which parent.",
-        inputs: &["failure declarations", "ownership (the supervising parent)", "restart declarations"],
-        producer: Some(site(CG_DECL, "declare_locus_methods")),
+        inputs: &["failure declarations", "declared loci and type aliases (the bundled stdlib's loci included)", "import renames", "ownership (the supervising parent instance, in lowering)"],
+        producer: Some(site(HANDLER_ROUTING, "handler_rows")),
         legacy: &[
             legacy(CG_CHANNELS, "failure_handler_for", "looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows)", "the handler fn is a column of the row"),
             legacy(CG_CHANNELS, "resolve_failure_route", "the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's", "the instance is a row of the instance tree (phase 2)"),
             legacy(CG, "__StdBusUnixConnectTransport", "the transport-loss handler is picked by name through the routing table", "the bindings family names the transport's locus"),
-            legacy(CHECK, "check_duplicate_failure_handlers", "duplicates are refused by `Ty::display()` string, a third way of naming the child type", "one identity"),
-            legacy(MODEL_BUILDER, "Supervises", "the model's supervision rows name the child by a raw path string", "projected from the table"),
-            legacy(FRONTIER, "supervised_diags", "@supervised coverage from `has any handler`, no import renames", "a law over the rows"),
         ],
-        consumers: &[consumer("codegen (__parent_on_failure)"), consumer("model"), consumer("check")],
-        invariants: &["the child type is resolved one way; #1229's three ways agree because a review probed them, not because anything enforces it"],
+        consumers: &[consumer_at("codegen (the handler table)", CG_DECL, "handlers_of"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised)", FRONTIER, "supervised_diags")],
+        invariants: &["the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row"],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type)", "tests/hale/on_failure_per_child_type_test.hl", "crates/hale-types/tests/violate.rs"],
         spec: &["spec/semantics.md § failure", "spec/runtime.md (failure delivery)"],
-        owned: &[],
-        seams: &[],
+        owned: &[site(HANDLER_ROUTING, "child_locus_name")],
+        seams: &[Seam { symbol: "handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1), (CHECK, 1), (MODEL_BUILDER, 1), (FRONTIER, 1)] }],
     },
     Family {
         name: "flows",
@@ -743,9 +741,9 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "Which loci declare restart operations, which restart in place, and what the restart bound is.",
         inputs: &["closure and birth-check declarations", "handler_routing (the rows' recovery ops)"],
-        producer: None,
+        producer: Some(site(HANDLER_ROUTING, "handler_rows")),
         legacy: &[
-            legacy(MODEL_BUILDER, "walk_ops", "the model's recovery-op walk", "projected from the row"),
+            legacy(CG_RESTART, "locus_declares_failures", "which loci a failure can come from (and so get restart points) is a walk over closure and birth-check members in codegen", "a column of the restart rows"),
         ],
         consumers: &[consumer("codegen (__restart_<L>, __resume_<L>)"), consumer("model")],
         invariants: &["a recovery op is a row with a witness, per (parent, child)"],

@@ -105,7 +105,7 @@ fn supervised_satisfied_by_a_root_policy() {
         @supervised
         main locus App {
             params { mid: Mid = Mid { }; }
-            on_failure(e: Violation) { }
+            on_failure(c: Mid, err: ClosureViolation) { }
             run() { }
         }
         fn main() { App { }; }
@@ -116,6 +116,7 @@ fn supervised_satisfied_by_a_root_policy() {
         "a root policy covers the whole subtree: {:?}",
         ds
     );
+    assert!(ds.is_empty(), "the program checks clean: {:?}", ds);
 }
 
 /// Coarse secret taint: a `@secret` param must not reach a publish

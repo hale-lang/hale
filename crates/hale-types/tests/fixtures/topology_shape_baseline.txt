@@ -1471,6 +1471,7 @@ crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
 crates/hale-types/tests/effects_through_handles.rs#4 366138d0626a5646
 crates/hale-types/tests/effects_through_handles.rs#9 b02810e84978532d
 crates/hale-types/tests/frontier_items.rs#1 440e61c90f2db460
+crates/hale-types/tests/frontier_items.rs#3 0be97e8b849edaab
 crates/hale-types/tests/frontier_items.rs#6 604a68af0451e08c
 crates/hale-types/tests/frontier_items.rs#7 f21ae88fa4619246
 crates/hale-types/tests/fstring_diagnostics.rs#12 f2c1228edb650960

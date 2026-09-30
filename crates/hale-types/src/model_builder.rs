@@ -63,6 +63,7 @@ use hale_syntax::ast::{
 };
 
 use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
+use crate::handler_routing::ChildRef;
 use crate::symbol::Bundle;
 
 static BUILDS: AtomicU64 = AtomicU64::new(0);
@@ -1734,7 +1735,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
-    // supervision (same walk as the artifact's, per-handler).
+    // supervision (per-handler).
     // Keyed WITH the authored ordinal: duplicate-signature handlers
     // are check-clean and the legacy artifact serializes each
     // declaration -- a (parent, child, err)-only key silently
@@ -1743,65 +1744,40 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         (LocusDeclId, SupervisedRef, String, u32),
         (Vec<String>, Option<i64>, ProvenanceId),
     > = BTreeMap::new();
-    {
-        fn te_name(t: &TypeExpr) -> String {
-            match t {
-                TypeExpr::Named { path, .. } => path
-                    .segments
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-                _ => "?".to_string(),
-            }
-        }
-        // The recovery-op walk is the handler rows' (F.40 phase 1.4).
-        fn walk_ops(
-            b: &Block,
-            ops: &mut Vec<String>,
-            retry: &mut Option<i64>,
-        ) {
-            let (found, bound) = crate::handler_routing::recovery_ops(b);
-            for op in found {
-                let n = crate::handler_routing::op_name(op);
-                if !ops.iter().any(|o| o == n) {
-                    ops.push(n.to_string());
+    //
+    // F.40 phase 1.4: projected from the handler rows. The child is the
+    // row's: a locus the model has a declaration for (a monomorph is
+    // its template, the declaration written), else the written name.
+    // The authored ordinal stays the handler's position in the bundle
+    // walk (the rows come in that order), not the row's per-parent
+    // ordinal, so the canonical key keeps its values.
+    let mut authored: u32 = 0;
+    for p in &programs {
+        let routing =
+            crate::handler_routing::handler_rows(p, &bundle.import_renames);
+        for row in routing.rows() {
+            let parent = locus_id[&row.parent];
+            let declared = match &row.child {
+                ChildRef::Locus(n) => {
+                    locus_id.get(n).or_else(|| locus_id.get(&row.written))
                 }
-            }
-            if bound.is_some() {
-                *retry = bound;
-            }
-        }
-        let mut authored: u32 = 0;
-        for l in &ast.loci {
-            for member in &l.members {
-                if let LocusMember::Failure(fd) = member {
-                    let mut ops = Vec::new();
-                    let mut retry: Option<i64> = None;
-                    walk_ops(&fd.body, &mut ops, &mut retry);
-                    let parent = locus_id[&l.name.name];
-                    let child_name = fd
-                        .params
-                        .first()
-                        .map(|p| te_name(&p.ty))
-                        .unwrap_or_else(|| "?".to_string());
-                    let child = match locus_id.get(&child_name) {
-                        Some(id) => SupervisedRef::Locus(*id),
-                        None => SupervisedRef::External(child_name),
-                    };
-                    let err = fd
-                        .params
-                        .get(1)
-                        .map(|p| te_name(&p.ty))
-                        .unwrap_or_else(|| "?".to_string());
-                    let pid = intern_span(&mut records, fd.span);
-                    sup.insert(
-                        (parent, child, err, authored),
-                        (ops, retry, pid),
-                    );
-                    authored += 1;
-                }
-            }
+                ChildRef::External(_) => None,
+            };
+            let child = match declared {
+                Some(id) => SupervisedRef::Locus(*id),
+                None => SupervisedRef::External(row.written.clone()),
+            };
+            let ops: Vec<String> = row
+                .ops
+                .iter()
+                .map(|op| crate::handler_routing::op_name(*op).to_string())
+                .collect();
+            let pid = intern_span(&mut records, row.span);
+            sup.insert(
+                (parent, child, row.error_type.clone(), authored),
+                (ops, row.retry_bound, pid),
+            );
+            authored += 1;
         }
     }
 
