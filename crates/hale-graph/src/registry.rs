@@ -712,7 +712,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("codegen (the handler table)", CG_DECL, "handlers_of"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised)", FRONTIER, "supervised_diags")],
         invariants: &["the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row"],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type)", "tests/hale/on_failure_per_child_type_test.hl", "crates/hale-types/tests/violate.rs"],
+        tests: &["crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type)", "tests/hale/on_failure_per_child_type_test.hl", "crates/hale-types/tests/violate.rs", "crates/hale-types/tests/handler_routing_probes.rs"],
         spec: &["spec/semantics.md § failure", "spec/runtime.md (failure delivery)"],
         owned: &[site(HANDLER_ROUTING, "child_locus_name")],
         seams: &[

@@ -613,7 +613,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type); tests/hale/on_failure_per_child_type_test.hl; crates/hale-types/tests/violate.rs
+**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type); tests/hale/on_failure_per_child_type_test.hl; crates/hale-types/tests/violate.rs; crates/hale-types/tests/handler_routing_probes.rs
 
 **Spec.** spec/semantics.md § failure; spec/runtime.md (failure delivery)
 
