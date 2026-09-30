@@ -353,6 +353,40 @@ impl BusGraph {
         }
         h
     }
+
+    /// The graph's per-subject gate facts in the plan's shape (GH #476
+    /// Change 8): what `DispatchPlan::from_gates` decides a flavor
+    /// from. Publisher loci are sorted and deduplicated; subscribers
+    /// keep the graph's site order.
+    pub fn dispatch_gates(&self) -> Vec<hale_model::DispatchGate> {
+        self.subjects
+            .iter()
+            .map(|(subject, info)| hale_model::DispatchGate {
+                subject: subject.clone(),
+                static_eligible: info.eligible,
+                direct_eligible: info.direct_call_eligible,
+                ineligible_reason: info
+                    .ineligible_reason
+                    .as_ref()
+                    .map(|r| r.tag().to_string()),
+                publisher_loci: {
+                    let mut p: Vec<String> = info
+                        .publishers
+                        .iter()
+                        .map(|s| s.locus.clone())
+                        .collect();
+                    p.sort();
+                    p.dedup();
+                    p
+                },
+                subscribers: info
+                    .subscribers
+                    .iter()
+                    .map(|s| (s.locus.clone(), s.handler.clone()))
+                    .collect(),
+            })
+            .collect()
+    }
 }
 
 /// Build the authoritative [`BusGraph`] for a bundle. Run this

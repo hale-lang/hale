@@ -1109,6 +1109,7 @@ pub fn build_resolved(
         ownership,
         bubble,
         handlers,
+        plan,
         ..
     } = resolved;
     let program = &user;
@@ -1184,115 +1185,54 @@ pub fn build_resolved(
         hale_types::bus_graph::has_offthread_placement(&bundle)
             || has_socket_binding;
 
-    // Static-bus-dispatch devirtualization plan (build #1b). Compute
-    // the authoritative BusGraph over the MERGED + topic-desugared
-    // program: by this point `program` has had `desugar_topics` run, so
-    // every bus-block subject is a `Literal` whose `canonical()` equals
-    // the wire string codegen's register/publish sites see — and
-    // building over `merged` (user + stdlib) keeps the eligibility gate
-    // sound w.r.t. stdlib wildcard subscribers (e.g. `log.**`). The
-    // closed-world gate (`fn main` / `main locus`) defaults to
-    // ineligible, so a library/wasm build with no entry point yields an
-    // empty plan and the all-dynamic lowering. `LOTUS_NO_BUS_DEVIRT=1`
-    // forces the empty plan — the differential-test control arm.
-    #[allow(clippy::type_complexity)]
-    let (bus_devirt_ids, bus_devirt_direct, bus_devirt_direct_subs): (
-        std::collections::BTreeMap<String, u32>,
-        std::collections::BTreeSet<String>,
-        std::collections::BTreeMap<String, Vec<(String, String)>>,
-    ) = if options.no_bus_devirt {
-        (
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeSet::new(),
-            std::collections::BTreeMap::new(),
-        )
+    // Static-bus-dispatch devirtualization plan (build #1b), derived in
+    // the resolved program from the bus graph over the merged and
+    // topic-desugared program (F.40 phase 1.5): every subject is the
+    // wire string the register/publish sites see, and the stdlib's
+    // wildcard subscribers (`log.**`) are in the graph the gates were
+    // judged over. The flavor ladder is `DispatchPlan`'s — the same
+    // procedure the model's `DispatchPlan::derive` runs, and whose
+    // digest the execution identity folds in. A build with no entry
+    // point is open world and its plan all dynamic.
+    // `LOTUS_NO_BUS_DEVIRT=1` forces the empty plan — the
+    // differential-test control arm.
+    let plan = if options.no_bus_devirt {
+        hale_model::dispatch_plan::DispatchPlan::default()
     } else {
-        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        // GH #476 Change 8: the flavor decision is NOT made here. The
-        // gate facts are bridged into the canonical shape and
-        // `DispatchPlan` — the same procedure the model-side
-        // `DispatchPlan::derive` runs, and whose digest the execution
-        // identity folds in — decides. Codegen's gates come from the
-        // MERGED (user + stdlib, desugared) graph its own lowering
-        // must agree with, so the source of facts is local; only the
-        // ladder is shared. `dispatch_plan_agrees_with_the_model` in
-        // hale-cli pins the two fact sources against each other over
-        // the corpus.
-        let gates: Vec<hale_model::DispatchGate> = graph
-            .subjects
-            .iter()
-            .map(|(subject, info)| hale_model::DispatchGate {
-                subject: subject.clone(),
-                static_eligible: info.eligible,
-                direct_eligible: info.direct_call_eligible,
-                ineligible_reason: info
-                    .ineligible_reason
-                    .as_ref()
-                    .map(|r| r.tag().to_string()),
-                publisher_loci: {
-                    let mut p: Vec<String> = info
-                        .publishers
-                        .iter()
-                        .map(|s| s.locus.clone())
-                        .collect();
-                    p.sort();
-                    p.dedup();
-                    p
-                },
-                subscribers: info
-                    .subscribers
-                    .iter()
-                    .map(|s| (s.locus.clone(), s.handler.clone()))
-                    .collect(),
-            })
-            .collect();
-        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
-            &gates,
-            &std::collections::BTreeMap::new(),
-        );
-        if options.dispatch_trace {
-            for s in &plan.subjects {
-                eprintln!(
-                    "[hale-dispatch] {} {}",
-                    s.subject,
-                    s.flavor.as_str()
-                );
-            }
-        }
-        // Deterministic ids: static subjects in wire-string order
-        // (the plan sorts by subject), 0..N. The direct-call subset
-        // reuses those very ids (its bucket is the same one
-        // lotus_bus_register_static populates), so we collect both in
-        // one pass.
-        let mut ids: std::collections::BTreeMap<String, u32> =
-            std::collections::BTreeMap::new();
-        let mut direct: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
-        // Direct-INLINE (slice-3): the subscriber (locus, handler) list
-        // per direct subject, so the publish site can resolve+dedup the
-        // handler FunctionValue and bake a single-handler direct call.
-        let mut direct_subs: std::collections::BTreeMap<
-            String,
-            Vec<(String, String)>,
-        > = std::collections::BTreeMap::new();
-        for (next, s) in plan.static_subjects().iter().enumerate() {
-            ids.insert(s.subject.clone(), next as u32);
-            if s.flavor
-                == hale_model::dispatch_plan::DispatchFlavor::StaticDirect
-            {
-                direct.insert(s.subject.clone());
-                direct_subs
-                    .insert(s.subject.clone(), s.subscribers.clone());
-            }
-        }
-        (ids, direct, direct_subs)
+        plan
     };
+    if options.dispatch_trace {
+        for s in &plan.subjects {
+            eprintln!("[hale-dispatch] {} {}", s.subject, s.flavor.as_str());
+        }
+    }
+    // Deterministic ids: static subjects in wire-string order (the plan
+    // sorts by subject), 0..N. The direct-call subset reuses those very
+    // ids (its bucket is the same one lotus_bus_register_static
+    // populates), so both are collected in one pass. Direct-INLINE
+    // (slice-3): the subscriber (locus, handler) list per direct
+    // subject, so the publish site can resolve+dedup the handler
+    // FunctionValue and bake a single-handler direct call.
+    let mut bus_devirt_ids: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    let mut bus_devirt_direct: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut bus_devirt_direct_subs: std::collections::BTreeMap<
+        String,
+        Vec<(String, String)>,
+    > = std::collections::BTreeMap::new();
+    for (next, s) in plan.static_subjects().iter().enumerate() {
+        bus_devirt_ids.insert(s.subject.clone(), next as u32);
+        if s.flavor == hale_model::dispatch_plan::DispatchFlavor::StaticDirect {
+            bus_devirt_direct.insert(s.subject.clone());
+            bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
+        }
+    }
 
     // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
     // plans (`hale_types::ownership_graph::BubblePlans`), projected in
     // the resolved program from the ownership graph over the same
-    // merged and desugared program the bus graph above is built from.
+    // merged and desugared program the dispatch plan above comes from.
     // The seam routes a singleton hit to the global load, a
     // non-singleton hit to the threaded-field load and a cross-pool hit
     // to the async birth on the owner's thread; the forwarding sets

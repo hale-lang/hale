@@ -163,9 +163,10 @@ impl DispatchPlan {
 
     /// The plan over raw gate facts plus a locus-display → thread
     /// domains map. `derive` supplies the model's arrangement for
-    /// the map; codegen, which holds the merged (user + stdlib,
-    /// desugared) bus graph its own lowering must agree with,
-    /// supplies its gates and an empty map — flavors depend only on
+    /// the map; the resolved program (`hale_types::resolved`), which
+    /// holds the merged (user + stdlib, desugared) bus graph lowering
+    /// must agree with, supplies its gates and an empty map for the
+    /// plan codegen reads — flavors depend only on
     /// the gates, so an absent arrangement costs the `same_domain`
     /// survey field and nothing else.
     /// `domains_of` is a COMPLETE account per key: a locus present

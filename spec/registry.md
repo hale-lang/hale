@@ -218,10 +218,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker and never passed on: model_builder, claim_lowering, topology, sync inference, codegen (once, for the bus plan), the resolved program (once, for the ownership graph) and the LSP (seven times) rebuild it. *Removed when:* one scope per snapshot, passed by reference (phase 2).
+- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker and never passed on: model_builder, claim_lowering, topology, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it. *Removed when:* one scope per snapshot, passed by reference (phase 2).
 - `crates/hale-types/src/check.rs` · `collect_known_names` — a second name table the checker keeps beside the scope. *Removed when:* one table.
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); claims (`crates/hale-types/src/claim_lowering.rs` · `lower_claims`); topology (`crates/hale-types/src/topology.rs` · `dump_topology`); codegen (`crates/hale-codegen/src/codegen.rs` · `build_top_scope`); lsp (`crates/hale-lsp/src/lib.rs` · `build_top_scope`); check --matrix (`crates/hale-cli/src/verbs/check/matrix.rs` · `build_top_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); claims (`crates/hale-types/src/claim_lowering.rs` · `lower_claims`); topology (`crates/hale-types/src/topology.rs` · `dump_topology`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (`crates/hale-lsp/src/lib.rs` · `build_top_scope`); check --matrix (`crates/hale-cli/src/verbs/check/matrix.rs` · `build_top_scope`)
 
 **Invariants.**
 
@@ -235,7 +235,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7, `crates/hale-cli/src/verbs/check/matrix.rs` ×1
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7, `crates/hale-cli/src/verbs/check/matrix.rs` ×1
 
 ### `expression_typing` — Migrating · derivation
 
@@ -462,7 +462,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/topology.rs` · `build_bus_graph` — rebuilt for the artifact. *Removed when:* phase 1.5.
 - `crates/hale-cli/src/verbs/check/matrix.rs` · `build_bus_graph` — rebuilt for constitution identities. *Removed when:* phase 1.5.
 - `crates/hale-lsp/src/lib.rs` · `build_bus_graph` — rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass. *Removed when:* phase 2.
-- `crates/hale-codegen/src/codegen.rs` · `build_bus_graph` — rebuilt in codegen over a desugared program the model never sees, then mapped to a plan with an empty domain map. *Removed when:* phase 1.5.
+- `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the checker, the model, claim lowering, the topology artifact, the matrix and the LSP still build their own over the un-desugared bundle. *Removed when:* one graph per snapshot (phase 2: the check over the resolved program).
 
 **Consumers.** check (rules 9-12, 19); model; claims; topology; dispatch; lsp (hale/busGraph); bus_inert
 
@@ -478,7 +478,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
 
 ### `topics` — Migrating · derivation
@@ -557,11 +557,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/codegen.rs` · `DispatchPlan::from_gates(` — codegen derives its own plan from its own gates with an EMPTY domain map, so `same_domain` is always false; gates are not merged per wire as the model merges them. *Removed when:* codegen reads the one plan (phase 1.5).
+- `crates/hale-types/src/resolved.rs` · `from_gates` — the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`. *Removed when:* one plan (phase 2).
 - `crates/hale-codegen/src/bus/wire.rs` · `bus_payload_is_flat` — the third leg of the direct-call gate exists only in codegen. *Removed when:* a gate column.
 - `crates/hale-cli/src/shared/options.rs` · `model_identity` — the CLI derives the plan a second time for the exec digest, from a bundle shaped differently from the one the agreement test compares. *Removed when:* one plan, one digest.
 
-**Consumers.** codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (`crates/hale-cli/src/shared/options.rs` · `exec_digest`); model dump
+**Consumers.** codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`); codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (`crates/hale-cli/src/shared/options.rs` · `exec_digest`); model dump
 
 **Invariants.**
 
@@ -577,7 +577,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-model/src/lib.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
-- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-codegen/src/codegen.rs` ×1
+- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ### `handler_routing` — Migrating · derivation
 

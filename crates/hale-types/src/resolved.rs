@@ -11,8 +11,10 @@
 //! The envelope also carries the ownership graph over the merged
 //! program (which accepting ancestor owns each method-body birth, and
 //! which locus accepts which child type) and the bubble plans lowering
-//! projects from it (F.40 phase 1.3), built here once, and the
-//! `on_failure` handler rows (F.40 phase 1.4).
+//! projects from it (F.40 phase 1.3), built here once, the
+//! `on_failure` handler rows (F.40 phase 1.4), and the bus graph over
+//! the same program with the dispatch plan lowering reads (F.40
+//! phase 1.5).
 //!
 //! The sequence is codegen's former one, moved here unchanged: the
 //! same passes, in the same order, over the same inputs. The one
@@ -31,6 +33,9 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 
+use hale_model::dispatch_plan::DispatchPlan;
+
+use crate::bus_graph::BusGraph;
 use crate::handler_routing::HandlerRouting;
 use crate::ownership::OwnerTable;
 use crate::ownership_graph::{BubblePlans, OwnershipGraph};
@@ -59,6 +64,13 @@ pub struct ResolvedProgram {
     /// Which `on_failure` handler a failing child reaches, one row per
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
+    /// The message graph over `merged`, keyed by wire subject (the
+    /// topic desugars have run), with its devirtualization gates
+    /// (F.40 phase 1.5).
+    pub bus: BusGraph,
+    /// Lowering's dispatch plan, derived from `bus`'s gates with an
+    /// empty domain map: the flavor each subject is lowered to.
+    pub plan: DispatchPlan,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -219,14 +231,32 @@ pub fn resolve_program(
     // from. The bundle's one program keeps the name codegen gave it,
     // so nothing keyed by program name moves; the scope's diagnostics
     // are the checker's to report, not this step's.
-    let (ownership, bubble) = {
+    //
+    // F.40 phase 1.5: and the bus graph and lowering's dispatch plan,
+    // over the same bundle and scope. The topic desugars above have
+    // run, so every bus-block subject is its wire literal — the string
+    // the register and publish sites see — and the stdlib is merged,
+    // so the gates are sound against its wildcard subscribers
+    // (`log.**`). A bundle with no entry point is open world: every
+    // subject is ineligible, and the plan is all dynamic.
+    let (ownership, bubble, bus, plan) = {
         let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
         programs.insert("__codegen_merged".to_string(), &merged);
         let bundle = crate::symbol::Bundle::new(programs);
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
         let bubble = graph.bubble_plans();
-        (graph, bubble)
+        let bus = crate::bus_graph::build_bus_graph(&bundle, &top);
+        // The flavor is a function of the gates alone; the domain map
+        // only fills the `same_domain` survey column, and lowering's
+        // is empty on purpose (#464's widening is its own optimization
+        // with its own bench gate). The model derives its plan with
+        // the arrangement's domains.
+        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
+            &bus.dispatch_gates(),
+            &BTreeMap::new(),
+        );
+        (graph, bubble, bus, plan)
     };
 
     // F.40 phase 1.4: the handler rows, over the same merged program,
@@ -242,6 +272,8 @@ pub fn resolve_program(
         ownership,
         bubble,
         handlers,
+        bus,
+        plan,
         resolved_in: t_start.elapsed(),
     })
 }
