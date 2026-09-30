@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 
 use hale_model::dispatch_plan::DispatchPlan;
+use hale_syntax::desugar::IntraLocusRewrite;
 
 use crate::bus_graph::BusGraph;
 use crate::handler_routing::HandlerRouting;
@@ -66,11 +67,16 @@ pub struct ResolvedProgram {
     pub handlers: HandlerRouting,
     /// The message graph over `merged`, keyed by wire subject (the
     /// topic desugars have run), with its devirtualization gates
-    /// (F.40 phase 1.5).
+    /// (F.40 phase 1.5), and on each subject the sends `intra_locus`
+    /// rewrote.
     pub bus: BusGraph,
     /// Lowering's dispatch plan, derived from `bus`'s gates with an
     /// empty domain map: the flavor each subject is lowered to.
     pub plan: DispatchPlan,
+    /// Every send the intra-locus rewrite replaced with a direct call:
+    /// the relation that keeps the publish in the program's account
+    /// after the rewrite erased it from the text (boundary 7).
+    pub intra_locus: Vec<IntraLocusRewrite>,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -127,7 +133,8 @@ pub fn resolve_program(
         hale_syntax::api_gen::inject_api_entry(&mut program_owned, path)?;
     }
     hale_syntax::api_gen::generate_api(&mut [&mut program_owned], api_roles);
-    hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    let intra_locus =
+        hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
     // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
     // `L2::set_price(w, x)`) into the equivalent `std::bytes::*` calls.
@@ -246,7 +253,24 @@ pub fn resolve_program(
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
         let bubble = graph.bubble_plans();
-        let bus = crate::bus_graph::build_bus_graph(&bundle, &top);
+        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top);
+        // Boundary 7: the sends the intra-locus rewrite replaced are
+        // gone from `merged`, but not from the graph. Each is recorded
+        // on its subject, which the rewrite named by topic and the
+        // graph keys by wire. The publisher's `publish` declaration is
+        // still in its bus block, so the subject is always there.
+        let wires = crate::topic_identity::topic_wire_subjects(&merged.items);
+        for rw in &intra_locus {
+            let wire = wires.get(&rw.subject).unwrap_or(&rw.subject);
+            let info = bus.subjects.get_mut(wire);
+            debug_assert!(info.is_some(), "rewritten send on `{wire}` has no subject in the graph");
+            if let Some(info) = info {
+                info.direct_sends.push((rw.locus.clone(), rw.handler.clone()));
+            }
+        }
+        // The gates are the ones the rewritten program was judged by,
+        // as before: the relation is recorded, not yet read.
+        //
         // The flavor is a function of the gates alone; the domain map
         // only fills the `same_domain` survey column, and lowering's
         // is empty on purpose (#464's widening is its own optimization
@@ -274,6 +298,7 @@ pub fn resolve_program(
         handlers,
         bus,
         plan,
+        intra_locus,
         resolved_in: t_start.elapsed(),
     })
 }

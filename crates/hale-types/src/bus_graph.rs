@@ -330,6 +330,14 @@ pub struct SubjectInfo {
     /// is ANDed with `bus_payload_is_flat` there. A false positive is
     /// an observable-ordering bug, so this stays conservative.
     pub direct_call_eligible: bool,
+    /// The sends on this subject the intra-locus rewrite turned into
+    /// direct calls, as (publishing locus, subscriber handler) pairs
+    /// (F.40 boundary 7). Empty from [`build_bus_graph`]: a graph over
+    /// an authored program still sees those sends, and the resolved
+    /// program fills this from the rewrite's relation, so a graph over
+    /// the rewritten program still knows every publish the rewrite
+    /// removed from the program's text.
+    pub direct_sends: Vec<(String, String)>,
 }
 
 /// The whole-bundle bus graph, keyed by `BusSubject::canonical()`.
@@ -501,6 +509,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
                 eligible,
                 ineligible_reason: reason,
                 direct_call_eligible,
+                direct_sends: Vec::new(),
             },
         );
     }

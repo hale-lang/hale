@@ -129,7 +129,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: a synthesized text driver and no check at all. *Removed when:* phase 2.
 - `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: json_gen and sync inference per file, then generate_api. *Removed when:* phase 2.
-- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program. *Removed when:* one sequence, before the check (phase 2).
+- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
 - `crates/hale-types/src/resolved.rs` · `normalize_unit_return_annotations` — unit-return normalization in the resolved-program step. *Removed when:* phase 2.
 - `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run` — the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it. *Removed when:* the sequence runs once, before the check.
 - `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way). *Removed when:* the frontend is the only producer (phase 2).
@@ -469,6 +469,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it
+- the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)
 
 **Missing data.** an unknown is a hole with a stated policy
 
@@ -499,7 +500,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects` — the routing-key table. *Removed when:* same.
 - `crates/hale-types/src/model_builder.rs` · `topic_wire_subjects` — rebuilt for the model. *Removed when:* phase 1.5.
 
-**Consumers.** check; model; codegen (dispatch, bindings, runtime registration); topology (topic shapes)
+**Consumers.** check; model; codegen (dispatch, bindings, runtime registration); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
 
 **Invariants.**
 
@@ -513,7 +514,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×8
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×8
 
 ### `bindings` — Migrating · derivation
 
