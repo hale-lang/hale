@@ -743,4 +743,32 @@ fn main() { App { }; }
     assert_eq!((rw.locus.as_str(), rw.subject.as_str(), rw.handler.as_str()), ("App", "PingT", "on_ping"));
     let info = resolved.bus.subjects.get("p.ping").expect("the wire subject is in the graph");
     assert_eq!(info.direct_sends, vec![("App".to_string(), "on_ping".to_string())]);
+
+    // Outside review of #1276, finding 4: this is the adapter path (the
+    // program was never minted before `resolve_program`), and the
+    // relation's sends are minted all the same, because the mint runs
+    // before the rewrite: no recorded send is `NONE`, and each is the
+    // id of the direct call that replaced it, a site of the snapshot.
+    assert!(
+        resolved.intra_locus.iter().all(|rw| !rw.send.is_none()),
+        "{:?}",
+        resolved.intra_locus
+    );
+    let mut call_ids = Vec::new();
+    for item in &resolved.merged.items {
+        let hale_syntax::ast::TopDecl::Locus(l) = item else { continue };
+        if l.name.name != "App" {
+            continue;
+        }
+        for m in &l.members {
+            let hale_syntax::ast::LocusMember::Lifecycle(d) = m else { continue };
+            for s in &d.body.stmts {
+                if let hale_syntax::ast::Stmt::Expr(hale_syntax::ast::Expr::Call { id, .. }) = s {
+                    call_ids.push(id.0);
+                }
+            }
+        }
+    }
+    assert_eq!(call_ids, vec![rw.send.0], "the direct call carries the recorded send's id");
+    assert!(resolved.snapshot.site_id(rw.send).is_some(), "the send's id is a site of the snapshot");
 }

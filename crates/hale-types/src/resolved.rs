@@ -17,14 +17,16 @@
 //! phase 1.5).
 //!
 //! The sequence is codegen's former one, moved here unchanged: the
-//! same passes, in the same order, over the same inputs. The one
-//! addition is the mint over the merged program before the pre-pass,
-//! with the bundle's source map, so every stdlib and desugar-generated
-//! node has its identity (the mint keeps the ids the bundle already
-//! carries and continues the counter) and every site its seed: a user
-//! site the file its span falls in, a stdlib site the stdlib's own
-//! seed. The pre-pass numbers nothing; a `Struct` or `Call` it finds
-//! unnumbered is an error.
+//! same passes, in the same order, over the same inputs. The additions
+//! are two mints. One over the user program before the intra-locus
+//! rewrite, so every send it records is minted on every path, the
+//! harness adapter's included. And one over the merged program before
+//! the pre-pass, with the bundle's source map, so every stdlib and
+//! desugar-generated node has its identity (the mint keeps the ids
+//! already carried and continues the counter) and every site its seed:
+//! a user site the file its span falls in, a stdlib site the stdlib's
+//! own seed. The pre-pass numbers nothing; a `Struct` or `Call` it
+//! finds unnumbered is an error.
 //!
 //! Today the verbs still run `json_gen`, api injection and sync
 //! inference before the check, and this step re-runs the idempotent
@@ -107,17 +109,23 @@ pub struct ResolvedProgram {
 const MERGED_NAME: &str = "__codegen_merged";
 
 /// The bundle view of a merged program: one program under
-/// [`MERGED_NAME`], no import renames, no source map, no snapshot.
-fn merged_bundle(merged: &Program) -> Bundle<'_> {
-    Bundle::new(std::iter::once((MERGED_NAME.to_string(), merged)).collect())
+/// [`MERGED_NAME`] with the build's import renames, no source map, no
+/// snapshot. The renames are what let a graph built over it resolve a
+/// qualified imported type (`accept(c: lib::Child)`) to the mangled
+/// locus the merge declared; without them the graph's `accepts` row
+/// for that locus is empty, and lowering reads it as authoritative.
+fn merged_bundle<'a>(merged: &'a Program, import_renames: &[(Vec<String>, String)]) -> Bundle<'a> {
+    let mut bundle = Bundle::new(std::iter::once((MERGED_NAME.to_string(), merged)).collect());
+    bundle.import_renames = import_renames.to_vec();
+    bundle
 }
 
 impl ResolvedProgram {
     /// The bundle view of `merged` the envelope's graphs were built
-    /// over: lowering reads program-wide facts through it instead of
-    /// building its own.
+    /// over, with the envelope's import renames: lowering reads
+    /// program-wide facts through it instead of building its own.
     pub fn bundle(&self) -> Bundle<'_> {
-        merged_bundle(&self.merged)
+        merged_bundle(&self.merged, &self.import_renames)
     }
 }
 
@@ -177,6 +185,14 @@ pub fn resolve_program(
         hale_syntax::api_gen::inject_api_entry(&mut program_owned, path)?;
     }
     hale_syntax::api_gen::generate_api(&mut [&mut program_owned], api_roles);
+    // The intra-locus rewrite moves each send's id onto the call that
+    // replaces it and records it in the relation, so the sends have to
+    // be minted before it runs: a caller that did not mint (the
+    // harness adapter, `build_executable_with_options`) would otherwise
+    // get a relation of `NodeId::NONE` sends no call can be joined to.
+    // Idempotent: the ids a bundle already minted are kept, and the
+    // mint over the merged program below keeps these and continues.
+    crate::snapshot::mint([("program", &mut program_owned)], sources);
     let intra_locus =
         hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
@@ -284,11 +300,12 @@ pub fn resolve_program(
     // the two sides of every ownership decision computed once.
     //
     // F.40 phase 1.2c: the rows are the checker's too; the pre-pass
-    // reads the locus and the returned binding of each.
+    // reads the fresh half, the locus and the returned binding of each
+    // row the escape walk passed.
     let mut fresh_locus_factories: BTreeMap<String, (String, Option<String>)> =
         crate::ownership::fresh_factories(&[&merged], import_renames)
             .into_iter()
-            .map(|(f, row)| (f, (row.locus, row.returned_binding)))
+            .filter_map(|(f, row)| Some((f, (row.locus, row.fresh?.returned_binding))))
             .collect();
     let mut owner_table = crate::ownership::resolve_owners(
         &merged,
@@ -323,7 +340,7 @@ pub fn resolve_program(
     // (`log.**`). A bundle with no entry point is open world: every
     // subject is ineligible, and the plan is all dynamic.
     let (ownership, bubble, bus, plan, top) = {
-        let bundle = merged_bundle(&merged);
+        let bundle = merged_bundle(&merged, import_renames);
         // The scope's diagnostics are dropped: the checker reported
         // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);

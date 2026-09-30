@@ -104,7 +104,10 @@
 //! each factory constructs ([`FactoryRow::products`]), which is the
 //! checker's self-containment rule's question (GH #870). The rule
 //! reads the same rows over the bundle's programs rather than keeping
-//! a mirror of the classification (F.40 phase 1.2c).
+//! a mirror of the classification (F.40 phase 1.2c). The products do
+//! not depend on the escape walk, which answers only the row's
+//! [`FactoryRow::fresh`] half: a fn that passes its returned binding
+//! to a call still constructs it.
 //!
 //! ## What lowering asks
 //!
@@ -2100,21 +2103,38 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
     }
 }
 
-/// One fresh factory: a free fn [`fresh_factories`] proved to hand back
-/// a locus it built.
+/// One factory row: a free fn [`fresh_factories`] found to hand back a
+/// locus it built. The row answers two questions and keeps them apart:
+/// what a call constructs ([`FactoryRow::products`], which the
+/// self-containment rule reads) and whether the caller may own what
+/// comes back ([`FactoryRow::fresh`], which the ownership pre-pass
+/// reads). The first does not depend on the second: a fn whose
+/// returned binding escapes still builds what it builds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoryRow {
     /// The locus the fn returns, resolved through the rename table.
     pub locus: String,
+    /// What a call constructs: every literal the fn hands back, as
+    /// (locus, its supplied field names, sorted and deduplicated) —
+    /// through a uniquely bound returned `let` too, followed one hop
+    /// whether or not the binding escapes — and, for a return that is a
+    /// call to a factory with a row, that factory's products. Sorted
+    /// and deduplicated.
+    pub products: Vec<(String, Vec<String>)>,
+    /// The ownership-eligible answer: `Some` only when the returned
+    /// binding, if any, passes the escape walk and every factory the fn
+    /// hands back is itself fresh.
+    pub fresh: Option<Fresh>,
+}
+
+/// The half of a [`FactoryRow`] the ownership pre-pass reads: the fn
+/// hands back a locus nothing else holds, so its caller's binding may
+/// own it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fresh {
     /// The binding the fn hands back, when a return names one; `None`
     /// when every return is a literal or a factory call.
     pub returned_binding: Option<String>,
-    /// What a call constructs: every literal the fn hands back, as
-    /// (locus, its supplied field names, sorted and deduplicated) —
-    /// through the returned binding too — and, for a return that is a
-    /// call to a known factory, that factory's products. Sorted and
-    /// deduplicated.
-    pub products: Vec<(String, Vec<String>)>,
 }
 
 /// The fresh-factory rows, keyed by fn name.
@@ -2129,16 +2149,21 @@ pub type FreshFactories = BTreeMap<String, FactoryRow>;
 /// ownership ambiguity which defeated the earlier attempts on this
 /// issue is now a compile error rather than a runtime guess.
 ///
-/// A fn qualifies when:
+/// A fn has a row when:
 ///   - its declared return type names a locus L (resolved through the
 ///     import-rename table, so `mat::Matrix` counts);
-///   - every return is a direct `L { … }` literal, or one single
-///     `let`-bound ident whose binding is itself fresh — an `L { … }`
-///     literal or a call to an already-qualifying factory (hence the
-///     fixpoint: helpers build on other factories);
-///   - that binding never escapes into argument position, another
-///     literal, or a reassignment (receiver-position use such as
-///     `m.set(i, v)` is fine — using a locus is not transferring it);
+///   - every return is a direct `L { … }` literal, a call to a factory
+///     of L that already has a row, or one single `let`-bound ident
+///     whose binding is either (hence the fixpoint: helpers build on
+///     other factories).
+///
+/// That is all [`FactoryRow::products`] asks. The row is also
+/// [`FactoryRow::fresh`] when, in addition:
+///   - every factory it hands back, directly or through the binding, is
+///     itself fresh;
+///   - the returned binding never escapes into argument position,
+///     another literal, or a reassignment (receiver-position use such
+///     as `m.set(i, v)` is fine — using a locus is not transferring it);
 ///   - no statement form this walk does not explicitly recognize
 ///     appears.
 ///
@@ -2150,12 +2175,13 @@ pub type FreshFactories = BTreeMap<String, FactoryRow>;
 /// Every "don't know" answers NOT fresh, preserving the old
 /// program-lifetime behavior rather than risking a double dissolve.
 ///
-/// One row per fn proven to return a fresh locus, keyed by its name in
-/// the program walked. It has two readers (F.40 phase 1.2c):
+/// One row per fn found to return a locus it built, keyed by its name
+/// in the program walked. It has two readers (F.40 phase 1.2c):
 ///
 ///   * the ownership pre-pass, over the resolved merged program: the
-///     resolved-program step projects `(locus, returned_binding)` into
-///     the seed [`resolve_owners`] takes as `base`, and
+///     resolved-program step projects each `fresh` row's `(locus,
+///     returned_binding)` into the seed [`resolve_owners`] takes as
+///     `base`, and
 ///     [`OwnerTable::extended_fresh_factories`] adds the carrier
 ///     returns this walk misses;
 ///   * the checker's self-containment rule
@@ -2502,6 +2528,10 @@ pub fn fresh_factories(
             };
             let mut fresh_name: Option<String> = None;
             let mut products: Vec<(String, Vec<String>)> = Vec::new();
+            // Whether every factory handed back is itself fresh. Each
+            // row it reads was inserted, `fresh` and all, before this
+            // one, so a row's answer is final at insertion.
+            let mut callees_fresh = true;
             let mut ok = true;
             for r in &rets {
                 match r {
@@ -2524,6 +2554,7 @@ pub fn fresh_factories(
                     Expr::Call { callee, .. } if known(callee).is_some() => {
                         if let Some(row) = known(callee) {
                             products.extend(row.products.iter().cloned());
+                            callees_fresh &= row.fresh.is_some();
                         }
                     }
                     Expr::Ident(i) => match &fresh_name {
@@ -2537,6 +2568,10 @@ pub fn fresh_factories(
             if !ok {
                 continue;
             }
+            // The returned binding is followed one hop for what it
+            // constructs whether or not it escapes; the escape walk
+            // answers the fresh half alone.
+            let mut escapes = false;
             if let Some(x) = &fresh_name {
                 let bindings: Vec<&(String, Freshness)> =
                     lets.iter().filter(|(n, _)| n == x).collect();
@@ -2545,24 +2580,23 @@ pub fn fresh_factories(
                 }
                 let bound = match &bindings[0].1 {
                     Freshness::Literal(p) => Some(vec![p.clone()]),
-                    Freshness::CallTo(c) => out
-                        .get(c)
-                        .filter(|row| row.locus == l)
-                        .map(|row| row.products.clone()),
+                    Freshness::CallTo(c) => {
+                        out.get(c).filter(|row| row.locus == l).map(|row| {
+                            callees_fresh &= row.fresh.is_some();
+                            row.products.clone()
+                        })
+                    }
                     Freshness::Other => None,
                 };
                 let Some(bound) = bound else { continue };
-                if !body_ok(&f.body, x) {
-                    continue;
-                }
+                escapes = !body_ok(&f.body, x);
                 products.extend(bound);
             }
             products.sort();
             products.dedup();
-            out.insert(
-                f.name.name.clone(),
-                FactoryRow { locus: l, returned_binding: fresh_name, products },
-            );
+            let fresh = (callees_fresh && !escapes)
+                .then(|| Fresh { returned_binding: fresh_name });
+            out.insert(f.name.name.clone(), FactoryRow { locus: l, products, fresh });
             added = true;
         }
         if !added {

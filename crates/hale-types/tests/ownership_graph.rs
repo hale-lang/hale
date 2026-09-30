@@ -554,3 +554,29 @@ fn corpus_threads_nothing_2b_inert() {
         }
     }
 }
+
+/// Outside review of #1276, finding 2: the envelope's graph is built
+/// over a bundle that carries the build's import renames, so a
+/// qualified imported type in `accept(c: lib::Child)` resolves to the
+/// locus the merge declared it as. Lowering reads `accepts` as
+/// authoritative for a locus with a row, so an empty set here meant
+/// the declared `accept` never ran.
+#[test]
+fn resolved_graph_resolves_an_imported_accept_type() {
+    let src = r#"
+        locus ImportedChild { params { id: Int = 0; } }
+        locus Parent {
+            params { count: Int = 0; }
+            accept(c: lib::Child) { self.count = self.count + 1; }
+            run() { lib::Child { id: 1 }; }
+        }
+        fn main() { Parent { }; }
+    "#;
+    let prog = parse_source(src).expect("parse failed");
+    let renames = vec![(vec!["lib".to_string(), "Child".to_string()], "ImportedChild".to_string())];
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &renames, None, None)
+        .expect("resolve");
+    let want: std::collections::BTreeSet<String> = ["ImportedChild".to_string()].into();
+    assert_eq!(resolved.ownership.accepts.get("Parent"), Some(&want));
+    assert_eq!(resolved.bundle().import_renames, renames, "the bundle view carries them too");
+}

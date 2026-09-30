@@ -3284,9 +3284,10 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// The rows are computed over the bundle's files together, with the
 /// bundle's import renames, as lowering computes them (lowering then
 /// widens its set with the carrier fold, which this rule does not
-/// read): a call it cannot see as fresh — an accessor, a method, a
-/// `std::` path, a factory whose returned binding escapes — takes no
-/// edge and stays
+/// read). The products do not depend on the escape walk: a factory
+/// whose returned binding escapes into a call still constructs it, and
+/// still takes its edge. A call it cannot see as constructing — an
+/// accessor, a method, a `std::` path — takes no edge and stays
 /// accepted, exactly as before; a program like that recurses at RUN
 /// time only if the callee really does build one, which is what
 /// `@no_recursion` is the contract for.
@@ -9757,8 +9758,9 @@ impl<'a> Checker<'a> {
             // that runs
             let Some(fd) = handler_decls.get(row.ordinal as usize) else { continue };
             // the rows are the bundle's: a same-named locus in another
-            // file has rows of its own, which are not this one's
-            if fd.span != row.span {
+            // file has rows of its own, which are not this one's (joined
+            // by identity, the span only where nothing was minted)
+            if !row.is_row_of(fd) {
                 continue;
             }
             let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);

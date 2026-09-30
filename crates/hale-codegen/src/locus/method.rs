@@ -169,10 +169,12 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         // err.locus / err.closure GEP into the violation struct).
         //
         // A locus may declare one handler per child type. Each
-        // declaration finds its routing row by span (a monomorph's
-        // members are its template's, spans included) and lowers into
-        // the fn at the row's ordinal in the handler table, never into
-        // another handler's fn (#1199).
+        // declaration finds its routing row by identity
+        // (`HandlerRow::is_row_of`; a monomorph's members are its
+        // template's, ids included, and the span is only the fallback
+        // for a declaration nothing minted) and lowers into the fn at
+        // the row's ordinal in the handler table, never into another
+        // handler's fn (#1199).
         let failure_decls = l.members.iter().filter_map(|m| match m {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,
@@ -181,7 +183,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             let row = self
                 .handlers
                 .handlers_of(&info.routing_name)
-                .find(|r| r.span == failure_decl.span)
+                .find(|r| r.is_row_of(failure_decl))
                 .ok_or_else(|| {
                     CodegenError::Unsupported(format!(
                         "locus `{}` declares an on_failure handler the \

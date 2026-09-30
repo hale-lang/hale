@@ -19,13 +19,16 @@
 //! The row carries the handler's snapshot identity (a `SiteId`, looked
 //! up in the snapshot the caller hands in) as a column, not as its key:
 //! every entry point and `resolve_program` mint it, but a test that
-//! builds a bundle without minting has none there.
+//! builds a bundle without minting has none there. A reader holding a
+//! declaration joins it to its row by that identity
+//! ([`HandlerRow::is_row_of`]); the span is the fallback for the
+//! unminted bundle alone, since two declarations may share one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, LValueSeg,
+    Block, ElseBranch, Expr, FailureDecl, IfStmt, Literal, LocusMember, LValueSeg,
     MatchArmBody, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -76,6 +79,27 @@ pub struct HandlerRow {
     pub ops: Vec<RecoveryOp>,
     /// `restart(c) for N`'s literal `N`, the last one written.
     pub retry_bound: Option<i64>,
+}
+
+impl HandlerRow {
+    /// Whether `decl` is the declaration this row was made from.
+    ///
+    /// Joined by identity: the row's site against the declaration's
+    /// minted id, so two handlers that share a span (a synthetic AST
+    /// with shared provenance, a desugar that stamps one span on
+    /// several declarations) are still two rows, and a same-named locus
+    /// in another file is not this one. A monomorph's members are its
+    /// template's, ids included, so it joins its template's rows.
+    ///
+    /// The span is the fallback when either side is unminted: a bundle
+    /// no entry point minted (the checker's own tests build one) has
+    /// `NodeId::NONE` on every declaration and no site on any row.
+    pub fn is_row_of(&self, decl: &FailureDecl) -> bool {
+        match self.id {
+            Some(site) if !decl.id.is_none() => site.index == decl.id.0,
+            _ => self.span == decl.span,
+        }
+    }
 }
 
 /// Every handler of a program, with the routing index.

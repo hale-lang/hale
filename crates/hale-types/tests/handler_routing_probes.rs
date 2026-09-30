@@ -178,3 +178,79 @@ fn restart_in_place_inside_a_match_arm_or_an_if_value_is_seen() {
         );
     }
 }
+
+/// The program the identity join is probed on: two handlers of `App`,
+/// for two child types. A plain literal, as the probes are.
+const TWO_HANDLERS: &str = "
+locus Alpha { params { n: Int = 0; } closure boom { captures: n; epoch inline; } fn go() { violate boom; } }
+locus Beta { params { n: Int = 0; } closure boom { captures: n; epoch inline; } fn go() { violate boom; } }
+main locus App {
+    params { a: Alpha = Alpha { }; b: Beta = Beta { }; }
+    on_failure(x: Alpha, err: ClosureViolation) { restart(x); }
+    on_failure(y: Beta, err: ClosureViolation) { quarantine(y); }
+    run() { self.a.go(); self.b.go(); }
+}
+fn main() { App { }; }
+";
+
+/// `App`'s `on_failure` declarations, in order.
+fn app_handlers(p: &mut hale_syntax::ast::Program) -> Vec<&mut hale_syntax::ast::FailureDecl> {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    p.items
+        .iter_mut()
+        .filter_map(|i| match i {
+            TopDecl::Locus(l) if l.name.name == "App" => Some(l),
+            _ => None,
+        })
+        .flat_map(|l| l.members.iter_mut())
+        .filter_map(|m| match m {
+            LocusMember::Failure(fd) => Some(fd),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Outside review of #1276, finding 3: a declaration is joined to its
+/// handler row by identity, not by span. Two handlers built by hand to
+/// carry one span (the shape a synthetic AST with shared provenance, or
+/// a desugar that stamps one span on several declarations, produces)
+/// but distinct ids route two different children to two different
+/// ordinals, and each declaration is its own row's alone. Joined by
+/// span, both declarations found the first row, and lowering put both
+/// bodies in one fn.
+#[test]
+fn handlers_sharing_a_span_join_their_rows_by_identity() {
+    let mut program = hale_syntax::parse_source(TWO_HANDLERS).expect("parses");
+    let shared = app_handlers(&mut program)[0].span;
+    app_handlers(&mut program)[1].span = shared;
+    let snapshot = hale_types::snapshot::mint([("main.hl", &mut program)], &[]);
+    let routing = handler_rows(&[&program], &[], &snapshot);
+
+    let alpha = routing.route("App", "Alpha").expect("Alpha routes");
+    let beta = routing.route("App", "Beta").expect("Beta routes");
+    assert_eq!((alpha.ordinal, beta.ordinal), (0, 1));
+    assert_eq!(alpha.span, beta.span, "the two rows share one span");
+    assert!(alpha.id.is_some() && beta.id.is_some() && alpha.id != beta.id);
+
+    let decls = app_handlers(&mut program);
+    // `NodeId`'s `==` is always true (structural AST equality ignores
+    // identity), so the ids are compared by their numbers.
+    assert!(!decls[0].id.is_none() && decls[0].id.0 != decls[1].id.0);
+    assert!(alpha.is_row_of(decls[0]) && !alpha.is_row_of(decls[1]));
+    assert!(beta.is_row_of(decls[1]) && !beta.is_row_of(decls[0]));
+}
+
+/// The span stays the join where nothing was minted: the checker's own
+/// tests build a bundle no entry point minted, whose rows carry no site.
+#[test]
+fn an_unminted_handler_joins_its_row_by_span() {
+    let mut program = hale_syntax::parse_source(TWO_HANDLERS).expect("parses");
+    let routing = handler_rows(&[&program], &[], &Default::default());
+    let alpha = routing.route("App", "Alpha").expect("Alpha routes");
+    let beta = routing.route("App", "Beta").expect("Beta routes");
+    assert!(alpha.id.is_none() && beta.id.is_none());
+    let decls = app_handlers(&mut program);
+    assert!(decls[0].id.is_none());
+    assert!(alpha.is_row_of(decls[0]) && !alpha.is_row_of(decls[1]));
+    assert!(beta.is_row_of(decls[1]) && !beta.is_row_of(decls[0]));
+}
