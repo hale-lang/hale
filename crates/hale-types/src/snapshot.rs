@@ -107,6 +107,21 @@ impl Snapshot {
             .filter(|s| s.id == id)
     }
 
+    /// The full identity of the site an AST node carries: its seed
+    /// joined to the index the node holds. `None` for a `NONE` id and
+    /// for an index this snapshot did not mint. The index alone is
+    /// unique (one counter numbers every seed), so this is one binary
+    /// search.
+    pub fn site_id(&self, node: NodeId) -> Option<SiteId> {
+        if node.is_none() {
+            return None;
+        }
+        self.sites
+            .binary_search_by_key(&node.0, |s| s.id.index)
+            .ok()
+            .map(|i| self.sites[i].id)
+    }
+
     /// The desugar that generated this site, if one did.
     pub fn origin(&self, id: SiteId) -> Option<Origin> {
         self.origins

@@ -124,9 +124,9 @@
 //! body hand it back, does a bare `=` move a value through it, and is
 //! it a `[c; N]` that never escapes the frame. [`resolve_binding_facts`]
 //! answers them once per binding site, into
-//! [`OwnerTable::binding_facts`], keyed by the `let`'s snapshot
-//! identity (F.40 phase 1.2b), and the `let` lowering reads its own
-//! row. A `let` in a body no walk reads has a row that says `false`
+//! [`OwnerTable::binding_facts`], one row per `let` carrying its
+//! snapshot identity (F.40 phase 1.2b; a `SiteId` since the phase-1
+//! review), and the `let` lowering reads its own row. A `let` in a body no walk reads has a row that says `false`
 //! three times, and so does a `let` with no row at all. A generic fn's
 //! monomorphs keep the template's identities, so a monomorph's `let`
 //! reads the template's answer.
@@ -138,6 +138,7 @@ use hale_syntax::ast::{
     LocusDecl, LocusMember, MatchArmBody, MatchStmt, ModuleDecl, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
     QualifiedName, RecoveryModifier, Stmt, StructInit, TopDecl, TypeExpr,
 };
+use hale_graph::ids::SiteId;
 use hale_syntax::Span;
 
 // ===================================================================
@@ -315,9 +316,13 @@ pub struct OwnerTable {
     scope_kinds: Vec<ScopeKind>,
     /// The EXTENDED proven-fresh factory set: fn name -> locus.
     fresh: BTreeMap<String, String>,
-    /// One row per `let`, keyed by the statement's snapshot index
-    /// (see [`resolve_binding_facts`]).
-    bindings: BTreeMap<u32, BindingFacts>,
+    /// One row per `let`, with the statement's full snapshot identity
+    /// (see [`resolve_binding_facts`]). Keyed by the identity's index:
+    /// one counter numbers every seed of the resolved snapshot, so the
+    /// index alone is unique, and it is what the `let` lowering holds
+    /// (the `NodeId` on the statement), so its lookup is one search
+    /// with no detour through the snapshot for the seed.
+    bindings: BTreeMap<u32, (SiteId, BindingFacts)>,
 }
 
 /// What a `let` needs to know about its own binding before it lowers
@@ -347,7 +352,21 @@ impl OwnerTable {
         if id.is_none() {
             return None;
         }
-        self.bindings.get(&id.0)
+        self.bindings.get(&id.0).map(|(_, f)| f)
+    }
+
+    /// The snapshot identity of the `let` whose node carries `id`, if
+    /// it has a row.
+    pub fn binding_site(&self, id: NodeId) -> Option<SiteId> {
+        if id.is_none() {
+            return None;
+        }
+        self.bindings.get(&id.0).map(|(s, _)| *s)
+    }
+
+    /// Every binding row, by snapshot identity, in index order.
+    pub fn binding_rows(&self) -> impl Iterator<Item = (SiteId, &BindingFacts)> {
+        self.bindings.values().map(|(s, f)| (*s, f))
     }
 
     /// The id this pass gave the node, or `None` when the node carries
@@ -1159,8 +1178,8 @@ fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
     out
 }
 
-/// Fill `table`'s binding rows for `program`: one row per `let`,
-/// keyed by the statement's snapshot index.
+/// Fill `table`'s binding rows for `program`: one row per `let`, with
+/// the statement's snapshot identity as `snapshot` minted it.
 ///
 /// Each body gets the walks [`binding_bodies`] gives it: `returned` is
 /// [`ReturnedBindings::let_is_returned`] asked at the `let`'s own
@@ -1169,13 +1188,17 @@ fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
 /// `stack_array` are the name's membership in the body's
 /// [`assign_moved_names`] and [`stack_array_names`]. Every other `let`
 /// of the program — in a body no walk reads — gets a row of three
-/// `false`s. A `let` with a `NONE` id gets no row. A tuple `let` gets
+/// `false`s. A `let` the snapshot did not mint (a `NONE` id) gets no row. A tuple `let` gets
 /// none either: it binds several names under one id, and nothing asks.
 ///
 /// Runs after [`resolve_owners`], over the program the snapshot minted.
 /// A generic fn's monomorphs keep its sites' identities, so each reads
 /// the template's rows.
-pub fn resolve_binding_facts(program: &Program, table: &mut OwnerTable) {
+pub fn resolve_binding_facts(
+    program: &Program,
+    snapshot: &crate::snapshot::Snapshot,
+    table: &mut OwnerTable,
+) {
     for (walks, params, body) in binding_bodies(program) {
         let returned = walks.returned.then(|| returned_bindings(body));
         let moved = if walks.assign_moved {
@@ -1191,25 +1214,28 @@ pub fn resolve_binding_facts(program: &Program, table: &mut OwnerTable) {
         let mut lets = Vec::new();
         body_lets(body, &mut lets);
         for (name, id) in lets {
-            if id.is_none() {
-                continue;
-            }
+            let Some(site) = snapshot.site_id(id) else { continue };
             table.bindings.insert(
                 id.0,
-                BindingFacts {
-                    returned: returned
-                        .as_ref()
-                        .map(|rb| rb.let_is_returned(name))
-                        .unwrap_or(false),
-                    assign_moved: moved.contains(&name.name),
-                    stack_array: stack.contains(&name.name),
-                },
+                (
+                    site,
+                    BindingFacts {
+                        returned: returned
+                            .as_ref()
+                            .map(|rb| rb.let_is_returned(name))
+                            .unwrap_or(false),
+                        assign_moved: moved.contains(&name.name),
+                        stack_array: stack.contains(&name.name),
+                    },
+                ),
             );
         }
     }
     hale_syntax::sites::for_each_site(program, &mut |kind, _, id| {
-        if kind == hale_syntax::sites::SiteKind::Let && !id.is_none() {
-            table.bindings.entry(id.0).or_default();
+        if kind == hale_syntax::sites::SiteKind::Let {
+            if let Some(site) = snapshot.site_id(id) {
+                table.bindings.entry(id.0).or_insert((site, BindingFacts::default()));
+            }
         }
     });
 }

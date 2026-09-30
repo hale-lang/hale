@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 158 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 159 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -44,7 +44,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `target_capability` | Layer 5 | Migrating | capability | — | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 7 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
-| `bus_inert` | Layer 6 | Migrating | derivation | — | 2 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
+| `bus_inert` | Layer 6 | Migrating | derivation | — | 3 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
 | `law_backstops` | Layer 8 | Migrating | law | — | 1 | The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
@@ -1129,6 +1129,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-codegen/src/codegen.rs` · `let dbg = format!("{:?}", program.items);` — decided by searching the program's Debug string for `__Std`, `name: "std"` and tainted namespaces. *Removed when:* a query over the message graph.
 - `crates/hale-codegen/src/codegen.rs` · `stdlib_bus_tainted_namespaces` — the stdlib taint fixpoint, also over Debug strings, cached per process. *Removed when:* a column of the stdlib_surface rows.
+- `crates/hale-types/src/resolved.rs` · `user` — the resolved program carries the desugared user program a second time so lowering's tier-1 bus-inert scan reads the same Debug text it always did. *Removed when:* the bus-inert verdict is a row of the resolved program, computed structurally and shadowed against the scan (phase 2).
 
 **Consumers.** codegen (`crates/hale-codegen/src/bus/runtime.rs` · `emit_bus_drain`)
 

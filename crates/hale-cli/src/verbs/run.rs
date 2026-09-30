@@ -59,7 +59,6 @@ fn resolve_checked(
 /// `hale build`, so there is no `run`-vs-`build` behavioral divergence.
 pub(crate) fn compile_and_exec(
     resolved: hale_types::resolved::ResolvedProgram,
-    renames: &[(Vec<String>, String)],
     user_args: &[String],
     // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
     observe: bool,
@@ -91,7 +90,7 @@ pub(crate) fn compile_and_exec(
         obs_entity_ids,
         ..options
     };
-    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, renames, &options) {
+    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
@@ -225,7 +224,6 @@ pub(crate) fn run_program(
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
             resolved,
-            &renames,
             user_args,
             observe,
             model_hash,
@@ -429,7 +427,6 @@ pub(crate) fn run_program(
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
         resolved,
-        &renames,
         user_args,
         observe,
         model_hash,

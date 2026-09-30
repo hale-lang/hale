@@ -42,13 +42,17 @@ use crate::bus_graph::BusGraph;
 use crate::handler_routing::HandlerRouting;
 use crate::ownership::OwnerTable;
 use crate::ownership_graph::{BubblePlans, OwnershipGraph};
+use crate::resolve::TopScope;
 use crate::snapshot::Snapshot;
-use crate::symbol::SourceFile;
+use crate::symbol::{Bundle, SourceFile};
 
 /// The program codegen lowers, and the tables the frontend derives over it.
 pub struct ResolvedProgram {
     /// The user's program after the codegen-shape desugars, before the
-    /// stdlib merge. Codegen's tier-1 bus-inert scan reads it.
+    /// stdlib merge: a second copy of `merged`'s user half, which only
+    /// codegen's tier-1 bus-inert Debug scan reads (a registered legacy
+    /// row of the `bus_inert` family, until the verdict is a row of the
+    /// envelope).
     pub user: Program,
     /// `user` with the bundled stdlib's declarations appended, unit
     /// returns normalized, construction aliases resolved and the
@@ -86,6 +90,35 @@ pub struct ResolvedProgram {
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
     pub resolved_in: std::time::Duration,
+    /// The inputs the program was resolved with: the cross-seed rename
+    /// table, the `--api` path and the roles the environment binds.
+    /// Lowering reads the renames from here, and refuses options whose
+    /// api disagrees with the envelope's.
+    pub import_renames: Vec<(Vec<String>, String)>,
+    pub api: Option<String>,
+    pub api_roles: Option<String>,
+    /// The top-level scope over `merged`, the one the ownership and bus
+    /// graphs were built with.
+    pub top: TopScope,
+}
+
+/// The name the merged program goes by in its bundle view. Nothing is
+/// keyed by it outside the envelope; it is kept as codegen named it.
+const MERGED_NAME: &str = "__codegen_merged";
+
+/// The bundle view of a merged program: one program under
+/// [`MERGED_NAME`], no import renames, no source map, no snapshot.
+fn merged_bundle(merged: &Program) -> Bundle<'_> {
+    Bundle::new(std::iter::once((MERGED_NAME.to_string(), merged)).collect())
+}
+
+impl ResolvedProgram {
+    /// The bundle view of `merged` the envelope's graphs were built
+    /// over: lowering reads program-wide facts through it instead of
+    /// building its own.
+    pub fn bundle(&self) -> Bundle<'_> {
+        merged_bundle(&self.merged)
+    }
 }
 
 /// Resolve `program` into the envelope codegen lowers.
@@ -253,7 +286,7 @@ pub fn resolve_program(
     // F.40 phase 1.2b: and what each `let` needs to know about its
     // own binding, one row per binding site, keyed by the identity
     // minted above.
-    crate::ownership::resolve_binding_facts(&merged, &mut owner_table);
+    crate::ownership::resolve_binding_facts(&merged, &snapshot, &mut owner_table);
     for (fname, locus) in owner_table.extended_fresh_factories() {
         // A carrier return hands back an ARM's value, so there is no
         // single returned binding to name: `None`, the same as a fn
@@ -276,10 +309,10 @@ pub fn resolve_program(
     // so the gates are sound against its wildcard subscribers
     // (`log.**`). A bundle with no entry point is open world: every
     // subject is ineligible, and the plan is all dynamic.
-    let (ownership, bubble, bus, plan) = {
-        let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
-        programs.insert("__codegen_merged".to_string(), &merged);
-        let bundle = crate::symbol::Bundle::new(programs);
+    let (ownership, bubble, bus, plan, top) = {
+        let bundle = merged_bundle(&merged);
+        // The scope's diagnostics are dropped: the checker reported
+        // them already, over the program the verb checked.
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
         let bubble = graph.bubble_plans();
@@ -310,12 +343,12 @@ pub fn resolve_program(
             &bus.dispatch_gates(),
             &BTreeMap::new(),
         );
-        (graph, bubble, bus, plan)
+        (graph, bubble, bus, plan, top)
     };
 
     // F.40 phase 1.4: the handler rows, over the same merged program,
     // with the child type resolved the way lowering resolves it.
-    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames);
+    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
 
     Ok(ResolvedProgram {
         user,
@@ -330,6 +363,10 @@ pub fn resolve_program(
         plan,
         intra_locus,
         resolved_in: t_start.elapsed(),
+        import_renames: import_renames.to_vec(),
+        api: api.map(str::to_string),
+        api_roles: api_roles.map(str::to_string),
+        top,
     })
 }
 

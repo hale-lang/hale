@@ -580,7 +580,11 @@ pub fn check_bundle_scoped(
     // the model resolve it.
     let bundle_programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let handlers =
-        crate::handler_routing::handler_rows(&bundle_programs, &bundle.import_renames);
+        crate::handler_routing::handler_rows(
+            &bundle_programs,
+            &bundle.import_renames,
+            &bundle.snapshot,
+        );
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -749,6 +753,7 @@ pub fn check_bundle_scoped(
         diags.extend(crate::frontier::supervised_diags(
             &programs_vec,
             &bundle.import_renames,
+            &bundle.snapshot,
         ));
         diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
         for d in &mut diags[law_start..] {

@@ -148,7 +148,7 @@ pub(crate) fn compile_test_binary(
     )
     .map_err(hale_codegen::CodegenError::Unsupported)
     .and_then(|resolved| {
-        hale_codegen::build_resolved(resolved, &bin, &renames, &options)
+        hale_codegen::build_resolved(resolved, &bin, &options)
     }) {
         // GH #848: the per-fixture failure message is the located
         // rendering `build` prints, so a test that will not compile

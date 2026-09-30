@@ -986,3 +986,45 @@ fn a_let_in_a_body_no_walk_read_has_a_row_of_falses() {
     assert_eq!(facts(&t, &lets, 0), Default::default(), "`p` in a lifecycle");
     assert_eq!(facts(&t, &lets, 1), Default::default(), "`q` in a lifecycle");
 }
+
+// ===================================================================
+// 4 — the envelope's shape (review of phase 1)
+// ===================================================================
+
+/// Every binding row carries the `let`'s full snapshot identity, the
+/// one the resolved snapshot minted for it, seed included.
+#[test]
+fn a_binding_row_carries_the_site_id_the_snapshot_minted() {
+    let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
+    let p = hale_syntax::parse_source(&src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let mut rows = 0;
+    for (site, _) in resolved.owner_table.binding_rows() {
+        let minted = resolved.snapshot.site(site).expect("the row's site is minted");
+        assert_eq!(minted.kind, hale_syntax::sites::SiteKind::Let);
+        rows += 1;
+    }
+    assert!(rows > 0, "the program has binding rows");
+}
+
+/// `build_resolved` lowers the envelope with the api it was resolved
+/// with, and refuses options that name another.
+#[test]
+fn build_resolved_refuses_options_whose_api_disagrees_with_the_envelope() {
+    let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
+    let p = hale_syntax::parse_source(&src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let mut options = build_opts::options();
+    options.api_roles = Some("admin".to_string());
+    let bin = harness::unique_bin("ownertab_api_mismatch");
+    let r = hale_codegen::build_resolved(resolved, &bin, &options);
+    let _ = std::fs::remove_file(&bin);
+    match r {
+        Err(hale_codegen::CodegenError::Unsupported(msg)) => {
+            assert!(msg.contains("\"admin\"") && msg.contains("None"), "{msg}");
+        }
+        other => panic!("a mismatched api must be refused, got {other:?}"),
+    }
+}

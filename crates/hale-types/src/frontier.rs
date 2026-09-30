@@ -590,12 +590,13 @@ pub fn class_mask_with(
 pub fn supervised_diags(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
+    snapshot: &crate::snapshot::Snapshot,
 ) -> Vec<Diag> {
     // locus name -> (has on_failure, child locus type names, span)
     let mut info: BTreeMap<String, (bool, Vec<String>, Span)> =
         BTreeMap::new();
     let mut supervised_roots: Vec<(String, Span)> = Vec::new();
-    let handlers = crate::handler_routing::handler_rows(programs, import_renames);
+    let handlers = crate::handler_routing::handler_rows(programs, import_renames, snapshot);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };

@@ -16,18 +16,22 @@
 //! and the retry bound a `restart(c) for N` states. Restart-in-place
 //! attribution is a question over those ops.
 //!
-//! The row carries the handler's snapshot identity as a column, not as
-//! its key: every entry point and `resolve_program` mint it, but a test
-//! that builds a bundle without minting has `NodeId::NONE` there.
+//! The row carries the handler's snapshot identity (a `SiteId`, looked
+//! up in the snapshot the caller hands in) as a column, not as its key:
+//! every entry point and `resolve_program` mint it, but a test that
+//! builds a bundle without minting has none there.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, LValueSeg,
-    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
+    MatchArmBody, OrDisposition, Program, RecoveryModifier,
     RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
+
+use crate::snapshot::Snapshot;
 
 /// The child type a handler names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,8 +68,8 @@ pub struct HandlerRow {
     pub error_type: String,
     /// The handler's position among its parent's two-param handlers.
     pub ordinal: u32,
-    /// The declaration's snapshot identity (`NONE` when unminted).
-    pub id: NodeId,
+    /// The declaration's snapshot identity (`None` when unminted).
+    pub id: Option<SiteId>,
     pub span: Span,
     /// The recovery ops the body can invoke, deduplicated, in source
     /// order.
@@ -264,10 +268,12 @@ fn written_name(te: &TypeExpr) -> String {
 /// against every locus the bundle declares, so a child declared in a
 /// sibling file (the LSP's bundle holds one program per file) is that
 /// locus, not an external type. Rows come in program order, then
-/// declaration order.
+/// declaration order. `snapshot` is the one `programs` were minted
+/// into; each row's `id` is the handler's site in it.
 pub fn handler_rows(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
+    snapshot: &Snapshot,
 ) -> HandlerRouting {
     let declared = DeclaredNames::of(programs);
     let mut routing = HandlerRouting::default();
@@ -287,7 +293,7 @@ pub fn handler_rows(
                 written: written_name(&fd.params[0].ty),
                 error_type: written_name(&fd.params[1].ty),
                 ordinal,
-                id: fd.id,
+                id: snapshot.site_id(fd.id),
                 span: fd.span,
                 ops,
                 retry_bound,

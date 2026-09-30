@@ -1755,7 +1755,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // The rows are the bundle's, computed once: a child declared in a
     // sibling file is a locus here as it is to lowering.
     let routing =
-        crate::handler_routing::handler_rows(&programs, &bundle.import_renames);
+        crate::handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot);
     for (authored, row) in routing.rows().iter().enumerate() {
         let parent = locus_id[&row.parent];
         let declared = match &row.child {

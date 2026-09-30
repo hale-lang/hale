@@ -1865,7 +1865,7 @@ locus Worker {
     let child = hale_syntax::parse_source(child_src).expect("parse child");
 
     let routing =
-        hale_types::handler_routing::handler_rows(&[&parent, &child], &[]);
+        hale_types::handler_routing::handler_rows(&[&parent, &child], &[], &Default::default());
     let row = routing.route("Boss", "Worker").expect("Boss routes Worker");
     assert_eq!(
         row.child,

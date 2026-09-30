@@ -81,9 +81,12 @@ hale-ts-shim  staticlib; no dependents; linked by path
 6. **Judgment**: `judgment::claim_law_diags`, from the check path
    only when no non-`Claim` error exists and claims are present.
 7. **The resolved program**: `hale_types::resolved::resolve_program`
-   (the codegen-shape desugars, the stdlib merge, the snapshot mint,
-   the ownership, handler-routing and bus tables), then **codegen**:
-   `hale_codegen::build_resolved` (`codegen.rs`).
+   (the codegen-shape desugars, the stdlib merge, the snapshot mint
+   with the bundle's source map, the ownership, handler-routing and
+   bus tables; the envelope keeps the renames and api it was resolved
+   with, its top scope, and hands out its bundle view), then
+   **codegen**: `hale_codegen::build_resolved` (`codegen.rs`), which
+   refuses options whose api disagrees with the envelope's.
    `build_executable_with_options` is the adapter the test harness
    uses; it resolves and then lowers.
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
@@ -97,9 +100,11 @@ rewrites are recorded as a relation, `desugar_topics`,
 sees topics unsugared** (F.40 phase 2 moves the sequence before the
 check); the stdlib merge (`hale_stdlib::AP_SOURCE` parsed and
 appended); unit and alias normalization; `desugar_omitted_run`; the
-snapshot mint over the merged program; the ownership pre-pass
-(`ownership::resolve_owners`, F.39 in `spec/decisions.md`: an
-instantiation with no owner row is a `CodegenError`), the binding
+snapshot mint over the merged program (the stdlib's sites under their
+own seed); the ownership pre-pass (`ownership::resolve_owners`, F.39
+in `spec/decisions.md`: it numbers nothing and refuses an unminted
+literal or call, and an instantiation with no owner row is a
+`CodegenError`), the binding
 facts and the fresh factories; the ownership graph and the bubble
 plans; the handler-routing rows; the bus graph feeding
 `DispatchPlan::from_gates`. Then inside `build_resolved` (hale-codegen):

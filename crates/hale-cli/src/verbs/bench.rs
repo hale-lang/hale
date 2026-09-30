@@ -313,7 +313,7 @@ pub(crate) fn run_bench_file(
         )
         .map_err(hale_codegen::CodegenError::Unsupported)
         .and_then(|resolved| {
-            hale_codegen::build_resolved(resolved, &bin, &bundle.import_renames, &options)
+            hale_codegen::build_resolved(resolved, &bin, &options)
         })
         .map_err(|e| render_codegen_error(&e, &file_bases, &sources))?;
         Ok(bin)

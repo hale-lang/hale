@@ -1118,6 +1118,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CG, "let dbg = format!(\"{:?}\", program.items);", "decided by searching the program's Debug string for `__Std`, `name: \"std\"` and tainted namespaces", "a query over the message graph"),
             legacy(CG, "stdlib_bus_tainted_namespaces", "the stdlib taint fixpoint, also over Debug strings, cached per process", "a column of the stdlib_surface rows"),
+            legacy(TY_RESOLVED, "user", "the resolved program carries the desugared user program a second time so lowering's tier-1 bus-inert scan reads the same Debug text it always did", "the bus-inert verdict is a row of the resolved program, computed structurally and shadowed against the scan (phase 2)"),
         ],
         consumers: &[consumer_at("codegen", CG_BUS_RT, "emit_bus_drain")],
         invariants: &["a drain elision is a conclusion of the message graph, never of a string"],
