@@ -1751,7 +1751,7 @@ pub fn resolve_owners(
         import_renames,
         &mut locus_fields,
     );
-    let accepts = collect_accepts(&program.items, &loci, import_renames);
+    let accepts = collect_accepts(program, import_renames);
 
     let fresh = extend_fresh_factories(
         program,
@@ -1881,52 +1881,33 @@ fn refine_field_kinds(
     go(items, loci, &ifaces, provisional, renames, out);
 }
 
-/// locus -> the child locus type its `accept(c: C)` declares.
+/// locus -> the child locus type its `accept(c: C)` declares, named by
+/// the one child resolver ([`crate::handler_routing::child_locus_name`])
+/// the ownership graph's `accepts` relation and the handler rows use:
+/// an alias is followed, generic arguments name the monomorph, and a
+/// qualified path resolves through the renames. A param that names no
+/// locus makes no entry.
 fn collect_accepts(
-    items: &[TopDecl],
-    loci: &BTreeSet<String>,
+    program: &Program,
     renames: &[(Vec<String>, String)],
 ) -> BTreeMap<String, String> {
+    use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
     use hale_syntax::ast::LifecycleKind;
+    let declared = DeclaredNames::of(&[program]);
     let mut out = BTreeMap::new();
-    fn go(
-        items: &[TopDecl],
-        loci: &BTreeSet<String>,
-        renames: &[(Vec<String>, String)],
-        out: &mut BTreeMap<String, String>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        let LocusMember::Lifecycle(lc) = m else { continue };
-                        if lc.kind != LifecycleKind::Accept {
-                            continue;
-                        }
-                        let Some(p) = lc.params.first() else { continue };
-                        let TypeExpr::Named { path, .. } = &p.ty else {
-                            continue;
-                        };
-                        let segs = qname_segs(path);
-                        let name = resolve_path(&segs, renames)
-                            .filter(|n| loci.contains(n))
-                            .or_else(|| {
-                                path.segments
-                                    .last()
-                                    .map(|s| s.name.clone())
-                                    .filter(|n| loci.contains(n))
-                            });
-                        if let Some(name) = name {
-                            out.insert(l.name.name.clone(), name);
-                        }
-                    }
-                }
-                TopDecl::Module(m) => go(&m.items, loci, renames, out),
-                _ => {}
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        let TopDecl::Locus(l) = item else { continue };
+        for m in &l.members {
+            let LocusMember::Lifecycle(lc) = m else { continue };
+            if lc.kind != LifecycleKind::Accept {
+                continue;
+            }
+            let Some(p) = lc.params.first() else { continue };
+            if let ChildRef::Locus(name) = child_locus_name(&p.ty, &declared, renames) {
+                out.insert(l.name.name.clone(), name);
             }
         }
     }
-    go(items, loci, renames, &mut out);
     out
 }
 

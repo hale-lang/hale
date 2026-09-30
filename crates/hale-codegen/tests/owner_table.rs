@@ -760,6 +760,49 @@ fn every_locus_is_decided_in_the_family_commit_four_closed() {
     );
 }
 
+/// F.40 phase 1 review, finding 5: the pre-pass names an accepted
+/// child through the one resolver the ownership graph uses. With
+/// `accept(c: Kid)` and `type Kid = Child`, a `Child` literal in the
+/// acceptor's own body is the acceptor's (`__children`), and the graph's
+/// `accepts` names the same child — the pre-pass used to take the
+/// written name, find no locus `Kid`, and leave the literal to its frame.
+#[test]
+fn an_aliased_accept_param_names_the_child_the_graph_names() {
+    let src = r#"
+locus Child { params { n: Int = 0; } }
+type Kid = Child;
+locus Parent {
+    accept(c: Kid) { }
+    fn spawn() { let k = Child { n: 1 }; }
+}
+fn main() { let p = Parent { }; p.spawn(); }
+"#;
+    let p = hale_syntax::parse_source(src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let t = &resolved.owner_table;
+    let kids: Vec<&Entry> = t
+        .rows()
+        .map(|(_, e)| e)
+        .filter(|e| e.name == "Child" && e.decl.contains("spawn"))
+        .collect();
+    assert_eq!(kids.len(), 1, "{}", dump(t));
+    assert_eq!(
+        kids[0].owner,
+        Owner::Field {
+            owner: ExprId::DECLARED,
+            field: "__children".to_string(),
+        },
+        "the acceptor owns the child its aliased accept names:\n{}",
+        dump(t)
+    );
+    assert_eq!(
+        resolved.ownership.accepts.get("Parent").map(|s| s.iter().cloned().collect::<Vec<_>>()),
+        Some(vec!["Child".to_string()]),
+        "the graph names the same child"
+    );
+}
+
 /// F.40 phase 1 review, finding 9: the pre-pass numbers nothing. A
 /// literal that arrives after the mint has no identity to key a row
 /// by, and the pass refuses the program naming its span instead of

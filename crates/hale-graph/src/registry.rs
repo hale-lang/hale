@@ -571,6 +571,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "lowering-only today: the carrier fold widens the set lowering reads; the checker reads the unextended set (phase 2)"),
             legacy("crates/hale-types/src/borrow_lifetime.rs", "accepts", "the borrow-lifetime law rebuilds the accept sets from the AST for itself", "reads `accepts_ancestor`"),
             legacy(CHECK, "check_unowned_subscriber_locus", "the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others", "a law over the table, on every entry point"),
+            legacy(CG_INST, "parent_accepts_us", "a monomorphised parent reads its own accept param: graph rows are per template", "the graph keys rows by the template's identity and lowering asks by it (phase 2)"),
         ],
         consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer("model"), consumer("alloc_summary (eager-only accept sets)")],
         invariants: &[
