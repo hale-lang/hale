@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 3 canonical, 37 migrating (with 161 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 3 canonical, 37 migrating (with 160 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -50,7 +50,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance. |
-| `demand` | Identity | Migrating | derivation | `Snapshot` | 2 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
+| `demand` | Identity | Migrating | derivation | `Snapshot` | 1 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -730,7 +730,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `check_api_roles` — role declarations, includes and gates are judged over the AST. *Removed when:* a law over the surface rows.
 - `crates/hale-cli/src/verbs/check/matrix.rs` · `role_coverage` — re-runs the loader and reads pre-desugar programs. *Removed when:* reads the rows.
 
-**Consumers.** check --dump-api; build (the description the binding serves); describe / call / watch / admin; ui (reserved); bundle (reserved)
+**Consumers.** check --dump-api (the snapshot's surface, the one its binding serves) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `api_surface`); build (the description the binding serves); describe / call / watch / admin; ui (reserved); bundle (reserved)
 
 **Invariants.**
 
@@ -1204,7 +1204,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/model_builder.rs` · `ModelInputs`; `crates/hale-types/src/lib.rs` · `derive_application_model`
 
-**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); a bundle no snapshot holds (the test entry's) (`crates/hale-types/src/lib.rs` · `derive_application_model_over`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
+**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); a bundle no snapshot holds (the test entry's) (`crates/hale-types/src/lib.rs` · `derive_application_model_over`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`hale check`'s artifact and both gates: the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); topology (a bundle no snapshot holds) (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
 
@@ -1318,11 +1318,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-lsp/src/lib.rs` · `analyze_seed` — the LSP's request handlers (hover, completion, definition, references, the bus graph, placement): their own load per request, and a top scope each. *Removed when:* 2.3, step 5.
-- `crates/hale-types/src/topology.rs` · `dump_topology` — the artifact derives its own model (`derive_application_model`), outside the snapshot, so `hale check --dump-topology` of a program with claims derives two. *Removed when:* 2.3: the artifact demands the snapshot's model.
 
 **Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`; `crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`; `crates/hale-frontend/src/snapshot.rs` · `demand_handlers`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `demand_lowering`; `crates/hale-frontend/src/snapshot.rs` · `from_program`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
 
-**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); build (`crates/hale-cli/src/verbs/build.rs` · `demand_lowering`); run <file> and run <dir> (`crates/hale-cli/src/verbs/run.rs` · `demand_lowering`); test (a build config for the host, the dev profile) (`crates/hale-cli/src/verbs/test.rs` · `demand_lowering`); replay (the identity admitted before lowering) (`crates/hale-cli/src/verbs/replay.rs` · `demand_lowering`); bench (the driver an overlay on the bench file) (`crates/hale-cli/src/verbs/bench.rs` · `demand_lowering`); the test harness (`Snapshot::from_program`, lowering not gated on a check) (`crates/hale-codegen/src/codegen.rs` · `demand_lowering`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
+**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `api_surface`); build (`crates/hale-cli/src/verbs/build.rs` · `demand_lowering`); run <file> and run <dir> (`crates/hale-cli/src/verbs/run.rs` · `demand_lowering`); test (a build config for the host, the dev profile) (`crates/hale-cli/src/verbs/test.rs` · `demand_lowering`); replay (the identity admitted before lowering) (`crates/hale-cli/src/verbs/replay.rs` · `demand_lowering`); bench (the driver an overlay on the bench file) (`crates/hale-cli/src/verbs/bench.rs` · `demand_lowering`); the test harness (`Snapshot::from_program`, lowering not gated on a check) (`crates/hale-codegen/src/codegen.rs` · `demand_lowering`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
 
 **Invariants.**
 

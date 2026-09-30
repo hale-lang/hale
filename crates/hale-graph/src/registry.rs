@@ -805,7 +805,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CHECK, "check_api_roles", "role declarations, includes and gates are judged over the AST", "a law over the surface rows"),
             legacy(V_MATRIX, "role_coverage", "re-runs the loader and reads pre-desugar programs", "reads the rows"),
         ],
-        consumers: &[consumer("check --dump-api"), consumer("build (the description the binding serves)"), consumer("describe / call / watch / admin"), consumer("ui (reserved)"), consumer("bundle (reserved)")],
+        consumers: &[consumer_at("check --dump-api (the snapshot's surface, the one its binding serves)", V_CHECK, "api_surface"), consumer("build (the description the binding serves)"), consumer("describe / call / watch / admin"), consumer("ui (reserved)"), consumer("bundle (reserved)")],
         invariants: &["form, not params (I1): the description names what the program is, never where one copy listens", "perspective-invariant (I5)"],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-types/tests/api_binding_check.rs"],
@@ -1180,7 +1180,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["a checked bundle", "top_scope", "bus_graph", "ownership", "handler_routing", "placement", "effects", "alloc_summary", "topics", "bindings"],
         producer: Some(site(MODEL_BUILDER, "derive_application_model_over")),
         legacy: &[],
-        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"),consumer_at("topology", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
+        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
             "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
@@ -1276,11 +1276,12 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(SNAPSHOT, "Snapshot")),
         legacy: &[
             legacy(LSP, "analyze_seed", "the LSP's request handlers (hover, completion, definition, references, the bus graph, placement): their own load per request, and a top scope each", "2.3, step 5"),
-            legacy(TOPOLOGY, "dump_topology", "the artifact derives its own model (`derive_application_model`), outside the snapshot, so `hale check --dump-topology` of a program with claims derives two", "2.3: the artifact demands the snapshot's model"),
         ],
         owned: &[site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
+            consumer_at("topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model)", V_CHECK, "dump_topology_over"),
+            consumer_at("the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for)", V_CHECK, "api_surface"),
             consumer_at("build", V_BUILD, "demand_lowering"),
             consumer_at("run <file> and run <dir>", V_RUN, "demand_lowering"),
             consumer_at("test (a build config for the host, the dev profile)", V_TEST, "demand_lowering"),

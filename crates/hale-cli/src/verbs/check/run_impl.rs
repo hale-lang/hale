@@ -1,7 +1,7 @@
 use super::MODEL_DUMP_DEMANDED;
+use std::cell::OnceCell;
 use std::sync::atomic::Ordering;
 use std::path::Path;
-use hale_syntax::ast::Program;
 use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::verbs::model::diff_lines;
@@ -26,6 +26,40 @@ use crate::shared::frontend::retain_owned_advisories;
 /// names, so a transitive util lib reached through two different
 /// libs lives twice in the binary — no re-export, no dedup, just
 /// per-importer scoped resolution.
+/// The topology artifact of the snapshot's model, rendered into `cell`
+/// the first time a flag asks for it. A program that does not typecheck
+/// has no model, so `doing` is refused, with the error kind that
+/// blocked it, and the exit code is the error.
+fn topology_artifact<'c>(
+    cell: &'c OnceCell<String>,
+    snap: &Snapshot,
+    target: &Path,
+    doing: &str,
+) -> Result<&'c str, u8> {
+    if cell.get().is_none() {
+        match snap.demand_model() {
+            Ok(model) => {
+                // The artifact's environment label is the snapshot's own
+                // (outside review of #1283, finding 1).
+                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model));
+                let _ = cell.set(art);
+            }
+            Err(b) => {
+                eprintln!(
+                    "refusing to {}: `{}` does not typecheck, so its model \
+                     is not a truthful description of any program. Fix the \
+                     {} first.",
+                    doing,
+                    target.display(),
+                    b.because.first().map_or("error", |d| d.kind_str())
+                );
+                return Err(1);
+            }
+        }
+    }
+    Ok(cell.get().map(String::as_str).unwrap_or_default())
+}
+
 pub(crate) fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     run_check_impl_env(target, gate_warnings, &[])
 }
@@ -214,6 +248,11 @@ pub(crate) fn run_check_impl_labelled(
         Ok(c) => c.diags.clone(),
         Err(b) => b.because.clone(),
     };
+    // F.40 phase 2.3: the artifact projects the snapshot's model — the
+    // one the check judged the laws over, so a program with claims
+    // derives one model, not two — rendered once for every flag that
+    // reads it (the dump and both gates).
+    let artifact_cell: OnceCell<String> = OnceCell::new();
 
     if dump_topology || dump_topology_to.is_some() {
         // The artifact's EXISTENCE means the model is sound.
@@ -245,10 +284,13 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let artifact = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
+        let artifact = match topology_artifact(&artifact_cell, &snap, target, "emit a topology artifact") {
+            Ok(a) => a,
+            Err(code) => return code,
+        };
         match &dump_topology_to {
             Some(path) => {
-                if let Err(e) = std::fs::write(path, &artifact) {
+                if let Err(e) = std::fs::write(path, artifact) {
                     eprintln!("could not write {}: {}", path, e);
                     return 2;
                 }
@@ -256,10 +298,10 @@ pub(crate) fn run_check_impl_labelled(
             None => print!("{}", artifact),
         }
     }
-    // GH #1107: the api binding's description, from the checked
-    // bundle. Same refusal rule as the artifact. A program with no
-    // `api:` entry prints nothing and succeeds: there is nothing to
-    // describe, and `hale describe` says so.
+    // GH #1107: the api binding's description. Same refusal rule as
+    // the artifact. A program with no `api:` entry prints nothing and
+    // succeeds: there is nothing to describe, and `hale describe` says
+    // so.
     let dump_api = argv.iter().any(|a| a == "--dump-api");
     let dump_api_to = argv
         .iter()
@@ -280,12 +322,13 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-        // The bytes the binding serves, never re-serialized (a `Value`
-        // round trip would sort the keys; spec/model.md promises the
-        // two documents agree byte for byte).
-        let text = match hale_syntax::api_gen::api_surface(&programs) {
-            Some(surface) => hale_syntax::api_gen::describe(&surface) + "\n",
+        // F.40 phase 2.3: the snapshot's surface, the one its desugar
+        // sequence generated the binding for, so the description is the
+        // binding's by construction. The bytes the binding serves, never
+        // re-serialized (a `Value` round trip would sort the keys;
+        // spec/model.md promises the two documents agree byte for byte).
+        let text = match snap.api_surface() {
+            Some(surface) => hale_syntax::api_gen::describe(surface) + "\n",
             None => String::new(),
         };
         match &dump_api_to {
@@ -368,7 +411,10 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = shape_gate {
-        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
+        let current = match topology_artifact(&artifact_cell, &snap, target, "compare a topology baseline") {
+            Ok(a) => a,
+            Err(code) => return code,
+        };
         // The hash VALUE, not the raw line — the gate's whole point
         // is that this is the model's identity, and a diagnostic
         // that makes you read past `"shape_hash": ` and a trailing
@@ -401,7 +447,7 @@ pub(crate) fn run_check_impl_labelled(
                 );
                 return 2;
             }
-            Ok(expected) => match (hash_of(&expected), hash_of(&current)) {
+            Ok(expected) => match (hash_of(&expected), hash_of(current)) {
                 (Some(a), Some(b)) if a != b => {
                     eprintln!(
                         "topology SHAPE changed — the program's \
@@ -441,7 +487,10 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = check_topology_path {
-        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
+        let current = match topology_artifact(&artifact_cell, &snap, target, "compare a topology baseline") {
+            Ok(a) => a,
+            Err(code) => return code,
+        };
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
                 if expected != current {
@@ -453,7 +502,7 @@ pub(crate) fn run_check_impl_labelled(
                          --check-topology-shape to gate the model alone.",
                         path
                     );
-                    for line in diff_lines(&expected, &current) {
+                    for line in diff_lines(&expected, current) {
                         eprintln!("{}", line);
                     }
                     eprintln!(

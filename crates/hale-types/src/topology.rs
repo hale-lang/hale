@@ -218,21 +218,27 @@ pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
 }
 
 /// Serialize the bundle's model + claim results as the topology
-/// artifact (JSON).
+/// artifact (JSON), for a bundle no snapshot holds: the model is
+/// derived here ([`crate::derive_application_model`]). `hale check`
+/// renders its snapshot's model instead ([`dump_topology_over`]).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_parts(bundle)
+    dump_topology_over(bundle, &crate::derive_application_model(bundle))
 }
 
-/// The artifact. One authority: every emitted section is a
+/// [`dump_topology`], under its Change-6 name (the projection tests').
+#[doc(hidden)]
+pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
+    dump_topology(bundle)
+}
+
+/// The artifact of `bundle`, projected from `app_model`, the model the
+/// caller holds (F.40 phase 2.3: `hale check`'s snapshot's, the one its
+/// laws were judged over, so a check of a program with claims derives
+/// one model, not two). One authority: every emitted section is a
 /// PROJECTION of `ApplicationModel` (GH #476 Change 6 inverted the
 /// direction; Change 9 deleted the legacy gathering that had stayed
 /// behind as the corpus differential's comparison arm).
-///
-/// Retained under its Change-6 name because the claim/law pipeline
-/// below it is one long function; `dump_topology` is the caller
-/// everything else uses.
-#[doc(hidden)]
-pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
+pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::ApplicationModel) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // User code only — an app's artifact describes the app, the
@@ -397,10 +403,10 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
         &programs,
         &bundle.import_renames,
     );
-    let vmodel = crate::model_builder::derive_application_model(bundle);
-    let law_table = crate::claim_lowering::lower_claims(bundle, &vmodel);
+    let vmodel = app_model;
+    let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
     let law_evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &law_table, &vmodel,
+        bundle, &law_table, vmodel,
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
