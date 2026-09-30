@@ -17364,7 +17364,7 @@ impl<'a> Checker<'a> {
                     // GH #911 B5: the mangled name of a generic
                     // LOCUS monomorph, written out. `hale build`
                     // refuses it — the ownership pre-pass never
-                    // numbers a node spelled this way (F.39), with
+                    // gives a node spelled this way a row (F.39), with
                     // or without the monomorph having been
                     // discovered — so the checker refuses it too,
                     // and says which spelling does work instead of

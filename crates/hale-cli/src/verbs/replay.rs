@@ -216,10 +216,11 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
             Err(errors) => return report_import_diags(&errors),
         };
     // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
-    // before the check, so it mints straight after the load; with no
-    // source map here, the seed is the program's ordinal.
+    // before the check, so it mints straight after the load, seeded by
+    // the source map `check` mints with.
     let prog_name = prog.display().to_string();
-    let snapshot = hale_types::snapshot::mint([(prog_name.as_str(), &mut program)], &[]);
+    let source_map = crate::shared::frontend::source_map(&prog, &file_bases, &sources);
+    let snapshot = hale_types::snapshot::mint([(prog_name.as_str(), &mut program)], &source_map);
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(prog_name.clone(), &program);
     let mut bundle = hale_types::Bundle::new(bundle_programs);
@@ -240,6 +241,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // phase 1.5).
     let resolved = match hale_types::resolved::resolve_program(
         &program,
+        &source_map,
         &renames,
         build_options.api.as_deref(),
         build_options.api_roles.as_deref(),

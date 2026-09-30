@@ -113,7 +113,9 @@ fn table_of(src: &str) -> OwnerTable {
     // the ordinary factories, so a derivation test never passes
     // because `fresh_factories` happened to agree.
     let seed: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
-    resolve_owners(&mut p, &seed, &[])
+    // The pass keys rows by the snapshot's ids and numbers nothing.
+    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    resolve_owners(&p, &seed, &[]).expect("every node is minted")
 }
 
 /// The one row written in `decl` at `position` naming `name`.
@@ -566,17 +568,23 @@ fn a_binding_the_frame_hands_back_is_the_callers() {
 }
 
 #[test]
-fn the_table_numbers_every_locus_producing_node_it_decides() {
-    let t = table_of(&program(
+fn the_table_keys_every_locus_producing_node_it_decides_by_its_minted_id() {
+    let mut p = hale_syntax::parse_source(&program(
         "    let a = Subj { n: 1 };\n    let b = make(1);\n    println(\"u=\", a.probe() + b.probe());",
-    ));
-    assert!(t.numbered() >= t.len() as u32);
+    ))
+    .expect("parse");
+    let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    let t = resolve_owners(&p, &BTreeMap::new(), &[]).expect("every node is minted");
     assert!(!t.is_empty());
     for (id, _) in t.rows() {
         assert_ne!(
             *id,
             ExprId::DECLARED,
             "a real row must not carry the declaration sentinel"
+        );
+        assert!(
+            snap.sites.iter().any(|s| s.id.index == id.0),
+            "row {id:?} keys an id the snapshot did not mint"
         );
     }
 }
@@ -752,12 +760,12 @@ fn every_locus_is_decided_in_the_family_commit_four_closed() {
     );
 }
 
-/// F.40 1.2a-0: after the snapshot has minted every site, the pre-pass
-/// numbers nothing below the minted ids. Lowering re-parses the stdlib
-/// unnumbered, so a counter starting at zero would hand a stdlib
-/// literal a minted user site's id and overwrite its row.
+/// F.40 phase 1 review, finding 9: the pre-pass numbers nothing. A
+/// literal that arrives after the mint has no identity to key a row
+/// by, and the pass refuses the program naming its span instead of
+/// giving it one.
 #[test]
-fn the_pre_pass_numbers_past_the_snapshot_and_never_collides() {
+fn an_unnumbered_late_node_is_an_error() {
     let src = r#"
 locus Item { params { x: Int = 0; } }
 locus Holder {
@@ -767,33 +775,22 @@ locus Holder {
 fn main() { Holder { }; }
 "#;
     let mut p = hale_syntax::parse_source(src).expect("parse");
-    let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
-    let minted_max = snap.sites.iter().map(|s| s.id.index).max().expect("sites");
-    // A late-arriving unnumbered literal, as the stdlib merge produces.
-    let mut late = hale_syntax::parse_source("fn f() { let l = Item { }; }\n").expect("parse");
+    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    assert!(
+        hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]).is_ok(),
+        "a fully minted program resolves"
+    );
+    // A late-arriving unnumbered literal, built after the mint.
+    let late_src = "fn f() { let l = Item { }; }\n";
+    let mut late = hale_syntax::parse_source(late_src).expect("parse");
+    let literal_at = late_src.find("Item {").expect("the literal") as u32;
     p.items.extend(late.items.drain(..));
-    let table = hale_codegen::ownership::resolve_owners(&mut p, &BTreeMap::new(), &[]);
-    // The pre-pass numbers only Struct and Call nodes; the late fn's
-    // other sites stay NONE until a snapshot mints them, and are not
-    // ids to compare.
-    let mut ids = Vec::new();
-    hale_syntax::sites::for_each_site(&p, &mut |_, _, id| {
-        if !id.is_none() {
-            ids.push(id.0);
+    match hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]) {
+        Err(hale_codegen::ownership::OwnershipError::Unminted { span, .. }) => {
+            assert_eq!(span.start.0, literal_at, "the error names the late literal's span");
         }
-    });
-    let mut sorted = ids.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(sorted.len(), ids.len(), "every site keeps a unique id: {ids:?}");
-    assert!(
-        table.rows().all(|(id, _)| id.0 <= minted_max || id.0 > minted_max),
-        "rows key by the site's own id"
-    );
-    assert!(
-        ids.iter().any(|i| *i > minted_max),
-        "the late literal was numbered past the minted range"
-    );
+        Ok(_) => panic!("an unminted literal must be refused, not numbered"),
+    }
 }
 
 // ===================================================================
@@ -826,7 +823,7 @@ fn binding_rows_of(src: &str, decl: &str) -> (OwnerTable, Lets) {
     }
     let p = hale_syntax::parse_source(src)
         .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
-    let resolved = hale_types::resolved::resolve_program(&p, &[], None, None)
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
         .unwrap_or_else(|e| panic!("resolve_program refused the fixture: {e}"));
     let mut out = Vec::new();
     for item in &resolved.merged.items {

@@ -311,7 +311,7 @@ fn main() {
 fn a_generic_locus_monomorph_name_is_not_a_spelling() {
     // `Cache_Int_String` is the name codegen SYNTHESIZES, and it is
     // not instantiable under that spelling at any use site: the
-    // ownership pre-pass never numbers the node (F.39), whether or
+    // ownership pre-pass never gives the node a row (F.39), whether or
     // not the monomorph was discovered elsewhere. The struct twin
     // (`Box_Int { }`) IS lowerable and stays accepted — see
     // `generics.rs`.

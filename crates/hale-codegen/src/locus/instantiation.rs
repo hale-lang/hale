@@ -197,7 +197,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(crate::ownership::Site::Unindexed(sp)) => {
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` is instantiated at a node the \
-                             ownership pre-pass never numbered (bytes \
+                             snapshot never minted (bytes \
                              {}..{}); a node codegen builds itself has to \
                              carry the id of the source expression it \
                              stands for, or declare its owner. See \

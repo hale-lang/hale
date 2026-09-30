@@ -1056,8 +1056,10 @@ pub fn build_executable_with_options(
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
+    // A bare program has no source map: its sites seed by ordinal.
     let resolved = hale_types::resolved::resolve_program(
         program,
+        &[],
         import_renames,
         options.api.as_deref(),
         options.api_roles.as_deref(),
@@ -11031,7 +11033,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut scope = Scope::default();
         self.instantiating_program_lifetime = true;
         // GH #921 A2: codegen builds this literal; there is no source
-        // expression the pre-pass could have numbered. F.39 calls the
+        // expression the snapshot could have minted. F.39 calls the
         // bindings transport `Placement(entry)` (Riley's answer to
         // its third open question), which A3 has to arrange here
         // rather than by reading a table row.

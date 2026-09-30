@@ -288,10 +288,13 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
-    // F.40 phase 1.1b-iii: the snapshot, after the last desugar. This
-    // path builds no source map, so the seed is the program's ordinal.
+    // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
+    // by the same source map `check` mints with; the resolved program
+    // below mints its merged program with it too.
     let target_name = target.display().to_string();
-    let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
+    let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
+    let snapshot =
+        hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
 
     // Typecheck before lowering. Render diagnostics against the
     // entry-file's source — diagnostic spans currently point into
@@ -516,6 +519,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // same call.
     match hale_types::resolved::resolve_program(
         &program,
+        &source_map,
         &renames,
         options.api.as_deref(),
         options.api_roles.as_deref(),

@@ -26,8 +26,10 @@
 //!
 //! ## The key
 //!
-//! [`ExprId`] is the [`NodeId`] this pass writes into the AST, in
-//! pre-order over the merged, desugared program. It has to live in the
+//! [`ExprId`] is the [`NodeId`] the snapshot minted into the AST over
+//! the merged, desugared program (`crate::snapshot::mint`, run by the
+//! resolved-program step before this pass); the pass numbers nothing,
+//! and refuses a literal or call the mint left `NONE`. It has to live in the
 //! node because codegen lowers CLONES of every declaration —
 //! `locus_decls` and `user_fn_decls` are `Vec`s of cloned decls, and
 //! `lower_locus_instantiation` clones the whole `LocusInfo` (param
@@ -142,9 +144,9 @@ use hale_syntax::Span;
 // Ids
 // ===================================================================
 
-/// The identity of a locus-producing expression: the [`NodeId`] this
-/// pass writes into the node. See the module docs for why it cannot be
-/// an address or a span.
+/// The identity of a locus-producing expression: the [`NodeId`] the
+/// snapshot minted into the node. See the module docs for why it
+/// cannot be an address or a span.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct ExprId(pub u32);
 
@@ -313,8 +315,6 @@ pub struct OwnerTable {
     scope_kinds: Vec<ScopeKind>,
     /// The EXTENDED proven-fresh factory set: fn name -> locus.
     fresh: BTreeMap<String, String>,
-    /// How many nodes the pass numbered.
-    numbered: u32,
     /// One row per `let`, keyed by the statement's snapshot index
     /// (see [`resolve_binding_facts`]).
     bindings: BTreeMap<u32, BindingFacts>,
@@ -476,11 +476,6 @@ impl OwnerTable {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-
-    /// How many expression nodes the pass numbered.
-    pub fn numbered(&self) -> u32 {
-        self.numbered
     }
 
     /// Every row, in id order — the unit tests' view.
@@ -1667,7 +1662,6 @@ struct Resolver {
     /// The EXTENDED proven-fresh factory set: fn name -> locus.
     fresh: BTreeMap<String, String>,
     table: OwnerTable,
-    next_id: u32,
     next_slot: u32,
     /// The reclaim-scope stack; the last entry is the innermost.
     scopes: Vec<ScopeId>,
@@ -1685,21 +1679,56 @@ struct Resolver {
     owner_locus: String,
 }
 
-/// Build the owner table for `program`, numbering every
-/// locus-producing expression node on the way.
+/// Why [`resolve_owners`] refused a program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwnershipError {
+    /// A `Struct` or `Call` node carries a `NONE` id: the snapshot never
+    /// minted it, so no row can be keyed by it. Every node of the merged
+    /// program is minted before the pass runs; one that is not was built
+    /// by a pass that ran after the mint.
+    Unminted { kind: hale_syntax::sites::SiteKind, span: Span },
+}
+
+impl std::fmt::Display for OwnershipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnershipError::Unminted { kind, span } => write!(
+                f,
+                "ownership pre-pass: the {:?} at {}..{} has no snapshot identity \
+                 (a node built after the mint)",
+                kind, span.start.0, span.end.0
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OwnershipError {}
+
+/// Build the owner table for `program`, keyed by the identity the
+/// snapshot minted for every locus-producing expression node.
 ///
 /// `fresh_factories` is codegen's own `fresh_locus_factories` map (fn
 /// name -> (locus, returned binding)); the table seeds its EXTENDED
 /// set from it and adds the carrier-return fns that map misses.
 ///
-/// The program is taken by `&mut` for the ids alone: nothing else
-/// about it changes, and every other field the AST carries is left
-/// exactly as parsed.
+/// The pass numbers nothing: a locus-producing `Struct` or `Call` node
+/// with a `NONE` id is [`OwnershipError::Unminted`], naming the node's
+/// span.
 pub fn resolve_owners(
-    program: &mut Program,
+    program: &Program,
     fresh_factories: &BTreeMap<String, (String, Option<String>)>,
     import_renames: &[(Vec<String>, String)],
-) -> OwnerTable {
+) -> Result<OwnerTable, OwnershipError> {
+    use hale_syntax::sites::SiteKind;
+    let mut unminted = None;
+    hale_syntax::sites::for_each_site(program, &mut |kind, span, id| {
+        if matches!(kind, SiteKind::StructLiteral | SiteKind::Call) && id.is_none() {
+            unminted.get_or_insert(OwnershipError::Unminted { kind, span });
+        }
+    });
+    if let Some(e) = unminted {
+        return Err(e);
+    }
     let mut loci = BTreeSet::new();
     let mut provisional: BTreeMap<String, BTreeMap<String, FieldKind>> =
         BTreeMap::new();
@@ -1744,10 +1773,8 @@ pub fn resolve_owners(
             borrowed: BTreeMap::new(),
             scope_kinds: Vec::new(),
             fresh,
-            numbered: 0,
             bindings: BTreeMap::new(),
         },
-        next_id: 0,
         next_slot: 0,
         scopes: Vec::new(),
         slots: BTreeMap::new(),
@@ -1755,21 +1782,8 @@ pub fn resolve_owners(
         owner_locus: String::new(),
         returned: ReturnedBindings::default(),
     };
-    // The counter starts past the largest id already present: the
-    // snapshot (F.40 1.1b) mints every site before lowering, and the
-    // stdlib re-parsed in codegen arrives unnumbered, so numbering
-    // from zero here would collide a stdlib literal with a minted user
-    // site in the table. `numbered` stays "ids this run assigned".
-    let mut start: u32 = 0;
-    hale_syntax::sites::for_each_site(program, &mut |_, _, id| {
-        if !id.is_none() {
-            start = start.max(id.0 + 1);
-        }
-    });
-    r.next_id = start;
-    r.walk_decls(&mut program.items, "");
-    r.table.numbered = r.next_id - start;
-    r.table
+    r.walk_decls(&program.items, "");
+    Ok(r.table)
 }
 
 // -------------------------------------------------------------------
@@ -1995,7 +2009,7 @@ fn param_field_kind(
 /// through `hale_stdlib::PATH_RENAMES`, cross-seed imports through the
 /// caller's rename list. Without this, every path-qualified stdlib
 /// literal (`std::io::tcp::Stream { … }`) looked like a record
-/// literal to the pre-pass and was never numbered.
+/// literal to the pre-pass and got no row.
 fn resolve_path(
     segs: &[String],
     renames: &[(Vec<String>, String)],
@@ -2786,20 +2800,14 @@ impl Resolver {
         s
     }
 
-    /// Give this node an id, once. Only the two shapes that can
-    /// produce a locus carry one.
-    fn number(&mut self, e: &mut Expr) -> Option<ExprId> {
-        let slot = match e {
-            Expr::Struct { id, .. } | Expr::Call { id, .. } => id,
-            _ => return None,
-        };
-        if !slot.is_none() {
-            return Some(ExprId(slot.0));
+    /// The id the snapshot minted for this literal or call. The entry
+    /// check in [`resolve_owners`] refused a program with an unminted
+    /// one, so every node the walk keys a row by has its id.
+    fn minted_id(&self, e: &Expr) -> ExprId {
+        match node_id(e) {
+            Some(id) if !id.is_none() => ExprId(id.0),
+            _ => unreachable!("resolve_owners refuses an unminted literal or call on entry"),
         }
-        let n = self.next_id;
-        self.next_id += 1;
-        *slot = NodeId(n);
-        Some(ExprId(n))
     }
 
     fn record(
@@ -2903,14 +2911,14 @@ impl Resolver {
     // assign: distribute a site's decision down to the leaves
     // ---------------------------------------------------------------
 
-    fn assign(&mut self, e: &mut Expr, d: Decision, position: &'static str) {
+    fn assign(&mut self, e: &Expr, d: Decision, position: &'static str) {
         match e {
             Expr::Struct { path, inits, span, id: _ } => {
                 let lname = self.locus_of_literal(path);
                 let span = *span;
                 match lname {
                     Some(lname) => {
-                        let id = self.number(e).expect("a literal is numbered");
+                        let id = self.minted_id(e);
                         // An acceptor's own body: the child is
                         // appended to `__children[]` and reclaimed by
                         // the acceptor's cascade, whatever the
@@ -2933,22 +2941,14 @@ impl Resolver {
                             position,
                             span,
                         );
-                        let Expr::Struct { inits, .. } = e else {
-                            unreachable!("matched a struct above")
-                        };
-                        let mut taken = std::mem::take(inits);
-                        self.walk_literal_inits(id, &lname, &mut taken);
-                        let Expr::Struct { inits, .. } = e else {
-                            unreachable!("matched a struct above")
-                        };
-                        *inits = taken;
+                        self.walk_literal_inits(id, &lname, inits);
                     }
                     None => {
                         // A record / type literal: not a locus, but
                         // its initialisers are ordinary expressions.
-                        for i in inits.iter_mut() {
+                        for i in inits.iter() {
                             self.assign(
-                                &mut i.value,
+                                &i.value,
                                 Decision::FrameTemp,
                                 "record field",
                             );
@@ -2960,7 +2960,7 @@ impl Resolver {
                 let lname = self.fresh_call_locus(e);
                 let span = e.span();
                 if let Some(lname) = lname {
-                    let id = self.number(e).expect("a call is numbered");
+                    let id = self.minted_id(e);
                     let owner = self.owner_from(&d);
                     self.record(
                         id,
@@ -2978,20 +2978,10 @@ impl Resolver {
                 let Expr::Call { callee, args, .. } = e else {
                     unreachable!("matched a call above")
                 };
-                let mut taken_callee = std::mem::replace(
-                    callee,
-                    Box::new(Expr::KwSelf(Span::new(0, 0))),
-                );
-                let mut taken_args = std::mem::take(args);
-                self.walk_callee(&mut taken_callee);
-                for a in taken_args.iter_mut() {
+                self.walk_callee(callee);
+                for a in args.iter() {
                     self.assign(a, Decision::FrameTemp, "argument");
                 }
-                let Expr::Call { callee, args, .. } = e else {
-                    unreachable!("matched a call above")
-                };
-                *callee = taken_callee;
-                *args = taken_args;
             }
             Expr::Or { inner, disposition, span: _ } => {
                 let through = d.through_delegate();
@@ -3014,15 +3004,15 @@ impl Resolver {
             Expr::Match(m) => {
                 let through = d.through_delegate();
                 self.assign(
-                    &mut m.scrutinee,
+                    &m.scrutinee,
                     Decision::FrameTemp,
                     "scrutinee",
                 );
-                for a in m.arms.iter_mut() {
-                    if let Some(g) = &mut a.guard {
+                for a in m.arms.iter() {
+                    if let Some(g) = &a.guard {
                         self.assign(g, Decision::FrameTemp, "arm guard");
                     }
-                    match &mut a.body {
+                    match &a.body {
                         MatchArmBody::Expr(x) => {
                             self.assign(x, through.clone(), "`match` arm")
                         }
@@ -3039,7 +3029,7 @@ impl Resolver {
             }
             Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
                 let through = d.through_delegate();
-                for p in parts.iter_mut() {
+                for p in parts.iter() {
                     self.assign(p, through.clone(), "composite element");
                 }
             }
@@ -3087,13 +3077,13 @@ impl Resolver {
 
     fn assign_if(
         &mut self,
-        i: &mut IfStmt,
+        i: &IfStmt,
         d: Decision,
         position: &'static str,
     ) {
-        self.assign(&mut i.cond, Decision::FrameTemp, "condition");
-        self.walk_block(&mut i.then_block, Some((d.clone(), position)));
-        match i.else_block.as_deref_mut() {
+        self.assign(&i.cond, Decision::FrameTemp, "condition");
+        self.walk_block(&i.then_block, Some((d.clone(), position)));
+        match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => {
                 self.walk_block(b, Some((d, position)))
             }
@@ -3105,7 +3095,7 @@ impl Resolver {
     /// A receiver written in front of a call — `Cfg { }.seed()` — is a
     /// value of this frame and nothing else. GH #896 is exactly the
     /// case where the flags hand it the field's decision.
-    fn walk_callee(&mut self, callee: &mut Expr) {
+    fn walk_callee(&mut self, callee: &Expr) {
         match callee {
             Expr::Ident(_) | Expr::Path(_) => {}
             Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
@@ -3122,10 +3112,10 @@ impl Resolver {
         &mut self,
         lit_id: ExprId,
         locus: &str,
-        inits: &mut [StructInit],
+        inits: &[StructInit],
     ) {
         let saved = std::mem::replace(&mut self.owner_locus, locus.to_string());
-        for init in inits.iter_mut() {
+        for init in inits.iter() {
             let kind = self
                 .locus_fields
                 .get(locus)
@@ -3141,7 +3131,7 @@ impl Resolver {
             self.walk_field_init(
                 lit_id,
                 &field,
-                &mut init.value,
+                &init.value,
                 kind,
                 placed,
             );
@@ -3153,7 +3143,7 @@ impl Resolver {
         &mut self,
         owner: ExprId,
         field: &str,
-        value: &mut Expr,
+        value: &Expr,
         kind: FieldKind,
         placed: bool,
     ) {
@@ -3200,13 +3190,13 @@ impl Resolver {
     /// when the block is in value position.
     fn walk_block(
         &mut self,
-        b: &mut Block,
+        b: &Block,
         tail: Option<(Decision, &'static str)>,
     ) {
-        for s in b.stmts.iter_mut() {
+        for s in b.stmts.iter() {
             self.walk_stmt(s);
         }
-        if let Some(t) = &mut b.tail {
+        if let Some(t) = &b.tail {
             match tail {
                 Some((d, pos)) => self.assign(t, d, pos),
                 None => self.assign(t, Decision::FrameTemp, "block tail"),
@@ -3214,7 +3204,7 @@ impl Resolver {
         }
     }
 
-    fn walk_stmt(&mut self, s: &mut Stmt) {
+    fn walk_stmt(&mut self, s: &Stmt) {
         match s {
             Stmt::Let { name, value, .. } => {
                 let d = if self.returned.let_is_returned(name) {
@@ -3240,7 +3230,7 @@ impl Resolver {
                 let head = target.head.name.clone();
                 let head_is_returned =
                     bare && self.returned.assign_is_returned(&target.head);
-                for seg in target.tail.iter_mut() {
+                for seg in target.tail.iter() {
                     if let LValueSeg::Index(ix) = seg {
                         self.assign(
                             ix,
@@ -3295,7 +3285,7 @@ impl Resolver {
                 self.assign(value, Decision::FrameTemp, "`fail` payload")
             }
             Stmt::Recovery { args, modifier, .. } => {
-                for a in args.iter_mut() {
+                for a in args.iter() {
                     self.assign(a, Decision::FrameTemp, "recovery argument");
                 }
                 match modifier {
@@ -3355,23 +3345,23 @@ impl Resolver {
         }
     }
 
-    fn walk_if_stmt(&mut self, i: &mut IfStmt) {
-        self.assign(&mut i.cond, Decision::FrameTemp, "condition");
-        self.walk_block(&mut i.then_block, None);
-        match i.else_block.as_deref_mut() {
+    fn walk_if_stmt(&mut self, i: &IfStmt) {
+        self.assign(&i.cond, Decision::FrameTemp, "condition");
+        self.walk_block(&i.then_block, None);
+        match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => self.walk_block(b, None),
             Some(ElseBranch::ElseIf(n)) => self.walk_if_stmt(n),
             None => {}
         }
     }
 
-    fn walk_match_stmt(&mut self, m: &mut MatchStmt) {
-        self.assign(&mut m.scrutinee, Decision::FrameTemp, "scrutinee");
-        for a in m.arms.iter_mut() {
-            if let Some(g) = &mut a.guard {
+    fn walk_match_stmt(&mut self, m: &MatchStmt) {
+        self.assign(&m.scrutinee, Decision::FrameTemp, "scrutinee");
+        for a in m.arms.iter() {
+            if let Some(g) = &a.guard {
                 self.assign(g, Decision::FrameTemp, "arm guard");
             }
-            match &mut a.body {
+            match &a.body {
                 MatchArmBody::Expr(e) => {
                     self.assign(e, Decision::FrameTemp, "`match` arm")
                 }
@@ -3408,8 +3398,8 @@ impl Resolver {
         self.returned = saved.returned;
     }
 
-    fn walk_decls(&mut self, items: &mut [TopDecl], prefix: &str) {
-        for item in items.iter_mut() {
+    fn walk_decls(&mut self, items: &[TopDecl], prefix: &str) {
+        for item in items.iter() {
             match item {
                 TopDecl::Fn(f) => self.walk_fn(f, prefix, "fn"),
                 TopDecl::Locus(l) => self.walk_locus(l, prefix),
@@ -3421,7 +3411,7 @@ impl Resolver {
                         prefix, c.name.name
                     ));
                     self.assign(
-                        &mut c.value,
+                        &c.value,
                         Decision::FrameTemp,
                         "const initialiser",
                     );
@@ -3430,11 +3420,11 @@ impl Resolver {
                 TopDecl::Type(t) => {
                     let name = t.name.name.clone();
                     if let hale_syntax::ast::TypeDeclBody::Struct(fields) =
-                        &mut t.body
+                        &t.body
                     {
-                        for f in fields.iter_mut() {
+                        for f in fields.iter() {
                             let fname = f.name.name.clone();
-                            if let Some(d) = &mut f.default {
+                            if let Some(d) = &f.default {
                                 let saved = self.open_frame(&format!(
                                     "{}type {}.{}",
                                     prefix, name, fname
@@ -3451,10 +3441,10 @@ impl Resolver {
                 }
                 TopDecl::Interface(i) => {
                     let iname = i.name.name.clone();
-                    for m in i.methods.iter_mut() {
+                    for m in i.methods.iter() {
                         let decl =
                             format!("{}{}.{}", prefix, iname, m.name.name);
-                        self.walk_param_defaults(&mut m.params, &decl);
+                        self.walk_param_defaults(&m.params, &decl);
                     }
                 }
                 TopDecl::Topic(_)
@@ -3468,19 +3458,19 @@ impl Resolver {
         }
     }
 
-    fn walk_module(&mut self, m: &mut ModuleDecl, prefix: &str) {
+    fn walk_module(&mut self, m: &ModuleDecl, prefix: &str) {
         let inner = format!("{}{}::", prefix, m.name.name);
-        self.walk_decls(&mut m.items, &inner);
+        self.walk_decls(&m.items, &inner);
     }
 
     fn walk_perspective(
         &mut self,
-        p: &mut hale_syntax::ast::PerspectiveDecl,
+        p: &hale_syntax::ast::PerspectiveDecl,
         prefix: &str,
     ) {
         use hale_syntax::ast::PerspectiveMember;
         let pname = format!("{}{}", prefix, p.name.name);
-        for m in p.members.iter_mut() {
+        for m in p.members.iter() {
             match m {
                 PerspectiveMember::Fn(f) => {
                     self.walk_fn(f, &format!("{}.", pname), "perspective fn")
@@ -3501,25 +3491,25 @@ impl Resolver {
         }
     }
 
-    fn walk_fn(&mut self, f: &mut FnDecl, prefix: &str, what: &str) {
+    fn walk_fn(&mut self, f: &FnDecl, prefix: &str, what: &str) {
         let decl = format!("{} {}{}", what, prefix, f.name.name);
         let saved = self.open_body_frame(&decl, &f.body);
-        for p in f.params.iter_mut() {
-            if let Some(d) = &mut p.default {
+        for p in f.params.iter() {
+            if let Some(d) = &p.default {
                 self.assign(d, Decision::FrameTemp, "param default");
             }
         }
         self.walk_block(
-            &mut f.body,
+            &f.body,
             Some((Decision::Caller, "fn body tail")),
         );
         self.close_frame(saved);
     }
 
-    fn walk_param_defaults(&mut self, params: &mut [Param], decl: &str) {
+    fn walk_param_defaults(&mut self, params: &[Param], decl: &str) {
         let saved = self.open_frame(decl);
-        for p in params.iter_mut() {
-            if let Some(d) = &mut p.default {
+        for p in params.iter() {
+            if let Some(d) = &p.default {
                 self.assign(d, Decision::FrameTemp, "param default");
             }
         }
@@ -3528,7 +3518,7 @@ impl Resolver {
 
     fn walk_params_block(
         &mut self,
-        pb: &mut hale_syntax::ast::ParamsBlock,
+        pb: &hale_syntax::ast::ParamsBlock,
         owner: &str,
     ) {
         // `accept` retains children written in a METHOD body; a
@@ -3537,7 +3527,7 @@ impl Resolver {
         let saved_accepting = self.accepting.take();
         let saved_owner =
             std::mem::replace(&mut self.owner_locus, owner.to_string());
-        for pd in pb.params.iter_mut() {
+        for pd in pb.params.iter() {
             let field = pd.name.name.clone();
             let kind = self
                 .locus_fields
@@ -3550,7 +3540,7 @@ impl Resolver {
                 .get(owner)
                 .map(|s| s.contains(&field))
                 .unwrap_or(false);
-            let ParamInit::Value(v) = &mut pd.init else { continue };
+            let ParamInit::Value(v) = &pd.init else { continue };
             let decl = format!("{}.params.{}", owner, field);
             let saved = self.open_frame(&decl);
             self.walk_field_init(
@@ -3566,34 +3556,29 @@ impl Resolver {
         self.accepting = saved_accepting;
     }
 
-    fn walk_locus(&mut self, l: &mut LocusDecl, prefix: &str) {
+    fn walk_locus(&mut self, l: &LocusDecl, prefix: &str) {
         use hale_syntax::ast::{
             BusMember, ClosureClause, EpochSpec, KeyFilter, LifecycleKind,
             ModeKind, TypeDeclBody,
         };
         let lname = l.name.name.clone();
         let qualified = format!("{}{}", prefix, lname);
-        if let Some(form) = &mut l.form {
-            let mut args = std::mem::take(&mut form.args);
+        if let Some(form) = &l.form {
             let saved = self.open_frame(&format!("{} @form", qualified));
-            for a in args.iter_mut() {
+            for a in form.args.iter() {
                 self.assign(
-                    &mut a.value,
+                    &a.value,
                     Decision::FrameTemp,
                     "@form argument",
                 );
             }
             self.close_frame(saved);
-            if let Some(form) = &mut l.form {
-                form.args = args;
-            }
         }
         let saved_accepting = std::mem::replace(
             &mut self.accepting,
             self.accepts.get(&lname).cloned(),
         );
-        let mut members = std::mem::take(&mut l.members);
-        for m in members.iter_mut() {
+        for m in l.members.iter() {
             match m {
                 LocusMember::Params(pb) => {
                     self.walk_params_block(pb, &lname)
@@ -3614,8 +3599,8 @@ impl Resolver {
                         &format!("{}.{}", qualified, kind),
                         &lc.body,
                     );
-                    for p in lc.params.iter_mut() {
-                        if let Some(d) = &mut p.default {
+                    for p in lc.params.iter() {
+                        if let Some(d) = &p.default {
                             self.assign(
                                 d,
                                 Decision::FrameTemp,
@@ -3624,7 +3609,7 @@ impl Resolver {
                         }
                     }
                     self.walk_block(
-                        &mut lc.body,
+                        &lc.body,
                         Some((Decision::Caller, "body tail")),
                     );
                     self.close_frame(saved);
@@ -3640,7 +3625,7 @@ impl Resolver {
                         &md.body,
                     );
                     self.walk_block(
-                        &mut md.body,
+                        &md.body,
                         Some((Decision::Caller, "body tail")),
                     );
                     self.close_frame(saved);
@@ -3648,30 +3633,30 @@ impl Resolver {
                 LocusMember::Failure(fd) => {
                     let saved = self
                         .open_frame(&format!("{}.on_failure", qualified));
-                    self.walk_block(&mut fd.body, None);
+                    self.walk_block(&fd.body, None);
                     self.close_frame(saved);
                 }
                 LocusMember::Closure(cd) => {
                     let saved =
                         self.open_frame(&format!("{}.closure", qualified));
-                    if let Some(a) = &mut cd.assertion {
+                    if let Some(a) = &cd.assertion {
                         self.assign(
-                            &mut a.left,
+                            &a.left,
                             Decision::FrameTemp,
                             "closure assertion",
                         );
                         self.assign(
-                            &mut a.right,
+                            &a.right,
                             Decision::FrameTemp,
                             "closure assertion",
                         );
                         self.assign(
-                            &mut a.tolerance,
+                            &a.tolerance,
                             Decision::FrameTemp,
                             "closure tolerance",
                         );
                     }
-                    for c in cd.clauses.iter_mut() {
+                    for c in cd.clauses.iter() {
                         if let ClosureClause::Epoch(EpochSpec::Duration(e)) =
                             c
                         {
@@ -3688,11 +3673,11 @@ impl Resolver {
                     let saved = self
                         .open_frame(&format!("{}.birth_check", qualified));
                     self.assign(
-                        &mut bc.cond,
+                        &bc.cond,
                         Decision::FrameTemp,
                         "birth-check condition",
                     );
-                    if let Some(p) = &mut bc.payload {
+                    if let Some(p) = &bc.payload {
                         self.assign(
                             p,
                             Decision::FrameTemp,
@@ -3702,7 +3687,7 @@ impl Resolver {
                     self.close_frame(saved);
                 }
                 LocusMember::Bus(bb) => {
-                    for bm in bb.members.iter_mut() {
+                    for bm in bb.members.iter() {
                         if let BusMember::Subscribe {
                             key_filter:
                                 Some(KeyFilter::Specific { expr, .. }),
@@ -3729,7 +3714,7 @@ impl Resolver {
                         qualified, c.name.name
                     ));
                     self.assign(
-                        &mut c.value,
+                        &c.value,
                         Decision::FrameTemp,
                         "const initialiser",
                     );
@@ -3737,10 +3722,10 @@ impl Resolver {
                 }
                 LocusMember::Type(t) => {
                     let tname = t.name.name.clone();
-                    if let TypeDeclBody::Struct(fields) = &mut t.body {
-                        for f in fields.iter_mut() {
+                    if let TypeDeclBody::Struct(fields) = &t.body {
+                        for f in fields.iter() {
                             let fname = f.name.name.clone();
-                            if let Some(d) = &mut f.default {
+                            if let Some(d) = &f.default {
                                 let saved = self.open_frame(&format!(
                                     "{}.type {}.{}",
                                     qualified, tname, fname
@@ -3762,7 +3747,6 @@ impl Resolver {
                 | LocusMember::Claims(_) => {}
             }
         }
-        l.members = members;
         self.accepting = saved_accepting;
     }
 
@@ -3771,41 +3755,31 @@ impl Resolver {
     /// Riley's answer to F.39's third open question.
     fn walk_bindings(
         &mut self,
-        bb: &mut hale_syntax::ast::BindingsBlock,
+        bb: &hale_syntax::ast::BindingsBlock,
         owner: &str,
     ) {
         use hale_syntax::ast::TransportSpec;
-        for entry in bb.entries.iter_mut() {
+        for entry in bb.entries.iter() {
             let topic = entry.topic.name.clone();
             if let TransportSpec::Adapter { locus, inits, .. } =
-                &mut entry.transport
+                &entry.transport
             {
                 let lname = locus.name.clone();
-                let mut taken = std::mem::take(inits);
                 let saved = self.open_frame(&format!(
                     "{}.bindings {} adapter",
                     owner, topic
                 ));
-                self.walk_binding_inits(&lname, &mut taken, &topic);
+                self.walk_binding_inits(&lname, inits, &topic);
                 self.close_frame(saved);
-                if let TransportSpec::Adapter { inits, .. } =
-                    &mut entry.transport
-                {
-                    *inits = taken;
-                }
             }
-            if let Some(codec) = &mut entry.codec {
+            if let Some(codec) = &entry.codec {
                 let lname = codec.locus.name.clone();
-                let mut taken = std::mem::take(&mut codec.inits);
                 let saved = self.open_frame(&format!(
                     "{}.bindings {} codec",
                     owner, topic
                 ));
-                self.walk_binding_inits(&lname, &mut taken, &topic);
+                self.walk_binding_inits(&lname, &codec.inits, &topic);
                 self.close_frame(saved);
-                if let Some(codec) = &mut entry.codec {
-                    codec.inits = taken;
-                }
             }
         }
     }
@@ -3813,10 +3787,10 @@ impl Resolver {
     fn walk_binding_inits(
         &mut self,
         locus: &str,
-        inits: &mut [StructInit],
+        inits: &[StructInit],
         topic: &str,
     ) {
-        for init in inits.iter_mut() {
+        for init in inits.iter() {
             let kind = self
                 .locus_fields
                 .get(locus)
@@ -3827,13 +3801,13 @@ impl Resolver {
                 && self.is_locus_producing(&init.value)
             {
                 self.assign(
-                    &mut init.value,
+                    &init.value,
                     Decision::Placement(topic.to_string()),
                     "bindings transport field",
                 );
             } else {
                 self.assign(
-                    &mut init.value,
+                    &init.value,
                     Decision::FrameTemp,
                     "bindings transport field",
                 );

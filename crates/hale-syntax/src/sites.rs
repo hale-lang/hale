@@ -2,7 +2,7 @@
 //!
 //! Every declaration, member and statement site that the snapshot
 //! numbers carries an `id: NodeId`, as do the two expression shapes
-//! the ownership pre-pass already numbered (`Expr::Struct`,
+//! the ownership pre-pass keys its rows by (`Expr::Struct`,
 //! `Expr::Call`). This module is the traversal that reaches all of
 //! them, so the minting pass and every later reader agree on which
 //! sites exist and in what order.

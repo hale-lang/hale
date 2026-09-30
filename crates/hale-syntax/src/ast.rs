@@ -2948,7 +2948,7 @@ pub enum RecoveryModifier {
 pub struct NodeId(pub u32);
 
 impl NodeId {
-    /// No identity: a node the pre-pass never numbered, or one
+    /// No identity: a node the snapshot never minted, or one
     /// synthesized after it ran.
     pub const NONE: NodeId = NodeId(u32::MAX);
 
@@ -2985,8 +2985,8 @@ pub enum Expr {
         callee: Box<Expr>,
         args: Vec<Expr>,
         span: Span,
-        /// GH #921: see [`NodeId`]. `NodeId::NONE` everywhere but the
-        /// program the ownership pre-pass numbered.
+        /// GH #921: see [`NodeId`]. `NodeId::NONE` until the snapshot
+        /// mints the program.
         id: NodeId,
     },
     Field {
@@ -3010,8 +3010,8 @@ pub enum Expr {
         path: QualifiedName,
         inits: Vec<StructInit>,
         span: Span,
-        /// GH #921: see [`NodeId`]. `NodeId::NONE` everywhere but the
-        /// program the ownership pre-pass numbered.
+        /// GH #921: see [`NodeId`]. `NodeId::NONE` until the snapshot
+        /// mints the program.
         id: NodeId,
     },
     Block(Block),

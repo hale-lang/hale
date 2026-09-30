@@ -19,10 +19,12 @@
 //! The sequence is codegen's former one, moved here unchanged: the
 //! same passes, in the same order, over the same inputs. The one
 //! addition is the mint over the merged program before the pre-pass,
-//! so every stdlib and desugar-generated node has its identity before
-//! the pre-pass numbers anything (the mint keeps the ids the bundle
-//! already carries and continues the counter, so the pre-pass then
-//! finds every `Struct` and `Call` numbered).
+//! with the bundle's source map, so every stdlib and desugar-generated
+//! node has its identity (the mint keeps the ids the bundle already
+//! carries and continues the counter) and every site its seed: a user
+//! site the file its span falls in, a stdlib site the stdlib's own
+//! seed. The pre-pass numbers nothing; a `Struct` or `Call` it finds
+//! unnumbered is an error.
 //!
 //! Today the verbs still run `json_gen`, api injection and sync
 //! inference before the check, and this step re-runs the idempotent
@@ -41,6 +43,7 @@ use crate::handler_routing::HandlerRouting;
 use crate::ownership::OwnerTable;
 use crate::ownership_graph::{BubblePlans, OwnershipGraph};
 use crate::snapshot::Snapshot;
+use crate::symbol::SourceFile;
 
 /// The program codegen lowers, and the tables the frontend derives over it.
 pub struct ResolvedProgram {
@@ -52,7 +55,9 @@ pub struct ResolvedProgram {
     /// omitted `run` synthesized: what lowering walks.
     pub merged: Program,
     /// Every site's identity, minted over `merged` after the desugars
-    /// (ids the bundle already minted are kept; the counter continues).
+    /// with the bundle's source map (ids the bundle already minted are
+    /// kept; the counter continues). The stdlib's sites are seeded
+    /// under [`crate::snapshot::STDLIB_SEED`].
     pub snapshot: Snapshot,
     pub owner_table: OwnerTable,
     /// Fresh factories, extended by the carrier-return fold.
@@ -85,14 +90,20 @@ pub struct ResolvedProgram {
 
 /// Resolve `program` into the envelope codegen lowers.
 ///
+/// `sources` is the bundle's source map, the one its snapshot was
+/// minted with: the resolved snapshot seeds each user site by the file
+/// its span falls in, as the bundle's does. A caller with no source
+/// map passes `&[]`, and the user program is then seed 0 by ordinal.
 /// `import_renames` is the per-build path-rename table for cross-seed
 /// imports (see `hale_codegen::build_executable_with_options`); `api`
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds. The error is the message codegen reports as
-/// `CodegenError::Unsupported`: a refused `--api` injection, or a
-/// bundled stdlib that does not parse.
+/// `CodegenError::Unsupported`: a refused `--api` injection, a bundled
+/// stdlib that does not parse, or a locus-producing node the mint left
+/// unnumbered.
 pub fn resolve_program(
     program: &Program,
+    sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
     api: Option<&str>,
     api_roles: Option<&str>,
@@ -156,6 +167,7 @@ pub fn resolve_program(
             format!("stdlib parse: {}", summary)
         })?;
     let mut merged = user.clone();
+    let user_items = merged.items.len();
     merged.items.extend(stdlib_program.items);
     // Downstream handoff: `-> ()` is a no-op unit annotation. The
     // fallible decl paths already recognized the empty tuple as
@@ -189,14 +201,31 @@ pub fn resolve_program(
     // a desugar above generated. The ids the bundle minted are kept
     // and the counter continues past them, so the pre-pass below finds
     // every `Struct` and `Call` already numbered.
-    let snapshot = crate::snapshot::mint([("program", &mut merged)], &[]);
+    //
+    // The user's items seed by the bundle's source map; the stdlib's,
+    // whose spans overlap the first file's, by the stdlib's own seed.
+    // No pass above adds or removes a top-level item, so the stdlib's
+    // are still the tail the merge appended, and go back after the mint.
+    let mut stdlib = Program {
+        effect_names: Vec::new(),
+        declared_effects: Vec::new(),
+        effect_defs: Vec::new(),
+        imports: Vec::new(),
+        items: merged.items.split_off(user_items),
+        span: merged.span,
+    };
+    let snapshot = crate::snapshot::mint(
+        [("program", &mut merged), (crate::snapshot::STDLIB_SEED, &mut stdlib)],
+        sources,
+    );
+    merged.items.append(&mut stdlib.items);
 
     // GH #921 A2: the ownership pre-pass, over the merged and
-    // desugared program and before anything borrows it. It numbers
-    // every locus-producing expression node (the only mutation it
-    // makes) and derives an owner for each from syntactic position,
-    // using the same fresh-factory fixpoint lowering uses — extended
-    // to the carrier returns that fixpoint misses.
+    // desugared program. It derives an owner for every locus-producing
+    // expression node from syntactic position, keyed by the id the
+    // mint above gave it, using the same fresh-factory fixpoint
+    // lowering uses — extended to the carrier returns that fixpoint
+    // misses.
     //
     // GH #921 A3, commit 1: the extension is no longer table-only.
     // `fresh_factories::collect` classifies the CARRIER
@@ -216,10 +245,11 @@ pub fn resolve_program(
             .map(|(f, row)| (f, (row.locus, row.returned_binding)))
             .collect();
     let mut owner_table = crate::ownership::resolve_owners(
-        &mut merged,
+        &merged,
         &fresh_locus_factories,
         import_renames,
-    );
+    )
+    .map_err(|e| e.to_string())?;
     // F.40 phase 1.2b: and what each `let` needs to know about its
     // own binding, one row per binding site, keyed by the identity
     // minted above.

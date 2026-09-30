@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 158 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 157 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -49,7 +49,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `model` | The law engine | Canonical | derivation | `derive_application_model` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
-| `snapshot_identity` | Identity | Migrating | derivation | `mint` | 5 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars and again over the merged program in the resolved-program step, idempotently (one numbering; the second mint numbers only what the first did not see), with reliable provenance. |
+| `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again over the merged program in the resolved-program step with the bundle's seeds and a named seed for the bundled stdlib, idempotently (one numbering; the second mint numbers only what the first did not see), with reliable provenance. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -1230,7 +1230,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `snapshot_identity` — Migrating · derivation
 
-**Answers.** The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars and again over the merged program in the resolved-program step, idempotently (one numbering; the second mint numbers only what the first did not see), with reliable provenance.
+**Answers.** The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again over the merged program in the resolved-program step with the bundle's seeds and a named seed for the bundled stdlib, idempotently (one numbering; the second mint numbers only what the first did not see), with reliable provenance.
 
 **Inputs.** seed_loading; desugar_sequence
 
@@ -1238,7 +1238,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/ownership.rs` · `ExprId` — F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass. *Removed when:* the pre-pass numbers nothing on a minted program; the row goes with the numbering (phase-1 follow-up).
 - `crates/hale-types/src/ownership.rs` · `BindingKey` — use sites inside the returned-bindings walk are resolved by span (identifiers are not minted sites); the row is keyed by the `let`'s snapshot identity. *Removed when:* use-site identity (phase 1.1 follow-up).
 - `crates/hale-model/src/ids.rs` · `FunctionId` — model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings). *Removed when:* same.
 - `crates/hale-types/src/effects.rs` · `FnKey` — analysis keys are (locus name, fn name). *Removed when:* same.
@@ -1251,7 +1250,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)
 - snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem
 - canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate
-- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, over the merged program in the resolved-program step, which numbers only what the first mint did not see (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar and the bundle carries the result; a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass keeps what was minted and numbers past it
+- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, over the merged program in the resolved-program step, which numbers only what the first mint did not see (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar with the source map check builds and the bundle carries the result; the resolved program mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error
 
 **Missing data.** a missing required row is a compiler error
 

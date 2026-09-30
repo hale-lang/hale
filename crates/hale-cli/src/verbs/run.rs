@@ -33,6 +33,7 @@ use crate::shared::process::wait_passing_signals;
 /// carries. A refused resolve is reported as the build would report it.
 fn resolve_checked(
     program: &Program,
+    source_map: &[hale_types::symbol::SourceFile],
     renames: &[(Vec<String>, String)],
     options: &hale_codegen::BuildOptions,
     file_bases: &[(u32, PathBuf, u32)],
@@ -40,6 +41,7 @@ fn resolve_checked(
 ) -> Result<hale_types::resolved::ResolvedProgram, ExitCode> {
     hale_types::resolved::resolve_program(
         program,
+        source_map,
         renames,
         options.api.as_deref(),
         options.api_roles.as_deref(),
@@ -175,10 +177,11 @@ pub(crate) fn run_program(
         };
         // F.40 phase 1.1b-iii: the snapshot. The file entry runs no
         // desugar before the check, so it mints straight after the
-        // load; with no source map here, the seed is the program's
-        // ordinal.
+        // load, seeded by the source map `check` mints with.
         let target_name = target.display().to_string();
-        let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
+        let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
+        let snapshot =
+            hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
         bundle_programs.insert(target_name.clone(), &program);
         // The rename table must reach the analysis here too, not only in
@@ -205,7 +208,14 @@ pub(crate) fn run_program(
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let resolved = match resolve_checked(&program, &renames, &options, &file_bases, &sources) {
+        let resolved = match resolve_checked(
+            &program,
+            &source_map,
+            &renames,
+            &options,
+            &file_bases,
+            &sources,
+        ) {
             Ok(r) => r,
             Err(code) => return code,
         };
@@ -369,10 +379,12 @@ pub(crate) fn run_program(
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
-    // F.40 phase 1.1b-iii: the snapshot, after the last desugar. This
-    // path builds no source map, so the seed is the program's ordinal.
+    // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
+    // by the source map `check` mints with.
     let target_name = target.display().to_string();
-    let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
+    let source_map = crate::shared::frontend::source_map(target, &file_bases, &path_sources);
+    let snapshot =
+        hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
 
     let bundle_programs: BTreeMap<String, &Program> =
         std::iter::once((target_name.clone(), &program)).collect();
@@ -400,7 +412,14 @@ pub(crate) fn run_program(
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
     let resolved =
-        match resolve_checked(&program, &renames, &options, &file_bases, &path_sources) {
+        match resolve_checked(
+            &program,
+            &source_map,
+            &renames,
+            &options,
+            &file_bases,
+            &path_sources,
+        ) {
             Ok(r) => r,
             Err(code) => return code,
         };

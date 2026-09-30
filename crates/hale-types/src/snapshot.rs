@@ -8,14 +8,18 @@
 //! numbering would collide there. The seed is the source unit the
 //! site's span falls in (the bundle's `sources`, whose `base`/`len`
 //! give each unit's range in the bundle-global space), or the
-//! program's own ordinal when the caller has no source map.
+//! program's own ordinal when the caller has no source map. The
+//! bundled stdlib is a seed of its own, named [`STDLIB_SEED`]: it is
+//! parsed in its own coordinate space, which overlaps the source
+//! map's first unit, so its spans cannot name its seed.
 //!
 //! Minting is idempotent: a site that already carries an id keeps
 //! it, and the counter continues past the largest id present. That
-//! is what lets the F.39 pre-pass (`resolve_owners`), which numbers
-//! `Struct` and `Call` nodes it finds unnumbered, run after the
-//! snapshot without renumbering anything, and keep numbering on the
-//! harness paths that build without a snapshot.
+//! is what lets the resolved-program step (`crate::resolved`) mint
+//! the merged program after the bundle minted the user's: the user's
+//! ids are kept, and the stdlib's sites and every node a later
+//! desugar generated are numbered past them. Nothing numbers a site
+//! after the mint; the F.39 pre-pass refuses one it finds unnumbered.
 //!
 //! What this pass records is one row per site: its id, its kind and
 //! its span. Tables key on the id; witnesses render from the span
@@ -122,6 +126,11 @@ impl Snapshot {
     }
 }
 
+/// The name of the bundled stdlib's seed. A program minted under this
+/// name is its own seed whatever the source map says (see the module
+/// docs), recorded after the source map's units.
+pub const STDLIB_SEED: &str = "<stdlib>";
+
 /// The seed of a span: the source unit whose bundle-global range holds
 /// its start, if the source map has one.
 fn seed_of(sources: &[SourceFile], span: Span) -> Option<SeedId> {
@@ -135,15 +144,16 @@ fn seed_of(sources: &[SourceFile], span: Span) -> Option<SeedId> {
 /// return every site's row and every generated site's origin.
 /// `sources` is the bundle's source map (the seed of a site is the unit
 /// its span falls in); when it is empty, each program is its own seed,
-/// in the order given.
+/// in the order given. A program named [`STDLIB_SEED`] is its own seed
+/// either way.
 pub fn mint<'a>(
     programs: impl IntoIterator<Item = (&'a str, &'a mut Program)>,
     sources: &[SourceFile],
 ) -> Snapshot {
     let mut programs: Vec<(&str, &mut Program)> = programs.into_iter().collect();
     // The counter continues past the largest id already present, so
-    // minting twice, or after a pre-pass numbered some nodes, keeps
-    // every existing id.
+    // minting twice, or minting a merged program whose user half the
+    // bundle already minted, keeps every existing id.
     let mut next: u32 = 0;
     for (_, p) in programs.iter() {
         for_each_site(p, &mut |_, _, id| {
@@ -154,10 +164,10 @@ pub fn mint<'a>(
     }
     let mut seeds: Vec<String> = sources.iter().map(|u| u.path.clone()).collect();
     let mut sites = Vec::new();
-    for (ordinal, (path, p)) in programs.iter_mut().enumerate() {
-        let own_seed = if sources.is_empty() {
+    for (path, p) in programs.iter_mut() {
+        let own_seed = if sources.is_empty() || *path == STDLIB_SEED {
             seeds.push(path.to_string());
-            Some(SeedId(ordinal as u32))
+            Some(SeedId(seeds.len() as u32 - 1))
         } else {
             None
         };

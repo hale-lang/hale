@@ -17,7 +17,7 @@ use hale_syntax::error::{Diag, SpanOrigin};
 use hale_syntax::Span;
 
 /// A declaration's text without its positions (`Pos(12)`) or the
-/// ownership pre-pass's numbering (`NodeId(7)`): two declarations with the
+/// snapshot's identities (`NodeId(7)`): two declarations with the
 /// same text compare equal wherever they sit.
 fn shape(d: &TopDecl) -> String {
     let mut text = format!("{:?}", d);

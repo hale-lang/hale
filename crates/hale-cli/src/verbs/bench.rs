@@ -255,14 +255,6 @@ pub(crate) fn run_bench_file(
                     return Err(msg);
                 }
             };
-        // F.40 phase 1.1b-iii: the snapshot, straight after the load
-        // (bench runs no desugar of its own). Bench builds no bundle
-        // and runs no check, so nothing holds the table; what stays is
-        // the identities on the program codegen receives, the same as
-        // every other entry point hands it. No source map here, so the
-        // seed is the program's ordinal.
-        let entry_name = entry.display().to_string();
-        let _ = hale_types::snapshot::mint([(entry_name.as_str(), &mut prog)], &[]);
         // GH #848: the compile runs against a temp COPY of the bench
         // file with the synthesized driver appended, and that copy is
         // deleted a moment later — so a located codegen error would
@@ -287,6 +279,23 @@ pub(crate) fn run_bench_file(
             .into_iter()
             .map(|(base, p, len)| (base, relabel(p), len))
             .collect();
+        // F.40 phase 1.1b-iii: the snapshot, straight after the load
+        // (bench runs no desugar of its own), seeded by the source map
+        // `check` mints with — over the re-labelled files, so a seed
+        // names the bench file and not its temp copy. Bench runs no
+        // check, but it holds its snapshot on the same minimal bundle
+        // the other verbs build (the program, the rename table, the
+        // source map), and the resolve below reads its inputs from it.
+        let entry_name = entry.display().to_string();
+        let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
+        let snapshot =
+            hale_types::snapshot::mint([(entry_name.as_str(), &mut prog)], &source_map);
+        let mut bundle = hale_types::Bundle::new(
+            std::iter::once((entry_name.clone(), &prog)).collect(),
+        );
+        bundle.import_renames = renames;
+        bundle.sources = source_map;
+        bundle.snapshot = snapshot;
         let bin = bench_scratch.path("bench");
         let options = collect_ffi_from_imports(
             &ctx.imports,
@@ -297,13 +306,14 @@ pub(crate) fn run_bench_file(
         // shipped optimization level.
         hale_types::resolved::resolve_program(
             &prog,
-            &renames,
+            &bundle.sources,
+            &bundle.import_renames,
             options.api.as_deref(),
             options.api_roles.as_deref(),
         )
         .map_err(hale_codegen::CodegenError::Unsupported)
         .and_then(|resolved| {
-            hale_codegen::build_resolved(resolved, &bin, &renames, &options)
+            hale_codegen::build_resolved(resolved, &bin, &bundle.import_renames, &options)
         })
         .map_err(|e| render_codegen_error(&e, &file_bases, &sources))?;
         Ok(bin)

@@ -87,10 +87,11 @@ pub(crate) fn compile_test_binary(
         }
     };
     // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
-    // before the check, so it mints straight after the load; with no
-    // source map here, the seed is the program's ordinal.
+    // before the check, so it mints straight after the load, seeded by
+    // the source map `check` mints with.
     let entry_name = entry.display().to_string();
-    let snapshot = hale_types::snapshot::mint([(entry_name.as_str(), &mut program)], &[]);
+    let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
+    let snapshot = hale_types::snapshot::mint([(entry_name.as_str(), &mut program)], &source_map);
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(entry_name.clone(), &program);
     // The rename table must reach the analysis here too, not only in
@@ -140,6 +141,7 @@ pub(crate) fn compile_test_binary(
     options.dev_profile = true;
     if let Err(e) = hale_types::resolved::resolve_program(
         &program,
+        &source_map,
         &renames,
         options.api.as_deref(),
         options.api_roles.as_deref(),

@@ -736,7 +736,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let prog = parse_source(src).expect("parse failed");
-    let resolved = hale_types::resolved::resolve_program(&prog, &[], None, None)
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None)
         .expect("resolves");
     assert_eq!(resolved.intra_locus.len(), 1, "{:?}", resolved.intra_locus);
     let rw = &resolved.intra_locus[0];
