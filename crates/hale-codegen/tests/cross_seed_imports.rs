@@ -391,6 +391,48 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
     );
 }
 
+/// Outside review of #1276, finding 2: the envelope's bundle carried no
+/// import renames, so the ownership graph could not resolve the
+/// qualified imported type in `accept(c: lib::Child)` and its
+/// `accepts["Parent"]` was empty — which lowering reads as
+/// authoritative, so the declared `accept` never ran (`count=0`). The
+/// CLI rewrites qualified declaration types before this point, which
+/// masked it; a build handed the rename table through the API, as this
+/// one is, shows it.
+#[test]
+fn accept_of_a_qualified_imported_type_runs_through_the_api() {
+    let src = r#"
+        locus ImportedChild { params { id: Int = 0; } }
+        locus Parent {
+            params { count: Int = 0; }
+            accept(c: lib::Child) {
+                self.count = self.count + 1;
+            }
+            run() {
+                lib::Child { id: 1 };
+                println("count=", self.count);
+            }
+        }
+        fn main() { Parent { }; }
+    "#;
+    let renames: Vec<(Vec<String>, String)> =
+        vec![(vec!["lib".to_string(), "Child".to_string()], "ImportedChild".to_string())];
+    let prog = parse_source(src).expect("parse");
+    let bin = harness::unique_bin("hale_accept_qualified_import");
+    build_executable_with_options(&prog, &bin, &renames, &build_opts::options())
+        .expect("build with the rename table");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        out.status.success(),
+        "non-zero exit: {:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("count=1"), "the declared accept ran: {stdout:?}");
+}
+
 #[test]
 fn method_name_shadowed_by_top_level_fn_resolves() {
     // pond P1 (FRICTION method-name-shadowed-by-fn): a cross-seed method
