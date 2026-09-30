@@ -237,6 +237,7 @@ const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
 const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 const CG_DECL: &str = "crates/hale-codegen/src/locus/decl.rs";
+const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
@@ -705,6 +706,8 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_CHANNELS, "failure_handler_for", "looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows)", "the handler fn is a column of the row"),
             legacy(CG_CHANNELS, "resolve_failure_route", "the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's", "the instance is a row of the instance tree (phase 2)"),
             legacy(CG, "__StdBusUnixConnectTransport", "the transport-loss handler is picked by name through the routing table", "the bindings family names the transport's locus"),
+            legacy(CG_METHOD, "lower_locus_method_bodies", "the body loop pairs each on_failure declaration with its LLVM fn by position in the handler table", "the body is looked up by the row's ordinal (item 3)"),
+            legacy(MODEL_BUILDER, "fn_rows", "the model's function rows key a failure handler by a signature string built from its params' written types", "keyed by the row's SiteId (phase 2)"),
         ],
         consumers: &[consumer_at("codegen (the handler table)", CG_DECL, "handlers_of"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised)", FRONTIER, "supervised_diags")],
         invariants: &["the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row"],

@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 160 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 162 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -25,7 +25,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 3 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 5 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
@@ -600,6 +600,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/channels/mod.rs` · `failure_handler_for` — looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows). *Removed when:* the handler fn is a column of the row.
 - `crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route` — the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's. *Removed when:* the instance is a row of the instance tree (phase 2).
 - `crates/hale-codegen/src/codegen.rs` · `__StdBusUnixConnectTransport` — the transport-loss handler is picked by name through the routing table. *Removed when:* the bindings family names the transport's locus.
+- `crates/hale-codegen/src/locus/method.rs` · `lower_locus_method_bodies` — the body loop pairs each on_failure declaration with its LLVM fn by position in the handler table. *Removed when:* the body is looked up by the row's ordinal (item 3).
+- `crates/hale-types/src/model_builder.rs` · `fn_rows` — the model's function rows key a failure handler by a signature string built from its params' written types. *Removed when:* keyed by the row's SiteId (phase 2).
 
 **Also owned.** `crates/hale-types/src/handler_routing.rs` · `child_locus_name`
 
