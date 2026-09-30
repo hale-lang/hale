@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 3 canonical, 37 migrating (with 158 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 3 canonical, 37 migrating (with 157 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -51,7 +51,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance. |
 | `demand` | Identity | Migrating | derivation | `Snapshot` | 1 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
-| `digests` | Identity | Migrating | digest | `model_shape_hash` | 11 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under. |
+| `digests` | Identity | Migrating | digest | `model_shape_hash` | 10 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under. |
 
 ## Layer 1 — parse and desugar
 
@@ -1353,7 +1353,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/verbs/check/run_impl.rs` · `--check-topology-shape` — scrapes `shape_hash` from text a second time. *Removed when:* same.
 - `crates/hale-cli/src/shared/options.rs` · `exec_digest` — the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays. *Removed when:* one stated coverage, with tests that a covered change moves it.
 - `crates/hale-cli/build.rs` · `toolchain_digest` — the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk. *Removed when:* phase 2.
 - `crates/hale-cli/src/shared/stale.rs` · `compute_codegen_src_hash` — the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk. *Removed when:* one identity per snapshot; the stale check reads it.

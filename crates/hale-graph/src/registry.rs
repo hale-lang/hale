@@ -1317,7 +1317,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site(TOPOLOGY, "model_shape_hash")),
         legacy: &[
-            legacy(V_CHECK, "--check-topology-shape", "scrapes `shape_hash` from text a second time", "same"),
             legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
             legacy(CLI_BUILD_RS, "toolchain_digest", "the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk", "phase 2"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk", "one identity per snapshot; the stale check reads it"),
