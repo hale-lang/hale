@@ -7,6 +7,9 @@
 //! else is a family, demanded by name:
 //!
 //! - [`Snapshot::demand_scope`]: the top scope, with its topic rows.
+//!   [`Snapshot::demand_editor_scope`] is the editor's reading of it:
+//!   over a seed with a hole, the scope of the members that parsed,
+//!   with the hole named.
 //! - [`Snapshot::demand_bus_graph`], [`Snapshot::demand_ownership_graph`]
 //!   and [`Snapshot::demand_handlers`]: the bus graph, the ownership
 //!   graph and the handler rows over the checked programs, what the
@@ -316,6 +319,17 @@ struct Scope {
     diags: Vec<Diag>,
 }
 
+/// The scope the editor answers a request from
+/// ([`Snapshot::demand_editor_scope`]): the snapshot's top scope, and
+/// the members it does not cover.
+pub struct EditorScope<'a> {
+    pub top: &'a TopScope,
+    /// The seed's members that are not in `top` — they did not parse
+    /// or would not read — sorted. Empty for a whole seed, whose `top`
+    /// is [`Snapshot::demand_scope`]'s.
+    pub hole: Vec<&'a Path>,
+}
+
 /// One load's inputs, and the families derived from them.
 pub struct Snapshot {
     /// The environment this snapshot's claims are checked for and its
@@ -343,6 +357,9 @@ pub struct Snapshot {
     /// that leaves any blocks the scope.
     unreadable: BTreeMap<PathBuf, String>,
     scope: OnceCell<Result<Scope, Blocked>>,
+    /// The editor's scope over the members that parsed, for a seed with
+    /// a hole ([`Snapshot::demand_editor_scope`]).
+    partial_scope: OnceCell<Result<Scope, Blocked>>,
     typing: OnceCell<Result<Vec<Diag>, Blocked>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
@@ -498,6 +515,7 @@ impl Snapshot {
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
             scope: OnceCell::new(),
+            partial_scope: OnceCell::new(),
             typing: OnceCell::new(),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
@@ -752,6 +770,37 @@ impl Snapshot {
     /// The top scope, with the bundle's topic rows.
     pub fn demand_scope(&self) -> Result<&TopScope, &Blocked> {
         self.scope().map(|s| &s.top)
+    }
+
+    /// The scope an editor request answers from while the seed is being
+    /// typed: [`Snapshot::demand_scope`]'s for a whole seed; for the
+    /// editor's seed with a hole ([`LoadMode::Editor`], a member that
+    /// did not parse or would not read), the top scope over the members
+    /// that parsed — each its own program, unshaped, no import followed
+    /// — with the hole named. It is counted as the `top_scope` family:
+    /// a seed with a hole never builds the whole scope, so the count
+    /// stays one. Nothing else reads it — the check, the graphs and the
+    /// model stay blocked, so no check runs over a partial program.
+    /// Blocked when no member parsed, and for any other load with a
+    /// hole.
+    pub fn demand_editor_scope(&self) -> Result<EditorScope<'_>, &Blocked> {
+        if !self.has_hole() {
+            return self.demand_scope().map(|top| EditorScope { top, hole: Vec::new() });
+        }
+        let partial = self
+            .partial_scope
+            .get_or_init(|| {
+                if self.key.mode != Some(LoadMode::Editor) || self.programs.is_empty() {
+                    return Err(self.hole_blocked());
+                }
+                let (top, diags) = self.build_scope();
+                Ok(Scope { top, diags })
+            })
+            .as_ref()?;
+        let mut hole: Vec<&Path> =
+            self.unparsed.keys().chain(self.unreadable.keys()).map(PathBuf::as_path).collect();
+        hole.sort();
+        Ok(EditorScope { top: &partial.top, hole })
     }
 
     /// What the resolver and the checker report, before the laws.
@@ -1211,6 +1260,35 @@ mod tests {
         for f in FAMILIES.iter().filter(|f| **f != "seed_loading") {
             assert_eq!(builds[f], 0, "{f} ran for a seed that did not parse");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The editor's scope over a seed with a hole: the members that
+    /// parsed, with the hole named, built once and counted as the
+    /// scope; the check stays blocked, and a whole seed's editor scope
+    /// is its scope.
+    #[test]
+    fn the_editor_scope_covers_the_members_that_parsed_and_names_the_hole() {
+        let d = scratch("editor-scope");
+        std::fs::write(d.join("app.hl"), CLEAN).unwrap();
+        std::fs::write(d.join("broken.hl"), "fn broken( {\n").unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        assert!(s.demand_scope().is_err(), "the whole scope is blocked");
+        let scope = s.demand_editor_scope().expect("the members that parsed");
+        assert_eq!(scope.hole, vec![d.join("broken.hl").as_path()]);
+        assert!(scope.top.lookup("App").is_some() && scope.top.lookup("broken").is_none());
+        let again = s.demand_editor_scope().expect("still there");
+        assert!(std::ptr::eq(scope.top, again.top), "built once");
+        assert_eq!(s.demand_check().expect_err("never checked").family, "top_scope");
+        assert_eq!(s.builds()["top_scope"], 1);
+        assert_eq!(s.builds()["expression_typing"], 0);
+
+        std::fs::remove_file(d.join("broken.hl")).unwrap();
+        let whole = load(&d.join("app.hl"), &Disk, Config::editor());
+        let scope = whole.demand_editor_scope().expect("a whole seed");
+        assert!(scope.hole.is_empty());
+        assert!(std::ptr::eq(scope.top, whole.demand_scope().unwrap()), "the snapshot's scope");
+        assert_eq!(whole.builds()["top_scope"], 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 
