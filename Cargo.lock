@@ -78,6 +78,7 @@ version = "0.22.0"
 dependencies = [
  "hale-codegen",
  "hale-dna",
+ "hale-graph",
  "hale-iris",
  "hale-lsp",
  "hale-model",
@@ -120,6 +121,7 @@ name = "hale-iris"
 version = "0.22.0"
 dependencies = [
  "hale-dna",
+ "hale-graph",
  "hale-stdlib",
 ]
 

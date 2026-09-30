@@ -7,3 +7,7 @@ description = "The iris observer's sources, embedded so `hale iris` ships in the
 [dependencies]
 hale-dna = { path = "../hale-dna" }
 hale-stdlib = { path = "../hale-stdlib" }
+
+[build-dependencies]
+# The identity list and walk (F.40 phase 0 step 0.4); dependency-free.
+hale-graph = { path = "../hale-graph" }

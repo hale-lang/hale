@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 hale-model = { path = "../hale-model" }
+hale-graph = { path = "../hale-graph" }
 hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 hale-codegen = { path = "../hale-codegen" }
@@ -122,3 +123,7 @@ path = "tests/topology.rs"
 [[test]]
 name = "xseed"
 path = "tests/xseed.rs"
+
+[build-dependencies]
+# The identity list and walk (F.40 phase 0 step 0.4); dependency-free.
+hale-graph = { path = "../hale-graph" }
