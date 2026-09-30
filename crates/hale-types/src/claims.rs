@@ -25,9 +25,7 @@
 //!
 //! Selection is deliberately not a judgment. It reads clause text,
 //! adoption, and membership — never the bus graph, and never an
-//! effect walk. The public entry points still accept a `&BusGraph`
-//! because their callers hold one and a future selection rule might
-//! need topology; nothing in here consults it today.
+//! effect walk, and its entry points take no graph.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,7 +33,6 @@ use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
 use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
-use crate::bus_graph::BusGraph;
 use hale_model::GroupSelection;
 use crate::effects::close;
 use crate::stdlib_surface::{self, EffectSet};
@@ -67,8 +64,6 @@ pub(crate) struct Selection<'a> {
 
 pub(crate) fn select<'a>(
     programs: &[&'a Program],
-    // Unused since Change 10 — see `claims_report_inner`.
-    _graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Selection<'a> {
     let universe = enumerate_clauses(programs, import_renames);
@@ -94,7 +89,6 @@ pub(crate) fn select<'a>(
 /// selection, so this stops there.
 pub fn constitution_identities(
     programs: &[&Program],
-    _graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Adoption {
     let (_d, adoption, _groups) =
@@ -118,10 +112,9 @@ pub fn constitution_identities(
 /// the artifact read the other.
 pub fn selection_diags(
     programs: &[&Program],
-    graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    select(programs, graph, import_renames).diags
+    select(programs, import_renames).diags
 }
 
 /// Diagnostics plus per-claim outcomes (the artifact's rows).
@@ -566,7 +559,6 @@ pub(crate) struct ClauseUniverse<'a> {
 /// evaluator is gone. This is the thing it was standing in for.
 pub fn selected_clauses(
     programs: &[&Program],
-    _graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<(String, Option<String>)> {
     let u = enumerate_clauses(programs, import_renames);
@@ -949,10 +941,9 @@ fn resolve_member(
 /// Change 10: selection does not consult the BUS GRAPH — that was
 /// the evaluator's input, for counting publishers and walking
 /// edges. Deciding WHICH laws exist is a question about clause
-/// text, adoption, and group membership. The public entry points
-/// still take a graph: their callers hold one anyway, and the
-/// parameter is where a future selection rule that needs topology
-/// would arrive.
+/// text, adoption, and group membership, so no entry point takes a
+/// graph (their callers built one for nothing until F.40 phase 1's
+/// review).
 fn claims_report_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],

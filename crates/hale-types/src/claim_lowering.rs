@@ -386,11 +386,8 @@ pub fn lower_claims(
     // while this table recorded no issue for it, so the artifact
     // could serialize the dependent law as `holds` and contradict
     // the compiler that produced it.
-    let (top, _) = crate::resolve::build_top_scope(bundle);
-    let graph = crate::bus_graph::build_bus_graph(bundle, &top);
     let selection = crate::claims::select(
         &programs,
-        &graph,
         &bundle.import_renames,
     );
     let universe = selection.universe;

@@ -80,23 +80,38 @@ hale-ts-shim  staticlib; no dependents; linked by path
 5. **Model**: `model_builder::derive_application_model`, on demand.
 6. **Judgment**: `judgment::claim_law_diags`, from the check path
    only when no non-`Claim` error exists and claims are present.
-7. **Codegen**: `hale_codegen::build_executable_with_options`
-   (`codegen.rs`).
+7. **The resolved program**: `hale_types::resolved::resolve_program`
+   (the codegen-shape desugars, the stdlib merge, the snapshot mint
+   with the bundle's source map, the ownership, handler-routing and
+   bus tables; the envelope keeps the renames and api it was resolved
+   with, its top scope, and hands out its bundle view), then
+   **codegen**: `hale_codegen::build_resolved` (`codegen.rs`), which
+   refuses options whose api disagrees with the envelope's.
+   `build_executable_with_options` is the adapter the test harness
+   uses; it resolves and then lowers.
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
-Inside `build_executable_with_options`, in order:
+Inside `resolve_program` (hale-types), in order:
 `resolve_qualified_bus_subjects`; the topic desugars in
-`hale-syntax/src/desugar.rs` (`desugar_intra_locus_topics`,
-`desugar_topics`, `desugar_repr_accessors`), **which run after
-check, so the checker sees topics unsugared**; the stdlib merge
-(`hale_stdlib::AP_SOURCE` parsed and appended); unit and alias
-normalization; `desugar_omitted_run`; the ownership pre-pass
-(`ownership::resolve_owners`, F.39 in `spec/decisions.md`: an
-instantiation with no owner row is a `CodegenError`); the bus graph
-feeding `DispatchPlan::from_gates`; `lower_program` (A0 types, A
-loci, A3 serializers, B fn decls, C lifecycle bodies, D fn bodies);
-object emission and link.
+`hale-syntax/src/desugar.rs` (`desugar_intra_locus_topics`, whose
+rewrites are recorded as a relation, `desugar_topics`,
+`desugar_repr_accessors`), **which run after check, so the checker
+sees topics unsugared** (F.40 phase 2 moves the sequence before the
+check); the stdlib merge (`hale_stdlib::AP_SOURCE` parsed and
+appended); unit and alias normalization; `desugar_omitted_run`; the
+snapshot mint over the merged program (the stdlib's sites under their
+own seed); the ownership pre-pass (`ownership::resolve_owners`, F.39
+in `spec/decisions.md`: it numbers nothing and refuses an unminted
+literal or call, and an instantiation with no owner row is a
+`CodegenError`), the binding
+facts and the fresh factories; the ownership graph and the bubble
+plans; the handler-routing rows; the bus graph feeding
+`DispatchPlan::from_gates`. Then inside `build_resolved` (hale-codegen):
+`lower_program` (A0 types, A loci, A3 serializers, B fn decls, C
+lifecycle bodies, D fn bodies); object emission and link. What
+lowering still derives for itself is listed in `spec/registry.md`
+as legacy rows with their removal conditions.
 
 `hale build` derives the model to stamp its identity into the binary
 (`model_identity`, `topology::model_shape_hash`); `hale check` builds

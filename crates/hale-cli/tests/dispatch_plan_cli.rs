@@ -1,20 +1,14 @@
-//! GH #476 Change 8 — the dispatch plan, proven against the thing
-//! that actually lowers.
+//! GH #476 Change 8 — the dispatch plan is part of the execution
+//! identity, so a build that lowers dispatch differently is a
+//! different build and its recording is not admitted.
 //!
-//! `DispatchPlan` has two fact sources by design: the model's bus
-//! graph (built over the AUTHORED bundle) and codegen's (built over
-//! the merged, desugared program its own emission uses). The
-//! decision LADDER is shared — `DispatchFlavor::of` — but shared
-//! code proves nothing about facts, so this differential compares
-//! the two plans over the real corpus, through the real binaries:
-//! `hale model dump` prints the model's plan, `HALE_DISPATCH_TRACE`
-//! prints codegen's.
-//!
-//! The second test pins the consequence: the plan is part of the
-//! execution identity, so a build that lowers dispatch differently
-//! is a different build and its recording is not admitted.
+//! The plan the identity frames is the resolved program's, the one
+//! codegen lowers (F.40 phase 1.5). The model's plan was compared with
+//! codegen's over the corpus here until then; the comparison ran once
+//! more, over every corpus program, as a shadow against the resolved
+//! program's plan, and was retired with every shared subject's flavor
+//! agreeing.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -28,139 +22,6 @@ fn workdir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).expect("mkdir");
     d
-}
-
-fn repo_root() -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.pop();
-    p.pop();
-    p
-}
-
-/// `subject -> flavor` from `hale model dump`'s plan section.
-fn model_plan(prog: &Path) -> BTreeMap<String, String> {
-    let out = hale()
-        .arg("model")
-        .arg("dump")
-        .arg(prog)
-        .output()
-        .expect("hale model dump");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut rows = BTreeMap::new();
-    let mut in_plan = false;
-    for line in text.lines() {
-        if line.starts_with("dispatch_plan (") {
-            in_plan = true;
-            continue;
-        }
-        if !in_plan {
-            continue;
-        }
-        let Some(rest) = line.strip_prefix("  ") else { break };
-        let mut it = rest.split(' ');
-        let (Some(subject), Some(flavor)) = (it.next(), it.next()) else {
-            break;
-        };
-        rows.insert(subject.to_string(), flavor.to_string());
-    }
-    rows
-}
-
-/// `subject -> flavor` from the backend's own plan.
-fn codegen_plan(dir: &Path, prog: &str) -> BTreeMap<String, String> {
-    let out = hale()
-        .current_dir(dir)
-        .arg("build")
-        .arg(prog)
-        .env("HALE_DISPATCH_TRACE", "1")
-        .output()
-        .expect("hale build");
-    assert!(
-        out.status.success(),
-        "build of {} failed: {}",
-        prog,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let text = String::from_utf8_lossy(&out.stderr);
-    let mut rows = BTreeMap::new();
-    for line in text.lines() {
-        let Some(rest) = line.strip_prefix("[hale-dispatch] ") else {
-            continue;
-        };
-        let mut it = rest.split(' ');
-        if let (Some(subject), Some(flavor)) = (it.next(), it.next()) {
-            rows.insert(subject.to_string(), flavor.to_string());
-        }
-    }
-    rows
-}
-
-/// Every subject the MODEL plans must be planned the same way by
-/// codegen. The converse does not hold and must not be asserted:
-/// codegen merges the Hale-source stdlib, so its plan additionally
-/// carries stdlib subjects (`log.**`, `io.tcp.**`) that no user
-/// model has any business naming.
-#[test]
-fn the_model_plan_agrees_with_the_codegen_plan_over_the_corpus() {
-    let corpus =
-        repo_root().join("crates/hale-codegen/tests/fixtures/examples");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&corpus)
-        .expect("corpus")
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("main.hl").is_file())
-        .collect();
-    dirs.sort();
-    let work = workdir("differential");
-    let mut compared = 0usize;
-    let mut subjects = 0usize;
-    for d in dirs {
-        let main = d.join("main.hl");
-        let model = model_plan(&main);
-        if model.is_empty() {
-            continue; // no bus surface: nothing to disagree about
-        }
-        // Build in a copy so the corpus tree stays clean.
-        let name = d.file_name().unwrap().to_string_lossy().into_owned();
-        let dst = work.join(&name);
-        let _ = std::fs::create_dir_all(&dst);
-        for e in std::fs::read_dir(&d).unwrap().flatten() {
-            if e.path().is_file() {
-                let _ = std::fs::copy(
-                    e.path(),
-                    dst.join(e.file_name()),
-                );
-            }
-        }
-        let cg = codegen_plan(&dst, "main.hl");
-        assert!(
-            !cg.is_empty(),
-            "{}: codegen printed no plan at all",
-            name
-        );
-        for (subject, flavor) in &model {
-            assert_eq!(
-                cg.get(subject),
-                Some(flavor),
-                "{}: the model plans `{}` as {} but codegen lowers \
-                 it as {:?} — the two fact sources have drifted",
-                name,
-                subject,
-                flavor,
-                cg.get(subject)
-            );
-            subjects += 1;
-        }
-        compared += 1;
-    }
-    assert!(
-        compared >= 15 && subjects >= 15,
-        "differential covered too little to mean anything: \
-         {} programs / {} subjects",
-        compared,
-        subjects
-    );
-    let _ = std::fs::remove_dir_all(&work);
 }
 
 const BUS_PROG: &str = r#"

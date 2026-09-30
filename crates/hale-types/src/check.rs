@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::handler_routing::ChildRef;
 use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
@@ -574,6 +575,16 @@ pub fn check_bundle_scoped(
             }
         }
     }
+    // F.40 phase 1.4: the handler rows, over the whole bundle, so a
+    // child locus declared in a sibling file resolves as lowering and
+    // the model resolve it.
+    let bundle_programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let handlers =
+        crate::handler_routing::handler_rows(
+            &bundle_programs,
+            &bundle.import_renames,
+            &bundle.snapshot,
+        );
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -603,6 +614,7 @@ pub fn check_bundle_scoped(
             generic_fns,
             generic_types,
             generic_loci,
+            handlers: &handlers,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -710,40 +722,40 @@ pub fn check_bundle_scoped(
             &programs_vec,
             &bundle.import_renames,
         ));
-        {
-            let graph = crate::bus_graph::build_bus_graph(bundle, top);
-            // GH #265 frontier: cross-actor causality (needs the
-            // bus graph), supervision coverage, and secret taint.
-            // GH #476 Change 5f/5g: `causes:` and its backward dual
-            // `depends:` (RFC #330) are judged over the model with
-            // the other migrated families — see `check_bundle_opts`.
-            // GH #382 phase 1: bundle-level claims — group
-            // resolution (unknown name = error, vacuity) and
-            // `forbid reaches` evaluation with countermodel
-            // witnesses. Errors, gating check from day one: an
-            // advisory claim reads as law and doesn't bind.
-            // GH #476 Change 9: ONE authority per question. Law
-            // SELECTION (which laws exist: constitutions, group
-            // resolution, the tier rule) stays with the claim
-            // surface; the VERDICTS come from the judgment engines
-            // over the canonical model — the same judgment the
-            // artifact projects, instead of a second evaluator
-            // that re-derived the same four families from source.
-            // `tests/claim_diags_differential.rs` held the two
-            // byte-equal over the corpus through the cutover.
-            diags.extend(crate::claims::selection_diags(
-                &programs_vec,
-                &graph,
-                &bundle.import_renames,
-            ));
-            // The VERDICTS are appended by `check_bundle_opts`,
-            // after this whole pass establishes that the program
-            // denotes a valid model — see the note there. Selection
-            // stays here: it reads the claim surface directly and is
-            // meaningful even for a program that does not typecheck.
-            diags.extend(crate::frontier::supervised_diags(&programs_vec));
-            diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
-        }
+        // GH #265 frontier: supervision coverage and secret taint
+        // (cross-actor causality is judged over the model).
+        // GH #476 Change 5f/5g: `causes:` and its backward dual
+        // `depends:` (RFC #330) are judged over the model with
+        // the other migrated families — see `check_bundle_opts`.
+        // GH #382 phase 1: bundle-level claims — group
+        // resolution (unknown name = error, vacuity) and
+        // `forbid reaches` evaluation with countermodel
+        // witnesses. Errors, gating check from day one: an
+        // advisory claim reads as law and doesn't bind.
+        // GH #476 Change 9: ONE authority per question. Law
+        // SELECTION (which laws exist: constitutions, group
+        // resolution, the tier rule) stays with the claim
+        // surface; the VERDICTS come from the judgment engines
+        // over the canonical model — the same judgment the
+        // artifact projects, instead of a second evaluator
+        // that re-derived the same four families from source.
+        // `tests/claim_diags_differential.rs` held the two
+        // byte-equal over the corpus through the cutover.
+        diags.extend(crate::claims::selection_diags(
+            &programs_vec,
+            &bundle.import_renames,
+        ));
+        // The VERDICTS are appended by `check_bundle_opts`,
+        // after this whole pass establishes that the program
+        // denotes a valid model — see the note there. Selection
+        // stays here: it reads the claim surface directly and is
+        // meaningful even for a program that does not typecheck.
+        diags.extend(crate::frontier::supervised_diags(
+            &programs_vec,
+            &bundle.import_renames,
+            &bundle.snapshot,
+        ));
+        diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
         for d in &mut diags[law_start..] {
             if d.kind == hale_syntax::error::DiagKind::Type {
                 d.kind = hale_syntax::error::DiagKind::Claim;
@@ -3264,18 +3276,20 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// the spelling of one edge changed.
 ///
 /// Telling that apart from an accessor handing back a `Node` somebody
-/// else already owns is a whole-program question, and
-/// `fresh_locus_factory_products` is the answer: codegen's
-/// `compute_fresh_locus_factories` classification, mirrored over the
-/// bundle rather than imported (hale-codegen depends on hale-types,
-/// so the dependency cannot run the other way; only the pure "what
-/// does this fn hand back" part is repeated, and it answers with each
-/// literal's supplied fields, which the ownership map has no use
-/// for). A call it cannot see as fresh — an accessor, a method, a
-/// `std::` or cross-seed path — takes no edge and stays accepted,
-/// exactly as before; a program like that recurses at RUN time only
-/// if the callee really does build one, which is what `@no_recursion`
-/// is the contract for.
+/// else already owns is a whole-program question, and the ownership
+/// family's fresh-factory rows are the answer
+/// ([`crate::ownership::fresh_factories`], the one producer the
+/// ownership pre-pass reads too, F.40 phase 1.2c): the rule reads each
+/// row's `products`, the (locus, supplied fields) a call constructs.
+/// The rows are computed over the bundle's files together, with the
+/// bundle's import renames, as lowering computes them (lowering then
+/// widens its set with the carrier fold, which this rule does not
+/// read): a call it cannot see as fresh — an accessor, a method, a
+/// `std::` path, a factory whose returned binding escapes — takes no
+/// edge and stays
+/// accepted, exactly as before; a program like that recurses at RUN
+/// time only if the callee really does build one, which is what
+/// `@no_recursion` is the contract for.
 ///
 /// A node is (locus, supplied field names) rather than the locus
 /// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
@@ -3314,8 +3328,17 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
         return;
     }
     // GH #870: which fns hand back a locus they freshly built, and
-    // what each call constructs. Computed once for the bundle.
-    let factories = fresh_locus_factory_products(bundle, &loci);
+    // what each call constructs: the fresh-factory rows over the
+    // bundle's files together (a factory in one file may hand back
+    // what a sibling file's factory built), with the bundle's import
+    // renames, for the loci this bundle declares.
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let factories: BTreeMap<String, Vec<ContainmentState>> =
+        crate::ownership::fresh_factories(&programs, &bundle.import_renames)
+            .into_iter()
+            .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
+            .map(|(name, row)| (name, row.products))
+            .collect();
     // Classic gray/black DFS. `finished` is the black set: every
     // cycle reachable from a state was found while that state was
     // being explored, so re-entering it later has nothing to add —
@@ -3453,11 +3476,11 @@ fn walk_param_default_containment(
 ///     as the outer one. Only single-segment paths that name a locus
 ///     in this bundle are edges; a `type` literal, a stdlib path and
 ///     a sibling file's name are all skipped;
-///   * GH #870: a call to a fn `fresh_locus_factory_products`
-///     classified as freshly building one. The states it contributes
-///     are the literals that fn hands back, so `fn make() -> Node {
-///     return Node { n: 5 }; }` contributes `(Node, [n])` — the same
-///     node the literal `Node { n: 5 }` would.
+///   * GH #870: a call to a fn the fresh-factory rows classify as
+///     freshly building one. The states it contributes are the row's
+///     products, the literals that fn hands back, so `fn make() ->
+///     Node { return Node { n: 5 }; }` contributes `(Node, [n])` — the
+///     same node the literal `Node { n: 5 }` would.
 fn collect_constructed_loci(
     e: &Expr,
     loci: &BTreeMap<&str, &LocusDecl>,
@@ -3557,230 +3580,6 @@ fn plain_callee_name(callee: &Expr) -> Option<&str> {
         }
         _ => None,
     }
-}
-
-/// GH #870: every fn in the bundle that hands back a locus it
-/// freshly BUILT, with the [`ContainmentState`]s a call to it
-/// constructs.
-///
-/// The classification is codegen's `compute_fresh_locus_factories`:
-/// a fn qualifies when every arm it returns is a literal of its
-/// declared locus, a call to another qualifying fn of that locus, or
-/// one local binding that was itself bound to either — a fixpoint,
-/// since the second and third forms are answers about other fns.
-/// Two deliberate differences from the codegen map:
-///
-///   * it answers with each literal's SUPPLIED FIELD NAMES, not just
-///     the locus. `Node { n: 5 }` expands every default but `n`, and
-///     the containment graph's nodes are (locus, supplied) pairs for
-///     exactly that reason. Ownership has no use for the names, so
-///     the codegen map does not carry them;
-///   * it drops the escape analysis codegen runs on a returned
-///     binding (`body_ok`). That asks who OWNS the value; the
-///     question here is only whether one was built, which the `let`
-///     already answered.
-///
-/// Everything it cannot follow makes a fn opaque rather than fresh,
-/// which costs a report and never invents one: a multi-segment
-/// return type or callee (a `std::` or cross-seed path), a carrier
-/// arm (`return if c { … } else { … }`), a returned binding written
-/// twice, and any statement form that could hide a `return` this walk
-/// does not model.
-fn fresh_locus_factory_products(
-    bundle: &Bundle<'_>,
-    loci: &BTreeMap<&str, &LocusDecl>,
-) -> BTreeMap<String, Vec<ContainmentState>> {
-    /// `M { … }` spelled as a single-segment path naming `locus`, as
-    /// the state it constructs.
-    fn literal_state(e: &Expr, locus: &str) -> Option<ContainmentState> {
-        let Expr::Struct { path, inits, .. } = e else { return None };
-        if path.segments.len() != 1 || path.segments[0].name != locus {
-            return None;
-        }
-        let mut supplied: Vec<String> =
-            inits.iter().map(|i| i.name.name.clone()).collect();
-        supplied.sort();
-        supplied.dedup();
-        Some((locus.to_string(), supplied))
-    }
-
-    /// What one returned expression hands back, or `None` if this
-    /// walk cannot see it as a fresh `locus`. `lets` is empty on the
-    /// recursive step: a binding is followed one level, since
-    /// chasing a chain of them needs flow sensitivity this walk does
-    /// not have.
-    fn arm_states(
-        e: &Expr,
-        locus: &str,
-        lets: &[(&str, &Expr)],
-        known: &BTreeMap<String, Vec<ContainmentState>>,
-    ) -> Option<Vec<ContainmentState>> {
-        if let Some(s) = literal_state(e, locus) {
-            return Some(vec![s]);
-        }
-        if let Expr::Call { callee, .. } = e {
-            let states = known.get(plain_callee_name(callee)?)?;
-            if states.iter().all(|(l, _)| l == locus) {
-                return Some(states.clone());
-            }
-            return None;
-        }
-        if let Expr::Ident(i) = e {
-            let bound: Vec<&Expr> = lets
-                .iter()
-                .filter(|(n, _)| *n == i.name)
-                .map(|(_, v)| *v)
-                .collect();
-            if bound.len() != 1 {
-                return None;
-            }
-            return arm_states(bound[0], locus, &[], known);
-        }
-        None
-    }
-
-    /// Every value a fn body can hand back, and every `let` in it.
-    /// `false` means the walk met a statement form that could carry a
-    /// `return` it does not model — an unseen one would make an
-    /// accessor look like a factory, so the fn is opaque instead.
-    ///
-    /// A nested block's tail counts as a value the body produces: a
-    /// locus literal evaluated anywhere in the callee is constructed
-    /// as surely as one it returns.
-    fn collect_returns<'a>(
-        b: &'a Block,
-        rets: &mut Vec<&'a Expr>,
-        lets: &mut Vec<(&'a str, &'a Expr)>,
-    ) -> bool {
-        for s in &b.stmts {
-            match s {
-                Stmt::Return(Some(e), _) => rets.push(e),
-                Stmt::Let { name, value, .. } => {
-                    lets.push((name.name.as_str(), value))
-                }
-                Stmt::If(i) => {
-                    if !if_returns(i, rets, lets) {
-                        return false;
-                    }
-                }
-                Stmt::Match(m) => {
-                    for arm in &m.arms {
-                        match &arm.body {
-                            MatchArmBody::Block(bb) => {
-                                if !collect_returns(bb, rets, lets) {
-                                    return false;
-                                }
-                            }
-                            // An arm evaluated for its effect: a
-                            // match STATEMENT hands nothing back.
-                            MatchArmBody::Expr(_) => {}
-                        }
-                    }
-                }
-                Stmt::For { body, .. }
-                | Stmt::While { body, .. }
-                | Stmt::Block(body) => {
-                    if !collect_returns(body, rets, lets) {
-                        return false;
-                    }
-                }
-                Stmt::Return(None, _)
-                | Stmt::LetTuple { .. }
-                | Stmt::Assign { .. }
-                | Stmt::Expr(_)
-                | Stmt::Break(_)
-                | Stmt::Continue(_)
-                | Stmt::Fail { .. }
-                | Stmt::Yield(_)
-                | Stmt::Terminate(_)
-                | Stmt::Reperspective { .. }
-                | Stmt::Recovery { .. }
-                | Stmt::Violate { .. }
-                | Stmt::Send { .. } => {}
-                _ => return false,
-            }
-        }
-        if let Some(t) = &b.tail {
-            rets.push(t);
-        }
-        true
-    }
-
-    fn if_returns<'a>(
-        i: &'a IfStmt,
-        rets: &mut Vec<&'a Expr>,
-        lets: &mut Vec<(&'a str, &'a Expr)>,
-    ) -> bool {
-        if !collect_returns(&i.then_block, rets, lets) {
-            return false;
-        }
-        match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => collect_returns(b, rets, lets),
-            Some(ElseBranch::ElseIf(nested)) => {
-                if_returns(nested, rets, lets)
-            }
-            None => true,
-        }
-    }
-
-    // A name declared twice keeps the first declaration, as the
-    // locus map above does: a bundle with two is ill-formed for
-    // another reason, and this pass is not the place to say so.
-    let mut fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        for item in flat_decls(&program.items) {
-            if let TopDecl::Fn(f) = item {
-                fns.entry(f.name.name.as_str()).or_insert(f);
-            }
-        }
-    }
-    let mut out: BTreeMap<String, Vec<ContainmentState>> = BTreeMap::new();
-    loop {
-        let mut added = false;
-        for (name, f) in &fns {
-            if out.contains_key(*name) {
-                continue;
-            }
-            let locus = match f.ret.as_ref() {
-                Some(TypeExpr::Named { path, .. })
-                    if path.segments.len() == 1 =>
-                {
-                    path.segments[0].name.as_str()
-                }
-                _ => continue,
-            };
-            if !loci.contains_key(locus) {
-                continue;
-            }
-            let mut rets: Vec<&Expr> = Vec::new();
-            let mut lets: Vec<(&str, &Expr)> = Vec::new();
-            if !collect_returns(&f.body, &mut rets, &mut lets) {
-                continue;
-            }
-            let mut states: Vec<ContainmentState> = Vec::new();
-            let mut fresh = !rets.is_empty();
-            for r in &rets {
-                match arm_states(r, locus, &lets, &out) {
-                    Some(s) => states.extend(s),
-                    None => {
-                        fresh = false;
-                        break;
-                    }
-                }
-            }
-            if !fresh || states.is_empty() {
-                continue;
-            }
-            states.sort();
-            states.dedup();
-            out.insert((*name).to_string(), states);
-            added = true;
-        }
-        if !added {
-            break;
-        }
-    }
-    out
 }
 
 /// F.31 Phase 5: pool identity. Each main-locus params field
@@ -8411,6 +8210,9 @@ struct Checker<'a> {
     /// checker). A locus's `params` are its fields — the monomorph's
     /// are the template's with the arguments substituted.
     generic_loci: BTreeMap<String, &'a LocusDecl>,
+    /// F.40 phase 1.4: the bundle's `on_failure` handler rows, the
+    /// child type resolved as lowering resolves it.
+    handlers: &'a crate::handler_routing::HandlerRouting,
     /// GH #255 phase 1: topic names with a declared transport
     /// binding (any `bindings { }` entry, bundle-wide). Gates
     /// `or wait` on publishes — the loss window it waits out
@@ -9931,31 +9733,43 @@ impl<'a> Checker<'a> {
     /// that type is the one that runs. A second handler for the same
     /// type can never run, whatever its body or its error param says,
     /// so it is refused where it stands, pointing at the first.
+    ///
+    /// A law over the handler rows (F.40 phase 1.4): two rows of one
+    /// parent naming one child locus. A row whose child is no locus
+    /// (`External`) is skipped, as a child the checker typed `Unknown`
+    /// was.
     fn check_duplicate_failure_handlers(&mut self, decl: &LocusDecl) {
-        let mut first: Vec<(String, Span)> = Vec::new();
-        for member in &decl.members {
-            let LocusMember::Failure(fd) = member else { continue };
-            // a handler the signature rules already refuse takes no
-            // slot: it is not the one that runs
-            if fd.params.len() != 2 {
+        // The rows' declarations, by ordinal: the locus's two-param
+        // handlers in order.
+        let handler_decls: Vec<&FailureDecl> = decl
+            .members
+            .iter()
+            .filter_map(|m| match m {
+                LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd),
+                _ => None,
+            })
+            .collect();
+        let mut first: Vec<(&str, Span)> = Vec::new();
+        for row in self.handlers.handlers_of(&decl.name.name) {
+            let ChildRef::Locus(key) = &row.child else { continue };
+            // a handler the signature rule refuses (its error is not
+            // `ClosureViolation`) takes no slot: it is not the one
+            // that runs
+            let Some(fd) = handler_decls.get(row.ordinal as usize) else { continue };
+            // the rows are the bundle's: a same-named locus in another
+            // file has rows of its own, which are not this one's
+            if fd.span != row.span {
                 continue;
             }
-            // the same test the signature rule refuses by
             let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
             let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
             if !is_violation && !matches!(err_ty, Ty::Unknown) {
                 continue;
             }
-            let child = &fd.params[0];
-            let child_ty = resolve_type_expr(&child.ty, self.known);
-            if matches!(child_ty, Ty::Unknown) {
-                continue;
-            }
-            let key = child_ty.display();
-            if let Some((_, at)) = first.iter().find(|(k, _)| *k == key) {
+            if let Some((_, at)) = first.iter().find(|(k, _)| *k == key.as_str()) {
                 self.diags.push(
                     Diag::ty(
-                        fd.span,
+                        row.span,
                         format!(
                             "locus `{}` already has an `on_failure` for `{}`: a failing child reaches the first handler declared for its type, so this one can never run. Handle every failure of a `{}` in the one handler",
                             decl.name.name, key, key
@@ -9964,7 +9778,7 @@ impl<'a> Checker<'a> {
                     .with_related(*at, "the handler that runs"),
                 );
             } else {
-                first.push((key, fd.span));
+                first.push((key, row.span));
             }
         }
     }
@@ -17555,7 +17369,7 @@ impl<'a> Checker<'a> {
                     // GH #911 B5: the mangled name of a generic
                     // LOCUS monomorph, written out. `hale build`
                     // refuses it — the ownership pre-pass never
-                    // numbers a node spelled this way (F.39), with
+                    // gives a node spelled this way a row (F.39), with
                     // or without the monomorph having been
                     // discovered — so the checker refuses it too,
                     // and says which spelling does work instead of

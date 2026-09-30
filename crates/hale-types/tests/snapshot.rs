@@ -73,6 +73,38 @@ fn the_seed_comes_from_the_source_map_when_there_is_one() {
     assert_eq!(snap.seeds, vec!["main.hl".to_string()]);
 }
 
+/// Review of phase 1, finding 9: the resolved program mints its merged
+/// program with the bundle's source map, so a user site keeps the seed
+/// the bundle's mint gave it, and the bundled stdlib, whose spans
+/// overlap the first file's, is a seed of its own under its name.
+#[test]
+fn the_resolved_snapshot_seeds_by_the_bundle_and_names_the_stdlib() {
+    let src = "locus L { params { n: Int = 0; } }\nfn main() { L { }; }\n";
+    let mut p = parse(src);
+    let sources = vec![SourceFile {
+        id: 0,
+        path: "main.hl".into(),
+        digest: "0".into(),
+        base: 0,
+        len: src.len() as u32,
+    }];
+    let bundle_snap = mint([("main.hl", &mut p)], &sources);
+    let resolved = hale_types::resolved::resolve_program(&p, &sources, &[], None, None)
+        .expect("resolve");
+    let snap = &resolved.snapshot;
+    assert_eq!(
+        snap.seeds,
+        vec!["main.hl".to_string(), hale_types::snapshot::STDLIB_SEED.to_string()]
+    );
+    for site in &bundle_snap.sites {
+        assert_eq!(snap.site(site.id).map(|s| s.id.seed), Some(SeedId(0)), "{site:?}");
+    }
+    assert!(
+        snap.sites.iter().any(|s| s.id.seed == SeedId(1)),
+        "the stdlib's sites carry the stdlib's seed"
+    );
+}
+
 #[test]
 fn minting_is_idempotent_and_a_clone_keeps_its_ids() {
     let mut p = parse("locus L { fn f() { } }\nfn main() { L { }; }\n");

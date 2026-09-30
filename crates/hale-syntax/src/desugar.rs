@@ -951,11 +951,32 @@ fn respan_expr(e: Expr, span: Span) -> Expr {
     }
 }
 
+/// One send the intra-locus rewrite replaced with a direct call: the
+/// relation that keeps the publish visible after the `Stmt::Send` is
+/// gone from the program (F.40 boundary 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntraLocusRewrite {
+    /// The `Stmt::Send`'s identity. The call that replaces it carries
+    /// the same id, so the site keeps its identity across the rewrite
+    /// (`NodeId::NONE` when the program was not minted before it).
+    pub send: crate::ast::NodeId,
+    /// The locus whose body held the send: the publisher.
+    pub locus: String,
+    /// The topic the send named, by its declaration name (the rewrite
+    /// runs before the topic desugar turns it into its wire subject).
+    pub subject: String,
+    /// The subscriber's handler the direct call names: the topic's one
+    /// subscriber, on the publisher itself or on its one field of the
+    /// subscriber's type.
+    pub handler: String,
+}
+
 /// Intra-locus / intra-tower closed-world optimization entry
-/// point. Mutates `program` in place. Idempotent: re-running on
-/// already-optimized input is a no-op (rewritten Sends become
-/// method-call Stmt::Expr nodes, which the rewrite step skips).
-pub fn desugar_intra_locus_topics(program: &mut Program) {
+/// point. Mutates `program` in place and returns every send it
+/// rewrote. Idempotent: re-running on already-optimized input is a
+/// no-op returning an empty vector (rewritten Sends become method-call
+/// Stmt::Expr nodes, which the rewrite step skips).
+pub fn desugar_intra_locus_topics(program: &mut Program) -> Vec<IntraLocusRewrite> {
     let bindings = collect_bindings(&program.items);
     let (pubs, subs) = collect_pub_sub(&program.items);
     let locus_types = collect_locus_type_names(&program.items);
@@ -1096,18 +1117,20 @@ pub fn desugar_intra_locus_topics(program: &mut Program) {
         );
     }
 
+    let mut rewrites = Vec::new();
     if eligible.is_empty() {
-        return;
+        return rewrites;
     }
 
     // Walk locus methods and rewrite matching Sends.
     for item in &mut program.items {
         match item {
-            TopDecl::Locus(l) => intra_rewrite_locus(l, &eligible),
-            TopDecl::Module(m) => intra_rewrite_module(m, &eligible),
+            TopDecl::Locus(l) => intra_rewrite_locus(l, &eligible, &mut rewrites),
+            TopDecl::Module(m) => intra_rewrite_module(m, &eligible, &mut rewrites),
             _ => {}
         }
     }
+    rewrites
 }
 
 /// Set of (owner_locus, field) pairs whose `placement { }` entry
@@ -1248,11 +1271,12 @@ fn single_named_locus(
 fn intra_rewrite_module(
     m: &mut ModuleDecl,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
     for item in &mut m.items {
         match item {
-            TopDecl::Locus(l) => intra_rewrite_locus(l, eligible),
-            TopDecl::Module(inner) => intra_rewrite_module(inner, eligible),
+            TopDecl::Locus(l) => intra_rewrite_locus(l, eligible, out),
+            TopDecl::Module(inner) => intra_rewrite_module(inner, eligible, out),
             _ => {}
         }
     }
@@ -1266,21 +1290,22 @@ fn intra_rewrite_module(
 fn intra_rewrite_locus(
     l: &mut LocusDecl,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
     let locus_name = l.name.name.clone();
     for member in &mut l.members {
         match member {
             LocusMember::Lifecycle(lc) => {
-                intra_rewrite_block(&mut lc.body, &locus_name, eligible);
+                intra_rewrite_block(&mut lc.body, &locus_name, eligible, out);
             }
             LocusMember::Mode(md) => {
-                intra_rewrite_block(&mut md.body, &locus_name, eligible);
+                intra_rewrite_block(&mut md.body, &locus_name, eligible, out);
             }
             LocusMember::Fn(fd) => {
-                intra_rewrite_block(&mut fd.body, &locus_name, eligible);
+                intra_rewrite_block(&mut fd.body, &locus_name, eligible, out);
             }
             LocusMember::Failure(f) => {
-                intra_rewrite_block(&mut f.body, &locus_name, eligible);
+                intra_rewrite_block(&mut f.body, &locus_name, eligible, out);
             }
             _ => {}
         }
@@ -1291,20 +1316,28 @@ fn intra_rewrite_block(
     b: &mut Block,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
     for stmt in &mut b.stmts {
-        intra_rewrite_stmt(stmt, locus_name, eligible);
+        intra_rewrite_stmt(stmt, locus_name, eligible, out);
     }
     if let Some(tail) = &mut b.tail {
-        intra_rewrite_expr(tail, locus_name, eligible);
+        intra_rewrite_expr(tail, locus_name, eligible, out);
     }
 }
 
 /// Build the `self.<chain[0]>.<chain[1]>...(value)` expression
 /// from an access chain. The chain's final segment is the method
 /// name; all preceding segments are field accesses through which
-/// the receiver is traversed.
-fn build_chained_call(access_chain: &[String], value: Expr, takes_context: bool, span: Span) -> Expr {
+/// the receiver is traversed. The call carries `id`, the identity of
+/// the send it replaces.
+fn build_chained_call(
+    access_chain: &[String],
+    value: Expr,
+    takes_context: bool,
+    id: crate::ast::NodeId,
+    span: Span,
+) -> Expr {
     // Start from `self`, walk all but the last segment as field
     // accesses, then call the last segment as a method on the
     // accumulated receiver.
@@ -1320,7 +1353,7 @@ fn build_chained_call(access_chain: &[String], value: Expr, takes_context: bool,
         };
     }
     Expr::Call {
-        id: crate::ast::NodeId::NONE,
+        id,
         callee: Box::new(Expr::Field {
             receiver: Box::new(receiver),
             name: Ident { name: method_name.clone(), span },
@@ -1339,17 +1372,29 @@ fn intra_rewrite_stmt(
     s: &mut Stmt,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
-    if let Stmt::Send { subject, value, span, .. } = s {
+    if let Stmt::Send { subject, value, span, id: send_id, .. } = s {
         if let Expr::Ident(id) = subject {
             if let Some(rw) = eligible.get(&id.name) {
                 if rw.publisher_locus == locus_name {
                     let span = *span;
+                    let send_id = *send_id;
                     let value_expr = std::mem::replace(
                         value,
                         Expr::Literal(Literal::Bool(false), span),
                     );
-                    let call_expr = build_chained_call(&rw.access_chain, value_expr, rw.takes_context, span);
+                    out.push(IntraLocusRewrite {
+                        send: send_id,
+                        locus: locus_name.to_string(),
+                        subject: id.name.clone(),
+                        handler: rw
+                            .access_chain
+                            .last()
+                            .expect("eligible access chain is never empty")
+                            .clone(),
+                    });
+                    let call_expr = build_chained_call(&rw.access_chain, value_expr, rw.takes_context, send_id, span);
                     *s = Stmt::Expr(call_expr);
                     return;
                 }
@@ -1357,12 +1402,12 @@ fn intra_rewrite_stmt(
         }
     }
     match s {
-        Stmt::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible),
-        Stmt::Match(m) => intra_rewrite_match(m, locus_name, eligible),
-        Stmt::For { body, .. } => intra_rewrite_block(body, locus_name, eligible),
-        Stmt::While { body, .. } => intra_rewrite_block(body, locus_name, eligible),
-        Stmt::Block(b) => intra_rewrite_block(b, locus_name, eligible),
-        Stmt::Expr(e) => intra_rewrite_expr(e, locus_name, eligible),
+        Stmt::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible, out),
+        Stmt::Match(m) => intra_rewrite_match(m, locus_name, eligible, out),
+        Stmt::For { body, .. } => intra_rewrite_block(body, locus_name, eligible, out),
+        Stmt::While { body, .. } => intra_rewrite_block(body, locus_name, eligible, out),
+        Stmt::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
+        Stmt::Expr(e) => intra_rewrite_expr(e, locus_name, eligible, out),
         _ => {}
     }
 }
@@ -1371,12 +1416,13 @@ fn intra_rewrite_if(
     if_stmt: &mut IfStmt,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
-    intra_rewrite_block(&mut if_stmt.then_block, locus_name, eligible);
+    intra_rewrite_block(&mut if_stmt.then_block, locus_name, eligible, out);
     if let Some(eb) = &mut if_stmt.else_block {
         match eb.as_mut() {
-            ElseBranch::Else(b) => intra_rewrite_block(b, locus_name, eligible),
-            ElseBranch::ElseIf(inner) => intra_rewrite_if(inner, locus_name, eligible),
+            ElseBranch::Else(b) => intra_rewrite_block(b, locus_name, eligible, out),
+            ElseBranch::ElseIf(inner) => intra_rewrite_if(inner, locus_name, eligible, out),
         }
     }
 }
@@ -1385,11 +1431,12 @@ fn intra_rewrite_match(
     m: &mut MatchStmt,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
     for arm in &mut m.arms {
         match &mut arm.body {
-            MatchArmBody::Block(b) => intra_rewrite_block(b, locus_name, eligible),
-            MatchArmBody::Expr(e) => intra_rewrite_expr(e, locus_name, eligible),
+            MatchArmBody::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
+            MatchArmBody::Expr(e) => intra_rewrite_expr(e, locus_name, eligible, out),
         }
     }
 }
@@ -1398,11 +1445,12 @@ fn intra_rewrite_expr(
     e: &mut Expr,
     locus_name: &str,
     eligible: &BTreeMap<String, EligibleRewrite>,
+    out: &mut Vec<IntraLocusRewrite>,
 ) {
     match e {
-        Expr::Block(b) => intra_rewrite_block(b, locus_name, eligible),
-        Expr::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible),
-        Expr::Match(m) => intra_rewrite_match(m, locus_name, eligible),
+        Expr::Block(b) => intra_rewrite_block(b, locus_name, eligible, out),
+        Expr::If(if_stmt) => intra_rewrite_if(if_stmt, locus_name, eligible, out),
+        Expr::Match(m) => intra_rewrite_match(m, locus_name, eligible, out),
         _ => {}
     }
 }

@@ -711,3 +711,36 @@ locus Producer {
         msgs
     );
 }
+
+// --- the intra-locus relation (F.40 phase 1.5, boundary 7) ----------
+
+/// The intra-locus rewrite turns `PingT <- ..` into `self.w.on_ping(..)`,
+/// erasing the send from the program lowering walks. The resolved
+/// program keeps it as a relation, and the graph over the rewritten
+/// program records it on the subject's wire key.
+#[test]
+fn a_rewritten_send_stays_on_the_resolved_graph() {
+    let src = r#"
+type Ping { n: Int = 0; }
+topic PingT { payload: Ping; subject: "p.ping"; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe PingT as on_ping; }
+    fn on_ping(p: Ping) { self.seen = p.n; }
+}
+main locus App {
+    params { w: Worker = Worker { }; }
+    bus { publish PingT; }
+    run() { PingT <- Ping { n: 1 }; }
+}
+fn main() { App { }; }
+"#;
+    let prog = parse_source(src).expect("parse failed");
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None)
+        .expect("resolves");
+    assert_eq!(resolved.intra_locus.len(), 1, "{:?}", resolved.intra_locus);
+    let rw = &resolved.intra_locus[0];
+    assert_eq!((rw.locus.as_str(), rw.subject.as_str(), rw.handler.as_str()), ("App", "PingT", "on_ping"));
+    let info = resolved.bus.subjects.get("p.ping").expect("the wire subject is in the graph");
+    assert_eq!(info.direct_sends, vec![("App".to_string(), "on_ping".to_string())]);
+}

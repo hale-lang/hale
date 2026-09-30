@@ -19,6 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
+use hale_types::resolved::ResolvedProgram;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
 // during the codegen model-organization refactor (Round 1). Bringing
@@ -1043,17 +1044,56 @@ fn compile_cached_runtime_object_with(
 /// mangled symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
 /// this table after the static stdlib table when resolving
 /// qualified-name paths. A caller with no imports passes `&[]`.
+///
+/// This is the adapter for callers that hold a bare program (the test
+/// harness): it resolves the program through
+/// `hale_types::resolved::resolve_program` and lowers the envelope with
+/// [`build_resolved`]. The verbs resolve the program themselves and
+/// call [`build_resolved`].
 pub fn build_executable_with_options(
     program: &Program,
     output_path: &Path,
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
+    // A bare program has no source map: its sites seed by ordinal.
+    let resolved = hale_types::resolved::resolve_program(
+        program,
+        &[],
+        import_renames,
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(CodegenError::Unsupported)?;
+    build_resolved(resolved, output_path, options)
+}
+
+/// Lower the resolved program the frontend produced
+/// (`hale_types::resolved::ResolvedProgram`) to an executable at
+/// `output_path`. The cross-seed rename table is the one the envelope
+/// was resolved with; `options` has to carry the envelope's `--api`
+/// path and roles, or the build is refused (the api surface was shaped
+/// by the envelope's, and lowering it under another would describe a
+/// program nobody resolved). See [`build_executable_with_options`].
+pub fn build_resolved(
+    resolved: ResolvedProgram,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
+    if options.api != resolved.api || options.api_roles != resolved.api_roles {
+        return Err(CodegenError::Unsupported(format!(
+            "the build options name api {:?} with roles {:?}, but the program was \
+             resolved with api {:?} and roles {:?}",
+            options.api, options.api_roles, resolved.api, resolved.api_roles
+        )));
+    }
     // #8 (2026-07-02): `BuildOptions::time_phases` (the CLI's
     // `HALE_TIME`) prints per-phase wall times to stderr — the
     // profiling surface the incremental design reads.
     let time_phases = options.time_phases;
-    let t_start = std::time::Instant::now();
+    // The clock starts when the frontend started resolving, so the
+    // first mark is the resolve step and the totals include it.
+    let t_start = std::time::Instant::now() - resolved.resolved_in;
     let mut t_last = t_start;
     let phase = |name: &str, t_last: &mut std::time::Instant| {
         if time_phases {
@@ -1067,49 +1107,29 @@ pub fn build_executable_with_options(
             *t_last = now;
         }
     };
-    // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
-    // — cross-seed topic refs the parser admits — to plain
-    // single-segment `BusSubject::Topic(Ident(mangled_name))`
-    // BEFORE desugar runs. The mangling table built by the CLI
-    // (`import_renames`) plus the static stdlib path-renames hold
-    // every alias-qualified topic decl in the merged program;
-    // looking up the path here gives the same mangled name the
-    // topic decl ends up at, so desugar's existing Topic→Literal
-    // pass uses the topic's declared wire subject. The fallback
-    // keeps the leaf segment name so a downstream "unknown topic"
-    // diagnostic has something to cite.
-    let mut program_owned = program.clone();
-    resolve_qualified_bus_subjects(&mut program_owned, import_renames);
-    // Topic-reference desugaring: rewrite `BusSubject::Topic`
-    // and `Foo <- expr` (where Foo is a topic) into the
-    // equivalent literal-subject forms. The rest of codegen
-    // sees only the legacy AST shape, no topic-specific
-    // branching needed.
-    //
-    // The intra-locus optimization runs FIRST while sends still
-    // carry the cheap `Expr::Ident(Topic)` shape; it rewrites
-    // optimizable Send statements into direct `self.handler(...)`
-    // method calls. desugar_topics then handles whatever bus refs
-    // remain.
-    // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite `T::from_json`.
-    // Idempotent — a no-op if the CLI already generated them pre-typecheck.
-    hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
-    // GH #1106: the api binding, as ordinary loci and topics. The CLI
-    // ran this before the checker; a caller that builds straight from
-    // a program (a test) gets it here. Idempotent, and `--api` without
-    // an entry in the source injects one first.
-    if let Some(path) = &options.api {
-        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program_owned, path) {
-            return Err(CodegenError::Unsupported(msg));
-        }
-    }
-    hale_syntax::api_gen::generate_api(&mut [&mut program_owned], options.api_roles.as_deref());
-    hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
-    hale_syntax::desugar::desugar_topics(&mut program_owned);
-    // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
-    // `L2::set_price(w, x)`) into the equivalent `std::bytes::*` calls.
-    hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
-    let program = &program_owned;
+    phase("resolve", &mut t_last);
+    // Whether any placement puts a thread off main, asked of the
+    // envelope's bundle view before the envelope is taken apart; see
+    // `program_has_offthread` below for why it matters.
+    let has_offthread_placement =
+        hale_types::bus_graph::has_offthread_placement(&resolved.bundle());
+    // The envelope the frontend produced (`hale_types::resolved`):
+    // `user` is the desugared program before the stdlib merge, which
+    // only the tier-1 bus-inert scan below reads; `merged` is what
+    // lowering walks.
+    let ResolvedProgram {
+        user,
+        merged,
+        owner_table,
+        fresh_locus_factories,
+        ownership,
+        bubble,
+        handlers,
+        plan,
+        import_renames,
+        ..
+    } = resolved;
+    let program = &user;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
@@ -1134,86 +1154,6 @@ pub fn build_executable_with_options(
     } else {
         Target::initialize_native(&InitializationConfig::default())
             .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
-    }
-
-    // m73a: parse the bundled stdlib source and merge its decls
-    // into the user program before lowering. Stdlib loci land in
-    // `user_loci` alongside user-declared loci with no special
-    // casing in the lowering passes; collision with user names is
-    // prevented by the `__Std*` mangled prefix on bundled decls.
-    let stdlib_program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-        .map_err(|diags| {
-            let summary = diags
-                .iter()
-                .map(|d| format!("{:?}", d))
-                .collect::<Vec<_>>()
-                .join("; ");
-            CodegenError::Unsupported(format!("stdlib parse: {}", summary))
-        })?;
-    // Tier-3 drain-elision taint is computed from the parsed stdlib
-    // (below) before its items are moved into `merged`; the result
-    // is process-cached, so this is a one-time cost.
-    let stdlib_taint: &'static [String] =
-        stdlib_bus_tainted_namespaces(&stdlib_program);
-    let mut merged = program.clone();
-    merged.items.extend(stdlib_program.items);
-    // Downstream handoff: `-> ()` is a no-op unit annotation. The
-    // fallible decl paths already recognized the empty tuple as
-    // Unit, but non-fallible methods and every call-site MethodSig
-    // consumer hit the 0-element-tuple reject. Normalize ONCE on
-    // the merged AST so `-> ()` and "no return type" are the same
-    // program everywhere downstream.
-    normalize_unit_return_annotations(&mut merged.items);
-    // GH #831: and normalize the other spelling nothing downstream
-    // should have to know about. `type Row2 = Row;` makes `Row2` a
-    // second spelling of `Row` in every TYPE position (GH #759); the
-    // CONSTRUCTION positions — `Row2 { }`, `Row2::Variant` — are read
-    // at roughly twenty `Expr::Struct` / variant-path sites in the
-    // lowering, none of which hold the alias table. Resolving the
-    // alias ONCE on the merged AST is what keeps `build` agreeing
-    // with `check`, which answers the same question in one hop from
-    // its own expanded table.
-    crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
-    // GH #735: an omitted `run` is an empty `run`, so a flow child is
-    // reclaimed when its (empty) run completes on both spellings. On
-    // the MERGED program, so a bundled stdlib locus is treated as a
-    // user one: pass A2 declares lifecycle methods from whichever
-    // declaration of a name it keeps, and a user seed that spells a
-    // stdlib locus's name (the stdlib's own seeds, harvested into
-    // the corpus) would otherwise carry a `run` its bundled twin
-    // lacked, and the body lowering would find no declaration.
-    hale_syntax::desugar::desugar_omitted_run(&mut merged);
-
-    // GH #921 A2: the ownership pre-pass, over the merged and
-    // desugared program and before anything borrows it. It numbers
-    // every locus-producing expression node (the only mutation it
-    // makes) and derives an owner for each from syntactic position,
-    // using the same fresh-factory fixpoint lowering uses — extended
-    // to the carrier returns that fixpoint misses.
-    //
-    // GH #921 A3, commit 1: the extension is no longer table-only.
-    // `compute_fresh_locus_factories::collect` classifies the CARRIER
-    // node and never its arms, so `return if c { make(1) } else {
-    // make2(1) }` left `produce` out of the map and its caller's
-    // binding did not own the result — the 105-cell carrier-return
-    // family. The pre-pass already flattens `if` / `match` / block
-    // tails to decide the same question; folding its answer back into
-    // the map lowering reads is what closes the family, and it keeps
-    // the two sides of every ownership decision computed once.
-    let mut fresh_locus_factories =
-        compute_fresh_locus_factories(&merged, import_renames);
-    let owner_table = crate::ownership::resolve_owners(
-        &mut merged,
-        &fresh_locus_factories,
-        import_renames,
-    );
-    for (fname, locus) in owner_table.extended_fresh_factories() {
-        // A carrier return hands back an ARM's value, so there is no
-        // single returned binding to name: `None`, the same as a fn
-        // whose every `return` is a literal.
-        fresh_locus_factories
-            .entry(fname.clone())
-            .or_insert_with(|| (locus.clone(), None));
     }
 
     // `program_has_offthread` — THE single source of truth for "does
@@ -1250,218 +1190,75 @@ pub fn build_executable_with_options(
     //     but the statically-baked `no_pinned` enqueue sites can't
     //     be un-baked at runtime — so the compile-time union here
     //     must stay the superset.
-    let mut bg_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bg_programs.insert("__codegen_merged".to_string(), &merged);
-    let bundle = hale_types::symbol::Bundle::new(bg_programs);
     let has_socket_binding = merged.items.iter().any(|item| {
         matches!(item, TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") && l.members.iter().any(|m| {
             matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty() || b.api.is_some())
         }))
     });
-    let program_has_offthread =
-        hale_types::bus_graph::has_offthread_placement(&bundle)
-            || has_socket_binding;
+    let program_has_offthread = has_offthread_placement || has_socket_binding;
 
-    // Static-bus-dispatch devirtualization plan (build #1b). Compute
-    // the authoritative BusGraph over the MERGED + topic-desugared
-    // program: by this point `program` has had `desugar_topics` run, so
-    // every bus-block subject is a `Literal` whose `canonical()` equals
-    // the wire string codegen's register/publish sites see — and
-    // building over `merged` (user + stdlib) keeps the eligibility gate
-    // sound w.r.t. stdlib wildcard subscribers (e.g. `log.**`). The
-    // closed-world gate (`fn main` / `main locus`) defaults to
-    // ineligible, so a library/wasm build with no entry point yields an
-    // empty plan and the all-dynamic lowering. `LOTUS_NO_BUS_DEVIRT=1`
-    // forces the empty plan — the differential-test control arm.
-    #[allow(clippy::type_complexity)]
-    let (bus_devirt_ids, bus_devirt_direct, bus_devirt_direct_subs): (
-        std::collections::BTreeMap<String, u32>,
-        std::collections::BTreeSet<String>,
-        std::collections::BTreeMap<String, Vec<(String, String)>>,
-    ) = if options.no_bus_devirt {
-        (
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeSet::new(),
-            std::collections::BTreeMap::new(),
-        )
+    // Static-bus-dispatch devirtualization plan (build #1b), derived in
+    // the resolved program from the bus graph over the merged and
+    // topic-desugared program (F.40 phase 1.5): every subject is the
+    // wire string the register/publish sites see, and the stdlib's
+    // wildcard subscribers (`log.**`) are in the graph the gates were
+    // judged over. The flavor ladder is `DispatchPlan`'s — the same
+    // procedure the model's `DispatchPlan::derive` runs, and whose
+    // digest the execution identity folds in. A build with no entry
+    // point is open world and its plan all dynamic.
+    // `LOTUS_NO_BUS_DEVIRT=1` forces the empty plan — the
+    // differential-test control arm.
+    let plan = if options.no_bus_devirt {
+        hale_model::dispatch_plan::DispatchPlan::default()
     } else {
-        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-        let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        // GH #476 Change 8: the flavor decision is NOT made here. The
-        // gate facts are bridged into the canonical shape and
-        // `DispatchPlan` — the same procedure the model-side
-        // `DispatchPlan::derive` runs, and whose digest the execution
-        // identity folds in — decides. Codegen's gates come from the
-        // MERGED (user + stdlib, desugared) graph its own lowering
-        // must agree with, so the source of facts is local; only the
-        // ladder is shared. `dispatch_plan_agrees_with_the_model` in
-        // hale-cli pins the two fact sources against each other over
-        // the corpus.
-        let gates: Vec<hale_model::DispatchGate> = graph
-            .subjects
-            .iter()
-            .map(|(subject, info)| hale_model::DispatchGate {
-                subject: subject.clone(),
-                static_eligible: info.eligible,
-                direct_eligible: info.direct_call_eligible,
-                ineligible_reason: info
-                    .ineligible_reason
-                    .as_ref()
-                    .map(|r| r.tag().to_string()),
-                publisher_loci: {
-                    let mut p: Vec<String> = info
-                        .publishers
-                        .iter()
-                        .map(|s| s.locus.clone())
-                        .collect();
-                    p.sort();
-                    p.dedup();
-                    p
-                },
-                subscribers: info
-                    .subscribers
-                    .iter()
-                    .map(|s| (s.locus.clone(), s.handler.clone()))
-                    .collect(),
-            })
-            .collect();
-        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
-            &gates,
-            &std::collections::BTreeMap::new(),
-        );
-        if options.dispatch_trace {
-            for s in &plan.subjects {
-                eprintln!(
-                    "[hale-dispatch] {} {}",
-                    s.subject,
-                    s.flavor.as_str()
-                );
-            }
-        }
-        // Deterministic ids: static subjects in wire-string order
-        // (the plan sorts by subject), 0..N. The direct-call subset
-        // reuses those very ids (its bucket is the same one
-        // lotus_bus_register_static populates), so we collect both in
-        // one pass.
-        let mut ids: std::collections::BTreeMap<String, u32> =
-            std::collections::BTreeMap::new();
-        let mut direct: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
-        // Direct-INLINE (slice-3): the subscriber (locus, handler) list
-        // per direct subject, so the publish site can resolve+dedup the
-        // handler FunctionValue and bake a single-handler direct call.
-        let mut direct_subs: std::collections::BTreeMap<
-            String,
-            Vec<(String, String)>,
-        > = std::collections::BTreeMap::new();
-        for (next, s) in plan.static_subjects().iter().enumerate() {
-            ids.insert(s.subject.clone(), next as u32);
-            if s.flavor
-                == hale_model::dispatch_plan::DispatchFlavor::StaticDirect
-            {
-                direct.insert(s.subject.clone());
-                direct_subs
-                    .insert(s.subject.clone(), s.subscribers.clone());
-            }
-        }
-        (ids, direct, direct_subs)
+        plan
     };
-
-    // Interest-based ownership, artifact #2: singleton-owner, same-tower
-    // bubbling. Build the authoritative `OwnershipGraph` over the SAME
-    // merged/desugared bundle the bus graph consumes, then distil it to
-    // the only sites this artifact acts on: an `I{}` born deep inside
-    // locus `B` that resolves to a UNIQUE accepting ancestor `A` where
-    // `A` is a `main locus`/`@export` singleton (`OwnerKind::
-    // SingletonConst`) running on the same OS thread as `B`
-    // (`EdgeClass::SameTower`). Those bubble to `A`; every other
-    // resolution (SelfOwned direct-parent, non-singleton ancestor,
-    // cross-pool, per-path, orphan, open) is dropped and stays transient.
-    // Resolution depends only on `(enclosing_locus, child_ty)` (the graph
-    // climbs the static instantiated-by relation, not a runtime path), so
-    // the plan keys on that pair. `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties
-    // the plan — the differential-gate control arm that proves inertness
-    // (the corpus resolves `Ancestor: 0`, so the plan is empty either way
-    // and behavior is identical on/off).
-    //
-    // Interest-based ownership, artifact #2b: NON-singleton owner
-    // threading (same-tower). #2 handled a SingletonConst ancestor `A`
-    // whose pointer folds to a global; #2b generalizes to an `A` with
-    // MULTIPLE instances, whose pointer cannot be a constant and must be
-    // threaded down the birth chain via hidden `__owner_for_<I>` fields
-    // (see `compute_forwarding_sets`). Both plans are keyed on
-    // `(enclosing_locus, child_ty)`; they are DISJOINT (a site is either
-    // SingletonConst or Ancestor). The seam routes a singleton hit to the
-    // global load and a non-singleton hit to the threaded-field load. The
-    // forwarding sets drive both the hidden-field declaration (decl.rs)
-    // and the birth-time 3-way write (instantiation.rs).
-    //
-    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties BOTH plans AND the forwarding
-    // sets — so the OFF build declares no threading fields, writes none,
-    // and stitches nothing: byte-identical to pre-#2 (the differential
-    // control arm).
-    let (
-        ownership_bubble_plan,
-        ownership_bubble_nonsingleton_plan,
-        ownership_forwarding_sets,
-        ownership_bubble_crosspool_plan,
-    ): (
-        std::collections::BTreeMap<(String, String), String>,
-        std::collections::BTreeMap<(String, String), String>,
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-        std::collections::BTreeMap<(String, String), String>,
-    ) = if options.no_ownership_bubble
-    {
-        (
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-        )
-    } else {
-        use hale_types::ownership_graph::{EdgeClass, OwnerKind, OwnerResolution};
-        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-        let graph =
-            hale_types::ownership_graph::build_ownership_graph(&bundle, &top);
-        let mut plan: std::collections::BTreeMap<(String, String), String> =
-            std::collections::BTreeMap::new();
-        let mut nonsingleton: std::collections::BTreeMap<
-            (String, String),
-            String,
-        > = std::collections::BTreeMap::new();
-        // Interest-based ownership #3: the cross-pool twin. A site
-        // resolving to `Ancestor(A)` with `OwnerKind::SingletonConst`
-        // AND `EdgeClass::CrossPool` (A a program-start singleton on a
-        // different thread than the enclosing locus) lands here — the
-        // child is born on A's thread via the async post+dispatch path.
-        // Non-singleton cross-pool has no compile-time pool handle for A
-        // → NOT admitted (stays transient, deferred).
-        let mut crosspool: std::collections::BTreeMap<
-            (String, String),
-            String,
-        > = std::collections::BTreeMap::new();
-        for site in &graph.sites {
-            if let OwnerResolution::Ancestor(owner) = &site.resolution {
-                let key =
-                    (site.enclosing_locus.clone(), site.child_ty.clone());
-                match (&site.edge_class, &site.owner_kind) {
-                    (EdgeClass::SameTower, OwnerKind::SingletonConst) => {
-                        plan.insert(key, owner.clone());
-                    }
-                    (EdgeClass::SameTower, OwnerKind::Ancestor) => {
-                        nonsingleton.insert(key, owner.clone());
-                    }
-                    (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
-                        crosspool.insert(key, owner.clone());
-                    }
-                    // CrossPool + non-singleton (no static pool handle),
-                    // Open, per-path, orphan: stay transient.
-                    _ => {}
-                }
-            }
+    if options.dispatch_trace {
+        for s in &plan.subjects {
+            eprintln!("[hale-dispatch] {} {}", s.subject, s.flavor.as_str());
         }
-        let forwarding = graph.compute_forwarding_sets();
-        (plan, nonsingleton, forwarding, crosspool)
+    }
+    // Deterministic ids: static subjects in wire-string order (the plan
+    // sorts by subject), 0..N. The direct-call subset reuses those very
+    // ids (its bucket is the same one lotus_bus_register_static
+    // populates), so both are collected in one pass. Direct-INLINE
+    // (slice-3): the subscriber (locus, handler) list per direct
+    // subject, so the publish site can resolve+dedup the handler
+    // FunctionValue and bake a single-handler direct call.
+    let mut bus_devirt_ids: std::collections::BTreeMap<String, u32> =
+        std::collections::BTreeMap::new();
+    let mut bus_devirt_direct: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut bus_devirt_direct_subs: std::collections::BTreeMap<
+        String,
+        Vec<(String, String)>,
+    > = std::collections::BTreeMap::new();
+    for (next, s) in plan.static_subjects().iter().enumerate() {
+        bus_devirt_ids.insert(s.subject.clone(), next as u32);
+        if s.flavor == hale_model::dispatch_plan::DispatchFlavor::StaticDirect {
+            bus_devirt_direct.insert(s.subject.clone());
+            bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
+        }
+    }
+
+    // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
+    // plans (`hale_types::ownership_graph::BubblePlans`), projected in
+    // the resolved program from the ownership graph over the same
+    // merged and desugared program the dispatch plan above comes from.
+    // The seam routes a singleton hit to the global load, a
+    // non-singleton hit to the threaded-field load and a cross-pool hit
+    // to the async birth on the owner's thread; the forwarding sets
+    // drive both the hidden-field declaration (decl.rs) and the
+    // birth-time 3-way write (instantiation.rs).
+    //
+    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties all three plans AND the
+    // forwarding sets — so the OFF build declares no threading fields,
+    // writes none, and stitches nothing: byte-identical to pre-#2 (the
+    // differential control arm).
+    let bubble = if options.no_ownership_bubble {
+        hale_types::ownership_graph::BubblePlans::default()
+    } else {
+        bubble
     };
 
     let context = Context::create();
@@ -1606,7 +1403,7 @@ pub fn build_executable_with_options(
             } else if !dbg.contains("name: \"std\"") {
                 true
             } else {
-                !stdlib_taint.iter().any(|ns| {
+                !stdlib_bus_tainted_namespaces().iter().any(|ns| {
                     dbg.contains(&format!("name: \"{}\"", ns))
                 })
             }
@@ -1663,10 +1460,12 @@ pub fn build_executable_with_options(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
-        ownership_bubble_plan,
-        ownership_bubble_nonsingleton_plan,
-        ownership_forwarding_sets,
-        ownership_bubble_crosspool_plan,
+        ownership_bubble_plan: bubble.singleton,
+        ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
+        ownership_forwarding_sets: bubble.forwarding,
+        ownership_bubble_crosspool_plan: bubble.crosspool,
+        ownership_accepts: ownership.accepts,
+        handlers,
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
@@ -1706,16 +1505,12 @@ pub fn build_executable_with_options(
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
-        restart_in_place_targets: BTreeSet::new(),
         deployment: Default::default(),
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
         fresh_locus_factories,
-        returned_bindings: compute_returned_bindings(&merged),
-        assign_moved_bindings: compute_assign_moved_bindings(&merged),
-        stack_array_bindings: compute_stack_array_bindings(&merged),
         stack_array_bytes_used: BTreeMap::new(),
         next_array_repeat_is_stack_local: false,
         model_hash: options.model_hash,
@@ -3350,13 +3145,17 @@ fn locate_ts_shim_staticlib(options: &BuildOptions) -> Option<PathBuf> {
 /// is table-driven from it); tainted decls with no table entry are
 /// reachable only via a literal `__Std` mention, which tier 2
 /// rejects wholesale. Computed once per process: AP_SOURCE is a
-/// compile-time constant.
-fn stdlib_bus_tainted_namespaces(
-    stdlib: &hale_syntax::ast::Program,
-) -> &'static [String] {
+/// compile-time constant, so the first call parses it for itself
+/// (the resolved program carries the stdlib only merged into the
+/// user's) and every later call reads the cached answer.
+fn stdlib_bus_tainted_namespaces() -> &'static [String] {
     use std::sync::OnceLock;
     static TAINT: OnceLock<Vec<String>> = OnceLock::new();
     TAINT.get_or_init(|| {
+        // `resolve_program` parsed the same text before any build
+        // reaches here, and refuses the build when it does not parse.
+        let stdlib = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
+            .expect("the bundled stdlib parses (resolve_program parsed it first)");
         let mut decls: Vec<(String, bool, String)> = Vec::new();
         for it in &stdlib.items {
             let (name, surface) = match it {
@@ -3415,230 +3214,6 @@ fn stdlib_bus_tainted_namespaces(
 }
 
 
-/// GH #383 — which free fns provably return a FRESH locus?
-///
-/// Since v0.14 a locus-typed field may only be assigned a locus
-/// LITERAL (`check_locus_field_store`), so a locus a factory returns
-/// has exactly one place it can come to rest: the binding that names
-/// it. That is what makes caller-scoped teardown sound — the
-/// ownership ambiguity which defeated the earlier attempts on this
-/// issue is now a compile error rather than a runtime guess.
-///
-/// A fn qualifies when:
-///   - its declared return type names a locus L (resolved through the
-///     import-rename table, so `mat::Matrix` counts);
-///   - every return is a direct `L { … }` literal, or one single
-///     `let`-bound ident whose binding is itself fresh — an `L { … }`
-///     literal or a call to an already-qualifying factory (hence the
-///     fixpoint: helpers build on other factories);
-///   - that binding never escapes into argument position, another
-///     literal, or a reassignment (receiver-position use such as
-///     `m.set(i, v)` is fine — using a locus is not transferring it);
-///   - no syntax this walk does not explicitly recognize appears.
-///
-/// Every "don't know" answers NOT fresh, preserving the old
-/// program-lifetime behavior rather than risking a double dissolve.
-/// GH #383 — for EVERY free fn, the local bindings it hands back via
-/// `return <ident>;` (or a tail ident), each resolved to the `let` in
-/// scope where the return spells it (GH #1140: an inner `let` that
-/// shadows the name is another binding, reclaimed like any other).
-///
-/// Distinct from `compute_fresh_locus_factories` and needed
-/// separately: a fn that does NOT qualify as a clean factory can
-/// still return a locus it bound from one. `nn::forward` is the
-/// case that proved it — it binds several factory results, returns
-/// one, and fails the freshness walk. Without this set, the caller-
-/// scoped dissolve fired on the binding the fn hands back and the
-/// caller received a dissolved locus (reads came back as zeros).
-///
-/// Conservative by construction: membership merely suppresses a
-/// dissolve, which is the old leak — never a double-free.
-fn compute_returned_bindings(
-    program: &Program,
-) -> std::collections::BTreeMap<String, crate::ownership::ReturnedBindings> {
-    use crate::ownership::returned_bindings;
-    use std::collections::BTreeMap;
-
-    let mut m: BTreeMap<String, crate::ownership::ReturnedBindings> =
-        BTreeMap::new();
-    // GH #884: module nesting flattened — the fn and the mode this
-    // keys by are lowered whatever their brace depth, so the facts
-    // they are looked up under have to be computed at that depth too.
-    for item in hale_syntax::ast::flat_decls(&program.items) {
-        match item {
-            TopDecl::Fn(f) => {
-                m.insert(f.name.name.clone(), returned_bindings(&f.body));
-            }
-            // A `mode` is the third shape that legitimately returns a
-            // locus (alongside a free fn) — it IS the locus-valued
-            // projection surface. This pass predated modes and walked
-            // only `TopDecl::Fn`, so a mode returning a factory-built
-            // locus had no returned-bindings entry: the GH #383 dissolve
-            // fired on the binding the caller now owns, handing back a
-            // reclaimed locus (empty reads, or another projection's
-            // recycled storage). Key by `{locus}.{mode}` to match the
-            // LLVM function name `current_fn` reports at the dissolve
-            // decision (see locus/decl.rs — same `{}.{}` convention).
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    if let LocusMember::Mode(md) = member {
-                        let mode_name = match md.kind {
-                            ModeKind::Bulk => "bulk",
-                            ModeKind::Harmonic => "harmonic",
-                            ModeKind::Resolution => "resolution",
-                        };
-                        m.insert(
-                            format!("{}.{}", l.name.name, mode_name),
-                            returned_bindings(&md.body),
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m
-}
-
-/// `-> ()` is spelled unit: rewrite an empty-tuple return
-/// annotation to "no return type" on every fn-shaped declaration,
-/// so downstream signature consumers never see a 0-element tuple.
-fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
-    fn norm(ret: &mut Option<TypeExpr>) {
-        if matches!(ret, Some(TypeExpr::Tuple(parts, _)) if parts.is_empty())
-        {
-            *ret = None;
-        }
-    }
-    for item in items {
-        match item {
-            TopDecl::Fn(f) => norm(&mut f.ret),
-            TopDecl::Interface(i) => {
-                for m in &mut i.methods {
-                    norm(&mut m.ret);
-                }
-            }
-            TopDecl::Locus(l) => {
-                for member in &mut l.members {
-                    match member {
-                        LocusMember::Fn(f) => norm(&mut f.ret),
-                        LocusMember::Mode(md) => norm(&mut md.ret),
-                        LocusMember::Lifecycle(lc) => norm(&mut lc.ret),
-                        _ => {}
-                    }
-                }
-            }
-            TopDecl::Module(m) => {
-                normalize_unit_return_annotations(&mut m.items)
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Bindings that participate in a plain `=` between locals
-/// (`a = nx;`, `a = make(...);`) — downstream handoff, free-fn
-/// locus rebinding. An assignment MOVES a value between bindings
-/// without the binding-scoped ownership rule seeing it: the
-/// moved-from binding's scope-exit dissolve would fire on a value
-/// the target (and possibly the caller) still holds, and the
-/// target's own dissolve can fire on a value another binding
-/// registered. Any name on either side of a bare-local `=` is
-/// therefore disqualified from frame-scoped reclamation.
-///
-/// Conservative by construction, same stance as
-/// `compute_returned_bindings`: membership only suppresses a
-/// dissolve — the old leak, never a double-free.
-fn compute_assign_moved_bindings(
-    program: &Program,
-) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    fn walk(b: &Block, out: &mut BTreeSet<String>) {
-        for s in &b.stmts {
-            match s {
-                Stmt::Assign { target, op, value, .. } => {
-                    if matches!(op, AssignOp::Eq) && target.tail.is_empty() {
-                        out.insert(target.head.name.clone());
-                        if let Expr::Ident(i) = value {
-                            out.insert(i.name.clone());
-                        }
-                    }
-                }
-                Stmt::While { body, .. } | Stmt::For { body, .. } => {
-                    walk(body, out)
-                }
-                Stmt::If(i) => {
-                    walk(&i.then_block, out);
-                    let mut cur = i.else_block.as_deref();
-                    while let Some(eb) = cur {
-                        match eb {
-                            ElseBranch::Else(bb) => {
-                                walk(bb, out);
-                                cur = None;
-                            }
-                            ElseBranch::ElseIf(ei) => {
-                                walk(&ei.then_block, out);
-                                cur = ei.else_block.as_deref();
-                            }
-                        }
-                    }
-                }
-                Stmt::Match(m) => {
-                    for arm in &m.arms {
-                        if let MatchArmBody::Block(bb) = &arm.body {
-                            walk(bb, out);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut record = |key: String, body: &Block| {
-        let mut set = BTreeSet::new();
-        walk(body, &mut set);
-        if !set.is_empty() {
-            m.insert(key, set);
-        }
-    };
-    // GH #884: module nesting flattened, for the reason above.
-    for item in hale_syntax::ast::flat_decls(&program.items) {
-        match item {
-            TopDecl::Fn(f) => record(f.name.name.clone(), &f.body),
-            // Locus frames use the `{locus}.{member}` LLVM name
-            // convention (locus/decl.rs) — key the same way so the
-            // `current_fn` lookup at the dissolve decision matches.
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    match member {
-                        LocusMember::Fn(f) => record(
-                            format!("{}.{}", l.name.name, f.name.name),
-                            &f.body,
-                        ),
-                        LocusMember::Mode(md) => {
-                            let mode_name = match md.kind {
-                                ModeKind::Bulk => "bulk",
-                                ModeKind::Harmonic => "harmonic",
-                                ModeKind::Resolution => "resolution",
-                            };
-                            record(
-                                format!("{}.{}", l.name.name, mode_name),
-                                &md.body,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m
-}
-
 /// GH #767: most stack bytes one fn's array literals may take.
 ///
 /// 8 KiB is one eighth of `LOTUS_CORO_STACK_BYTES` (the 64 KiB
@@ -3664,866 +3239,6 @@ pub(crate) const STACK_ARRAY_MAX_BYTES: u64 = 8 * 1024;
 /// form is pure IR bloat — `[0; 1024]` emitted 1024 stores and 2090
 /// lines of IR for one local.
 const ARRAY_FILL_UNROLL_MAX: u64 = 16;
-
-/// GH #767: per-fn set of `let` bindings whose initializer is a
-/// literal `[c; N]` and whose every use in the enclosing fn body is an
-/// element read (`t[i]`) or an element write (`t[i] = v`). Those are
-/// the bindings whose storage can live in the fn's own frame instead
-/// of an arena.
-///
-/// Why it matters: a free fn's temporaries are allocated in the
-/// CALLER's arena and are not reclaimed until the caller returns, so a
-/// fixed scratch table inside a helper is per-call churn for the whole
-/// lifetime of the loop that calls it — 1.69 GB of RSS over 200k calls
-/// in the measurement on #754.
-///
-/// Conservative by construction, and it has to be: a wrong answer here
-/// is a dangling stack pointer, not a leak. The walker whitelists the
-/// two element-access shapes and treats EVERY other occurrence of the
-/// name — a bare mention, a call argument, a `return`, a field store, a
-/// publish, a `for ... in t`, an alias `let u = t;` — as an escape. Any
-/// `Expr`/`Stmt` variant added later must be handled explicitly: both
-/// walkers match exhaustively, with no `_` arm.
-///
-/// A name bound more than once in one body, shadowed by a parameter, or
-/// re-bound by a bare `t = ...` is dropped outright rather than
-/// reasoned about. Keys follow the `{locus}.{member}` LLVM naming
-/// convention (locus/decl.rs) that `compute_returned_bindings` uses, so
-/// the `current_fn` lookup at the `let` matches; a duplicate key keeps
-/// only the INTERSECTION, so a name collision can only ever shrink the
-/// set.
-fn compute_stack_array_bindings(
-    program: &Program,
-) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    /// Every occurrence of `name` in `e` is an element access.
-    fn expr_uses_are_elementwise(e: &Expr, name: &str) -> bool {
-        match e {
-            // A bare mention hands the array's ADDRESS to whatever
-            // context it sits in. Unclassifiable — treat as escape.
-            Expr::Ident(i) => i.name != name,
-            Expr::Index { receiver, index, .. } => {
-                let recv_ok = match receiver.as_ref() {
-                    // `t[i]` yields the ELEMENT, by value. The storage
-                    // address stops here.
-                    Expr::Ident(i) if i.name == name => true,
-                    other => expr_uses_are_elementwise(other, name),
-                };
-                recv_ok && expr_uses_are_elementwise(index, name)
-            }
-            Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => true,
-            Expr::Binary { left, right, .. }
-            | Expr::Range { lo: left, hi: right, .. } => {
-                expr_uses_are_elementwise(left, name)
-                    && expr_uses_are_elementwise(right, name)
-            }
-            Expr::Unary { operand, .. } => {
-                expr_uses_are_elementwise(operand, name)
-            }
-            Expr::Call { callee, args, .. } => {
-                expr_uses_are_elementwise(callee, name)
-                    && args
-                        .iter()
-                        .all(|a| expr_uses_are_elementwise(a, name))
-            }
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-                expr_uses_are_elementwise(receiver, name)
-            }
-            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
-                xs.iter().all(|x| expr_uses_are_elementwise(x, name))
-            }
-            Expr::Struct { inits, .. } => inits
-                .iter()
-                .all(|si| expr_uses_are_elementwise(&si.value, name)),
-            Expr::Block(b) => block_uses_are_elementwise(b, name),
-            Expr::If(i) => if_uses_are_elementwise(i, name),
-            Expr::Match(m) => match_uses_are_elementwise(m, name),
-            Expr::Sum(x, _) | Expr::Prod(x, _) => {
-                expr_uses_are_elementwise(x, name)
-            }
-            Expr::Approx { left, right, tolerance, .. } => {
-                expr_uses_are_elementwise(left, name)
-                    && expr_uses_are_elementwise(right, name)
-                    && expr_uses_are_elementwise(tolerance, name)
-            }
-            Expr::ArrayRepeat { val, .. } => {
-                expr_uses_are_elementwise(val, name)
-            }
-            Expr::Or { inner, .. } => expr_uses_are_elementwise(inner, name),
-        }
-    }
-
-    fn if_uses_are_elementwise(i: &IfStmt, name: &str) -> bool {
-        if !expr_uses_are_elementwise(&i.cond, name)
-            || !block_uses_are_elementwise(&i.then_block, name)
-        {
-            return false;
-        }
-        match i.else_block.as_deref() {
-            None => true,
-            Some(ElseBranch::Else(b)) => block_uses_are_elementwise(b, name),
-            Some(ElseBranch::ElseIf(inner)) => {
-                if_uses_are_elementwise(inner, name)
-            }
-        }
-    }
-
-    fn match_uses_are_elementwise(m: &MatchStmt, name: &str) -> bool {
-        if !expr_uses_are_elementwise(&m.scrutinee, name) {
-            return false;
-        }
-        m.arms.iter().all(|arm| {
-            let guard_ok = arm
-                .guard
-                .as_ref()
-                .map(|g| expr_uses_are_elementwise(g, name))
-                .unwrap_or(true);
-            let body_ok = match &arm.body {
-                MatchArmBody::Expr(e) => expr_uses_are_elementwise(e, name),
-                MatchArmBody::Block(b) => block_uses_are_elementwise(b, name),
-            };
-            guard_ok && body_ok
-        })
-    }
-
-    fn stmt_uses_are_elementwise(s: &Stmt, name: &str) -> bool {
-        match s {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-                expr_uses_are_elementwise(value, name)
-            }
-            Stmt::Assign { target, value, .. } => {
-                let target_ok = if target.head.name == name {
-                    // `t[i] = v` writes an element. Anything else with
-                    // `t` at the head — `t = x` (a rebind), `t.f = x` —
-                    // is not an element write.
-                    match target.tail.as_slice() {
-                        [LValueSeg::Index(ix)] => {
-                            expr_uses_are_elementwise(ix, name)
-                        }
-                        _ => false,
-                    }
-                } else {
-                    target.tail.iter().all(|seg| match seg {
-                        LValueSeg::Index(ix) => {
-                            expr_uses_are_elementwise(ix, name)
-                        }
-                        LValueSeg::Field(_) => true,
-                    })
-                };
-                target_ok && expr_uses_are_elementwise(value, name)
-            }
-            Stmt::If(i) => if_uses_are_elementwise(i, name),
-            Stmt::Match(m) => match_uses_are_elementwise(m, name),
-            // `for x in t` reads elements, but the lowering walks the
-            // storage — left out on purpose, the conservative side.
-            Stmt::For { iter, body, .. } => {
-                expr_uses_are_elementwise(iter, name)
-                    && block_uses_are_elementwise(body, name)
-            }
-            Stmt::While { cond, body, .. } => {
-                expr_uses_are_elementwise(cond, name)
-                    && block_uses_are_elementwise(body, name)
-            }
-            Stmt::Return(v, _) => v
-                .as_ref()
-                .map(|e| expr_uses_are_elementwise(e, name))
-                .unwrap_or(true),
-            Stmt::Break(_)
-            | Stmt::Continue(_)
-            | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => true,
-            Stmt::Fail { value, .. } => expr_uses_are_elementwise(value, name),
-            Stmt::Block(b) => block_uses_are_elementwise(b, name),
-            Stmt::Recovery { args, .. } => {
-                args.iter().all(|a| expr_uses_are_elementwise(a, name))
-            }
-            Stmt::Violate { payload, .. } => payload
-                .as_ref()
-                .map(|e| expr_uses_are_elementwise(e, name))
-                .unwrap_or(true),
-            Stmt::Send { subject, value, .. } => {
-                expr_uses_are_elementwise(subject, name)
-                    && expr_uses_are_elementwise(value, name)
-            }
-            Stmt::ShmWrite { max, body, .. } => {
-                expr_uses_are_elementwise(max, name)
-                    && block_uses_are_elementwise(body, name)
-            }
-            Stmt::Expr(e) => expr_uses_are_elementwise(e, name),
-        }
-    }
-
-    fn block_uses_are_elementwise(b: &Block, name: &str) -> bool {
-        b.stmts.iter().all(|s| stmt_uses_are_elementwise(s, name))
-            && b.tail
-                .as_deref()
-                .map(|t| expr_uses_are_elementwise(t, name))
-                .unwrap_or(true)
-    }
-
-    /// Candidates (a `let` whose RHS is a literal `[c; N]`) and every
-    /// other name the body binds. A name in both — a shadow, a second
-    /// `let`, a loop variable — is dropped.
-    fn collect_binders(
-        b: &Block,
-        candidates: &mut Vec<String>,
-        other: &mut BTreeSet<String>,
-    ) {
-        fn visit_if(
-            i: &IfStmt,
-            candidates: &mut Vec<String>,
-            other: &mut BTreeSet<String>,
-        ) {
-            collect_binders(&i.then_block, candidates, other);
-            match i.else_block.as_deref() {
-                None => {}
-                Some(ElseBranch::Else(bb)) => {
-                    collect_binders(bb, candidates, other)
-                }
-                Some(ElseBranch::ElseIf(inner)) => {
-                    visit_if(inner, candidates, other)
-                }
-            }
-        }
-        for s in &b.stmts {
-            match s {
-                Stmt::Let { name, value, .. } => {
-                    if matches!(value, Expr::ArrayRepeat { .. }) {
-                        candidates.push(name.name.clone());
-                    } else {
-                        other.insert(name.name.clone());
-                    }
-                }
-                Stmt::LetTuple { names, .. } => {
-                    for n in names {
-                        other.insert(n.name.clone());
-                    }
-                }
-                Stmt::For { name, body, .. } => {
-                    other.insert(name.name.clone());
-                    collect_binders(body, candidates, other);
-                }
-                Stmt::While { body, .. }
-                | Stmt::Block(body)
-                | Stmt::ShmWrite { body, .. } => {
-                    collect_binders(body, candidates, other)
-                }
-                Stmt::If(i) => visit_if(i, candidates, other),
-                Stmt::Match(m) => {
-                    for arm in &m.arms {
-                        if let MatchArmBody::Block(bb) = &arm.body {
-                            collect_binders(bb, candidates, other);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn qualifying(params: &[Param], body: &Block) -> BTreeSet<String> {
-        let mut candidates: Vec<String> = Vec::new();
-        let mut other: BTreeSet<String> = BTreeSet::new();
-        collect_binders(body, &mut candidates, &mut other);
-        for p in params {
-            other.insert(p.name.name.clone());
-        }
-        let mut out = BTreeSet::new();
-        for c in &candidates {
-            if other.contains(c) {
-                continue;
-            }
-            // Bound twice in one body — two `[c; N]` literals under one
-            // name. Not worth reasoning about; drop it.
-            if candidates.iter().filter(|x| *x == c).count() != 1 {
-                continue;
-            }
-            if block_uses_are_elementwise(body, c) {
-                out.insert(c.clone());
-            }
-        }
-        out
-    }
-
-    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut record = |key: String, params: &[Param], body: &Block| {
-        let set = qualifying(params, body);
-        match m.entry(key) {
-            std::collections::btree_map::Entry::Vacant(v) => {
-                if !set.is_empty() {
-                    v.insert(set);
-                }
-            }
-            // Two declarations landed on one LLVM name. Keep only what
-            // holds for both.
-            std::collections::btree_map::Entry::Occupied(mut o) => {
-                o.get_mut().retain(|n| set.contains(n));
-            }
-        }
-    };
-    // GH #884: module nesting flattened, for the reason above.
-    for item in hale_syntax::ast::flat_decls(&program.items) {
-        match item {
-            TopDecl::Fn(f) => {
-                record(f.name.name.clone(), &f.params, &f.body)
-            }
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    match member {
-                        LocusMember::Fn(f) => record(
-                            format!("{}.{}", l.name.name, f.name.name),
-                            &f.params,
-                            &f.body,
-                        ),
-                        LocusMember::Mode(md) => {
-                            let mode_name = match md.kind {
-                                ModeKind::Bulk => "bulk",
-                                ModeKind::Harmonic => "harmonic",
-                                ModeKind::Resolution => "resolution",
-                            };
-                            record(
-                                format!("{}.{}", l.name.name, mode_name),
-                                &[],
-                                &md.body,
-                            );
-                        }
-                        LocusMember::Lifecycle(lc) => {
-                            let lc_name = match lc.kind {
-                                LifecycleKind::Birth => "birth",
-                                LifecycleKind::Accept => "accept",
-                                LifecycleKind::Release => "release",
-                                LifecycleKind::Run => "run",
-                                LifecycleKind::Drain => "drain",
-                                LifecycleKind::Dissolve => "dissolve",
-                            };
-                            record(
-                                format!("{}.{}", l.name.name, lc_name),
-                                &lc.params,
-                                &lc.body,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m.retain(|_, v| !v.is_empty());
-    m
-}
-
-fn compute_fresh_locus_factories(
-    program: &Program,
-    import_renames: &[(Vec<String>, String)],
-) -> std::collections::BTreeMap<String, (String, Option<String>)> {
-    use std::collections::BTreeMap;
-
-    fn resolve(
-        v: &[String],
-        renames: &[(Vec<String>, String)],
-    ) -> Option<String> {
-        if v.len() == 1 {
-            return Some(v[0].clone());
-        }
-        let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
-        if let Some(m) = stdlib_mangled_for_path(&refs) {
-            return Some(m.to_string());
-        }
-        renames
-            .iter()
-            .find(|(p, _)| p.len() == v.len() && p.iter().zip(v).all(|(a, b)| a == b))
-            .map(|(_, m)| m.clone())
-    }
-
-    fn qname(q: &QualifiedName) -> Vec<String> {
-        q.segments.iter().map(|s| s.name.clone()).collect()
-    }
-
-    fn ret_locus_name(
-        f: &FnDecl,
-        renames: &[(Vec<String>, String)],
-    ) -> Option<String> {
-        match f.ret.as_ref()? {
-            TypeExpr::Named { path, .. } => resolve(&qname(path), renames),
-            _ => None,
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    enum Freshness {
-        Literal,
-        CallTo(String),
-        Other,
-    }
-
-    /// Accepts both spellings of a qualified callee: `a::b` parses to
-    /// `Path2`, and some paths normalize to `Field` before this pass.
-    /// Accepting only one silently classified every cross-seed
-    /// factory call as opaque.
-    fn callee_name(
-        callee: &Expr,
-        renames: &[(Vec<String>, String)],
-    ) -> Option<String> {
-        fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
-            match e {
-                Expr::Ident(i) => {
-                    out.push(i.name.clone());
-                    true
-                }
-                // THREE spellings reach here for a qualified callee:
-                // `Path` (the whole-name form the parser produces for
-                // `mat::zeros(...)`), plus `Path2` / `Field` for the
-                // receiver-chain forms. Missing `Path` silently
-                // classified every cross-seed factory call as opaque,
-                // which is why the neural helpers never qualified.
-                Expr::Path(q) => {
-                    out.extend(q.segments.iter().map(|i| i.name.clone()));
-                    true
-                }
-                Expr::Path2 { receiver, name, .. }
-                | Expr::Field { receiver, name, .. } => {
-                    if !segs(receiver, out) {
-                        return false;
-                    }
-                    out.push(name.name.clone());
-                    true
-                }
-                _ => false,
-            }
-        }
-        let mut v = Vec::new();
-        if !segs(callee, &mut v) {
-            return None;
-        }
-        resolve(&v, renames)
-    }
-
-    fn expr_ok(e: &Expr, x: &str) -> bool {
-        match e {
-            Expr::Ident(i) => i.name != x,
-            Expr::Literal(..) => true,
-            Expr::Field { receiver, .. } => recv_ok(receiver, x),
-            Expr::Call { callee, args, .. } => {
-                let c = match callee.as_ref() {
-                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
-                    Expr::Ident(i) => i.name != x,
-                    other => expr_ok(other, x),
-                };
-                c && args.iter().all(|a| expr_ok(a, x))
-            }
-            Expr::Binary { left, right, .. } => {
-                expr_ok(left, x) && expr_ok(right, x)
-            }
-            Expr::Unary { operand, .. } => expr_ok(operand, x),
-            Expr::Index { receiver, index, .. } => {
-                recv_ok(receiver, x) && expr_ok(index, x)
-            }
-            Expr::Path2 { receiver, .. } => recv_ok(receiver, x),
-            Expr::Or { inner, disposition, .. } => {
-                let d = match disposition {
-                    OrDisposition::Substitute(e) => expr_ok(e, x),
-                    OrDisposition::Fail(e, _) => expr_ok(e, x),
-                    _ => true,
-                };
-                expr_ok(inner, x) && d
-            }
-            Expr::Struct { inits, .. } => {
-                inits.iter().all(|i| expr_ok(&i.value, x))
-            }
-            Expr::Array(parts, _) => parts.iter().all(|p| expr_ok(p, x)),
-            Expr::Block(b) => block_ok(b, x),
-            other => !format!("{:?}", other)
-                .contains(&format!("name: \"{}\"", x)),
-        }
-    }
-
-    fn recv_ok(e: &Expr, x: &str) -> bool {
-        match e {
-            Expr::Ident(_) => true,
-            Expr::Field { receiver, .. } => recv_ok(receiver, x),
-            Expr::Index { receiver, index, .. } => {
-                recv_ok(receiver, x) && expr_ok(index, x)
-            }
-            Expr::Call { callee, args, .. } => {
-                let c = match callee.as_ref() {
-                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
-                    other => expr_ok(other, x),
-                };
-                c && args.iter().all(|a| expr_ok(a, x))
-            }
-            other => expr_ok(other, x),
-        }
-    }
-
-    fn block_ok(b: &Block, x: &str) -> bool {
-        b.stmts.iter().all(|s| stmt_ok(s, x))
-            && b.tail.as_ref().map_or(true, |t| expr_ok(t, x))
-    }
-
-    fn stmt_ok(s: &Stmt, x: &str) -> bool {
-        match s {
-            Stmt::Let { name, value, .. } => {
-                name.name != x && expr_ok(value, x)
-            }
-            Stmt::Assign { target, value, .. } => {
-                target.head.name != x && expr_ok(value, x)
-            }
-            Stmt::Expr(e) => expr_ok(e, x),
-            Stmt::While { cond, body, .. } => {
-                expr_ok(cond, x) && block_ok(body, x)
-            }
-            Stmt::For { body, iter, .. } => {
-                expr_ok(iter, x) && block_ok(body, x)
-            }
-            Stmt::If(i) => if_ok(i, x),
-            Stmt::Return(Some(Expr::Ident(i)), _) if i.name == x => true,
-            Stmt::Return(Some(e), _) => expr_ok(e, x),
-            Stmt::Return(None, _) => true,
-            Stmt::Break(_) | Stmt::Continue(_) => true,
-            Stmt::Fail { value, .. } => expr_ok(value, x),
-            _ => false,
-        }
-    }
-
-    fn if_ok(i: &IfStmt, x: &str) -> bool {
-        expr_ok(&i.cond, x)
-            && block_ok(&i.then_block, x)
-            && i.else_block.as_ref().map_or(true, |e| match e.as_ref() {
-                ElseBranch::Else(b) => block_ok(b, x),
-                ElseBranch::ElseIf(e) => if_ok(e, x),
-            })
-    }
-
-    /// Skips the defining `let x = …;` (its own name check would trip).
-    fn body_ok(b: &Block, x: &str) -> bool {
-        for s in &b.stmts {
-            match s {
-                Stmt::Let { name, value, .. } if name.name == x => {
-                    if !expr_ok(value, x) {
-                        return false;
-                    }
-                }
-                other => {
-                    if !stmt_ok(other, x) {
-                        return false;
-                    }
-                }
-            }
-        }
-        b.tail.as_ref().map_or(true, |t| match t.as_ref() {
-            Expr::Ident(i) if i.name == x => true,
-            e => expr_ok(e, x),
-        })
-    }
-
-    fn collect(
-        b: &Block,
-        rets: &mut Vec<Expr>,
-        lets: &mut Vec<(String, Freshness)>,
-        l: &str,
-        renames: &[(Vec<String>, String)],
-    ) {
-        for s in &b.stmts {
-            match s {
-                Stmt::Return(Some(e), _) => rets.push(e.clone()),
-                Stmt::Let { name, value, .. } => {
-                    let fr = match value {
-                        Expr::Struct { path, .. }
-                            if resolve(&qname(path), renames).as_deref()
-                                == Some(l) =>
-                        {
-                            Freshness::Literal
-                        }
-                        Expr::Call { callee, .. } => {
-                            match callee_name(callee, renames) {
-                                Some(n) => Freshness::CallTo(n),
-                                None => Freshness::Other,
-                            }
-                        }
-                        _ => Freshness::Other,
-                    };
-                    lets.push((name.name.clone(), fr));
-                }
-                Stmt::While { body, .. } | Stmt::For { body, .. } => {
-                    collect(body, rets, lets, l, renames)
-                }
-                Stmt::If(i) => {
-                    collect(&i.then_block, rets, lets, l, renames);
-                    let mut cur = i.else_block.as_deref();
-                    while let Some(eb) = cur {
-                        match eb {
-                            ElseBranch::Else(bb) => {
-                                collect(bb, rets, lets, l, renames);
-                                cur = None;
-                            }
-                            ElseBranch::ElseIf(ei) => {
-                                collect(&ei.then_block, rets, lets, l, renames);
-                                cur = ei.else_block.as_deref();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(t) = &b.tail {
-            rets.push((**t).clone());
-        }
-    }
-
-    let mut out: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
-    loop {
-        let mut added = false;
-        // GH #884: module nesting flattened — a factory fn one
-        // brace deeper is lowered and called like any other, so it
-        // has to enter the same fixpoint.
-        for item in hale_syntax::ast::flat_decls(&program.items) {
-            let TopDecl::Fn(f) = item else { continue };
-            if out.contains_key(&f.name.name) {
-                continue;
-            }
-            let Some(l) = ret_locus_name(f, import_renames) else {
-                continue;
-            };
-            let mut rets = Vec::new();
-            let mut lets = Vec::new();
-            collect(&f.body, &mut rets, &mut lets, &l, import_renames);
-            if rets.is_empty() {
-                continue;
-            }
-            let mut fresh_name: Option<String> = None;
-            let mut ok = true;
-            for r in &rets {
-                match r {
-                    Expr::Struct { path, .. }
-                        if resolve(&qname(path), import_renames).as_deref()
-                            == Some(l.as_str()) => {}
-                    // GH #402 shape 2: a return arm that is itself a
-                    // call to an already-qualifying factory of the
-                    // same locus. `matmul`'s guard arm — `if bad {
-                    // return error_matrix(); }` — disqualified the
-                    // whole fn under the original literal-or-ident
-                    // rule, even though that arm hands back a value
-                    // as fresh as the main one. Freshness is
-                    // transitive here for the same reason it is for
-                    // let-bindings, and the fixpoint already decides
-                    // it.
-                    Expr::Call { callee, .. }
-                        if callee_name(callee, import_renames)
-                            .and_then(|c| out.get(&c).cloned())
-                            .map(|(cl, _)| cl == l)
-                            .unwrap_or(false) => {}
-                    Expr::Ident(i) => match &fresh_name {
-                        None => fresh_name = Some(i.name.clone()),
-                        Some(n) if *n == i.name => {}
-                        Some(_) => { ok = false; break; }
-                    },
-                    _ => { ok = false; break; }
-                }
-            }
-            if !ok {
-                continue;
-            }
-            if let Some(x) = &fresh_name {
-                let bindings: Vec<&(String, Freshness)> =
-                    lets.iter().filter(|(n, _)| n == x).collect();
-                if bindings.len() != 1 {
-                    continue;
-                }
-                let fresh_binding = match &bindings[0].1 {
-                    Freshness::Literal => true,
-                    Freshness::CallTo(c) => {
-                        out.get(c).map(|(cl, _)| *cl == l).unwrap_or(false)
-                    }
-                    Freshness::Other => false,
-                };
-                if !fresh_binding || !body_ok(&f.body, x) {
-                    continue;
-                }
-            }
-            out.insert(f.name.name.clone(), (l, fresh_name));
-            added = true;
-        }
-        if !added {
-            break;
-        }
-    }
-    out
-}
-
-fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
-    if !matches!(segs.first(), Some(&"std")) {
-        return None;
-    }
-    let table: &[(&[&str], &str)] = hale_stdlib::PATH_RENAMES;
-    table
-        .iter()
-        .find(|(p, _)| *p == segs)
-        .map(|(_, name)| *name)
-}
-
-/// A7 (G16): walk the program before desugar and resolve every
-/// `BusSubject::QualifiedTopic(alias::Foo)` ref to the mangled
-/// single-segment ident the imported topic decl ends up at.
-/// Leaves the variant in place if the path doesn't resolve so a
-/// downstream "unknown topic" diagnostic can cite the source path.
-fn resolve_qualified_bus_subjects(
-    program: &mut hale_syntax::ast::Program,
-    import_renames: &[(Vec<String>, String)],
-) {
-    use hale_syntax::ast::{
-        BusMember, BusSubject, Ident, LocusMember, TopDecl,
-    };
-    fn lookup<'a>(
-        segs: &[&str],
-        import_renames: &'a [(Vec<String>, String)],
-    ) -> Option<String> {
-        if let Some(s) = stdlib_mangled_for_path(segs) {
-            return Some(s.to_string());
-        }
-        let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
-        import_renames
-            .iter()
-            .find(|(k, _)| k == &key)
-            .map(|(_, v)| v.clone())
-    }
-    fn rewrite(
-        subject: &mut BusSubject,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        if let BusSubject::QualifiedTopic(qn) = subject {
-            let segs: Vec<&str> =
-                qn.segments.iter().map(|s| s.name.as_str()).collect();
-            if let Some(mangled) = lookup(&segs, import_renames) {
-                let span = qn.span;
-                *subject = BusSubject::Topic(Ident { name: mangled, span });
-            }
-        }
-    }
-    // GH #527 B6: `bindings { alias::Topic: unix(...); }` — the
-    // entry keeps the joined path as its ident; resolve it here for
-    // the build path exactly as the qualified bus subjects are.
-    fn rewrite_binding(
-        entry: &mut hale_syntax::ast::BindingEntry,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        if !entry.topic.name.contains("::") {
-            return;
-        }
-        let segs: Vec<&str> = entry.topic.name.split("::").collect();
-        if let Some(mangled) = lookup(&segs, import_renames) {
-            entry.topic.name = mangled;
-        }
-    }
-    use hale_syntax::ast::{Block, ElseBranch, Expr, MatchArmBody, Stmt};
-    fn rewrite_send_subject(
-        e: &mut Expr,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        // `source::Heartbeat <- payload;` — Expr::Path multi-segment
-        // resolves to a single-segment Ident with the mangled topic
-        // name so the desugar's Stmt::Send rewriter (which only
-        // looks at Expr::Ident) handles it uniformly with intra-
-        // seed sends.
-        if let Expr::Path(qn) = e {
-            if qn.segments.len() > 1 {
-                let segs: Vec<&str> =
-                    qn.segments.iter().map(|s| s.name.as_str()).collect();
-                if let Some(mangled) = lookup(&segs, import_renames) {
-                    let span = qn.span;
-                    *e = Expr::Ident(Ident { name: mangled, span });
-                }
-            }
-        }
-    }
-    fn walk_if(
-        i: &mut hale_syntax::ast::IfStmt,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        walk_block(&mut i.then_block, import_renames);
-        if let Some(eb) = &mut i.else_block {
-            match eb.as_mut() {
-                ElseBranch::Else(b) => walk_block(b, import_renames),
-                ElseBranch::ElseIf(nested) => walk_if(nested, import_renames),
-            }
-        }
-    }
-    fn walk_block(
-        b: &mut Block,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        for s in &mut b.stmts {
-            walk_stmt(s, import_renames);
-        }
-        // Tail expr can't be a Send (Send is statement-only).
-        let _ = &b.tail;
-    }
-    fn walk_stmt(
-        s: &mut Stmt,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        match s {
-            Stmt::Send { subject, .. } => {
-                rewrite_send_subject(subject, import_renames);
-            }
-            Stmt::If(i) => walk_if(i, import_renames),
-            Stmt::Match(m) => {
-                for arm in &mut m.arms {
-                    if let MatchArmBody::Block(b) = &mut arm.body {
-                        walk_block(b, import_renames);
-                    }
-                }
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                walk_block(body, import_renames);
-            }
-            Stmt::Block(b) => walk_block(b, import_renames),
-            _ => {}
-        }
-    }
-    // GH #884: module nesting flattened — a qualified bus subject
-    // written one brace deeper names the same topic.
-    hale_syntax::ast::for_each_decl_mut(&mut program.items, &mut |item| {
-        if let TopDecl::Locus(l) = item {
-            for m in &mut l.members {
-                match m {
-                    LocusMember::Bus(b) => {
-                        for bm in &mut b.members {
-                            match bm {
-                                BusMember::Subscribe { subject, .. } => {
-                                    rewrite(subject, import_renames);
-                                }
-                                BusMember::Publish { subject, .. } => {
-                                    rewrite(subject, import_renames);
-                                }
-                            }
-                        }
-                    }
-                    LocusMember::Lifecycle(lc) => {
-                        walk_block(&mut lc.body, import_renames);
-                    }
-                    LocusMember::Mode(md) => {
-                        walk_block(&mut md.body, import_renames);
-                    }
-                    LocusMember::Fn(fd) => {
-                        walk_block(&mut fd.body, import_renames);
-                    }
-                    LocusMember::Bindings(bb) => {
-                        for entry in &mut bb.entries {
-                            rewrite_binding(entry, import_renames);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        } else if let TopDecl::Fn(fd) = item {
-            walk_block(&mut fd.body, import_renames);
-        }
-    });
-}
 
 
 pub(crate) struct Cx<'ctx, 'p> {
@@ -4838,6 +3553,19 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_bubble_crosspool_plan:
         std::collections::BTreeMap<(String, String), String>,
+    /// locus type → the child types it declares `accept(_: T)` for: the
+    /// ownership graph's `accepts` relation, from the resolved program.
+    /// `lower_locus_instantiation` reads it to decide whether the
+    /// enclosing locus accepts the child it births (SelfOwned). Not
+    /// emptied under `LOTUS_NO_OWNERSHIP_BUBBLE=1`: direct acceptance
+    /// is not a bubble.
+    pub(crate) ownership_accepts:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Which `on_failure` handler a failing child reaches: one row per
+    /// handler, the child type resolved once (F.40 phase 1.4). The
+    /// handler table, the failure route and restart-in-place
+    /// attribution read it.
+    pub(crate) handlers: hale_types::handler_routing::HandlerRouting,
     /// Set true by `lower_stmt` immediately before it lowers a bare
     /// expression-statement locus instantiation (`I { ... };`), and
     /// consumed (mem::take) at the top of `lower_locus_instantiation`.
@@ -5019,7 +3747,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// instantiated via struct-literal syntax + bare-name
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
-    generic_locus_templates: BTreeMap<String, LocusDecl>,
+    pub(crate) generic_locus_templates: BTreeMap<String, LocusDecl>,
     /// GH #921 A3, commit 6: this instantiation's struct must live
     /// for the PROGRAM, not for the frame that builds it — a
     /// `bindings { }` transport, adapter or codec, which the runtime
@@ -5209,9 +3937,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #1066: `__restart_<L>` / `__resume_<L>` for each locus a
     /// failure can come from (see `locus::restart`).
     pub(crate) restart_fns: BTreeMap<String, crate::locus::restart::RestartFns<'ctx>>,
-    /// Locus types some `on_failure` handler restarts in place: they
-    /// keep a copy of the params they were built with.
-    pub(crate) restart_in_place_targets: BTreeSet<String>,
 
     /// R3 (2026-07-29): the reified deployment arrangement — see
     /// `crate::deployment::DeploymentPlan`. Populated by
@@ -5262,26 +3987,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     /// GH #383: fn name -> (locus it freshly returns, the let-binding
-    /// it returns if any). See `compute_fresh_locus_factories`.
+    /// it returns if any). See `fresh_factories`.
     pub(crate) fresh_locus_factories:
         std::collections::BTreeMap<String, (String, Option<String>)>,
-    /// GH #383: fn name -> the local bindings it returns. Ownership
-    /// of those transfers to the caller, so this frame must not
-    /// dissolve them. See `compute_returned_bindings`.
-    pub(crate) returned_bindings:
-        std::collections::BTreeMap<String, crate::ownership::ReturnedBindings>,
-    /// Downstream handoff (free-fn locus rebinding): fn name -> the
-    /// local bindings that appear on either side of a bare-local
-    /// `=`. A moved value has two names; frame-scoped reclamation
-    /// must not fire on either. See `compute_assign_moved_bindings`.
-    pub(crate) assign_moved_bindings:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// GH #767: fn name -> the `let` bindings whose initializer is a
-    /// literal `[c; N]` that provably never escapes the fn. Those get
-    /// an entry-block `alloca` instead of an arena allocation. See
-    /// `compute_stack_array_bindings`.
-    pub(crate) stack_array_bindings:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// GH #767: fn name -> stack bytes already handed to array
     /// literals in that fn, so the per-fn cap
     /// (`STACK_ARRAY_MAX_BYTES`) counts the whole frame and not one
@@ -5290,7 +3998,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// never hand the outer fn a fresh budget.
     pub(crate) stack_array_bytes_used: std::collections::BTreeMap<String, u64>,
     /// GH #767: set by `Stmt::Let` immediately before lowering an
-    /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
+    /// `Expr::ArrayRepeat` RHS its binding facts clear (`stack_array`),
     /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
     /// the owner site). Nested array literals inside the
     /// RHS keep the arena path.
@@ -7250,15 +5958,15 @@ pub(crate) struct LocusInfo<'ctx> {
     /// with `tick_closures_fn`.
     pub(crate) tick_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// `on_failure(child: ChildL, err: ClosureViolation)` handlers
-    /// declared on this locus, one entry per declaration, in
-    /// declaration order; each handler's first param names the
-    /// child type it accepts. Stored as (child_locus_name, llvm_fn).
-    /// When a child fails its closure, the violation routes to the
-    /// handler whose child type is the child's own locus type
-    /// (`failure_handler_for`; the first declared, if two name the
-    /// same type) instead of dprintf+exit. Every handler takes
-    /// `ClosureViolation`, so the child type is the only selector.
+    /// declared on this locus: one entry per handler row, in ordinal
+    /// order, stored as (the row's child locus name, llvm_fn). When a
+    /// child fails its closure, the violation routes to the handler
+    /// the routing row selects (`Cx::failure_handler_for`: the first
+    /// declared for the child's locus type) instead of dprintf+exit.
     pub(crate) failure_handlers: Vec<(String, FunctionValue<'ctx>)>,
+    /// The name the handler rows key this locus by: its own, or, for a
+    /// monomorph, its generic template's.
+    pub(crate) routing_name: String,
     /// When this locus declares `accept(child: T)` AND a method
     /// body iterates `for child in self.children`, every accept
     /// dispatch appends the child's self_ptr to a growable
@@ -7548,23 +6256,6 @@ pub(crate) struct LocusInfo<'ctx> {
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
 }
 
-impl<'ctx> LocusInfo<'ctx> {
-    /// The `on_failure` handler this locus declares for a child of
-    /// locus type `child_locus_name`, if any. Selection is by the
-    /// child's type alone: a locus with a handler per child type
-    /// routes each child's failure to its own handler, never to
-    /// whichever handler happens to be declared first or last.
-    pub(crate) fn failure_handler_for(
-        &self,
-        child_locus_name: &str,
-    ) -> Option<FunctionValue<'ctx>> {
-        self.failure_handlers
-            .iter()
-            .find(|(child, _)| child == child_locus_name)
-            .map(|(_, f)| *f)
-    }
-}
-
 /// F.22 slot record carried on every LocusInfo. v1 surface:
 /// records name, kind, cell type, and the struct slot where the
 /// allocator pointer lives. Task #17 will widen this to participate
@@ -7789,7 +6480,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     pub(crate) fn mangled_for_path(&self, segs: &[&str]) -> Option<String> {
-        if let Some(name) = stdlib_mangled_for_path(segs) {
+        if let Some(name) = crate::ownership::stdlib_mangled_for_path(segs) {
             return Some(name.to_string());
         }
         let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
@@ -12271,14 +10962,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // main locus declares the matching on_failure, register
         // the loss dispatcher. Without the handler, the C drain
         // falls straight through to the structural exit — no
-        // dispatcher needed.
+        // dispatcher needed. The handler is main's routing row for
+        // the connect transport's locus type (picked by that name).
         if any_connect_binding {
             let main_handler = self
                 .deployment.main_locus_name
                 .as_ref()
-                .and_then(|n| self.user_loci.get(n))
-                .and_then(|info| {
-                    info.failure_handler_for("__StdBusUnixConnectTransport")
+                .and_then(|n| {
+                    self.failure_handler_for(n, "__StdBusUnixConnectTransport")
                 });
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler)?;
@@ -12352,7 +11043,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut scope = Scope::default();
         self.instantiating_program_lifetime = true;
         // GH #921 A2: codegen builds this literal; there is no source
-        // expression the pre-pass could have numbered. F.39 calls the
+        // expression the snapshot could have minted. F.39 calls the
         // bindings transport `Placement(entry)` (Riley's answer to
         // its third open question), which A3 has to arrange here
         // rather than by reading a table row.
@@ -14068,71 +12759,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
-    /// m61: produce the mangled name for a generic instantiation.
-    /// `Box<Int>` → `"Box_Int"`, `Pair<Int, String>` →
-    /// `"Pair_Int_String"`. Recurses into nested generics so
-    /// `Box<Pair<Int, String>>` → `"Box_Pair_Int_String"`. Each
-    /// arg must be a primitive or a non-generic user type at this
-    /// milestone (or itself a generic instantiation, which mangles
-    /// recursively).
+    /// m61: the mangled name for a generic instantiation —
+    /// `crate::mangle::mangle_generic_name`, its refusal carried as
+    /// the `UnsupportedAt` it always was.
     pub(crate) fn mangle_generic_name(
         template: &str,
         args: &[TypeExpr],
     ) -> Result<String, CodegenError> {
-        let mut tokens: Vec<String> = Vec::with_capacity(args.len());
-        for a in args {
-            tokens.push(Self::type_expr_mangle_token(a)?);
-        }
-        Ok(format!("{}_{}", template, tokens.join("_")))
-    }
-
-    /// m61: produce a single-token mangle for one generic arg.
-    /// Primitives use their canonical name (`Int`, `String`,
-    /// ...); a non-generic Named ref uses the bare name; a
-    /// generic ref recurses through `mangle_generic_name`.
-    ///
-    /// GH #911 B3 (#907): the primitive half of the vocabulary is
-    /// `hale_types::ty::GENERIC_ARG_PRIMS`, which the CHECKER also
-    /// reads — it refuses an unnameable argument at its span, so this
-    /// arm is the layer of last resort rather than the first place the
-    /// author hears about it. It used to name seven primitives while
-    /// `Bytes` / `BytesView` / `BytesMut` / `StringView` were ordinary
-    /// field types everywhere else in the language, which is why
-    /// `Box<Bytes>` checked clean and refused to build.
-    fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, CodegenError> {
-        match t {
-            TypeExpr::Primitive(p, span) => {
-                match hale_types::ty::generic_arg_mangle_token(*p) {
-                    Some(token) => Ok(token.into()),
-                    // GH #241: user-reachable — carry the arg's span.
-                    None => Err(CodegenError::UnsupportedAt(
-                        hale_types::ty::generic_arg_refusal(*p),
-                        *span,
-                    )),
-                }
-            }
-            TypeExpr::Named { path, generic_args, .. }
-                if path.segments.len() == 1 =>
-            {
-                if generic_args.is_empty() {
-                    Ok(path.segments[0].name.clone())
-                } else {
-                    Self::mangle_generic_name(
-                        &path.segments[0].name,
-                        generic_args,
-                    )
-                }
-            }
-            // GH #241: user-reachable — carry the arg's span.
-            other => Err(CodegenError::UnsupportedAt(
-                format!(
-                    "{} as a generic argument (v0 supports primitives \
-                     and named types)",
-                    other.form_name()
-                ),
-                other.span(),
-            )),
-        }
+        crate::mangle::mangle_generic_name(template, args)
+            .map_err(|(msg, span)| CodegenError::UnsupportedAt(msg, span))
     }
 
     /// m61: substitute generic param refs (`T`, `U`, ...) inside a
@@ -19063,7 +17698,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Let { name, ty: ascribed, value, .. } => {
+            Stmt::Let { name, ty: ascribed, value, id, span, .. } => {
                 // m61b: when a let has both a generic-typed
                 // ascription and a bare-name struct literal as
                 // its value, rewrite the literal's path to the
@@ -19129,17 +17764,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // does not, so route THIS binding's RHS through the
                 // caller arena too — exactly how a free fn threads its
                 // `__caller_arena` to the same factory. Gated on the
-                // binding actually being returned (compute_returned_
-                // bindings now sees mode bodies), so ordinary transient
-                // bindings keep using scratch.
+                // binding actually being returned (the returned walk
+                // sees mode bodies), so ordinary transient bindings keep
+                // using scratch.
+                //
+                // F.40 1.2b: what the `let` knows about its own binding
+                // is the owner table's row for this site. A `let` with
+                // no row (a `NONE` id, or a site the resolved program
+                // never saw) is a compiler bug, refused here: read as
+                // defaults, it would answer "not returned, not moved",
+                // the answers that dissolve the value.
+                let facts = *self.owner_table.binding_facts(*id).ok_or_else(|| {
+                    CodegenError::UnsupportedAt(
+                        format!(
+                            "no binding-facts row for `{}`: the resolved program did not mint this site",
+                            name.name
+                        ),
+                        *span,
+                    )
+                })?;
                 let saved_override_for_returned = self.current_arena_override;
-                let binding_is_returned = self.current_method_scratch.is_some()
-                    && self
-                        .current_fn
-                        .map(|f| f.get_name().to_string_lossy().to_string())
-                        .and_then(|fname| self.returned_bindings.get(&fname))
-                        .map(|rb| rb.let_is_returned(name))
-                        .unwrap_or(false);
+                let binding_is_returned =
+                    self.current_method_scratch.is_some() && facts.returned;
                 if binding_is_returned {
                     if let Some(slot) = self.current_method_caller_arena {
                         let ptr_t =
@@ -19167,16 +17813,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.next_array_repeat_is_stack_local =
                     matches!(value_to_lower, Expr::ArrayRepeat { .. })
                         && !binding_is_returned
-                        && self
-                            .current_fn
-                            .map(|f| {
-                                f.get_name().to_string_lossy().to_string()
-                            })
-                            .and_then(|fname| {
-                                self.stack_array_bindings.get(&fname)
-                            })
-                            .map(|set| set.contains(&name.name))
-                            .unwrap_or(false);
+                        && facts.stack_array;
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
@@ -19265,12 +17902,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // bound from one (`nn::forward` — the case
                         // that caught this, where reads came back as
                         // zeros).
-                        let is_my_returned_binding = self
-                            .current_fn
-                            .map(|f| f.get_name().to_string_lossy().to_string())
-                            .and_then(|fname| self.returned_bindings.get(&fname))
-                            .map(|rb| rb.let_is_returned(name))
-                            .unwrap_or(false);
+                        let is_my_returned_binding = facts.returned;
                         // Downstream handoff (free-fn locus
                         // rebinding): a binding that participates in
                         // a bare-local `=` can hold a value another
@@ -19279,14 +17911,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // fire on a value that is still live — or
                         // already dissolved — through the other
                         // name. Leak it instead.
-                        let is_assign_moved = self
-                            .current_fn
-                            .map(|f| f.get_name().to_string_lossy().to_string())
-                            .and_then(|fname| {
-                                self.assign_moved_bindings.get(&fname).cloned()
-                            })
-                            .map(|set| set.contains(&name.name))
-                            .unwrap_or(false);
+                        let is_assign_moved = facts.assign_moved;
                         if is_fresh && !is_my_returned_binding && !is_assign_moved {
                             fresh_dissolve_of = Some(lname.clone());
                         }
@@ -24617,7 +23242,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// Storage is an entry-block `alloca` when `want_stack` says the
     /// binding this literal initializes provably does not escape the fn
-    /// (`compute_stack_array_bindings`), the element is a scalar, and
+    /// (its binding facts' `stack_array`), the element is a scalar, and
     /// the fn's stack-array budget has room; the current arena
     /// otherwise. A free fn's arena is the CALLER's, so the arena form
     /// of a fixed local table is per-call churn that outlives the call
@@ -24908,7 +23533,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // owner. It is either a missing decision, which
                     // the guard after the call refuses, or a factory
                     // whose return is not a LOCUS at all:
-                    // `compute_fresh_locus_factories` does not check
+                    // `fresh_factories` does not check
                     // that (`fn __http_parse_url(..) -> Url` is in
                     // its map though `Url` is a `type`), and the
                     // table filters those out because it has no

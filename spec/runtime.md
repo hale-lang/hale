@@ -478,7 +478,11 @@ be bucketed past its own adapter.
 The plan is part of what a build **is**: its digest is framed into
 the executable identity (`exec_digest`) alongside the toolchain
 hash, the compiler version, the build options, and every source
-byte. Two builds of identical sources that lower dispatch
+byte. The plan framed there is the one the backend lowers: derived
+once from the bus graph over the merged, topic-desugared program
+the backend walks, with the same ladder, and without the
+arrangement (its `same_domain` column is not consulted by any
+flavor today). Two builds of identical sources that lower dispatch
 differently — notably the all-dynamic `LOTUS_NO_BUS_DEVIRT=1`
 control arm — therefore have different identities, and a recording
 made under one is refused against the other rather than replayed

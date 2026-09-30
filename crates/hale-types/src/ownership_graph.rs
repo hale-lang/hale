@@ -38,6 +38,7 @@ use hale_syntax::ast::*;
 use hale_syntax::Span;
 
 use crate::bus_graph::Placement;
+use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
 use crate::resolve::TopScope;
 use crate::symbol::Bundle;
 
@@ -148,7 +149,9 @@ pub struct OwnedSite {
 pub struct OwnershipGraph {
     /// Every resolved instantiation site, in walk order.
     pub sites: Vec<OwnedSite>,
-    /// locus type → the child types it declares `accept(_: T)` for.
+    /// locus type → the child types it declares `accept(_: T)` for, each
+    /// the locus `child_locus_name` resolves it to: an alias followed,
+    /// generic arguments mangled, a `std::` or cross-seed path renamed.
     pub accepts: BTreeMap<String, BTreeSet<String>>,
     /// child locus type → the set of locus types that instantiate it
     /// in a method body (the ancestor-edge relation).
@@ -233,6 +236,86 @@ impl OwnershipGraph {
         }
         out
     }
+
+    /// The bubble plans lowering acts on: the graph's sites distilled to
+    /// the ones a bubble moves, plus [`Self::compute_forwarding_sets`].
+    /// Resolution depends only on `(enclosing_locus, child_ty)` (the
+    /// climb walks the static instantiated-by relation, not a runtime
+    /// path), so every plan keys on that pair.
+    pub fn bubble_plans(&self) -> BubblePlans {
+        let mut plan: BTreeMap<(String, String), String> = BTreeMap::new();
+        let mut nonsingleton: BTreeMap<(String, String), String> =
+            BTreeMap::new();
+        // Interest-based ownership #3: the cross-pool twin. A site
+        // resolving to `Ancestor(A)` with `OwnerKind::SingletonConst`
+        // AND `EdgeClass::CrossPool` (A a program-start singleton on a
+        // different thread than the enclosing locus) lands here — the
+        // child is born on A's thread via the async post+dispatch path.
+        // Non-singleton cross-pool has no compile-time pool handle for A
+        // → NOT admitted (stays transient, deferred).
+        let mut crosspool: BTreeMap<(String, String), String> =
+            BTreeMap::new();
+        for site in &self.sites {
+            if let OwnerResolution::Ancestor(owner) = &site.resolution {
+                let key =
+                    (site.enclosing_locus.clone(), site.child_ty.clone());
+                match (&site.edge_class, &site.owner_kind) {
+                    (EdgeClass::SameTower, OwnerKind::SingletonConst) => {
+                        plan.insert(key, owner.clone());
+                    }
+                    (EdgeClass::SameTower, OwnerKind::Ancestor) => {
+                        nonsingleton.insert(key, owner.clone());
+                    }
+                    (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
+                        crosspool.insert(key, owner.clone());
+                    }
+                    // CrossPool + non-singleton (no static pool handle),
+                    // Open, per-path, orphan: stay transient.
+                    _ => {}
+                }
+            }
+        }
+        let forwarding = self.compute_forwarding_sets();
+        BubblePlans {
+            singleton: plan,
+            nonsingleton,
+            crosspool,
+            forwarding,
+        }
+    }
+}
+
+/// The bubble plans lowering reads, projected from the graph by
+/// [`OwnershipGraph::bubble_plans`]. The three plans key on
+/// `(enclosing locus, child type)` and carry the owner locus type `A`;
+/// they are DISJOINT (a site has one edge class and one owner kind).
+/// Every other resolution (SelfOwned direct-parent, non-singleton
+/// cross-pool, per-path, orphan, open) is in none of them and stays
+/// transient. `BubblePlans::default()` is the empty plan: no bubble,
+/// no threading field, nothing stitched — the differential control
+/// arm codegen's `LOTUS_NO_OWNERSHIP_BUBBLE=1` selects.
+#[derive(Debug, Clone, Default)]
+pub struct BubblePlans {
+    /// Interest-based ownership #2, the SameTower + SingletonConst plan:
+    /// an `I{}` born deep inside locus `B` that resolves to a UNIQUE
+    /// accepting ancestor `A` where `A` is a `main locus` / `@export`
+    /// singleton on the same OS thread as `B`. `A`'s pointer folds to
+    /// a global, so the child bubbles to it directly.
+    pub singleton: BTreeMap<(String, String), String>,
+    /// #2b, the SameTower + Ancestor plan: the same bubble to an `A`
+    /// with MULTIPLE instances, whose pointer cannot be a constant and
+    /// is threaded down the birth chain in hidden `__owner_for_<I>`
+    /// fields (see `forwarding`).
+    pub nonsingleton: BTreeMap<(String, String), String>,
+    /// #3, the CrossPool + SingletonConst plan: `A` a singleton on a
+    /// DIFFERENT pool/thread than `B`, so the child is born on `A`'s
+    /// thread through the async post + dispatch path (a bare `I{};`
+    /// statement only).
+    pub crosspool: BTreeMap<(String, String), String>,
+    /// #2b's forwarding sets ([`OwnershipGraph::compute_forwarding_sets`]):
+    /// locus type → the interest types `I` it carries an
+    /// `__owner_for_I` field for.
+    pub forwarding: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// DFS upward from `node` toward `owner` via `instantiated_by`, adding
@@ -275,7 +358,9 @@ fn collect_forwarding(
 /// One locus's ownership-relevant facts, collected in a single walk.
 #[derive(Default)]
 struct LocusFacts {
-    /// Child types this locus declares `accept(_: T)` for.
+    /// Child types this locus declares `accept(_: T)` for, resolved by
+    /// `child_locus_name` (a type that names no locus is accepted by
+    /// no one).
     accepts: BTreeSet<String>,
     /// Locus-typed literals born in this locus's method bodies.
     instantiates: Vec<RawSite>,
@@ -332,11 +417,20 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
         })
     });
 
+    // The child an `accept` names is resolved by the one resolver the
+    // handler rows use, so an alias, generic arguments or a `std::` path
+    // name the locus lowering resolves (F.40 phase 1.4).
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let declared = DeclaredNames::of(&programs);
+    let renames = bundle.import_renames.as_slice();
+
     // Pass 2: per-locus facts.
     let mut facts: BTreeMap<String, LocusFacts> = BTreeMap::new();
     fn walk(
         items: &[TopDecl],
         locus_types: &BTreeSet<String>,
+        declared: &DeclaredNames,
+        renames: &[(Vec<String>, String)],
         facts: &mut BTreeMap<String, LocusFacts>,
     ) {
         for item in items {
@@ -356,7 +450,9 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                             LocusMember::Lifecycle(ld) => {
                                 if ld.kind == LifecycleKind::Accept {
                                     for p in &ld.params {
-                                        if let Some(name) = named_type(&p.ty) {
+                                        if let ChildRef::Locus(name) =
+                                            child_locus_name(&p.ty, declared, renames)
+                                        {
                                             entry.accepts.insert(name);
                                         }
                                     }
@@ -406,13 +502,15 @@ fn collect_ownership_walk(bundle: &Bundle<'_>) -> OwnershipWalk {
                         }
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, locus_types, facts),
+                TopDecl::Module(m) => {
+                    walk(&m.items, locus_types, declared, renames, facts)
+                }
                 _ => {}
             }
         }
     }
-    for program in bundle.programs.values() {
-        walk(&program.items, &locus_types, &mut facts);
+    for program in &programs {
+        walk(&program.items, &locus_types, &declared, renames, &mut facts);
     }
 
     OwnershipWalk {

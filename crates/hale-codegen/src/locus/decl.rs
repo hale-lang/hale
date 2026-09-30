@@ -11,6 +11,7 @@ use hale_syntax::ast::{
     ParamInit, ProjectionClass, ScheduleClass,
     TypeExpr,
 };
+use hale_types::handler_routing::ChildRef;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
@@ -1258,6 +1259,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 duration_last_fire_field_idxs,
                 explicit_closures_fn: None,
                 failure_handlers: Vec::new(),
+                routing_name: l.name.name.clone(),
                 children_field_idx,
                 child_count_field_idx,
                 child_cap_field_idx,
@@ -1334,7 +1336,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             std::collections::BTreeSet::new();
         let mut closures: Vec<(String, ClosureAssertion, EpochSpec)> =
             Vec::new();
-        let mut failure_handlers: Vec<(String, FunctionValue<'ctx>)> = Vec::new();
+        let mut failure_decls: usize = 0;
 
         // Pre-collect bus-handler method names so we can reject
         // defaults on them: bus dispatch is a fixed (self, payload)
@@ -1791,17 +1793,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             fd.params.len()
                         )));
                     }
-                    let child_ty = self.type_expr_to_codegen_ty(&fd.params[0].ty)?;
-                    let child_locus_name = match &child_ty {
-                        CodegenTy::LocusRef(n) => n.clone(),
-                        other => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` on_failure first param must be \
-                                 a locus type; got {:?}",
-                                l.name.name, other
-                            )));
-                        }
-                    };
                     let err_ty = self.type_expr_to_codegen_ty(&fd.params[1].ty)?;
                     if err_ty != CodegenTy::TypeRef("ClosureViolation".into())
                     {
@@ -1811,30 +1802,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             l.name.name, err_ty
                         )));
                     }
-                    // Every handler gets its own fn, pushed in
-                    // declaration order (the body pass pairs them back
-                    // up the same way). The child's locus type is what
-                    // selects one at routing time
-                    // (`LocusInfo::failure_handler_for`). A second handler
-                    // for the SAME child type is refused by `hale check`
-                    // (it could never run: the first declared is the one
-                    // routing picks).
-                    //
-                    // Sig: void(parent_self, child_self, violation).
-                    // The first handler keeps the plain
-                    // `<L>.on_failure` symbol; later ones carry their
-                    // child type (LLVM uniquifies a repeat).
-                    let fn_ty = void_t.fn_type(
-                        &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
-                        false,
-                    );
-                    let fn_name = if failure_handlers.is_empty() {
-                        format!("{}.on_failure", l.name.name)
-                    } else {
-                        format!("{}.on_failure.{}", l.name.name, child_locus_name)
-                    };
-                    let func = self.module.add_function(&fn_name, fn_ty, None);
-                    failure_handlers.push((child_locus_name, func));
+                    // The child type, and which handler it selects, are
+                    // the routing rows' (below, after every member).
+                    failure_decls += 1;
                 }
                 LocusMember::Mode(md) => {
                     // Modes lower as locus methods named after
@@ -2099,6 +2069,91 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // subscribed user-fn body just before its tail
         // drain — see Pass C's user-fn body lowering.
 
+        // on_failure(child: ChildL, err: ClosureViolation): the handlers
+        // closures route to when an unabsorbed violation reaches the
+        // parent. The table is the routing rows' (F.40 phase 1.4): one
+        // fn per row, in ordinal order, so a fn's index in the table IS
+        // its row's ordinal. Building it pairs each row with its
+        // declaration by position (the rows are made in declaration
+        // order); every reader then goes by the row's ordinal: the body
+        // pass (method.rs) and a route (`failure_handler_for`). The
+        // rows are per declaration, so a monomorph reads its template's
+        // (it keeps the template's identity).
+        //
+        // Sig: void(parent_self, child_self, violation). The first
+        // handler keeps the plain `<L>.on_failure` symbol; later ones
+        // carry their child type (LLVM uniquifies a repeat).
+        let routing_name = if failure_decls > 0
+            && self.handlers.handlers_of(&l.name.name).next().is_none()
+        {
+            self.generic_locus_templates
+                .values()
+                .find(|t| !l.id.is_none() && t.id.0 == l.id.0)
+                .map(|t| t.name.name.clone())
+                .unwrap_or_else(|| l.name.name.clone())
+        } else {
+            l.name.name.clone()
+        };
+        let rows: Vec<hale_types::handler_routing::HandlerRow> =
+            self.handlers.handlers_of(&routing_name).cloned().collect();
+        if rows.len() != failure_decls {
+            return Err(CodegenError::Unsupported(format!(
+                "locus `{}` declares {} on_failure handler(s) but the \
+                 handler routing has {} row(s) for `{}`",
+                l.name.name,
+                failure_decls,
+                rows.len(),
+                routing_name
+            )));
+        }
+        let mut failure_handlers: Vec<(String, FunctionValue<'ctx>)> = Vec::new();
+        for (row, fd) in rows.iter().zip(l.members.iter().filter_map(|m| match m {
+            LocusMember::Failure(fd) => Some(fd),
+            _ => None,
+        })) {
+            if row.ordinal as usize != failure_handlers.len() || row.span != fd.span {
+                return Err(CodegenError::Unsupported(format!(
+                    "locus `{}` on_failure handler {} is not routing row {} \
+                     of `{}`",
+                    l.name.name,
+                    failure_handlers.len(),
+                    row.ordinal,
+                    routing_name
+                )));
+            }
+            let child_locus_name = match &row.child {
+                ChildRef::Locus(n) => n.clone(),
+                ChildRef::External(written) => {
+                    // What lowering makes of the type, for the message
+                    // (and its own refusal when it cannot name it).
+                    return Err(match self.type_expr_to_codegen_ty(&fd.params[0].ty)? {
+                        CodegenTy::LocusRef(n) => CodegenError::Unsupported(format!(
+                            "locus `{}` on_failure first param `{}` resolves \
+                             to locus `{}` in lowering but the handler \
+                             routing names no locus",
+                            l.name.name, written, n
+                        )),
+                        other => CodegenError::Unsupported(format!(
+                            "locus `{}` on_failure first param must be \
+                             a locus type; got {:?}",
+                            l.name.name, other
+                        )),
+                    });
+                }
+            };
+            let fn_ty = void_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+                false,
+            );
+            let fn_name = if failure_handlers.is_empty() {
+                format!("{}.on_failure", l.name.name)
+            } else {
+                format!("{}.on_failure.{}", l.name.name, child_locus_name)
+            };
+            let func = self.module.add_function(&fn_name, fn_ty, None);
+            failure_handlers.push((child_locus_name, func));
+        }
+
         // Stash the methods + accept_param onto the existing
         // LocusInfo.
         let info = self
@@ -2122,6 +2177,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.duration_wrapper_fn = duration_wrapper_fn;
         info.explicit_closures_fn = explicit_closures_fn;
         info.failure_handlers = failure_handlers;
+        info.routing_name = routing_name;
         Ok(())
     }
 

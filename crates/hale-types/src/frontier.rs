@@ -585,19 +585,37 @@ pub fn class_mask_with(
 /// `@supervised` on a locus: every locus in its subtree (its params
 /// children, transitively) must have a declared failure policy —
 /// an `on_failure` handler somewhere up the tree. Supervision
-/// coverage, checked.
-pub fn supervised_diags(programs: &[&Program]) -> Vec<Diag> {
+/// coverage, checked. Whether a locus has a handler is the handler
+/// rows' answer (F.40 phase 1.4).
+pub fn supervised_diags(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+    snapshot: &crate::snapshot::Snapshot,
+) -> Vec<Diag> {
     // locus name -> (has on_failure, child locus type names, span)
     let mut info: BTreeMap<String, (bool, Vec<String>, Span)> =
         BTreeMap::new();
     let mut supervised_roots: Vec<(String, Span)> = Vec::new();
+    let handlers = crate::handler_routing::handler_rows(programs, import_renames, snapshot);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
-            let has_failure = l
+            // The rows are the bundle's: a same-named locus in another
+            // file has rows of its own, which are not this one's. A row
+            // is this declaration's when the two-param handler at its
+            // ordinal is the row's span, as the checker's duplicate-
+            // handler law matches them.
+            let handler_decls: Vec<Span> = l
                 .members
                 .iter()
-                .any(|m| matches!(m, LocusMember::Failure(_)));
+                .filter_map(|m| match m {
+                    LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd.span),
+                    _ => None,
+                })
+                .collect();
+            let has_failure = handlers
+                .handlers_of(&l.name.name)
+                .any(|row| handler_decls.get(row.ordinal as usize) == Some(&row.span));
             let mut children = Vec::new();
             for m in &l.members {
                 if let LocusMember::Params(pb) = m {

@@ -8,7 +8,7 @@
 //!      lowering reads, so they are stated positively and not as
 //!      "whatever lowering happens to do". They seed the
 //!      fresh-factory fixpoint EMPTY on purpose, so a derivation
-//!      never passes because `compute_fresh_locus_factories`
+//!      never passes because `fresh_factories`
 //!      happened to agree.
 //!   2. **the build** — the same programs compiled. Reaching a locus
 //!      instantiation the table has no row for is a `CodegenError`
@@ -18,6 +18,10 @@
 //!      here as shadow-mode DISAGREEMENTS and were A3's checklist;
 //!      all four are closed, and each is a shape here naming the
 //!      commit that closed it.
+//!   3. **binding facts** — the row each `let` reads about its own
+//!      binding (handed back, moved by `=`, frame-local array), keyed
+//!      by the site's snapshot identity in the resolved program (F.40
+//!      phase 1.2b).
 //!
 //! Every program is assembled from ordinary `"…"` constants, never a
 //! RAW string literal, because `hale_corpus::embedded` harvests raw
@@ -107,9 +111,11 @@ fn table_of(src: &str) -> OwnerTable {
         .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
     // An EMPTY seed on purpose: the table's own fixpoint has to find
     // the ordinary factories, so a derivation test never passes
-    // because `compute_fresh_locus_factories` happened to agree.
+    // because `fresh_factories` happened to agree.
     let seed: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
-    resolve_owners(&mut p, &seed, &[])
+    // The pass keys rows by the snapshot's ids and numbers nothing.
+    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    resolve_owners(&p, &seed, &[]).expect("every node is minted")
 }
 
 /// The one row written in `decl` at `position` naming `name`.
@@ -523,7 +529,7 @@ fn a_placed_field_is_a_placement_entry() {
 #[test]
 fn a_carrier_return_fn_is_a_proven_fresh_factory_in_the_table() {
     // The whole of the 105-cell carrier-return family.
-    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // `fresh_factories::collect` classifies the CARRIER
     // node and never its arms, so `produce` was not a factory and its
     // caller's binding did not own the result. The table flattens the
     // arms, and GH #921 A3 commit 1 folds its answer back into the
@@ -562,17 +568,23 @@ fn a_binding_the_frame_hands_back_is_the_callers() {
 }
 
 #[test]
-fn the_table_numbers_every_locus_producing_node_it_decides() {
-    let t = table_of(&program(
+fn the_table_keys_every_locus_producing_node_it_decides_by_its_minted_id() {
+    let mut p = hale_syntax::parse_source(&program(
         "    let a = Subj { n: 1 };\n    let b = make(1);\n    println(\"u=\", a.probe() + b.probe());",
-    ));
-    assert!(t.numbered() >= t.len() as u32);
+    ))
+    .expect("parse");
+    let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    let t = resolve_owners(&p, &BTreeMap::new(), &[]).expect("every node is minted");
     assert!(!t.is_empty());
     for (id, _) in t.rows() {
         assert_ne!(
             *id,
             ExprId::DECLARED,
             "a real row must not carry the declaration sentinel"
+        );
+        assert!(
+            snap.sites.iter().any(|s| s.id.index == id.0),
+            "row {id:?} keys an id the snapshot did not mint"
         );
     }
 }
@@ -748,12 +760,55 @@ fn every_locus_is_decided_in_the_family_commit_four_closed() {
     );
 }
 
-/// F.40 1.2a-0: after the snapshot has minted every site, the pre-pass
-/// numbers nothing below the minted ids. Lowering re-parses the stdlib
-/// unnumbered, so a counter starting at zero would hand a stdlib
-/// literal a minted user site's id and overwrite its row.
+/// F.40 phase 1 review, finding 5: the pre-pass names an accepted
+/// child through the one resolver the ownership graph uses. With
+/// `accept(c: Kid)` and `type Kid = Child`, a `Child` literal in the
+/// acceptor's own body is the acceptor's (`__children`), and the graph's
+/// `accepts` names the same child — the pre-pass used to take the
+/// written name, find no locus `Kid`, and leave the literal to its frame.
 #[test]
-fn the_pre_pass_numbers_past_the_snapshot_and_never_collides() {
+fn an_aliased_accept_param_names_the_child_the_graph_names() {
+    let src = r#"
+locus Child { params { n: Int = 0; } }
+type Kid = Child;
+locus Parent {
+    accept(c: Kid) { }
+    fn spawn() { let k = Child { n: 1 }; }
+}
+fn main() { let p = Parent { }; p.spawn(); }
+"#;
+    let p = hale_syntax::parse_source(src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let t = &resolved.owner_table;
+    let kids: Vec<&Entry> = t
+        .rows()
+        .map(|(_, e)| e)
+        .filter(|e| e.name == "Child" && e.decl.contains("spawn"))
+        .collect();
+    assert_eq!(kids.len(), 1, "{}", dump(t));
+    assert_eq!(
+        kids[0].owner,
+        Owner::Field {
+            owner: ExprId::DECLARED,
+            field: "__children".to_string(),
+        },
+        "the acceptor owns the child its aliased accept names:\n{}",
+        dump(t)
+    );
+    assert_eq!(
+        resolved.ownership.accepts.get("Parent").map(|s| s.iter().cloned().collect::<Vec<_>>()),
+        Some(vec!["Child".to_string()]),
+        "the graph names the same child"
+    );
+}
+
+/// F.40 phase 1 review, finding 9: the pre-pass numbers nothing. A
+/// literal that arrives after the mint has no identity to key a row
+/// by, and the pass refuses the program naming its span instead of
+/// giving it one.
+#[test]
+fn an_unnumbered_late_node_is_an_error() {
     let src = r#"
 locus Item { params { x: Int = 0; } }
 locus Holder {
@@ -763,31 +818,213 @@ locus Holder {
 fn main() { Holder { }; }
 "#;
     let mut p = hale_syntax::parse_source(src).expect("parse");
-    let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
-    let minted_max = snap.sites.iter().map(|s| s.id.index).max().expect("sites");
-    // A late-arriving unnumbered literal, as the stdlib merge produces.
-    let mut late = hale_syntax::parse_source("fn f() { let l = Item { }; }\n").expect("parse");
+    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    assert!(
+        hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]).is_ok(),
+        "a fully minted program resolves"
+    );
+    // A late-arriving unnumbered literal, built after the mint.
+    let late_src = "fn f() { let l = Item { }; }\n";
+    let mut late = hale_syntax::parse_source(late_src).expect("parse");
+    let literal_at = late_src.find("Item {").expect("the literal") as u32;
     p.items.extend(late.items.drain(..));
-    let table = hale_codegen::ownership::resolve_owners(&mut p, &BTreeMap::new(), &[]);
-    // The pre-pass numbers only Struct and Call nodes; the late fn's
-    // other sites stay NONE until a snapshot mints them, and are not
-    // ids to compare.
-    let mut ids = Vec::new();
-    hale_syntax::sites::for_each_site(&p, &mut |_, _, id| {
-        if !id.is_none() {
-            ids.push(id.0);
+    match hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]) {
+        Err(hale_codegen::ownership::OwnershipError::Unminted { span, .. }) => {
+            assert_eq!(span.start.0, literal_at, "the error names the late literal's span");
         }
-    });
-    let mut sorted = ids.clone();
-    sorted.sort();
-    sorted.dedup();
-    assert_eq!(sorted.len(), ids.len(), "every site keeps a unique id: {ids:?}");
+        Ok(_) => panic!("an unminted literal must be refused, not numbered"),
+    }
+}
+
+// ===================================================================
+// 3 — binding facts, one row per binding site (F.40 phase 1.2b)
+// ===================================================================
+
+type Lets = Vec<(String, hale_syntax::ast::NodeId)>;
+
+/// The resolved program's owner table, and every `let` of `decl` (a
+/// free fn, `Locus.fn` or `Locus.run`) in the order it is written,
+/// with its snapshot identity.
+fn binding_rows_of(src: &str, decl: &str) -> (OwnerTable, Lets) {
+    use hale_syntax::ast::{Block, ElseBranch, LifecycleKind, LocusMember, Stmt, TopDecl};
+    fn lets(b: &Block, out: &mut Lets) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, id, .. } => out.push((name.name.clone(), *id)),
+                Stmt::If(i) => {
+                    lets(&i.then_block, out);
+                    if let Some(ElseBranch::Else(e)) = i.else_block.as_deref() {
+                        lets(e, out);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
+                    lets(body, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    let p = hale_syntax::parse_source(src)
+        .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .unwrap_or_else(|e| panic!("resolve_program refused the fixture: {e}"));
+    let mut out = Vec::new();
+    for item in &resolved.merged.items {
+        match item {
+            TopDecl::Fn(f) if f.name.name == decl => lets(&f.body, &mut out),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    let (member, body) = match m {
+                        LocusMember::Fn(f) => (f.name.name.as_str(), &f.body),
+                        LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => {
+                            ("run", &lc.body)
+                        }
+                        _ => continue,
+                    };
+                    if format!("{}.{}", l.name.name, member) == decl {
+                        lets(body, &mut out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!out.is_empty(), "no `let` in `{decl}`");
+    (resolved.owner_table, out)
+}
+
+fn facts(t: &OwnerTable, lets: &Lets, nth: usize) -> hale_codegen::ownership::BindingFacts {
+    let (name, id) = &lets[nth];
+    assert!(!id.is_none(), "the snapshot minted `let {name}`");
+    *t.binding_facts(*id)
+        .unwrap_or_else(|| panic!("`let {name}` (#{}) has no binding row", id.0))
+}
+
+#[test]
+fn a_returned_let_is_returned_and_an_inner_shadow_of_its_name_is_not() {
+    let src = [
+        DECLS,
+        "\nfn produce() -> Subj {\n",
+        "    let s = make(1);\n",
+        "    if s.probe() > 0 {\n",
+        "        let s = make(2);\n",
+        "        println(\"inner=\", s.probe());\n",
+        "    }\n",
+        "    return s;\n",
+        "}\n",
+        "fn main() { let a = produce(); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "produce");
+    assert_eq!(lets.len(), 2);
+    assert!(facts(&t, &lets, 0).returned, "the outer `s` is handed back");
     assert!(
-        table.rows().all(|(id, _)| id.0 <= minted_max || id.0 > minted_max),
-        "rows key by the site's own id"
+        !facts(&t, &lets, 1).returned,
+        "the inner `s` is another binding (GH #1140), whatever the fn returns"
     );
-    assert!(
-        ids.iter().any(|i| *i > minted_max),
-        "the late literal was numbered past the minted range"
-    );
+}
+
+#[test]
+fn a_bare_assign_participant_is_assign_moved() {
+    let src = [
+        DECLS,
+        "\nfn rebind() -> Int {\n",
+        "    let mut a = make(1);\n",
+        "    let b = make(2);\n",
+        "    a = b;\n",
+        "    let c = make(3);\n",
+        "    return a.probe() + c.probe();\n",
+        "}\n",
+        "fn main() { println(\"u=\", rebind()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "rebind");
+    assert!(facts(&t, &lets, 0).assign_moved, "`a` is written by `=`");
+    assert!(facts(&t, &lets, 1).assign_moved, "`b` is read by `=`");
+    assert!(!facts(&t, &lets, 2).assign_moved, "`c` is on neither side");
+}
+
+#[test]
+fn an_elementwise_array_repeat_is_frame_local_and_an_escaping_one_is_not() {
+    let src = [
+        DECLS,
+        "\nfn tables() -> Int {\n",
+        "    let mut t = [0; 8];\n",
+        "    t[1] = 3;\n",
+        "    let u = [0; 8];\n",
+        "    let w = u;\n",
+        "    return t[1] + w[0];\n",
+        "}\n",
+        "fn main() { println(\"u=\", tables()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "tables");
+    assert!(facts(&t, &lets, 0).stack_array, "`t` is only indexed");
+    assert!(!facts(&t, &lets, 1).stack_array, "`u` escapes through `let w = u`");
+    assert!(!facts(&t, &lets, 2).stack_array, "`w` is not a repeat literal");
+}
+
+/// A body the legacy maps never walked for a question answers `false`
+/// for it: the returned-bindings walk read free fns and modes, not a
+/// locus's fns; the `=` walk did not read lifecycles. The row is there
+/// and says so, where the name join found no entry.
+#[test]
+fn a_let_in_a_body_no_walk_read_has_a_row_of_falses() {
+    let src = [
+        DECLS,
+        "\nlocus Keeper {\n",
+        "    fn keep() -> Subj { let k = make(1); return k; }\n",
+        "    run() { let mut p = make(1); let q = make(2); p = q; println(\"p=\", p.probe()); }\n",
+        "}\n",
+        "fn main() { Keeper { }; }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "Keeper.keep");
+    assert_eq!(facts(&t, &lets, 0), Default::default(), "`k` in a locus fn");
+    let (t, lets) = binding_rows_of(&src, "Keeper.run");
+    assert_eq!(lets.len(), 2);
+    assert_eq!(facts(&t, &lets, 0), Default::default(), "`p` in a lifecycle");
+    assert_eq!(facts(&t, &lets, 1), Default::default(), "`q` in a lifecycle");
+}
+
+// ===================================================================
+// 4 — the envelope's shape (review of phase 1)
+// ===================================================================
+
+/// Every binding row carries the `let`'s full snapshot identity, the
+/// one the resolved snapshot minted for it, seed included.
+#[test]
+fn a_binding_row_carries_the_site_id_the_snapshot_minted() {
+    let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
+    let p = hale_syntax::parse_source(&src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let mut rows = 0;
+    for (site, _) in resolved.owner_table.binding_rows() {
+        let minted = resolved.snapshot.site(site).expect("the row's site is minted");
+        assert_eq!(minted.kind, hale_syntax::sites::SiteKind::Let);
+        rows += 1;
+    }
+    assert!(rows > 0, "the program has binding rows");
+}
+
+/// `build_resolved` lowers the envelope with the api it was resolved
+/// with, and refuses options that name another.
+#[test]
+fn build_resolved_refuses_options_whose_api_disagrees_with_the_envelope() {
+    let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
+    let p = hale_syntax::parse_source(&src).expect("parse");
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None)
+        .expect("resolve");
+    let mut options = build_opts::options();
+    options.api_roles = Some("admin".to_string());
+    let bin = harness::unique_bin("ownertab_api_mismatch");
+    let r = hale_codegen::build_resolved(resolved, &bin, &options);
+    let _ = std::fs::remove_file(&bin);
+    match r {
+        Err(hale_codegen::CodegenError::Unsupported(msg)) => {
+            assert!(msg.contains("\"admin\"") && msg.contains("None"), "{msg}");
+        }
+        other => panic!("a mismatched api must be refused, got {other:?}"),
+    }
 }

@@ -122,6 +122,48 @@ fn pool_main_subscriber_still_optimizes() {
     );
 }
 
+/// Boundary 7 (F.40 phase 1.5): the rewrite returns what it erased —
+/// the send's identity, the publishing locus, the topic and the handler
+/// the call names — and the call keeps the send's identity, so a second
+/// run finds nothing to rewrite and returns nothing.
+#[test]
+fn the_rewrite_returns_what_it_rewrote_once() {
+    use hale_syntax::ast::{Expr, NodeId};
+    use hale_syntax::desugar::IntraLocusRewrite;
+    let src = SRC_TEMPLATE.replace("placement { __PLACEMENT__ }", "");
+    let mut program = hale_syntax::parse_source(&src).expect("parse");
+    for item in &mut program.items {
+        let TopDecl::Locus(l) = item else { continue };
+        for m in &mut l.members {
+            let LocusMember::Lifecycle(d) = m else { continue };
+            for s in &mut d.body.stmts {
+                if let Stmt::Send { id, .. } = s {
+                    *id = NodeId(42);
+                }
+            }
+        }
+    }
+    let rewrites = desugar_intra_locus_topics(&mut program);
+    assert_eq!(
+        rewrites,
+        vec![IntraLocusRewrite {
+            send: NodeId(42),
+            locus: "App".to_string(),
+            subject: "PingT".to_string(),
+            handler: "on_ping".to_string(),
+        }]
+    );
+    let call_id = run_body(&program, "App").stmts.iter().find_map(|s| match s {
+        Stmt::Expr(Expr::Call { id, .. }) => Some(*id),
+        _ => None,
+    });
+    assert_eq!(call_id, Some(NodeId(42)), "the direct call carries the send's identity");
+    assert!(
+        desugar_intra_locus_topics(&mut program).is_empty(),
+        "a second run rewrites nothing"
+    );
+}
+
 #[test]
 fn unplaced_subscriber_still_optimizes() {
     // No placement block at all → Worker is on main with the

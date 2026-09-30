@@ -1,0 +1,62 @@
+// A locus accepts the children its `accept` names however the child
+// type is spelled, and a monomorphised locus accepts like its template.
+// Lowering asks the ownership graph which child type a locus accepts,
+// and the graph resolves the type with the one child resolver
+// (`child_locus_name`, F.40 phase 1.4), so an alias and generic
+// arguments name the locus lowering sees. The graph's rows are per
+// declaration: a monomorph (`Holder<Int>` lowered as `Holder_Int`) has
+// none and keeps the lowering's own read. Each parent here counts its
+// accepts.
+
+locus Child {
+    params { n: Int = 1; }
+}
+
+locus Cell<T> {
+    params { n: Int = 1; }
+}
+
+type Kid = Child;
+
+locus ByAlias {
+    params { accepted: Int = 0; }
+    accept(c: Kid) { self.accepted = self.accepted + 1; }
+    run() {
+        Child { n: 2 };
+        std::test::assert_eq_int(self.accepted, 1, "an alias names the child it resolves to");
+    }
+}
+
+locus ByGenericChild {
+    params { accepted: Int = 0; }
+    accept(c: Cell<Int>) { self.accepted = self.accepted + 1; }
+    run() {
+        let x: Cell<Int> = Cell { n: 2 };
+        std::test::assert_eq_int(self.accepted, 1, "generic arguments name the monomorph");
+    }
+}
+
+locus Holder<T> {
+    params { accepted: Int = 0; }
+    accept(c: Child) { self.accepted = self.accepted + 1; }
+    run() {
+        Child { n: 2 };
+        std::test::assert_eq_int(self.accepted, 1, "a monomorphised parent accepts");
+    }
+}
+
+locus ByParam<T> {
+    params { accepted: Int = 0; }
+    accept(c: T) { self.accepted = self.accepted + 1; }
+    run() {
+        Child { n: 2 };
+        std::test::assert_eq_int(self.accepted, 1, "a type parameter names its argument");
+    }
+}
+
+fn main() {
+    ByAlias { };
+    ByGenericChild { };
+    let h: Holder<Int> = Holder { };
+    let p: ByParam<Child> = ByParam { };
+}

@@ -70,34 +70,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let void_t = self.context.void_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
-        // The locus types some handler restarts in place, found by the
-        // handler body's own rendering: `restart_in_place` is a
-        // statement, and a statement can sit in any block — an `if` or
-        // `match` used as a value included — so a hand walk over some
-        // of the tree could miss one, and a miss would re-evaluate
-        // nothing and restore nothing. A false hit (the word in a
-        // string) only costs that locus one copy of its params.
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
-            let hale_syntax::ast::TopDecl::Locus(l) = item else { continue };
-            let Some(info) = self.user_loci.get(&l.name.name) else {
-                continue;
-            };
-            // One handler per child type, paired with its lowered fn
-            // in declaration order: only the child types whose OWN
-            // handler restarts in place are targets.
-            let handlers = l.members.iter().filter_map(|m| match m {
-                hale_syntax::ast::LocusMember::Failure(fd) => Some(fd),
-                _ => None,
-            });
-            let targets: Vec<String> = handlers
-                .zip(info.failure_handlers.iter())
-                .filter(|(fd, _)| {
-                    format!("{:?}", fd.body).contains("RestartInPlace")
-                })
-                .map(|(_, (child, _))| child.clone())
-                .collect();
-            self.restart_in_place_targets.extend(targets);
-        }
         let names: Vec<String> = self.user_loci.keys().cloned().collect();
         for name in names {
             if !self.locus_declares_failures(&name) {
@@ -397,7 +369,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        if !self.restart_in_place_targets.contains(locus_name) {
+        // The locus types some handler restarts in place: a question
+        // over the routing rows' recovery ops, whose walk reaches every
+        // statement (an `if` or `match` used as a value included).
+        if !self.handlers.restarts_in_place(locus_name) {
             return Ok(());
         }
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());

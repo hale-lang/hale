@@ -197,7 +197,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some(crate::ownership::Site::Unindexed(sp)) => {
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` is instantiated at a node the \
-                             ownership pre-pass never numbered (bytes \
+                             snapshot never minted (bytes \
                              {}..{}); a node codegen builds itself has to \
                              carry the id of the source expression it \
                              stands for, or declare its owner. See \
@@ -444,12 +444,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // would tighten this; deferred to v1.x. See the
         // resolution note in notes/hale-friction.md
         // `nested-locus-child-field-reads-return-garbage`.
+        //
+        // "The current self accepts this locus" is the ownership
+        // graph's `accepts` relation, from the resolved program: the
+        // child type a locus declares `accept(_: T)` for, resolved by
+        // `child_locus_name` to the locus lowering resolves (an alias,
+        // generic arguments and a `std::` path included), the same
+        // relation `accept_param` spells (the checker admits one
+        // `accept` per locus). The graph's rows are per declaration, so
+        // a locus codegen monomorphised (`Holder<T>` lowered as
+        // `Holder_Int`) has none, and keeps the lowering's own read.
         let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
-            self.user_loci
-                .get(&cs.locus_name)
-                .and_then(|p| p.accept_param.as_ref().cloned())
-                .map(|(_, child_ty)| child_ty == locus_name)
-                .unwrap_or(false)
+            match self.ownership_accepts.get(&cs.locus_name) {
+                Some(accepts) => accepts.contains(locus_name),
+                None => self
+                    .user_loci
+                    .get(&cs.locus_name)
+                    .and_then(|p| p.accept_param.as_ref())
+                    .is_some_and(|(_, child_ty)| child_ty == locus_name),
+            }
         } else {
             false
         };

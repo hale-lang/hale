@@ -57,12 +57,13 @@ use hale_model::{
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
     KeyFilter, Literal, LocusDecl as AstLocusDecl, LocusMember,
-    Program, RecoveryModifier, RecoveryOp,
+    Program,
     ShedPolicy as AstShedPolicy, Stmt, TopDecl, TopicDecl, TypeExpr,
     UnmatchedPolicy,
 };
 
 use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
+use crate::handler_routing::ChildRef;
 use crate::symbol::Bundle;
 
 static BUILDS: AtomicU64 = AtomicU64::new(0);
@@ -1734,7 +1735,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
-    // supervision (same walk as the artifact's, per-handler).
+    // supervision (per-handler).
     // Keyed WITH the authored ordinal: duplicate-signature handlers
     // are check-clean and the legacy artifact serializes each
     // declaration -- a (parent, child, err)-only key silently
@@ -1743,105 +1744,40 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         (LocusDeclId, SupervisedRef, String, u32),
         (Vec<String>, Option<i64>, ProvenanceId),
     > = BTreeMap::new();
-    {
-        fn te_name(t: &TypeExpr) -> String {
-            match t {
-                TypeExpr::Named { path, .. } => path
-                    .segments
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-                _ => "?".to_string(),
+    //
+    // F.40 phase 1.4: projected from the handler rows. The child is the
+    // row's: a locus the model has a declaration for (a monomorph is
+    // its template, the declaration written), else the written name.
+    // The authored ordinal stays the handler's position in the bundle
+    // walk (the rows come in that order), not the row's per-parent
+    // ordinal, so the canonical key keeps its values.
+    //
+    // The rows are the bundle's, computed once: a child declared in a
+    // sibling file is a locus here as it is to lowering.
+    let routing =
+        crate::handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot);
+    for (authored, row) in routing.rows().iter().enumerate() {
+        let parent = locus_id[&row.parent];
+        let declared = match &row.child {
+            ChildRef::Locus(n) => {
+                locus_id.get(n).or_else(|| locus_id.get(&row.written))
             }
-        }
-        fn walk_ops(
-            b: &Block,
-            ops: &mut Vec<String>,
-            retry: &mut Option<i64>,
-        ) {
-            for st in &b.stmts {
-                match st {
-                    Stmt::Recovery { op, modifier, .. } => {
-                        let n = match op {
-                            RecoveryOp::Restart => "restart",
-                            RecoveryOp::RestartInPlace => {
-                                "restart_in_place"
-                            }
-                            RecoveryOp::Quarantine => "quarantine",
-                            RecoveryOp::Reorganize => "reorganize",
-                            RecoveryOp::Bubble => "bubble",
-                        };
-                        if !ops.iter().any(|o| o == n) {
-                            ops.push(n.to_string());
-                        }
-                        if let Some(RecoveryModifier::For(
-                            Expr::Literal(Literal::Int(kk), _),
-                        )) = modifier
-                        {
-                            *retry = Some(*kk);
-                        }
-                    }
-                    Stmt::If(i) => {
-                        walk_ops(&i.then_block, ops, retry);
-                        let mut cur = i.else_block.as_deref();
-                        while let Some(eb) = cur {
-                            match eb {
-                                ElseBranch::Else(bb) => {
-                                    walk_ops(bb, ops, retry);
-                                    cur = None;
-                                }
-                                ElseBranch::ElseIf(ei) => {
-                                    walk_ops(
-                                        &ei.then_block,
-                                        ops,
-                                        retry,
-                                    );
-                                    cur = ei.else_block.as_deref();
-                                }
-                            }
-                        }
-                    }
-                    Stmt::While { body, .. }
-                    | Stmt::For { body, .. } => {
-                        walk_ops(body, ops, retry)
-                    }
-                    Stmt::Block(bb) => walk_ops(bb, ops, retry),
-                    _ => {}
-                }
-            }
-        }
-        let mut authored: u32 = 0;
-        for l in &ast.loci {
-            for member in &l.members {
-                if let LocusMember::Failure(fd) = member {
-                    let mut ops = Vec::new();
-                    let mut retry: Option<i64> = None;
-                    walk_ops(&fd.body, &mut ops, &mut retry);
-                    let parent = locus_id[&l.name.name];
-                    let child_name = fd
-                        .params
-                        .first()
-                        .map(|p| te_name(&p.ty))
-                        .unwrap_or_else(|| "?".to_string());
-                    let child = match locus_id.get(&child_name) {
-                        Some(id) => SupervisedRef::Locus(*id),
-                        None => SupervisedRef::External(child_name),
-                    };
-                    let err = fd
-                        .params
-                        .get(1)
-                        .map(|p| te_name(&p.ty))
-                        .unwrap_or_else(|| "?".to_string());
-                    let pid = intern_span(&mut records, fd.span);
-                    sup.insert(
-                        (parent, child, err, authored),
-                        (ops, retry, pid),
-                    );
-                    authored += 1;
-                }
-            }
-        }
+            ChildRef::External(_) => None,
+        };
+        let child = match declared {
+            Some(id) => SupervisedRef::Locus(*id),
+            None => SupervisedRef::External(row.written.clone()),
+        };
+        let ops: Vec<String> = row
+            .ops
+            .iter()
+            .map(|op| crate::handler_routing::op_name(*op).to_string())
+            .collect();
+        let pid = intern_span(&mut records, row.span);
+        sup.insert(
+            (parent, child, row.error_type.clone(), authored as u32),
+            (ops, row.retry_bound, pid),
+        );
     }
 
     // groups: authored selectors + resolved membership.
@@ -2610,9 +2546,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // Keyed at WIRE grain, not at `BusSubject::canonical()` grain.
     // The graph this builder runs over sees the AUTHORED program, so
     // a topic-addressed site keys by the topic's declaration name
-    // (`Evt`); codegen desugars topics to their wire subject before
-    // building its graph, so the very same dispatch keys by `evt`
-    // there — and the wire string is the identity the runtime, the
+    // (`Evt`); the resolved program desugars topics to their wire
+    // subject before building lowering's graph, so the very same
+    // dispatch keys by `evt` there — and the wire string is the identity the runtime, the
     // artifact (Change 7's route grain), and the static bucket all
     // use. Mapping here is what makes the two plans comparable at
     // all.
@@ -2625,6 +2561,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // authored view of it was) with the site sets unioned. That is
     // the conservative side: the plan can under-promote relative to
     // codegen, never over-promote.
+    //
+    // Known wrong (the F.40 phase 1.5 shadow's one divergence): a
+    // LITERAL subject spelled like a topic's name (`"Evt" <- x` beside
+    // `topic Evt { subject: "evt"; }`) shares the topic's key in the
+    // authored graph, so it is merged onto the topic's wire here. The
+    // model's plan then has no row for the literal subject and the
+    // topic's row carries the literal's subscribers; lowering's graph,
+    // over wire literals, keeps the two apart.
     let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {

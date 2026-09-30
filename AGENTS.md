@@ -52,6 +52,8 @@ invariants:
   I7 lower-reads  : lowering consumes rows, never derives them
   I8 dialect      : every dialect's graph is closed at a named horizon;
                     past it is a hole, never an assumption
+  ; I7 holds for the tables lowering reads today; spec/registry.md's
+  ; legacy rows name the residue (F.40 phase 2)
 
 hale ≜ operationalization(DESIGN, substrate=language)
 map:                                        ; ⊥ = where the construct's graph closes (I8)

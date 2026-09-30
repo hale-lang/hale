@@ -288,10 +288,13 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
-    // F.40 phase 1.1b-iii: the snapshot, after the last desugar. This
-    // path builds no source map, so the seed is the program's ordinal.
+    // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
+    // by the same source map `check` mints with; the resolved program
+    // below mints its merged program with it too.
     let target_name = target.display().to_string();
-    let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
+    let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
+    let snapshot =
+        hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
 
     // Typecheck before lowering. Render diagnostics against the
     // entry-file's source — diagnostic spans currently point into
@@ -326,13 +329,6 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // the binary, for the observation segment header.
     options.model_hash =
         Some(hale_types::topology::model_shape_hash(&bundle));
-    // GH #476 Change 8: the canonical entity ids a consumer joins
-    // the live manifest to that model with, and the dispatch
-    // plan's digest — held here and folded into the execution
-    // identity once the options are FINAL (below), since the
-    // fingerprint covers options that are still being set.
-    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
-    options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
     // Output naming is a property of the target, not a special case
@@ -515,18 +511,31 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // execution identity at all — so a recording from one could not
     // be refused against a differently-lowered sibling, which is
     // exactly what the identity is for.
-    options.exec_digest = Some(exec_digest(
-        &sources,
-        target,
-        &build_env::options_fingerprint(&options),
-        plan_digest,
-    ));
-    match hale_codegen::build_executable_with_options(
+    //
+    // The program is resolved first: the dispatch plan the digest
+    // frames is the resolved program's, the one codegen lowers
+    // (F.40 phase 1.5). GH #476 Change 8: the canonical entity ids a
+    // consumer joins the live manifest to the model with come from the
+    // same call.
+    match hale_types::resolved::resolve_program(
         &program,
-        &output,
+        &source_map,
         &renames,
-        &options,
-    ) {
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(hale_codegen::CodegenError::Unsupported)
+    .and_then(|resolved| {
+        let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
+        options.obs_entity_ids = obs_ids;
+        options.exec_digest = Some(exec_digest(
+            &sources,
+            target,
+            &build_env::options_fingerprint(&options),
+            plan_digest,
+        ));
+        hale_codegen::build_resolved(resolved, &output, &options)
+    }) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {

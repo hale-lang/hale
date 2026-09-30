@@ -1005,7 +1005,8 @@ crates/hale-codegen/tests/os_getrandom.rs#4 8b96bb75fff4a698
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 f33c497096dc5dbf
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 3b0e8370f1acd561
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 a02b92823a26a9c5
-crates/hale-codegen/tests/owner_table.rs#0 508fa61c52bf1edf
+crates/hale-codegen/tests/owner_table.rs#0 81b94f991b7122d7
+crates/hale-codegen/tests/owner_table.rs#1 508fa61c52bf1edf
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
 crates/hale-codegen/tests/ownership_bubble.rs#1 ef3055b186950d67
 crates/hale-codegen/tests/ownership_bubble.rs#2 f81faba0af524049
@@ -1401,6 +1402,7 @@ crates/hale-types/tests/bus_graph.rs#15 16b983ea5e1774aa
 crates/hale-types/tests/bus_graph.rs#16 3bba39a1bca30835
 crates/hale-types/tests/bus_graph.rs#17 1267f8745a99b7f0
 crates/hale-types/tests/bus_graph.rs#18 46b94d56a5a94fcf
+crates/hale-types/tests/bus_graph.rs#19 96cddb6a7bae345f
 crates/hale-types/tests/bus_graph.rs#2 a5b806976b754c77
 crates/hale-types/tests/bus_graph.rs#3 69161ab43c42fd49
 crates/hale-types/tests/bus_graph.rs#4 759965f77f282f63
@@ -1471,8 +1473,10 @@ crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
 crates/hale-types/tests/effects_through_handles.rs#4 366138d0626a5646
 crates/hale-types/tests/effects_through_handles.rs#9 b02810e84978532d
 crates/hale-types/tests/frontier_items.rs#1 440e61c90f2db460
-crates/hale-types/tests/frontier_items.rs#6 604a68af0451e08c
-crates/hale-types/tests/frontier_items.rs#7 f21ae88fa4619246
+crates/hale-types/tests/frontier_items.rs#3 0be97e8b849edaab
+crates/hale-types/tests/frontier_items.rs#4 a36e9b1a421f43df
+crates/hale-types/tests/frontier_items.rs#8 604a68af0451e08c
+crates/hale-types/tests/frontier_items.rs#9 f21ae88fa4619246
 crates/hale-types/tests/fstring_diagnostics.rs#12 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#13 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#14 f2c1228edb650960
@@ -1554,6 +1558,7 @@ crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
 crates/hale-types/tests/model_builder.rs#25 16638d003fd75bff
+crates/hale-types/tests/model_builder.rs#27 61f8e4862b142236
 crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
 crates/hale-types/tests/model_builder.rs#8 d3041c260f7ea233

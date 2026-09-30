@@ -51,8 +51,8 @@ pub(crate) mod channels;
 pub mod codegen;
 pub(crate) mod form;
 pub(crate) mod locus;
-pub mod mangle;
-pub mod ownership;
+pub use hale_types::mangle;
+pub use hale_types::ownership;
 pub mod target;
 pub(crate) mod shared;
 pub(crate) mod stdlib;
@@ -65,6 +65,6 @@ pub use ownership::{
 
 pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,
-    build_executable_with_options, BuildOptions, CodegenError, CompileTarget,
+    build_executable_with_options, build_resolved, BuildOptions, CodegenError, CompileTarget,
     DebugSourceFile, DebugSources, LtoMode, TargetCpu,
 };
