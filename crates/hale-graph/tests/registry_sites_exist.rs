@@ -14,7 +14,10 @@
 //! symbol that is not an identifier is a text fragment (a region
 //! inside a large function) and must appear verbatim. A legacy site
 //! is often a call that re-runs a producer or a row constructor, so
-//! its identifier must be used in a code line, not only a comment.
+//! its identifier must be used in code, not only in a comment: a
+//! comment line, a trailing `//` comment and a one-line `/* … */`
+//! are not code, so a comment that still names a removed call does
+//! not keep its entry alive either.
 //! Consumer and seam sites reference a symbol rather than define it,
 //! so they are held to the verbatim rule. A family's focused tests are
 //! paths, and each must be a file.
@@ -79,12 +82,62 @@ enum Rule {
     Verbatim,
 }
 
+/// The code on one line: a `//` comment's tail and any `/* … */`
+/// closed on the line are dropped, and a comment marker inside a
+/// string literal (tracked with its escapes, and past a `'"'`
+/// character literal) is text, not a comment. A block comment left
+/// open drops the rest of the line; its continuation lines are rare
+/// enough in this tree that the scan reads them as code.
+fn code_part(line: &str) -> String {
+    let b = line.as_bytes();
+    let mut out = String::new();
+    let mut in_str = false;
+    let mut i = 0;
+    let mut kept = 0;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if c == b'\\' {
+                i += 1;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if c == b'\'' && b.get(i + 1) == Some(&b'\\') {
+            // an escaped character literal, `'\"'` among them
+            if let Some(k) = b
+                .get(i + 3..)
+                .and_then(|r| r.iter().position(|&x| x == b'\''))
+            {
+                i += 3 + k;
+            }
+        } else if c == b'\'' && b.get(i + 2) == Some(&b'\'') {
+            i += 2;
+        } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            break;
+        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            out.push_str(&line[kept..i]);
+            match line[i + 2..].find("*/") {
+                Some(k) => {
+                    i += 2 + k + 2;
+                    kept = i;
+                    out.push(' ');
+                    continue;
+                }
+                None => return out,
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&line[kept..i.min(line.len())]);
+    out
+}
+
 fn mentioned_in_code(text: &str, name: &str) -> bool {
     text.lines().any(|line| {
-        let t = line.trim_start();
-        if t.starts_with("//") {
-            return false;
-        }
+        let t = code_part(line);
+        let t = t.as_str();
         let mut from = 0;
         while let Some(i) = t[from..].find(name) {
             let start = from + i;
@@ -236,4 +289,51 @@ fn every_registered_site_exists() {
         missing.len(),
         missing.join("\n")
     );
+}
+
+#[test]
+fn a_comment_is_not_a_code_mention() {
+    let trailing = "fn run() {\n    let g = graph(); // build_bus_graph used to be here\n}\n";
+    assert!(
+        !mentioned_in_code(trailing, "build_bus_graph"),
+        "a file whose only mention is a trailing comment does not use the symbol in code"
+    );
+    assert!(!mentioned_in_code(
+        "    // build_bus_graph(p)\n",
+        "build_bus_graph"
+    ));
+    assert!(!mentioned_in_code(
+        "let g = /* build_bus_graph */ graph();\n",
+        "build_bus_graph"
+    ));
+    assert!(!mentioned_in_code(
+        "let g = graph(); /* build_bus_graph(\n",
+        "build_bus_graph"
+    ));
+    // code after a closed block comment, and code before a trailing one
+    assert!(mentioned_in_code(
+        "let g = /* old */ build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "let g = build_bus_graph(p); // the one call\n",
+        "build_bus_graph"
+    ));
+    // a comment marker inside a string literal is text, not a comment
+    assert!(mentioned_in_code(
+        "let u = \"http://x\"; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "let u = \"a \\\" // b\"; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "if c == '\"' { build_bus_graph(p); }\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "if c == '\\'' { build_bus_graph(p); }\n",
+        "build_bus_graph"
+    ));
 }

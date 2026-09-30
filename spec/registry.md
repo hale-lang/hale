@@ -1313,10 +1313,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/topology.rs` · `fn model_shape_hash` — renders the whole artifact and scrapes `shape_hash` out of the text. *Removed when:* reads the digest from the rendered value.
 - `crates/hale-cli/src/verbs/check/run_impl.rs` · `--check-topology-shape` — scrapes `shape_hash` from text a second time. *Removed when:* same.
 - `crates/hale-cli/src/shared/options.rs` · `exec_digest` — the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays. *Removed when:* one stated coverage, with tests that a covered change moves it.
-- `crates/hale-cli/build.rs` · `toolchain_digest` — the replay identity: every identity-covered crate (`hale_graph::identity::COVERED_CRATES`) plus hale-cli, walked through the one shared walk. *Removed when:* phase 2.
+- `crates/hale-cli/build.rs` · `toolchain_digest` — the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk. *Removed when:* phase 2.
 - `crates/hale-cli/src/shared/stale.rs` · `compute_codegen_src_hash` — the stale-binary hash: codegen.rs, lotus_arena.c and every stdlib .hl seed, walked identically at build and run time through the shared walk. *Removed when:* one identity per snapshot; the stale check reads it.
-- `crates/hale-iris/build.rs` · `covered_dirs` — the DNA toolchain cache key's compiler-source half: every identity-covered crate, from the one list. *Removed when:* the cache key is derived from the snapshot identity.
-- `crates/hale-iris/src/lib.rs` · `toolchain_hash` — the cache key itself (version, compiler sources, stdlib, embedded iris and DNA trees). *Removed when:* the cache key is derived from the snapshot identity.
+- `crates/hale-iris/build.rs` · `identity_files` — the DNA toolchain cache key's compiler-source half: the replay identity's selection, every identity-covered crate and the manifest files; hale-cli is covered because the cache builds a host through its `build` verb, whose Rust still owns import handling and the pre-check sequence, until that work moves into hale-frontend. *Removed when:* the cache key is derived from the snapshot identity.
+- `crates/hale-iris/src/lib.rs` · `toolchain_hash` — the cache key itself (version, compiler sources and manifests, stdlib, embedded iris and DNA trees). *Removed when:* the cache key is derived from the snapshot identity.
 - `crates/hale-dna/src/digest.rs` · `EMBEDDED_DIRS` — DNA's embedded-source identity, its own directory list. *Removed when:* one inventory of what each identity covers.
 - `crates/hale-types/src/evidence.rs` · `analysis_inputs_digest` — the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry). *Removed when:* same.
 - `crates/hale-cli/src/verbs/check/run_impl.rs` · `bundle.sources` — per-file FNV digests, rooted at hale.toml, set by check only; the LSP uses absolute paths; build leaves it empty. *Removed when:* one source map per snapshot.
@@ -1328,7 +1328,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)
-- a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key walk every identity-covered crate; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design
+- a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design
 
 **Missing data.** n/a
 

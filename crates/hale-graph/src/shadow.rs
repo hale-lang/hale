@@ -28,7 +28,9 @@
 //!   every native key, rather than silently dropping one (the #1210
 //!   failure mode); a key on one side only is [`Kind::OnlyOld`] or
 //!   [`Kind::OnlyNew`]. The fixture records the kind, so a
-//!   disagreement that turns into a collision is unexplained again.
+//!   disagreement that turns into a collision is unexplained again,
+//!   and a collision's facts are every colliding row on each side, so
+//!   a row of it that changes, joins or leaves is unexplained again too.
 //! - **A program is named by its content.** The corpus's `file.rs#N`
 //!   ordinal moves when a literal is added above it; a shadow keys
 //!   its fixture by [`program_id`], the origin path plus a digest of
@@ -91,9 +93,13 @@ pub struct Divergence {
     pub program: String,
     /// The correspondence key both producers were mapped onto.
     pub key: String,
-    /// The old producer's fact, or `None` when it has no row.
+    /// The old producer's fact, or `None` when it has no row. For a
+    /// collision, every old row the key collected, as
+    /// [`collision_facts`] renders them, so the fixture pins all of
+    /// them and not only the first.
     pub old: Option<String>,
-    /// The new producer's fact, or `None` when it has no row.
+    /// The new producer's fact, or `None` when it has no row; for a
+    /// collision, every new row the key collected, as for `old`.
     pub new: Option<String>,
     /// What decided the two rows, rendered for the fixer.
     pub witnesses: Vec<String>,
@@ -173,6 +179,16 @@ pub fn program_id(origin: &str, source: &str) -> String {
     }
     let base = origin.split('#').next().unwrap_or(origin);
     format!("{base}#{:08x}", (h >> 32) as u32 ^ h as u32)
+}
+
+/// One side's rows behind a collided key, as the fact the fixture
+/// pins: every `native=value`, sorted, joined by `; `. Carrying all of
+/// them rather than the first is what makes a change to any colliding
+/// row, or a row joining or leaving the collision, unexplained again.
+fn collision_facts<V: Display>(rows: &[(String, &V)]) -> String {
+    let mut facts: Vec<String> = rows.iter().map(|(nk, v)| format!("{nk}={v}")).collect();
+    facts.sort();
+    facts.join("; ")
 }
 
 /// The shadow's result over a corpus.
@@ -271,8 +287,8 @@ impl Report {
                     kind: Kind::Collision,
                     program: program.to_string(),
                     key: k.to_string(),
-                    old: o.and_then(|v| v.first()).map(|(_, v)| v.to_string()),
-                    new: n.and_then(|v| v.first()).map(|(_, v)| v.to_string()),
+                    old: o.map(|rows| collision_facts(rows)),
+                    new: n.map(|rows| collision_facts(rows)),
                     witnesses: witness(k),
                     slice: slice(k),
                     natives,
@@ -603,6 +619,106 @@ mod tests {
             "a collision lists every native key so the fixer sees the two spans"
         );
         assert_eq!(r.rows_compared, 0, "a collided key is not compared");
+        assert_eq!(
+            r.divergences[0].old.as_deref(),
+            Some("(10, 12)=caller; (40, 42)=binding")
+        );
+        assert_eq!(r.divergences[0].new.as_deref(), Some("7=caller"));
+    }
+
+    /// The collision probe: old rows `span1`, `span2` and new row `7`,
+    /// all mapped onto one key.
+    fn collide(old: &[(&str, &str)]) -> Report {
+        let mut r = Report::new("ownership");
+        let new: Vec<(u32, &str)> = vec![(7, "caller")];
+        r.compare_rows(
+            "p.hl",
+            old,
+            &new,
+            |_span| Some("r".to_string()),
+            |_id| Some("r".to_string()),
+            |_| vec![],
+            |_| vec![],
+        );
+        r
+    }
+
+    /// The report's fixture with every line classified.
+    fn classified(r: &Report) -> Vec<Classified> {
+        parse_fixture(&r.render_fixture(&[]))
+            .unwrap()
+            .into_iter()
+            .map(|mut c| {
+                c.class = Class::KnownOldBug;
+                c.note = "the old producer keys a let by its span".into();
+                c
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_change_to_any_row_of_a_classified_collision_is_unexplained_again() {
+        let base = collide(&[("span1", "caller"), ("span2", "binding")]);
+        let fixture = classified(&base);
+        assert_eq!(
+            fixture[0].old.as_deref(),
+            Some("span1=caller; span2=binding"),
+            "the fixture pins every colliding row"
+        );
+        assert!(base.explain(&fixture).0.is_empty());
+        // the rows' order does not matter: the facts are sorted
+        let reordered = collide(&[("span2", "binding"), ("span1", "caller")]);
+        assert!(reordered.explain(&fixture).0.is_empty());
+        for (what, rows) in [
+            (
+                "a secondary row that changes",
+                vec![("span1", "caller"), ("span2", "wrong-arena")],
+            ),
+            (
+                "the first row that changes",
+                vec![("span1", "wrong-arena"), ("span2", "binding")],
+            ),
+            (
+                "a row that joins the collision",
+                vec![
+                    ("span1", "caller"),
+                    ("span2", "binding"),
+                    ("span3", "caller"),
+                ],
+            ),
+        ] {
+            let r = collide(&rows);
+            assert_eq!(r.divergences[0].kind, Kind::Collision, "{what}");
+            assert_eq!(
+                r.explain(&fixture).0.len(),
+                1,
+                "{what} is unexplained again"
+            );
+        }
+        // a row that leaves a classified three-row collision, which is
+        // still a collision
+        let three = collide(&[
+            ("span1", "caller"),
+            ("span2", "binding"),
+            ("span3", "caller"),
+        ]);
+        let fixture3 = classified(&three);
+        assert!(three.explain(&fixture3).0.is_empty());
+        let left = collide(&[("span1", "caller"), ("span3", "caller")]);
+        assert_eq!(left.divergences[0].kind, Kind::Collision);
+        assert_eq!(
+            left.explain(&fixture3).0.len(),
+            1,
+            "a row that leaves is unexplained again"
+        );
+        // a row that leaves a two-row collision ends it: the line is stale
+        let one = collide(&[("span1", "caller")]);
+        assert!(one.divergences.is_empty());
+        assert_eq!(
+            one.explain(&fixture).1.len(),
+            1,
+            "the classification is stale"
+        );
     }
 
     #[test]
