@@ -565,7 +565,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)
-- the model's plan and codegen's agree over the corpus
+- lowering reads one plan, derived once per snapshot in the resolved program; the execution digest frames that plan
+- the model's plan agrees with it on the flavor of every subject both carry (shadowed over the corpus at phase 1.5)
 
 **Missing data.** a missing required row is a compiler error
 

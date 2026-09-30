@@ -2547,9 +2547,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // Keyed at WIRE grain, not at `BusSubject::canonical()` grain.
     // The graph this builder runs over sees the AUTHORED program, so
     // a topic-addressed site keys by the topic's declaration name
-    // (`Evt`); codegen desugars topics to their wire subject before
-    // building its graph, so the very same dispatch keys by `evt`
-    // there — and the wire string is the identity the runtime, the
+    // (`Evt`); the resolved program desugars topics to their wire
+    // subject before building lowering's graph, so the very same
+    // dispatch keys by `evt` there — and the wire string is the identity the runtime, the
     // artifact (Change 7's route grain), and the static bucket all
     // use. Mapping here is what makes the two plans comparable at
     // all.
@@ -2562,6 +2562,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // authored view of it was) with the site sets unioned. That is
     // the conservative side: the plan can under-promote relative to
     // codegen, never over-promote.
+    //
+    // Known wrong (the F.40 phase 1.5 shadow's one divergence): a
+    // LITERAL subject spelled like a topic's name (`"Evt" <- x` beside
+    // `topic Evt { subject: "evt"; }`) shares the topic's key in the
+    // authored graph, so it is merged onto the topic's wire here. The
+    // model's plan then has no row for the literal subject and the
+    // topic's row carries the literal's subscribers; lowering's graph,
+    // over wire literals, keeps the two apart.
     let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
