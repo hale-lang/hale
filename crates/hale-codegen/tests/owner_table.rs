@@ -18,6 +18,10 @@
 //!      here as shadow-mode DISAGREEMENTS and were A3's checklist;
 //!      all four are closed, and each is a shape here naming the
 //!      commit that closed it.
+//!   3. **binding facts** — the row each `let` reads about its own
+//!      binding (handed back, moved by `=`, frame-local array), keyed
+//!      by the site's snapshot identity in the resolved program (F.40
+//!      phase 1.2b).
 //!
 //! Every program is assembled from ordinary `"…"` constants, never a
 //! RAW string literal, because `hale_corpus::embedded` harvests raw
@@ -790,4 +794,155 @@ fn main() { Holder { }; }
         ids.iter().any(|i| *i > minted_max),
         "the late literal was numbered past the minted range"
     );
+}
+
+// ===================================================================
+// 3 — binding facts, one row per binding site (F.40 phase 1.2b)
+// ===================================================================
+
+type Lets = Vec<(String, hale_syntax::ast::NodeId)>;
+
+/// The resolved program's owner table, and every `let` of `decl` (a
+/// free fn, `Locus.fn` or `Locus.run`) in the order it is written,
+/// with its snapshot identity.
+fn binding_rows_of(src: &str, decl: &str) -> (OwnerTable, Lets) {
+    use hale_syntax::ast::{Block, ElseBranch, LifecycleKind, LocusMember, Stmt, TopDecl};
+    fn lets(b: &Block, out: &mut Lets) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, id, .. } => out.push((name.name.clone(), *id)),
+                Stmt::If(i) => {
+                    lets(&i.then_block, out);
+                    if let Some(ElseBranch::Else(e)) = i.else_block.as_deref() {
+                        lets(e, out);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Block(body) => {
+                    lets(body, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    let p = hale_syntax::parse_source(src)
+        .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
+    let resolved = hale_types::resolved::resolve_program(&p, &[], None, None)
+        .unwrap_or_else(|e| panic!("resolve_program refused the fixture: {e}"));
+    let mut out = Vec::new();
+    for item in &resolved.merged.items {
+        match item {
+            TopDecl::Fn(f) if f.name.name == decl => lets(&f.body, &mut out),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    let (member, body) = match m {
+                        LocusMember::Fn(f) => (f.name.name.as_str(), &f.body),
+                        LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => {
+                            ("run", &lc.body)
+                        }
+                        _ => continue,
+                    };
+                    if format!("{}.{}", l.name.name, member) == decl {
+                        lets(body, &mut out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!out.is_empty(), "no `let` in `{decl}`");
+    (resolved.owner_table, out)
+}
+
+fn facts(t: &OwnerTable, lets: &Lets, nth: usize) -> hale_codegen::ownership::BindingFacts {
+    let (name, id) = &lets[nth];
+    assert!(!id.is_none(), "the snapshot minted `let {name}`");
+    *t.binding_facts(*id)
+        .unwrap_or_else(|| panic!("`let {name}` (#{}) has no binding row", id.0))
+}
+
+#[test]
+fn a_returned_let_is_returned_and_an_inner_shadow_of_its_name_is_not() {
+    let src = [
+        DECLS,
+        "\nfn produce() -> Subj {\n",
+        "    let s = make(1);\n",
+        "    if s.probe() > 0 {\n",
+        "        let s = make(2);\n",
+        "        println(\"inner=\", s.probe());\n",
+        "    }\n",
+        "    return s;\n",
+        "}\n",
+        "fn main() { let a = produce(); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "produce");
+    assert_eq!(lets.len(), 2);
+    assert!(facts(&t, &lets, 0).returned, "the outer `s` is handed back");
+    assert!(
+        !facts(&t, &lets, 1).returned,
+        "the inner `s` is another binding (GH #1140), whatever the fn returns"
+    );
+}
+
+#[test]
+fn a_bare_assign_participant_is_assign_moved() {
+    let src = [
+        DECLS,
+        "\nfn rebind() -> Int {\n",
+        "    let mut a = make(1);\n",
+        "    let b = make(2);\n",
+        "    a = b;\n",
+        "    let c = make(3);\n",
+        "    return a.probe() + c.probe();\n",
+        "}\n",
+        "fn main() { println(\"u=\", rebind()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "rebind");
+    assert!(facts(&t, &lets, 0).assign_moved, "`a` is written by `=`");
+    assert!(facts(&t, &lets, 1).assign_moved, "`b` is read by `=`");
+    assert!(!facts(&t, &lets, 2).assign_moved, "`c` is on neither side");
+}
+
+#[test]
+fn an_elementwise_array_repeat_is_frame_local_and_an_escaping_one_is_not() {
+    let src = [
+        DECLS,
+        "\nfn tables() -> Int {\n",
+        "    let mut t = [0; 8];\n",
+        "    t[1] = 3;\n",
+        "    let u = [0; 8];\n",
+        "    let w = u;\n",
+        "    return t[1] + w[0];\n",
+        "}\n",
+        "fn main() { println(\"u=\", tables()); }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "tables");
+    assert!(facts(&t, &lets, 0).stack_array, "`t` is only indexed");
+    assert!(!facts(&t, &lets, 1).stack_array, "`u` escapes through `let w = u`");
+    assert!(!facts(&t, &lets, 2).stack_array, "`w` is not a repeat literal");
+}
+
+/// A body the legacy maps never walked for a question answers `false`
+/// for it: the returned-bindings walk read free fns and modes, not a
+/// locus's fns; the `=` walk did not read lifecycles. The row is there
+/// and says so, where the name join found no entry.
+#[test]
+fn a_let_in_a_body_no_walk_read_has_a_row_of_falses() {
+    let src = [
+        DECLS,
+        "\nlocus Keeper {\n",
+        "    fn keep() -> Subj { let k = make(1); return k; }\n",
+        "    run() { let mut p = make(1); let q = make(2); p = q; println(\"p=\", p.probe()); }\n",
+        "}\n",
+        "fn main() { Keeper { }; }\n",
+    ]
+    .concat();
+    let (t, lets) = binding_rows_of(&src, "Keeper.keep");
+    assert_eq!(facts(&t, &lets, 0), Default::default(), "`k` in a locus fn");
+    let (t, lets) = binding_rows_of(&src, "Keeper.run");
+    assert_eq!(lets.len(), 2);
+    assert_eq!(facts(&t, &lets, 0), Default::default(), "`p` in a lifecycle");
+    assert_eq!(facts(&t, &lets, 1), Default::default(), "`q` in a lifecycle");
 }

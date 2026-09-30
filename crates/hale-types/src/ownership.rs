@@ -109,15 +109,28 @@
 //! and the GH #793 hook in `lower_or_expr` ask
 //! [`OwnerTable::temp_verdict`] the same question for a factory
 //! call's result.
+//!
+//! ## Binding facts
+//!
+//! A `let` asks three more questions of its own binding: does the
+//! body hand it back, does a bare `=` move a value through it, and is
+//! it a `[c; N]` that never escapes the frame. They used to be three
+//! maps keyed by the LLVM function name, each answering by binding
+//! NAME, and lowering joined them to the `let` through `current_fn`'s
+//! name. [`resolve_binding_facts`] answers them once per binding site
+//! instead, into [`OwnerTable::binding_facts`], keyed by the `let`'s
+//! snapshot identity (F.40 phase 1.2b): the walks are the old ones,
+//! over the same bodies, and a `let` in a body none of them walked
+//! has a row that says `false` three times, which is what the join
+//! answered for a name it had no entry for.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg, LocusDecl,
-    LocusMember, MatchArmBody, MatchStmt, ModeKind, ModuleDecl, NodeId,
-    OrDisposition, Param, ParamInit, Pattern, Program, QualifiedName,
-    RecoveryModifier, Stmt,
-    StructInit, TopDecl, TypeExpr,
+    AssignOp, Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg,
+    LifecycleKind, LocusDecl, LocusMember, MatchArmBody, MatchStmt, ModeKind,
+    ModuleDecl, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
+    QualifiedName, RecoveryModifier, Stmt, StructInit, TopDecl, TypeExpr,
 };
 use hale_syntax::Span;
 
@@ -298,9 +311,45 @@ pub struct OwnerTable {
     fresh: BTreeMap<String, String>,
     /// How many nodes the pass numbered.
     numbered: u32,
+    /// One row per `let`, keyed by the statement's snapshot index
+    /// (see [`resolve_binding_facts`]).
+    bindings: BTreeMap<u32, BindingFacts>,
+}
+
+/// What a `let` needs to know about its own binding before it lowers
+/// the right-hand side. One row per binding site; see the module
+/// docs' "Binding facts".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BindingFacts {
+    /// The body hands the binding back (a `return` or a counted tail
+    /// names it, directly or through another handed-back binding):
+    /// the caller owns its value. See [`ReturnedBindings`].
+    pub returned: bool,
+    /// The binding's name is on either side of a bare-local `=` in the
+    /// body: a value moves through it. See [`assign_moved_names`].
+    pub assign_moved: bool,
+    /// The binding is a literal `[c; N]` whose every use is an element
+    /// access: its storage can live in the frame. See
+    /// [`stack_array_names`].
+    pub stack_array: bool,
 }
 
 impl OwnerTable {
+    /// The facts for the `let` whose snapshot identity is `id`. `None`
+    /// for a `NONE` id and for a site the resolved program did not
+    /// contain; a consumer reads that as three `false`s.
+    pub fn binding_facts(&self, id: NodeId) -> Option<&BindingFacts> {
+        if id.is_none() {
+            return None;
+        }
+        self.bindings.get(&id.0)
+    }
+
+    /// Every binding row, in snapshot-index order.
+    pub fn binding_rows(&self) -> impl Iterator<Item = (&u32, &BindingFacts)> {
+        self.bindings.iter()
+    }
+
     /// The id this pass gave the node, or `None` when the node carries
     /// no id at all (a shape that cannot produce a locus) or was built
     /// after the pass ran.
@@ -773,6 +822,711 @@ pub fn compute_returned_bindings(
     m
 }
 
+// ===================================================================
+// Binding facts (F.40 phase 1.2b)
+// ===================================================================
+
+/// Bindings that participate in a plain `=` between locals
+/// (`a = nx;`, `a = make(...);`) — downstream handoff, free-fn
+/// locus rebinding. An assignment MOVES a value between bindings
+/// without the binding-scoped ownership rule seeing it: the
+/// moved-from binding's scope-exit dissolve would fire on a value
+/// the target (and possibly the caller) still holds, and the
+/// target's own dissolve can fire on a value another binding
+/// registered. Any name on either side of a bare-local `=` is
+/// therefore disqualified from frame-scoped reclamation.
+///
+/// Conservative by construction, same stance as
+/// [`ReturnedBindings`]: membership only suppresses a dissolve — the
+/// old leak, never a double-free.
+pub fn assign_moved_names(b: &Block) -> BTreeSet<String> {
+    fn walk(b: &Block, out: &mut BTreeSet<String>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Assign { target, op, value, .. } => {
+                    if matches!(op, AssignOp::Eq) && target.tail.is_empty() {
+                        out.insert(target.head.name.clone());
+                        if let Expr::Ident(i) = value {
+                            out.insert(i.name.clone());
+                        }
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    walk(body, out)
+                }
+                Stmt::If(i) => {
+                    walk(&i.then_block, out);
+                    let mut cur = i.else_block.as_deref();
+                    while let Some(eb) = cur {
+                        match eb {
+                            ElseBranch::Else(bb) => {
+                                walk(bb, out);
+                                cur = None;
+                            }
+                            ElseBranch::ElseIf(ei) => {
+                                walk(&ei.then_block, out);
+                                cur = ei.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(bb) = &arm.body {
+                            walk(bb, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(b, &mut out);
+    out
+}
+
+/// The legacy producer the binding rows replace: [`assign_moved_names`]
+/// per body, keyed by the LLVM function name the body lowers under
+/// (`fn_name`, `{locus}.{member}`, `{locus}.{mode}`), for lowering's
+/// `current_fn` join. Kept for the binding-facts shadow; the rows
+/// answer the same question per site.
+pub fn compute_assign_moved_bindings(
+    program: &Program,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (key, walks, _, body) in binding_bodies(program) {
+        if !walks.assign_moved {
+            continue;
+        }
+        let set = assign_moved_names(body);
+        if !set.is_empty() {
+            m.insert(key, set);
+        }
+    }
+    m
+}
+
+/// GH #767: the `let` bindings of one body whose initializer is a
+/// literal `[c; N]` and whose every use in the body is an element
+/// read (`t[i]`) or an element write (`t[i] = v`). Those are the
+/// bindings whose storage can live in the fn's own frame instead of
+/// an arena.
+///
+/// Why it matters: a free fn's temporaries are allocated in the
+/// CALLER's arena and are not reclaimed until the caller returns, so a
+/// fixed scratch table inside a helper is per-call churn for the whole
+/// lifetime of the loop that calls it — 1.69 GB of RSS over 200k calls
+/// in the measurement on #754.
+///
+/// Conservative by construction, and it has to be: a wrong answer here
+/// is a dangling stack pointer, not a leak. The walker whitelists the
+/// two element-access shapes and treats EVERY other occurrence of the
+/// name — a bare mention, a call argument, a `return`, a field store, a
+/// publish, a `for ... in t`, an alias `let u = t;` — as an escape. Any
+/// `Expr`/`Stmt` variant added later must be handled explicitly: both
+/// walkers match exhaustively, with no `_` arm.
+///
+/// A name bound more than once in one body, shadowed by a parameter, or
+/// re-bound by a bare `t = ...` is dropped outright rather than
+/// reasoned about.
+pub fn stack_array_names(params: &[Param], body: &Block) -> BTreeSet<String> {
+    /// Every occurrence of `name` in `e` is an element access.
+    fn expr_uses_are_elementwise(e: &Expr, name: &str) -> bool {
+        match e {
+            // A bare mention hands the array's ADDRESS to whatever
+            // context it sits in. Unclassifiable — treat as escape.
+            Expr::Ident(i) => i.name != name,
+            Expr::Index { receiver, index, .. } => {
+                let recv_ok = match receiver.as_ref() {
+                    // `t[i]` yields the ELEMENT, by value. The storage
+                    // address stops here.
+                    Expr::Ident(i) if i.name == name => true,
+                    other => expr_uses_are_elementwise(other, name),
+                };
+                recv_ok && expr_uses_are_elementwise(index, name)
+            }
+            Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => true,
+            Expr::Binary { left, right, .. }
+            | Expr::Range { lo: left, hi: right, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+            }
+            Expr::Unary { operand, .. } => {
+                expr_uses_are_elementwise(operand, name)
+            }
+            Expr::Call { callee, args, .. } => {
+                expr_uses_are_elementwise(callee, name)
+                    && args
+                        .iter()
+                        .all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+                expr_uses_are_elementwise(receiver, name)
+            }
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
+                xs.iter().all(|x| expr_uses_are_elementwise(x, name))
+            }
+            Expr::Struct { inits, .. } => inits
+                .iter()
+                .all(|si| expr_uses_are_elementwise(&si.value, name)),
+            Expr::Block(b) => block_uses_are_elementwise(b, name),
+            Expr::If(i) => if_uses_are_elementwise(i, name),
+            Expr::Match(m) => match_uses_are_elementwise(m, name),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => {
+                expr_uses_are_elementwise(x, name)
+            }
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+                    && expr_uses_are_elementwise(tolerance, name)
+            }
+            Expr::ArrayRepeat { val, .. } => {
+                expr_uses_are_elementwise(val, name)
+            }
+            Expr::Or { inner, .. } => expr_uses_are_elementwise(inner, name),
+        }
+    }
+
+    fn if_uses_are_elementwise(i: &IfStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&i.cond, name)
+            || !block_uses_are_elementwise(&i.then_block, name)
+        {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            None => true,
+            Some(ElseBranch::Else(b)) => block_uses_are_elementwise(b, name),
+            Some(ElseBranch::ElseIf(inner)) => {
+                if_uses_are_elementwise(inner, name)
+            }
+        }
+    }
+
+    fn match_uses_are_elementwise(m: &MatchStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&m.scrutinee, name) {
+            return false;
+        }
+        m.arms.iter().all(|arm| {
+            let guard_ok = arm
+                .guard
+                .as_ref()
+                .map(|g| expr_uses_are_elementwise(g, name))
+                .unwrap_or(true);
+            let body_ok = match &arm.body {
+                MatchArmBody::Expr(e) => expr_uses_are_elementwise(e, name),
+                MatchArmBody::Block(b) => block_uses_are_elementwise(b, name),
+            };
+            guard_ok && body_ok
+        })
+    }
+
+    fn stmt_uses_are_elementwise(s: &Stmt, name: &str) -> bool {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                expr_uses_are_elementwise(value, name)
+            }
+            Stmt::Assign { target, value, .. } => {
+                let target_ok = if target.head.name == name {
+                    // `t[i] = v` writes an element. Anything else with
+                    // `t` at the head — `t = x` (a rebind), `t.f = x` —
+                    // is not an element write.
+                    match target.tail.as_slice() {
+                        [LValueSeg::Index(ix)] => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    target.tail.iter().all(|seg| match seg {
+                        LValueSeg::Index(ix) => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        LValueSeg::Field(_) => true,
+                    })
+                };
+                target_ok && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::If(i) => if_uses_are_elementwise(i, name),
+            Stmt::Match(m) => match_uses_are_elementwise(m, name),
+            // `for x in t` reads elements, but the lowering walks the
+            // storage — left out on purpose, the conservative side.
+            Stmt::For { iter, body, .. } => {
+                expr_uses_are_elementwise(iter, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_uses_are_elementwise(cond, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Return(v, _) => v
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => true,
+            Stmt::Fail { value, .. } => expr_uses_are_elementwise(value, name),
+            Stmt::Block(b) => block_uses_are_elementwise(b, name),
+            Stmt::Recovery { args, .. } => {
+                args.iter().all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Stmt::Violate { payload, .. } => payload
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Send { subject, value, .. } => {
+                expr_uses_are_elementwise(subject, name)
+                    && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                expr_uses_are_elementwise(max, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Expr(e) => expr_uses_are_elementwise(e, name),
+        }
+    }
+
+    fn block_uses_are_elementwise(b: &Block, name: &str) -> bool {
+        b.stmts.iter().all(|s| stmt_uses_are_elementwise(s, name))
+            && b.tail
+                .as_deref()
+                .map(|t| expr_uses_are_elementwise(t, name))
+                .unwrap_or(true)
+    }
+
+    /// Candidates (a `let` whose RHS is a literal `[c; N]`) and every
+    /// other name the body binds. A name in both — a shadow, a second
+    /// `let`, a loop variable — is dropped.
+    fn collect_binders(
+        b: &Block,
+        candidates: &mut Vec<String>,
+        other: &mut BTreeSet<String>,
+    ) {
+        fn visit_if(
+            i: &IfStmt,
+            candidates: &mut Vec<String>,
+            other: &mut BTreeSet<String>,
+        ) {
+            collect_binders(&i.then_block, candidates, other);
+            match i.else_block.as_deref() {
+                None => {}
+                Some(ElseBranch::Else(bb)) => {
+                    collect_binders(bb, candidates, other)
+                }
+                Some(ElseBranch::ElseIf(inner)) => {
+                    visit_if(inner, candidates, other)
+                }
+            }
+        }
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    if matches!(value, Expr::ArrayRepeat { .. }) {
+                        candidates.push(name.name.clone());
+                    } else {
+                        other.insert(name.name.clone());
+                    }
+                }
+                Stmt::LetTuple { names, .. } => {
+                    for n in names {
+                        other.insert(n.name.clone());
+                    }
+                }
+                Stmt::For { name, body, .. } => {
+                    other.insert(name.name.clone());
+                    collect_binders(body, candidates, other);
+                }
+                Stmt::While { body, .. }
+                | Stmt::Block(body)
+                | Stmt::ShmWrite { body, .. } => {
+                    collect_binders(body, candidates, other)
+                }
+                Stmt::If(i) => visit_if(i, candidates, other),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(bb) = &arm.body {
+                            collect_binders(bb, candidates, other);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut candidates: Vec<String> = Vec::new();
+    let mut other: BTreeSet<String> = BTreeSet::new();
+    collect_binders(body, &mut candidates, &mut other);
+    for p in params {
+        other.insert(p.name.name.clone());
+    }
+    let mut out = BTreeSet::new();
+    for c in &candidates {
+        if other.contains(c) {
+            continue;
+        }
+        // Bound twice in one body — two `[c; N]` literals under one
+        // name. Not worth reasoning about; drop it.
+        if candidates.iter().filter(|x| *x == c).count() != 1 {
+            continue;
+        }
+        if block_uses_are_elementwise(body, c) {
+            out.insert(c.clone());
+        }
+    }
+    out
+}
+
+/// The legacy producer the binding rows replace: [`stack_array_names`]
+/// per body, keyed by the LLVM function name the body lowers under,
+/// for lowering's `current_fn` join. A duplicate key keeps only the
+/// INTERSECTION, so a name collision can only ever shrink the set.
+/// Kept for the binding-facts shadow; the rows answer the same
+/// question per site.
+pub fn compute_stack_array_bindings(
+    program: &Program,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (key, walks, params, body) in binding_bodies(program) {
+        if !walks.stack_array {
+            continue;
+        }
+        let set = stack_array_names(params, body);
+        match m.entry(key) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                if !set.is_empty() {
+                    v.insert(set);
+                }
+            }
+            // Two declarations landed on one LLVM name. Keep only what
+            // holds for both.
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                o.get_mut().retain(|n| set.contains(n));
+            }
+        }
+    }
+    m.retain(|_, v| !v.is_empty());
+    m
+}
+
+/// Which of the three walks a body gets: the bodies each old map
+/// walked, unchanged. The returned-bindings walk reads free fns and
+/// modes; the `=` walk adds locus fns; the stack-array walk adds the
+/// lifecycles too.
+#[derive(Clone, Copy)]
+struct Walks {
+    returned: bool,
+    assign_moved: bool,
+    stack_array: bool,
+}
+
+/// Every body a binding-fact walk reads, in declaration order, with the
+/// LLVM function name it lowers under (the legacy maps' key), the walks
+/// it gets, and its params. GH #884: module nesting flattened — the fn
+/// and the member a key names are lowered whatever their brace depth,
+/// so the facts they are looked up under are computed at that depth
+/// too.
+fn binding_bodies(
+    program: &Program,
+) -> Vec<(String, Walks, &[Param], &Block)> {
+    const FREE_OR_MODE: Walks =
+        Walks { returned: true, assign_moved: true, stack_array: true };
+    const LOCUS_FN: Walks =
+        Walks { returned: false, assign_moved: true, stack_array: true };
+    const LIFECYCLE: Walks =
+        Walks { returned: false, assign_moved: false, stack_array: true };
+    let mut out: Vec<(String, Walks, &[Param], &Block)> = Vec::new();
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        match item {
+            TopDecl::Fn(f) => out.push((
+                f.name.name.clone(),
+                FREE_OR_MODE,
+                &f.params,
+                &f.body,
+            )),
+            // Locus frames use the `{locus}.{member}` LLVM name
+            // convention (locus/decl.rs).
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    match member {
+                        LocusMember::Fn(f) => out.push((
+                            format!("{}.{}", l.name.name, f.name.name),
+                            LOCUS_FN,
+                            &f.params,
+                            &f.body,
+                        )),
+                        // A `mode` is the third shape that legitimately
+                        // returns a locus (alongside a free fn) — it IS
+                        // the locus-valued projection surface. A mode
+                        // returning a factory-built locus with no
+                        // returned-bindings answer fired the GH #383
+                        // dissolve on the binding the caller now owns,
+                        // handing back a reclaimed locus.
+                        LocusMember::Mode(md) => out.push((
+                            format!("{}.{}", l.name.name, mode_name(md.kind)),
+                            FREE_OR_MODE,
+                            &[],
+                            &md.body,
+                        )),
+                        LocusMember::Lifecycle(lc) => {
+                            let lc_name = match lc.kind {
+                                LifecycleKind::Birth => "birth",
+                                LifecycleKind::Accept => "accept",
+                                LifecycleKind::Release => "release",
+                                LifecycleKind::Run => "run",
+                                LifecycleKind::Drain => "drain",
+                                LifecycleKind::Dissolve => "dissolve",
+                            };
+                            out.push((
+                                format!("{}.{}", l.name.name, lc_name),
+                                LIFECYCLE,
+                                &lc.params,
+                                &lc.body,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn mode_name(kind: ModeKind) -> &'static str {
+    match kind {
+        ModeKind::Bulk => "bulk",
+        ModeKind::Harmonic => "harmonic",
+        ModeKind::Resolution => "resolution",
+    }
+}
+
+/// Fill `table`'s binding rows for `program`: one row per `let`,
+/// keyed by the statement's snapshot index.
+///
+/// Each body gets exactly the walks the three legacy maps gave it
+/// ([`binding_bodies`]), with their algorithms unchanged: `returned`
+/// is [`ReturnedBindings::let_is_returned`] asked at the `let`'s own
+/// identifier (so the walk's span-keyed resolution and its by-name
+/// fallback answer exactly as they did), `assign_moved` and
+/// `stack_array` are the name's membership in the body's
+/// [`assign_moved_names`] and [`stack_array_names`]. Every other `let`
+/// of the program — in a body no map walked — gets a row of three
+/// `false`s, the answer lowering's name join gave a function it had no
+/// entry for. A `let` with a `NONE` id gets no row. A tuple `let`
+/// gets none either: it binds several names under one id, and nothing
+/// asks.
+///
+/// Runs after [`resolve_owners`], over the program the snapshot minted.
+pub fn resolve_binding_facts(program: &Program, table: &mut OwnerTable) {
+    for (_, walks, params, body) in binding_bodies(program) {
+        let returned = walks.returned.then(|| returned_bindings(body));
+        let moved = if walks.assign_moved {
+            assign_moved_names(body)
+        } else {
+            BTreeSet::new()
+        };
+        let stack = if walks.stack_array {
+            stack_array_names(params, body)
+        } else {
+            BTreeSet::new()
+        };
+        let mut lets = Vec::new();
+        body_lets(body, &mut lets);
+        for (name, id) in lets {
+            if id.is_none() {
+                continue;
+            }
+            table.bindings.insert(
+                id.0,
+                BindingFacts {
+                    returned: returned
+                        .as_ref()
+                        .map(|rb| rb.let_is_returned(name))
+                        .unwrap_or(false),
+                    assign_moved: moved.contains(&name.name),
+                    stack_array: stack.contains(&name.name),
+                },
+            );
+        }
+    }
+    hale_syntax::sites::for_each_site(program, &mut |kind, _, id| {
+        if kind == hale_syntax::sites::SiteKind::Let && !id.is_none() {
+            table.bindings.entry(id.0).or_default();
+        }
+    });
+}
+
+/// Every `let` a body declares, wherever it stands in the body, with
+/// its declaring identifier. The matches are exhaustive, like
+/// [`ScopeWalk`]'s: a new statement or expression form must say where
+/// its `let`s are before this compiles.
+fn body_lets<'e>(b: &'e Block, out: &mut Vec<(&'e Ident, NodeId)>) {
+    fn if_chain<'e>(i: &'e IfStmt, out: &mut Vec<(&'e Ident, NodeId)>) {
+        expr(&i.cond, out);
+        body_lets(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => body_lets(b, out),
+            Some(ElseBranch::ElseIf(n)) => if_chain(n, out),
+            None => {}
+        }
+    }
+    fn match_arms<'e>(m: &'e MatchStmt, out: &mut Vec<(&'e Ident, NodeId)>) {
+        expr(&m.scrutinee, out);
+        for a in &m.arms {
+            if let Some(g) = &a.guard {
+                expr(g, out);
+            }
+            match &a.body {
+                MatchArmBody::Block(b) => body_lets(b, out),
+                MatchArmBody::Expr(x) => expr(x, out),
+            }
+        }
+    }
+    fn disposition<'e>(
+        d: &'e OrDisposition,
+        out: &mut Vec<(&'e Ident, NodeId)>,
+    ) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                expr(e, out)
+            }
+            OrDisposition::Raise(_)
+            | OrDisposition::Discard(_)
+            | OrDisposition::Wait(_) => {}
+        }
+    }
+    fn stmt<'e>(s: &'e Stmt, out: &mut Vec<(&'e Ident, NodeId)>) {
+        match s {
+            Stmt::Let { name, value, id, .. } => {
+                expr(value, out);
+                out.push((name, *id));
+            }
+            Stmt::LetTuple { value, .. } => expr(value, out),
+            Stmt::Assign { target, value, .. } => {
+                for seg in &target.tail {
+                    match seg {
+                        LValueSeg::Index(ix) => expr(ix, out),
+                        LValueSeg::Field(_) => {}
+                    }
+                }
+                expr(value, out);
+            }
+            Stmt::Return(value, _) => {
+                if let Some(e) = value {
+                    expr(e, out);
+                }
+            }
+            Stmt::If(i) => if_chain(i, out),
+            Stmt::Match(m) => match_arms(m, out),
+            Stmt::For { iter, body, .. } => {
+                expr(iter, out);
+                body_lets(body, out);
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                expr(max, out);
+                body_lets(body, out);
+            }
+            Stmt::While { cond, body, .. } => {
+                expr(cond, out);
+                body_lets(body, out);
+            }
+            Stmt::Block(body) => body_lets(body, out),
+            Stmt::Fail { value, .. } => expr(value, out),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+                match modifier {
+                    Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) => {
+                        expr(e, out)
+                    }
+                    None => {}
+                }
+            }
+            Stmt::Violate { payload, .. } => {
+                if let Some(p) = payload {
+                    expr(p, out);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                expr(subject, out);
+                expr(value, out);
+                if let Some(d) = or_disposition {
+                    disposition(d, out);
+                }
+            }
+            Stmt::Expr(e) => expr(e, out),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => {}
+        }
+    }
+    fn expr<'e>(e: &'e Expr, out: &mut Vec<(&'e Ident, NodeId)>) {
+        match e {
+            Expr::Ident(_) | Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Binary { left, right, .. } => {
+                expr(left, out);
+                expr(right, out);
+            }
+            Expr::Unary { operand, .. } => expr(operand, out),
+            Expr::Call { callee, args, .. } => {
+                expr(callee, out);
+                for a in args {
+                    expr(a, out);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+                expr(receiver, out)
+            }
+            Expr::Index { receiver, index, .. } => {
+                expr(receiver, out);
+                expr(index, out);
+            }
+            Expr::Tuple(v, _) | Expr::Array(v, _) => {
+                for x in v {
+                    expr(x, out);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    expr(&i.value, out);
+                }
+            }
+            Expr::Block(b) => body_lets(b, out),
+            Expr::If(i) => if_chain(i, out),
+            Expr::Match(m) => match_arms(m, out),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => expr(x, out),
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr(left, out);
+                expr(right, out);
+                expr(tolerance, out);
+            }
+            Expr::Range { lo, hi, .. } => {
+                expr(lo, out);
+                expr(hi, out);
+            }
+            Expr::ArrayRepeat { val, .. } => expr(val, out),
+            Expr::Or { inner, disposition: d, .. } => {
+                expr(inner, out);
+                disposition(d, out);
+            }
+        }
+    }
+    for s in &b.stmts {
+        stmt(s, out);
+    }
+    if let Some(t) = b.tail.as_deref() {
+        expr(t, out);
+    }
+}
+
 impl<'e> ScopeWalk<'e> {
     fn lookup(&self, name: &str) -> Resolved {
         for frame in self.frames.iter().rev() {
@@ -1133,6 +1887,7 @@ pub fn resolve_owners(
             scope_kinds: Vec::new(),
             fresh,
             numbered: 0,
+            bindings: BTreeMap::new(),
         },
         next_id: 0,
         next_slot: 0,

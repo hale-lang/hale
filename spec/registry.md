@@ -421,8 +421,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership.rs` · `compute_returned_bindings` — which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string. *Removed when:* keyed by snapshot identity (phase 1.2).
 - `crates/hale-types/src/ownership.rs` · `returned_bindings` — the per-body walk the row above calls. *Removed when:* phase 1.2.
-- `crates/hale-codegen/src/codegen.rs` · `compute_assign_moved_bindings` — bindings moved by `=`, keyed by name. *Removed when:* phase 1.2.
-- `crates/hale-codegen/src/codegen.rs` · `compute_stack_array_bindings` — array repeats that never escape, keyed by name. *Removed when:* phase 1.2.
+- `crates/hale-types/src/ownership.rs` · `compute_assign_moved_bindings` — bindings moved by `=`, keyed by name. *Removed when:* phase 1.2.
+- `crates/hale-types/src/ownership.rs` · `compute_stack_array_bindings` — array repeats that never escape, keyed by name. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets` — the interests a locus forwards for bubbling. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind` — owner classification for the bubble plan. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_edge` — edge classification for the bubble plan. *Removed when:* phase 1.3.

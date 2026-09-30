@@ -175,11 +175,15 @@ pub fn resolve_program(
     // the two sides of every ownership decision computed once.
     let mut fresh_locus_factories =
         crate::ownership::compute_fresh_locus_factories(&merged, import_renames);
-    let owner_table = crate::ownership::resolve_owners(
+    let mut owner_table = crate::ownership::resolve_owners(
         &mut merged,
         &fresh_locus_factories,
         import_renames,
     );
+    // F.40 phase 1.2b: and what each `let` needs to know about its
+    // own binding, one row per binding site, keyed by the identity
+    // minted above.
+    crate::ownership::resolve_binding_facts(&merged, &mut owner_table);
     for (fname, locus) in owner_table.extended_fresh_factories() {
         // A carrier return hands back an ARM's value, so there is no
         // single returned binding to name: `None`, the same as a fn
