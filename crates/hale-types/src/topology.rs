@@ -200,39 +200,38 @@ pub const MODEL_SEMANTICS: u32 = 2;
 
 /// The model identity alone (downstream handoff P26, 2026-08-12):
 /// the same `shape_hash` `dump_topology` stamps, for embedding in
-/// the built binary's observation segment. Extracted from the full
-/// serialization rather than recomputed, so the two can never
-/// drift — the cost (one artifact render at build time) is the
-/// same analysis stack `hale check` runs in ~10 ms on the largest
-/// apps.
+/// the built binary's observation segment, for a bundle no snapshot
+/// holds. It is the model half's digest read from the model
+/// ([`crate::topology_projection::project_shape_hash`], the function
+/// the artifact's own stamp is asserted equal to), not scraped out of a
+/// rendered artifact. A verb reads its snapshot's model instead
+/// (`model_identity` in the CLI).
 pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
-    let art = dump_topology(bundle);
-    art.lines()
-        .find_map(|l| {
-            l.trim()
-                .strip_prefix("\"shape_hash\": \"")?
-                .strip_suffix("\",")
-        })
-        .and_then(|h| u64::from_str_radix(h, 16).ok())
-        .unwrap_or(0)
+    crate::topology_projection::project_shape_hash(&crate::derive_application_model(bundle))
 }
 
 /// Serialize the bundle's model + claim results as the topology
-/// artifact (JSON).
+/// artifact (JSON), for a bundle no snapshot holds: the model is
+/// derived here ([`crate::derive_application_model`]). `hale check`
+/// renders its snapshot's model instead ([`dump_topology_over`]).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_parts(bundle)
+    dump_topology_over(bundle, &crate::derive_application_model(bundle))
 }
 
-/// The artifact. One authority: every emitted section is a
+/// [`dump_topology`], under its Change-6 name (the projection tests').
+#[doc(hidden)]
+pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
+    dump_topology(bundle)
+}
+
+/// The artifact of `bundle`, projected from `app_model`, the model the
+/// caller holds (F.40 phase 2.3: `hale check`'s snapshot's, the one its
+/// laws were judged over, so a check of a program with claims derives
+/// one model, not two). One authority: every emitted section is a
 /// PROJECTION of `ApplicationModel` (GH #476 Change 6 inverted the
 /// direction; Change 9 deleted the legacy gathering that had stayed
 /// behind as the corpus differential's comparison arm).
-///
-/// Retained under its Change-6 name because the claim/law pipeline
-/// below it is one long function; `dump_topology` is the caller
-/// everything else uses.
-#[doc(hidden)]
-pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
+pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::ApplicationModel) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // User code only — an app's artifact describes the app, the
@@ -397,10 +396,10 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
         &programs,
         &bundle.import_renames,
     );
-    let vmodel = crate::model_builder::derive_application_model(bundle);
-    let law_table = crate::claim_lowering::lower_claims(bundle, &vmodel);
+    let vmodel = app_model;
+    let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
     let law_evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &law_table, &vmodel,
+        bundle, &law_table, vmodel,
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();

@@ -164,11 +164,10 @@ pub(crate) fn run_program(
             return ExitCode::from(1);
         }
     }
-    // P26: stamp the model identity of the bundle just checked.
-    let model_hash = hale_types::topology::model_shape_hash(&snap.bundle());
     // The view before the execution identity: the identity folds in
     // the dispatch plan the view carries. A refused resolve is
-    // reported as the build would report it.
+    // reported as the build would report it. The model identity (P26)
+    // and the entity ids are the snapshot's model's.
     let view = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
@@ -177,21 +176,21 @@ pub(crate) fn run_program(
         }
     };
     let options_fp = build_env::options_fingerprint(&options);
-    let (plan_digest, obs_ids) = match model_identity(&snap, view, &options) {
+    let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {
             eprintln!("{}", render_blocked(b, file_bases, sources));
             return ExitCode::from(1);
         }
     };
-    let digest = exec_digest(sources, target, &options_fp, plan_digest);
+    let digest = exec_digest(sources, target, &options_fp, identity.plan_digest);
     compile_and_exec(
         view,
         user_args,
         observe,
-        model_hash,
+        identity.model_hash,
         digest,
-        obs_ids,
+        identity.obs_ids,
         file_bases,
         sources,
         options,

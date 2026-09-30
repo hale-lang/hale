@@ -774,7 +774,10 @@ changed graph fails. `--check-topology <path>` diffs against a
 committed baseline and
 fails with a regenerate hint — the `.hale.effects` precedent: an
 unreviewed topology or law change fails CI the way an API break
-does. v2 scope: every claim verb replays independently over the
+does. Both gates compare the artifact of the model the check judged
+the laws over; a program that does not typecheck has no model, so
+they refuse it as `--dump-topology` does, naming the error kind, and
+exit 1. v2 scope: every claim verb replays independently over the
 exported relations — `forbid`/`only edges` including
 through-stdlib reachability, `require`/`count` cardinality,
 `cover` via the seed sort, `during` via the phase relation,

@@ -676,18 +676,33 @@ pub(crate) fn exec_digest(
     out
 }
 
+/// What a build stamps as its identity beside the sources, all of it
+/// read from the build's snapshot (F.40 phase 2.3).
+pub(crate) struct BuildIdentity {
+    /// The model identity (downstream handoff P26): the snapshot's
+    /// model's `shape_hash`, the value its topology artifact stamps.
+    pub(crate) model_hash: u64,
+    /// The digest of the dispatch plan codegen lowers, folded into the
+    /// execution identity by [`exec_digest`].
+    pub(crate) plan_digest: u64,
+    /// The canonical entity ids codegen stamps into the observation
+    /// manifest.
+    pub(crate) obs_ids: Vec<hale_model::obs_ids::ObsEntityId>,
+}
+
 /// GH #476 Change 8: what the BUILD stamps as its identity beside the
-/// sources — the digest of the dispatch plan codegen lowers (folded
-/// into the execution identity by [`exec_digest`]) and the canonical
-/// entity ids codegen stamps into the observation manifest.
+/// sources ([`BuildIdentity`]).
 ///
 /// The plan is the lowering view's (F.40 phase 1.5): the one codegen
 /// reads, over the program it lowers, so the digest names exactly the
 /// lowering the binary carries. The model is the snapshot's, demanded
-/// here for a different concern: the observation entity ids are the
-/// model's identities, which a consumer joins the live manifest to. A
-/// checked program denotes a model, so the build's snapshot always
-/// has one; a blocked model is the caller's to report.
+/// here for a different concern: the model hash is its identity, and
+/// the observation entity ids are its entities' identities, which a
+/// consumer joins the live manifest to. Both used to come from a second
+/// model: the hash rendered a whole artifact over a model of its own
+/// and scraped `shape_hash` out of the text. A checked program denotes
+/// a model, so the build's snapshot always has one; a blocked model is
+/// the caller's to report.
 ///
 /// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
 /// harness's control arm) makes codegen emit the empty plan — every
@@ -700,14 +715,18 @@ pub(crate) fn model_identity<'s>(
     snap: &'s hale_frontend::snapshot::Snapshot,
     resolved: &hale_types::resolved::LoweringView,
     options: &hale_codegen::BuildOptions,
-) -> Result<(u64, Vec<hale_model::obs_ids::ObsEntityId>), &'s hale_frontend::snapshot::Blocked> {
+) -> Result<BuildIdentity, &'s hale_frontend::snapshot::Blocked> {
     let model = snap.demand_model()?;
     let plan_digest = if options.no_bus_devirt {
         hale_model::dispatch_plan::DispatchPlan::default().digest()
     } else {
         resolved.plan.digest()
     };
-    Ok((plan_digest, hale_model::obs_ids::obs_entity_ids(model)))
+    Ok(BuildIdentity {
+        model_hash: hale_types::topology_projection::project_shape_hash(model),
+        plan_digest,
+        obs_ids: hale_model::obs_ids::obs_entity_ids(model),
+    })
 }
 /// A `--flag value` / `--flag=value` reader over an explicit argv
 /// slice. `flag_value` inside `run_check_impl` reads the process

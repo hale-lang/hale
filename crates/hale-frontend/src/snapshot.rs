@@ -7,7 +7,12 @@
 //! else is a family, demanded by name:
 //!
 //! - [`Snapshot::demand_scope`]: the top scope, with its topic rows.
-//! - [`Snapshot::demand_model`]: the application model, over the scope.
+//! - [`Snapshot::demand_bus_graph`], [`Snapshot::demand_ownership_graph`]
+//!   and [`Snapshot::demand_handlers`]: the bus graph, the ownership
+//!   graph and the handler rows over the checked programs, what the
+//!   model reads beside the scope.
+//! - [`Snapshot::demand_model`]: the application model, over the scope
+//!   and those three.
 //! - [`Snapshot::demand_check`]: what the checker reports — the scope's
 //!   and the typing's diagnostics, and the laws judged over the model
 //!   when the program declares any.
@@ -40,6 +45,9 @@ use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
+use hale_types::bus_graph::BusGraph;
+use hale_types::handler_routing::HandlerRouting;
+use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::LoweringView;
 use hale_types::symbol::SourceFile;
@@ -53,15 +61,22 @@ use crate::imports::ImportRenames;
 use crate::source::SourceProvider;
 
 /// The families a snapshot produces, in the order a build demands them.
-/// The names are the registry's (`spec/registry.md`); `lowering_view`
-/// is the `demand` family's own, the view whose tables are the
-/// ownership, bus-graph, dispatch and handler-routing families'.
-pub const FAMILIES: [&str; 8] = [
+/// The names are the registry's (`spec/registry.md`). `bus_graph`,
+/// `ownership` and `handler_routing` count the checked programs' graphs,
+/// the model's inputs; `lowering_view` is the `demand` family's own, the
+/// view over the resolved program whose tables are lowering's ownership,
+/// bus-graph, dispatch and handler-routing rows. Until the check runs
+/// over the resolved program, a snapshot that is checked for its model
+/// and lowered holds both shapes' graphs.
+pub const FAMILIES: [&str; 11] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
     "top_scope",
     "expression_typing",
+    "bus_graph",
+    "ownership",
+    "handler_routing",
     "model",
     "claims",
     "lowering_view",
@@ -312,6 +327,9 @@ pub struct Snapshot {
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     typing: OnceCell<Result<Vec<Diag>, Blocked>>,
+    bus_graph: OnceCell<Result<BusGraph, Blocked>>,
+    ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
+    handlers: OnceCell<Result<HandlerRouting, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
@@ -457,6 +475,9 @@ impl Snapshot {
             unparsed: loaded.unparsed,
             scope: OnceCell::new(),
             typing: OnceCell::new(),
+            bus_graph: OnceCell::new(),
+            ownership_graph: OnceCell::new(),
+            handlers: OnceCell::new(),
             model: OnceCell::new(),
             check: OnceCell::new(),
             lowering: OnceCell::new(),
@@ -700,9 +721,56 @@ impl Snapshot {
             .map(Vec::as_slice)
     }
 
-    /// The application model. A model describes a CHECKED program
-    /// (GH #476 Change 9): it is blocked while the resolver or the
-    /// checker reports an error other than a claim's.
+    /// The bus graph over the checked programs, with the scope's topic
+    /// rows: the model's subjects, endpoints and dispatch gates.
+    pub fn demand_bus_graph(&self) -> Result<&BusGraph, &Blocked> {
+        self.bus_graph
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                self.count("bus_graph");
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top))
+            })
+            .as_ref()
+    }
+
+    /// The ownership graph over the checked programs: the model's
+    /// dynamic births.
+    pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
+        self.ownership_graph
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                self.count("ownership");
+                Ok(hale_types::ownership_graph::build_ownership_graph(&self.bundle(), &scope.top))
+            })
+            .as_ref()
+    }
+
+    /// The handler rows of the checked programs: the model's
+    /// supervision. Blocked with the scope, which a file that did not
+    /// parse blocks.
+    pub fn demand_handlers(&self) -> Result<&HandlerRouting, &Blocked> {
+        self.handlers
+            .get_or_init(|| {
+                self.scope().map_err(Clone::clone)?;
+                self.count("handler_routing");
+                // In the bundle's order: a row's position is its
+                // authored ordinal.
+                let bundle = self.bundle();
+                let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                Ok(hale_types::handler_routing::handler_rows(
+                    &programs,
+                    &bundle.import_renames,
+                    &bundle.snapshot,
+                ))
+            })
+            .as_ref()
+    }
+
+    /// The application model, over the scope, the bus graph, the
+    /// ownership graph and the handler rows, each demanded. A model
+    /// describes a CHECKED program (GH #476 Change 9): it is blocked
+    /// while the resolver or the checker reports an error other than a
+    /// claim's.
     pub fn demand_model(&self) -> Result<&ApplicationModel, &Blocked> {
         self.model
             .get_or_init(|| self.with_env(|| {
@@ -718,11 +786,16 @@ impl Snapshot {
                         refused: None,
                     });
                 }
-                let scope = self.scope().map_err(Clone::clone)?;
+                let inputs = hale_types::model_builder::ModelInputs {
+                    top: &self.scope().map_err(Clone::clone)?.top,
+                    bus_graph: self.demand_bus_graph().map_err(Clone::clone)?,
+                    ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
+                    handlers: self.demand_handlers().map_err(Clone::clone)?,
+                };
                 self.count("model");
-                Ok(hale_types::model_builder::derive_application_model_in(
+                Ok(hale_types::model_builder::derive_application_model_over(
                     &self.bundle(),
-                    &scope.top,
+                    &inputs,
                 ))
             }))
             .as_ref()
@@ -1039,7 +1112,7 @@ mod tests {
         assert_eq!(builds["seed_loading"], 1);
         let Err(blocked) = s.demand_lowering() else { panic!("nor a lowering view") };
         assert_eq!(blocked.family, "top_scope");
-        for f in ["desugar_sequence", "snapshot_identity", "top_scope", "expression_typing", "model", "claims", "lowering_view"] {
+        for f in FAMILIES.iter().filter(|f| **f != "seed_loading") {
             assert_eq!(builds[f], 0, "{f} ran for a seed that did not parse");
         }
         let _ = std::fs::remove_dir_all(&d);

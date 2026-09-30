@@ -135,12 +135,20 @@ distinction — see [Unknown is not absent](#unknown-is-not-absent).
 There is exactly **one** constructor:
 
 ```rust
-hale_types::model_builder::derive_application_model(&Bundle) -> ApplicationModel
+hale_types::model_builder::derive_application_model_over(&Bundle, &ModelInputs) -> ApplicationModel
 ```
 
 It runs over a *checked* bundle. A model of an ill-typed program
 describes nothing, so consumers that judge gate on the bundle
 having no non-`Claim` errors first.
+
+It builds none of the families it reads beside the program:
+`ModelInputs` hands it the top scope with its topic rows, the bus
+graph, the ownership graph and the handler rows, each built once
+over the checked programs. Every verb demands them, and the model,
+from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3);
+`hale_types::derive_application_model(&Bundle)` builds them for a
+bundle no snapshot holds (the test entry's) and derives over them.
 
 **There is no other way in.** In particular:
 
@@ -584,7 +592,7 @@ actually hash — not what their names suggest.
 | `inputs_digest` | analysis inputs OUTSIDE the model: `ANALYSIS_SEMANTICS_VERSION`, the Hale stdlib source, **the compiler package version**, the import-rename table, and **the stdlib surface-classification registry** (namespaces, fn names, effect masks, open prefixes) | any of those drift — most do not rely on anyone remembering |
 | `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, a **failure-handler discriminator** — not the full `FunctionKind`, so a move among `Free`/`Method`/`Hook`/`Mode` is not in that byte — and **canonical owner** | coverage changes, *or* a member moves between owners |
 | `model_shape` (in `EvidenceTable`) | the `shape_hash` the sidecar was derived beside | the model half does |
-| obs `model_hash` | **the emitted `shape_hash`** — `model_shape_hash` renders the artifact and reads that field out | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
+| obs `model_hash` | **the emitted `shape_hash`** — the build's snapshot's model's model-half digest (`project_shape_hash`, the value the artifact of that model stamps), read from the model, never from a rendered artifact | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
 | obs `entity_id_digest` | the exact stamped id table (kind, name, id) | the numbering does. It exists because `model_hash` does *not* cover every table the ids index — arrangement bindings are not in the artifact at all, and an unused topic's wire subject rides an unhashed section, so two builds could share a `model_hash` while numbering entities differently |
 | `TOPOLOGY_SCHEMA` | the artifact's decoding contract | a field becomes required, a section changes meaning, or a family moves (1.18 added the per-locus `contracts` section) |
 | `TOPOLOGY_DIFF_SCHEMA` | the `hale model diff` document's decoding contract | a diff section changes meaning or a field becomes required |

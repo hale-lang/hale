@@ -135,9 +135,6 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    // P26: stamp the model identity of the bundle just checked into
-    // the binary, for the observation segment header.
-    options.model_hash = Some(hale_types::topology::model_shape_hash(&snap.bundle()));
     // hello-world.hl → hello-world. myapp/ → myapp; output lands next to
     // target. When the user passes `.` (or any path without a useful
     // trailing component — `./`, `..`), `Path::file_name` returns None;
@@ -351,7 +348,8 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // digest frames is the view's, the one codegen lowers (F.40 phase
     // 1.5). GH #476 Change 8: the canonical entity ids a consumer
     // joins the live manifest to the model with come from the
-    // snapshot's model.
+    // snapshot's model, and so does the model identity (P26) stamped
+    // into the binary for the observation segment header.
     let view = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
@@ -359,19 +357,20 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (plan_digest, obs_ids) = match model_identity(&snap, view, &options) {
+    let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {
             eprintln!("{}", render_blocked(b, file_bases, sources));
             return ExitCode::from(1);
         }
     };
-    options.obs_entity_ids = obs_ids;
+    options.model_hash = Some(identity.model_hash);
+    options.obs_entity_ids = identity.obs_ids;
     options.exec_digest = Some(exec_digest(
         sources,
         target,
         &build_env::options_fingerprint(&options),
-        plan_digest,
+        identity.plan_digest,
     ));
     match hale_codegen::build_resolved(view, &output, &options) {
         Ok(()) => {

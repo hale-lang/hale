@@ -1171,7 +1171,9 @@ Two gates, named for what they compare:
 
 Either way the gate separates two review questions: *does the
 program still satisfy the law?* and *did the graph change in a way
-reviewers should see?*
+reviewers should see?* A program that does not typecheck has no
+model to compare, so both gates refuse it, as `--dump-topology`
+does.
 
 The pieces worth knowing:
 

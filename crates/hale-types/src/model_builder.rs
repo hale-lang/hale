@@ -1,7 +1,7 @@
 //! GH #476 Change 2 — derive the canonical `ApplicationModel` from a
 //! checked bundle.
 //!
-//! One entry point, [`derive_application_model`], assembling the
+//! One entry point, [`derive_application_model_over`], assembling the
 //! model from the SAME trusted analyses the topology artifact
 //! consumes today: `AllocSummary` (calls, sites, unresolved
 //! residue), `BusGraph` (endpoints with spans), `model::Model`
@@ -176,17 +176,28 @@ fn type_descriptor(ty: &TypeExpr) -> String {
     }
 }
 
-pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
-    let (top, _diags) = crate::resolve::build_top_scope(bundle);
-    derive_application_model_in(bundle, &top)
+/// The model of a bundle no snapshot holds, built where the families it
+/// reads are built for it ([`crate::derive_application_model`]).
+pub use crate::derive_application_model;
+
+/// What the model reads from the families it does not own, each built
+/// once over the CHECKED programs (F.40 phase 2.3): the top scope with
+/// its topic rows, the bus graph, the ownership graph and the handler
+/// rows. The frontend's snapshot demands each as a family of its own
+/// (`Snapshot::demand_scope`, `demand_bus_graph`,
+/// `demand_ownership_graph`, `demand_handlers`) and hands them here;
+/// the model builds none of them.
+pub struct ModelInputs<'a> {
+    pub top: &'a crate::resolve::TopScope,
+    pub bus_graph: &'a crate::bus_graph::BusGraph,
+    pub ownership: &'a crate::ownership_graph::OwnershipGraph,
+    pub handlers: &'a crate::handler_routing::HandlerRouting,
 }
 
-/// [`derive_application_model`] over the bundle's top scope, built by
-/// the caller: the frontend's snapshot builds one scope and passes it
-/// to every family that reads it.
-pub fn derive_application_model_in(
+/// The application model of `bundle`, over the families `inputs` holds.
+pub fn derive_application_model_over(
     bundle: &Bundle<'_>,
-    top: &crate::resolve::TopScope,
+    inputs: &ModelInputs<'_>,
 ) -> ApplicationModel {
     if std::env::var("HALE_MODEL_TRACE").as_deref() == Ok("1") {
         eprintln!("[hale-model] deriving ApplicationModel");
@@ -196,7 +207,7 @@ pub fn derive_application_model_in(
         bundle.programs.values().copied().collect();
     // GH #1159: the rename table once per derivation, not per string.
     let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
-    let graph = crate::bus_graph::build_bus_graph(bundle, top);
+    let graph = inputs.bus_graph;
     let summary = alloc_summary::summarize_programs_with_renames(
         &programs,
         &bundle.import_renames,
@@ -752,19 +763,19 @@ pub fn derive_application_model_in(
         .iter()
         .flat_map(|p| p.items.iter().cloned())
         .collect();
-    let wire_subjects =
-        crate::topic_identity::topic_wire_subjects(&all_items);
     // Keyed by RAW name — canonical identity — with the author
     // spelling carried alongside.
     let mut topic_decl_by_name: BTreeMap<String, TInfo> = BTreeMap::new();
     for t in &ast.topics {
         let raw = t.name.name.clone();
-        // The wire map is keyed by the RAW name; a subject-less
-        // topic's default wire subject is likewise the raw name
-        // (parent joins included) — exactly the artifact's rule.
-        let wire = wire_subjects
-            .get(&raw)
-            .cloned()
+        // The scope's topic rows are keyed by the RAW name; a
+        // subject-less topic's default wire subject is likewise the raw
+        // name (parent joins included) — exactly the artifact's rule.
+        let wire = inputs
+            .top
+            .topics
+            .named(&raw)
+            .map(|row| row.wire.clone())
             .unwrap_or_else(|| raw.clone());
         topic_decl_by_name
             .insert(raw, TInfo { decl: t, wire });
@@ -1753,11 +1764,9 @@ pub fn derive_application_model_in(
     // walk (the rows come in that order), not the row's per-parent
     // ordinal, so the canonical key keeps its values.
     //
-    // The rows are the bundle's, computed once: a child declared in a
-    // sibling file is a locus here as it is to lowering.
-    let routing =
-        crate::handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot);
-    for (authored, row) in routing.rows().iter().enumerate() {
+    // The rows are the bundle's, demanded once per snapshot: a child
+    // declared in a sibling file is a locus here as it is to lowering.
+    for (authored, row) in inputs.handlers.rows().iter().enumerate() {
         let parent = locus_id[&row.parent];
         let declared = match &row.child {
             ChildRef::Locus(n) => {
@@ -2569,12 +2578,17 @@ pub fn derive_application_model_in(
     // model's plan then has no row for the literal subject and the
     // topic's row carries the literal's subscribers; lowering's graph,
     // over wire literals, keeps the two apart.
+    //
+    // The wire is the scope's topic row's (F.40 phase 2.3): the one
+    // table the checker reads a subject through.
     let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
-        let wire = topic_decl_by_name
-            .get(subject.as_str())
-            .map(|t| t.wire.clone())
+        let wire = inputs
+            .top
+            .topics
+            .named(subject)
+            .map(|row| row.wire.clone())
             .unwrap_or_else(|| subject.clone());
         let publisher_loci: Vec<String> =
             info.publishers.iter().map(|p| p.locus.clone()).collect();
@@ -3428,9 +3442,7 @@ pub fn derive_application_model_in(
         // placement are runtime facts. Typed holes keep the
         // capability account honest (RuntimeInheritedPlacement is
         // exactly this shape).
-        let og = crate::ownership_graph::build_ownership_graph(
-            bundle, top,
-        );
+        let og = inputs.ownership;
         let free_fn_births =
             crate::ownership_graph::free_fn_birth_sites(bundle);
         // Params-default births ARE the arrangement — only sites
