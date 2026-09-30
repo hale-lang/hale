@@ -73,7 +73,8 @@ pub const WEBROOT: &str = "iris/render/web";
 
 /// FNV-1a over what the cached binaries were built from: the crate
 /// version, the compiler's own source (`HALE_COMPILER_SRC_HASH`, from
-/// `build.rs`: front end, type checker, codegen and the runtime C), the
+/// `build.rs`: front end, type checker, codegen and the runtime C, the
+/// CLI whose `build` verb makes the host, and the manifests), the
 /// embedded stdlib, and every embedded iris and DNA byte. A change to
 /// any of them rebuilds; two toolchains that agree on all of them share
 /// a cache.

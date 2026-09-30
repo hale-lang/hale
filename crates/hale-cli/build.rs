@@ -160,16 +160,18 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 /// a length-framed SHA-256 over every compiler-side source that
 /// shapes what a build emits or how a recording is produced,
 /// parsed, and served, plus the rustc version and the git commit
-/// when available. The crates it walks are the identity-covered
-/// set `hale_graph::identity::COVERED_CRATES` plus this CLI (F.40
-/// phase 0, step 0.4): the parser, the type checker, the model
+/// when available. The files it frames are
+/// `hale_graph::identity::identity_files`, the selection the DNA
+/// toolchain cache key folds too (F.40 phase 0, step 0.4): the
+/// identity-covered crates — the parser, the type checker, the model
 /// schema, the graph core, codegen with EVERY runtime TU incl.
 /// lotus_obs.c, the stdlib's tables AND its `.hl` seeds (which
 /// `hale-stdlib/src` embeds by `include_str!`, so hashing that
-/// crate's Rust alone missed them), and the replay CLI. A semantic
-/// producer moving between these crates cannot make a later edit
-/// invisible to replay identity. The 64-bit stale-CLI hash keeps
-/// its separate, narrower job.
+/// crate's Rust alone missed them), and this CLI — then the lock
+/// file and the ts-shim manifest. A semantic producer moving between
+/// these crates cannot make a later edit invisible to replay
+/// identity. The 64-bit stale-CLI hash keeps its separate, narrower
+/// job.
 fn toolchain_digest(workspace_root: &PathBuf) {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
@@ -191,9 +193,7 @@ fn toolchain_digest(workspace_root: &PathBuf) {
         .map(|o| o.stdout)
         .unwrap_or_default();
     frame(&commit, &mut buf);
-    let mut files: Vec<PathBuf> =
-        hale_graph::identity::covered_files(workspace_root, &["hale-cli"]);
-    files.extend(hale_graph::identity::manifest_files(workspace_root));
+    let files: Vec<PathBuf> = hale_graph::identity::identity_files(workspace_root);
     for f in &files {
         println!("cargo:rerun-if-changed={}", f.display());
         let rel = f

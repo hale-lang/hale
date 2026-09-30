@@ -21,6 +21,17 @@ use std::path::{Path, PathBuf};
 
 /// The crates whose sources every compiler identity covers, in
 /// workspace order: what shapes a compiled program or a recording.
+///
+/// `hale-cli` is here because the DNA toolchain cache builds a host
+/// by invoking the CLI's `build` verb, and that verb's Rust still owns
+/// semantic work: import handling and the pre-check sequence
+/// (json_gen, api, bind_build_env, sync inference, the source map,
+/// the mint). A change there changes the binary a cached host is. It
+/// leaves this list when that work has moved into hale-frontend and
+/// the verb only drives it; the replay identity then keeps walking
+/// the CLI as its own extra, since the CLI produces and serves
+/// recordings. It is last so the replay identity's file order, and so
+/// its digest, is what it was when the CLI was that extra.
 pub const COVERED_CRATES: &[&str] = &[
     "hale-syntax",
     "hale-types",
@@ -28,17 +39,12 @@ pub const COVERED_CRATES: &[&str] = &[
     "hale-graph",
     "hale-codegen",
     "hale-stdlib",
+    "hale-cli",
 ];
 
-/// The workspace members no identity covers, each with the reason.
-/// `hale-cli` is covered by the replay identity alone (it does not
-/// shape a cached host's binary); the rest shape nothing a program
-/// runs.
+/// The workspace members no identity covers, each with the reason:
+/// none of them shapes what a program compiles to or a recording.
 pub const NOT_COVERED: &[(&str, &str)] = &[
-    (
-        "hale-cli",
-        "the replay identity walks it; a cached host's binary does not depend on the CLI",
-    ),
     (
         "hale-lsp",
         "serves diagnostics; emits no artifact and no recording",
@@ -64,8 +70,8 @@ pub const NOT_COVERED: &[(&str, &str)] = &[
 /// Files outside the covered crates' source trees that shape a
 /// compiled program: the lock file (every dependency version the
 /// compiler and its shims are built with) and the ts-shim manifest
-/// (the tree-sitter versions `std::ts` links). The replay identity
-/// frames them beside the sources.
+/// (the tree-sitter versions `std::ts` links). Both identities fold
+/// them beside the sources, through [`identity_files`].
 pub const MANIFEST_FILES: &[&str] = &["Cargo.lock", "crates/hale-ts-shim/Cargo.toml"];
 
 /// The subdirectories of a covered crate that hold sources.
@@ -151,6 +157,16 @@ pub fn covered_files(workspace_root: &Path, extra: &[&str]) -> Vec<PathBuf> {
     for d in covered_dirs(workspace_root, extra) {
         walk_sources(&d, &mut files);
     }
+    files
+}
+
+/// What the replay identity and the toolchain cache key hash: every
+/// source file of the covered crates, then the manifest files, in
+/// that order. One selection for both, so neither can leave out an
+/// input the other covers.
+pub fn identity_files(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut files = covered_files(workspace_root, &[]);
+    files.extend(manifest_files(workspace_root));
     files
 }
 

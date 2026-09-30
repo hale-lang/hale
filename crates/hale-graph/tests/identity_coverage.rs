@@ -61,15 +61,14 @@ fn every_workspace_member_is_covered_or_excluded_with_a_reason() {
 fn the_identities_take_the_list_and_the_walk_from_hale_graph() {
     let cli_build = read("crates/hale-cli/build.rs");
     assert!(
-        cli_build.contains("hale_graph::identity::covered_files(")
-            && cli_build.contains("\"hale-cli\""),
-        "the replay identity must walk hale_graph::identity's covered crates plus the CLI"
+        cli_build.contains("hale_graph::identity::identity_files("),
+        "the replay identity must frame hale_graph::identity's selection"
     );
     let iris_build = read("crates/hale-iris/build.rs");
     assert!(
-        iris_build.contains("hale_graph::identity::covered_dirs(")
+        iris_build.contains("hale_graph::identity::identity_files(")
             && iris_build.contains("hale_graph::identity::fold_files("),
-        "the toolchain cache key must hash hale_graph::identity's covered crates with its fold"
+        "the toolchain cache key must fold hale_graph::identity's selection with its fold"
     );
     for rel in [
         "crates/hale-cli/build.rs",
@@ -90,7 +89,7 @@ fn the_identities_take_the_list_and_the_walk_from_hale_graph() {
 #[test]
 fn every_covered_directory_exists_and_every_covered_crate_contributes() {
     let root = root();
-    for d in hale_graph::identity::covered_dirs(&root, &["hale-cli"]) {
+    for d in hale_graph::identity::covered_dirs(&root, &[]) {
         assert!(
             d.is_dir(),
             "{} is not a directory (a missing rerun-if-changed path is always stale)",
@@ -122,4 +121,67 @@ fn every_covered_directory_exists_and_every_covered_crate_contributes() {
         stale.len() > 3 && stale.iter().all(|p| p.is_file()),
         "the stale hash's paths exist: {stale:?}"
     );
+}
+
+/// The inputs each identity consumer actually hashes, held against a
+/// scratch tree: the build scripts fold `identity_files` (the text
+/// check above holds that they do), so a change to any file the
+/// selection should cover must move the fold. The cached host is
+/// built by the CLI's `build` verb and links the dependencies the
+/// lock file and the ts-shim manifest pin, so those move it as much
+/// as a graph-core change does.
+#[test]
+fn a_change_to_any_hashed_input_moves_the_cache_key() {
+    use hale_graph::identity::{fold_files, identity_files, COVERED_CRATES, MANIFEST_FILES};
+    let scratch = std::env::temp_dir().join(format!(
+        "hale-graph-identity-inputs-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    for krate in COVERED_CRATES {
+        let src = scratch.join("crates").join(krate).join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), format!("// {krate}\n")).unwrap();
+    }
+    for m in MANIFEST_FILES {
+        let p = scratch.join(m);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("# {m}\n")).unwrap();
+    }
+    let key = || fold_files(&scratch, &identity_files(&scratch));
+    let hashed: Vec<PathBuf> = identity_files(&scratch);
+    for input in [
+        "crates/hale-cli/src/lib.rs",
+        "crates/hale-graph/src/lib.rs",
+        "Cargo.lock",
+        "crates/hale-ts-shim/Cargo.toml",
+    ] {
+        assert!(
+            hashed.contains(&scratch.join(input)),
+            "{input} is not among the cache key's inputs"
+        );
+        let before = key();
+        let p = scratch.join(input);
+        let mut text = std::fs::read_to_string(&p).unwrap();
+        text.push_str("// changed\n");
+        std::fs::write(&p, text).unwrap();
+        assert_ne!(
+            before,
+            key(),
+            "a change to {input} leaves the cache key where it was"
+        );
+    }
+    let before = key();
+    std::fs::write(
+        scratch.join("crates/hale-cli/src/verb.rs"),
+        "fn build() {}\n",
+    )
+    .unwrap();
+    assert_ne!(
+        before,
+        key(),
+        "a CLI source added leaves the cache key where it was"
+    );
+    let _ = std::fs::remove_dir_all(&scratch);
 }

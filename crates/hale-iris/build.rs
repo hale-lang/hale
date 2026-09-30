@@ -8,26 +8,31 @@
 //! crate from `hale_stdlib::AP_FILES`; this script hashes the source
 //! that CANNOT be embedded here without bloating the binary by the
 //! size of the compiler: the front end, the type checker, codegen and
-//! its runtime C, and the stdlib crate's own tables.
+//! its runtime C, the stdlib crate's own tables, the CLI whose `build`
+//! verb the cache invokes, and the manifests that pin their
+//! dependencies.
 
 use std::path::PathBuf;
 
-/// The directories this script hashes are the identity-covered
-/// crates' (`hale_graph::identity::COVERED_CRATES`, F.40 phase 0 step
-/// 0.4), through the shared walk and fold. The stdlib's `.hl` seeds
-/// also ride the key at run time through `hale_stdlib::AP_FILES`. A
-/// model-shape or graph-core change busts a cached host like a
+/// The files this script folds are `hale_graph::identity::identity_files`
+/// (F.40 phase 0 step 0.4): the identity-covered crates' sources, the
+/// CLI's among them, then the lock file and the ts-shim manifest —
+/// the selection the replay identity frames too, through the shared
+/// walk and fold. The stdlib's `.hl` seeds also ride the key at run
+/// time through `hale_stdlib::AP_FILES`. A model-shape, graph-core,
+/// CLI or dependency-version change busts a cached host like a
 /// codegen change does.
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir")).join("../..");
-    let dirs = hale_graph::identity::covered_dirs(&root, &[]);
-    let mut files = Vec::new();
-    for d in &dirs {
-        // A file's content, and the listing of the directory, so a
-        // file added or removed re-runs this script too.
+    // Each covered directory, so a file added or removed re-runs this
+    // script too, and each manifest file.
+    for d in hale_graph::identity::covered_dirs(&root, &[]) {
         println!("cargo:rerun-if-changed={}", d.display());
-        hale_graph::identity::walk_sources(d, &mut files);
     }
+    for f in hale_graph::identity::manifest_files(&root) {
+        println!("cargo:rerun-if-changed={}", f.display());
+    }
+    let files = hale_graph::identity::identity_files(&root);
     let h = hale_graph::identity::fold_files(&root, &files);
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rustc-env=HALE_COMPILER_SRC_HASH={h:016x}");
