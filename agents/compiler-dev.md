@@ -82,7 +82,9 @@ hale-ts-shim  staticlib; no dependents; linked by path
 4. **Resolve + check**: `hale_types::check_bundle_opts_scoped`
    (`hale-types/src/lib.rs`): `resolve::build_top_scope`, then
    `check::check_bundle_scoped` (`check.rs`).
-5. **Model**: `model_builder::derive_application_model`, on demand.
+5. **Model**: `model_builder::derive_application_model_over`, on
+   demand (`Snapshot::demand_model`), over the snapshot's scope, bus
+   graph, ownership graph and handler rows.
 6. **Judgment**: `judgment::claim_law_diags`, from the check path
    only when no non-`Claim` error exists and claims are present.
 7. **The resolved program**: `hale_types::resolved::resolve_program`
@@ -147,8 +149,10 @@ Contract: [`spec/model.md`](../spec/model.md); tutorial:
 `docs/src/the-model.md`; rustdoc at `/api/hale_model`.
 
 - **One constructor**:
-  `hale_types::model_builder::derive_application_model(&Bundle)`,
-  over a *checked* bundle. No artifact-to-model, no plan-to-model, no
+  `hale_types::model_builder::derive_application_model_over(&Bundle,
+  &ModelInputs)`, over a *checked* bundle; a test without a snapshot
+  calls `derive_application_model(&Bundle)`, which builds the inputs
+  and derives over them. No artifact-to-model, no plan-to-model, no
   hand-authored model format; a test that needs a shape derives a
   real model and edits its tables.
 - The law: `Bundle -> ApplicationModel`; `Bundle + Model ->

@@ -284,6 +284,31 @@ pub fn check_bundle_opts_scoped(
     diags
 }
 
+/// The application model of a bundle no snapshot holds: the test
+/// entry's ([`judgment::claim_law_diags`], the hale-types tests, the
+/// artifact's bundle entry `topology::dump_topology`). It builds the
+/// families the frontend's snapshot demands for the model — the scope,
+/// the bus graph and the ownership graph over the checked programs, the
+/// handler rows — once each, and derives over them
+/// ([`model_builder::derive_application_model_over`]). Every verb reads
+/// its snapshot's model instead (`Snapshot::demand_model`).
+pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
+    let (top, _diags) = resolve::build_top_scope(bundle);
+    let bus_graph = bus_graph::build_bus_graph(bundle, &top);
+    let ownership = ownership_graph::build_ownership_graph(bundle, &top);
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let handlers = handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot);
+    model_builder::derive_application_model_over(
+        bundle,
+        &model_builder::ModelInputs {
+            top: &top,
+            bus_graph: &bus_graph,
+            ownership: &ownership,
+            handlers: &handlers,
+        },
+    )
+}
+
 /// Whether a program the resolver and the checker reported `diags`
 /// for denotes a model: no error but a claim's. Claim errors do not
 /// gate it: a program whose only errors are broken LAWS still has a

@@ -135,12 +135,20 @@ distinction — see [Unknown is not absent](#unknown-is-not-absent).
 There is exactly **one** constructor:
 
 ```rust
-hale_types::model_builder::derive_application_model(&Bundle) -> ApplicationModel
+hale_types::model_builder::derive_application_model_over(&Bundle, &ModelInputs) -> ApplicationModel
 ```
 
 It runs over a *checked* bundle. A model of an ill-typed program
 describes nothing, so consumers that judge gate on the bundle
 having no non-`Claim` errors first.
+
+It builds none of the families it reads beside the program:
+`ModelInputs` hands it the top scope with its topic rows, the bus
+graph, the ownership graph and the handler rows, each built once
+over the checked programs. Every verb demands them, and the model,
+from its snapshot (`Snapshot::demand_model`, F.40 phase 2.3);
+`hale_types::derive_application_model(&Bundle)` builds them for a
+bundle no snapshot holds (the test entry's) and derives over them.
 
 **There is no other way in.** In particular:
 

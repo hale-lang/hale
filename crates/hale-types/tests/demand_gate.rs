@@ -145,6 +145,9 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
+    for family in ["bus_graph", "ownership", "handler_routing"] {
+        assert_eq!(builds[family], 0, "the model's input `{family}` is demanded with it");
+    }
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
     assert_at_most_once(&s, "lsp");
     let _ = std::fs::remove_dir_all(&d);
@@ -161,6 +164,13 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         assert_clean(&s);
         assert_eq!(s.builds()["model"], 1, "a claim is judged over the model");
         assert_eq!(s.builds()["claims"], 1);
+        // The model reads the snapshot's graphs: built once, for it.
+        for family in ["top_scope", "bus_graph", "ownership", "handler_routing"] {
+            assert_eq!(s.builds()[family], 1, "the model demands `{family}`");
+        }
+        s.demand_bus_graph().expect("the graph the model read");
+        s.demand_ownership_graph().expect("the graph the model read");
+        s.demand_handlers().expect("the rows the model read");
         // `--dump-model` and a second demand of every family.
         s.demand_model().expect("a clean program has a model");
         s.demand_check().expect("still checked");
@@ -196,7 +206,17 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 let _ = s.bundle();
             }
             let builds = s.builds();
-            for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "top_scope", "expression_typing", "model"] {
+            for family in [
+                "seed_loading",
+                "desugar_sequence",
+                "snapshot_identity",
+                "top_scope",
+                "expression_typing",
+                "bus_graph",
+                "ownership",
+                "handler_routing",
+                "model",
+            ] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }
             assert_eq!(builds["lowering_view"], u32::from(*lowers), "{consumer}: `lowering_view`");
@@ -238,7 +258,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
     for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "lowering_view"] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["top_scope", "expression_typing", "model", "claims"] {
+    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");
