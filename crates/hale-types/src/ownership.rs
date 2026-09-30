@@ -4,9 +4,10 @@
 //! `ownership` family's home is the frontend: F.40 phase 1 moves the
 //! pre-pass here with its algorithm unchanged, together with the
 //! fresh-factory seed it is handed ([`compute_fresh_locus_factories`],
-//! whose one producer this is). Codegen reads the table; it
-//! re-exports this module as `hale_codegen::ownership` and, for now,
-//! still runs the pass on its own merged program in `lower_program`.
+//! whose one producer this is). The frontend's resolved-program step
+//! (`crate::resolved::resolve_program`) runs the pass over the merged
+//! program it hands codegen, and codegen reads the tables from that
+//! envelope; it re-exports this module as `hale_codegen::ownership`.
 //!
 //! `spec/decisions.md` F.39 is the design. The short version: locus
 //! ownership USED to be decided by seven one-shot flags on `Cx`
@@ -113,7 +114,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg, LocusDecl,
-    LocusMember, MatchArmBody, MatchStmt, ModuleDecl, NodeId,
+    LocusMember, MatchArmBody, MatchStmt, ModeKind, ModuleDecl, NodeId,
     OrDisposition, Param, ParamInit, Pattern, Program, QualifiedName,
     RecoveryModifier, Stmt,
     StructInit, TopDecl, TypeExpr,
@@ -712,6 +713,64 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
 /// The bindings a body hands back (see [`ReturnedBindings`]).
 pub fn returned_bindings(b: &Block) -> ReturnedBindings {
     body_bindings(b).returned
+}
+
+/// GH #383 — for EVERY free fn, the local bindings it hands back via
+/// `return <ident>;` (or a tail ident), each resolved to the `let` in
+/// scope where the return spells it (GH #1140: an inner `let` that
+/// shadows the name is another binding, reclaimed like any other).
+///
+/// Distinct from `compute_fresh_locus_factories` and needed
+/// separately: a fn that does NOT qualify as a clean factory can
+/// still return a locus it bound from one. `nn::forward` is the
+/// case that proved it — it binds several factory results, returns
+/// one, and fails the freshness walk. Without this set, the caller-
+/// scoped dissolve fired on the binding the fn hands back and the
+/// caller received a dissolved locus (reads came back as zeros).
+///
+/// Conservative by construction: membership merely suppresses a
+/// dissolve, which is the old leak — never a double-free.
+pub fn compute_returned_bindings(
+    program: &Program,
+) -> BTreeMap<String, ReturnedBindings> {
+    let mut m: BTreeMap<String, ReturnedBindings> = BTreeMap::new();
+    // GH #884: module nesting flattened — the fn and the mode this
+    // keys by are lowered whatever their brace depth, so the facts
+    // they are looked up under have to be computed at that depth too.
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        match item {
+            TopDecl::Fn(f) => {
+                m.insert(f.name.name.clone(), returned_bindings(&f.body));
+            }
+            // A `mode` is the third shape that legitimately returns a
+            // locus (alongside a free fn) — it IS the locus-valued
+            // projection surface. This pass predated modes and walked
+            // only `TopDecl::Fn`, so a mode returning a factory-built
+            // locus had no returned-bindings entry: the GH #383 dissolve
+            // fired on the binding the caller now owns, handing back a
+            // reclaimed locus (empty reads, or another projection's
+            // recycled storage). Key by `{locus}.{mode}` to match the
+            // LLVM function name `current_fn` reports at the dissolve
+            // decision (see locus/decl.rs — same `{}.{}` convention).
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    if let LocusMember::Mode(md) = member {
+                        let mode_name = match md.kind {
+                            ModeKind::Bulk => "bulk",
+                            ModeKind::Harmonic => "harmonic",
+                            ModeKind::Resolution => "resolution",
+                        };
+                        m.insert(
+                            format!("{}.{}", l.name.name, mode_name),
+                            returned_bindings(&md.body),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    m
 }
 
 impl<'e> ScopeWalk<'e> {
@@ -1407,6 +1466,30 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
     }
 }
 
+/// GH #383 — which free fns provably return a FRESH locus?
+///
+/// Since v0.14 a locus-typed field may only be assigned a locus
+/// LITERAL (`check_locus_field_store`), so a locus a factory returns
+/// has exactly one place it can come to rest: the binding that names
+/// it. That is what makes caller-scoped teardown sound — the
+/// ownership ambiguity which defeated the earlier attempts on this
+/// issue is now a compile error rather than a runtime guess.
+///
+/// A fn qualifies when:
+///   - its declared return type names a locus L (resolved through the
+///     import-rename table, so `mat::Matrix` counts);
+///   - every return is a direct `L { … }` literal, or one single
+///     `let`-bound ident whose binding is itself fresh — an `L { … }`
+///     literal or a call to an already-qualifying factory (hence the
+///     fixpoint: helpers build on other factories);
+///   - that binding never escapes into argument position, another
+///     literal, or a reassignment (receiver-position use such as
+///     `m.set(i, v)` is fine — using a locus is not transferring it);
+///   - no syntax this walk does not explicitly recognize appears.
+///
+/// Every "don't know" answers NOT fresh, preserving the old
+/// program-lifetime behavior rather than risking a double dissolve.
+///
 /// The fresh-factory seed: every free fn proven to return a fresh
 /// locus, keyed by its merged-program name, with the locus it returns
 /// and the binding it hands back (if any). [`resolve_owners`] takes it

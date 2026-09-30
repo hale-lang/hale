@@ -19,6 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
+use hale_types::resolved::ResolvedProgram;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
 // during the codegen model-organization refactor (Round 1). Bringing
@@ -1043,8 +1044,34 @@ fn compile_cached_runtime_object_with(
 /// mangled symbol name (`"__lib_foo_<stem>_Bar"`). The codegen consults
 /// this table after the static stdlib table when resolving
 /// qualified-name paths. A caller with no imports passes `&[]`.
+///
+/// This is the adapter for callers that hold a bare program (the test
+/// harness): it resolves the program through
+/// `hale_types::resolved::resolve_program` and lowers the envelope with
+/// [`build_resolved`]. The verbs resolve the program themselves and
+/// call [`build_resolved`].
 pub fn build_executable_with_options(
     program: &Program,
+    output_path: &Path,
+    import_renames: &[(Vec<String>, String)],
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
+    let resolved = hale_types::resolved::resolve_program(
+        program,
+        import_renames,
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(CodegenError::Unsupported)?;
+    build_resolved(resolved, output_path, import_renames, options)
+}
+
+/// Lower the resolved program the frontend produced
+/// (`hale_types::resolved::ResolvedProgram`) to an executable at
+/// `output_path`. `import_renames` and `options` are the ones the
+/// program was resolved with; see [`build_executable_with_options`].
+pub fn build_resolved(
+    resolved: ResolvedProgram,
     output_path: &Path,
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
@@ -1067,49 +1094,19 @@ pub fn build_executable_with_options(
             *t_last = now;
         }
     };
-    // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
-    // — cross-seed topic refs the parser admits — to plain
-    // single-segment `BusSubject::Topic(Ident(mangled_name))`
-    // BEFORE desugar runs. The mangling table built by the CLI
-    // (`import_renames`) plus the static stdlib path-renames hold
-    // every alias-qualified topic decl in the merged program;
-    // looking up the path here gives the same mangled name the
-    // topic decl ends up at, so desugar's existing Topic→Literal
-    // pass uses the topic's declared wire subject. The fallback
-    // keeps the leaf segment name so a downstream "unknown topic"
-    // diagnostic has something to cite.
-    let mut program_owned = program.clone();
-    resolve_qualified_bus_subjects(&mut program_owned, import_renames);
-    // Topic-reference desugaring: rewrite `BusSubject::Topic`
-    // and `Foo <- expr` (where Foo is a topic) into the
-    // equivalent literal-subject forms. The rest of codegen
-    // sees only the legacy AST shape, no topic-specific
-    // branching needed.
-    //
-    // The intra-locus optimization runs FIRST while sends still
-    // carry the cheap `Expr::Ident(Topic)` shape; it rewrites
-    // optimizable Send statements into direct `self.handler(...)`
-    // method calls. desugar_topics then handles whatever bus refs
-    // remain.
-    // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite `T::from_json`.
-    // Idempotent — a no-op if the CLI already generated them pre-typecheck.
-    hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
-    // GH #1106: the api binding, as ordinary loci and topics. The CLI
-    // ran this before the checker; a caller that builds straight from
-    // a program (a test) gets it here. Idempotent, and `--api` without
-    // an entry in the source injects one first.
-    if let Some(path) = &options.api {
-        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program_owned, path) {
-            return Err(CodegenError::Unsupported(msg));
-        }
-    }
-    hale_syntax::api_gen::generate_api(&mut [&mut program_owned], options.api_roles.as_deref());
-    hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
-    hale_syntax::desugar::desugar_topics(&mut program_owned);
-    // Proposal A′: rewrite repr-tagged field accessors (`L2::price(v)` /
-    // `L2::set_price(w, x)`) into the equivalent `std::bytes::*` calls.
-    hale_syntax::desugar::desugar_repr_accessors(&mut program_owned);
-    let program = &program_owned;
+    // The envelope the frontend produced (`hale_types::resolved`):
+    // `user` is the desugared program before the stdlib merge, which
+    // only the tier-1 bus-inert scan below reads; `merged` is what
+    // lowering walks.
+    let ResolvedProgram {
+        user,
+        merged,
+        owner_table,
+        fresh_locus_factories,
+        returned_bindings,
+        ..
+    } = resolved;
+    let program = &user;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
@@ -1134,86 +1131,6 @@ pub fn build_executable_with_options(
     } else {
         Target::initialize_native(&InitializationConfig::default())
             .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
-    }
-
-    // m73a: parse the bundled stdlib source and merge its decls
-    // into the user program before lowering. Stdlib loci land in
-    // `user_loci` alongside user-declared loci with no special
-    // casing in the lowering passes; collision with user names is
-    // prevented by the `__Std*` mangled prefix on bundled decls.
-    let stdlib_program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-        .map_err(|diags| {
-            let summary = diags
-                .iter()
-                .map(|d| format!("{:?}", d))
-                .collect::<Vec<_>>()
-                .join("; ");
-            CodegenError::Unsupported(format!("stdlib parse: {}", summary))
-        })?;
-    // Tier-3 drain-elision taint is computed from the parsed stdlib
-    // (below) before its items are moved into `merged`; the result
-    // is process-cached, so this is a one-time cost.
-    let stdlib_taint: &'static [String] =
-        stdlib_bus_tainted_namespaces(&stdlib_program);
-    let mut merged = program.clone();
-    merged.items.extend(stdlib_program.items);
-    // Downstream handoff: `-> ()` is a no-op unit annotation. The
-    // fallible decl paths already recognized the empty tuple as
-    // Unit, but non-fallible methods and every call-site MethodSig
-    // consumer hit the 0-element-tuple reject. Normalize ONCE on
-    // the merged AST so `-> ()` and "no return type" are the same
-    // program everywhere downstream.
-    normalize_unit_return_annotations(&mut merged.items);
-    // GH #831: and normalize the other spelling nothing downstream
-    // should have to know about. `type Row2 = Row;` makes `Row2` a
-    // second spelling of `Row` in every TYPE position (GH #759); the
-    // CONSTRUCTION positions — `Row2 { }`, `Row2::Variant` — are read
-    // at roughly twenty `Expr::Struct` / variant-path sites in the
-    // lowering, none of which hold the alias table. Resolving the
-    // alias ONCE on the merged AST is what keeps `build` agreeing
-    // with `check`, which answers the same question in one hop from
-    // its own expanded table.
-    crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
-    // GH #735: an omitted `run` is an empty `run`, so a flow child is
-    // reclaimed when its (empty) run completes on both spellings. On
-    // the MERGED program, so a bundled stdlib locus is treated as a
-    // user one: pass A2 declares lifecycle methods from whichever
-    // declaration of a name it keeps, and a user seed that spells a
-    // stdlib locus's name (the stdlib's own seeds, harvested into
-    // the corpus) would otherwise carry a `run` its bundled twin
-    // lacked, and the body lowering would find no declaration.
-    hale_syntax::desugar::desugar_omitted_run(&mut merged);
-
-    // GH #921 A2: the ownership pre-pass, over the merged and
-    // desugared program and before anything borrows it. It numbers
-    // every locus-producing expression node (the only mutation it
-    // makes) and derives an owner for each from syntactic position,
-    // using the same fresh-factory fixpoint lowering uses — extended
-    // to the carrier returns that fixpoint misses.
-    //
-    // GH #921 A3, commit 1: the extension is no longer table-only.
-    // `compute_fresh_locus_factories::collect` classifies the CARRIER
-    // node and never its arms, so `return if c { make(1) } else {
-    // make2(1) }` left `produce` out of the map and its caller's
-    // binding did not own the result — the 105-cell carrier-return
-    // family. The pre-pass already flattens `if` / `match` / block
-    // tails to decide the same question; folding its answer back into
-    // the map lowering reads is what closes the family, and it keeps
-    // the two sides of every ownership decision computed once.
-    let mut fresh_locus_factories =
-        crate::ownership::compute_fresh_locus_factories(&merged, import_renames);
-    let owner_table = crate::ownership::resolve_owners(
-        &mut merged,
-        &fresh_locus_factories,
-        import_renames,
-    );
-    for (fname, locus) in owner_table.extended_fresh_factories() {
-        // A carrier return hands back an ARM's value, so there is no
-        // single returned binding to name: `None`, the same as a fn
-        // whose every `return` is a literal.
-        fresh_locus_factories
-            .entry(fname.clone())
-            .or_insert_with(|| (locus.clone(), None));
     }
 
     // `program_has_offthread` — THE single source of truth for "does
@@ -1606,7 +1523,7 @@ pub fn build_executable_with_options(
             } else if !dbg.contains("name: \"std\"") {
                 true
             } else {
-                !stdlib_taint.iter().any(|ns| {
+                !stdlib_bus_tainted_namespaces().iter().any(|ns| {
                     dbg.contains(&format!("name: \"{}\"", ns))
                 })
             }
@@ -1713,7 +1630,7 @@ pub fn build_executable_with_options(
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
         fresh_locus_factories,
-        returned_bindings: compute_returned_bindings(&merged),
+        returned_bindings,
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         stack_array_bindings: compute_stack_array_bindings(&merged),
         stack_array_bytes_used: BTreeMap::new(),
@@ -3350,13 +3267,17 @@ fn locate_ts_shim_staticlib(options: &BuildOptions) -> Option<PathBuf> {
 /// is table-driven from it); tainted decls with no table entry are
 /// reachable only via a literal `__Std` mention, which tier 2
 /// rejects wholesale. Computed once per process: AP_SOURCE is a
-/// compile-time constant.
-fn stdlib_bus_tainted_namespaces(
-    stdlib: &hale_syntax::ast::Program,
-) -> &'static [String] {
+/// compile-time constant, so the first call parses it for itself
+/// (the resolved program carries the stdlib only merged into the
+/// user's) and every later call reads the cached answer.
+fn stdlib_bus_tainted_namespaces() -> &'static [String] {
     use std::sync::OnceLock;
     static TAINT: OnceLock<Vec<String>> = OnceLock::new();
     TAINT.get_or_init(|| {
+        // `resolve_program` parsed the same text before any build
+        // reaches here, and refuses the build when it does not parse.
+        let stdlib = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
+            .expect("the bundled stdlib parses (resolve_program parsed it first)");
         let mut decls: Vec<(String, bool, String)> = Vec::new();
         for it in &stdlib.items {
             let (name, surface) = match it {
@@ -3414,127 +3335,6 @@ fn stdlib_bus_tainted_namespaces(
     })
 }
 
-
-/// GH #383 — which free fns provably return a FRESH locus?
-///
-/// Since v0.14 a locus-typed field may only be assigned a locus
-/// LITERAL (`check_locus_field_store`), so a locus a factory returns
-/// has exactly one place it can come to rest: the binding that names
-/// it. That is what makes caller-scoped teardown sound — the
-/// ownership ambiguity which defeated the earlier attempts on this
-/// issue is now a compile error rather than a runtime guess.
-///
-/// A fn qualifies when:
-///   - its declared return type names a locus L (resolved through the
-///     import-rename table, so `mat::Matrix` counts);
-///   - every return is a direct `L { … }` literal, or one single
-///     `let`-bound ident whose binding is itself fresh — an `L { … }`
-///     literal or a call to an already-qualifying factory (hence the
-///     fixpoint: helpers build on other factories);
-///   - that binding never escapes into argument position, another
-///     literal, or a reassignment (receiver-position use such as
-///     `m.set(i, v)` is fine — using a locus is not transferring it);
-///   - no syntax this walk does not explicitly recognize appears.
-///
-/// Every "don't know" answers NOT fresh, preserving the old
-/// program-lifetime behavior rather than risking a double dissolve.
-/// GH #383 — for EVERY free fn, the local bindings it hands back via
-/// `return <ident>;` (or a tail ident), each resolved to the `let` in
-/// scope where the return spells it (GH #1140: an inner `let` that
-/// shadows the name is another binding, reclaimed like any other).
-///
-/// Distinct from `compute_fresh_locus_factories` and needed
-/// separately: a fn that does NOT qualify as a clean factory can
-/// still return a locus it bound from one. `nn::forward` is the
-/// case that proved it — it binds several factory results, returns
-/// one, and fails the freshness walk. Without this set, the caller-
-/// scoped dissolve fired on the binding the fn hands back and the
-/// caller received a dissolved locus (reads came back as zeros).
-///
-/// Conservative by construction: membership merely suppresses a
-/// dissolve, which is the old leak — never a double-free.
-fn compute_returned_bindings(
-    program: &Program,
-) -> std::collections::BTreeMap<String, crate::ownership::ReturnedBindings> {
-    use crate::ownership::returned_bindings;
-    use std::collections::BTreeMap;
-
-    let mut m: BTreeMap<String, crate::ownership::ReturnedBindings> =
-        BTreeMap::new();
-    // GH #884: module nesting flattened — the fn and the mode this
-    // keys by are lowered whatever their brace depth, so the facts
-    // they are looked up under have to be computed at that depth too.
-    for item in hale_syntax::ast::flat_decls(&program.items) {
-        match item {
-            TopDecl::Fn(f) => {
-                m.insert(f.name.name.clone(), returned_bindings(&f.body));
-            }
-            // A `mode` is the third shape that legitimately returns a
-            // locus (alongside a free fn) — it IS the locus-valued
-            // projection surface. This pass predated modes and walked
-            // only `TopDecl::Fn`, so a mode returning a factory-built
-            // locus had no returned-bindings entry: the GH #383 dissolve
-            // fired on the binding the caller now owns, handing back a
-            // reclaimed locus (empty reads, or another projection's
-            // recycled storage). Key by `{locus}.{mode}` to match the
-            // LLVM function name `current_fn` reports at the dissolve
-            // decision (see locus/decl.rs — same `{}.{}` convention).
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    if let LocusMember::Mode(md) = member {
-                        let mode_name = match md.kind {
-                            ModeKind::Bulk => "bulk",
-                            ModeKind::Harmonic => "harmonic",
-                            ModeKind::Resolution => "resolution",
-                        };
-                        m.insert(
-                            format!("{}.{}", l.name.name, mode_name),
-                            returned_bindings(&md.body),
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m
-}
-
-/// `-> ()` is spelled unit: rewrite an empty-tuple return
-/// annotation to "no return type" on every fn-shaped declaration,
-/// so downstream signature consumers never see a 0-element tuple.
-fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
-    fn norm(ret: &mut Option<TypeExpr>) {
-        if matches!(ret, Some(TypeExpr::Tuple(parts, _)) if parts.is_empty())
-        {
-            *ret = None;
-        }
-    }
-    for item in items {
-        match item {
-            TopDecl::Fn(f) => norm(&mut f.ret),
-            TopDecl::Interface(i) => {
-                for m in &mut i.methods {
-                    norm(&mut m.ret);
-                }
-            }
-            TopDecl::Locus(l) => {
-                for member in &mut l.members {
-                    match member {
-                        LocusMember::Fn(f) => norm(&mut f.ret),
-                        LocusMember::Mode(md) => norm(&mut md.ret),
-                        LocusMember::Lifecycle(lc) => norm(&mut lc.ret),
-                        _ => {}
-                    }
-                }
-            }
-            TopDecl::Module(m) => {
-                normalize_unit_return_annotations(&mut m.items)
-            }
-            _ => {}
-        }
-    }
-}
 
 /// Bindings that participate in a plain `=` between locals
 /// (`a = nx;`, `a = make(...);`) — downstream handoff, free-fn
@@ -4013,166 +3813,6 @@ fn compute_stack_array_bindings(
     }
     m.retain(|_, v| !v.is_empty());
     m
-}
-
-/// A7 (G16): walk the program before desugar and resolve every
-/// `BusSubject::QualifiedTopic(alias::Foo)` ref to the mangled
-/// single-segment ident the imported topic decl ends up at.
-/// Leaves the variant in place if the path doesn't resolve so a
-/// downstream "unknown topic" diagnostic can cite the source path.
-fn resolve_qualified_bus_subjects(
-    program: &mut hale_syntax::ast::Program,
-    import_renames: &[(Vec<String>, String)],
-) {
-    use hale_syntax::ast::{
-        BusMember, BusSubject, Ident, LocusMember, TopDecl,
-    };
-    fn lookup<'a>(
-        segs: &[&str],
-        import_renames: &'a [(Vec<String>, String)],
-    ) -> Option<String> {
-        if let Some(s) = crate::ownership::stdlib_mangled_for_path(segs) {
-            return Some(s.to_string());
-        }
-        let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
-        import_renames
-            .iter()
-            .find(|(k, _)| k == &key)
-            .map(|(_, v)| v.clone())
-    }
-    fn rewrite(
-        subject: &mut BusSubject,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        if let BusSubject::QualifiedTopic(qn) = subject {
-            let segs: Vec<&str> =
-                qn.segments.iter().map(|s| s.name.as_str()).collect();
-            if let Some(mangled) = lookup(&segs, import_renames) {
-                let span = qn.span;
-                *subject = BusSubject::Topic(Ident { name: mangled, span });
-            }
-        }
-    }
-    // GH #527 B6: `bindings { alias::Topic: unix(...); }` — the
-    // entry keeps the joined path as its ident; resolve it here for
-    // the build path exactly as the qualified bus subjects are.
-    fn rewrite_binding(
-        entry: &mut hale_syntax::ast::BindingEntry,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        if !entry.topic.name.contains("::") {
-            return;
-        }
-        let segs: Vec<&str> = entry.topic.name.split("::").collect();
-        if let Some(mangled) = lookup(&segs, import_renames) {
-            entry.topic.name = mangled;
-        }
-    }
-    use hale_syntax::ast::{Block, ElseBranch, Expr, MatchArmBody, Stmt};
-    fn rewrite_send_subject(
-        e: &mut Expr,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        // `source::Heartbeat <- payload;` — Expr::Path multi-segment
-        // resolves to a single-segment Ident with the mangled topic
-        // name so the desugar's Stmt::Send rewriter (which only
-        // looks at Expr::Ident) handles it uniformly with intra-
-        // seed sends.
-        if let Expr::Path(qn) = e {
-            if qn.segments.len() > 1 {
-                let segs: Vec<&str> =
-                    qn.segments.iter().map(|s| s.name.as_str()).collect();
-                if let Some(mangled) = lookup(&segs, import_renames) {
-                    let span = qn.span;
-                    *e = Expr::Ident(Ident { name: mangled, span });
-                }
-            }
-        }
-    }
-    fn walk_if(
-        i: &mut hale_syntax::ast::IfStmt,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        walk_block(&mut i.then_block, import_renames);
-        if let Some(eb) = &mut i.else_block {
-            match eb.as_mut() {
-                ElseBranch::Else(b) => walk_block(b, import_renames),
-                ElseBranch::ElseIf(nested) => walk_if(nested, import_renames),
-            }
-        }
-    }
-    fn walk_block(
-        b: &mut Block,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        for s in &mut b.stmts {
-            walk_stmt(s, import_renames);
-        }
-        // Tail expr can't be a Send (Send is statement-only).
-        let _ = &b.tail;
-    }
-    fn walk_stmt(
-        s: &mut Stmt,
-        import_renames: &[(Vec<String>, String)],
-    ) {
-        match s {
-            Stmt::Send { subject, .. } => {
-                rewrite_send_subject(subject, import_renames);
-            }
-            Stmt::If(i) => walk_if(i, import_renames),
-            Stmt::Match(m) => {
-                for arm in &mut m.arms {
-                    if let MatchArmBody::Block(b) = &mut arm.body {
-                        walk_block(b, import_renames);
-                    }
-                }
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                walk_block(body, import_renames);
-            }
-            Stmt::Block(b) => walk_block(b, import_renames),
-            _ => {}
-        }
-    }
-    // GH #884: module nesting flattened — a qualified bus subject
-    // written one brace deeper names the same topic.
-    hale_syntax::ast::for_each_decl_mut(&mut program.items, &mut |item| {
-        if let TopDecl::Locus(l) = item {
-            for m in &mut l.members {
-                match m {
-                    LocusMember::Bus(b) => {
-                        for bm in &mut b.members {
-                            match bm {
-                                BusMember::Subscribe { subject, .. } => {
-                                    rewrite(subject, import_renames);
-                                }
-                                BusMember::Publish { subject, .. } => {
-                                    rewrite(subject, import_renames);
-                                }
-                            }
-                        }
-                    }
-                    LocusMember::Lifecycle(lc) => {
-                        walk_block(&mut lc.body, import_renames);
-                    }
-                    LocusMember::Mode(md) => {
-                        walk_block(&mut md.body, import_renames);
-                    }
-                    LocusMember::Fn(fd) => {
-                        walk_block(&mut fd.body, import_renames);
-                    }
-                    LocusMember::Bindings(bb) => {
-                        for entry in &mut bb.entries {
-                            rewrite_binding(entry, import_renames);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        } else if let TopDecl::Fn(fd) = item {
-            walk_block(&mut fd.body, import_renames);
-        }
-    });
 }
 
 

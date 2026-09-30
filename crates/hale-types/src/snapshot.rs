@@ -57,8 +57,9 @@ use crate::symbol::SourceFile;
 /// - `TopicDesugar`, `IntraLocusRewrite`, `ReprAccessors`: no row. Those
 ///   passes rewrite subjects and expressions in place and synthesize no
 ///   declaration; the calls the latter two build carry the rewritten
-///   node's span and no marker. They also run only inside codegen,
-///   after every entry point has minted.
+///   node's span and no marker. They also run only in the resolved-
+///   program step (`crate::resolved`), after every entry point has
+///   minted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Origin {
     JsonParsers,

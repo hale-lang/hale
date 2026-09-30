@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
+43 families: 3 canonical, 36 migrating (with 176 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
 
 ## Families
 
@@ -10,7 +10,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 |---|---|---|---|---|---|---|
 | `seed_loading` | Layer 1 | Migrating | desugar | — | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 6 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
-| `desugar_sequence` | Layer 1 | Migrating | desugar | — | 10 | Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns. |
+| `desugar_sequence` | Layer 1 | Migrating | desugar | — | 11 | Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
 | `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 2 | What every top-level name denotes: the symbol table over the merged program. |
@@ -96,7 +96,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-cli/src/shared/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* the snapshot identity names seeds (phase 1.1).
 - `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope. *Removed when:* one alias resolution shared by checker and lowering.
 - `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases` — rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`. *Removed when:* one alias resolution shared by checker and lowering.
-- `crates/hale-codegen/src/codegen.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in codegen's own clone of the program. *Removed when:* codegen reads the resolved program.
+- `crates/hale-types/src/resolved.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in the resolved-program step's clone. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/resolve.rs` · `resolve_bus_subject` — the checker's resolution of the same subjects. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/check.rs` · `imported_fn` — an imported fn's signature by path-string vector. *Removed when:* one resolution, shared.
 
@@ -129,11 +129,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: a synthesized text driver and no check at all. *Removed when:* phase 2.
 - `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: json_gen and sync inference per file, then generate_api. *Removed when:* phase 2.
-- `crates/hale-codegen/src/codegen.rs` · `generate_json_parsers` — codegen re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone. *Removed when:* codegen receives the resolved program (phase 2).
-- `crates/hale-codegen/src/codegen.rs` · `normalize_unit_return_annotations` — unit-return normalization inside codegen. *Removed when:* phase 2.
-- `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run` — the omitted `run` is synthesized only in codegen, after the stdlib merge; the checker never sees it. *Removed when:* the sequence runs once, before the check.
+- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program. *Removed when:* one sequence, before the check (phase 2).
+- `crates/hale-types/src/resolved.rs` · `normalize_unit_return_annotations` — unit-return normalization in the resolved-program step. *Removed when:* phase 2.
+- `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run` — the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it. *Removed when:* the sequence runs once, before the check.
+- `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way). *Removed when:* the frontend is the only producer (phase 2).
 
-**Consumers.** check; build; run; test; replay; lsp; codegen (`crates/hale-codegen/src/codegen.rs` · `build_executable_with_options`)
+**Consumers.** check; build; run; test; replay; lsp; codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`)
 
 **Invariants.**
 
@@ -145,6 +146,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Focused tests.** crates/hale-cli/tests/api_description.rs; crates/hale-codegen/tests/framework_elision.rs
 
 **Spec.** spec/semantics.md
+
+**Guarded seams.**
+
+- `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
 
 ### `sync_inference` — Migrating · derivation
 
@@ -414,7 +419,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it. *Removed when:* one factory row.
 - `crates/hale-types/src/check.rs` · `fresh_locus_factory_products` — the checker's mirror of the factory set. *Removed when:* one factory row.
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
-- `crates/hale-codegen/src/codegen.rs` · `compute_returned_bindings` — which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string. *Removed when:* keyed by snapshot identity (phase 1.2).
+- `crates/hale-types/src/ownership.rs` · `compute_returned_bindings` — which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string. *Removed when:* keyed by snapshot identity (phase 1.2).
 - `crates/hale-types/src/ownership.rs` · `returned_bindings` — the per-body walk the row above calls. *Removed when:* phase 1.2.
 - `crates/hale-codegen/src/codegen.rs` · `compute_assign_moved_bindings` — bindings moved by `=`, keyed by name. *Removed when:* phase 1.2.
 - `crates/hale-codegen/src/codegen.rs` · `compute_stack_array_bindings` — array repeats that never escape, keyed by name. *Removed when:* phase 1.2.
@@ -441,9 +446,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `resolve_owners(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 - `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
-- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 
@@ -1246,7 +1251,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/effects.rs` · `FnKey` — analysis keys are (locus name, fn name). *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `type_expr_key` — rule 12 compares stringified TypeExprs. *Removed when:* same.
 
-**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future)
+**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future); the resolved program (codegen's input is minted over the merged program)
 
 **Invariants.**
 
@@ -1332,7 +1337,6 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-cli/src/build_env.rs` | `format!( "target={:?};cpu={:?};dev={};debug={}", o.target, o.target_cpu, o.dev_profile, o.` | decides (`digests`) |
 | `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | decides (`digests`) |
 | `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | renders |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", d)` | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", f.body)` | decides (`alloc_summary`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | renders |
@@ -1358,6 +1362,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | decides (`snapshot_identity`) |
 | `crates/hale-types/src/ownership.rs` | `format!("{:?}", other)` | decides (`ownership`) |
+| `crates/hale-types/src/resolved.rs` | `format!("{:?}", d)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", op)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", subject)` | renders |
 | `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", fd)` | decides (`effects`) |

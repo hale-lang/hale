@@ -220,6 +220,7 @@ const BUS_GRAPH: &str = "crates/hale-types/src/bus_graph.rs";
 const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
+const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -312,7 +313,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(IMPORTS, "lib_canonical_id", "library identity by path, falling back to the file name outside a workspace (can collide)", "the snapshot identity names seeds (phase 1.1)"),
             legacy(CHECK, "construction_target", "one alias hop in the top scope", "one alias resolution shared by checker and lowering"),
             legacy(TY_MANGLE, "resolve_construction_aliases", "rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`", "one alias resolution shared by checker and lowering"),
-            legacy(CG, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in codegen's own clone of the program", "codegen reads the resolved program"),
+            legacy(TY_RESOLVED, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in the resolved-program step's clone", "one resolution, shared"),
             legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
             legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),
         ],
@@ -340,11 +341,12 @@ pub const FAMILIES: &[Family] = &[
             legacy(V_REPLAY, "parse_file", "replay: file entry only", "phase 2"),
             legacy(V_BENCH, "run_bench_file", "bench: a synthesized text driver and no check at all", "phase 2"),
             legacy(LSP, "check_and_publish", "the LSP: json_gen and sync inference per file, then generate_api", "phase 2"),
-            legacy(CG, "generate_json_parsers", "codegen re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone", "codegen receives the resolved program (phase 2)"),
-            legacy(CG, "normalize_unit_return_annotations", "unit-return normalization inside codegen", "phase 2"),
-            legacy(DESUGAR, "desugar_omitted_run", "the omitted `run` is synthesized only in codegen, after the stdlib merge; the checker never sees it", "the sequence runs once, before the check"),
+            legacy(TY_RESOLVED, "resolve_program", "the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program", "one sequence, before the check (phase 2)"),
+            legacy(TY_RESOLVED, "normalize_unit_return_annotations", "unit-return normalization in the resolved-program step", "phase 2"),
+            legacy(DESUGAR, "desugar_omitted_run", "the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it", "the sequence runs once, before the check"),
+            legacy(CG, "build_executable_with_options", "codegen resolves the program for itself when handed a bare one (the test harness builds this way)", "the frontend is the only producer (phase 2)"),
         ],
-        consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_executable_with_options")],
+        consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
         invariants: &[
             "one order, run once per snapshot, before the first law is judged",
             "codegen never re-desugars",
@@ -353,7 +355,9 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
-        seams: &[],
+        seams: &[
+            Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
+        ],
     },
     Family {
         name: "sync_inference",
@@ -567,7 +571,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it", "one factory row"),
             legacy(CHECK, "fresh_locus_factory_products", "the checker's mirror of the factory set", "one factory row"),
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
-            legacy(CG, "compute_returned_bindings", "which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string", "keyed by snapshot identity (phase 1.2)"),
+            legacy(TY_OWN, "compute_returned_bindings","which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string", "keyed by snapshot identity (phase 1.2)"),
             legacy(TY_OWN, "returned_bindings", "the per-body walk the row above calls", "phase 1.2"),
             legacy(CG, "compute_assign_moved_bindings", "bindings moved by `=`, keyed by name", "phase 1.2"),
             legacy(CG, "compute_stack_array_bindings", "array repeats that never escape, keyed by name", "phase 1.2"),
@@ -589,9 +593,9 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/decisions.md F.39", "spec/semantics.md § Dissolve timing rules"],
         owned: &[],
         seams: &[
-            Seam { symbol: "resolve_owners(", allowed: &[(CG, 1), (TY_OWN, 1)] },
+            Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 1)] },
-            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(CG, 1), (TY_OWN, 1)] },
+            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
         ],
     },
     Family {
@@ -1231,7 +1235,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
         ],
-        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)")],
+        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)")],
         invariants: &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
@@ -1428,7 +1432,6 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: BUILD_ENV, fragment: "format!( \"target={:?};cpu={:?};dev={};debug={}\", o.target, o.target_cpu, o.dev_profile, o.", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
     DebugScan { path: BUILD_ENV, fragment: "format!(\";lto={l:?}\")", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
     DebugScan { path: "crates/hale-cli/src/verbs/misc.rs", fragment: "println!(\"{:#?}\", prog)", count: 1, verdict: ScanVerdict::Renders },
-    DebugScan { path: CG, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", f.body)", count: 1, verdict: ScanVerdict::Decides { family: "alloc_summary" } },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", it)", count: 1, verdict: ScanVerdict::Decides { family: "bus_inert" } },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Renders },
@@ -1454,6 +1457,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
     DebugScan { path: TY_OWN, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Decides { family: "ownership" } },
+    DebugScan { path: TY_RESOLVED, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", fd)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },

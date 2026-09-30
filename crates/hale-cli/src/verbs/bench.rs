@@ -295,9 +295,16 @@ pub(crate) fn run_bench_file(
         );
         // Release profile on purpose: benchmarks measure the
         // shipped optimization level.
-        hale_codegen::build_executable_with_options(
-            &prog, &bin, &renames, &options,
+        hale_types::resolved::resolve_program(
+            &prog,
+            &renames,
+            options.api.as_deref(),
+            options.api_roles.as_deref(),
         )
+        .map_err(hale_codegen::CodegenError::Unsupported)
+        .and_then(|resolved| {
+            hale_codegen::build_resolved(resolved, &bin, &renames, &options)
+        })
         .map_err(|e| render_codegen_error(&e, &file_bases, &sources))?;
         Ok(bin)
     })();

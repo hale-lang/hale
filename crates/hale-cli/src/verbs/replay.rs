@@ -449,9 +449,16 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         obs_entity_ids: obs_ids.clone(),
         ..build_options
     };
-    if let Err(e) = hale_codegen::build_executable_with_options(
-        &program, &bin, &renames, &options,
-    ) {
+    if let Err(e) = hale_types::resolved::resolve_program(
+        &program,
+        &renames,
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(hale_codegen::CodegenError::Unsupported)
+    .and_then(|resolved| {
+        hale_codegen::build_resolved(resolved, &bin, &renames, &options)
+    }) {
         eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
         return ExitCode::from(1);
     }

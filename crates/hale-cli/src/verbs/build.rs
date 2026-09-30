@@ -521,12 +521,16 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         &build_env::options_fingerprint(&options),
         plan_digest,
     ));
-    match hale_codegen::build_executable_with_options(
+    match hale_types::resolved::resolve_program(
         &program,
-        &output,
         &renames,
-        &options,
-    ) {
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(hale_codegen::CodegenError::Unsupported)
+    .and_then(|resolved| {
+        hale_codegen::build_resolved(resolved, &output, &renames, &options)
+    }) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
             if let hale_codegen::CompileTarget::Foreign(spec) = options.target {

@@ -138,9 +138,16 @@ pub(crate) fn compile_test_binary(
     // Tests are rebuilt every run — take the dev profile's build
     // latency win; the exit-code contract doesn't time anything.
     options.dev_profile = true;
-    if let Err(e) = hale_codegen::build_executable_with_options(
-        &program, &bin, &renames, &options,
-    ) {
+    if let Err(e) = hale_types::resolved::resolve_program(
+        &program,
+        &renames,
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(hale_codegen::CodegenError::Unsupported)
+    .and_then(|resolved| {
+        hale_codegen::build_resolved(resolved, &bin, &renames, &options)
+    }) {
         // GH #848: the per-fixture failure message is the located
         // rendering `build` prints, so a test that will not compile
         // names the line to open — it used to be the `{:?}` of the
