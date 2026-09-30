@@ -14,10 +14,11 @@
 //! symbol that is not an identifier is a text fragment (a region
 //! inside a large function) and must appear verbatim. A legacy site
 //! is often a call that re-runs a producer or a row constructor, so
-//! its identifier must be used in code, not only in a comment: a
-//! comment line, a trailing `//` comment and a one-line `/* … */`
-//! are not code, so a comment that still names a removed call does
-//! not keep its entry alive either.
+//! its identifier must be used in code, not only in a comment: a `//`
+//! comment and a `/* … */` block (nested, across lines) are not code,
+//! and a comment marker inside a string (raw strings included) opens no
+//! comment, so a comment that still names a removed call does not keep
+//! its entry alive either.
 //! Consumer and seam sites reference a symbol rather than define it,
 //! so they are held to the verbatim rule. A family's focused tests are
 //! paths, and each must be a file.
@@ -82,84 +83,116 @@ enum Rule {
     Verbatim,
 }
 
-/// The code on one line: a `//` comment's tail and any `/* … */`
-/// closed on the line are dropped, and a comment marker inside a
-/// string literal (tracked with its escapes, and past a `'"'`
-/// character literal) is text, not a comment. A block comment left
-/// open drops the rest of the line; its continuation lines are rare
-/// enough in this tree that the scan reads them as code.
-fn code_part(line: &str) -> String {
-    let b = line.as_bytes();
-    let mut out = String::new();
-    let mut in_str = false;
-    let mut i = 0;
-    let mut kept = 0;
-    while i < b.len() {
-        let c = b[i];
-        if in_str {
-            if c == b'\\' {
-                i += 1;
-            } else if c == b'"' {
-                in_str = false;
-            }
-        } else if c == b'"' {
-            in_str = true;
-        } else if c == b'\'' && b.get(i + 1) == Some(&b'\\') {
-            // an escaped character literal, `'\"'` among them
-            if let Some(k) = b
-                .get(i + 3..)
-                .and_then(|r| r.iter().position(|&x| x == b'\''))
-            {
-                i += 3 + k;
-            }
-        } else if c == b'\'' && b.get(i + 2) == Some(&b'\'') {
-            i += 2;
-        } else if c == b'/' && b.get(i + 1) == Some(&b'/') {
-            break;
-        } else if c == b'/' && b.get(i + 1) == Some(&b'*') {
-            out.push_str(&line[kept..i]);
-            match line[i + 2..].find("*/") {
-                Some(k) => {
-                    i += 2 + k + 2;
-                    kept = i;
-                    out.push(' ');
-                    continue;
-                }
-                None => return out,
+/// The file's code, scanned once: every comment (a `//` line, a
+/// `/* … */` block nested to any depth and across lines) blanked to
+/// spaces, newlines kept. String literals (ordinary, byte, and raw —
+/// `r"…"`, `r#"…"#` with any number of `#`, `br…` too) are read whole,
+/// so a comment marker inside one opens nothing; their contents stay,
+/// because codegen names a runtime or mangled symbol in a string
+/// (`"lotus_replay_start_ingress"`, `format!("__reclaim_{}", …)`) and
+/// that is a use in code. A character literal is stepped over whole, so
+/// the quote in `'"'` opens nothing; a `'` that closes no character is
+/// a lifetime.
+fn code_text(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = b.to_vec();
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for x in &mut out[from.min(b.len())..to.min(b.len())] {
+            if *x != b'\n' {
+                *x = b' ';
             }
         }
-        i += 1;
+    };
+    let ident = |i: usize| i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                let end = b[i..].iter().position(|&x| x == b'\n').map_or(b.len(), |k| i + k);
+                blank(&mut out, i, end);
+                i = end;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 0usize;
+                let mut j = i;
+                while j < b.len() {
+                    if b[j] == b'/' && b.get(j + 1) == Some(&b'*') {
+                        depth += 1;
+                        j += 2;
+                    } else if b[j] == b'*' && b.get(j + 1) == Some(&b'/') {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+                blank(&mut out, i, j);
+                i = j;
+            }
+            // a raw string: `r` (or `br`) starting a token, then `#`s and a quote
+            b'r' if !ident(i) || (b[i - 1] == b'b' && !ident(i - 1)) => {
+                let hashes = b[i + 1..].iter().take_while(|&&x| x == b'#').count();
+                if b.get(i + 1 + hashes) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let body = i + 2 + hashes;
+                let close: Vec<u8> = std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
+                let end = b[body..].windows(close.len()).position(|w| w == close.as_slice()).map_or(b.len(), |k| body + k);
+                i = end + close.len();
+            }
+            b'"' => {
+                let mut j = i + 1;
+                while j < b.len() && b[j] != b'"' {
+                    if b[j] == b'\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                i = j + 1;
+            }
+            b'\'' => {
+                if b.get(i + 1) == Some(&b'\\') {
+                    // an escaped character literal, `'\''` among them
+                    i += b.get(i + 3..).and_then(|r| r.iter().position(|&x| x == b'\'')).map_or(1, |k| 4 + k);
+                } else {
+                    let l = text[i + 1..].chars().next().map_or(0, char::len_utf8);
+                    i += if l > 0 && b.get(i + 1 + l) == Some(&b'\'') { 2 + l } else { 1 };
+                }
+            }
+            _ => i += 1,
+        }
     }
-    out.push_str(&line[kept..i.min(line.len())]);
-    out
+    String::from_utf8(out).expect("blanking replaces whole characters with spaces")
 }
 
 fn mentioned_in_code(text: &str, name: &str) -> bool {
-    text.lines().any(|line| {
-        let t = code_part(line);
-        let t = t.as_str();
-        let mut from = 0;
-        while let Some(i) = t[from..].find(name) {
-            let start = from + i;
-            let end = start + name.len();
-            let before_ok = start == 0
-                || !t[..start]
-                    .chars()
-                    .last()
-                    .map(|c| c.is_ascii_alphanumeric() || c == '_')
-                    .unwrap_or(false);
-            let after_ok = t[end..]
+    let t = code_text(text);
+    let t = t.as_str();
+    let mut from = 0;
+    while let Some(i) = t[from..].find(name) {
+        let start = from + i;
+        let end = start + name.len();
+        let before_ok = start == 0
+            || !t[..start]
                 .chars()
-                .next()
-                .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(true);
-            if before_ok && after_ok {
-                return true;
-            }
-            from = end;
+                .last()
+                .map(|c| c.is_ascii_alphanumeric() || c == '_')
+                .unwrap_or(false);
+        let after_ok = t[end..]
+            .chars()
+            .next()
+            .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
         }
-        false
-    })
+        from = end;
+    }
+    false
 }
 
 fn check_site(
@@ -334,6 +367,74 @@ fn a_comment_is_not_a_code_mention() {
     ));
     assert!(mentioned_in_code(
         "if c == '\\'' { build_bus_graph(p); }\n",
+        "build_bus_graph"
+    ));
+    // a lifetime is not a character literal: the quote after it opens
+    // a string as usual
+    assert!(mentioned_in_code(
+        "fn f<'a>(s: &'a str) { let u = \"//\"; build_bus_graph(p); }\n",
+        "build_bus_graph"
+    ));
+}
+
+/// Block comments nest and span lines, and a raw string's contents are
+/// text whatever they spell (outside review of #1278, finding 2).
+#[test]
+fn a_nested_or_multi_line_comment_and_a_raw_string_are_read_whole() {
+    // the mention sits inside the outer comment, past the inner `*/`
+    assert!(!mentioned_in_code(
+        "/* outer /* inner */ build_bus_graph(p) */ let x = 0;\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "/* outer /* inner */ still */ build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    // a block comment across lines
+    assert!(!mentioned_in_code(
+        "let x = 0; /*\n    build_bus_graph(p);\n*/\nlet y = 1;\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "/*\n  old\n*/\nbuild_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    // a comment marker inside a raw string opens nothing
+    assert!(mentioned_in_code(
+        "let s = r#\"\"//\"#; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "let s = r##\"a \"# /* b\"##; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "let s = r\"/*\"; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    // byte strings, plain and raw
+    assert!(mentioned_in_code(
+        "let s = b\"/*\"; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    assert!(mentioned_in_code(
+        "let s = br#\"//\"#; build_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    // a raw string across lines holds a comment marker, and code follows
+    assert!(mentioned_in_code(
+        "let s = r#\"\n /* \"#;\nbuild_bus_graph(p);\n",
+        "build_bus_graph"
+    ));
+    // a symbol spelled in a string is a use: codegen names the runtime
+    // that way
+    assert!(mentioned_in_code(
+        "b.declare(\"build_bus_graph\");\n",
+        "build_bus_graph"
+    ));
+    // an identifier ending in `r` before a string is not a raw string
+    assert!(mentioned_in_code(
+        "let v = for_r\"#\"; build_bus_graph(p);\n",
         "build_bus_graph"
     ));
 }
