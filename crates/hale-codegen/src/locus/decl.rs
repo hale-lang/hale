@@ -2075,7 +2075,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // fn per row, in ordinal order, so a fn's index in the table IS
         // its row's ordinal. Building it pairs each row with its
         // declaration by position (the rows are made in declaration
-        // order); every reader then goes by the row's ordinal: the body
+        // order) and checks the pair by identity (`is_row_of`, the
+        // span only for an unminted declaration); every reader then
+        // goes by the row's ordinal: the body
         // pass (method.rs) and a route (`failure_handler_for`). The
         // rows are per declaration, so a monomorph reads its template's
         // (it keeps the template's identity).
@@ -2111,7 +2113,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,
         })) {
-            if row.ordinal as usize != failure_handlers.len() || row.span != fd.span {
+            if row.ordinal as usize != failure_handlers.len() || !row.is_row_of(fd) {
                 return Err(CodegenError::Unsupported(format!(
                     "locus `{}` on_failure handler {} is not routing row {} \
                      of `{}`",

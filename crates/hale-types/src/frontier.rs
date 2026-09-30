@@ -603,19 +603,20 @@ pub fn supervised_diags(
             // The rows are the bundle's: a same-named locus in another
             // file has rows of its own, which are not this one's. A row
             // is this declaration's when the two-param handler at its
-            // ordinal is the row's span, as the checker's duplicate-
-            // handler law matches them.
-            let handler_decls: Vec<Span> = l
+            // ordinal is the row's declaration (`HandlerRow::is_row_of`:
+            // by identity, the span only where nothing was minted), as
+            // the checker's duplicate-handler law matches them.
+            let handler_decls: Vec<&hale_syntax::ast::FailureDecl> = l
                 .members
                 .iter()
                 .filter_map(|m| match m {
-                    LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd.span),
+                    LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd),
                     _ => None,
                 })
                 .collect();
-            let has_failure = handlers
-                .handlers_of(&l.name.name)
-                .any(|row| handler_decls.get(row.ordinal as usize) == Some(&row.span));
+            let has_failure = handlers.handlers_of(&l.name.name).any(|row| {
+                handler_decls.get(row.ordinal as usize).is_some_and(|fd| row.is_row_of(fd))
+            });
             let mut children = Vec::new();
             for m in &l.members {
                 if let LocusMember::Params(pb) = m {

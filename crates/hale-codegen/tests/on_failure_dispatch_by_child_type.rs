@@ -72,6 +72,68 @@ fn main() { App { }; }
     );
 }
 
+/// Outside review of #1276, finding 3: two handlers that share one span
+/// (built by hand here; a synthetic AST with shared provenance, or a
+/// desugar that stamps one span on several declarations, produces the
+/// same) are still two handlers. Lowering joined a declaration to its
+/// routing row by span, so both bodies went into the first row's fn,
+/// the second fn had no body and the build failed; the join is by
+/// identity now. A plain literal: the corpus harvests raw ones.
+#[test]
+fn handlers_sharing_a_span_each_lower_into_their_own_fn() {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let src = "
+locus Alpha {
+    params { why: String = \"alpha-why\"; n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = 1; violate boom; }
+}
+locus Beta {
+    params { why: String = \"beta-why\"; n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = 2; violate boom; }
+}
+main locus App {
+    params { a: Alpha = Alpha { }; b: Beta = Beta { }; }
+    on_failure(x: Alpha, err: ClosureViolation) { println(\"ALPHA handler: \", x.why); }
+    on_failure(y: Beta, err: ClosureViolation) { println(\"BETA handler: \", y.why); }
+    run() {
+        self.b.go();
+        self.a.go();
+        println(\"done\");
+    }
+}
+fn main() { App { }; }
+";
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    for item in &mut program.items {
+        let TopDecl::Locus(l) = item else { continue };
+        if l.name.name != "App" {
+            continue;
+        }
+        let mut handlers = l.members.iter_mut().filter_map(|m| match m {
+            LocusMember::Failure(fd) => Some(fd),
+            _ => None,
+        });
+        let first = handlers.next().expect("first handler");
+        let second = handlers.next().expect("second handler");
+        second.span = first.span;
+    }
+    let bin = harness::unique_bin("lotus_test_on_failure_shared_span");
+    build_executable_with_options(&program, &bin, &[], &build_opts::options())
+        .expect("two handlers sharing a span build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "non-zero exit; stdout={stdout:?} stderr={stderr:?}");
+    assert_eq!(
+        stdout,
+        "BETA handler: beta-why\nALPHA handler: alpha-why\ndone\n",
+        "stderr={stderr:?}"
+    );
+}
+
 /// The same pair, failing in the opposite order to the handlers'
 /// declaration, so neither "first handler" nor "last handler" can
 /// pass by accident.
