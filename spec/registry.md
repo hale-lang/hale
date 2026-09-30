@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 172 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 15 decide a fact.
+43 families: 3 canonical, 36 migrating (with 170 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 15 decide a fact.
 
 ## Families
 
@@ -20,7 +20,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | — | 9 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
-| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 11 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
+| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 9 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 9 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
@@ -408,7 +408,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.
 
-**Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories; returned bindings
+**Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories (one producer); returned bindings
 
 **Producer (today's authority, migrating).** `crates/hale-types/src/ownership.rs` · `resolve_owners`
 
@@ -416,8 +416,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/ownership_graph.rs` · `build_ownership_graph` — which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans. *Removed when:* one ownership table with both relations (phase 1.3).
 - `crates/hale-types/src/model_builder.rs` · `Owns` — the model's params-field tree from main, a third ownership account. *Removed when:* projected from the one table.
-- `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; the checker mirrors it. *Removed when:* one factory row.
-- `crates/hale-types/src/check.rs` · `fresh_locus_factory_products` — the checker's mirror of the factory set. *Removed when:* one factory row.
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets` — the interests a locus forwards for bubbling. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind` — owner classification for the bubble plan. *Removed when:* phase 1.3.
@@ -426,7 +424,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/borrow_lifetime.rs` · `accepts` — the borrow-lifetime law rebuilds the accept sets from the AST for itself. *Removed when:* reads `accepts_ancestor`.
 - `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` — the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others. *Removed when:* a law over the table, on every entry point.
 
-**Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`
+**Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`; `crates/hale-types/src/ownership.rs` · `fresh_factories`
 
 **Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model; alloc_summary (eager-only accept sets)
 
@@ -446,7 +444,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 - `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
-- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-types/src/ownership.rs` ×4, `crates/hale-types/src/check.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 

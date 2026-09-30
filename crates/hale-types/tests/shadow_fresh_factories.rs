@@ -1,6 +1,7 @@
-//! The fresh-factory shadow (F.40 phase 1.2c).
+//! The fresh-factory shadow (F.40 phase 1.2c): two comparisons, one
+//! report, keyed `escape/<fn>` and `products/<fn>`.
 //!
-//! `ownership::compute_fresh_locus_factories` answers which free fns
+//! **escape/** — `ownership::fresh_factories` answers which free fns
 //! hand back a locus they freshly built, and which binding they hand
 //! back. Its escape walk used to end in a catch-all that searched a
 //! node's Debug rendering for `name: "<binding>"`, so the binding's
@@ -11,13 +12,26 @@
 //!
 //! OLD is the classification with the Debug-string catch-all, frozen
 //! below as it stood before 1.2c ([`old_fresh_factories`]; the rest of
-//! the walk is the same code). NEW is the producer in `src`. Both are
-//! keyed by fn name, the value is `(locus, returned binding)`, and
-//! both run over the program the pre-pass reads: every corpus program
-//! `resolve_program` accepts (merged with the stdlib, desugared). The
-//! bundled stdlib's fns are the same in every merged program, so they
-//! are compared once, over the stdlib merged into an empty program,
-//! and left out of the per-program rows.
+//! the walk is the same code). NEW is the producer in `src`, projected
+//! onto the same value. Both are keyed by fn name, the value is
+//! `(locus, returned binding)`, and both run over the program the
+//! pre-pass reads: every corpus program `resolve_program` accepts
+//! (merged with the stdlib, desugared). The bundled stdlib's fns are
+//! the same in every merged program, so they are compared once, over
+//! the stdlib merged into an empty program, and left out of the
+//! per-program rows.
+//!
+//! **products/** — the checker's self-containment rule (GH #870) kept
+//! its own mirror of the classification, `fresh_locus_factory_products`,
+//! which answered with the (locus, supplied fields) products a call to
+//! each factory constructs. 1.2c deletes it and the rule reads the
+//! producer's rows. OLD is the mirror, frozen below as it stood
+//! ([`old_mirror_products`]); NEW is what the rule now reads: the rows'
+//! `products`, for the fns whose locus the bundle declares. Both run
+//! in the checker's shape — each parseable corpus program parsed
+//! alone, as `hale check` of a single file sees it — keyed by fn
+//! name. The rule's only input from either is this map, so where the
+//! two agree over a program its diagnostics are the same.
 //!
 //! The gate: every divergence over the corpus is classified in
 //! `fixtures/shadow_fresh_factories.txt` with a note, and none is a
@@ -29,10 +43,18 @@ use std::path::PathBuf;
 
 use hale_graph::shadow::{gate_message, parse_fixture, program_id, Report};
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, OrDisposition, Program,
-    QualifiedName, Stmt, TopDecl, TypeExpr,
+    flat_decls, Block, ElseBranch, Expr, FnDecl, IfStmt, LocusDecl, MatchArmBody, OrDisposition,
+    Program, QualifiedName, Stmt, TopDecl, TypeExpr,
 };
-use hale_types::ownership::{compute_fresh_locus_factories, stdlib_mangled_for_path};
+use hale_types::ownership::{fresh_factories, stdlib_mangled_for_path};
+use hale_types::Bundle;
+
+fn compute_new(program: &Program) -> Factories {
+    fresh_factories(program, &[])
+        .into_iter()
+        .map(|(f, row)| (f, (row.locus, row.returned_binding)))
+        .collect()
+}
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shadow_fresh_factories.txt")
@@ -81,7 +103,7 @@ fn escape_one(
         m.iter().filter(|(k, _)| keep(k)).map(|(k, v)| (k.clone(), render(v))).collect()
     };
     let old = rows(old_fresh_factories(merged, &[]));
-    let new = rows(compute_fresh_locus_factories(merged, &[]));
+    let new = rows(compute_new(merged));
     report.compare_rows(
         program_name,
         &old,
@@ -102,6 +124,83 @@ fn escape_one(
     );
 }
 
+type Products = BTreeMap<String, Vec<(String, Vec<String>)>>;
+
+fn render_products(ps: &[(String, Vec<String>)]) -> String {
+    ps.iter()
+        .map(|(l, s)| format!("{l}{{{}}}", s.join(",")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every locus a program declares, as the rule collects them.
+fn loci_of(program: &Program) -> BTreeMap<&str, &LocusDecl> {
+    fn collect<'a>(items: &'a [TopDecl], out: &mut BTreeMap<&'a str, &'a LocusDecl>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.entry(l.name.name.as_str()).or_insert(l);
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    collect(&program.items, &mut out);
+    out
+}
+
+fn products_one(report: &mut Report, id: &str, program: &Program, src: &str) {
+    let loci = loci_of(program);
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), program);
+    let bundle = Bundle::new(programs);
+    let old: Products = if loci.is_empty() { Products::new() } else { old_mirror_products(&bundle, &loci) };
+    // What `check_self_containing_locus` now reads: the rows'
+    // products, for the loci the bundle declares.
+    let new: Products = if loci.is_empty() {
+        Products::new()
+    } else {
+        fresh_factories(program, &[])
+            .into_iter()
+            .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
+            .map(|(f, row)| (f, row.products))
+            .collect()
+    };
+    let old: Vec<(String, String)> = old.iter().map(|(k, v)| (k.clone(), render_products(v))).collect();
+    let new: Vec<(String, String)> = new.iter().map(|(k, v)| (k.clone(), render_products(v))).collect();
+    report.compare_rows(
+        id,
+        &old,
+        &new,
+        |k| Some(format!("products/{k}")),
+        |k| Some(format!("products/{k}")),
+        |k| {
+            let name = k.trim_start_matches("products/");
+            vec![fn_source(program, src, name).unwrap_or_else(|| format!("fn `{name}`"))]
+        },
+        |k| {
+            // What the rule now reports on the program: every
+            // self-containment diagnostic `hale check` of the file
+            // gives. The old map is the new one less this row, so a
+            // cycle the old rule reported is one the new rule reports.
+            let reports: Vec<String> = hale_types::check_program(program)
+                .into_iter()
+                .filter(|d| d.message.contains("a locus cannot contain itself by value"))
+                .map(|d| d.message)
+                .collect();
+            vec![
+                format!(
+                    "check_self_containing_locus: a param default that calls `{}` takes an edge to each product",
+                    k.trim_start_matches("products/")
+                ),
+                format!("the rule reports {} self-containment diagnostic(s) on this program: {:?}", reports.len(), reports),
+            ]
+        },
+    );
+}
+
 #[test]
 fn the_fresh_factory_producers_agree_or_every_divergence_is_classified() {
     let mut report = Report::new("ownership (fresh factories)");
@@ -114,8 +213,18 @@ fn the_fresh_factory_producers_agree_or_every_divergence_is_classified() {
     escape_one(&mut report, "<bundled stdlib>", &resolved.merged, None, |k| std_names.contains(k));
 
     let mut factories = 0usize;
+    let mut mirror_rows = 0usize;
     for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
         let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
+        let id = program_id(&p.origin, &p.source);
+        // The checker's shape: the program alone, before any desugar.
+        let loci = loci_of(&program);
+        if !loci.is_empty() {
+            let mut programs = BTreeMap::new();
+            programs.insert("app.hl".to_string(), &program);
+            mirror_rows += old_mirror_products(&Bundle::new(programs), &loci).len();
+        }
+        products_one(&mut report, &id, &program, &p.source);
         let Ok(resolved) = hale_types::resolved::resolve_program(&program, &[], None, None) else {
             continue;
         };
@@ -123,13 +232,13 @@ fn the_fresh_factory_producers_agree_or_every_divergence_is_classified() {
             .keys()
             .filter(|k| !std_names.contains(*k))
             .count();
-        let id = program_id(&p.origin, &p.source);
         escape_one(&mut report, &id, &resolved.merged, Some((&program, &p.source)), |k| {
             !std_names.contains(k)
         });
     }
     assert!(report.programs > 300, "the corpus walk is vacuous ({} programs)", report.programs);
     assert!(factories > 100, "the old side found too few user factories to compare ({factories})");
+    assert!(mirror_rows > 20, "the mirror found too few factories to compare ({mirror_rows})");
 
     let path = fixture_path();
     let existing = std::fs::read_to_string(&path)
@@ -148,12 +257,14 @@ fn the_fresh_factory_producers_agree_or_every_divergence_is_classified() {
         gate_message(&report, &unexplained, &stale, "crates/hale-types/tests/fixtures/shadow_fresh_factories.txt")
     );
     eprintln!(
-        "shadow `{}`: {} programs, {} rows compared, {} divergence(s); old-side user factories: {}",
+        "shadow `{}`: {} comparisons, {} rows compared, {} divergence(s); old-side user \
+         factories (escape/): {}; mirror factories (products/): {}",
         report.family,
         report.programs,
         report.rows_compared,
         report.divergences.len(),
-        factories
+        factories,
+        mirror_rows
     );
 }
 
@@ -223,7 +334,7 @@ fn the_correction_on_probes() {
         let program = hale_syntax::parse_source(&src)
             .unwrap_or_else(|d| panic!("probe `{what}` does not parse: {d:?}"));
         let old = old_fresh_factories(&program, &[]).contains_key("make");
-        let new = compute_fresh_locus_factories(&program, &[]).contains_key("make");
+        let new = fresh_factories(&program, &[]).contains_key("make");
         if (old, new) != (*old_ok, *new_ok) {
             wrong.push(format!(
                 "{what}: old {old} (expected {old_ok}), new {new} (expected {new_ok})"
@@ -515,6 +626,186 @@ fn old_fresh_factories(
                 }
             }
             out.insert(f.name.name.clone(), (l, fresh_name));
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    out
+}
+
+// -------------------------------------------------------------------
+// OLD (products/): the checker's `fresh_locus_factory_products` as it
+// stood before F.40 phase 1.2c, frozen verbatim.
+// -------------------------------------------------------------------
+
+type ContainmentState = (String, Vec<String>);
+
+fn plain_callee_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(i) => Some(i.name.as_str()),
+        Expr::Path(q) if q.segments.len() == 1 => Some(q.segments[0].name.as_str()),
+        _ => None,
+    }
+}
+
+fn old_mirror_products(
+    bundle: &Bundle<'_>,
+    loci: &BTreeMap<&str, &LocusDecl>,
+) -> BTreeMap<String, Vec<ContainmentState>> {
+    fn literal_state(e: &Expr, locus: &str) -> Option<ContainmentState> {
+        let Expr::Struct { path, inits, .. } = e else { return None };
+        if path.segments.len() != 1 || path.segments[0].name != locus {
+            return None;
+        }
+        let mut supplied: Vec<String> = inits.iter().map(|i| i.name.name.clone()).collect();
+        supplied.sort();
+        supplied.dedup();
+        Some((locus.to_string(), supplied))
+    }
+
+    fn arm_states(
+        e: &Expr,
+        locus: &str,
+        lets: &[(&str, &Expr)],
+        known: &BTreeMap<String, Vec<ContainmentState>>,
+    ) -> Option<Vec<ContainmentState>> {
+        if let Some(s) = literal_state(e, locus) {
+            return Some(vec![s]);
+        }
+        if let Expr::Call { callee, .. } = e {
+            let states = known.get(plain_callee_name(callee)?)?;
+            if states.iter().all(|(l, _)| l == locus) {
+                return Some(states.clone());
+            }
+            return None;
+        }
+        if let Expr::Ident(i) = e {
+            let bound: Vec<&Expr> =
+                lets.iter().filter(|(n, _)| *n == i.name).map(|(_, v)| *v).collect();
+            if bound.len() != 1 {
+                return None;
+            }
+            return arm_states(bound[0], locus, &[], known);
+        }
+        None
+    }
+
+    fn collect_returns<'a>(
+        b: &'a Block,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => rets.push(e),
+                Stmt::Let { name, value, .. } => lets.push((name.name.as_str(), value)),
+                Stmt::If(i) => {
+                    if !if_returns(i, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        match &arm.body {
+                            MatchArmBody::Block(bb) => {
+                                if !collect_returns(bb, rets, lets) {
+                                    return false;
+                                }
+                            }
+                            MatchArmBody::Expr(_) => {}
+                        }
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => {
+                    if !collect_returns(body, rets, lets) {
+                        return false;
+                    }
+                }
+                Stmt::Return(None, _)
+                | Stmt::LetTuple { .. }
+                | Stmt::Assign { .. }
+                | Stmt::Expr(_)
+                | Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Fail { .. }
+                | Stmt::Yield(_)
+                | Stmt::Terminate(_)
+                | Stmt::Reperspective { .. }
+                | Stmt::Recovery { .. }
+                | Stmt::Violate { .. }
+                | Stmt::Send { .. } => {}
+                _ => return false,
+            }
+        }
+        if let Some(t) = &b.tail {
+            rets.push(t);
+        }
+        true
+    }
+
+    fn if_returns<'a>(
+        i: &'a IfStmt,
+        rets: &mut Vec<&'a Expr>,
+        lets: &mut Vec<(&'a str, &'a Expr)>,
+    ) -> bool {
+        if !collect_returns(&i.then_block, rets, lets) {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => collect_returns(b, rets, lets),
+            Some(ElseBranch::ElseIf(nested)) => if_returns(nested, rets, lets),
+            None => true,
+        }
+    }
+
+    let mut fns: BTreeMap<&str, &FnDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in flat_decls(&program.items) {
+            if let TopDecl::Fn(f) = item {
+                fns.entry(f.name.name.as_str()).or_insert(f);
+            }
+        }
+    }
+    let mut out: BTreeMap<String, Vec<ContainmentState>> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        for (name, f) in &fns {
+            if out.contains_key(*name) {
+                continue;
+            }
+            let locus = match f.ret.as_ref() {
+                Some(TypeExpr::Named { path, .. }) if path.segments.len() == 1 => {
+                    path.segments[0].name.as_str()
+                }
+                _ => continue,
+            };
+            if !loci.contains_key(locus) {
+                continue;
+            }
+            let mut rets: Vec<&Expr> = Vec::new();
+            let mut lets: Vec<(&str, &Expr)> = Vec::new();
+            if !collect_returns(&f.body, &mut rets, &mut lets) {
+                continue;
+            }
+            let mut states: Vec<ContainmentState> = Vec::new();
+            let mut fresh = !rets.is_empty();
+            for r in &rets {
+                match arm_states(r, locus, &lets, &out) {
+                    Some(s) => states.extend(s),
+                    None => {
+                        fresh = false;
+                        break;
+                    }
+                }
+            }
+            if !fresh || states.is_empty() {
+                continue;
+            }
+            states.sort();
+            states.dedup();
+            out.insert((*name).to_string(), states);
             added = true;
         }
         if !added {

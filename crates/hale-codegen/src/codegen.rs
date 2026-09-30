@@ -4098,7 +4098,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     /// GH #383: fn name -> (locus it freshly returns, the let-binding
-    /// it returns if any). See `compute_fresh_locus_factories`.
+    /// it returns if any). See `fresh_factories`.
     pub(crate) fresh_locus_factories:
         std::collections::BTreeMap<String, (String, Option<String>)>,
     /// GH #767: fn name -> stack bytes already handed to array
@@ -23654,7 +23654,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // owner. It is either a missing decision, which
                     // the guard after the call refuses, or a factory
                     // whose return is not a LOCUS at all:
-                    // `compute_fresh_locus_factories` does not check
+                    // `fresh_factories` does not check
                     // that (`fn __http_parse_url(..) -> Url` is in
                     // its map though `Url` is a `type`), and the
                     // table filters those out because it has no

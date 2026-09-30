@@ -397,7 +397,7 @@ fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
 // One thing these tests deliberately do not pin: what becomes of a
 // returned arm value AFTER it reaches the caller. A fn whose
 // `return` names an `if` / `match` / block is not a proven-fresh
-// factory — `compute_fresh_locus_factories` classifies the carrier
+// factory — `fresh_factories` classifies the carrier
 // node itself, never its arms — so the caller's binding does not
 // own the result and nothing reclaims it. That is a leak, it is a
 // separate seam, and it was already the fate of the one arm that

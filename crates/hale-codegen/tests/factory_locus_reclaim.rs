@@ -17,7 +17,7 @@
 //! Two guards keep it that way, and both are pinned below:
 //!
 //!  - **Fresh only.** A whitelist analysis
-//!    (`compute_fresh_locus_factories`) admits a fn only when every
+//!    (`fresh_factories`) admits a fn only when every
 //!    return is an `L { … }` literal or a single let-binding that is
 //!    itself fresh, and that binding never escapes into argument
 //!    position or another literal. Fixpointed, so helpers built on

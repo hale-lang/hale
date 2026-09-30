@@ -164,7 +164,7 @@ pub fn resolve_program(
     // to the carrier returns that fixpoint misses.
     //
     // GH #921 A3, commit 1: the extension is no longer table-only.
-    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // `fresh_factories::collect` classifies the CARRIER
     // node and never its arms, so `return if c { make(1) } else {
     // make2(1) }` left `produce` out of the map and its caller's
     // binding did not own the result — the 105-cell carrier-return
@@ -172,8 +172,14 @@ pub fn resolve_program(
     // tails to decide the same question; folding its answer back into
     // the map lowering reads is what closes the family, and it keeps
     // the two sides of every ownership decision computed once.
-    let mut fresh_locus_factories =
-        crate::ownership::compute_fresh_locus_factories(&merged, import_renames);
+    //
+    // F.40 phase 1.2c: the rows are the checker's too; the pre-pass
+    // reads the locus and the returned binding of each.
+    let mut fresh_locus_factories: BTreeMap<String, (String, Option<String>)> =
+        crate::ownership::fresh_factories(&merged, import_renames)
+            .into_iter()
+            .map(|(f, row)| (f, (row.locus, row.returned_binding)))
+            .collect();
     let mut owner_table = crate::ownership::resolve_owners(
         &mut merged,
         &fresh_locus_factories,

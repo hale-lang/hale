@@ -8,7 +8,7 @@
 //!      lowering reads, so they are stated positively and not as
 //!      "whatever lowering happens to do". They seed the
 //!      fresh-factory fixpoint EMPTY on purpose, so a derivation
-//!      never passes because `compute_fresh_locus_factories`
+//!      never passes because `fresh_factories`
 //!      happened to agree.
 //!   2. **the build** — the same programs compiled. Reaching a locus
 //!      instantiation the table has no row for is a `CodegenError`
@@ -111,7 +111,7 @@ fn table_of(src: &str) -> OwnerTable {
         .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
     // An EMPTY seed on purpose: the table's own fixpoint has to find
     // the ordinary factories, so a derivation test never passes
-    // because `compute_fresh_locus_factories` happened to agree.
+    // because `fresh_factories` happened to agree.
     let seed: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     resolve_owners(&mut p, &seed, &[])
 }
@@ -527,7 +527,7 @@ fn a_placed_field_is_a_placement_entry() {
 #[test]
 fn a_carrier_return_fn_is_a_proven_fresh_factory_in_the_table() {
     // The whole of the 105-cell carrier-return family.
-    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // `fresh_factories::collect` classifies the CARRIER
     // node and never its arms, so `produce` was not a factory and its
     // caller's binding did not own the result. The table flattens the
     // arms, and GH #921 A3 commit 1 folds its answer back into the

@@ -3,7 +3,7 @@
 //! This module lives in the frontend (`hale-types`) because the
 //! `ownership` family's home is the frontend: F.40 phase 1 moves the
 //! pre-pass here with its algorithm unchanged, together with the
-//! fresh-factory seed it is handed ([`compute_fresh_locus_factories`],
+//! fresh-factory seed it is handed ([`fresh_factories`],
 //! whose one producer this is). The frontend's resolved-program step
 //! (`crate::resolved::resolve_program`) runs the pass over the merged
 //! program it hands codegen, and codegen reads the tables from that
@@ -83,10 +83,10 @@
 //! ## The fresh-factory set
 //!
 //! The table derives factory calls from an EXTENDED set: the one
-//! `compute_fresh_locus_factories` computes, plus every fn whose
+//! `fresh_factories` computes, plus every fn whose
 //! return arms are fresh once `if` / `match` / block tails are
 //! flattened, and every fn that hands back a BINDING of one.
-//! `compute_fresh_locus_factories::collect` classifies the carrier
+//! `fresh_factories::collect` classifies the carrier
 //! node and never its arms, which is why `return if c { make(1) }
 //! else { make(2) }` was not a factory and its caller's binding did
 //! not own the result — the 105-cell carrier-return family.
@@ -95,8 +95,14 @@
 //! reads ([`OwnerTable::extended_fresh_factories`], applied in
 //! `lower_program`), so the two sides of every ownership decision are
 //! computed once and cannot drift. It lives here rather than inside
-//! `compute_fresh_locus_factories` because the flattening is the same
+//! `fresh_factories` because the flattening is the same
 //! walk the table already does to decide each arm.
+//!
+//! The rows [`fresh_factories`] produces also carry what a call to
+//! each factory constructs ([`FactoryRow::products`]), which is the
+//! checker's self-containment rule's question (GH #870). The rule
+//! reads the same rows over the bundle's programs rather than keeping
+//! a mirror of the classification (F.40 phase 1.2c).
 //!
 //! ## What lowering asks
 //!
@@ -396,7 +402,7 @@ impl OwnerTable {
     }
 
     /// The locus a fn freshly returns under the EXTENDED rule (the
-    /// carrier-return arms `compute_fresh_locus_factories` misses are
+    /// carrier-return arms `fresh_factories` misses are
     /// in here and not in its map).
     pub fn extended_fresh_factory(&self, fn_name: &str) -> Option<&str> {
         self.fresh.get(fn_name).map(|s| s.as_str())
@@ -754,7 +760,7 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
 
 /// The bindings a body hands back (see [`ReturnedBindings`]).
 ///
-/// GH #383: distinct from `compute_fresh_locus_factories` and needed
+/// GH #383: distinct from `fresh_factories` and needed
 /// separately: a fn that does NOT qualify as a clean factory can still
 /// return a locus it bound from one. `nn::forward` is the case that
 /// proved it — it binds several factory results, returns one, and
@@ -1983,7 +1989,7 @@ fn param_field_kind(
 }
 
 /// A multi-segment path resolved to the single mangled name the
-/// merged program declares, exactly as `compute_fresh_locus_factories`
+/// merged program declares, exactly as `fresh_factories`
 /// and `Cx::mangled_for_path` resolve it: bundled `std::…` paths
 /// through `hale_stdlib::PATH_RENAMES`, cross-seed imports through the
 /// caller's rename list. Without this, every path-qualified stdlib
@@ -2072,6 +2078,26 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
     }
 }
 
+/// One fresh factory: a free fn [`fresh_factories`] proved to hand back
+/// a locus it built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoryRow {
+    /// The locus the fn returns, resolved through the rename table.
+    pub locus: String,
+    /// The binding the fn hands back, when a return names one; `None`
+    /// when every return is a literal or a factory call.
+    pub returned_binding: Option<String>,
+    /// What a call constructs: every literal the fn hands back, as
+    /// (locus, its supplied field names, sorted and deduplicated) —
+    /// through the returned binding too — and, for a return that is a
+    /// call to a known factory, that factory's products. Sorted and
+    /// deduplicated.
+    pub products: Vec<(String, Vec<String>)>,
+}
+
+/// The fresh-factory rows, keyed by fn name.
+pub type FreshFactories = BTreeMap<String, FactoryRow>;
+
 /// GH #383 — which free fns provably return a FRESH locus?
 ///
 /// Since v0.14 a locus-typed field may only be assigned a locus
@@ -2102,15 +2128,26 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
 /// Every "don't know" answers NOT fresh, preserving the old
 /// program-lifetime behavior rather than risking a double dissolve.
 ///
-/// The fresh-factory seed: every free fn proven to return a fresh
-/// locus, keyed by its merged-program name, with the locus it returns
-/// and the binding it hands back (if any). [`resolve_owners`] takes it
-/// as `base` and [`OwnerTable::extended_fresh_factories`] adds the
-/// carrier returns it misses. This is its one producer.
-pub fn compute_fresh_locus_factories(
+/// One row per fn proven to return a fresh locus, keyed by its name in
+/// the program walked. It has two readers (F.40 phase 1.2c):
+///
+///   * the ownership pre-pass, over the resolved merged program: the
+///     resolved-program step projects `(locus, returned_binding)` into
+///     the seed [`resolve_owners`] takes as `base`, and
+///     [`OwnerTable::extended_fresh_factories`] adds the carrier
+///     returns this walk misses;
+///   * the checker's self-containment rule
+///     (`check::check_self_containing_locus`, GH #870), over each
+///     program of the bundle before desugar, which reads `products`: a
+///     node of its containment graph is (locus, supplied fields), so a
+///     call to a factory constructs what the factory hands back.
+///
+/// The two still walk different program shapes; phase 2's one
+/// snapshot ends that.
+pub fn fresh_factories(
     program: &Program,
     import_renames: &[(Vec<String>, String)],
-) -> BTreeMap<String, (String, Option<String>)> {
+) -> FreshFactories {
 
     fn resolve(
         v: &[String],
@@ -2145,9 +2182,19 @@ pub fn compute_fresh_locus_factories(
 
     #[derive(Clone, Debug)]
     enum Freshness {
-        Literal,
+        /// A literal of the locus, with the product it constructs.
+        Literal((String, Vec<String>)),
         CallTo(String),
         Other,
+    }
+
+    /// The (locus, supplied field names) a literal constructs.
+    fn product(l: &str, inits: &[StructInit]) -> (String, Vec<String>) {
+        let mut supplied: Vec<String> =
+            inits.iter().map(|i| i.name.name.clone()).collect();
+        supplied.sort();
+        supplied.dedup();
+        (l.to_string(), supplied)
     }
 
     /// Accepts both spellings of a qualified callee: `a::b` parses to
@@ -2355,11 +2402,11 @@ pub fn compute_fresh_locus_factories(
                 Stmt::Return(Some(e), _) => rets.push(e.clone()),
                 Stmt::Let { name, value, .. } => {
                     let fr = match value {
-                        Expr::Struct { path, .. }
+                        Expr::Struct { path, inits, .. }
                             if resolve(&qname(path), renames).as_deref()
                                 == Some(l) =>
                         {
-                            Freshness::Literal
+                            Freshness::Literal(product(l, inits))
                         }
                         Expr::Call { callee, .. } => {
                             match callee_name(callee, renames) {
@@ -2398,7 +2445,7 @@ pub fn compute_fresh_locus_factories(
         }
     }
 
-    let mut out: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut out: FreshFactories = BTreeMap::new();
     loop {
         let mut added = false;
         // GH #884: module nesting flattened — a factory fn one
@@ -2418,13 +2465,24 @@ pub fn compute_fresh_locus_factories(
             if rets.is_empty() {
                 continue;
             }
+            // A factory of the same locus the fixpoint already
+            // accepted, by the name a callee spells.
+            let known = |callee: &Expr| {
+                callee_name(callee, import_renames)
+                    .and_then(|c| out.get(&c))
+                    .filter(|row| row.locus == l)
+            };
             let mut fresh_name: Option<String> = None;
+            let mut products: Vec<(String, Vec<String>)> = Vec::new();
             let mut ok = true;
             for r in &rets {
                 match r {
-                    Expr::Struct { path, .. }
+                    Expr::Struct { path, inits, .. }
                         if resolve(&qname(path), import_renames).as_deref()
-                            == Some(l.as_str()) => {}
+                            == Some(l.as_str()) =>
+                    {
+                        products.push(product(&l, inits));
+                    }
                     // GH #402 shape 2: a return arm that is itself a
                     // call to an already-qualifying factory of the
                     // same locus. `matmul`'s guard arm — `if bad {
@@ -2435,11 +2493,11 @@ pub fn compute_fresh_locus_factories(
                     // transitive here for the same reason it is for
                     // let-bindings, and the fixpoint already decides
                     // it.
-                    Expr::Call { callee, .. }
-                        if callee_name(callee, import_renames)
-                            .and_then(|c| out.get(&c).cloned())
-                            .map(|(cl, _)| cl == l)
-                            .unwrap_or(false) => {}
+                    Expr::Call { callee, .. } if known(callee).is_some() => {
+                        if let Some(row) = known(callee) {
+                            products.extend(row.products.iter().cloned());
+                        }
+                    }
                     Expr::Ident(i) => match &fresh_name {
                         None => fresh_name = Some(i.name.clone()),
                         Some(n) if *n == i.name => {}
@@ -2457,18 +2515,26 @@ pub fn compute_fresh_locus_factories(
                 if bindings.len() != 1 {
                     continue;
                 }
-                let fresh_binding = match &bindings[0].1 {
-                    Freshness::Literal => true,
-                    Freshness::CallTo(c) => {
-                        out.get(c).map(|(cl, _)| *cl == l).unwrap_or(false)
-                    }
-                    Freshness::Other => false,
+                let bound = match &bindings[0].1 {
+                    Freshness::Literal(p) => Some(vec![p.clone()]),
+                    Freshness::CallTo(c) => out
+                        .get(c)
+                        .filter(|row| row.locus == l)
+                        .map(|row| row.products.clone()),
+                    Freshness::Other => None,
                 };
-                if !fresh_binding || !body_ok(&f.body, x) {
+                let Some(bound) = bound else { continue };
+                if !body_ok(&f.body, x) {
                     continue;
                 }
+                products.extend(bound);
             }
-            out.insert(f.name.name.clone(), (l, fresh_name));
+            products.sort();
+            products.dedup();
+            out.insert(
+                f.name.name.clone(),
+                FactoryRow { locus: l, returned_binding: fresh_name, products },
+            );
             added = true;
         }
         if !added {
@@ -2491,7 +2557,7 @@ pub fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// Seed from [`compute_fresh_locus_factories`]'s map and add the fns whose every return arm is
+/// Seed from [`fresh_factories`]'s map and add the fns whose every return arm is
 /// fresh once carriers are flattened.
 fn extend_fresh_factories(
     program: &Program,
@@ -2499,7 +2565,7 @@ fn extend_fresh_factories(
     loci: &BTreeSet<String>,
     renames: &[(Vec<String>, String)],
 ) -> BTreeMap<String, String> {
-    // `compute_fresh_locus_factories` does not check that what a fn
+    // `fresh_factories` does not check that what a fn
     // freshly returns is a LOCUS — `fn parse_url(..) -> std::http::Url`
     // is in its map though `Url` is a record — and the hooks that read
     // it filter on the lowered `CodegenTy::LocusRef` instead. The

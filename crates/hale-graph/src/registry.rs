@@ -563,13 +563,11 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.",
-        inputs: &["locus declarations (params, accept, release)", "bodies (let, assign, return, field initialisers, placement entries)", "fresh factories", "returned bindings"],
+        inputs: &["locus declarations (params, accept, release)", "bodies (let, assign, return, field initialisers, placement entries)", "fresh factories (one producer)", "returned bindings"],
         producer: Some(site(TY_OWN, "resolve_owners")),
         legacy: &[
             legacy(OWNERSHIP_GRAPH, "build_ownership_graph", "which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans", "one ownership table with both relations (phase 1.3)"),
             legacy(MODEL_BUILDER, "Owns", "the model's params-field tree from main, a third ownership account", "projected from the one table"),
-            legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; the checker mirrors it", "one factory row"),
-            legacy(CHECK, "fresh_locus_factory_products", "the checker's mirror of the factory set", "one factory row"),
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
             legacy(OWNERSHIP_GRAPH, "compute_forwarding_sets", "the interests a locus forwards for bubbling", "phase 1.3"),
             legacy(OWNERSHIP_GRAPH, "classify_owner_kind", "owner classification for the bubble plan", "phase 1.3"),
@@ -587,11 +585,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/owner_table.rs", "crates/hale-codegen/tests/ownership_matrix.rs", "crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/ownership_bubble.rs"],
         spec: &["spec/decisions.md F.39", "spec/semantics.md § Dissolve timing rules"],
-        owned: &[site(TY_OWN, "resolve_binding_facts")],
+        owned: &[site(TY_OWN, "resolve_binding_facts"), site(TY_OWN, "fresh_factories")],
         seams: &[
             Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 1)] },
-            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
+            Seam { symbol: "fresh_factories(", allowed: &[(TY_RESOLVED, 2), (TY_OWN, 4), (CHECK, 1)] },
         ],
     },
     Family {

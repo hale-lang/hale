@@ -177,9 +177,9 @@ fn a_shared_child_is_not_a_cycle() {
 ///
 /// What the edge needs is the accessor/factory question — does this
 /// call build a fresh `Node` or hand back one somebody else owns —
-/// which `fresh_locus_factory_products` answers with codegen's
-/// `compute_fresh_locus_factories` classification, mirrored over the
-/// bundle.
+/// which the ownership family's fresh-factory rows answer
+/// (`ownership::fresh_factories`, the classification the ownership
+/// pre-pass reads too), through each row's products.
 #[test]
 fn a_factory_call_in_a_default_is_reported() {
     let src = r#"
