@@ -16,203 +16,6 @@ use super::diag::render_located;
 use super::imports::resolve_imports;
 use super::imports::scope_import_aliases;
 use super::imports::unscoped_alias_uses;
-/// Parse a single-file entry, follow its `import "..." as alias;`
-/// directives, and produce the merged Program + per-build path-
-/// rename table. Imports inside imported libs ARE followed
-/// recursively (A4, G34) — relative paths are resolved against
-/// each lib's own directory so a two-hop chain
-/// `app → lib → lib/_util` works. The mangled prefix embeds the
-/// importer's alias, so two parallel paths to the same lib live
-/// as separate compiled copies (per-importer namespacing). Cycles
-/// are bounded by the canonical-path `visited` set.
-/// Per-build entry context that Stage-2 FFI uses to walk imports
-/// after resolution. The caller resolves imports once for normal
-/// codegen; this context lets a second walk (just for FFI
-/// manifest pickup) happen against the same lookup roots without
-/// re-reading the entry file.
-pub struct EntryCtx {
-    pub entry_dir: PathBuf,
-    pub workspace_root: Option<PathBuf>,
-    pub imports: Vec<hale_syntax::ast::Import>,
-}
-
-pub fn parse_with_imports(
-    entry: &Path,
-    src: &dyn SourceProvider,
-) -> Result<
-    (
-        Program,
-        ImportRenames,
-        BTreeMap<PathBuf, String>,
-        Vec<(u32, PathBuf, u32)>,
-        EntryCtx,
-    ),
-    Vec<ImportDiag>,
-> {
-    let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut errors: Vec<ImportDiag> = Vec::new();
-    let mut visited: std::collections::BTreeSet<PathBuf> =
-        std::collections::BTreeSet::new();
-    // GH #820: the entry seed's own files are not claimed — a library
-    // is what an `import` names, and the entry is not imported.
-    let mut claims: FileClaims = FileClaims::new();
-
-    let workspace_root = find_workspace_root(entry);
-    let entry_dir = entry
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-
-    let entry_canon = entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf());
-    let entry_source = match src.read(entry) {
-        Ok(s) => s,
-        Err(e) => {
-            // GH #903: the last "print here, hand back nothing" site
-            // on the import path. It printed the sentence itself and
-            // returned an EMPTY vector, so every caller reported a
-            // failure with no message — `hale test --json` emitted a
-            // row whose `message` was the empty string. It travels as
-            // an `ImportDiag::Io` like every other unreadable file of
-            // the graph (GH #806), so the ONE rendering path prints
-            // the same sentence and the `--json` channels carry it.
-            errors.push(ImportDiag::Io(IoDiag::read(
-                entry,
-                &e,
-                format!("could not read {}: {}", entry.display(), e),
-            )));
-            return Err(errors);
-        }
-    };
-    let entry_program = match hale_syntax::parse_source(&entry_source) {
-        Ok(p) => p,
-        Err(diags) => {
-            for d in diags {
-                // The entry file is parsed unshifted (`parse_source`),
-                // so its own base is 0.
-                errors.push(ImportDiag::Located {
-                    file: entry.to_path_buf(),
-                    base: 0,
-                    diag: d,
-                    source: entry_source.clone(),
-                });
-            }
-            return Err(errors);
-        }
-    };
-    visited.insert(entry_canon.clone());
-    // The entry file occupies base 0 (parse_source above = no shift);
-    // imported files get subsequent virtual bases in resolve_imports.
-    let mut file_bases: Vec<(u32, PathBuf, u32)> =
-        vec![(0, entry_canon.clone(), entry_source.len() as u32)];
-    // GH #746: the entry file is a seed of one, and its aliases are
-    // scoped to it like any lib's.
-    let entry_scope = entry_canon.clone();
-    sources.insert(entry_canon, entry_source);
-
-    let entry_imports = entry_program.imports.clone();
-    let mut effects = EffectTable::from_seed(&entry_program);
-    let mut merged_items = entry_program.items;
-    // Seed the merged table with the ENTRY's classes so the entry's
-    // own `User(i)` indices stay identity — its items are already in
-    // `merged_items` and are never walked.
-    let mut renames: ImportRenames = Vec::new();
-    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
-    let mut alias_scopes = AliasScopes::default();
-    alias_scopes.record_files(&entry_scope, vec![entry_scope.clone()]);
-
-    if resolve_imports(
-        &entry_program.imports,
-        &entry_dir,
-        workspace_root.as_deref(),
-        &mut visited,
-        &mut claims,
-        &mut sources,
-        &mut file_bases,
-        &mut errors,
-        &mut merged_items,
-        &mut renames,
-        &mut seed_cache,
-        &mut effects,
-        &entry_scope,
-        &mut alias_scopes,
-        src,
-    )
-    .is_err()
-    {
-        return Err(errors);
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    // #345: user effect-class tables are per-seed — each seed interns
-    // its own `effect NAME;` from zero, so the same index means a
-    // DIFFERENT class in a different seed. `resolve_imports` unions the
-    // names and rewrites each seed's indices into this table before
-    // merging its items, so the merged program carries one table that
-    // every `User(i)` in `merged_items` agrees on.
-    let declared: Vec<u16> = effects.declared_indices();
-    let effect_defs = effects.defs;
-    let effect_names = effects.names;
-    let mut merged = Program {
-        effect_names,
-        declared_effects: declared,
-        effect_defs,
-        imports: Vec::new(),
-        items: merged_items,
-        span: entry_program.span,
-    };
-    // GH #762: refuse a reference to an alias the seed it is written
-    // in never declared, before the table can answer it out of
-    // another seed's import row.
-    let unscoped = unscoped_alias_uses(
-        &merged,
-        &file_bases,
-        &sources,
-        &alias_scopes,
-        &seed_cache,
-    );
-    if !unscoped.is_empty() {
-        for u in unscoped {
-            // The span is in the merged coordinate space; the base it
-            // was raised at comes back out of it at render time, the
-            // same way every other entry in this vector does.
-            let src = sources.get(&u.file).cloned().unwrap_or_default();
-            errors.push(ImportDiag::Located {
-                file: u.file,
-                base: u.base,
-                diag: u.diag,
-                source: src,
-            });
-        }
-        return Err(errors);
-    }
-    // GH #746: before anything resolves through the table, scope any
-    // alias two seeds bound to different libs.
-    scope_import_aliases(
-        &mut merged,
-        &mut renames,
-        &file_bases,
-        &alias_scopes,
-        &seed_cache,
-    );
-    // brained F.1 (2026-05-23): rewrite `alias::Name` type
-    // references in the entry program's TypeExprs to the
-    // matching mangled single name. Lets the typechecker
-    // resolve qualified-path cell types in @form annotations
-    // (and any other TypeExpr position) the same way it
-    // resolves bare type names. Codegen-side
-    // `mangled_for_path` still handles expression-position
-    // qualified paths separately — those don't round-trip
-    // through typecheck so they stay opaque to it.
-    hale_types::mangle::apply_qualified_path_renames(&mut merged, &renames);
-    let ctx = EntryCtx {
-        entry_dir,
-        workspace_root,
-        imports: entry_imports,
-    };
-    Ok((merged, renames, sources, file_bases, ctx))
-}
 
 pub fn collect_target_files(
     t: &ImportTarget,
@@ -242,7 +45,7 @@ pub enum LoadMode {
     /// The CLI (`check`, `build`, `run`, ...): the target as named — a
     /// directory is the seed, a file is a seed of one — and the loaders
     /// above then follow every `import` it declares
-    /// ([`parse_with_imports`], [`collect_checkable`]).
+    /// ([`collect_checkable`]).
     WholeSeed,
     /// The LSP, until it loads through the whole-seed path (F.40 phase
     /// 2.3, step 5): a FILE target stands for the directory around it
@@ -921,7 +724,7 @@ pub fn file_of_span(
 /// decls to one bundle, in alphabetical filename order (per
 /// `collect_ap_files`'s sort). Returns `None` if the iterator
 /// yielded zero programs. Mirrors the merge step inside
-/// `parse_with_imports` but without the import-following
+/// the whole-seed load but without the import-following
 /// (directory targets see every file by enumeration; nothing to
 /// follow).
 pub fn merge_programs<'a, I>(programs: I) -> Option<Program>

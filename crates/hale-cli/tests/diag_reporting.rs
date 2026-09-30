@@ -632,7 +632,7 @@ fn assert_located_in_second_hl(what: &str, out: &str) {
 
 /// `build` on both target shapes. The directory target reports the
 /// resolver's vector directly; the single-file target reports
-/// `parse_with_imports`'s `Err`. They are separate call sites and
+/// the whole-seed load's `Err`. They are separate call sites and
 /// were wrong separately.
 #[test]
 fn build_positions_an_imported_parse_error_in_its_own_file() {
@@ -1185,7 +1185,7 @@ fn an_unresolvable_import_prints_a_located_line_and_caret() {
 /// `build` and `run` have no machine-readable channel, and reach the
 /// resolver by two roads: a directory target resolves the union of
 /// its files' imports and reports through `report_import_diags`, a
-/// single-file target through `parse_with_imports`'s `Err`. Both used
+/// single-file target through the whole-seed load's `Err`. Both used
 /// to print the positionless sentence.
 #[test]
 fn build_and_run_locate_an_unresolvable_import() {

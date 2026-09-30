@@ -239,6 +239,6 @@ these when concrete friction demonstrates the need.
   that exercise a real `git clone` against a `file://` URL.
 
 The compiler's import-resolution path (which consumes the
-cloned source) lives in `hale-cli`'s `parse_with_imports` /
-`resolve_import` / `find_workspace_root` family — see
+cloned source) lives in `hale-frontend`'s whole-seed load
+(`resolve_import` / `find_workspace_root`) — see
 `spec/projects.md` § Implementation entry points.

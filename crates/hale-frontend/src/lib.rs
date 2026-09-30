@@ -7,9 +7,9 @@
 //! `hale-codegen` or on its consumer `hale-lsp`
 //! (`crates/hale-graph/tests/architecture.rs` holds that).
 //!
-//! - [`frontend`]: the loaders — [`frontend::parse_with_imports`] for
-//!   a file entry, [`frontend::collect_checkable`] for a check target,
-//!   the file collection and merge beneath them, the source map.
+//! - [`frontend`]: the loader — [`frontend::collect_checkable`] for a
+//!   check target (a file entry stands for its seed), the file
+//!   collection and merge beneath it, the source map.
 //! - [`imports`]: import resolution, the seed cache, the mangling
 //!   drivers and alias scoping.
 //! - [`workspace`]: the workspace root and the seed walk.

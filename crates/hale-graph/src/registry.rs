@@ -286,7 +286,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &[".hl files", "import directives", "the workspace root (hale.toml)", "editor overlays (LSP)"],
         producer: Some(site(FRONTEND, "collect_checkable")),
         legacy: &[
-            legacy(FRONTEND, "parse_with_imports", "the single-file loader every verb but `check` used before 2.2b; since then no entry point calls it (every verb loads through `collect_checkable`, from the snapshot's `load_whole_seed`), and specs and the agent brief still describe it", "deleted with its mentions in spec/projects.md, spec/packages.md and agents/compiler-dev.md"),
             legacy(FRONTEND, "SeedDirectoryOnly", "the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request", "the LSP loads the whole seed with imports (2.3, step 5)"),
             legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the snapshot's editor load (`load_seed_directory`, which `check_and_publish` demands through); neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
         ],

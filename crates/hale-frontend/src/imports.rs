@@ -189,7 +189,7 @@ pub enum ImportDiag {
         /// `file_bases`, named the file differently from `build`.
         file: PathBuf,
         /// The virtual base `file` was parsed at; 0 for the entry
-        /// file, which `parse_with_imports` parses unshifted.
+        /// file, which the load parses unshifted.
         base: u32,
         diag: hale_syntax::Diag,
         /// `file`'s own text: what the un-shifted span is resolved
