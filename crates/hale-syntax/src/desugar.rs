@@ -162,7 +162,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         depends: None,
             supervised: false,
             sealed: false,
-        name: Ident { name: "__Main".to_string(), span: main_span },
+        name: Ident::new("__Main", main_span),
         is_main: false,
         export: true,
         generics: Vec::new(),
@@ -186,7 +186,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         program.items.insert(
             0,
             TopDecl::Target(TargetDecl {
-                name: Ident { name: "wasm".to_string(), span: main_span },
+                name: Ident::new("wasm", main_span),
                 capabilities: Vec::new(),
                 span: main_span,
             }),
@@ -647,10 +647,7 @@ pub fn desugar_repr_accessors(programs: &mut [&mut Program]) {
 }
 
 fn std_bytes_call(name: &str, args: Vec<Expr>, span: Span) -> Expr {
-    let seg = |s: &str| Ident {
-        name: s.to_string(),
-        span,
-    };
+    let seg = |s: &str| Ident::new(s, span);
     Expr::Call {
         id: crate::ast::NodeId::NONE,
         callee: Box::new(Expr::Path(QualifiedName {
@@ -1367,7 +1364,7 @@ fn build_chained_call(
     for field in fields {
         receiver = Expr::Field {
             receiver: Box::new(receiver),
-            name: Ident { name: field.clone(), span },
+            name: Ident::new(field.clone(), span),
             span,
         };
     }
@@ -1375,7 +1372,7 @@ fn build_chained_call(
         id,
         callee: Box::new(Expr::Field {
             receiver: Box::new(receiver),
-            name: Ident { name: method_name.clone(), span },
+            name: Ident::new(method_name.clone(), span),
             span,
         }),
         args: if takes_context {

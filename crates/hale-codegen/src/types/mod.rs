@@ -546,10 +546,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return None;
         }
         Some(QualifiedName {
-            segments: vec![Ident {
-                name: target_name.clone(),
-                span: bare.segments[0].span,
-            }],
+            segments: vec![Ident::new(target_name.clone(), bare.segments[0].span)],
             span: bare.span,
         })
     }
@@ -594,10 +591,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return None;
         }
         Some(QualifiedName {
-            segments: vec![Ident {
-                name: mangled,
-                span: bare.segments[0].span,
-            }],
+            segments: vec![Ident::new(mangled, bare.segments[0].span)],
             span: bare.span,
         })
     }

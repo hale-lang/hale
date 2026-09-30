@@ -623,7 +623,7 @@ fn expr(e: &mut Expr, n: &mut usize) {
 // ---- construction helpers -----------------------------------------
 
 fn id(n: &str, sp: Span) -> Ident {
-    Ident { name: n.to_string(), span: sp }
+    Ident::new(n, sp)
 }
 fn var(n: &str, sp: Span) -> Expr {
     Expr::Ident(id(n, sp))

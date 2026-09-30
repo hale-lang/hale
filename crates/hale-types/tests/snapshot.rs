@@ -387,4 +387,58 @@ fn main() { L { }; }
     let lets = of(SiteKind::Let);
     assert!(lets.contains(&Some(Origin::ChainDesugar)), "{lets:?}");
     assert!(lets.contains(&None), "the written `let c`: {lets:?}");
+    let uses = of(SiteKind::Use);
+    assert!(uses.contains(&Some(Origin::ChainDesugar)), "a use the rewrite spells: {uses:?}");
+    assert!(uses.contains(&None), "the written `return c`: {uses:?}");
+}
+
+/// F.40 phase 2, use-site identity: every identifier expression is a
+/// `Use` site, numbered in walk order with the rest, its id on its
+/// `Ident`; an identifier that is not an expression (a declaration's
+/// name, a field, a path segment) is none. A clone keeps its uses' ids,
+/// and one a pass synthesizes after the mint is numbered by the next.
+#[test]
+fn every_identifier_expression_is_a_use_site() {
+    let mut p = parse(
+        r#"
+type P { x: Int; }
+fn f(a: Int) -> Int {
+    let b = a + 1;
+    let p = P { x: b };
+    return p.x;
+}
+fn main() { f(2); }
+"#,
+    );
+    let snap = mint([("app.hl", &mut p)], &[]);
+    // `a`, `b`, `p` (receiver of `.x`), `f` (the callee): four uses.
+    let uses = snap.sites.iter().filter(|s| s.kind == SiteKind::Use).count();
+    assert_eq!(uses, 4, "{:?}", snap.sites);
+    let mut named = Vec::new();
+    hale_syntax::sites::for_each_named_site(&p, &mut |kind, _, name, id| {
+        if kind == SiteKind::Use {
+            assert!(!id.is_none(), "every use is numbered");
+            named.push(name.unwrap_or_default().to_string());
+        }
+    });
+    assert_eq!(named, vec!["a", "b", "p", "f"]);
+    let all = ids(&p);
+    let mut sorted = all.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), all.len(), "ids are unique");
+
+    // A clone keeps the uses' ids.
+    assert_eq!(ids(&p.clone()), all);
+
+    // A use synthesized after the mint carries none; the next mint
+    // numbers it past the rest and keeps every other id.
+    let hale_syntax::ast::TopDecl::Fn(main) = p.items.last_mut().unwrap() else { panic!() };
+    main.body.stmts.push(hale_syntax::ast::Stmt::Expr(hale_syntax::ast::Expr::Ident(
+        hale_syntax::ast::Ident::new("f", main.span),
+    )));
+    let again = mint([("app.hl", &mut p)], &[]);
+    assert_eq!(again.len(), snap.len() + 1);
+    let max = all.iter().max().copied().unwrap();
+    assert!(ids(&p).iter().any(|i| *i == max + 1), "the new use is numbered past the rest");
 }

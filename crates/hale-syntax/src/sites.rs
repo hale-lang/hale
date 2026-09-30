@@ -3,7 +3,8 @@
 //! Every declaration, member and statement site that the snapshot
 //! numbers carries an `id: NodeId`, as do the two expression shapes
 //! the ownership pre-pass keys its rows by (`Expr::Struct`,
-//! `Expr::Call`). This module is the traversal that reaches all of
+//! `Expr::Call`) and every identifier expression (`Expr::Ident`, a
+//! `Use`, whose id is its `Ident`'s). This module is the traversal that reaches all of
 //! them, so the minting pass and every later reader agree on which
 //! sites exist and in what order.
 //!
@@ -45,6 +46,9 @@ pub enum SiteKind {
     Send,
     StructLiteral,
     Call,
+    /// An identifier expression (`Expr::Ident`): a name spelled where a
+    /// value is read (F.40 phase 2, use-site identity).
+    Use,
 }
 
 /// Visit every identity field of the program in pre-order (a
@@ -71,7 +75,8 @@ pub fn for_each_site(
 
 /// The same traversal, read-only, with each site's name where the node
 /// carries one as a plain identifier: a declaration's name, the binding
-/// of a `let` or `for`, the head of an assignment's target. `None` for
+/// of a `let` or `for`, the head of an assignment's target, the name a
+/// use spells. `None` for
 /// the sites that have none (a lifecycle, a publish, a call).
 pub fn for_each_named_site(
     program: &Program,
@@ -595,7 +600,10 @@ macro_rules! walk {
                         expr(inner, f);
                         disposition(d, f);
                     }
-                    Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+                    Expr::Ident(i) => {
+                        f(SiteKind::Use, i.span, Some(i.name.as_str()), & $($m)? i.id);
+                    }
+                    Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
                 }
             }
         }

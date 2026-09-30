@@ -1916,14 +1916,8 @@ fn subscriber_members(c: &ApiCommand, s: &ApiSubscriber, replies: bool) -> Resul
     let mut member = s.member.clone();
     crate::sites::clear_ids_in_bus_member(&mut member);
     if let BusMember::Subscribe { subject, handler, ty, bound, .. } = &mut member {
-        *subject = BusSubject::Topic(Ident {
-            name: format!("__ApiCallT_{}", m),
-            span: handler.span,
-        });
-        *handler = Ident {
-            name: thunk,
-            span: handler.span,
-        };
+        *subject = BusSubject::Topic(Ident::new(format!("__ApiCallT_{}", m), handler.span));
+        *handler = Ident::new(thunk, handler.span);
         *ty = None;
         *bound = None;
     }
@@ -1970,10 +1964,7 @@ fn parse_locus_members(src: &str) -> Result<Vec<LocusMember>, String> {
 
 fn publish_reply_member(span: Span) -> BusMember {
     BusMember::Publish {
-        subject: BusSubject::Topic(Ident {
-            name: "__ApiReplyT".to_string(),
-            span,
-        }),
+        subject: BusSubject::Topic(Ident::new("__ApiReplyT", span)),
         ty: None,
         alias: None,
         gated: None,
@@ -2160,10 +2151,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     // the program computed) — review B3.
     if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
         inits.push(crate::ast::StructInit {
-            name: Ident {
-                name: "path".to_string(),
-                span: path_span,
-            },
+            name: Ident::new("path", path_span),
             value: path,
             span: path_span,
         });
@@ -2175,10 +2163,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
     if let Some(r) = &surface.binding.roles {
         if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
             inits.push(crate::ast::StructInit {
-                name: Ident {
-                    name: "roles".to_string(),
-                    span: r.span,
-                },
+                name: Ident::new("roles", r.span),
                 value: copied(&r.expr),
                 span: r.span,
             });
@@ -2194,7 +2179,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         if let Some(p) = &h.principals {
             if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
                 inits.push(crate::ast::StructInit {
-                    name: Ident { name: "principals".to_string(), span: h.span },
+                    name: Ident::new("principals", h.span),
                     value: copied(p),
                     span: h.span,
                 });
@@ -2214,7 +2199,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
                     for mut p in pb.params {
                         if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut p.init {
                             for (name, value) in [("host", copied(&h.host)), ("port", copied(&h.port))] {
-                                inits.push(crate::ast::StructInit { name: Ident { name: name.to_string(), span: h.span }, value, span: h.span });
+                                inits.push(crate::ast::StructInit { name: Ident::new(name, h.span), value, span: h.span });
                             }
                         }
                         extra_params.push(p);

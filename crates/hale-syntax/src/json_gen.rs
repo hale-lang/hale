@@ -646,10 +646,7 @@ fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
                         };
                         if let Some(prefix) = prefix {
                             let fname = format!("{}{}", prefix, qn.segments[0].name);
-                            *callee = Box::new(Expr::Ident(Ident {
-                                name: fname,
-                                span: *span,
-                            }));
+                            *callee = Box::new(Expr::Ident(Ident::new(fname, *span)));
                         }
                     }
                 }

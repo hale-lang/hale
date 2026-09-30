@@ -55,7 +55,8 @@ use crate::symbol::SourceFile;
 /// - `OmittedRun`: the `run` `desugar_omitted_run` adds, by its
 ///   `LifecycleDecl::synthesized` marker.
 /// - `ChainDesugar`: the `let`s and assignments the chains rewrite
-///   introduces bind `__hale_`-prefixed names. The calls it builds
+///   introduces bind `__hale_`-prefixed names, and the uses it writes
+///   spell them. The calls it builds
 ///   (`.get(i)`, `.len()`) carry the chain's span and no marker, so
 ///   they have no row.
 /// - `TopicDesugar`, `IntraLocusRewrite`, `ReprAccessors`: no row. Those
@@ -290,7 +291,7 @@ fn origins_of(p: &Program, out: &mut BTreeMap<u32, Origin>) {
         } else {
             match kind {
                 SiteKind::Lifecycle if synthesized.contains(&id.0) => Some(Origin::OmittedRun),
-                SiteKind::Let | SiteKind::Assign | SiteKind::For
+                SiteKind::Let | SiteKind::Assign | SiteKind::For | SiteKind::Use
                     if name.is_some_and(|n| n.starts_with("__hale_")) =>
                 {
                     Some(Origin::ChainDesugar)

@@ -1098,7 +1098,7 @@ pub fn inject_adopt(prog: &mut Program, name: &str) -> bool {
             continue;
         }
         found = true;
-        let id = Ident { name: name.to_string(), span: l.name.span };
+        let id = Ident::new(name, l.name.span);
         if let Some(LocusMember::Claims(cb)) = l
             .members
             .iter_mut()

@@ -8922,10 +8922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 let sp = self.program.span.clone();
                 FnDecl {
-                    name: Ident {
-                        name: "main".to_string(),
-                        span: sp.clone(),
-                    },
+                    name: Ident::new("main", sp.clone()),
                     generics: Vec::new(),
                     params: Vec::new(),
                     ret: None,
@@ -11024,17 +11021,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let url = format!("unix://{}", path);
         let str_init = |name: &str, value: &str| StructInit {
-            name: Ident { name: name.to_string(), span },
+            name: Ident::new(name, span),
             value: Expr::Literal(Literal::String(value.to_string()), span),
             span,
         };
         let locus_lit = Expr::Struct {
             id: hale_syntax::ast::NodeId::NONE,
             path: QualifiedName {
-                segments: vec![Ident {
-                    name: locus_name.to_string(),
-                    span,
-                }],
+                segments: vec![Ident::new(locus_name, span)],
                 span,
             },
             inits: vec![
@@ -12649,10 +12643,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// concrete instantiations are.
     fn builtin_generic_type_decls() -> Vec<TypeDecl> {
         let span = hale_syntax::span::Span::new(0, 0);
-        let mk_ident = |s: &str| Ident {
-            name: s.to_string(),
-            span,
-        };
+        let mk_ident = |s: &str| Ident::new(s, span);
         let mk_t = |name: &str| TypeExpr::Named {
             path: QualifiedName {
                 segments: vec![mk_ident(name)],
@@ -12888,10 +12879,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             depends: None,
             supervised: false,
             sealed: false,
-            name: Ident {
-                name: mangled_name.to_string(),
-                span: template.name.span.clone(),
-            },
+            name: Ident::new(mangled_name, template.name.span.clone()),
             is_main: template.is_main,
             export: template.export,
             generics: Vec::new(),
@@ -13085,10 +13073,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::TypeRef(name) | CodegenTy::Enum(name) => {
                 Ok(TypeExpr::Named {
                     path: QualifiedName {
-                        segments: vec![Ident {
-                            name: name.clone(),
-                            span,
-                        }],
+                        segments: vec![Ident::new(name.clone(), span)],
                         span,
                     },
                     generic_args: Vec::new(),
@@ -13267,10 +13252,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .as_ref()
             .map(|t| Self::substitute_type_expr(t, &subst));
         Ok(FnDecl {
-            name: Ident {
-                name: mangled_name.to_string(),
-                span: template.name.span.clone(),
-            },
+            name: Ident::new(mangled_name, template.name.span.clone()),
             generics: Vec::new(),
             params: new_params,
             ret: new_ret,
@@ -13866,10 +13848,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         Ok(TypeDecl {
             display: None,
-            name: Ident {
-                name: mangled,
-                span: template.name.span.clone(),
-            },
+            name: Ident::new(mangled, template.name.span.clone()),
             generics: Vec::new(),
             body: new_body,
             span: template.span.clone(),
@@ -23837,7 +23816,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // — the same fn pointer `apply(add3)` makes for a
                     // same-seed fn.
                     if self.module.get_function(&mangled).is_some() {
-                        let id = Expr::Ident(Ident { name: mangled, span: qn.span });
+                        let id = Expr::Ident(Ident::new(mangled, qn.span));
                         return self.lower_expr(&id, scope);
                     }
                 }

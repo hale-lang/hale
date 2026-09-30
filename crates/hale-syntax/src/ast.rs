@@ -3195,6 +3195,20 @@ pub enum Literal {
 pub struct Ident {
     pub name: String,
     pub span: Span,
+    /// F.40 phase 2: the snapshot identity of an identifier EXPRESSION
+    /// (`Expr::Ident`), a `Use` site. `NodeId::NONE` until the mint, and
+    /// on every other identifier (a declaration's name, a field, a path
+    /// segment), which is not a site. A clone keeps it, as an `Expr`
+    /// clone keeps its call's.
+    pub id: NodeId,
+}
+
+impl Ident {
+    /// An identifier with no identity: the parser's, and every one a
+    /// pass synthesizes. The mint numbers the ones that are sites.
+    pub fn new(name: impl Into<String>, span: Span) -> Self {
+        Ident { name: name.into(), span, id: NodeId::NONE }
+    }
 }
 
 /// #345: rewrite this seed's user effect-class indices into a merged

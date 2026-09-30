@@ -463,12 +463,8 @@ pub fn apply_sync_inference(
             // location-less zero-span). Ident has no canonical
             // synthetic span, so reuse the form's.
             let span = form.span;
-            let arg_name =
-                Ident { name: "sync".to_string(), span };
-            let arg_value = Expr::Ident(Ident {
-                name: label.to_string(),
-                span,
-            });
+            let arg_name = Ident::new("sync", span);
+            let arg_value = Expr::Ident(Ident::new(label, span));
             form.args.push(FormArg {
                 name: arg_name,
                 value: arg_value,

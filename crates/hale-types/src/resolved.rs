@@ -438,7 +438,7 @@ fn resolve_qualified_bus_subjects(
                 qn.segments.iter().map(|s| s.name.as_str()).collect();
             if let Some(mangled) = lookup(&segs, import_renames) {
                 let span = qn.span;
-                *subject = BusSubject::Topic(Ident { name: mangled, span });
+                *subject = BusSubject::Topic(Ident::new(mangled, span));
             }
         }
     }
@@ -473,7 +473,7 @@ fn resolve_qualified_bus_subjects(
                     qn.segments.iter().map(|s| s.name.as_str()).collect();
                 if let Some(mangled) = lookup(&segs, import_renames) {
                     let span = qn.span;
-                    *e = Expr::Ident(Ident { name: mangled, span });
+                    *e = Expr::Ident(Ident::new(mangled, span));
                 }
             }
         }
