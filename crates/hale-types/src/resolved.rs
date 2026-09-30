@@ -11,7 +11,8 @@
 //! The envelope also carries the ownership graph over the merged
 //! program (which accepting ancestor owns each method-body birth, and
 //! which locus accepts which child type) and the bubble plans lowering
-//! projects from it (F.40 phase 1.3), built here once.
+//! projects from it (F.40 phase 1.3), built here once, and the
+//! `on_failure` handler rows (F.40 phase 1.4).
 //!
 //! The sequence is codegen's former one, moved here unchanged: the
 //! same passes, in the same order, over the same inputs. The one
@@ -30,6 +31,7 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 
+use crate::handler_routing::HandlerRouting;
 use crate::ownership::OwnerTable;
 use crate::ownership_graph::{BubblePlans, OwnershipGraph};
 use crate::snapshot::Snapshot;
@@ -54,6 +56,9 @@ pub struct ResolvedProgram {
     pub ownership: OwnershipGraph,
     /// The bubble plans lowering acts on, projected from `ownership`.
     pub bubble: BubblePlans,
+    /// Which `on_failure` handler a failing child reaches, one row per
+    /// handler of `merged` (F.40 phase 1.4).
+    pub handlers: HandlerRouting,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -224,6 +229,10 @@ pub fn resolve_program(
         (graph, bubble)
     };
 
+    // F.40 phase 1.4: the handler rows, over the same merged program,
+    // with the child type resolved the way lowering resolves it.
+    let handlers = crate::handler_routing::handler_rows(&merged, import_renames);
+
     Ok(ResolvedProgram {
         user,
         merged,
@@ -232,6 +241,7 @@ pub fn resolve_program(
         fresh_locus_factories,
         ownership,
         bubble,
+        handlers,
         resolved_in: t_start.elapsed(),
     })
 }
@@ -272,6 +282,22 @@ fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
     }
 }
 
+/// The declaration a qualified path names: the stdlib's path renames
+/// first, then the build's cross-seed `import_renames`.
+pub(crate) fn lookup_qualified_path(
+    segs: &[&str],
+    import_renames: &[(Vec<String>, String)],
+) -> Option<String> {
+    if let Some(s) = crate::ownership::stdlib_mangled_for_path(segs) {
+        return Some(s.to_string());
+    }
+    let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
+    import_renames
+        .iter()
+        .find(|(k, _)| k == &key)
+        .map(|(_, v)| v.clone())
+}
+
 /// A7 (G16): walk the program before desugar and resolve every
 /// `BusSubject::QualifiedTopic(alias::Foo)` ref to the mangled
 /// single-segment ident the imported topic decl ends up at.
@@ -284,19 +310,7 @@ fn resolve_qualified_bus_subjects(
     use hale_syntax::ast::{
         BusMember, BusSubject, Ident, LocusMember, TopDecl,
     };
-    fn lookup<'a>(
-        segs: &[&str],
-        import_renames: &'a [(Vec<String>, String)],
-    ) -> Option<String> {
-        if let Some(s) = crate::ownership::stdlib_mangled_for_path(segs) {
-            return Some(s.to_string());
-        }
-        let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
-        import_renames
-            .iter()
-            .find(|(k, _)| k == &key)
-            .map(|(_, v)| v.clone())
-    }
+    use lookup_qualified_path as lookup;
     fn rewrite(
         subject: &mut BusSubject,
         import_renames: &[(Vec<String>, String)],

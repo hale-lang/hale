@@ -57,7 +57,7 @@ use hale_model::{
 use hale_syntax::ast::{
     Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
     KeyFilter, Literal, LocusDecl as AstLocusDecl, LocusMember,
-    Program, RecoveryModifier, RecoveryOp,
+    Program,
     ShedPolicy as AstShedPolicy, Stmt, TopDecl, TopicDecl, TypeExpr,
     UnmatchedPolicy,
 };
@@ -1755,60 +1755,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 _ => "?".to_string(),
             }
         }
+        // The recovery-op walk is the handler rows' (F.40 phase 1.4).
         fn walk_ops(
             b: &Block,
             ops: &mut Vec<String>,
             retry: &mut Option<i64>,
         ) {
-            for st in &b.stmts {
-                match st {
-                    Stmt::Recovery { op, modifier, .. } => {
-                        let n = match op {
-                            RecoveryOp::Restart => "restart",
-                            RecoveryOp::RestartInPlace => {
-                                "restart_in_place"
-                            }
-                            RecoveryOp::Quarantine => "quarantine",
-                            RecoveryOp::Reorganize => "reorganize",
-                            RecoveryOp::Bubble => "bubble",
-                        };
-                        if !ops.iter().any(|o| o == n) {
-                            ops.push(n.to_string());
-                        }
-                        if let Some(RecoveryModifier::For(
-                            Expr::Literal(Literal::Int(kk), _),
-                        )) = modifier
-                        {
-                            *retry = Some(*kk);
-                        }
-                    }
-                    Stmt::If(i) => {
-                        walk_ops(&i.then_block, ops, retry);
-                        let mut cur = i.else_block.as_deref();
-                        while let Some(eb) = cur {
-                            match eb {
-                                ElseBranch::Else(bb) => {
-                                    walk_ops(bb, ops, retry);
-                                    cur = None;
-                                }
-                                ElseBranch::ElseIf(ei) => {
-                                    walk_ops(
-                                        &ei.then_block,
-                                        ops,
-                                        retry,
-                                    );
-                                    cur = ei.else_block.as_deref();
-                                }
-                            }
-                        }
-                    }
-                    Stmt::While { body, .. }
-                    | Stmt::For { body, .. } => {
-                        walk_ops(body, ops, retry)
-                    }
-                    Stmt::Block(bb) => walk_ops(bb, ops, retry),
-                    _ => {}
+            let (found, bound) = crate::handler_routing::recovery_ops(b);
+            for op in found {
+                let n = crate::handler_routing::op_name(op);
+                if !ops.iter().any(|o| o == n) {
+                    ops.push(n.to_string());
                 }
+            }
+            if bound.is_some() {
+                *retry = bound;
             }
         }
         let mut authored: u32 = 0;

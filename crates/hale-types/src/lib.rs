@@ -31,6 +31,7 @@ pub mod effects;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
+pub mod handler_routing;
 pub mod claim_lowering;
 pub mod claims;
 pub mod model;

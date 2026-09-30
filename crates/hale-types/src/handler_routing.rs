@@ -1,0 +1,481 @@
+//! The `handler_routing` family (F.40 phase 1.4): which `on_failure`
+//! handler a failing child reaches.
+//!
+//! A failing child is routed to its parent's `on_failure` by the
+//! child's locus type alone, and the FIRST handler the parent declares
+//! for that type is the one that runs (the checker refuses a second:
+//! it could never run). [`handler_rows`] makes one row per handler,
+//! keyed by (parent locus, ordinal), with the child type resolved
+//! once, by [`child_locus_name`]; lowering, the checker and the model
+//! read the same row instead of naming the child three ways (codegen's
+//! lowered locus name, the checker's `Ty::display()`, the model's
+//! joined path).
+//!
+//! A row also carries the handler's recovery ops, from one walk over
+//! the whole body ([`recovery_ops`]): which restart ops it can invoke
+//! and the retry bound a `restart(c) for N` states. Restart-in-place
+//! attribution is a question over those ops.
+//!
+//! The row carries the handler's snapshot identity as a column, not as
+//! its key: every entry point and `resolve_program` mint it, but a test
+//! that builds a bundle without minting has `NodeId::NONE` there.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use hale_syntax::ast::{
+    Block, ElseBranch, Expr, IfStmt, Literal, LocusMember, LValueSeg,
+    MatchArmBody, NodeId, OrDisposition, Program, RecoveryModifier,
+    RecoveryOp, Stmt, TopDecl, TypeDeclBody, TypeExpr,
+};
+use hale_syntax::Span;
+
+/// The child type a handler names, resolved.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChildRef {
+    /// A locus this program declares, by its resolved name: the name
+    /// lowering gives it (an alias followed, a generic instantiation
+    /// mangled, a qualified path renamed).
+    Locus(String),
+    /// A type the program does not declare as a locus: the name as
+    /// written, its path joined by `::`.
+    External(String),
+}
+
+impl ChildRef {
+    /// The name the row is routed by: the resolved locus name, or the
+    /// written one.
+    pub fn name(&self) -> &str {
+        match self {
+            ChildRef::Locus(n) | ChildRef::External(n) => n,
+        }
+    }
+}
+
+/// One `on_failure` handler.
+#[derive(Debug, Clone)]
+pub struct HandlerRow {
+    /// The locus that declares the handler.
+    pub parent: String,
+    pub child: ChildRef,
+    /// The child type as written, its path joined by `::`: what a
+    /// reader who has no row for the resolved locus names it by.
+    pub written: String,
+    /// The error param's type, as written (its path joined by `::`).
+    pub error_type: String,
+    /// The handler's position among its parent's two-param handlers.
+    pub ordinal: u32,
+    /// The declaration's snapshot identity (`NONE` when unminted).
+    pub id: NodeId,
+    pub span: Span,
+    /// The recovery ops the body can invoke, deduplicated, in source
+    /// order.
+    pub ops: Vec<RecoveryOp>,
+    /// `restart(c) for N`'s literal `N`, the last one written.
+    pub retry_bound: Option<i64>,
+}
+
+/// Every handler of a program, with the routing index.
+#[derive(Debug, Clone, Default)]
+pub struct HandlerRouting {
+    rows: Vec<HandlerRow>,
+    /// parent → its rows' indices, in ordinal order.
+    by_parent: BTreeMap<String, Vec<usize>>,
+    /// (parent, child name) → the first row's index: the handler that
+    /// runs.
+    first: BTreeMap<(String, String), usize>,
+}
+
+impl HandlerRouting {
+    pub fn rows(&self) -> &[HandlerRow] {
+        &self.rows
+    }
+
+    /// The handler a failing child of type `child` reaches in `parent`:
+    /// the first one `parent` declares for that type.
+    pub fn route(&self, parent: &str, child: &str) -> Option<&HandlerRow> {
+        self.first
+            .get(&(parent.to_string(), child.to_string()))
+            .map(|&i| &self.rows[i])
+    }
+
+    /// `parent`'s handlers, in ordinal order.
+    pub fn handlers_of<'a>(
+        &'a self,
+        parent: &str,
+    ) -> impl Iterator<Item = &'a HandlerRow> + 'a {
+        self.by_parent
+            .get(parent)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.rows[i])
+    }
+
+    /// Whether some handler, in any parent, restarts a child of locus
+    /// type `child` in place: such a child keeps a copy of the params
+    /// it was built with.
+    pub fn restarts_in_place(&self, child: &str) -> bool {
+        self.rows.iter().any(|r| {
+            matches!(&r.child, ChildRef::Locus(n) if n == child)
+                && r.ops.contains(&RecoveryOp::RestartInPlace)
+        })
+    }
+
+    fn push(&mut self, row: HandlerRow) {
+        let i = self.rows.len();
+        self.by_parent.entry(row.parent.clone()).or_default().push(i);
+        self.first
+            .entry((row.parent.clone(), row.child.name().to_string()))
+            .or_insert(i);
+        self.rows.push(row);
+    }
+}
+
+/// What [`child_locus_name`] resolves against: the loci a program
+/// declares and its (non-generic) type aliases.
+#[derive(Debug, Clone, Default)]
+pub struct DeclaredNames {
+    pub loci: BTreeSet<String>,
+    pub aliases: BTreeMap<String, TypeExpr>,
+}
+
+impl DeclaredNames {
+    /// The loci and aliases of `programs`, module-nested ones included,
+    /// and the bundled stdlib's loci: every snapshot carries the
+    /// stdlib (the checker registers its surface, lowering merges its
+    /// declarations), so `std::bytes::BytesBuilder` names the same
+    /// locus whether or not the program handed here is the merged one.
+    pub fn of(programs: &[&Program]) -> DeclaredNames {
+        let mut out = DeclaredNames::default();
+        if let Some(std) = crate::stdlib_bodies::program() {
+            for item in hale_syntax::ast::flat_decls(&std.items) {
+                if let TopDecl::Locus(l) = item {
+                    out.loci.insert(l.name.name.clone());
+                }
+            }
+        }
+        for p in programs {
+            for item in hale_syntax::ast::flat_decls(&p.items) {
+                match item {
+                    TopDecl::Locus(l) => {
+                        out.loci.insert(l.name.name.clone());
+                    }
+                    TopDecl::Type(t) if t.generics.is_empty() => {
+                        if let TypeDeclBody::Alias(te) = &t.body {
+                            out.aliases.insert(t.name.name.clone(), te.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The one resolver of a child type (an `on_failure`'s first param, an
+/// `accept`'s param): the name lowering gives the locus it denotes.
+///
+/// - a single-segment name is itself; with generic arguments it is the
+///   monomorph's name (`mangle_generic_name`, as codegen mangles a
+///   generic locus), a locus when the template is one;
+/// - a qualified path resolves through the stdlib's path renames, then
+///   the build's cross-seed `import_renames` (the lookup the resolved
+///   program's qualified bus subjects use);
+/// - a type alias (`type A = B`) is followed to its target, as codegen
+///   follows it; a cyclic chain stops where it repeats.
+///
+/// The result is `Locus` when `declared` has a locus of that name (a
+/// monomorph when the template is one), else `External` with the name
+/// as written. This is where the three former namings could disagree:
+/// codegen resolved aliases, generics and qualified paths; the checker
+/// resolved aliases, generics, stdlib paths and imports; the model
+/// joined the written path and resolved nothing, so an alias, a
+/// generic instantiation or a qualified path named a different child
+/// there than the one lowering routed.
+pub fn child_locus_name(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    import_renames: &[(Vec<String>, String)],
+) -> ChildRef {
+    match resolve(te, declared, import_renames, &mut Vec::new()) {
+        Some(name) => ChildRef::Locus(name),
+        None => ChildRef::External(written_name(te)),
+    }
+}
+
+/// The locus name `te` denotes if it denotes one: `None` for a type no
+/// declared locus answers to.
+fn resolve(
+    te: &TypeExpr,
+    declared: &DeclaredNames,
+    renames: &[(Vec<String>, String)],
+    seen: &mut Vec<String>,
+) -> Option<String> {
+    let TypeExpr::Named { path, generic_args, .. } = te else {
+        return None;
+    };
+    let name = if path.segments.len() == 1 {
+        let name = &path.segments[0].name;
+        if !generic_args.is_empty() {
+            if !declared.loci.contains(name) {
+                return None;
+            }
+            return crate::mangle::mangle_generic_name(name, generic_args).ok();
+        }
+        name.clone()
+    } else {
+        if !generic_args.is_empty() {
+            return None;
+        }
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        crate::resolved::lookup_qualified_path(&segs, renames)?
+    };
+    match declared.aliases.get(&name) {
+        Some(target) if !seen.contains(&name) => {
+            seen.push(name);
+            resolve(target, declared, renames, seen)
+        }
+        Some(_) => None,
+        None => declared.loci.contains(&name).then_some(name),
+    }
+}
+
+/// A type as written, for a row that names no locus: a named type's
+/// path joined by `::`, a primitive by its name.
+fn written_name(te: &TypeExpr) -> String {
+    match te {
+        TypeExpr::Named { path, .. } => path
+            .segments
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::"),
+        TypeExpr::Primitive(p, _) => crate::ty::Ty::Prim(*p).display(),
+        _ => "?".to_string(),
+    }
+}
+
+/// Every `on_failure` handler of `program` that takes the two params
+/// (child, error) the signature rule requires. A handler with any other
+/// arity makes no row: the checker refuses it, and it is not the one
+/// that runs.
+pub fn handler_rows(
+    program: &Program,
+    import_renames: &[(Vec<String>, String)],
+) -> HandlerRouting {
+    let declared = DeclaredNames::of(&[program]);
+    let mut routing = HandlerRouting::default();
+    for item in hale_syntax::ast::flat_decls(&program.items) {
+        let TopDecl::Locus(l) = item else { continue };
+        let mut ordinal: u32 = 0;
+        for member in &l.members {
+            let LocusMember::Failure(fd) = member else { continue };
+            if fd.params.len() != 2 {
+                continue;
+            }
+            let (ops, retry_bound) = recovery_ops(&fd.body);
+            routing.push(HandlerRow {
+                parent: l.name.name.clone(),
+                child: child_locus_name(&fd.params[0].ty, &declared, import_renames),
+                written: written_name(&fd.params[0].ty),
+                error_type: written_name(&fd.params[1].ty),
+                ordinal,
+                id: fd.id,
+                span: fd.span,
+                ops,
+                retry_bound,
+            });
+            ordinal += 1;
+        }
+    }
+    routing
+}
+
+/// The recovery ops a handler body can invoke, deduplicated in source
+/// order, and the last literal retry bound (`restart(c) for N`). The
+/// walk reaches every statement, a block inside an expression (`if` /
+/// `match` used as a value) included: a recovery op missed here is a
+/// restart that re-evaluates nothing and restores nothing.
+pub fn recovery_ops(body: &Block) -> (Vec<RecoveryOp>, Option<i64>) {
+    let mut w = OpWalk::default();
+    w.block(body);
+    (w.ops, w.retry)
+}
+
+/// The name a recovery op is written with.
+pub fn op_name(op: RecoveryOp) -> &'static str {
+    match op {
+        RecoveryOp::Restart => "restart",
+        RecoveryOp::RestartInPlace => "restart_in_place",
+        RecoveryOp::Quarantine => "quarantine",
+        RecoveryOp::Reorganize => "reorganize",
+        RecoveryOp::Bubble => "bubble",
+    }
+}
+
+#[derive(Default)]
+struct OpWalk {
+    ops: Vec<RecoveryOp>,
+    retry: Option<i64>,
+}
+
+impl OpWalk {
+    fn block(&mut self, b: &Block) {
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = &b.tail {
+            self.expr(t);
+        }
+    }
+
+    fn if_stmt(&mut self, i: &IfStmt) {
+        self.expr(&i.cond);
+        self.block(&i.then_block);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b),
+            Some(ElseBranch::ElseIf(ei)) => self.if_stmt(ei),
+            None => {}
+        }
+    }
+
+    fn match_stmt(&mut self, m: &hale_syntax::ast::MatchStmt) {
+        self.expr(&m.scrutinee);
+        for arm in &m.arms {
+            if let Some(g) = &arm.guard {
+                self.expr(g);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e),
+                MatchArmBody::Block(b) => self.block(b),
+            }
+        }
+    }
+
+    fn or_disposition(&mut self, d: &OrDisposition) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+        }
+    }
+
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Recovery { op, args, modifier, .. } => {
+                if !self.ops.contains(op) {
+                    self.ops.push(*op);
+                }
+                for a in args {
+                    self.expr(a);
+                }
+                match modifier {
+                    Some(RecoveryModifier::For(Expr::Literal(Literal::Int(n), _))) => {
+                        self.retry = Some(*n);
+                    }
+                    Some(RecoveryModifier::For(e)) | Some(RecoveryModifier::Until(e)) => {
+                        self.expr(e)
+                    }
+                    None => {}
+                }
+            }
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => self.expr(value),
+            Stmt::Assign { target, value, .. } => {
+                for seg in &target.tail {
+                    if let LValueSeg::Index(e) = seg {
+                        self.expr(e);
+                    }
+                }
+                self.expr(value);
+            }
+            Stmt::If(i) => self.if_stmt(i),
+            Stmt::Match(m) => self.match_stmt(m),
+            Stmt::For { iter, body, .. } => {
+                self.expr(iter);
+                self.block(body);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body);
+            }
+            Stmt::Return(e, _) => {
+                if let Some(e) = e {
+                    self.expr(e);
+                }
+            }
+            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Block(b) => self.block(b),
+            Stmt::Violate { payload, .. } => {
+                if let Some(e) = payload {
+                    self.expr(e);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(d) = or_disposition {
+                    self.or_disposition(d);
+                }
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.expr(max);
+                self.block(body);
+            }
+            Stmt::Expr(e) => self.expr(e),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => {}
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_stmt(i),
+            Expr::Match(m) => self.match_stmt(m),
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(items, _) | Expr::Array(items, _) => {
+                for it in items {
+                    self.expr(it);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Sum(inner, _) | Expr::Prod(inner, _) => self.expr(inner),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                self.or_disposition(disposition);
+            }
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        }
+    }
+}
