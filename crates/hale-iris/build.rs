@@ -10,56 +10,25 @@
 //! size of the compiler: the front end, the type checker, codegen and
 //! its runtime C, and the stdlib crate's own tables.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-const DIRS: &[&str] = &[
-    "crates/hale-syntax/src",
-    "crates/hale-types/src",
-    "crates/hale-codegen/src",
-    "crates/hale-codegen/runtime",
-    "crates/hale-stdlib/src",
-];
-
-fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("hale-iris build.rs: cannot read {}: {e}", dir.display()))
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    entries.sort();
-    for p in entries {
-        if p.is_dir() {
-            files_under(&p, out);
-        } else {
-            out.push(p);
-        }
-    }
-}
-
+/// The directories this script hashes are the identity-covered
+/// crates' (`hale_graph::identity::COVERED_CRATES`, F.40 phase 0 step
+/// 0.4), through the shared walk and fold. The stdlib's `.hl` seeds
+/// also ride the key at run time through `hale_stdlib::AP_FILES`. A
+/// model-shape or graph-core change busts a cached host like a
+/// codegen change does.
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir")).join("../..");
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100_0000_01b3);
-        }
-    };
-    for dir in DIRS {
-        let d = root.join(dir);
+    let dirs = hale_graph::identity::covered_dirs(&root, &[]);
+    let mut files = Vec::new();
+    for d in &dirs {
         // A file's content, and the listing of the directory, so a
         // file added or removed re-runs this script too.
         println!("cargo:rerun-if-changed={}", d.display());
-        let mut files = Vec::new();
-        files_under(&d, &mut files);
-        for f in files {
-            let rel = f.strip_prefix(&root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
-            eat(rel.as_bytes());
-            eat(&[0]);
-            eat(&std::fs::read(&f).unwrap_or_else(|e| panic!("hale-iris build.rs: cannot read {}: {e}", f.display())));
-            eat(&[0]);
-        }
+        hale_graph::identity::walk_sources(d, &mut files);
     }
+    let h = hale_graph::identity::fold_files(&root, &files);
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rustc-env=HALE_COMPILER_SRC_HASH={h:016x}");
 }

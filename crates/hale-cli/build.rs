@@ -155,32 +155,21 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-fn walk_sources(dir: &PathBuf, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    let mut items: Vec<PathBuf> =
-        entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-    items.sort();
-    for p in items {
-        if p.is_dir() {
-            walk_sources(&p, out);
-        } else if matches!(
-            p.extension().and_then(|s| s.to_str()),
-            Some("rs") | Some("c") | Some("h") | Some("hl")
-        ) {
-            out.push(p);
-        }
-    }
-}
 
 /// GH #296 review round 3: the RECORD/REPLAY toolchain identity —
 /// a length-framed SHA-256 over every compiler-side source that
 /// shapes what a build emits or how a recording is produced,
-/// parsed, and served: the full hale-syntax / hale-types /
-/// hale-codegen / hale-cli source trees (which cover the parser,
-/// effect analysis, IR emit, EVERY runtime TU incl. lotus_obs.c,
-/// the stdlib seeds, and the replay CLI), plus the rustc version
-/// and the git commit when available. The 64-bit stale-CLI hash
-/// keeps its separate, narrower job.
+/// parsed, and served, plus the rustc version and the git commit
+/// when available. The crates it walks are the identity-covered
+/// set `hale_graph::identity::COVERED_CRATES` plus this CLI (F.40
+/// phase 0, step 0.4): the parser, the type checker, the model
+/// schema, the graph core, codegen with EVERY runtime TU incl.
+/// lotus_obs.c, the stdlib's tables AND its `.hl` seeds (which
+/// `hale-stdlib/src` embeds by `include_str!`, so hashing that
+/// crate's Rust alone missed them), and the replay CLI. A semantic
+/// producer moving between these crates cannot make a later edit
+/// invisible to replay identity. The 64-bit stale-CLI hash keeps
+/// its separate, narrower job.
 fn toolchain_digest(workspace_root: &PathBuf) {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
@@ -202,13 +191,9 @@ fn toolchain_digest(workspace_root: &PathBuf) {
         .map(|o| o.stdout)
         .unwrap_or_default();
     frame(&commit, &mut buf);
-    let mut files: Vec<PathBuf> = Vec::new();
-    for krate in ["hale-syntax", "hale-types", "hale-codegen", "hale-cli"] {
-        let root = workspace_root.join("crates").join(krate);
-        walk_sources(&root.join("src"), &mut files);
-        walk_sources(&root.join("runtime"), &mut files);
-    }
-    files.sort();
+    let mut files: Vec<PathBuf> =
+        hale_graph::identity::covered_files(workspace_root, &["hale-cli"]);
+    files.extend(hale_graph::identity::manifest_files(workspace_root));
     for f in &files {
         println!("cargo:rerun-if-changed={}", f.display());
         let rel = f
@@ -250,31 +235,15 @@ fn main() {
     }
 
     // Files we hash. codegen.rs is the IR-emit; lotus_arena.c is
-    // the C runtime bundled via include_str!; everything under
-    // stdlib/ is the Hale stdlib seed merged into every
-    // compiled program. Drift in any of these silently changes
-    // what `hale build` emits.
-    let mut paths: Vec<PathBuf> = vec![
-        codegen_dir.join("src").join("codegen.rs"),
-        codegen_dir.join("runtime").join("lotus_arena.c"),
-    ];
-
-    let stdlib_dir = codegen_dir.join("runtime").join("stdlib");
-    if let Ok(entries) = fs::read_dir(&stdlib_dir) {
-        let mut stdlib_files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    == Some("hl")
-            })
-            .map(|e| e.path())
-            .collect();
-        // Deterministic order across filesystems.
-        stdlib_files.sort();
-        paths.extend(stdlib_files);
-    }
+    // the C runtime bundled via include_str!; every `.hl` under
+    // crates/hale-stdlib/hl is the Hale stdlib seed merged into
+    // every compiled program (it moved there from
+    // codegen/runtime/stdlib, and this list followed it in F.40
+    // phase 0 — until then the stale hash covered two files).
+    // Drift in any of these silently changes what `hale build`
+    // emits. `stale.rs::compute_codegen_src_hash` takes the same list
+    // from `hale_graph::identity::stale_hash_paths`.
+    let paths: Vec<PathBuf> = hale_graph::identity::stale_hash_paths(&codegen_dir);
 
     let mut hasher = DefaultHasher::new();
     for path in &paths {

@@ -96,26 +96,14 @@ pub(crate) fn check_stale_dna(codegen_dir: &Path) {
     }
 }
 
+/// The same walk as `build.rs`'s `HALE_CODEGEN_SRC_HASH`, with the
+/// same path strings and the shared `hale_graph::identity` walk:
+/// codegen.rs, lotus_arena.c and every `.hl` under
+/// `crates/hale-stdlib/hl` (F.40 phase 0: the list followed the
+/// stdlib when it moved out of `codegen/runtime/stdlib`; until then
+/// this hash covered two files).
 pub(crate) fn compute_codegen_src_hash(codegen_dir: &Path) -> String {
-    let mut paths: Vec<PathBuf> = vec![
-        codegen_dir.join("src").join("codegen.rs"),
-        codegen_dir.join("runtime").join("lotus_arena.c"),
-    ];
-    let stdlib_dir = codegen_dir.join("runtime").join("stdlib");
-    if let Ok(entries) = fs::read_dir(&stdlib_dir) {
-        let mut stdlib_files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    == Some("hl")
-            })
-            .map(|e| e.path())
-            .collect();
-        stdlib_files.sort();
-        paths.extend(stdlib_files);
-    }
+    let paths: Vec<PathBuf> = hale_graph::identity::stale_hash_paths(codegen_dir);
     let mut hasher = DefaultHasher::new();
     for path in &paths {
         if let Ok(bytes) = fs::read(path) {
@@ -126,3 +114,4 @@ pub(crate) fn compute_codegen_src_hash(codegen_dir: &Path) -> String {
     }
     format!("{:016x}", hasher.finish())
 }
+

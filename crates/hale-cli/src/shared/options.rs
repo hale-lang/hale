@@ -641,10 +641,12 @@ pub(crate) fn inject_adopt(prog: &mut hale_syntax::ast::Program, name: &str) -> 
 /// GH #296: build-manifest identity — a FRAMED SHA-256 over the
 /// build inputs this binary can see:
 ///
-///   - the toolchain source hash (`HALE_CODEGEN_SRC_HASH`, computed
-///     by build.rs over the codegen + runtime + stdlib sources this
-///     CLI was linked against — so two different compiler/runtime
-///     commits under one version differ);
+///   - the toolchain source hash (`HALE_TOOLCHAIN_SHA256`, computed
+///     by build.rs over the identity-covered crates this CLI was
+///     linked against — parser, checker, model, graph core, codegen
+///     and its runtime, the stdlib's tables and `.hl` seeds, and this
+///     CLI — so two different compiler commits under one version
+///     differ);
 ///   - the CLI crate version;
 ///   - the build options that alter emitted code;
 ///   - every source file's FULL normalized path, byte length, and
