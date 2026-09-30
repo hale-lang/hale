@@ -75,7 +75,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          compile + run`) and its `kept    <path>` outcome column",
     ),
     (
-        "crates/hale-cli/src/shared/imports.rs",
+        "crates/hale-frontend/src/imports.rs",
         "resolve_imports",
         "the `[import]` trace's aligned phase column \
          (HALE_IMPORT_DEBUG=1)",

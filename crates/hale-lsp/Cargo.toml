@@ -7,6 +7,7 @@ license.workspace = true
 description = "Hale language server — compiled into the hale binary (`hale lsp`)"
 
 [dependencies]
+hale-frontend = { path = "../hale-frontend" }
 hale-syntax = { path = "../hale-syntax" }
 hale-stdlib = { path = "../hale-stdlib" }
 hale-types = { path = "../hale-types" }

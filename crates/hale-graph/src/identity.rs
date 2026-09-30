@@ -32,12 +32,17 @@ use std::path::{Path, PathBuf};
 /// the CLI as its own extra, since the CLI produces and serves
 /// recordings. It is last so the replay identity's file order, and so
 /// its digest, is what it was when the CLI was that extra.
+///
+/// `hale-frontend` loads and merges the seeds and drives the mangling
+/// (F.40 phase 2.1a moved it out of the CLI), so it shapes every
+/// compiled program.
 pub const COVERED_CRATES: &[&str] = &[
     "hale-syntax",
     "hale-types",
     "hale-model",
     "hale-graph",
     "hale-codegen",
+    "hale-frontend",
     "hale-stdlib",
     "hale-cli",
 ];

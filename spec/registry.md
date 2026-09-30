@@ -2,13 +2,13 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 174 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
 | family | layer | state | kind | producer | legacy | answers |
 |---|---|---|---|---|---|---|
-| `seed_loading` | Layer 1 | Migrating | desugar | — | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
+| `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 4 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 6 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | — | 11 | Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
@@ -60,12 +60,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** .hl files; import directives; the workspace root (hale.toml); editor overlays (LSP)
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer (today's authority, migrating).** `crates/hale-frontend/src/frontend.rs` · `parse_with_imports`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/shared/frontend.rs` · `parse_with_imports` — the file entry: parse, EffectTable::from_seed, resolve_imports, alias scoping, qualified-path renames. *Removed when:* phase 2: the shared frontend owns loading.
-- `crates/hale-cli/src/shared/frontend.rs` · `collect_checkable` — the directory entry for `hale check`; short-circuits a single file with no imports. *Removed when:* phase 2.
+- `crates/hale-frontend/src/frontend.rs` · `collect_checkable` — the directory entry for `hale check`; short-circuits a single file with no imports. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/build.rs` · `run_build` — a hand-copied directory body inside the build verb. *Removed when:* phase 2: one loader.
 - `crates/hale-cli/src/verbs/run.rs` · `run_program` — a hand-copied directory body inside the run verb. *Removed when:* phase 2: one loader.
 - `crates/hale-lsp/src/lib.rs` · `analyze_seed` — the changed file's parent directory only; resolves no `import`; the same body is inlined into `check_and_publish`. *Removed when:* phase 2: the LSP loads through the shared frontend with an overlay source provider.
@@ -89,11 +88,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** import aliases; the seed cache; hale_stdlib::PATH_RENAMES; declaration names
 
-**Producer (today's authority, migrating).** `crates/hale-cli/src/shared/imports.rs` · `resolve_imports`
+**Producer (today's authority, migrating).** `crates/hale-frontend/src/imports.rs` · `resolve_imports`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/shared/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* the snapshot's seed names the library (phase 2, when the frontend owns loading).
+- `crates/hale-frontend/src/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* the snapshot's seed names the library (phase 2, when the frontend owns loading).
 - `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope. *Removed when:* one alias resolution shared by checker and lowering.
 - `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases` — rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`. *Removed when:* one alias resolution shared by checker and lowering.
 - `crates/hale-types/src/resolved.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in the resolved-program step's clone. *Removed when:* one resolution, shared.
@@ -192,11 +191,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** effect_names / defs per program
 
-**Producer (today's authority, migrating).** `crates/hale-cli/src/verbs/check/run_impl.rs` · `EffectTable`
+**Producer (today's authority, migrating).** `crates/hale-frontend/src/frontend.rs` · `EffectTable`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/shared/frontend.rs` · `merge_programs` — the merge remaps class indices by name. *Removed when:* the table is a declaration-layer row keyed by identity.
+- `crates/hale-frontend/src/frontend.rs` · `merge_programs` — the merge remaps class indices by name. *Removed when:* the table is a declaration-layer row keyed by identity.
 - `crates/hale-types/src/effects.rs` · `effect_names_of` — takes the first non-empty program's table; expansion of a class is copied five times across hale-types. *Removed when:* one expansion.
 
 **Consumers.** check; effects; claims
@@ -1364,7 +1363,7 @@ A registered rule without an evaluator fails the compiler's own build.
 
 ## Frozen Debug renderings
 
-Every Debug rendering with no prose around it (a `?}` placeholder in a formatting macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse to the fragment. A message with prose around its `{:?}` is not listed: it is read by a person. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
+Every Debug rendering with no prose around it (a `?}` placeholder in a formatting macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, `hale-codegen`, `hale-frontend`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse to the fragment. A message with prose around its `{:?}` is not listed: it is read by a person. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
 
 | path | invocation | count | verdict |
 |---|---|---|---|

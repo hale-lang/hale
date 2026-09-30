@@ -8,6 +8,7 @@ members = [
     "crates/hale-model",
     "crates/hale-graph",
     "crates/hale-codegen",
+    "crates/hale-frontend",
     "crates/hale-lsp",
     "crates/hale-cli",
     "crates/hale-iris",

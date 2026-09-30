@@ -35,7 +35,7 @@
 //! 3. **Debug renderings are frozen.** A value rendered with `{:?}`
 //!    and read back as text is the cheapest way to derive without
 //!    saying so. Every formatting-macro invocation whose template is a
-//!    bare rendering (a `?}` placeholder and no prose) in the six
+//!    bare rendering (a `?}` placeholder and no prose) in the seven
 //!    scanned crates is listed with a verdict and a count, multi-line
 //!    invocations included; a new one fails. A message with prose
 //!    around its `{:?}` is read by a person and is not a derivation.
@@ -62,6 +62,7 @@ const SEMANTIC_CRATES: &[&str] = &[
     "hale-types",
     "hale-model",
     "hale-codegen",
+    "hale-frontend",
     "hale-cli",
     "hale-lsp",
 ];
@@ -74,6 +75,7 @@ const ALL_CRATES: &[&str] = &[
     "hale-types",
     "hale-model",
     "hale-codegen",
+    "hale-frontend",
     "hale-cli",
     "hale-lsp",
     "hale-iris",
@@ -401,6 +403,7 @@ const DEBUG_SCAN_CRATES: &[&str] = &[
     "hale-types",
     "hale-model",
     "hale-codegen",
+    "hale-frontend",
     "hale-cli",
     "hale-lsp",
 ];

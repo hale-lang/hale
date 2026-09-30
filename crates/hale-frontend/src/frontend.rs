@@ -1,6 +1,5 @@
 use super::imports::AliasScopes;
 use std::collections::BTreeMap;
-use crate::EffectTable;
 use std::process::ExitCode;
 use super::imports::FileClaims;
 use super::imports::ImportDiag;
@@ -37,7 +36,7 @@ pub struct EntryCtx {
     pub imports: Vec<hale_syntax::ast::Import>,
 }
 
-pub(crate) fn parse_with_imports(
+pub fn parse_with_imports(
     entry: &Path,
 ) -> Result<
     (
@@ -204,7 +203,7 @@ pub(crate) fn parse_with_imports(
     // `mangled_for_path` still handles expression-position
     // qualified paths separately — those don't round-trip
     // through typecheck so they stay opaque to it.
-    hale_codegen::mangle::apply_qualified_path_renames(&mut merged, &renames);
+    hale_types::mangle::apply_qualified_path_renames(&mut merged, &renames);
     let ctx = EntryCtx {
         entry_dir,
         workspace_root,
@@ -213,7 +212,7 @@ pub(crate) fn parse_with_imports(
     Ok((merged, renames, sources, file_bases, ctx))
 }
 
-pub(crate) fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
+pub fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
     match t {
         ImportTarget::SingleFile(p) => Ok(vec![p.clone()]),
         ImportTarget::Directory(d) => {
@@ -237,7 +236,7 @@ pub(crate) fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, Str
     }
 }
 
-pub(crate) fn collect_ap_files(target: &Path) -> Result<Vec<PathBuf>, String> {
+pub fn collect_ap_files(target: &Path) -> Result<Vec<PathBuf>, String> {
     if target.is_file() {
         return Ok(vec![target.to_path_buf()]);
     }
@@ -259,7 +258,7 @@ pub(crate) fn collect_ap_files(target: &Path) -> Result<Vec<PathBuf>, String> {
     Err(format!("not a file or directory: {}", target.display()))
 }
 
-pub(crate) fn parse_files(
+pub fn parse_files(
     files: &[PathBuf],
 ) -> Result<
     (
@@ -339,16 +338,16 @@ pub(crate) fn parse_files(
 /// offsets, and the source map carries the files that did NOT parse
 /// too — they have no program, but their text is what a span resolves
 /// against.
-pub(crate) struct ParseFailure {
-    pub(crate) diags: Vec<hale_syntax::Diag>,
+pub struct ParseFailure {
+    pub diags: Vec<hale_syntax::Diag>,
     /// GH #806: the target's own files that would not OPEN. They have
     /// no diagnostic — there is no text to raise one against — and
     /// they used to be printed here and counted only as a non-zero
     /// exit, so `check --json` on a seed it could not read emitted
     /// nothing at all.
-    pub(crate) io: Vec<IoDiag>,
-    pub(crate) file_bases: Vec<(u32, PathBuf, u32)>,
-    pub(crate) sources: BTreeMap<PathBuf, String>,
+    pub io: Vec<IoDiag>,
+    pub file_bases: Vec<(u32, PathBuf, u32)>,
+    pub sources: BTreeMap<PathBuf, String>,
 }
 
 impl ParseFailure {
@@ -356,7 +355,7 @@ impl ParseFailure {
     /// always printed, neither of which has a machine-readable channel
     /// — and hand back the exit status. `check` and `verify` take the
     /// other road, through [`CheckableFailure::report`].
-    pub(crate) fn report_text(&self) -> ExitCode {
+    pub fn report_text(&self) -> ExitCode {
         // The unreadable files first, in the order the walk hit them:
         // that is where they printed from when the read failed, and a
         // file that never opened explains anything else the seed is
@@ -388,19 +387,19 @@ impl ParseFailure {
 /// `run_check_impl_labelled` records. The file map travels with them
 /// because the spans are bundle-global offsets into files the caller
 /// never saw.
-pub(crate) struct CheckableFailure {
-    pub(crate) code: u8,
-    pub(crate) diags: Vec<hale_syntax::Diag>,
-    pub(crate) io: Vec<IoDiag>,
-    pub(crate) file_bases: Vec<(u32, PathBuf, u32)>,
-    pub(crate) sources: BTreeMap<PathBuf, String>,
+pub struct CheckableFailure {
+    pub code: u8,
+    pub diags: Vec<hale_syntax::Diag>,
+    pub io: Vec<IoDiag>,
+    pub file_bases: Vec<(u32, PathBuf, u32)>,
+    pub sources: BTreeMap<PathBuf, String>,
 }
 
 impl CheckableFailure {
     /// GH #806: an input that could not be read. Nothing has been
     /// printed yet — [`Self::report`] prints the sentence on stderr
     /// in text mode and the record on stdout under `--json`.
-    pub(crate) fn from_io(io: IoDiag) -> Self {
+    pub fn from_io(io: IoDiag) -> Self {
         Self {
             code: 1,
             diags: Vec::new(),
@@ -414,7 +413,7 @@ impl CheckableFailure {
     /// here rather than printed by `parse_files`, so `check --json`
     /// and `verify --json` report a syntactic failure as records like
     /// every other finding instead of as an empty stream.
-    pub(crate) fn from_parse(f: ParseFailure) -> Self {
+    pub fn from_parse(f: ParseFailure) -> Self {
         Self {
             code: 1,
             diags: f.diags,
@@ -428,7 +427,7 @@ impl CheckableFailure {
     /// go through — so `--json` carries the offending file, line and
     /// message, and a span resolves against the file it actually lives
     /// in — then hand back the exit status.
-    pub(crate) fn report(&self) -> u8 {
+    pub fn report(&self) -> u8 {
         let json_mode = std::env::args().any(|a| a == "--json");
         // GH #806: an unreadable input is a record too, at line 0 /
         // col 0 — it has no position, because it has no text. It
@@ -467,7 +466,7 @@ impl CheckableFailure {
 /// union of their imports — the same shapes `hale build` handles, so
 /// `check` and `build` finally agree about what a program contains.
 #[allow(clippy::type_complexity)]
-pub(crate) fn collect_checkable(
+pub fn collect_checkable(
     target: &Path,
 ) -> Result<
     (
@@ -656,7 +655,7 @@ pub(crate) fn collect_checkable(
     // Same pre-pass `run`/`build` apply: rewrite qualified-path
     // TypeExprs to their mangled targets, so a cross-seed payload
     // type resolves instead of rendering as `?`.
-    hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
+    hale_types::mangle::apply_qualified_path_renames(&mut program, &renames);
 
     let mut out: BTreeMap<PathBuf, Program> = BTreeMap::new();
     out.insert(target.to_path_buf(), program);
@@ -671,7 +670,7 @@ pub(crate) fn collect_checkable(
 /// a Linux-built one. The snapshot seeds each site from it: `check`
 /// mints with it, and every verb that builds mints and resolves with the
 /// same map, so a site has the same seed on every path.
-pub(crate) fn source_map(
+pub fn source_map(
     target: &Path,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
@@ -765,7 +764,7 @@ pub(crate) fn source_map(
 
 /// Drop WARNING-level diagnostics whose span resolves to a file the
 /// check target does not own. Errors always survive.
-pub(crate) fn retain_owned_advisories(
+pub fn retain_owned_advisories(
     diags: &mut Vec<hale_syntax::Diag>,
     own_files: &std::collections::BTreeSet<PathBuf>,
     file_bases: &[(u32, PathBuf, u32)],
@@ -797,7 +796,7 @@ pub(crate) fn retain_owned_advisories(
 
 /// Which file a merged span belongs to, via the per-file virtual
 /// base offsets `resolve_imports` records.
-pub(crate) fn file_of_span(
+pub fn file_of_span(
     pos: u32,
     file_bases: &[(u32, PathBuf, u32)],
 ) -> Option<PathBuf> {
@@ -821,7 +820,7 @@ pub(crate) fn file_of_span(
 /// `parse_with_imports` but without the import-following
 /// (directory targets see every file by enumeration; nothing to
 /// follow).
-pub(crate) fn merge_programs<'a, I>(programs: I) -> Option<Program>
+pub fn merge_programs<'a, I>(programs: I) -> Option<Program>
 where
     I: IntoIterator<Item = &'a Program>,
 {
@@ -855,4 +854,90 @@ where
         span: first.span,
     };
     Some(merged)
+}
+
+/// #345: the merged user effect-class table.
+///
+/// Carries declared-ness, not just names. A name reaches the table two
+/// ways — an `effect NAME;` DECLARATION, or a mere REFERENCE in an
+/// `@effects(...)` clause — and only the first makes the class real.
+/// Without the distinction a typo interns a fresh class that nothing
+/// carries, so `@effects(none: { monye })` is vacuously satisfied and
+/// reports success: the exact silently-false certificate this analysis
+/// exists to rule out.
+#[derive(Default)]
+pub struct EffectTable {
+    pub names: Vec<String>,
+    pub declared: std::collections::BTreeSet<String>,
+    /// #354: composed definitions, index-parallel to `names`. Members
+    /// are remapped into THIS table on absorb — a definition holds
+    /// `EffectClass::User` indices, so carrying it across a seed
+    /// boundary without remapping aliases it exactly like any other
+    /// class reference.
+    pub defs: Vec<Option<Vec<hale_syntax::ast::EffectClass>>>,
+}
+
+impl EffectTable {
+    pub fn from_seed(p: &Program) -> Self {
+        let mut t = EffectTable::default();
+        t.absorb(p);
+        t
+    }
+
+    /// Union `p`'s table into this one and return the index map that
+    /// rewrites `p`'s `User(i)` into this table.
+    pub fn absorb(&mut self, p: &Program) -> Vec<u16> {
+        for &i in &p.declared_effects {
+            if let Some(n) = p.effect_names.get(i as usize) {
+                self.declared.insert(n.clone());
+            }
+        }
+        let map: Vec<u16> = p
+            .effect_names
+            .iter()
+            .map(|n| {
+                let at = self
+                    .names
+                    .iter()
+                    .position(|e| e == n)
+                    .unwrap_or_else(|| {
+                        self.names.push(n.clone());
+                        self.defs.push(None);
+                        self.names.len() - 1
+                    });
+                at as u16
+            })
+            .collect();
+        // Carry definitions across, remapping their MEMBERS. A member
+        // is a `User(i)` in the source seed's numbering; storing it
+        // unremapped would silently point the definition at whatever
+        // class holds that index in the merged table.
+        for (i, def) in p.effect_defs.iter().enumerate() {
+            let Some(members) = def else { continue };
+            let Some(&to) = map.get(i) else { continue };
+            let remapped: Vec<hale_syntax::ast::EffectClass> = members
+                .iter()
+                .map(|m| match m {
+                    hale_syntax::ast::EffectClass::User(j) => map
+                        .get(*j as usize)
+                        .map(|&k| hale_syntax::ast::EffectClass::User(k))
+                        .unwrap_or(*m),
+                    other => *other,
+                })
+                .collect();
+            if let Some(slot) = self.defs.get_mut(to as usize) {
+                *slot = Some(remapped);
+            }
+        }
+        map
+    }
+
+    pub fn declared_indices(&self) -> Vec<u16> {
+        self.names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| self.declared.contains(*n))
+            .map(|(i, _)| i as u16)
+            .collect()
+    }
 }

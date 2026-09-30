@@ -247,8 +247,8 @@ const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
 const CG_TARGET: &str = "crates/hale-codegen/src/target.rs";
 const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
-const FRONTEND: &str = "crates/hale-cli/src/shared/frontend.rs";
-const IMPORTS: &str = "crates/hale-cli/src/shared/imports.rs";
+const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
+const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const OPTIONS: &str = "crates/hale-cli/src/shared/options.rs";
 const BUILD_ENV: &str = "crates/hale-cli/src/build_env.rs";
 const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
@@ -282,9 +282,8 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Desugar,
         answers: "Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases.",
         inputs: &[".hl files", "import directives", "the workspace root (hale.toml)", "editor overlays (LSP)"],
-        producer: None,
+        producer: Some(site(FRONTEND, "parse_with_imports")),
         legacy: &[
-            legacy(FRONTEND, "parse_with_imports", "the file entry: parse, EffectTable::from_seed, resolve_imports, alias scoping, qualified-path renames", "phase 2: the shared frontend owns loading"),
             legacy(FRONTEND, "collect_checkable", "the directory entry for `hale check`; short-circuits a single file with no imports", "phase 2"),
             legacy(V_BUILD, "run_build", "a hand-copied directory body inside the build verb", "phase 2: one loader"),
             legacy(V_RUN, "run_program", "a hand-copied directory body inside the run verb", "phase 2: one loader"),
@@ -390,7 +389,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index.",
         inputs: &["effect_names / defs per program"],
-        producer: Some(site(V_CHECK, "EffectTable")),
+        producer: Some(site(FRONTEND, "EffectTable")),
         legacy: &[
             legacy(FRONTEND, "merge_programs", "the merge remaps class indices by name", "the table is a declaration-layer row keyed by identity"),
             legacy(EFFECTS, "effect_names_of", "takes the first non-empty program's table; expansion of a class is copied five times across hale-types", "one expansion"),
@@ -1436,8 +1435,8 @@ pub const RULES: &[Rule] = &[
 
 /// Every Debug rendering with no prose around it (a `?}` placeholder in a
 /// formatting macro whose template holds no space: a value, never a
-/// message) in hale-syntax, hale-types, hale-model, hale-codegen, hale-cli
-/// and hale-lsp, frozen with a verdict and an invocation count. The
+/// message) in hale-syntax, hale-types, hale-model, hale-codegen,
+/// hale-frontend, hale-cli and hale-lsp, frozen with a verdict and an invocation count. The
 /// fragment is the invocation collapsed to one line, so a multi-line
 /// call is seen. A new one, or a changed count, fails registry_guard.rs.
 pub const DEBUG_SCANS: &[DebugScan] = &[
@@ -1706,7 +1705,7 @@ pub fn render_markdown() -> String {
     o.push_str(
         "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \
          macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, \
-         `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse \
+         `hale-codegen`, `hale-frontend`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse \
          to the fragment. A message with prose around its `{:?}` is not listed: it is read by a \
          person. A site that *decides* derives a fact from a Debug string and is permitted only \
          until its family's table replaces it; a new site fails the guard.\n\n",
