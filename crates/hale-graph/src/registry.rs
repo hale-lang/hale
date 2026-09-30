@@ -562,7 +562,7 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Locus,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`.",
+        answers: "Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.",
         inputs: &["locus declarations (params, accept, release)", "bodies (let, assign, return, field initialisers, placement entries)", "fresh factories", "returned bindings"],
         producer: Some(site(TY_OWN, "resolve_owners")),
         legacy: &[
@@ -571,10 +571,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it", "one factory row"),
             legacy(CHECK, "fresh_locus_factory_products", "the checker's mirror of the factory set", "one factory row"),
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
-            legacy(TY_OWN, "compute_returned_bindings","which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string", "keyed by snapshot identity (phase 1.2)"),
-            legacy(TY_OWN, "returned_bindings", "the per-body walk the row above calls", "phase 1.2"),
-            legacy(TY_OWN, "compute_assign_moved_bindings", "bindings moved by `=`, keyed by name", "phase 1.2"),
-            legacy(TY_OWN, "compute_stack_array_bindings", "array repeats that never escape, keyed by name", "phase 1.2"),
             legacy(OWNERSHIP_GRAPH, "compute_forwarding_sets", "the interests a locus forwards for bubbling", "phase 1.3"),
             legacy(OWNERSHIP_GRAPH, "classify_owner_kind", "owner classification for the bubble plan", "phase 1.3"),
             legacy(OWNERSHIP_GRAPH, "classify_edge", "edge classification for the bubble plan", "phase 1.3"),
@@ -591,7 +587,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/owner_table.rs", "crates/hale-codegen/tests/ownership_matrix.rs", "crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/ownership_bubble.rs"],
         spec: &["spec/decisions.md F.39", "spec/semantics.md § Dissolve timing rules"],
-        owned: &[],
+        owned: &[site(TY_OWN, "resolve_binding_facts")],
         seams: &[
             Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 1)] },
@@ -1230,7 +1226,7 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[
             legacy(TY_OWN, "ExprId", "F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass", "the snapshot mints every id (phase 1.1)"),
-            legacy(TY_OWN, "BindingKey", "a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210)", "same"),
+            legacy(TY_OWN, "BindingKey", "use sites inside the returned-bindings walk are resolved by span (identifiers are not minted sites); the row is keyed by the `let`'s snapshot identity", "use-site identity (phase 1.1 follow-up)"),
             legacy(M_IDS, "FunctionId", "model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings)", "same"),
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),

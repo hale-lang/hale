@@ -114,22 +114,20 @@
 //!
 //! A `let` asks three more questions of its own binding: does the
 //! body hand it back, does a bare `=` move a value through it, and is
-//! it a `[c; N]` that never escapes the frame. They used to be three
-//! maps keyed by the LLVM function name, each answering by binding
-//! NAME, and lowering joined them to the `let` through `current_fn`'s
-//! name. [`resolve_binding_facts`] answers them once per binding site
-//! instead, into [`OwnerTable::binding_facts`], keyed by the `let`'s
-//! snapshot identity (F.40 phase 1.2b): the walks are the old ones,
-//! over the same bodies, and a `let` in a body none of them walked
-//! has a row that says `false` three times, which is what the join
-//! answered for a name it had no entry for.
+//! it a `[c; N]` that never escapes the frame. [`resolve_binding_facts`]
+//! answers them once per binding site, into
+//! [`OwnerTable::binding_facts`], keyed by the `let`'s snapshot
+//! identity (F.40 phase 1.2b), and the `let` lowering reads its own
+//! row. A `let` in a body no walk reads has a row that says `false`
+//! three times, and so does a `let` with no row at all. A generic fn's
+//! monomorphs keep the template's identities, so a monomorph's `let`
+//! reads the template's answer.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     AssignOp, Block, ElseBranch, Expr, FnDecl, Ident, IfStmt, LValueSeg,
-    LifecycleKind, LocusDecl, LocusMember, MatchArmBody, MatchStmt, ModeKind,
-    ModuleDecl, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
+    LocusDecl, LocusMember, MatchArmBody, MatchStmt, ModuleDecl, NodeId, OrDisposition, Param, ParamInit, Pattern, Program,
     QualifiedName, RecoveryModifier, Stmt, StructInit, TopDecl, TypeExpr,
 };
 use hale_syntax::Span;
@@ -343,11 +341,6 @@ impl OwnerTable {
             return None;
         }
         self.bindings.get(&id.0)
-    }
-
-    /// Every binding row, in snapshot-index order.
-    pub fn binding_rows(&self) -> impl Iterator<Item = (&u32, &BindingFacts)> {
-        self.bindings.iter()
     }
 
     /// The id this pass gave the node, or `None` when the node carries
@@ -760,66 +753,17 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
 }
 
 /// The bindings a body hands back (see [`ReturnedBindings`]).
+///
+/// GH #383: distinct from `compute_fresh_locus_factories` and needed
+/// separately: a fn that does NOT qualify as a clean factory can still
+/// return a locus it bound from one. `nn::forward` is the case that
+/// proved it — it binds several factory results, returns one, and
+/// fails the freshness walk; the caller-scoped dissolve fired on the
+/// binding it hands back and the caller read zeros. Conservative by
+/// construction: a `true` merely suppresses a dissolve, which is the
+/// old leak — never a double-free.
 pub fn returned_bindings(b: &Block) -> ReturnedBindings {
     body_bindings(b).returned
-}
-
-/// GH #383 — for EVERY free fn, the local bindings it hands back via
-/// `return <ident>;` (or a tail ident), each resolved to the `let` in
-/// scope where the return spells it (GH #1140: an inner `let` that
-/// shadows the name is another binding, reclaimed like any other).
-///
-/// Distinct from `compute_fresh_locus_factories` and needed
-/// separately: a fn that does NOT qualify as a clean factory can
-/// still return a locus it bound from one. `nn::forward` is the
-/// case that proved it — it binds several factory results, returns
-/// one, and fails the freshness walk. Without this set, the caller-
-/// scoped dissolve fired on the binding the fn hands back and the
-/// caller received a dissolved locus (reads came back as zeros).
-///
-/// Conservative by construction: membership merely suppresses a
-/// dissolve, which is the old leak — never a double-free.
-pub fn compute_returned_bindings(
-    program: &Program,
-) -> BTreeMap<String, ReturnedBindings> {
-    let mut m: BTreeMap<String, ReturnedBindings> = BTreeMap::new();
-    // GH #884: module nesting flattened — the fn and the mode this
-    // keys by are lowered whatever their brace depth, so the facts
-    // they are looked up under have to be computed at that depth too.
-    for item in hale_syntax::ast::flat_decls(&program.items) {
-        match item {
-            TopDecl::Fn(f) => {
-                m.insert(f.name.name.clone(), returned_bindings(&f.body));
-            }
-            // A `mode` is the third shape that legitimately returns a
-            // locus (alongside a free fn) — it IS the locus-valued
-            // projection surface. This pass predated modes and walked
-            // only `TopDecl::Fn`, so a mode returning a factory-built
-            // locus had no returned-bindings entry: the GH #383 dissolve
-            // fired on the binding the caller now owns, handing back a
-            // reclaimed locus (empty reads, or another projection's
-            // recycled storage). Key by `{locus}.{mode}` to match the
-            // LLVM function name `current_fn` reports at the dissolve
-            // decision (see locus/decl.rs — same `{}.{}` convention).
-            TopDecl::Locus(l) => {
-                for member in &l.members {
-                    if let LocusMember::Mode(md) = member {
-                        let mode_name = match md.kind {
-                            ModeKind::Bulk => "bulk",
-                            ModeKind::Harmonic => "harmonic",
-                            ModeKind::Resolution => "resolution",
-                        };
-                        m.insert(
-                            format!("{}.{}", l.name.name, mode_name),
-                            returned_bindings(&md.body),
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    m
 }
 
 // ===================================================================
@@ -884,27 +828,6 @@ pub fn assign_moved_names(b: &Block) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     walk(b, &mut out);
     out
-}
-
-/// The legacy producer the binding rows replace: [`assign_moved_names`]
-/// per body, keyed by the LLVM function name the body lowers under
-/// (`fn_name`, `{locus}.{member}`, `{locus}.{mode}`), for lowering's
-/// `current_fn` join. Kept for the binding-facts shadow; the rows
-/// answer the same question per site.
-pub fn compute_assign_moved_bindings(
-    program: &Program,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (key, walks, _, body) in binding_bodies(program) {
-        if !walks.assign_moved {
-            continue;
-        }
-        let set = assign_moved_names(body);
-        if !set.is_empty() {
-            m.insert(key, set);
-        }
-    }
-    m
 }
 
 /// GH #767: the `let` bindings of one body whose initializer is a
@@ -1180,42 +1103,9 @@ pub fn stack_array_names(params: &[Param], body: &Block) -> BTreeSet<String> {
     out
 }
 
-/// The legacy producer the binding rows replace: [`stack_array_names`]
-/// per body, keyed by the LLVM function name the body lowers under,
-/// for lowering's `current_fn` join. A duplicate key keeps only the
-/// INTERSECTION, so a name collision can only ever shrink the set.
-/// Kept for the binding-facts shadow; the rows answer the same
-/// question per site.
-pub fn compute_stack_array_bindings(
-    program: &Program,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (key, walks, params, body) in binding_bodies(program) {
-        if !walks.stack_array {
-            continue;
-        }
-        let set = stack_array_names(params, body);
-        match m.entry(key) {
-            std::collections::btree_map::Entry::Vacant(v) => {
-                if !set.is_empty() {
-                    v.insert(set);
-                }
-            }
-            // Two declarations landed on one LLVM name. Keep only what
-            // holds for both.
-            std::collections::btree_map::Entry::Occupied(mut o) => {
-                o.get_mut().retain(|n| set.contains(n));
-            }
-        }
-    }
-    m.retain(|_, v| !v.is_empty());
-    m
-}
-
-/// Which of the three walks a body gets: the bodies each old map
-/// walked, unchanged. The returned-bindings walk reads free fns and
-/// modes; the `=` walk adds locus fns; the stack-array walk adds the
-/// lifecycles too.
+/// Which of the three walks a body gets. The returned-bindings walk
+/// reads free fns and modes; the `=` walk adds locus fns; the
+/// stack-array walk adds the lifecycles too.
 #[derive(Clone, Copy)]
 struct Walks {
     returned: bool,
@@ -1224,40 +1114,26 @@ struct Walks {
 }
 
 /// Every body a binding-fact walk reads, in declaration order, with the
-/// LLVM function name it lowers under (the legacy maps' key), the walks
-/// it gets, and its params. GH #884: module nesting flattened — the fn
-/// and the member a key names are lowered whatever their brace depth,
-/// so the facts they are looked up under are computed at that depth
-/// too.
-fn binding_bodies(
-    program: &Program,
-) -> Vec<(String, Walks, &[Param], &Block)> {
+/// walks it gets and its params. GH #884: module nesting flattened — a
+/// fn or member is lowered whatever its brace depth, so its facts are
+/// computed at that depth too.
+fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
     const FREE_OR_MODE: Walks =
         Walks { returned: true, assign_moved: true, stack_array: true };
     const LOCUS_FN: Walks =
         Walks { returned: false, assign_moved: true, stack_array: true };
     const LIFECYCLE: Walks =
         Walks { returned: false, assign_moved: false, stack_array: true };
-    let mut out: Vec<(String, Walks, &[Param], &Block)> = Vec::new();
+    let mut out: Vec<(Walks, &[Param], &Block)> = Vec::new();
     for item in hale_syntax::ast::flat_decls(&program.items) {
         match item {
-            TopDecl::Fn(f) => out.push((
-                f.name.name.clone(),
-                FREE_OR_MODE,
-                &f.params,
-                &f.body,
-            )),
-            // Locus frames use the `{locus}.{member}` LLVM name
-            // convention (locus/decl.rs).
+            TopDecl::Fn(f) => out.push((FREE_OR_MODE, &f.params, &f.body)),
             TopDecl::Locus(l) => {
                 for member in &l.members {
                     match member {
-                        LocusMember::Fn(f) => out.push((
-                            format!("{}.{}", l.name.name, f.name.name),
-                            LOCUS_FN,
-                            &f.params,
-                            &f.body,
-                        )),
+                        LocusMember::Fn(f) => {
+                            out.push((LOCUS_FN, &f.params, &f.body))
+                        }
                         // A `mode` is the third shape that legitimately
                         // returns a locus (alongside a free fn) — it IS
                         // the locus-valued projection surface. A mode
@@ -1265,27 +1141,11 @@ fn binding_bodies(
                         // returned-bindings answer fired the GH #383
                         // dissolve on the binding the caller now owns,
                         // handing back a reclaimed locus.
-                        LocusMember::Mode(md) => out.push((
-                            format!("{}.{}", l.name.name, mode_name(md.kind)),
-                            FREE_OR_MODE,
-                            &[],
-                            &md.body,
-                        )),
+                        LocusMember::Mode(md) => {
+                            out.push((FREE_OR_MODE, &[], &md.body))
+                        }
                         LocusMember::Lifecycle(lc) => {
-                            let lc_name = match lc.kind {
-                                LifecycleKind::Birth => "birth",
-                                LifecycleKind::Accept => "accept",
-                                LifecycleKind::Release => "release",
-                                LifecycleKind::Run => "run",
-                                LifecycleKind::Drain => "drain",
-                                LifecycleKind::Dissolve => "dissolve",
-                            };
-                            out.push((
-                                format!("{}.{}", l.name.name, lc_name),
-                                LIFECYCLE,
-                                &lc.params,
-                                &lc.body,
-                            ));
+                            out.push((LIFECYCLE, &lc.params, &lc.body))
                         }
                         _ => {}
                     }
@@ -1297,33 +1157,24 @@ fn binding_bodies(
     out
 }
 
-fn mode_name(kind: ModeKind) -> &'static str {
-    match kind {
-        ModeKind::Bulk => "bulk",
-        ModeKind::Harmonic => "harmonic",
-        ModeKind::Resolution => "resolution",
-    }
-}
-
 /// Fill `table`'s binding rows for `program`: one row per `let`,
 /// keyed by the statement's snapshot index.
 ///
-/// Each body gets exactly the walks the three legacy maps gave it
-/// ([`binding_bodies`]), with their algorithms unchanged: `returned`
-/// is [`ReturnedBindings::let_is_returned`] asked at the `let`'s own
-/// identifier (so the walk's span-keyed resolution and its by-name
-/// fallback answer exactly as they did), `assign_moved` and
+/// Each body gets the walks [`binding_bodies`] gives it: `returned` is
+/// [`ReturnedBindings::let_is_returned`] asked at the `let`'s own
+/// identifier (the walk's span-keyed resolution, with its by-name
+/// fallback for the uses it cannot resolve), `assign_moved` and
 /// `stack_array` are the name's membership in the body's
 /// [`assign_moved_names`] and [`stack_array_names`]. Every other `let`
-/// of the program — in a body no map walked — gets a row of three
-/// `false`s, the answer lowering's name join gave a function it had no
-/// entry for. A `let` with a `NONE` id gets no row. A tuple `let`
-/// gets none either: it binds several names under one id, and nothing
-/// asks.
+/// of the program — in a body no walk reads — gets a row of three
+/// `false`s. A `let` with a `NONE` id gets no row. A tuple `let` gets
+/// none either: it binds several names under one id, and nothing asks.
 ///
 /// Runs after [`resolve_owners`], over the program the snapshot minted.
+/// A generic fn's monomorphs keep its sites' identities, so each reads
+/// the template's rows.
 pub fn resolve_binding_facts(program: &Program, table: &mut OwnerTable) {
-    for (_, walks, params, body) in binding_bodies(program) {
+    for (walks, params, body) in binding_bodies(program) {
         let returned = walks.returned.then(|| returned_bindings(body));
         let moved = if walks.assign_moved {
             assign_moved_names(body)

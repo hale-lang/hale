@@ -1106,7 +1106,6 @@ pub fn build_resolved(
         merged,
         owner_table,
         fresh_locus_factories,
-        returned_bindings,
         ..
     } = resolved;
     let program = &user;
@@ -1633,9 +1632,6 @@ pub fn build_resolved(
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
         fresh_locus_factories,
-        returned_bindings,
-        assign_moved_bindings: crate::ownership::compute_assign_moved_bindings(&merged),
-        stack_array_bindings: crate::ownership::compute_stack_array_bindings(&merged),
         stack_array_bytes_used: BTreeMap::new(),
         next_array_repeat_is_stack_local: false,
         model_hash: options.model_hash,
@@ -4105,23 +4101,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// it returns if any). See `compute_fresh_locus_factories`.
     pub(crate) fresh_locus_factories:
         std::collections::BTreeMap<String, (String, Option<String>)>,
-    /// GH #383: fn name -> the local bindings it returns. Ownership
-    /// of those transfers to the caller, so this frame must not
-    /// dissolve them. See `compute_returned_bindings`.
-    pub(crate) returned_bindings:
-        std::collections::BTreeMap<String, crate::ownership::ReturnedBindings>,
-    /// Downstream handoff (free-fn locus rebinding): fn name -> the
-    /// local bindings that appear on either side of a bare-local
-    /// `=`. A moved value has two names; frame-scoped reclamation
-    /// must not fire on either. See `compute_assign_moved_bindings`.
-    pub(crate) assign_moved_bindings:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// GH #767: fn name -> the `let` bindings whose initializer is a
-    /// literal `[c; N]` that provably never escapes the fn. Those get
-    /// an entry-block `alloca` instead of an arena allocation. See
-    /// `compute_stack_array_bindings`.
-    pub(crate) stack_array_bindings:
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// GH #767: fn name -> stack bytes already handed to array
     /// literals in that fn, so the per-fn cap
     /// (`STACK_ARRAY_MAX_BYTES`) counts the whole frame and not one
@@ -4130,7 +4109,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// never hand the outer fn a fresh budget.
     pub(crate) stack_array_bytes_used: std::collections::BTreeMap<String, u64>,
     /// GH #767: set by `Stmt::Let` immediately before lowering an
-    /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
+    /// `Expr::ArrayRepeat` RHS its binding facts clear (`stack_array`),
     /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
     /// the owner site). Nested array literals inside the
     /// RHS keep the arena path.
@@ -17847,7 +17826,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Let { name, ty: ascribed, value, .. } => {
+            Stmt::Let { name, ty: ascribed, value, id, .. } => {
                 // m61b: when a let has both a generic-typed
                 // ascription and a bare-name struct literal as
                 // its value, rewrite the literal's path to the
@@ -17913,17 +17892,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // does not, so route THIS binding's RHS through the
                 // caller arena too — exactly how a free fn threads its
                 // `__caller_arena` to the same factory. Gated on the
-                // binding actually being returned (compute_returned_
-                // bindings now sees mode bodies), so ordinary transient
-                // bindings keep using scratch.
+                // binding actually being returned (the returned walk
+                // sees mode bodies), so ordinary transient bindings keep
+                // using scratch.
+                //
+                // F.40 1.2b: what the `let` knows about its own binding
+                // is the owner table's row for this site; a `let` with
+                // no row answers `false` three times.
+                let facts = self
+                    .owner_table
+                    .binding_facts(*id)
+                    .copied()
+                    .unwrap_or_default();
                 let saved_override_for_returned = self.current_arena_override;
-                let binding_is_returned = self.current_method_scratch.is_some()
-                    && self
-                        .current_fn
-                        .map(|f| f.get_name().to_string_lossy().to_string())
-                        .and_then(|fname| self.returned_bindings.get(&fname))
-                        .map(|rb| rb.let_is_returned(name))
-                        .unwrap_or(false);
+                let binding_is_returned =
+                    self.current_method_scratch.is_some() && facts.returned;
                 if binding_is_returned {
                     if let Some(slot) = self.current_method_caller_arena {
                         let ptr_t =
@@ -17951,16 +17934,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.next_array_repeat_is_stack_local =
                     matches!(value_to_lower, Expr::ArrayRepeat { .. })
                         && !binding_is_returned
-                        && self
-                            .current_fn
-                            .map(|f| {
-                                f.get_name().to_string_lossy().to_string()
-                            })
-                            .and_then(|fname| {
-                                self.stack_array_bindings.get(&fname)
-                            })
-                            .map(|set| set.contains(&name.name))
-                            .unwrap_or(false);
+                        && facts.stack_array;
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
@@ -18049,12 +18023,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // bound from one (`nn::forward` — the case
                         // that caught this, where reads came back as
                         // zeros).
-                        let is_my_returned_binding = self
-                            .current_fn
-                            .map(|f| f.get_name().to_string_lossy().to_string())
-                            .and_then(|fname| self.returned_bindings.get(&fname))
-                            .map(|rb| rb.let_is_returned(name))
-                            .unwrap_or(false);
+                        let is_my_returned_binding = facts.returned;
                         // Downstream handoff (free-fn locus
                         // rebinding): a binding that participates in
                         // a bare-local `=` can hold a value another
@@ -18063,14 +18032,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // fire on a value that is still live — or
                         // already dissolved — through the other
                         // name. Leak it instead.
-                        let is_assign_moved = self
-                            .current_fn
-                            .map(|f| f.get_name().to_string_lossy().to_string())
-                            .and_then(|fname| {
-                                self.assign_moved_bindings.get(&fname).cloned()
-                            })
-                            .map(|set| set.contains(&name.name))
-                            .unwrap_or(false);
+                        let is_assign_moved = facts.assign_moved;
                         if is_fresh && !is_my_returned_binding && !is_assign_moved {
                             fresh_dissolve_of = Some(lname.clone());
                         }
@@ -23401,7 +23363,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///
     /// Storage is an entry-block `alloca` when `want_stack` says the
     /// binding this literal initializes provably does not escape the fn
-    /// (`compute_stack_array_bindings`), the element is a scalar, and
+    /// (its binding facts' `stack_array`), the element is a scalar, and
     /// the fn's stack-array budget has room; the current arena
     /// otherwise. A free fn's arena is the CALLER's, so the arena form
     /// of a fixed local table is per-call churn that outlives the call

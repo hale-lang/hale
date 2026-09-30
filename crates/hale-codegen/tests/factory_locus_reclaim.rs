@@ -23,8 +23,8 @@
 //!    position or another literal. Fixpointed, so helpers built on
 //!    other factories qualify. Anything unrecognized answers NOT
 //!    fresh — the old leak, never a double free.
-//!  - **Never what the fn hands back.** `compute_returned_bindings`
-//!    records, for EVERY free fn, the locals it returns. A fn that
+//!  - **Never what the fn hands back.** Each `let`'s binding facts
+//!    record, in EVERY free fn, whether the fn returns it. A fn that
 //!    fails the freshness walk can still return a locus it bound
 //!    from a factory — `nn::forward` is the real case — and
 //!    dissolving that binding hands the caller a dead locus, which

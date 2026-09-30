@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 
-use crate::ownership::{OwnerTable, ReturnedBindings};
+use crate::ownership::OwnerTable;
 use crate::snapshot::Snapshot;
 
 /// The program codegen lowers, and the tables the frontend derives over it.
@@ -43,7 +43,6 @@ pub struct ResolvedProgram {
     pub owner_table: OwnerTable,
     /// Fresh factories, extended by the carrier-return fold.
     pub fresh_locus_factories: BTreeMap<String, (String, Option<String>)>,
-    pub returned_bindings: BTreeMap<String, ReturnedBindings>,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -192,7 +191,6 @@ pub fn resolve_program(
             .entry(fname.clone())
             .or_insert_with(|| (locus.clone(), None));
     }
-    let returned_bindings = crate::ownership::compute_returned_bindings(&merged);
 
     Ok(ResolvedProgram {
         user,
@@ -200,7 +198,6 @@ pub fn resolve_program(
         snapshot,
         owner_table,
         fresh_locus_factories,
-        returned_bindings,
         resolved_in: t_start.elapsed(),
     })
 }

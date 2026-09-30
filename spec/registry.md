@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 176 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
+43 families: 3 canonical, 36 migrating (with 172 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
 
 ## Families
 
@@ -20,7 +20,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | — | 9 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
-| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 15 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`. |
+| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 11 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 9 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
@@ -406,7 +406,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `ownership` — Migrating · derivation
 
-**Answers.** Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`.
+**Answers.** Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array.
 
 **Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories; returned bindings
 
@@ -419,16 +419,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it. *Removed when:* one factory row.
 - `crates/hale-types/src/check.rs` · `fresh_locus_factory_products` — the checker's mirror of the factory set. *Removed when:* one factory row.
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
-- `crates/hale-types/src/ownership.rs` · `compute_returned_bindings` — which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string. *Removed when:* keyed by snapshot identity (phase 1.2).
-- `crates/hale-types/src/ownership.rs` · `returned_bindings` — the per-body walk the row above calls. *Removed when:* phase 1.2.
-- `crates/hale-types/src/ownership.rs` · `compute_assign_moved_bindings` — bindings moved by `=`, keyed by name. *Removed when:* phase 1.2.
-- `crates/hale-types/src/ownership.rs` · `compute_stack_array_bindings` — array repeats that never escape, keyed by name. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets` — the interests a locus forwards for bubbling. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind` — owner classification for the bubble plan. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_edge` — edge classification for the bubble plan. *Removed when:* phase 1.3.
 - `crates/hale-codegen/src/locus/instantiation.rs` · `parent_accepts_us` — decides acceptance from the lowering context, not the table. *Removed when:* lowering reads the table.
 - `crates/hale-types/src/borrow_lifetime.rs` · `accepts` — the borrow-lifetime law rebuilds the accept sets from the AST for itself. *Removed when:* reads `accepts_ancestor`.
 - `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` — the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others. *Removed when:* a law over the table, on every entry point.
+
+**Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`
 
 **Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model; alloc_summary (eager-only accept sets)
 
@@ -1246,7 +1244,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/ownership.rs` · `ExprId` — F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass. *Removed when:* the snapshot mints every id (phase 1.1).
-- `crates/hale-types/src/ownership.rs` · `BindingKey` — a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210). *Removed when:* same.
+- `crates/hale-types/src/ownership.rs` · `BindingKey` — use sites inside the returned-bindings walk are resolved by span (identifiers are not minted sites); the row is keyed by the `let`'s snapshot identity. *Removed when:* use-site identity (phase 1.1 follow-up).
 - `crates/hale-model/src/ids.rs` · `FunctionId` — model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings). *Removed when:* same.
 - `crates/hale-types/src/effects.rs` · `FnKey` — analysis keys are (locus name, fn name). *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `type_expr_key` — rule 12 compares stringified TypeExprs. *Removed when:* same.
