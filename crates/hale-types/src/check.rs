@@ -15419,10 +15419,15 @@ impl<'a> Checker<'a> {
                 // `T::member(...)` names a wire-layout struct (a type with
                 // a `repr:`-tagged field), `member` must be one of its
                 // fields (read: `T::field`) or `set_<field>` (write). This
-                // catches a mistyped field at typecheck — otherwise the
-                // accessor desugars to an unknown `std::bytes::*` call and
-                // only fails at codegen. Valid accessors stay permissively
-                // typed (the desugar lowers them to the pack primitives).
+                // catches a mistyped field at typecheck, which the desugar
+                // leaves as written. A valid accessor never reaches here
+                // from an entry point: the desugar sequence rewrote it to
+                // its `std::bytes::*` call before the check (F.40 phase
+                // 2.1b), and that call is typed as the stdlib types it.
+                // What still arrives is what the desugar refused (an
+                // unknown field, the wrong arity) and a fragment checked
+                // without the sequence; a known field stays permissively
+                // typed.
                 if let Expr::Path(qn) = callee.as_ref() {
                     if qn.segments.len() == 2 {
                         let tname = &qn.segments[0].name;

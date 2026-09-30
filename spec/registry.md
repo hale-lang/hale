@@ -135,10 +135,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: a synthesized text driver and no check at all. *Removed when:* phase 2.
 - `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: sync inference per file, outside the sequence, before it. *Removed when:* phase 2.
-- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step runs the topic and intra-locus desugars and repr accessors on its own clone, after the check (JSON parsers and the api surface are the sequence's since phase 2.1b); the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
+- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step runs the topic and intra-locus desugars on its own clone, after the check (JSON parsers, the api surface and repr accessors are the sequence's since phase 2.1b); the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
 - `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard). *Removed when:* the frontend is the only producer (phase 2).
 
-**Also owned.** `crates/hale-syntax/src/desugar.rs` · `desugar_intra_locus_topics`; `crates/hale-types/src/desugar_sequence.rs` · `bundled_stdlib`; `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run`
+**Also owned.** `crates/hale-syntax/src/desugar.rs` · `desugar_intra_locus_topics`; `crates/hale-types/src/desugar_sequence.rs` · `bundled_stdlib`; `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run`; `crates/hale-syntax/src/desugar.rs` · `desugar_repr_accessors`
 
 **Consumers.** check; build; run; test; replay; lsp; codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`)
 
@@ -160,6 +160,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
+- `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
 - `desugar_intra_locus_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `build_executable_with_options(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1

@@ -618,14 +618,20 @@ fn collect_wire_layouts(items: &[TopDecl], out: &mut WireLayouts) {
     }
 }
 
-/// Rewrite repr-tagged field accessors into `std::bytes::*` calls.
-pub fn desugar_repr_accessors(program: &mut Program) {
+/// Rewrite repr-tagged field accessors into `std::bytes::*` calls,
+/// over every program of a bundle at once: a wire type one file
+/// declares is read in another, so the layouts are the bundle's.
+pub fn desugar_repr_accessors(programs: &mut [&mut Program]) {
     let mut layouts = WireLayouts::new();
-    collect_wire_layouts(&program.items, &mut layouts);
+    for program in programs.iter() {
+        collect_wire_layouts(&program.items, &mut layouts);
+    }
     if layouts.is_empty() {
         return;
     }
-    acc_items(&mut program.items, &layouts);
+    for program in programs.iter_mut() {
+        acc_items(&mut program.items, &layouts);
+    }
 }
 
 fn std_bytes_call(name: &str, args: Vec<Expr>, span: Span) -> Expr {

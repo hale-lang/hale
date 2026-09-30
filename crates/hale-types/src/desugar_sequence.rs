@@ -27,6 +27,12 @@
 //!    one (GH #735, spec `semantics.md` § `run()`: the two spellings
 //!    are the same program), carrying its locus's span, so the checker
 //!    and the model see the program lowering lowers.
+//! 6. repr accessors: `L2::price(v)` / `L2::set_price(w, x)` on a
+//!    `repr:`-tagged wire type become the `std::bytes::read_*` /
+//!    `write_*` calls they mean, with the layout's offsets (bundle-wide:
+//!    the type in one file, the accessor in another). An accessor the
+//!    pass refuses (no such field, the wrong arity) stays as written,
+//!    for the checker to report.
 //!
 //! The first two generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
@@ -95,6 +101,7 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
     for p in programs.iter_mut() {
         hale_syntax::desugar::desugar_omitted_run(p);
     }
+    hale_syntax::desugar::desugar_repr_accessors(programs);
 }
 
 /// The bundled stdlib, parsed once and put through the passes that
