@@ -609,6 +609,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(MODEL_BUILDER, "build_bus_graph", "rebuilt for the model", "phase 2 (the check over the resolved program)"),
             legacy(LSP, "build_bus_graph", "rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass", "phase 2"),
             legacy(TY_RESOLVED, "build_bus_graph", "built once in the resolved program, over the desugared program, for lowering; the model and the LSP still build their own over the un-desugared bundle, and the checker's rule 9 walks the bus itself", "one graph per snapshot (phase 2: the check over the resolved program)"),
+            legacy(CG, "intra_locus_publish_target", "lowering classifies a handler-named method call with a struct argument as a rewritten publish for the probes and the reclaimed subregion, re-deriving the relation the resolved program records", "lowering reads `ResolvedProgram::intra_locus` by the call's id, shadowed against this classification over the corpus (phase 2)"),
         ],
         consumers: &[consumer("check (rules 9-12, 19)"), consumer("model"), consumer("topology"), consumer("dispatch"), consumer("lsp (hale/busGraph)"), consumer("bus_inert")],
         invariants: &["one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it", "the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)"],
