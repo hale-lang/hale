@@ -54,21 +54,25 @@ use hale_syntax::Span;
 
 /// The sites allowed until `pq` takes a `std::secret::Credential`:
 /// `(file stem, locus or "" for a free fn, fn, qualified name, the
-/// fingerprint of the fn's body)`. The fingerprint is [`fingerprint`]
+/// fingerprint of the fn's body, a companion free fn the same module
+/// declares)`. The stem and the companion identify the module: a
+/// program's own fn that happens to share a pinned name, in a file
+/// that does not also declare the companion, is no pin. The fingerprint is [`fingerprint`]
 /// of the declaration as the checker sees it; an edit to one of these
 /// fns refuses it until the pin is updated here, so the exemption covers
 /// the reviewed code and nothing added to it.
-const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
-    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333"),
+const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
+    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333", "role_vault_name"),
     (
         "infra",
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
         "0aa957e955be225f",
+        "transport_kind",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c"),
-    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0"),
+    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c", "compute_client_final"),
+    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0", "salted_password"),
 ];
 
 const DEFERRED_LINE: &str = "Deferred: `pq` takes a `std::secret::Credential`";
@@ -639,30 +643,30 @@ fn outside_strings(text: &str, f: impl Fn(&str) -> String) -> String {
 /// mangled from the file stem) and its pinned body.
 fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Deferral {
     let fn_name = fd.name.name.as_str();
-    // The declaration is identified by its file, not its spelling: the
+    // The declaration is identified by its module, not its spelling: the
     // source unit its span falls in (or the program's own path when the
-    // bundle has no source map) must have the pin's stem and lie under
-    // the pinned library's directory (`dna` or `pq`). A program's own fn
-    // that happens to be called `role_password` is no pin (outside
-    // review, finding 1). An imported seed's declaration arrives mangled
-    // (`__lib_<id>_<stem>_<name>`) and is held to the same directory.
+    // bundle has no source map) must have the pin's stem, and the module
+    // must declare the pin's companion fn. A program's own fn that
+    // happens to be called `role_password` is no pin (outside review,
+    // finding 1). An imported seed's declarations arrive mangled
+    // (`__lib_<id>_<stem>_<name>`), the companion included. The
+    // directory is not part of the identity: the DNA seeds are checked
+    // from the tree, from a scratch copy and from the embedded host
+    // cache, and only the file names travel with them.
     let file = world.file_of(fd.name.span.start.0).unwrap_or(key);
     let file_stem = std::path::Path::new(file)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    // the source map's paths are relative to the checked target, so the
-    // directory context is the program's own path (the target or the
-    // entry) as often as the file's
-    let under = |lib: &str| {
-        file.split(['/', '\\']).any(|c| c == lib) || key.split(['/', '\\']).any(|c| c == lib)
-    };
     let mangled = |have: &str, stem: &str, want: &str| {
         have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want))
     };
-    let Some((_, _, _, q, pin)) = PQ_DEFERRED.iter().find(|(stem, l, f, q, _)| {
-        let lib = q.split("::").next().unwrap_or("");
-        if !under(lib) {
+    let declares = |stem: &str, companion: &str| {
+        companion.is_empty()
+            || world.fns.keys().any(|n| n == companion || mangled(n, stem, companion))
+    };
+    let Some((_, _, _, q, pin, _)) = PQ_DEFERRED.iter().find(|(stem, l, f, _, _, companion)| {
+        if !declares(stem, companion) {
             return false;
         }
         let own = file_stem == *stem;

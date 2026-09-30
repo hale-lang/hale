@@ -210,9 +210,16 @@ fn an_unrelated_declaration_that_spells_a_pinned_name_is_not_a_pin() {
     let benign_method = "locus ReferenceInfrastructure {\n    fn knowledge_database(project: String) -> Int { return 1; }\n}\nfn main() { let r = ReferenceInfrastructure { }; println(r.knowledge_database(\"p\")); }\n";
     let (ok, out) = check(&[("app/infra.hl", benign_method)], "pin_spell_method");
     assert!(ok && !out.contains("allowed") && !out.contains("pin"), "{out}");
-    let scram = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\nfn compute_client_final(a: String) -> String { return a; }\nfn main() { println(compute_client_final(salted_password(\"p\", \"s\"))); }\n";
+    // one pinned name in a `scram.hl` that does not declare its
+    // companion: no pin
+    let scram = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\nfn main() { println(salted_password(\"p\", \"s\")); }\n";
     let (ok, out) = check(&[("app/scram.hl", scram)], "pin_spell_scram");
     assert!(ok && !out.contains("allowed"), "{out}");
+    // a `scram.hl` that reproduces the module's identity (both pinned
+    // names) is taken for the module: its bodies are held to the pins
+    let module = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\nfn compute_client_final(a: String) -> String { return a; }\nfn main() { println(compute_client_final(salted_password(\"p\", \"s\"))); }\n";
+    let (ok, out) = check(&[("app/scram.hl", module)], "pin_spell_module");
+    assert!(!ok && out.contains("this one has changed"), "{out}");
 }
 
 /// The fingerprint strips positions and identity fields outside string
