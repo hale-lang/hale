@@ -28,10 +28,10 @@
 //! own seed. The pre-pass numbers nothing; a `Struct` or `Call` it
 //! finds unnumbered is an error.
 //!
-//! Today the verbs still run `json_gen`, api injection and sync
-//! inference before the check, and this step re-runs the idempotent
-//! ones on its own clone, exactly as codegen did. Phase 2 makes this
-//! the only place the sequence runs, before the check.
+//! The passes that shape a declaration are not among them: every
+//! caller ran the desugar sequence
+//! ([`crate::desugar_sequence::desugar_before_check`]) before its
+//! check, and this step does not run any of it again (F.40 phase 2.1b).
 
 use std::collections::BTreeMap;
 
@@ -141,10 +141,11 @@ impl ResolvedProgram {
 /// `import_renames` is the per-build path-rename table for cross-seed
 /// imports (see `hale_codegen::build_executable_with_options`); `api`
 /// and `api_roles` are the build's `--api` path and the roles its
-/// environment binds. The error is the message codegen reports as
-/// `CodegenError::Unsupported`: a refused `--api` injection, a bundled
-/// stdlib that does not parse, or a locus-producing node the mint left
-/// unnumbered.
+/// environment binds, the ones the sequence shaped the api surface
+/// with, recorded on the envelope for lowering to hold its options
+/// to. The error is the message codegen reports as
+/// `CodegenError::Unsupported`: a bundled stdlib that does not parse,
+/// or a locus-producing node the mint left unnumbered.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -177,17 +178,9 @@ pub fn resolve_program(
     // optimizable Send statements into direct `self.handler(...)`
     // method calls. desugar_topics then handles whatever bus refs
     // remain.
-    // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite `T::from_json`.
-    // Idempotent — a no-op if the CLI already generated them pre-typecheck.
-    hale_syntax::json_gen::generate_json_parsers(&mut program_owned);
-    // GH #1106: the api binding, as ordinary loci and topics. The CLI
-    // ran this before the checker; a caller that builds straight from
-    // a program (a test) gets it here. Idempotent, and `--api` without
-    // an entry in the source injects one first.
-    if let Some(path) = api {
-        hale_syntax::api_gen::inject_api_entry(&mut program_owned, path)?;
-    }
-    hale_syntax::api_gen::generate_api(&mut [&mut program_owned], api_roles);
+    // JSON Tier 2 and the api binding (GH #1106) are not run here: every
+    // caller ran them in the desugar sequence before its check, with the
+    // `api` and roles it hands this step, which the envelope records.
     // The intra-locus rewrite moves each send's id onto the call that
     // replaces it and records it in the relation, so the sends have to
     // be minted before it runs: a caller that did not mint (the

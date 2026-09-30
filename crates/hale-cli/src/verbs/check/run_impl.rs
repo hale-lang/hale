@@ -123,10 +123,6 @@ pub(crate) fn run_check_impl_labelled(
         }
     }
     for prog in programs.values_mut() {
-        // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite
-        // `T::from_json` before typecheck, so the generated parser is
-        // checked and callers must address its `fallible(JsonError)`.
-        hale_syntax::json_gen::generate_json_parsers(prog);
         // Downstream handoff (2026-08-11): the pre-pass's resolver
         // diagnostics are DISCARDED, not printed-and-bailed. They
         // are re-raised by `check_bundle` below through the normal
@@ -138,18 +134,26 @@ pub(crate) fn run_check_impl_labelled(
         // diagnostic correctly while the CLI did not.
         let _ = hale_types::apply_sync_inference(prog);
     }
-    // GH #1106: the api binding is bundle-wide (the main locus in one
-    // file, subscribers in another), so it runs over every program of
-    // the seed once the per-program passes are done.
     {
         let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-        hale_syntax::api_gen::generate_api(&mut refs, None);
-        // F.40 phase 2.1b: the declaration-shaping sequence, the one
-        // every entry point runs before its check.
-        hale_types::desugar_sequence::desugar_before_check(
+        // F.40 phase 2.1b: the desugar sequence, the one every entry
+        // point runs before its check: JSON Tier 2's parsers (so the
+        // generated parser is checked and callers must address its
+        // `fallible(JsonError)`), the api binding (GH #1106,
+        // bundle-wide: the main locus in one file, subscribers in
+        // another), then the passes that shape a declaration. `check`
+        // takes no `--api`, so there is no injection to refuse.
+        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
             &mut refs,
-            &hale_types::desugar_sequence::Sequence { import_renames: &import_renames },
-        );
+            &hale_types::desugar_sequence::Sequence {
+                import_renames: &import_renames,
+                api: None,
+                api_roles: None,
+            },
+        ) {
+            eprintln!("{}", msg);
+            return 2;
+        }
     }
 
     // GH #408 Phase 0: hand the source map to the artifact. Built

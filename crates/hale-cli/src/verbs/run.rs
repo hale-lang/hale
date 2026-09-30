@@ -177,11 +177,19 @@ pub(crate) fn run_program(
             Err(errors) => return report_import_diags(&errors),
         };
         // F.40 phase 2.1b: the declaration-shaping sequence, the one
-        // every entry point runs before its check.
-        hale_types::desugar_sequence::desugar_before_check(
+        // every entry point runs before its check, with the api inputs
+        // the resolve below reads.
+        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
             &mut [&mut program],
-            &hale_types::desugar_sequence::Sequence { import_renames: &renames },
-        );
+            &hale_types::desugar_sequence::Sequence {
+                import_renames: &renames,
+                api: options.api.as_deref(),
+                api_roles: options.api_roles.as_deref(),
+            },
+        ) {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
         // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
         // by the source map `check` mints with.
         let target_name = target.display().to_string();
@@ -388,11 +396,19 @@ pub(crate) fn run_program(
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
     // F.40 phase 2.1b: the declaration-shaping sequence, the one every
-    // entry point runs before its check.
-    hale_types::desugar_sequence::desugar_before_check(
+    // entry point runs before its check. The api pass finds the binding
+    // `bind_build_env` generated and leaves it alone.
+    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence { import_renames: &renames },
-    );
+        &hale_types::desugar_sequence::Sequence {
+            import_renames: &renames,
+            api: options.api.as_deref(),
+            api_roles: options.api_roles.as_deref(),
+        },
+    ) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
     // by the source map `check` mints with.
     let target_name = target.display().to_string();

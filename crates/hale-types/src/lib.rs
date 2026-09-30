@@ -117,8 +117,9 @@ pub fn check_program(program: &Program) -> Vec<Diag> {
     let mut program = program.clone();
     desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &desugar_sequence::Sequence { import_renames: &[] },
-    );
+        &desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+    )
+    .expect("the sequence refuses only an `--api` injection, and none is asked for");
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), &program);
     check_bundle_opts_whole_program(&Bundle::new(programs), false)

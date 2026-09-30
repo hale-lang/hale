@@ -128,14 +128,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-cli/src/verbs/check/run_impl.rs` · `run_check_impl_labelled` — check: json_gen, sync inference, generate_api(roles = None). *Removed when:* phase 2: one sequence in the shared frontend.
-- `crates/hale-cli/src/verbs/build.rs` · `run_build` — build: json_gen, inject_api_entry, bind_build_env (roles), then sync inference; a different order from check. *Removed when:* phase 2.
-- `crates/hale-cli/src/verbs/run.rs` · `compile_and_exec` — run <file>: `desugar_before_check`, but no json_gen, no api, no sync inference before the check. *Removed when:* phase 2.
-- `crates/hale-cli/src/verbs/test.rs` · `compile_test_binary` — test: file entry only; `desugar_before_check`, but no json_gen, api or sync inference before the check. *Removed when:* phase 2.
-- `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only; `desugar_before_check`, but no json_gen, api or sync inference before the check. *Removed when:* phase 2.
+- `crates/hale-cli/src/verbs/check/run_impl.rs` · `run_check_impl_labelled` — check: sync inference per file, outside the sequence, before it. *Removed when:* phase 2: one sequence in the shared frontend.
+- `crates/hale-cli/src/verbs/build.rs` · `run_build` — build: json_gen, inject_api_entry, bind_build_env (roles, constitution adoption), then sync inference, all before the sequence, whose JSON and api passes then find nothing left to do. *Removed when:* phase 2.
+- `crates/hale-cli/src/verbs/run.rs` · `compile_and_exec` — run <file>: `desugar_before_check`, but no sync inference before the check; run <dir>: build's own prefix. *Removed when:* phase 2.
+- `crates/hale-cli/src/verbs/test.rs` · `compile_test_binary` — test: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
+- `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: a synthesized text driver and no check at all. *Removed when:* phase 2.
-- `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: json_gen and sync inference per file, then generate_api. *Removed when:* phase 2.
-- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
+- `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: sync inference per file, outside the sequence, before it. *Removed when:* phase 2.
+- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step runs the topic and intra-locus desugars and repr accessors on its own clone, after the check (JSON parsers and the api surface are the sequence's since phase 2.1b); the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
 - `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run` — the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it. *Removed when:* the sequence runs once, before the check.
 - `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard). *Removed when:* the frontend is the only producer (phase 2).
 

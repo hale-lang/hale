@@ -567,18 +567,22 @@ fn check_and_publish(
     // every program; a parse hole would cascade phantom errors).
     if parse_diags.is_empty() && !programs.is_empty() {
         for prog in programs.values_mut() {
-            hale_syntax::json_gen::generate_json_parsers(prog);
             let _ = hale_types::apply_sync_inference(prog);
         }
         {
             let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-            hale_syntax::api_gen::generate_api(&mut refs, None);
-            // F.40 phase 2.1b: the declaration-shaping sequence, the
-            // one every entry point runs before its check. The editor
-            // loads no import, so there is no rename table.
-            hale_types::desugar_sequence::desugar_before_check(
+            // F.40 phase 2.1b: the desugar sequence, the one every
+            // entry point runs before its check (JSON parsers and the
+            // api surface first). The editor loads no import, so there
+            // is no rename table, and takes no `--api`, so there is no
+            // injection to refuse.
+            let _ = hale_types::desugar_sequence::desugar_before_check(
                 &mut refs,
-                &hale_types::desugar_sequence::Sequence { import_renames: &[] },
+                &hale_types::desugar_sequence::Sequence {
+                    import_renames: &[],
+                    api: None,
+                    api_roles: None,
+                },
             );
         }
         // GH #476 Change 9 (review round 1): install the SOURCE MAP.

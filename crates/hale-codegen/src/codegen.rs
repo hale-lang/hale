@@ -1064,8 +1064,13 @@ pub fn build_executable_with_options(
     let mut program = program.clone();
     hale_types::desugar_sequence::desugar_before_check(
         &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence { import_renames },
-    );
+        &hale_types::desugar_sequence::Sequence {
+            import_renames,
+            api: options.api.as_deref(),
+            api_roles: options.api_roles.as_deref(),
+        },
+    )
+    .map_err(CodegenError::Unsupported)?;
     // A bare program has no source map: its sites seed by ordinal.
     let resolved = hale_types::resolved::resolve_program(
         &program,

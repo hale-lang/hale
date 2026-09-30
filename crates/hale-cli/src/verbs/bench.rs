@@ -280,13 +280,22 @@ pub(crate) fn run_bench_file(
             .into_iter()
             .map(|(base, p, len)| (base, relabel(p), len))
             .collect();
+        let options = collect_ffi_from_imports(
+            &ctx.imports,
+            &ctx.entry_dir,
+            ctx.workspace_root.as_deref(),
+        );
         // F.40 phase 2.1b: the declaration-shaping sequence, the one
         // every entry point runs before its check. Bench runs no check,
         // but it lowers the same program shape.
         hale_types::desugar_sequence::desugar_before_check(
             &mut [&mut prog],
-            &hale_types::desugar_sequence::Sequence { import_renames: &renames },
-        );
+            &hale_types::desugar_sequence::Sequence {
+                import_renames: &renames,
+                api: options.api.as_deref(),
+                api_roles: options.api_roles.as_deref(),
+            },
+        )?;
         // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
         // by the source map `check` mints with — over the re-labelled
         // files, so a seed names the bench file and not its temp copy.
@@ -305,11 +314,6 @@ pub(crate) fn run_bench_file(
         bundle.sources = source_map;
         bundle.snapshot = snapshot;
         let bin = bench_scratch.path("bench");
-        let options = collect_ffi_from_imports(
-            &ctx.imports,
-            &ctx.entry_dir,
-            ctx.workspace_root.as_deref(),
-        );
         // Release profile on purpose: benchmarks measure the
         // shipped optimization level.
         hale_types::resolved::resolve_program(
