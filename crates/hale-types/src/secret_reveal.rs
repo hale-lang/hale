@@ -65,10 +65,10 @@ const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
-        "d01049660533208d",
+        "0aa957e955be225f",
     ),
     ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c"),
-    ("scram", "", "compute_client_final", "pq::compute_client_final", "a2a01932b10406e3"),
+    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0"),
 ];
 
 const DEFERRED_LINE: &str = "Deferred: `pq` takes a `std::secret::Credential`";
@@ -598,14 +598,16 @@ fn deferral(world: &World, locus: Option<&str>, fd: &FnDecl) -> Deferral {
     if have == *pin {
         Deferral::Allowed(q)
     } else {
-        Deferral::Changed { qualified: q, have }
+        Deferral::Changed { qualified: q, have, at: fd.name.span }
     }
 }
 
 enum Deferral {
     None,
     Allowed(&'static str),
-    Changed { qualified: &'static str, have: String },
+    /// The pinned body changed; `at` is the declaration's name, where a
+    /// stale pin is reported even when no reveal fires in the body.
+    Changed { qualified: &'static str, have: String, at: Span },
 }
 
 fn walk_fn(world: &World, locus: Option<&str>, fd: &FnDecl, diags: &mut Vec<Diag>) {
@@ -802,13 +804,32 @@ impl<'a> Body<'a> {
 
     fn finish(self) {
         let Body { found, deferred, diags, .. } = self;
+        // A pin that no longer matches its body is refused whether or
+        // not the body reveals anything the rule catches: the pin is
+        // the record of a review, and a stale one would let the first
+        // reveal added later pass under the old review's name.
+        if found.is_empty() {
+            if let Deferral::Changed { qualified, have, at } = &deferred {
+                diags.push(Diag::ty(
+                    *at,
+                    format!(
+                        "`{}` is allowed by name only with the body that was reviewed, and this one has \
+                         changed (fingerprint {}); until `pq` takes a `std::secret::Credential` ({}), a \
+                         change to it is reviewed and its pin in crates/hale-types/src/secret_reveal.rs \
+                         updated.",
+                        qualified, have, DEFERRED_LINE
+                    ),
+                ));
+            }
+            return;
+        }
         for (span, msg) in found {
             match &deferred {
                 Deferral::Allowed(q) => diags.push(Diag::warn(
                     span,
                     format!("{} It is allowed here by name, in `{}`, until `pq` takes a `std::secret::Credential` ({}).", msg, q, DEFERRED_LINE),
                 )),
-                Deferral::Changed { qualified, have } => diags.push(Diag::ty(
+                Deferral::Changed { qualified, have, .. } => diags.push(Diag::ty(
                     span,
                     format!(
                         "{} `{}` is allowed by name only with the body that was reviewed, and this one has \
