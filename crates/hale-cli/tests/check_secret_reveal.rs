@@ -194,3 +194,40 @@ fn the_postgres_sites_are_allowed_by_name_and_body_and_a_fifth_is_refused() {
     let (ok, out) = check(&[("app/main.hl", app), ("lib/memory_schema.hl", copy)], "pq_imported_copy");
     assert!(!ok && out.contains("this one has changed"), "{out}");
 }
+
+/// `hale check` over an in-tree seed directory; returns (success, output).
+fn check_tree(dir: &str) -> (bool, String) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", &root.join(dir).to_string_lossy()])
+        .current_dir(&root)
+        .output()
+        .expect("hale");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), text)
+}
+
+/// The four pinned bodies are in the tree, and a pin is compared on every
+/// check that reaches its declaration, whether or not the body reveals
+/// anything the rule catches (a stale pin is refused at the declaration).
+/// So the pins must match the tree they gate, as their own seed and as an
+/// imported one: `dna/host` holds `role_password` and the host's
+/// `knowledge_database` and imports `dna/core`; `dna/core/pond/pq` holds
+/// `salted_password` and `compute_client_final` and is imported by both.
+#[test]
+fn the_pinned_bodies_in_the_tree_match_their_pins() {
+    const CHANGED: &str = "is allowed by name only with the body that was reviewed";
+    for dir in ["dna/host", "dna/core", "dna/core/pond/pq"] {
+        let (ok, out) = check_tree(dir);
+        assert!(ok, "hale check {dir} failed:\n{out}");
+        assert!(!out.contains(CHANGED), "a stale secret pin in {dir}:\n{out}");
+    }
+    // The pins are exercised, not skipped: the two bodies that reveal a
+    // secret are allowed by name, which the check says as a warning in
+    // the seed that declares them (an imported seed's warnings are the
+    // importer's to ignore, so `dna/host` shows neither).
+    let (_, core) = check_tree("dna/core");
+    assert!(core.contains("It is allowed here by name, in `dna::role_password`"), "{core}");
+    let (_, pq) = check_tree("dna/core/pond/pq");
+    assert!(pq.contains("It is allowed here by name, in `pq::salted_password`"), "{pq}");
+}
