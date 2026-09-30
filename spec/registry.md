@@ -1331,7 +1331,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1)
 - a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a file that did not parse has no scope, a program that does not typecheck has no model, a program whose check reported an error has no lowering view; a ready result may still hold typed holes
 - the lowering view (`LoweringView`, the `lowering_view` count) is a family: `demand_lowering` demands the check, then runs `resolve_program` once over the snapshot's program, source map, renames and api config; `build_resolved` reads it by reference; every build path (build, run, test, replay, bench) demands it from a `Snapshot::load`, and the test harness from `Snapshot::from_program`, whose config (`Config::harness`) does not gate lowering on the check
-- a changed entry, target, config or overlay is a distinct snapshot (`SnapshotKey`); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)
+- a changed entry, load mode, target, config, overlay or source text is a distinct snapshot (`SnapshotKey`, computed after the load from what it read; a bare program is its own load); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)
 - the bundle is a borrowed view (`Snapshot::bundle`), built per call, never stored
 
 **Missing data.** a missing required row is a compiler error
