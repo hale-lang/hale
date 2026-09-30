@@ -235,8 +235,24 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    // Resolved before the identity: the dispatch plan the digest frames
+    // is the resolved program's, the one codegen lowers below (F.40
+    // phase 1.5).
+    let resolved = match hale_types::resolved::resolve_program(
+        &program,
+        &renames,
+        build_options.api.as_deref(),
+        build_options.api_roles.as_deref(),
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            let e = hale_codegen::CodegenError::Unsupported(e);
+            eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
+            return ExitCode::from(1);
+        }
+    };
     let options_fp = build_env::options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity(&bundle, &build_options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &build_options);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
@@ -449,16 +465,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         obs_entity_ids: obs_ids.clone(),
         ..build_options
     };
-    if let Err(e) = hale_types::resolved::resolve_program(
-        &program,
-        &renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(hale_codegen::CodegenError::Unsupported)
-    .and_then(|resolved| {
-        hale_codegen::build_resolved(resolved, &bin, &renames, &options)
-    }) {
+    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &renames, &options) {
         eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
         return ExitCode::from(1);
     }

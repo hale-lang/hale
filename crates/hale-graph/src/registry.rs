@@ -680,16 +680,15 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(TY_RESOLVED, "from_gates", "the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`", "one plan (phase 2)"),
             legacy(CG_WIRE, "bus_payload_is_flat", "the third leg of the direct-call gate exists only in codegen", "a gate column"),
-            legacy(OPTIONS, "model_identity", "the CLI derives the plan a second time for the exec digest, from a bundle shaped differently from the one the agreement test compares", "one plan, one digest"),
         ],
-        consumers: &[consumer_at("codegen", CG, "build_resolved"), consumer_at("codegen", "crates/hale-codegen/src/bus/dispatch.rs", "bus_devirt"), consumer_at("exec_digest", OPTIONS, "exec_digest"), consumer("model dump")],
+        consumers: &[consumer_at("codegen", CG, "build_resolved"), consumer_at("codegen", "crates/hale-codegen/src/bus/dispatch.rs", "bus_devirt"), consumer_at("exec_digest (the resolved program's plan)", OPTIONS, "resolved.plan.digest()"), consumer("model dump")],
         invariants: &["which flavour a subject gets is a plan conclusion, never a model row (spec/model.md)", "the model's plan and codegen's agree over the corpus"],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "DispatchPlan::derive(", allowed: &[(M_DISPATCH, 1), (M_LIB, 1), (MODEL_BUILDER, 1), (OPTIONS, 1)] },
+            Seam { symbol: "DispatchPlan::derive(", allowed: &[(M_DISPATCH, 1), (M_LIB, 1), (MODEL_BUILDER, 1)] },
             Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 2), (TY_RESOLVED, 1)] },
         ],
     },

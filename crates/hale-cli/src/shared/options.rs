@@ -712,27 +712,35 @@ pub(crate) fn exec_digest(
     out
 }
 
-/// GH #476 Change 8: everything the BUILD needs from the canonical
-/// model, from ONE derivation — the dispatch plan's digest (folded
-/// into the execution identity below) and the canonical entity ids
-/// codegen stamps into the observation manifest.
+/// GH #476 Change 8: what the BUILD stamps as its identity beside the
+/// sources — the digest of the dispatch plan codegen lowers (folded
+/// into the execution identity by [`exec_digest`]) and the canonical
+/// entity ids codegen stamps into the observation manifest.
+///
+/// The plan is the resolved program's (F.40 phase 1.5): the one
+/// codegen reads, over the program it lowers, so the digest names
+/// exactly the lowering the binary carries. The model is still
+/// derived here, from the checked bundle, for a different concern:
+/// the observation entity ids are the model's identities, which a
+/// consumer joins the live manifest to.
 ///
 /// `options.no_bus_devirt` (`LOTUS_NO_BUS_DEVIRT=1`, the differential
-/// harness's control arm) makes codegen emit the empty plan — every subject dynamic — so
-/// the identity folded into the exec digest must be the EMPTY
-/// plan's, not the model's. Otherwise the control arm and the live
-/// arm would share a build identity while running different
-/// lowerings, and a recording taken under one would be admitted
-/// against the other.
+/// harness's control arm) makes codegen emit the empty plan — every
+/// subject dynamic — so the identity folded into the exec digest must
+/// be the EMPTY plan's. Otherwise the control arm and the live arm
+/// would share a build identity while running different lowerings,
+/// and a recording taken under one would be admitted against the
+/// other.
 pub(crate) fn model_identity(
     bundle: &hale_types::Bundle<'_>,
+    resolved: &hale_types::resolved::ResolvedProgram,
     options: &hale_codegen::BuildOptions,
 ) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
     let model = hale_types::model_builder::derive_application_model(bundle);
     let plan_digest = if options.no_bus_devirt {
         hale_model::dispatch_plan::DispatchPlan::default().digest()
     } else {
-        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
+        resolved.plan.digest()
     };
     (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
 }

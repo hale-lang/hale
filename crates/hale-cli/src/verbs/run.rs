@@ -27,12 +27,36 @@ use crate::shared::imports::resolve_imports;
 use crate::shared::imports::scope_import_aliases;
 use crate::shared::imports::unscoped_alias_uses;
 use crate::shared::process::wait_passing_signals;
-/// Compile `program` to a temporary native binary and execute it,
-/// forwarding `user_args` as the program's trailing argv. This is
-/// the whole of `hale run` — the same codegen backend as `hale
-/// build`, so there is no `run`-vs-`build` behavioral divergence.
-pub(crate) fn compile_and_exec(
+/// Resolve the checked `program` into the envelope codegen lowers
+/// (`hale_types::resolved`). It runs before the execution identity is
+/// computed: the identity folds in the dispatch plan the envelope
+/// carries. A refused resolve is reported as the build would report it.
+fn resolve_checked(
     program: &Program,
+    renames: &[(Vec<String>, String)],
+    options: &hale_codegen::BuildOptions,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Result<hale_types::resolved::ResolvedProgram, ExitCode> {
+    hale_types::resolved::resolve_program(
+        program,
+        renames,
+        options.api.as_deref(),
+        options.api_roles.as_deref(),
+    )
+    .map_err(|e| {
+        let e = hale_codegen::CodegenError::Unsupported(e);
+        eprintln!("{}", render_codegen_error(&e, file_bases, sources));
+        ExitCode::from(1)
+    })
+}
+
+/// Compile the resolved program to a temporary native binary and
+/// execute it, forwarding `user_args` as the program's trailing argv.
+/// This is the whole of `hale run` — the same codegen backend as
+/// `hale build`, so there is no `run`-vs-`build` behavioral divergence.
+pub(crate) fn compile_and_exec(
+    resolved: hale_types::resolved::ResolvedProgram,
     renames: &[(Vec<String>, String)],
     user_args: &[String],
     // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
@@ -65,16 +89,7 @@ pub(crate) fn compile_and_exec(
         obs_entity_ids,
         ..options
     };
-    if let Err(e) = hale_types::resolved::resolve_program(
-        program,
-        renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(hale_codegen::CodegenError::Unsupported)
-    .and_then(|resolved| {
-        hale_codegen::build_resolved(resolved, &bin, renames, &options)
-    }) {
+    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, renames, &options) {
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
@@ -190,12 +205,16 @@ pub(crate) fn run_program(
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
+        let resolved = match resolve_checked(&program, &renames, &options, &file_bases, &sources) {
+            Ok(r) => r,
+            Err(code) => return code,
+        };
         let options_fp = build_env::options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity(&bundle, &options);
+        let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
-            &program,
+            resolved,
             &renames,
             user_args,
             observe,
@@ -380,12 +399,17 @@ pub(crate) fn run_program(
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    let resolved =
+        match resolve_checked(&program, &renames, &options, &file_bases, &path_sources) {
+            Ok(r) => r,
+            Err(code) => return code,
+        };
     let options_fp = build_env::options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity(&bundle, &options);
+    let (plan_digest, obs_ids) = model_identity(&bundle, &resolved, &options);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
-        &program,
+        resolved,
         &renames,
         user_args,
         observe,

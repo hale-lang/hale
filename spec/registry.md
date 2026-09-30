@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 163 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 162 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -24,7 +24,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 9 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
-| `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 3 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
+| `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 3 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 1 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
@@ -559,9 +559,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/resolved.rs` · `from_gates` — the resolved program derives lowering's plan with an empty domain map (#464's widening is a separate optimization); the model derives its own with the arrangement's domains for `same_domain`. *Removed when:* one plan (phase 2).
 - `crates/hale-codegen/src/bus/wire.rs` · `bus_payload_is_flat` — the third leg of the direct-call gate exists only in codegen. *Removed when:* a gate column.
-- `crates/hale-cli/src/shared/options.rs` · `model_identity` — the CLI derives the plan a second time for the exec digest, from a bundle shaped differently from the one the agreement test compares. *Removed when:* one plan, one digest.
 
-**Consumers.** codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`); codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (`crates/hale-cli/src/shared/options.rs` · `exec_digest`); model dump
+**Consumers.** codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`); codegen (`crates/hale-codegen/src/bus/dispatch.rs` · `bus_devirt`); exec_digest (the resolved program's plan) (`crates/hale-cli/src/shared/options.rs` · `resolved.plan.digest()`); model dump
 
 **Invariants.**
 
@@ -576,7 +575,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-model/src/lib.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
+- `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-model/src/lib.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1
 - `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ### `handler_routing` — Migrating · derivation
