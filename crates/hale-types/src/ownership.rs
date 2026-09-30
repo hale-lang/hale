@@ -2144,8 +2144,11 @@ pub type FreshFactories = BTreeMap<String, FactoryRow>;
 ///
 /// The two still walk different program shapes; phase 2's one
 /// snapshot ends that.
+/// `programs` are walked together: a seed's files hand factories to
+/// one another, so the fixpoint runs over all of them at once (the
+/// resolved program is one; the checker passes the bundle's files).
 pub fn fresh_factories(
-    program: &Program,
+    programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> FreshFactories {
 
@@ -2451,7 +2454,10 @@ pub fn fresh_factories(
         // GH #884: module nesting flattened — a factory fn one
         // brace deeper is lowered and called like any other, so it
         // has to enter the same fixpoint.
-        for item in hale_syntax::ast::flat_decls(&program.items) {
+        for item in programs
+            .iter()
+            .flat_map(|p| hale_syntax::ast::flat_decls(&p.items))
+        {
             let TopDecl::Fn(f) = item else { continue };
             if out.contains_key(&f.name.name) {
                 continue;

@@ -176,7 +176,7 @@ pub fn resolve_program(
     // F.40 phase 1.2c: the rows are the checker's too; the pre-pass
     // reads the locus and the returned binding of each.
     let mut fresh_locus_factories: BTreeMap<String, (String, Option<String>)> =
-        crate::ownership::fresh_factories(&merged, import_renames)
+        crate::ownership::fresh_factories(&[&merged], import_renames)
             .into_iter()
             .map(|(f, row)| (f, (row.locus, row.returned_binding)))
             .collect();

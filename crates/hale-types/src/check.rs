@@ -3314,17 +3314,17 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
         return;
     }
     // GH #870: which fns hand back a locus they freshly built, and
-    // what each call constructs: the fresh-factory rows of every
-    // program, merged by fn name (the first declaration wins, as it
-    // does for the loci), for the loci this bundle declares.
-    let mut factories: BTreeMap<String, Vec<ContainmentState>> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        for (name, row) in crate::ownership::fresh_factories(program, &[]) {
-            if loci.contains_key(row.locus.as_str()) {
-                factories.entry(name).or_insert(row.products);
-            }
-        }
-    }
+    // what each call constructs: the fresh-factory rows over the
+    // bundle's files together (a factory in one file may hand back
+    // what a sibling file's factory built), for the loci this bundle
+    // declares.
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let factories: BTreeMap<String, Vec<ContainmentState>> =
+        crate::ownership::fresh_factories(&programs, &[])
+            .into_iter()
+            .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
+            .map(|(name, row)| (name, row.products))
+            .collect();
     // Classic gray/black DFS. `finished` is the black set: every
     // cycle reachable from a state was found while that state was
     // being explored, so re-entering it later has nothing to add —

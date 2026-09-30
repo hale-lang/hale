@@ -50,7 +50,7 @@ use hale_types::ownership::{fresh_factories, stdlib_mangled_for_path};
 use hale_types::Bundle;
 
 fn compute_new(program: &Program) -> Factories {
-    fresh_factories(program, &[])
+    fresh_factories(&[program], &[])
         .into_iter()
         .map(|(f, row)| (f, (row.locus, row.returned_binding)))
         .collect()
@@ -162,7 +162,7 @@ fn products_one(report: &mut Report, id: &str, program: &Program, src: &str) {
     let new: Products = if loci.is_empty() {
         Products::new()
     } else {
-        fresh_factories(program, &[])
+        fresh_factories(&[program], &[])
             .into_iter()
             .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
             .map(|(f, row)| (f, row.products))
@@ -334,7 +334,7 @@ fn the_correction_on_probes() {
         let program = hale_syntax::parse_source(&src)
             .unwrap_or_else(|d| panic!("probe `{what}` does not parse: {d:?}"));
         let old = old_fresh_factories(&program, &[]).contains_key("make");
-        let new = fresh_factories(&program, &[]).contains_key("make");
+        let new = fresh_factories(&[&program], &[]).contains_key("make");
         if (old, new) != (*old_ok, *new_ok) {
             wrong.push(format!(
                 "{what}: old {old} (expected {old_ok}), new {new} (expected {new_ok})"
