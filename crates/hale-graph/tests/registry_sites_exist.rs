@@ -3,8 +3,9 @@
 //! A registry that cites a function which was renamed or deleted is
 //! worse than none: it tells the next contributor to read code that
 //! is not there. So every `Site { path, symbol }` in every family,
-//! legacy producer, owned helper, consumer, seam, rule evaluator and
-//! Debug-scan entry is checked against the workspace.
+//! legacy producer, owned helper, consumer, seam and rule evaluator is
+//! checked against the workspace (the frozen Debug renderings are
+//! matched by the guard's own scan).
 //!
 //! A definition site (a producer, an owned helper, a rule evaluator)
 //! whose symbol is an identifier must be **defined** in its file: `fn NAME(`, `struct NAME`, `enum NAME`, `const NAME`,
@@ -214,14 +215,6 @@ fn every_registered_site_exists() {
             );
             seen += 1;
         }
-    }
-    for d in hale_graph::DEBUG_SCANS {
-        let site = hale_graph::Site {
-            path: d.path,
-            symbol: d.fragment,
-        };
-        check_site(&root, &site, Rule::Verbatim, "debug scan", &mut missing);
-        seen += 1;
     }
     assert!(seen > 150, "the site scan is vacuous ({seen} sites)");
     assert!(

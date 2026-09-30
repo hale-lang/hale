@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 40 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 16 decide a fact.
 
 ## Families
 
@@ -174,7 +174,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×5, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
+- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `effect_class_table` — Migrating · derivation
 
@@ -872,7 +872,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×5, `crates/hale-types/src/lib.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×2, `crates/hale-types/src/topology.rs` ×1
+- `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×5, `crates/hale-types/src/lib.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/topology.rs` ×1
 - `unbounded_alloc_warnings(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `borrow_lifetime` — Canonical · law
@@ -1321,49 +1321,43 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` | Migrating |
 | semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
 
-## Frozen Debug-string sites
+## Frozen Debug renderings
 
-Every Debug-formatting line (`{:?}`, `{x:?}`, `{:#?}` in a formatting macro) in `hale-types`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of lines the fragment matches. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
+Every Debug rendering with no prose around it (a `?}` placeholder in a formatting macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse to the fragment. A message with prose around its `{:?}` is not listed: it is read by a person. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
 
-| path | fragment | lines | verdict |
+| path | invocation | count | verdict |
 |---|---|---|---|
-| `crates/hale-codegen/src/codegen.rs` | `let dbg = format!("{:?}", program.items);` | decides (`bus_inert`) |
-| `crates/hale-codegen/src/codegen.rs` | `decls.push((name, surface, format!("{:?}", it)));` | decides (`bus_inert`) |
-| `crates/hale-codegen/src/codegen.rs` | `other => !format!("{:?}", other)` | decides (`ownership`) |
-| `crates/hale-codegen/src/codegen.rs` | `let dbg = format!("{:?}", f.body);` | decides (`alloc_summary`) |
-| `crates/hale-codegen/src/codegen.rs` | `.map(\|d\| format!("{:?}", d))` | renders |
-| `crates/hale-codegen/src/codegen.rs` | `other => format!("{:?}", other),` | renders |
-| `crates/hale-codegen/src/codegen.rs` | `format!("clang failed compiling {:?} for wasm32", src)` | renders |
-| `crates/hale-codegen/src/locus/restart.rs` | `format!("{:?}", fd.body).contains("RestartInPlace")` | decides (`restart`) |
-| `crates/hale-types/src/check.rs` | `methods.insert(format!("{:?}", kind), body);` | decides (`nonreturning`) |
-| `crates/hale-types/src/check.rs` | `TypeExpr::Primitive(p, _) => format!("{:?}", p),` | decides (`snapshot_identity`) |
-| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_key(inner))` | decides (`snapshot_identity`) |
-| `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind),` | renders |
-| `crates/hale-types/src/purity.rs` | `subject_repr: format!("{:?}", subject),` | renders |
-| `crates/hale-types/src/purity.rs` | `fn_name: format!("{:?}", op),` | renders |
-| `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
-| `crates/hale-types/src/model_builder.rs` | `format!(" key {:?}", other)` | renders |
-| `crates/hale-types/src/secret_reveal.rs` | `let mut text = format!("{:?}", fd);` | decides (`effects`) |
-| `crates/hale-types/src/secret_reveal.rs` | `other => backstop(format!("{:?}", other), p.span, diags),` | renders |
-| `crates/hale-types/src/secret_reveal.rs` | `other => backstop(format!("{:?}", other), other.span(), diags),` | renders |
-| `crates/hale-types/src/secret_reveal.rs` | `body(&format!("{:?}", lc.kind).to_lowercase()` | decides (`effects`) |
-| `crates/hale-types/src/secret_reveal.rs` | `backstop(format!("{:?}", other), member_span(other), diags)` | renders |
-| `crates/hale-types/src/secret_reveal.rs` | `let raw = format!("{:?}", m);` | decides (`effects`) |
-| `crates/hale-types/src/stdlib_names.rs` | `let mut text = format!("{:?}", d);` | decides (`stdlib_surface`) |
-| `crates/hale-cli/src/build_env.rs` | `fp.push_str(&format!(";lto={l:?}"));` | decides (`digests`) |
-| `crates/hale-cli/src/verbs/fmt.rs` | `eprintln!("hale fmt: {:?}", d);` | renders |
-| `crates/hale-cli/src/verbs/misc.rs` | `println!("{:>4}:{:<3} {:?}", line, col, t.kind);` | renders |
-| `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog);` | renders |
-| `crates/hale-cli/src/pkg.rs` | `format!("git {:?} failed in {}", args, repo.display())` | renders |
-| `crates/hale-cli/src/pkg.rs` | `format!("git {:?} failed in {}", args, dir.display())` | renders |
-| `crates/hale-lsp/src/lib.rs` | `"placement": format!("{:?}", s.placement),` | renders |
-| `crates/hale-lsp/src/lib.rs` | `.map(\|r\| format!("{:?}", r)),` | renders |
-| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity).contains("Any")` | decides (`placement`) |
+| `crates/hale-cli/src/build_env.rs` | `format!( "target={:?};cpu={:?};dev={};debug={}", o.target, o.target_cpu, o.dev_profile, o.` | decides (`digests`) |
+| `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | decides (`digests`) |
+| `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | renders |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", d)` | renders |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", f.body)` | decides (`alloc_summary`) |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | decides (`bus_inert`) |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | decides (`ownership`) |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", program.items)` | decides (`bus_inert`) |
+| `crates/hale-codegen/src/locus/restart.rs` | `format!("{:?}", fd.body)` | decides (`restart`) |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | renders |
-| `crates/hale-lsp/src/lib.rs` | `.map(\|c\| format!("{:?}", c.kind))` | renders |
-| `crates/hale-lsp/src/lib.rs` | `TypeExpr::Primitive(p, _) => format!("{:?}", p),` | renders |
-| `crates/hale-lsp/src/lib.rs` | `"kind": format!("{:?}", site.kind),` | renders |
-| `crates/hale-lsp/src/lib.rs` | `"escape": format!("{:?}", site.escape),` | renders |
-| `crates/hale-lsp/src/lib.rs` | `"reason": format!("{:?}", site.reason),` | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | renders |
-| `crates/hale-lsp/src/lib.rs` | `(replies, format!("{code:?}"))` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity)` | decides (`placement`) |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", c.kind)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", p)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", r)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", s.placement)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", site.escape)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", site.kind)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", site.reason)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{code:?}")` | renders |
+| `crates/hale-syntax/src/json_gen.rs` | `format!("{:?}", f)` | renders |
+| `crates/hale-syntax/src/parser.rs` | `format!("{:?}", err)` | renders |
+| `crates/hale-types/src/check.rs` | `format!("{:?}", kind)` | decides (`nonreturning`) |
+| `crates/hale-types/src/check.rs` | `format!("{:?}", p)` | decides (`snapshot_identity`) |
+| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_key(inner))` | decides (`snapshot_identity`) |
+| `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind)` | renders |
+| `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | decides (`snapshot_identity`) |
+| `crates/hale-types/src/purity.rs` | `format!("{:?}", op)` | renders |
+| `crates/hale-types/src/purity.rs` | `format!("{:?}", subject)` | renders |
+| `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", fd)` | decides (`effects`) |
+| `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", lc.kind)` | decides (`effects`) |
+| `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", m)` | decides (`effects`) |
+| `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", other)` | renders |
+| `crates/hale-types/src/stdlib_names.rs` | `format!("{:?}", d)` | decides (`stdlib_surface`) |

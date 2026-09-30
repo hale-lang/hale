@@ -16,7 +16,8 @@ fn hale_graph_depends_on_nothing() {
         if t.starts_with('[') {
             // `[dependencies]` and every `[target.<cfg>.dependencies]`.
             in_deps = t == "[dependencies]"
-                || (t.starts_with("[target.") && t.ends_with(".dependencies]"));
+                || t.starts_with("[dependencies.")
+                || (t.starts_with("[target.") && t.contains(".dependencies"));
             continue;
         }
         if in_deps && !t.is_empty() && !t.starts_with('#') {

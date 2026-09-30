@@ -170,15 +170,18 @@ pub enum ScanVerdict {
     Renders,
 }
 
-/// A frozen Debug-formatting site (`{:?}`, `{x:?}`, `{:#?}` inside
-/// `format!`, `write!`, `writeln!`, `println!` or `eprintln!`) in
-/// hale-types, hale-codegen, hale-cli or hale-lsp.
+/// A frozen Debug rendering: a formatting-macro invocation (`format!`,
+/// `write!`, `writeln!`, `println!`, `eprintln!`) whose template holds
+/// a `?}` placeholder and no space. A template with prose is a
+/// message; one without is a value, and a value rendered from Debug
+/// and then compared, searched or hashed is a derivation with no name.
 #[derive(Debug, Clone, Copy)]
 pub struct DebugScan {
     pub path: &'static str,
-    /// A distinctive fragment of the line.
+    /// The invocation, collapsed to one line, as the scan renders it
+    /// (its first 90 characters).
     pub fragment: &'static str,
-    /// How many lines of the file contain the fragment.
+    /// How many invocations in the file collapse to the fragment.
     pub count: usize,
     pub verdict: ScanVerdict,
 }
@@ -371,7 +374,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/tests/placement.rs", "crates/hale-codegen/tests/form_hashmap_sync.rs"],
         spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
         owned: &[],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 5), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1)] }],
+        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1)] }],
     },
     Family {
         name: "effect_class_table",
@@ -929,7 +932,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/memory.md § Allocation routing", "spec/styleguide.md"],
         owned: &[],
         seams: &[
-            Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (STDLIB_BODIES, 2), (TOPOLOGY, 1)] },
+            Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (STDLIB_BODIES, 1), (TOPOLOGY, 1)] },
             Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (LSP, 1)] },
         ],
     },
@@ -1413,268 +1416,47 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
-/// Every Debug-formatting line in hale-types, hale-codegen, hale-cli
-/// and hale-lsp, frozen with a verdict and a line count. A new one,
-/// or a changed count, fails registry_guard.rs.
+/// Every Debug rendering with no prose around it (a `?}` placeholder in a
+/// formatting macro whose template holds no space: a value, never a
+/// message) in hale-syntax, hale-types, hale-model, hale-codegen, hale-cli
+/// and hale-lsp, frozen with a verdict and an invocation count. The
+/// fragment is the invocation collapsed to one line, so a multi-line
+/// call is seen. A new one, or a changed count, fails registry_guard.rs.
 pub const DEBUG_SCANS: &[DebugScan] = &[
-    DebugScan {
-        path: CG,
-        fragment: "let dbg = format!(\"{:?}\", program.items);",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "bus_inert",
-        },
-    },
-    DebugScan {
-        path: CG,
-        fragment: "decls.push((name, surface, format!(\"{:?}\", it)));",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "bus_inert",
-        },
-    },
-    DebugScan {
-        path: CG,
-        fragment: "other => !format!(\"{:?}\", other)",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "ownership",
-        },
-    },
-    DebugScan {
-        path: CG,
-        fragment: "let dbg = format!(\"{:?}\", f.body);",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "alloc_summary",
-        },
-    },
-    DebugScan {
-        path: CG,
-        fragment: ".map(|d| format!(\"{:?}\", d))",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: CG,
-        fragment: "other => format!(\"{:?}\", other),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: CG,
-        fragment: "format!(\"clang failed compiling {:?} for wasm32\", src)",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: CG_RESTART,
-        fragment: "format!(\"{:?}\", fd.body).contains(\"RestartInPlace\")",
-        count: 1,
-        verdict: ScanVerdict::Decides { family: "restart" },
-    },
-    DebugScan {
-        path: CHECK,
-        fragment: "methods.insert(format!(\"{:?}\", kind), body);",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "nonreturning",
-        },
-    },
-    DebugScan {
-        path: CHECK,
-        fragment: "TypeExpr::Primitive(p, _) => format!(\"{:?}\", p),",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "snapshot_identity",
-        },
-    },
-    DebugScan {
-        path: CHECK,
-        fragment: "format!(\"{:?}({})\", class, type_expr_key(inner))",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "snapshot_identity",
-        },
-    },
-    DebugScan {
-        path: TLIB,
-        fragment: "format!(\"{:?}\", d.kind),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: PURITY,
-        fragment: "subject_repr: format!(\"{:?}\", subject),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: PURITY,
-        fragment: "fn_name: format!(\"{:?}\", op),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: MODEL_BUILDER,
-        fragment: "format!(\"{:?}:{}\", d.kind, d.display)",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: MODEL_BUILDER,
-        fragment: "format!(\" key {:?}\", other)",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "let mut text = format!(\"{:?}\", fd);",
-        count: 1,
-        verdict: ScanVerdict::Decides { family: "effects" },
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "other => backstop(format!(\"{:?}\", other), p.span, diags),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "other => backstop(format!(\"{:?}\", other), other.span(), diags),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "body(&format!(\"{:?}\", lc.kind).to_lowercase()",
-        count: 1,
-        verdict: ScanVerdict::Decides { family: "effects" },
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "backstop(format!(\"{:?}\", other), member_span(other), diags)",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-types/src/secret_reveal.rs",
-        fragment: "let raw = format!(\"{:?}\", m);",
-        count: 1,
-        verdict: ScanVerdict::Decides { family: "effects" },
-    },
-    DebugScan {
-        path: "crates/hale-types/src/stdlib_names.rs",
-        fragment: "let mut text = format!(\"{:?}\", d);",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "stdlib_surface",
-        },
-    },
-    DebugScan {
-        path: BUILD_ENV,
-        fragment: "fp.push_str(&format!(\";lto={l:?}\"));",
-        count: 1,
-        verdict: ScanVerdict::Decides { family: "digests" },
-    },
-    DebugScan {
-        path: "crates/hale-cli/src/verbs/fmt.rs",
-        fragment: "eprintln!(\"hale fmt: {:?}\", d);",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-cli/src/verbs/misc.rs",
-        fragment: "println!(\"{:>4}:{:<3} {:?}\", line, col, t.kind);",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-cli/src/verbs/misc.rs",
-        fragment: "println!(\"{:#?}\", prog);",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-cli/src/pkg.rs",
-        fragment: "format!(\"git {:?} failed in {}\", args, repo.display())",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: "crates/hale-cli/src/pkg.rs",
-        fragment: "format!(\"git {:?} failed in {}\", args, dir.display())",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "\"placement\": format!(\"{:?}\", s.placement),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: ".map(|r| format!(\"{:?}\", r)),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "format!(\"{:?}\", affinity).contains(\"Any\")",
-        count: 1,
-        verdict: ScanVerdict::Decides {
-            family: "placement",
-        },
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "format!(\"pinned({:?})\", affinity)",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: ".map(|c| format!(\"{:?}\", c.kind))",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "TypeExpr::Primitive(p, _) => format!(\"{:?}\", p),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "\"kind\": format!(\"{:?}\", site.kind),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "\"escape\": format!(\"{:?}\", site.escape),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "\"reason\": format!(\"{:?}\", site.reason),",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "format!(\"{:?}\", ExitCode::SUCCESS)",
-        count: 2,
-        verdict: ScanVerdict::Renders,
-    },
-    DebugScan {
-        path: LSP,
-        fragment: "(replies, format!(\"{code:?}\"))",
-        count: 1,
-        verdict: ScanVerdict::Renders,
-    },
+    DebugScan { path: BUILD_ENV, fragment: "format!( \"target={:?};cpu={:?};dev={};debug={}\", o.target, o.target_cpu, o.dev_profile, o.", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
+    DebugScan { path: BUILD_ENV, fragment: "format!(\";lto={l:?}\")", count: 1, verdict: ScanVerdict::Decides { family: "digests" } },
+    DebugScan { path: "crates/hale-cli/src/verbs/misc.rs", fragment: "println!(\"{:#?}\", prog)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", f.body)", count: 1, verdict: ScanVerdict::Decides { family: "alloc_summary" } },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", it)", count: 1, verdict: ScanVerdict::Decides { family: "bus_inert" } },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", other)", count: 2, verdict: ScanVerdict::Decides { family: "ownership" } },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", program.items)", count: 1, verdict: ScanVerdict::Decides { family: "bus_inert" } },
+    DebugScan { path: CG_RESTART, fragment: "format!(\"{:?}\", fd.body)", count: 1, verdict: ScanVerdict::Decides { family: "restart" } },
+    DebugScan { path: LSP, fragment: "format!(\"pinned({:?})\", affinity)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", ExitCode::SUCCESS)", count: 2, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", affinity)", count: 1, verdict: ScanVerdict::Decides { family: "placement" } },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", c.kind)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", p)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", r)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", s.placement)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", site.escape)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", site.kind)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{:?}\", site.reason)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: LSP, fragment: "format!(\"{code:?}\")", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: "crates/hale-syntax/src/json_gen.rs", fragment: "format!(\"{:?}\", f)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: PARSER, fragment: "format!(\"{:?}\", err)", count: 21, verdict: ScanVerdict::Renders },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}\", kind)", count: 1, verdict: ScanVerdict::Decides { family: "nonreturning" } },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}\", p)", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: CHECK, fragment: "format!(\"{:?}({})\", class, type_expr_key(inner))", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", fd)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },
+    DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", lc.kind)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },
+    DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", m)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },
+    DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", other)", count: 3, verdict: ScanVerdict::Renders },
+    DebugScan { path: "crates/hale-types/src/stdlib_names.rs", fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Decides { family: "stdlib_surface" } },
 ];
 
 /// All families, in layer order.
@@ -1902,14 +1684,16 @@ pub fn render_markdown() -> String {
         ));
     }
     o.push('\n');
-    o.push_str("## Frozen Debug-string sites\n\n");
+    o.push_str("## Frozen Debug renderings\n\n");
     o.push_str(
-        "Every Debug-formatting line (`{:?}`, `{x:?}`, `{:#?}` in a formatting macro) in \
-         `hale-types`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of lines the \
-         fragment matches. A site that *decides* derives a fact from a Debug string and is \
-         permitted only until its family's table replaces it; a new site fails the guard.\n\n",
+        "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \
+         macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, \
+         `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse \
+         to the fragment. A message with prose around its `{:?}` is not listed: it is read by a \
+         person. A site that *decides* derives a fact from a Debug string and is permitted only \
+         until its family's table replaces it; a new site fails the guard.\n\n",
     );
-    o.push_str("| path | fragment | lines | verdict |\n|---|---|---|---|\n");
+    o.push_str("| path | invocation | count | verdict |\n|---|---|---|---|\n");
     for d in DEBUG_SCANS {
         let v = match d.verdict {
             ScanVerdict::Decides { family } => format!("decides (`{family}`)"),

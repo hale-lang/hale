@@ -3486,8 +3486,9 @@ scans fail the build: a derivation-shaped function (`compute_`,
 `derive_`, `infer_`, `summarize_`, `classify_`) in a semantic crate
 that the registry does not name; a reference to a family's guarded
 seam (`build_bus_graph(`, `resolve_owners(`, ...) from a file the
-registry does not list; a `format!("{:?}", ..)` site in `hale-types`
-or `hale-codegen` that is not in the frozen list. A registered rule
+registry does not list; a Debug rendering with no prose around it (a
+`?}` placeholder in a formatting macro whose template holds no space)
+in any of six crates that is not in the frozen list. A registered rule
 without an evaluator fails the build. Every site the registry names
 must exist. A scanner cannot prove that no code reimplements a
 decision under another name; it names the legitimate path and puts

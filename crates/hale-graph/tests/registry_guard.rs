@@ -28,10 +28,13 @@
 //!    file is a new consumer or a new re-derivation, and either way
 //!    the registry entry changes first; a cutover shows up as a
 //!    decrement.
-//! 3. **Debug-string formatting is frozen.** A value rendered with
-//!    `{:?}` and read back as text is the cheapest way to derive
-//!    without saying so. Every such site in the semantic crates is
-//!    listed with a verdict and a count; a new one fails.
+//! 3. **Debug renderings are frozen.** A value rendered with `{:?}`
+//!    and read back as text is the cheapest way to derive without
+//!    saying so. Every formatting-macro invocation whose template is a
+//!    bare rendering (a `?}` placeholder and no prose) in the six
+//!    scanned crates is listed with a verdict and a count, multi-line
+//!    invocations included; a new one fails. A message with prose
+//!    around its `{:?}` is read by a person and is not a derivation.
 //!
 //! Each check has a vacuity assertion, so a broken scanner cannot
 //! pass by seeing nothing. What the guard does not cover, by design:
@@ -178,6 +181,19 @@ fn derivation_shaped_definitions_are_registered_in_their_file() {
         seen >= 20,
         "the definition scan is vacuous ({seen} derivation-shaped fns)"
     );
+    let expected = registered
+        .iter()
+        .filter(|(path, name)| {
+            DERIVATION_PREFIXES.iter().any(|p| name.starts_with(p))
+                && SEMANTIC_CRATES
+                    .iter()
+                    .any(|c| path.starts_with(&format!("crates/{c}/src/")))
+        })
+        .count();
+    assert!(
+        seen >= expected,
+        "the definition scan saw {seen} derivation-shaped fns but the registry names {expected} in the scanned crates: the scanner is missing definitions"
+    );
     assert!(
         unregistered.is_empty(),
         "{} derivation-shaped function(s) are not registered in their file:\n{}\n\n\
@@ -210,7 +226,17 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
             seen_seams += 1;
             let allowed: BTreeMap<&str, usize> = seam.allowed.iter().copied().collect();
             for (rel, text) in &sources {
-                let n = text.matches(seam.symbol).count();
+                let n: usize = text
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with("//"))
+                    .map(|l| {
+                        l.split("//")
+                            .next()
+                            .unwrap_or(l)
+                            .matches(seam.symbol)
+                            .count()
+                    })
+                    .sum();
                 if n == 0 {
                     continue;
                 }
@@ -253,25 +279,78 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
     );
 }
 
-/// A line that formats a value with `{:?}` (or `{x:?}`, `{:#?}`)
-/// inside a formatting macro.
-fn is_debug_format_line(line: &str) -> bool {
-    line.contains("?}")
-        && [
-            "format!(",
-            "write!(",
-            "writeln!(",
-            "println!(",
-            "eprintln!(",
-        ]
-        .iter()
-        .any(|m| line.contains(m))
+/// Every formatting-macro invocation in `text` whose template holds a
+/// `?}` placeholder and no space, collapsed to one line (its first 90
+/// characters). Parentheses inside string literals do not count.
+fn debug_renderings(text: &str) -> Vec<String> {
+    const MACROS: &[&str] = &[
+        "format!(",
+        "write!(",
+        "writeln!(",
+        "println!(",
+        "eprintln!(",
+    ];
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < text.len() {
+        let next = MACROS
+            .iter()
+            .filter_map(|m| text[i..].find(m).map(|k| (i + k, *m)))
+            .min_by_key(|(k, _)| *k);
+        let Some((start, m)) = next else { break };
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut j = start + m.len() - 1;
+        let mut end = None;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if in_str {
+                if c == b'\\' {
+                    j += 1;
+                } else if c == b'"' {
+                    in_str = false;
+                }
+            } else if c == b'"' {
+                in_str = true;
+            } else if c == b'(' {
+                depth += 1;
+            } else if c == b')' {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(j);
+                    break;
+                }
+            }
+            j += 1;
+        }
+        let Some(end) = end else { break };
+        let inv = &text[start..=end];
+        let template = inv
+            .find('"')
+            .and_then(|q| inv[q + 1..].find('"').map(|e| &inv[q + 1..q + 1 + e]));
+        if let Some(t) = template {
+            if t.contains("?}") && !t.contains(' ') {
+                let collapsed: String = inv.split_whitespace().collect::<Vec<_>>().join(" ");
+                out.push(collapsed.chars().take(90).collect());
+            }
+        }
+        i = end + 1;
+    }
+    out
 }
 
-const DEBUG_SCAN_CRATES: &[&str] = &["hale-types", "hale-codegen", "hale-cli", "hale-lsp"];
+const DEBUG_SCAN_CRATES: &[&str] = &[
+    "hale-syntax",
+    "hale-types",
+    "hale-model",
+    "hale-codegen",
+    "hale-cli",
+    "hale-lsp",
+];
 
 #[test]
-fn debug_string_formatting_is_frozen() {
+fn debug_renderings_are_frozen() {
     let root = workspace_root();
     let mut frozen: BTreeMap<&str, Vec<(&hale_graph::DebugScan, usize)>> = BTreeMap::new();
     for d in hale_graph::DEBUG_SCANS {
@@ -281,17 +360,14 @@ fn debug_string_formatting_is_frozen() {
     let mut seen = 0usize;
     for c in DEBUG_SCAN_CRATES {
         for (rel, text) in rust_sources(&root, c) {
-            for (i, line) in text.lines().enumerate() {
-                if !is_debug_format_line(line) {
-                    continue;
-                }
+            for sig in debug_renderings(&text) {
                 seen += 1;
                 let hit = frozen
                     .get_mut(rel.as_str())
-                    .and_then(|v| v.iter_mut().find(|(d, _)| line.contains(d.fragment)));
+                    .and_then(|v| v.iter_mut().find(|(d, _)| d.fragment == sig));
                 match hit {
                     Some((_, n)) => *n += 1,
-                    None => unlisted.push(format!("{rel}:{}: {}", i + 1, line.trim())),
+                    None => unlisted.push(format!("{rel}: {sig}")),
                 }
             }
         }
@@ -301,24 +377,23 @@ fn debug_string_formatting_is_frozen() {
         for (d, n) in v {
             if *n != d.count {
                 miscounted.push(format!(
-                    "{path}: `{}` matches {n} line(s); the registry freezes {}",
+                    "{path}: `{}` has {n} invocation(s); the registry freezes {}",
                     d.fragment, d.count
                 ));
             }
         }
     }
     assert!(
-        seen >= 20,
-        "the Debug-format scan is vacuous ({seen} lines)"
+        seen >= 40,
+        "the Debug-rendering scan is vacuous ({seen} invocations)"
     );
     assert!(
         unlisted.is_empty() && miscounted.is_empty(),
-        "{} Debug-format line(s) are not in the frozen list, {} frozen fragment(s) match a different number of lines:\n{}\n{}\n\n\
-         A value rendered with {{:?}} and searched as text is a derivation \
-         with no name. Decide the fact from the family's table instead; if \
-         the site only renders a label or a message, list it in DEBUG_SCANS \
-         with ScanVerdict::Renders, a distinctive fragment of the line, and \
-         the number of lines it matches.",
+        "{} Debug rendering(s) are not in the frozen list, {} frozen entries have a different count:\n{}\n{}\n\n\
+         A value rendered with {{:?}} and then compared, searched or hashed is a derivation \
+         with no name. Decide the fact from the family's table instead; if the rendering only \
+         labels a value for a person, list it in DEBUG_SCANS with ScanVerdict::Renders, the \
+         invocation collapsed to one line (90 characters), and its count.",
         unlisted.len(),
         miscounted.len(),
         unlisted.join("\n"),
