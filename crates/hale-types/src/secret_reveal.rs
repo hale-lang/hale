@@ -176,6 +176,9 @@ impl Flow {
 struct FnInfo {
     /// each param: its name, and whether it is `@secret`
     params: Vec<(String, bool)>,
+    /// where it is declared: its program's key and its name's offset,
+    /// so its file is known from the source map
+    site: (String, u32),
 }
 
 #[derive(Default)]
@@ -273,7 +276,7 @@ impl World {
             .map(|(path, _, _)| path.as_str())
     }
 
-    fn gather(programs: &[&Program], renames: &[(Vec<String>, String)]) -> World {
+    fn gather(programs: &[(&str, &Program)], renames: &[(Vec<String>, String)]) -> World {
         let mut w = World { renames: renames.to_vec(), ..World::default() };
         fn declared(items: &[TopDecl], w: &mut World, aliases: &mut Vec<(String, TypeExpr)>) {
             for item in items {
@@ -299,7 +302,7 @@ impl World {
             }
         }
         let mut aliases = Vec::new();
-        for p in programs {
+        for (_, p) in programs {
             declared(&p.items, &mut w, &mut aliases);
         }
         // the stdlib's loci are keys too (`std::http::Client` ->
@@ -314,15 +317,18 @@ impl World {
                 }
             }
         }
-        fn info(params: &[Param]) -> FnInfo {
-            FnInfo { params: params.iter().map(|p| (p.name.name.clone(), p.secret)).collect() }
+        fn info(key: &str, fd: &FnDecl) -> FnInfo {
+            FnInfo {
+                params: fd.params.iter().map(|p| (p.name.name.clone(), p.secret)).collect(),
+                site: (key.to_string(), fd.name.span.start.0),
+            }
         }
-        fn collect(items: &[TopDecl], w: &mut World) {
+        fn collect(key: &str, items: &[TopDecl], w: &mut World) {
             for item in items {
                 match item {
-                    TopDecl::Module(m) => collect(&m.items, w),
+                    TopDecl::Module(m) => collect(key, &m.items, w),
                     TopDecl::Fn(fd) => {
-                        w.fns.insert(fd.name.name.clone(), info(&fd.params));
+                        w.fns.insert(fd.name.name.clone(), info(key, fd));
                         if let Some(r) = fd.ret.as_ref().and_then(|t| w.key_of(t)).filter(|t| w.loci.contains(t)) {
                             w.fn_returns.insert(fd.name.name.clone(), r);
                         }
@@ -340,7 +346,7 @@ impl World {
                                     }
                                 }
                                 LocusMember::Fn(fd) => {
-                                    methods.insert(fd.name.name.clone(), info(&fd.params));
+                                    methods.insert(fd.name.name.clone(), info(key, fd));
                                 }
                                 _ => {}
                             }
@@ -352,8 +358,8 @@ impl World {
                 }
             }
         }
-        for p in programs {
-            collect(&p.items, &mut w);
+        for (key, p) in programs {
+            collect(key, &p.items, &mut w);
         }
         // transparency, to a fixpoint: a free fn whose every call is to
         // a value fn, a value builtin or another transparent fn, that
@@ -369,7 +375,7 @@ impl World {
                 }
             }
         }
-        for p in programs {
+        for (_, p) in programs {
             free_bodies(&p.items, &mut bodies);
         }
         loop {
@@ -551,7 +557,7 @@ pub fn secret_reveal_diags(
     renames: &[(Vec<String>, String)],
     sources: &[crate::symbol::SourceFile],
 ) -> Vec<Diag> {
-    let list: Vec<&Program> = programs.values().copied().collect();
+    let list: Vec<(&str, &Program)> = programs.iter().map(|(k, p)| (k.as_str(), *p)).collect();
     let mut world = World::gather(&list, renames);
     world.sources = sources.iter().map(|u| (u.path.clone(), u.base, u.len)).collect();
     let mut diags = Vec::new();
@@ -639,41 +645,84 @@ fn outside_strings(text: &str, f: impl Fn(&str) -> String) -> String {
     out
 }
 
+/// The file a declaration at `at` sits in, in the program keyed `key`.
+/// The source map says, when the bundle has one; every verb that checks
+/// hands its bundle the map it minted with, and a caller that wants a
+/// pin to match supplies one. Without it the program's key is the file
+/// only when the key names one (a `.hl` path): a directory target's key
+/// is the directory, whose name says nothing of which file declared
+/// what, so there the declaration has no file and no pin matches it
+/// (outside review of #1277, finding 1).
+fn own_file<'w>(world: &'w World, key: &'w str, at: u32) -> Option<&'w str> {
+    if !world.sources.is_empty() {
+        return world.file_of(at);
+    }
+    (std::path::Path::new(key).extension().and_then(|e| e.to_str()) == Some("hl")).then_some(key)
+}
+
 /// The deferral a declaration is allowed by: its name (as written, or
 /// mangled from the file stem) and its pinned body.
 fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Deferral {
     let fn_name = fd.name.name.as_str();
     // The declaration is identified by its module, not its spelling: the
-    // source unit its span falls in (or the program's own path when the
-    // bundle has no source map) must have the pin's stem, and the module
-    // must declare the pin's companion fn. A program's own fn that
+    // source unit its span falls in must have the pin's stem, and the
+    // module must declare the pin's companion fn. A program's own fn that
     // happens to be called `role_password` is no pin (outside review,
     // finding 1). An imported seed's declarations arrive mangled
     // (`__lib_<id>_<stem>_<name>`), the companion included. The
     // directory is not part of the identity: the DNA seeds are checked
     // from the tree, from a scratch copy and from the embedded host
     // cache, and only the file names travel with them.
-    let file = world.file_of(fd.name.span.start.0).unwrap_or(key);
-    let file_stem = std::path::Path::new(file)
-        .file_stem()
+    let file = own_file(world, key, fd.name.span.start.0);
+    let file_stem = file
+        .and_then(|f| std::path::Path::new(f).file_stem())
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let mangled = |have: &str, stem: &str, want: &str| {
-        have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want))
-    };
-    let declares = |stem: &str, companion: &str| {
-        companion.is_empty()
-            || world.fns.keys().any(|n| n == companion || mangled(n, stem, companion))
+    // `__lib_<id>_<stem>_` of a mangled `have` spelling `want`: the one
+    // module (library and file) it was declared in
+    let mangled_prefix = |have: &str, stem: &str, want: &str| -> Option<String> {
+        (have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want)))
+            .then(|| have[..have.len() - want.len()].to_string())
     };
     let Some((_, _, _, q, pin, _)) = PQ_DEFERRED.iter().find(|(stem, l, f, _, _, companion)| {
-        if !declares(stem, companion) {
-            return false;
+        // the name that pins the declaration: a method's locus (a
+        // method's own name is never mangled), a free fn's name
+        let (have, want) = match locus {
+            Some(have) if !l.is_empty() && fn_name == *f => (have, *l),
+            None if l.is_empty() => (fn_name, *f),
+            _ => return false,
+        };
+        // The companion is declared in the candidate's OWN module, never
+        // merely somewhere in the world: two unrelated libraries, each
+        // holding one pinned name, do not vouch for each other (outside
+        // review of #1277, finding 2). Unmangled, that is the same file;
+        // mangled, the same `__lib_<id>_<stem>_` prefix.
+        if file_stem == *stem && have == want {
+            return companion.is_empty()
+                || world.fns.get(*companion).is_some_and(|c| {
+                    let there = own_file(world, &c.site.0, c.site.1);
+                    there.is_some() && there == file
+                });
         }
-        let own = file_stem == *stem;
-        match locus {
-            // a method's name is never mangled: its locus pins it
-            Some(have) => !l.is_empty() && fn_name == *f && ((own && have == *l) || mangled(have, stem, l)),
-            None => l.is_empty() && ((own && fn_name == *f) || mangled(fn_name, stem, f)),
+        match mangled_prefix(have, stem, want) {
+            Some(prefix) => {
+                // The prefix names a library and a file stem, but two
+                // single-file libraries with one basename share a library
+                // id (the importer's fallback outside a workspace), so the
+                // prefix alone proves nothing: the candidate's own file must
+                // have the pin's stem, and the companion must be declared in
+                // that same file. Without provenance, no pin (outside review
+                // of #1279).
+                let Some(here) = file else { return false };
+                if file_stem != *stem {
+                    return false;
+                }
+                companion.is_empty()
+                    || world.fns.get(&format!("{}{}", prefix, companion)).is_some_and(|c| {
+                        own_file(world, &c.site.0, c.site.1) == Some(here)
+                    })
+            }
+            None => false,
         }
     }) else {
         return Deferral::None;

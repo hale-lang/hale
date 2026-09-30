@@ -102,6 +102,8 @@ pub(crate) fn compile_test_binary(
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    // The map the snapshot minted with, as `check` hands it over.
+    bundle.sources = source_map.clone();
     bundle.snapshot = snapshot;
     let diags = hale_types::check_bundle_for_build(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {

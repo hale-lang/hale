@@ -225,6 +225,8 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     bundle_programs.insert(prog_name.clone(), &program);
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    // The map the snapshot minted with, as `check` hands it over.
+    bundle.sources = source_map.clone();
     bundle.snapshot = snapshot;
     let diags = hale_types::check_bundle_for_build(&bundle, false);
     if !diags.is_empty() {

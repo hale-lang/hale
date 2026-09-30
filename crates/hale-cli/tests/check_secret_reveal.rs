@@ -247,6 +247,95 @@ fn a_pinned_body_counts_its_string_literals() {
     assert_ne!(fp(&out_a), fp(&out_b), "{out_a}\n{out_b}");
 }
 
+/// A pin's companion is declared in the candidate's own module: two
+/// unrelated libraries, each a `scram.hl` holding one pinned name, do not
+/// vouch for each other when one app imports both; a genuine module still
+/// gets its pins however many aliases or copies it arrives under (outside
+/// review of #1277, finding 2).
+#[test]
+fn a_pins_companion_comes_from_its_own_module() {
+    let liba = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\n";
+    let libb = "fn compute_client_final(a: String) -> String { return a; }\n";
+    let app = "import \"../liba\" as a;\nimport \"../libb\" as b;\nfn main() { println(b::compute_client_final(a::salted_password(\"p\", \"s\"))); }\n";
+    let (ok, out) = check(&[("app/main.hl", app), ("liba/scram.hl", liba), ("libb/scram.hl", libb)], "pin_two_libs");
+    assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
+    // two SINGLE-FILE libraries with one basename share a library id
+    // outside a workspace (the importer's fallback), so their mangled
+    // prefixes coincide; the companion still has to come from the
+    // candidate's own file (outside review of #1279)
+    let single_files = "import \"../liba/scram\" as a;\nimport \"../libb/scram\" as b;\nfn main() { println(b::compute_client_final(a::salted_password(\"p\", \"s\"))); }\n";
+    let (ok, out) = check(&[("app/main.hl", single_files), ("liba/scram.hl", liba), ("libb/scram.hl", libb)], "pin_two_single_files");
+    assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
+    // each alone is no pin either
+    let alone_a = "import \"../liba\" as a;\nfn main() { println(a::salted_password(\"p\", \"s\")); }\n";
+    let (ok, out) = check(&[("app/main.hl", alone_a), ("liba/scram.hl", liba)], "pin_lib_a");
+    assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
+    let alone_b = "import \"../libb\" as b;\nfn main() { println(b::compute_client_final(\"x\")); }\n";
+    let (ok, out) = check(&[("app/main.hl", alone_b), ("libb/scram.hl", libb)], "pin_lib_b");
+    assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
+
+    // the genuine module, imported under two aliases and as two copies:
+    // its pins hold (the reviewed bodies pass), and a changed body is
+    // refused AS a pin, which only a recognized pin says
+    let real = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond/pq/scram.hl")).unwrap();
+    let use_both = |x: &str, y: &str| {
+        format!("{x}\n{y}\nfn main() {{ println(x::gs2_header() + y::gs2_header()); }}\n")
+    };
+    let single_file_real = use_both("import \"../lib/scram\" as x;", "import \"../lib/scram\" as y;");
+    // (an imported seed's warnings are the importer's to ignore, so the
+    // deferral warning is not shown here; the pin is recognized, which a
+    // changed single-file copy proves by being refused AS a pin below)
+    let (ok, out) = check(&[("app/main.hl", &single_file_real), ("lib/scram.hl", &real)], "pin_single_file_real");
+    assert!(ok && !out.contains("this one has changed"), "{out}");
+    let two_aliases = use_both("import \"../lib\" as x;", "import \"../lib\" as y;");
+    let (ok, out) = check(&[("app/main.hl", &two_aliases), ("lib/scram.hl", &real)], "pin_two_aliases");
+    assert!(ok && !out.contains("this one has changed"), "{out}");
+    let two_copies = use_both("import \"../lib1\" as x;", "import \"../lib2\" as y;");
+    let (ok, out) =
+        check(&[("app/main.hl", &two_copies), ("lib1/scram.hl", &real), ("lib2/scram.hl", &real)], "pin_two_copies");
+    assert!(ok && !out.contains("this one has changed"), "{out}");
+    let changed = real.replace("fn salted_password(@secret password: String, salt: Bytes, iters: Int) -> Bytes {", "fn salted_password(@secret password: String, salt: Bytes, iters: Int) -> Bytes {\n    println(\"edited\");");
+    assert_ne!(changed, real, "the edit applies");
+    let (ok, out) =
+        check(&[("app/main.hl", &two_copies), ("lib1/scram.hl", &real), ("lib2/scram.hl", &changed)], "pin_copy_changed");
+    assert!(!ok && out.contains("`pq::salted_password` is allowed by name only with the body that was reviewed"), "{out}");
+    let single_changed = use_both("import \"../lib/scram\" as x;", "import \"../lib/scram\" as y;");
+    let (ok, out) = check(&[("app/main.hl", &single_changed), ("lib/scram.hl", &changed)], "pin_single_file_changed");
+    assert!(!ok && out.contains("`pq::salted_password` is allowed by name only"), "{out}");
+}
+
+/// A copied, unchanged SCRAM module beside a `main.hl` is the module on
+/// every entry point: `check`, `build` and `run` of the directory each
+/// read the pin's file from the source map (a directory target's program
+/// key is the directory, which names no file), so each allows the pinned
+/// bodies with the deferral warning (outside review of #1277, finding 1).
+#[test]
+fn a_directory_target_reads_a_pin_the_same_on_check_build_and_run() {
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_secret_reveal_{}_dir_verbs", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let client = d.join("client");
+    std::fs::create_dir_all(&client).unwrap();
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond/pq/scram.hl"), client.join("scram.hl"))
+        .unwrap();
+    std::fs::write(client.join("main.hl"), "fn main() { println(\"client ran\"); }\n").unwrap();
+    for verb in ["check", "build", "run"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args([verb, &client.to_string_lossy()])
+            .current_dir(&d)
+            .output()
+            .expect("hale");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success() && text.contains("It is allowed here by name, in `pq::salted_password`"),
+            "hale {verb} client:\n{text}"
+        );
+        if verb == "run" {
+            assert!(text.contains("client ran"), "{text}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// `hale check` over an in-tree seed directory; returns (success, output).
 fn check_tree(dir: &str) -> (bool, String) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
