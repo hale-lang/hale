@@ -218,6 +218,7 @@ const RESOLVE: &str = "crates/hale-types/src/resolve.rs";
 const MODEL_BUILDER: &str = "crates/hale-types/src/model_builder.rs";
 const BUS_GRAPH: &str = "crates/hale-types/src/bus_graph.rs";
 const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
+const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
@@ -232,7 +233,6 @@ const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
-const CG_OWN: &str = "crates/hale-codegen/src/ownership.rs";
 const CG_MANGLE: &str = "crates/hale-codegen/src/mangle.rs";
 const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 const CG_DECL: &str = "crates/hale-codegen/src/locus/decl.rs";
@@ -560,15 +560,15 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`.",
         inputs: &["locus declarations (params, accept, release)", "bodies (let, assign, return, field initialisers, placement entries)", "fresh factories", "returned bindings"],
-        producer: Some(site(CG_OWN, "resolve_owners")),
+        producer: Some(site(TY_OWN, "resolve_owners")),
         legacy: &[
             legacy(OWNERSHIP_GRAPH, "build_ownership_graph", "which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans", "one ownership table with both relations (phase 1.3)"),
             legacy(MODEL_BUILDER, "Owns", "the model's params-field tree from main, a third ownership account", "projected from the one table"),
-            legacy(CG, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it", "one factory row"),
+            legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it", "one factory row"),
             legacy(CHECK, "fresh_locus_factory_products", "the checker's mirror of the factory set", "one factory row"),
-            legacy(CG_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
+            legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
             legacy(CG, "compute_returned_bindings", "which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string", "keyed by snapshot identity (phase 1.2)"),
-            legacy(CG_OWN, "returned_bindings", "the per-body walk the row above calls", "phase 1.2"),
+            legacy(TY_OWN, "returned_bindings", "the per-body walk the row above calls", "phase 1.2"),
             legacy(CG, "compute_assign_moved_bindings", "bindings moved by `=`, keyed by name", "phase 1.2"),
             legacy(CG, "compute_stack_array_bindings", "array repeats that never escape, keyed by name", "phase 1.2"),
             legacy(OWNERSHIP_GRAPH, "compute_forwarding_sets", "the interests a locus forwards for bubbling", "phase 1.3"),
@@ -578,7 +578,7 @@ pub const FAMILIES: &[Family] = &[
             legacy("crates/hale-types/src/borrow_lifetime.rs", "accepts", "the borrow-lifetime law rebuilds the accept sets from the AST for itself", "reads `accepts_ancestor`"),
             legacy(CHECK, "check_unowned_subscriber_locus", "the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others", "a law over the table, on every entry point"),
         ],
-        consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen", CG_DISSOLVE, "emit_locus_field_dissolves"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer("model"), consumer("alloc_summary (eager-only accept sets)")],
+        consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer("model"), consumer("alloc_summary (eager-only accept sets)")],
         invariants: &[
             "a locus instantiation with no row is a CodegenError (F.39)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
@@ -589,9 +589,9 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/decisions.md F.39", "spec/semantics.md § Dissolve timing rules"],
         owned: &[],
         seams: &[
-            Seam { symbol: "resolve_owners(", allowed: &[(CG, 1), (CG_OWN, 1)] },
+            Seam { symbol: "resolve_owners(", allowed: &[(CG, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 1)] },
-            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(CG, 2)] },
+            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(CG, 1), (TY_OWN, 1)] },
         ],
     },
     Family {
@@ -1225,8 +1225,8 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["seed_loading", "desugar_sequence"],
         producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[
-            legacy(CG_OWN, "ExprId", "F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass", "the snapshot mints every id (phase 1.1)"),
-            legacy(CG_OWN, "BindingKey", "a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210)", "same"),
+            legacy(TY_OWN, "ExprId", "F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass", "the snapshot mints every id (phase 1.1)"),
+            legacy(TY_OWN, "BindingKey", "a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210)", "same"),
             legacy(M_IDS, "FunctionId", "model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings)", "same"),
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
@@ -1431,7 +1431,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: CG, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", f.body)", count: 1, verdict: ScanVerdict::Decides { family: "alloc_summary" } },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", it)", count: 1, verdict: ScanVerdict::Decides { family: "bus_inert" } },
-    DebugScan { path: CG, fragment: "format!(\"{:?}\", other)", count: 2, verdict: ScanVerdict::Decides { family: "ownership" } },
+    DebugScan { path: CG, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: CG, fragment: "format!(\"{:?}\", program.items)", count: 1, verdict: ScanVerdict::Decides { family: "bus_inert" } },
     DebugScan { path: CG_RESTART, fragment: "format!(\"{:?}\", fd.body)", count: 1, verdict: ScanVerdict::Decides { family: "restart" } },
     DebugScan { path: LSP, fragment: "format!(\"pinned({:?})\", affinity)", count: 1, verdict: ScanVerdict::Renders },
@@ -1453,6 +1453,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
+    DebugScan { path: TY_OWN, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Decides { family: "ownership" } },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", fd)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },

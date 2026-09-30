@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 16 decide a fact.
+43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
 
 ## Families
 
@@ -405,17 +405,17 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** locus declarations (params, accept, release); bodies (let, assign, return, field initialisers, placement entries); fresh factories; returned bindings
 
-**Producer (today's authority, migrating).** `crates/hale-codegen/src/ownership.rs` · `resolve_owners`
+**Producer (today's authority, migrating).** `crates/hale-types/src/ownership.rs` · `resolve_owners`
 
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/ownership_graph.rs` · `build_ownership_graph` — which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans. *Removed when:* one ownership table with both relations (phase 1.3).
 - `crates/hale-types/src/model_builder.rs` · `Owns` — the model's params-field tree from main, a third ownership account. *Removed when:* projected from the one table.
-- `crates/hale-codegen/src/codegen.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it. *Removed when:* one factory row.
+- `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it. *Removed when:* one factory row.
 - `crates/hale-types/src/check.rs` · `fresh_locus_factory_products` — the checker's mirror of the factory set. *Removed when:* one factory row.
-- `crates/hale-codegen/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
+- `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
 - `crates/hale-codegen/src/codegen.rs` · `compute_returned_bindings` — which `let` a return hands back, keyed by span with a by-name fallback; recomputed per frame in the pre-pass and joined to lowering by LLVM fn-name string. *Removed when:* keyed by snapshot identity (phase 1.2).
-- `crates/hale-codegen/src/ownership.rs` · `returned_bindings` — the per-body walk the row above calls. *Removed when:* phase 1.2.
+- `crates/hale-types/src/ownership.rs` · `returned_bindings` — the per-body walk the row above calls. *Removed when:* phase 1.2.
 - `crates/hale-codegen/src/codegen.rs` · `compute_assign_moved_bindings` — bindings moved by `=`, keyed by name. *Removed when:* phase 1.2.
 - `crates/hale-codegen/src/codegen.rs` · `compute_stack_array_bindings` — array repeats that never escape, keyed by name. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets` — the interests a locus forwards for bubbling. *Removed when:* phase 1.3.
@@ -425,7 +425,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/borrow_lifetime.rs` · `accepts` — the borrow-lifetime law rebuilds the accept sets from the AST for itself. *Removed when:* reads `accepts_ancestor`.
 - `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` — the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others. *Removed when:* a law over the table, on every entry point.
 
-**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); codegen (`crates/hale-codegen/src/locus/dissolve.rs` · `emit_locus_field_dissolves`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model; alloc_summary (eager-only accept sets)
+**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model; alloc_summary (eager-only accept sets)
 
 **Invariants.**
 
@@ -441,9 +441,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `resolve_owners(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-codegen/src/ownership.rs` ×1
+- `resolve_owners(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 - `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
-- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
+- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 
@@ -1240,8 +1240,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/ownership.rs` · `ExprId` — F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass. *Removed when:* the snapshot mints every id (phase 1.1).
-- `crates/hale-codegen/src/ownership.rs` · `BindingKey` — a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210). *Removed when:* same.
+- `crates/hale-types/src/ownership.rs` · `ExprId` — F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass. *Removed when:* the snapshot mints every id (phase 1.1).
+- `crates/hale-types/src/ownership.rs` · `BindingKey` — a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210). *Removed when:* same.
 - `crates/hale-model/src/ids.rs` · `FunctionId` — model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings). *Removed when:* same.
 - `crates/hale-types/src/effects.rs` · `FnKey` — analysis keys are (locus name, fn name). *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `type_expr_key` — rule 12 compares stringified TypeExprs. *Removed when:* same.
@@ -1335,7 +1335,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", d)` | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", f.body)` | decides (`alloc_summary`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | decides (`bus_inert`) |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | decides (`ownership`) |
+| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", program.items)` | decides (`bus_inert`) |
 | `crates/hale-codegen/src/locus/restart.rs` | `format!("{:?}", fd.body)` | decides (`restart`) |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | renders |
@@ -1357,6 +1357,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | decides (`snapshot_identity`) |
+| `crates/hale-types/src/ownership.rs` | `format!("{:?}", other)` | decides (`ownership`) |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", op)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", subject)` | renders |
 | `crates/hale-types/src/secret_reveal.rs` | `format!("{:?}", fd)` | decides (`effects`) |

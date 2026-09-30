@@ -1,5 +1,13 @@
 //! GH #921 — locus ownership is resolved before lowering.
 //!
+//! This module lives in the frontend (`hale-types`) because the
+//! `ownership` family's home is the frontend: F.40 phase 1 moves the
+//! pre-pass here with its algorithm unchanged, together with the
+//! fresh-factory seed it is handed ([`compute_fresh_locus_factories`],
+//! whose one producer this is). Codegen reads the table; it
+//! re-exports this module as `hale_codegen::ownership` and, for now,
+//! still runs the pass on its own merged program in `lower_program`.
+//!
 //! `spec/decisions.md` F.39 is the design. The short version: locus
 //! ownership USED to be decided by seven one-shot flags on `Cx`
 //! (`suppress_fresh_temp`, `defer_next_locus_dissolve`,
@@ -540,7 +548,7 @@ enum Resolved {
 /// a use it could not resolve, a key two declarations share all answer
 /// by name against every name a return spelled — the old rule, whole.
 #[derive(Default, Debug, Clone)]
-pub(crate) struct ReturnedBindings {
+pub struct ReturnedBindings {
     /// The keyed `let`s handed back, directly or through the value of
     /// another handed-back binding.
     decls: BTreeSet<BindingKey>,
@@ -566,7 +574,7 @@ impl ReturnedBindings {
     }
 
     /// Whether the `let` declaring `name` is one the body hands back.
-    pub(crate) fn let_is_returned(&self, name: &Ident) -> bool {
+    pub fn let_is_returned(&self, name: &Ident) -> bool {
         match binding_key(name) {
             Some(k) if self.keyed.contains(&k) => {
                 self.key_is_returned(k, &name.name)
@@ -577,7 +585,7 @@ impl ReturnedBindings {
 
     /// Whether a bare `=` writing `head` writes a binding the body
     /// hands back.
-    pub(crate) fn assign_is_returned(&self, head: &Ident) -> bool {
+    pub fn assign_is_returned(&self, head: &Ident) -> bool {
         match binding_key(head).and_then(|u| self.uses.get(&u)) {
             Some(Resolved::Let(k)) if self.keyed.contains(k) => {
                 self.key_is_returned(*k, &head.name)
@@ -702,7 +710,7 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
 }
 
 /// The bindings a body hands back (see [`ReturnedBindings`]).
-pub(crate) fn returned_bindings(b: &Block) -> ReturnedBindings {
+pub fn returned_bindings(b: &Block) -> ReturnedBindings {
     body_bindings(b).returned
 }
 
@@ -1399,7 +1407,363 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
     }
 }
 
-/// Seed from codegen's map and add the fns whose every return arm is
+/// The fresh-factory seed: every free fn proven to return a fresh
+/// locus, keyed by its merged-program name, with the locus it returns
+/// and the binding it hands back (if any). [`resolve_owners`] takes it
+/// as `base` and [`OwnerTable::extended_fresh_factories`] adds the
+/// carrier returns it misses. This is its one producer.
+pub fn compute_fresh_locus_factories(
+    program: &Program,
+    import_renames: &[(Vec<String>, String)],
+) -> BTreeMap<String, (String, Option<String>)> {
+
+    fn resolve(
+        v: &[String],
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        if v.len() == 1 {
+            return Some(v[0].clone());
+        }
+        let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        if let Some(m) = stdlib_mangled_for_path(&refs) {
+            return Some(m.to_string());
+        }
+        renames
+            .iter()
+            .find(|(p, _)| p.len() == v.len() && p.iter().zip(v).all(|(a, b)| a == b))
+            .map(|(_, m)| m.clone())
+    }
+
+    fn qname(q: &QualifiedName) -> Vec<String> {
+        q.segments.iter().map(|s| s.name.clone()).collect()
+    }
+
+    fn ret_locus_name(
+        f: &FnDecl,
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        match f.ret.as_ref()? {
+            TypeExpr::Named { path, .. } => resolve(&qname(path), renames),
+            _ => None,
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum Freshness {
+        Literal,
+        CallTo(String),
+        Other,
+    }
+
+    /// Accepts both spellings of a qualified callee: `a::b` parses to
+    /// `Path2`, and some paths normalize to `Field` before this pass.
+    /// Accepting only one silently classified every cross-seed
+    /// factory call as opaque.
+    fn callee_name(
+        callee: &Expr,
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
+            match e {
+                Expr::Ident(i) => {
+                    out.push(i.name.clone());
+                    true
+                }
+                // THREE spellings reach here for a qualified callee:
+                // `Path` (the whole-name form the parser produces for
+                // `mat::zeros(...)`), plus `Path2` / `Field` for the
+                // receiver-chain forms. Missing `Path` silently
+                // classified every cross-seed factory call as opaque,
+                // which is why the neural helpers never qualified.
+                Expr::Path(q) => {
+                    out.extend(q.segments.iter().map(|i| i.name.clone()));
+                    true
+                }
+                Expr::Path2 { receiver, name, .. }
+                | Expr::Field { receiver, name, .. } => {
+                    if !segs(receiver, out) {
+                        return false;
+                    }
+                    out.push(name.name.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+        let mut v = Vec::new();
+        if !segs(callee, &mut v) {
+            return None;
+        }
+        resolve(&v, renames)
+    }
+
+    fn expr_ok(e: &Expr, x: &str) -> bool {
+        match e {
+            Expr::Ident(i) => i.name != x,
+            Expr::Literal(..) => true,
+            Expr::Field { receiver, .. } => recv_ok(receiver, x),
+            Expr::Call { callee, args, .. } => {
+                let c = match callee.as_ref() {
+                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
+                    Expr::Ident(i) => i.name != x,
+                    other => expr_ok(other, x),
+                };
+                c && args.iter().all(|a| expr_ok(a, x))
+            }
+            Expr::Binary { left, right, .. } => {
+                expr_ok(left, x) && expr_ok(right, x)
+            }
+            Expr::Unary { operand, .. } => expr_ok(operand, x),
+            Expr::Index { receiver, index, .. } => {
+                recv_ok(receiver, x) && expr_ok(index, x)
+            }
+            Expr::Path2 { receiver, .. } => recv_ok(receiver, x),
+            Expr::Or { inner, disposition, .. } => {
+                let d = match disposition {
+                    OrDisposition::Substitute(e) => expr_ok(e, x),
+                    OrDisposition::Fail(e, _) => expr_ok(e, x),
+                    _ => true,
+                };
+                expr_ok(inner, x) && d
+            }
+            Expr::Struct { inits, .. } => {
+                inits.iter().all(|i| expr_ok(&i.value, x))
+            }
+            Expr::Array(parts, _) => parts.iter().all(|p| expr_ok(p, x)),
+            Expr::Block(b) => block_ok(b, x),
+            other => !format!("{:?}", other)
+                .contains(&format!("name: \"{}\"", x)),
+        }
+    }
+
+    fn recv_ok(e: &Expr, x: &str) -> bool {
+        match e {
+            Expr::Ident(_) => true,
+            Expr::Field { receiver, .. } => recv_ok(receiver, x),
+            Expr::Index { receiver, index, .. } => {
+                recv_ok(receiver, x) && expr_ok(index, x)
+            }
+            Expr::Call { callee, args, .. } => {
+                let c = match callee.as_ref() {
+                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
+                    other => expr_ok(other, x),
+                };
+                c && args.iter().all(|a| expr_ok(a, x))
+            }
+            other => expr_ok(other, x),
+        }
+    }
+
+    fn block_ok(b: &Block, x: &str) -> bool {
+        b.stmts.iter().all(|s| stmt_ok(s, x))
+            && b.tail.as_ref().map_or(true, |t| expr_ok(t, x))
+    }
+
+    fn stmt_ok(s: &Stmt, x: &str) -> bool {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                name.name != x && expr_ok(value, x)
+            }
+            Stmt::Assign { target, value, .. } => {
+                target.head.name != x && expr_ok(value, x)
+            }
+            Stmt::Expr(e) => expr_ok(e, x),
+            Stmt::While { cond, body, .. } => {
+                expr_ok(cond, x) && block_ok(body, x)
+            }
+            Stmt::For { body, iter, .. } => {
+                expr_ok(iter, x) && block_ok(body, x)
+            }
+            Stmt::If(i) => if_ok(i, x),
+            Stmt::Return(Some(Expr::Ident(i)), _) if i.name == x => true,
+            Stmt::Return(Some(e), _) => expr_ok(e, x),
+            Stmt::Return(None, _) => true,
+            Stmt::Break(_) | Stmt::Continue(_) => true,
+            Stmt::Fail { value, .. } => expr_ok(value, x),
+            _ => false,
+        }
+    }
+
+    fn if_ok(i: &IfStmt, x: &str) -> bool {
+        expr_ok(&i.cond, x)
+            && block_ok(&i.then_block, x)
+            && i.else_block.as_ref().map_or(true, |e| match e.as_ref() {
+                ElseBranch::Else(b) => block_ok(b, x),
+                ElseBranch::ElseIf(e) => if_ok(e, x),
+            })
+    }
+
+    /// Skips the defining `let x = …;` (its own name check would trip).
+    fn body_ok(b: &Block, x: &str) -> bool {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } if name.name == x => {
+                    if !expr_ok(value, x) {
+                        return false;
+                    }
+                }
+                other => {
+                    if !stmt_ok(other, x) {
+                        return false;
+                    }
+                }
+            }
+        }
+        b.tail.as_ref().map_or(true, |t| match t.as_ref() {
+            Expr::Ident(i) if i.name == x => true,
+            e => expr_ok(e, x),
+        })
+    }
+
+    fn collect(
+        b: &Block,
+        rets: &mut Vec<Expr>,
+        lets: &mut Vec<(String, Freshness)>,
+        l: &str,
+        renames: &[(Vec<String>, String)],
+    ) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => rets.push(e.clone()),
+                Stmt::Let { name, value, .. } => {
+                    let fr = match value {
+                        Expr::Struct { path, .. }
+                            if resolve(&qname(path), renames).as_deref()
+                                == Some(l) =>
+                        {
+                            Freshness::Literal
+                        }
+                        Expr::Call { callee, .. } => {
+                            match callee_name(callee, renames) {
+                                Some(n) => Freshness::CallTo(n),
+                                None => Freshness::Other,
+                            }
+                        }
+                        _ => Freshness::Other,
+                    };
+                    lets.push((name.name.clone(), fr));
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    collect(body, rets, lets, l, renames)
+                }
+                Stmt::If(i) => {
+                    collect(&i.then_block, rets, lets, l, renames);
+                    let mut cur = i.else_block.as_deref();
+                    while let Some(eb) = cur {
+                        match eb {
+                            ElseBranch::Else(bb) => {
+                                collect(bb, rets, lets, l, renames);
+                                cur = None;
+                            }
+                            ElseBranch::ElseIf(ei) => {
+                                collect(&ei.then_block, rets, lets, l, renames);
+                                cur = ei.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            rets.push((**t).clone());
+        }
+    }
+
+    let mut out: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        // GH #884: module nesting flattened — a factory fn one
+        // brace deeper is lowered and called like any other, so it
+        // has to enter the same fixpoint.
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            let TopDecl::Fn(f) = item else { continue };
+            if out.contains_key(&f.name.name) {
+                continue;
+            }
+            let Some(l) = ret_locus_name(f, import_renames) else {
+                continue;
+            };
+            let mut rets = Vec::new();
+            let mut lets = Vec::new();
+            collect(&f.body, &mut rets, &mut lets, &l, import_renames);
+            if rets.is_empty() {
+                continue;
+            }
+            let mut fresh_name: Option<String> = None;
+            let mut ok = true;
+            for r in &rets {
+                match r {
+                    Expr::Struct { path, .. }
+                        if resolve(&qname(path), import_renames).as_deref()
+                            == Some(l.as_str()) => {}
+                    // GH #402 shape 2: a return arm that is itself a
+                    // call to an already-qualifying factory of the
+                    // same locus. `matmul`'s guard arm — `if bad {
+                    // return error_matrix(); }` — disqualified the
+                    // whole fn under the original literal-or-ident
+                    // rule, even though that arm hands back a value
+                    // as fresh as the main one. Freshness is
+                    // transitive here for the same reason it is for
+                    // let-bindings, and the fixpoint already decides
+                    // it.
+                    Expr::Call { callee, .. }
+                        if callee_name(callee, import_renames)
+                            .and_then(|c| out.get(&c).cloned())
+                            .map(|(cl, _)| cl == l)
+                            .unwrap_or(false) => {}
+                    Expr::Ident(i) => match &fresh_name {
+                        None => fresh_name = Some(i.name.clone()),
+                        Some(n) if *n == i.name => {}
+                        Some(_) => { ok = false; break; }
+                    },
+                    _ => { ok = false; break; }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            if let Some(x) = &fresh_name {
+                let bindings: Vec<&(String, Freshness)> =
+                    lets.iter().filter(|(n, _)| n == x).collect();
+                if bindings.len() != 1 {
+                    continue;
+                }
+                let fresh_binding = match &bindings[0].1 {
+                    Freshness::Literal => true,
+                    Freshness::CallTo(c) => {
+                        out.get(c).map(|(cl, _)| *cl == l).unwrap_or(false)
+                    }
+                    Freshness::Other => false,
+                };
+                if !fresh_binding || !body_ok(&f.body, x) {
+                    continue;
+                }
+            }
+            out.insert(f.name.name.clone(), (l, fresh_name));
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    out
+}
+
+/// A bundled `std::…` path's mangled name, from
+/// `hale_stdlib::PATH_RENAMES`; `None` for anything not under `std`.
+pub fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
+    if !matches!(segs.first(), Some(&"std")) {
+        return None;
+    }
+    let table: &[(&[&str], &str)] = hale_stdlib::PATH_RENAMES;
+    table
+        .iter()
+        .find(|(p, _)| *p == segs)
+        .map(|(_, name)| *name)
+}
+
+/// Seed from [`compute_fresh_locus_factories`]'s map and add the fns whose every return arm is
 /// fresh once carriers are flattened.
 fn extend_fresh_factories(
     program: &Program,

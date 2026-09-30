@@ -2930,7 +2930,7 @@ pub enum RecoveryModifier {
 /// node's address is not its identity and a span is not either: the
 /// stdlib is parsed in its own coordinate space and overlaps user file
 /// ranges. An id carried by the node survives every clone, which is
-/// what the ownership pre-pass (`hale_codegen::ownership`, F.39) keys
+/// what the ownership pre-pass (`hale_types::ownership`, F.39) keys
 /// its side table on.
 ///
 /// Ids are handed out by that pre-pass over the merged, desugared
