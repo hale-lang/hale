@@ -413,7 +413,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program", "import renames"],
         producer: Some(site(RESOLVE, "build_top_scope")),
         legacy: &[
-            legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here for its checker and passed on to nothing. Beside it the model of a bundle no snapshot holds (`derive_application_model`, the test entry's), sync inference, the lowering view (once, for the ownership graph and the bus graph) and the LSP's request handlers (seven times) rebuild it; every verb and the LSP's diagnostics build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "every consumer demands the scope from a snapshot (2.3)"),
+            legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here for its checker and passed on to nothing. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), sync inference, the lowering view (once, for the ownership graph and the bus graph) and the LSP's request handlers (seven times) rebuild it; every verb and the LSP's diagnostics build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "every consumer demands the scope from a snapshot (2.3)"),
             legacy(CHECK, "collect_known_names", "a second name table the checker keeps beside the scope", "one table"),
         ],
         consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("demand (every verb and the LSP's diagnostics: one scope per snapshot)", SNAPSHOT, "build_top_scope"), consumer_at("model (the snapshot's scope, handed in)", MODEL_BUILDER, "ModelInputs"), consumer_at("resolved program (lowering)", TY_RESOLVED, "build_top_scope"), consumer_at("lsp (request handlers)", LSP, "build_top_scope")],
@@ -1180,7 +1180,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["a checked bundle", "top_scope", "bus_graph", "ownership", "handler_routing", "placement", "effects", "alloc_summary", "topics", "bindings"],
         producer: Some(site(MODEL_BUILDER, "derive_application_model_over")),
         legacy: &[],
-        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
+        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
             "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
@@ -1192,7 +1192,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/model.md"],
         owned: &[site(MODEL_BUILDER, "ModelInputs"), site(TLIB, "derive_application_model")],
         seams: &[
-            Seam { symbol: "derive_application_model(", allowed: &[(TLIB, 1), (JUDGMENT, 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "derive_application_model(", allowed: &[(TLIB, 1), (JUDGMENT, 1), (TOPOLOGY, 2)] },
             Seam { symbol: "derive_application_model_over(", allowed: &[(MODEL_BUILDER, 1), (TLIB, 1), (SNAPSHOT, 1)] },
         ],
     },
@@ -1282,6 +1282,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("check", V_CHECK, "demand_check"),
             consumer_at("topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model)", V_CHECK, "dump_topology_over"),
             consumer_at("the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for)", V_CHECK, "api_surface"),
+            consumer_at("the model dump (`--dump-model`: the check's own model when it judged a law)", V_CHECK, "demand_model"),
+            consumer_at("the build identity (build, run, replay: the model hash and the obs ids from the snapshot's model, the plan digest from its lowering view)", OPTIONS, "model_identity"),
             consumer_at("build", V_BUILD, "demand_lowering"),
             consumer_at("run <file> and run <dir>", V_RUN, "demand_lowering"),
             consumer_at("test (a build config for the host, the dev profile)", V_TEST, "demand_lowering"),
@@ -1312,11 +1314,10 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Identity,
         state: State::Migrating,
         kind: Kind::Digest,
-        answers: "Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests.",
-        inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources"],
+        answers: "Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under.",
+        inputs: &["the model half", "the artifact", "sources", "BuildOptions", "compiler sources", "the snapshot key"],
         producer: Some(site(TOPOLOGY, "model_shape_hash")),
         legacy: &[
-            legacy(TOPOLOGY, "fn model_shape_hash", "renders the whole artifact and scrapes `shape_hash` out of the text", "reads the digest from the rendered value"),
             legacy(V_CHECK, "--check-topology-shape", "scrapes `shape_hash` from text a second time", "same"),
             legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
             legacy(CLI_BUILD_RS, "toolchain_digest", "the replay identity: `hale_graph::identity::identity_files`, every identity-covered crate (`COVERED_CRATES`, hale-cli among them) and the manifest files (`Cargo.lock`, the ts-shim manifest), walked through the one shared walk", "phase 2"),
@@ -1332,6 +1333,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],
         invariants: &[
             "external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)",
+            "a build's identities read one snapshot (2.3, `model_identity`): the model hash (P26) is the snapshot model's `shape_hash`, read from the model (`project_shape_hash`, the value its artifact stamps, never scraped from a rendered artifact), the obs ids are that model's entities, and the plan digest `exec_digest` frames is its lowering view's plan; beside them the snapshot key (`SnapshotKey`: the entry, the load mode, the target, the config digest, the overlay digest, the digest of the source text read) names the load all three were derived from. The key is snapshot-local: no binary or recording carries it",
             "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key fold one selection, every identity-covered crate (the CLI among them until hale-frontend owns its semantic work) and the manifest files; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design",
         ],
         missing: Missing::NotApplicable,

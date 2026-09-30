@@ -243,10 +243,10 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let bundle = snap.bundle();
-    let model_hash = hale_types::topology::model_shape_hash(&bundle);
     // The view before the identity: the dispatch plan the digest frames
     // is the view's, the one codegen lowers below once the recording is
-    // admitted (F.40 phase 1.5).
+    // admitted (F.40 phase 1.5). The model identity the recording is
+    // admitted against, and the entity ids, are the snapshot's model's.
     let resolved = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
@@ -255,14 +255,16 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         }
     };
     let options_fp = build_env::options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = match model_identity(&snap, resolved, &build_options) {
+    let identity = match model_identity(&snap, resolved, &build_options) {
         Ok(x) => x,
         Err(b) => {
             eprintln!("{}", render_blocked(b, file_bases, sources));
             return ExitCode::from(1);
         }
     };
-    let digest = exec_digest(sources, &prog, &options_fp, plan_digest);
+    let model_hash = identity.model_hash;
+    let obs_ids = identity.obs_ids;
+    let digest = exec_digest(sources, &prog, &options_fp, identity.plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or

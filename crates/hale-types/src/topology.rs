@@ -200,21 +200,14 @@ pub const MODEL_SEMANTICS: u32 = 2;
 
 /// The model identity alone (downstream handoff P26, 2026-08-12):
 /// the same `shape_hash` `dump_topology` stamps, for embedding in
-/// the built binary's observation segment. Extracted from the full
-/// serialization rather than recomputed, so the two can never
-/// drift — the cost (one artifact render at build time) is the
-/// same analysis stack `hale check` runs in ~10 ms on the largest
-/// apps.
+/// the built binary's observation segment, for a bundle no snapshot
+/// holds. It is the model half's digest read from the model
+/// ([`crate::topology_projection::project_shape_hash`], the function
+/// the artifact's own stamp is asserted equal to), not scraped out of a
+/// rendered artifact. A verb reads its snapshot's model instead
+/// (`model_identity` in the CLI).
 pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
-    let art = dump_topology(bundle);
-    art.lines()
-        .find_map(|l| {
-            l.trim()
-                .strip_prefix("\"shape_hash\": \"")?
-                .strip_suffix("\",")
-        })
-        .and_then(|h| u64::from_str_radix(h, 16).ok())
-        .unwrap_or(0)
+    crate::topology_projection::project_shape_hash(&crate::derive_application_model(bundle))
 }
 
 /// Serialize the bundle's model + claim results as the topology

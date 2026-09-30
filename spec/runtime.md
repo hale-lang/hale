@@ -1506,8 +1506,8 @@ PROTOCOL v0.4 — the contract's executable form is
 and pins its layouts to it, and the Rust test decoder is checked
 against its text. 0.2, 2026-08-12
 downstream handoff: the header gains `model_hash` at `0x80` — the
-topology artifact's `shape_hash`, stamped by the CLI from the same
-bundle it typechecks, so a consumer can establish the RUNNING
+topology artifact's `shape_hash`, stamped by the CLI from the model
+of the snapshot it typechecks, so a consumer can establish the RUNNING
 binary was built from the model it joins against; 0 = unstamped
 harness build. And the per-binding backpressure cells reserved
 since v0 are now written: `queue_depth` (cell 3, a last-write-wins
