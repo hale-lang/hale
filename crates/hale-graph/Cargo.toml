@@ -1,0 +1,21 @@
+# F.40 — the semantic-family registry, and (from phase 1) the graph core.
+#
+# ARCHITECTURE LAW: this crate holds generic mechanics only — the
+# registry of semantic families, and later identity, typed tables,
+# provenance and the shadow facility. It never depends on the AST,
+# the checker or codegen; row meanings, derivations and invariants
+# live with each semantic family. `hale-model` is rebuilt on this
+# crate in phase 1 and keeps its own no-syntax law.
+#
+# Deliberately dependency-free, like `hale-model`: the dependency
+# canary in tests/architecture.rs enforces it.
+
+[package]
+name = "hale-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Hale language: the semantic-family registry and the graph core (F.40)"
+
+[dependencies]

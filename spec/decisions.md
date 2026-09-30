@@ -3437,6 +3437,162 @@ Forward-looking items lifted from the spec files. These are design
 intent, **not current behavior** — grouped by the spec area they came
 from.
 
+### F.40 — The compiler is a pipeline of registered semantic families (the registry, the guard, and the graph core)
+
+**Status: ACCEPTED, IN PROGRESS.** Reviewed on GH #1212 (2026-09-28 to
+09-30: the compiler team's round, the differential, the final direction,
+the lineage note, the implementation plan). Phase 0 ships the registry,
+its guard and the boundaries below; phases 1 and 2 migrate families
+onto them, one at a time, behind shadows, on `main`. The parent is GH
+#476, which made every verification consumer read one typed model and
+deleted the second evaluator; F.40 does the same for the producers and
+for lowering.
+
+**The acceptance question.** Can a contributor make a correct change
+to one semantic family by understanding its contract, producer,
+relevant consumers and focused tests, without reconstructing the rest
+of the compiler?
+
+**Scope.** F.40 reorganizes the implementation of *existing* Hale
+semantics into authoritative, typed, witnessed results consumed
+through a shared pipeline. Success is measured by removed duplicate
+decisions, more consistent enforcement, more localized tests and
+diagnostics, and less compiler context needed for a correct change.
+Delivery is one semantic family at a time, with compatibility checks
+and explicit treatment of semantic corrections. `@evented` (F.41), the
+unit dialect (GH #1076), a second emitter, footprints, storage
+bindings, the authority edge and `hale ui` are extensions that consume
+F.40 and get their own review once phase 2 is green; none of their
+semantics is an acceptance condition here.
+
+**The registry.** `spec/registry.md`, rendered from
+`crates/hale-graph/src/registry.rs` and held byte-equal by a test,
+lists every semantic family with its contract: what it answers, what
+it reads, its authoritative producer, the legacy producers still
+permitted (each with its removal condition), its consumers,
+invariants, missing-data policy and focused tests; the spec's numbered
+rules with their evaluators; and the frozen list of Debug-string
+scans. A family is in one of three states — **Reserved** (a future
+family or consumer; computes nothing), **Migrating** (the canonical
+producer is under development; the legacy list is exact), or
+**Canonical** (one production producer; consumers cannot reconstruct
+its meaning) — so the inventory can be exact without banning what
+exists today. `spec/registry.md` carries the inventory and its counts;
+the reservations are `runs_under(locus, principal)`, `transitions`,
+`deployment` and `view`, with `ui` and `bundle` as reserved consumers.
+
+**The guard** (`crates/hale-graph/tests/registry_guard.rs`). Three
+scans fail the build: a derivation-shaped function (`compute_`,
+`derive_`, `infer_`, `summarize_`, `classify_`) in a semantic crate
+that the registry does not name; a reference to a family's guarded
+seam (`build_bus_graph(`, `resolve_owners(`, ...) from a file the
+registry does not list; a Debug rendering with no prose around it (a
+`?}` placeholder in a formatting macro whose template holds no space)
+in any of six crates that is not in the frozen list. A registered rule
+without an evaluator fails the build. Every site the registry names
+must exist. A scanner cannot prove that no code reimplements a
+decision under another name; it names the legitimate path and puts
+friction on the wrong one, which is what made
+`harness_paths_are_unique` true the day it existed.
+
+**Boundaries, locked before any fact moves.**
+
+1. `hale-graph` holds generic mechanics only: identity, provenance,
+   typed-table support, shared query machinery, the shadow facility.
+   Row meanings, derivations, invariants and named queries live with
+   each family. The crate depends on nothing; `hale-model` is rebuilt
+   on it and keeps its own no-syntax law.
+2. Frontend types and LLVM layout types stay distinct.
+3. **Identity is `(seed, index)`**, minted once after desugar.
+   Snapshot-local uniqueness and reliable provenance are the
+   requirement; persistent identity across editor revisions is a
+   separate problem, and a snapshot identity is not a persistent
+   deployment identity. Addresses are not identities (declarations are
+   cloned) and spans are not (the stdlib's coordinates overlap user
+   files; desugars stamp one span on several declarations, GH #1140 /
+   PR #1210). During migration the shadow compares through an explicit
+   correspondence, never raw id equality.
+4. **Derive once, precisely:** one authoritative producer per semantic
+   fact within a resolved compilation snapshot, including entry,
+   configuration and target inputs. Recomputation for another
+   snapshot, and shared indexing over established facts, are not
+   violations.
+5. **Unknown is not missing.** A hole is a declared unknown with a
+   stated policy. A missing required row at lowering — an
+   instantiation with no owner, a site with no dispatch decision — is
+   a compiler error. Codegen never guesses and never manufactures a
+   hole.
+6. **Lowering reads and never decides:** lowering does not rediscover
+   source-level semantic decisions the resolved program is supposed
+   to provide. Target-specific emission choices and walking a typed
+   body are not decisions in that sense.
+7. **Semantic source survives emission rewrites.** Turning a send into
+   a call must not erase the message relation analysis needs.
+8. **Readiness is not completeness.** Not requested, blocked by
+   invalid input, and ready with holes are three states. Adequacy is
+   query-specific: roots, direction, relations, horizon, phase and
+   hole policy all matter. Facts, laws, evidence and observations stay
+   separate, and the four verdicts and the evidence ties stand.
+
+Every compiler-recognized structural world has a locus root and an
+explicit horizon (`%DESIGN` I8), and its facts stay typed rows.
+
+**Rows versus laws.** Expression typing, borrow-outlives,
+bare-fallible, the blocking classification and the effects fixpoint
+are derivations: they produce rows. Claims judge rows. The registry
+states which side each family is on. Structural laws are evaluated
+through `model_query` with shared witness rendering; the judgment
+path stays for user claims; the two converge once hundreds of laws
+have been measured. `constitution Hale` remains the direction, but
+the vocabulary grows incrementally and is not a prerequisite for
+moving checks. Placement rule 6 (pinned-locus restrictions) is
+confirmed to have no checker code — its only evaluator is a spanless
+refusal at lowering — and is registered as such; the correction is
+its own reviewed change.
+
+**Approximate** is legitimate only in layers 5 and 7, where F.38 makes
+it so; everywhere else a backend lowers or rejects, with the row's
+witness. Consolidating today's target restrictions (the `check.rs`
+stdlib table, `link_wasm`, the per-site skips, `target_has_async_io`)
+into one matrix is in F.40; new backends are not.
+
+**External contracts are frozen through extraction,** in GH #476's
+sense: the artifact schema and digests, `shape_hash` over the model
+half, the model-diff JSON, the verify findings and the diagnostic
+wording that DNA pins. Additive and unhashed sections are free;
+transitions are explicit, versioned, and ship with the DNA edit in the
+same change. Any semantic change affecting execution stays covered by
+the executable or evidence identity even when the structural
+projection is unchanged.
+
+**Delivery.** A PR series on `main` behind shadows, one consumer per
+commit, a prerelease tag per phase; no long-lived feature branch. The
+shadow's report is designed for the contributor fixing a divergence:
+family, source site, old and new fact, deciding witnesses, smallest
+dependent slice, and a classification — migration regression, known
+old bug, intentional correction, unresolved spec disagreement. The
+current compiler is a compatibility reference, not a correctness
+oracle. Phase 1 migrates ownership first, then handler selection,
+then bus facts and dispatch. Phase 2 puts every entry point through
+one frontend: `check`, `build`, `run`, `test`, `replay`,
+`--dump-topology` and the LSP run the same layers, `build` stops
+recomputing, and the demand gate (GH #476 criterion 1) becomes
+per-family accounting: no family is built that no consumer asked for.
+Lifecycle normalization is in F.40; the first named decision is that
+handlers run only on the queue owner's thread, so cross-thread failure
+delivery follows `spec/runtime.md`, and the runtime is verified
+against the lifecycle table before the table is trusted.
+
+**What the phase-0 inventory corrected in the RFC.** `borrow_lifetime`
+and `bare_fallible` already run on the build, run, test and replay
+paths (through `check_bundle_for_build`); the entry points that skip
+them are the LSP and `bench`. The demand-gate criterion is GH #476's,
+not "#515" (no such reference exists in the tree). The DNA toolchain
+cache key covers the compiler's sources since commit `22a4daf0`, not
+since #1206. The key omits `hale-model` — as does the replay identity
+and the stale-binary hash — which is the identity-coverage gap phase 0
+closes before any producer moves.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

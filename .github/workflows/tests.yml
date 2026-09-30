@@ -202,7 +202,7 @@ jobs:
       - name: cargo nextest run (LLVM-free crates)
         run: |
           cargo nextest run --release \
-            -p hale-syntax -p hale-types -p hale-model \
+            -p hale-syntax -p hale-types -p hale-model -p hale-graph \
             -p hale-stdlib -p hale-corpus
 
   # A prose-only diff's only remaining exposure after `quick`: the
@@ -529,7 +529,7 @@ jobs:
         run: |
           cargo nextest run --release --workspace \
             --exclude hale-codegen --exclude hale-syntax --exclude hale-types \
-            --exclude hale-model --exclude hale-stdlib --exclude hale-corpus \
+            --exclude hale-model --exclude hale-graph --exclude hale-stdlib --exclude hale-corpus \
             --features hale-cli/dynamic-llvm \
             -E 'not binary(dna_native_suite)' \
             --partition hash:${{ matrix.part }}/3

@@ -112,6 +112,10 @@ name = "hale-dna"
 version = "0.22.0"
 
 [[package]]
+name = "hale-graph"
+version = "0.22.0"
+
+[[package]]
 name = "hale-iris"
 version = "0.22.0"
 dependencies = [
