@@ -1005,6 +1005,7 @@ crates/hale-codegen/tests/os_getrandom.rs#4 8b96bb75fff4a698
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 f33c497096dc5dbf
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 3b0e8370f1acd561
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 a02b92823a26a9c5
+crates/hale-codegen/tests/owner_table.rs#0 508fa61c52bf1edf
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
 crates/hale-codegen/tests/ownership_bubble.rs#1 ef3055b186950d67
 crates/hale-codegen/tests/ownership_bubble.rs#2 f81faba0af524049

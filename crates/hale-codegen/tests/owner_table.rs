@@ -747,3 +747,47 @@ fn every_locus_is_decided_in_the_family_commit_four_closed() {
         "or_into_iface_field",
     );
 }
+
+/// F.40 1.2a-0: after the snapshot has minted every site, the pre-pass
+/// numbers nothing below the minted ids. Lowering re-parses the stdlib
+/// unnumbered, so a counter starting at zero would hand a stdlib
+/// literal a minted user site's id and overwrite its row.
+#[test]
+fn the_pre_pass_numbers_past_the_snapshot_and_never_collides() {
+    let src = r#"
+locus Item { params { x: Int = 0; } }
+locus Holder {
+    params { it: Item = Item { }; }
+    run() { let extra = Item { }; }
+}
+fn main() { Holder { }; }
+"#;
+    let mut p = hale_syntax::parse_source(src).expect("parse");
+    let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    let minted_max = snap.sites.iter().map(|s| s.id.index).max().expect("sites");
+    // A late-arriving unnumbered literal, as the stdlib merge produces.
+    let mut late = hale_syntax::parse_source("fn f() { let l = Item { }; }\n").expect("parse");
+    p.items.extend(late.items.drain(..));
+    let table = hale_codegen::ownership::resolve_owners(&mut p, &BTreeMap::new(), &[]);
+    // The pre-pass numbers only Struct and Call nodes; the late fn's
+    // other sites stay NONE until a snapshot mints them, and are not
+    // ids to compare.
+    let mut ids = Vec::new();
+    hale_syntax::sites::for_each_site(&p, &mut |_, _, id| {
+        if !id.is_none() {
+            ids.push(id.0);
+        }
+    });
+    let mut sorted = ids.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len(), "every site keeps a unique id: {ids:?}");
+    assert!(
+        table.rows().all(|(id, _)| id.0 <= minted_max || id.0 > minted_max),
+        "rows key by the site's own id"
+    );
+    assert!(
+        ids.iter().any(|i| *i > minted_max),
+        "the late literal was numbered past the minted range"
+    );
+}
