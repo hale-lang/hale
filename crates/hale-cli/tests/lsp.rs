@@ -1192,3 +1192,184 @@ fn lsp_publishes_claim_diagnostics_against_the_right_file() {
     );
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+/// One diagnostic, as all three channels can spell it: the file's
+/// NAME (the three runs sit in three directories), 1-based line and
+/// column, the message.
+type Finding = (String, u64, u64, String);
+
+/// The overlay parity fixture (F.40 phase 2.1a): one seed, checked
+/// three ways, one answer.
+///
+/// 1. `hale check --json` on the directory.
+/// 2. The LSP with the files on disk and no buffer open: a `didSave`
+///    without text checks from the disk alone.
+/// 3. The LSP with every file's text supplied as a buffer, twice: over
+///    an EMPTY directory (the files exist only as buffers, so the seed
+///    is whatever the server's source provider lists) and over STALE
+///    disk copies (every buffer must win over its file).
+///
+/// The seed is two files in one directory, and `b.hl` calls a `fn`
+/// declared in `a.hl`, so a file the server failed to load shows up as
+/// an unresolved name, not as silence. It has no `import`: the LSP
+/// loads `LoadMode::SeedDirectoryOnly` (the changed file's directory,
+/// no import followed) until it loads the whole seed with its imports
+/// (phase 2.3, step 5), so a seed that imports would differ between
+/// the server and `hale check` for that reason alone. The import case
+/// joins this fixture then.
+#[test]
+fn lsp_overlays_lsp_on_disk_and_check_agree() {
+    const A: &str = "fn helper(n: Int) -> Int {\n    let s: String = n;\n    return n + 1;\n}\n";
+    const B: &str = "fn main() {\n    let x: Int = helper(1);\n    let y: Int = \"not an int\";\n    println(x);\n}\n";
+    const STALE: &str = "fn main() { }\n";
+
+    let root = std::env::temp_dir().join(format!("hale_lsp_parity_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mkdir = |name: &str| {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).expect("mkdir");
+        d.canonicalize().expect("canonical dir")
+    };
+    let on_disk = mkdir("disk");
+    std::fs::write(on_disk.join("a.hl"), A).expect("write a");
+    std::fs::write(on_disk.join("b.hl"), B).expect("write b");
+    let empty = mkdir("empty");
+    let stale = mkdir("stale");
+    std::fs::write(stale.join("a.hl"), STALE).expect("write stale a");
+    std::fs::write(stale.join("b.hl"), STALE).expect("write stale b");
+
+    // 1. `hale check --json`.
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", "--json"])
+        .arg(&on_disk)
+        .output()
+        .expect("run hale check");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut check: Vec<Finding> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let r: serde_json::Value = serde_json::from_str(l)
+                .unwrap_or_else(|e| panic!("an NDJSON record ({e}): {l}"));
+            let file = std::path::Path::new(r["file"].as_str().unwrap_or(""))
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (
+                file,
+                r["line"].as_u64().unwrap_or(0),
+                r["col"].as_u64().unwrap_or(0),
+                r["message"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    check.sort();
+    // Not vacuous: a finding in each file, the cross-file call among
+    // neither (the whole seed was loaded).
+    for f in ["a.hl", "b.hl"] {
+        assert!(
+            check.iter().any(|(file, ..)| file == f),
+            "hale check found nothing in {f}: {check:?}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // 2. The LSP on disk: no buffer, a save without text.
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didSave",
+        "params": { "textDocument": { "uri": uri(&on_disk.join("b.hl")) } }
+    }));
+    let disk = published(&mut lsp, 10);
+
+    // 3. The LSP with every file as a buffer, over an empty directory
+    // and over stale copies. The first open checks the seed with one
+    // buffer in it; the second has both, and that check is the answer.
+    let mut fence = 20;
+    let mut buffered = |lsp: &mut Lsp, dir: &std::path::Path| -> Vec<Finding> {
+        lsp.send(open(&dir.join("a.hl"), A));
+        fence += 1;
+        let _ = published(lsp, fence);
+        lsp.send(open(&dir.join("b.hl"), B));
+        fence += 1;
+        published(lsp, fence)
+    };
+    let over_empty = buffered(&mut lsp, &empty);
+    let over_stale = buffered(&mut lsp, &stale);
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(disk, check, "the LSP on disk and `hale check` disagree");
+    assert_eq!(over_empty, check, "the LSP with buffers over an empty directory and `hale check` disagree");
+    assert_eq!(over_stale, check, "the LSP with buffers over stale files and `hale check` disagree");
+}
+
+fn uri(path: &std::path::Path) -> String {
+    format!("file://{}", path.display())
+}
+
+fn open(path: &std::path::Path, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri(path), "languageId": "hale", "version": 1, "text": text
+        }}
+    })
+}
+
+/// Every publish of the check the last notification started, as
+/// findings, in 1-based lines and columns (the server's are 0-based,
+/// in UTF-16 units; the fixture is ASCII, so a unit is a character).
+///
+/// The server handles messages in order, so a request sent now is
+/// answered after every publish of that check: reading up to the
+/// answer collects the whole check however many files it covered —
+/// a file the server failed to load is missing from the result, not a
+/// read that never returns.
+fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": fence, "method": "hale/testFence", "params": null
+    }));
+    let mut out = Vec::new();
+    loop {
+        let msg = lsp.recv();
+        if msg.get("id").and_then(|i| i.as_u64()) == Some(fence) {
+            break;
+        }
+        if msg.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
+            continue;
+        }
+        let file = msg
+            .pointer("/params/uri")
+            .and_then(|u| u.as_str())
+            .and_then(|u| u.rsplit('/').next())
+            .unwrap_or("")
+            .to_string();
+        for d in msg.pointer("/params/diagnostics").and_then(|d| d.as_array()).into_iter().flatten() {
+            out.push((
+                file.clone(),
+                d["range"]["start"]["line"].as_u64().unwrap_or(u64::MAX) + 1,
+                d["range"]["start"]["character"].as_u64().unwrap_or(u64::MAX) + 1,
+                d["message"].as_str().unwrap_or("").to_string(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}

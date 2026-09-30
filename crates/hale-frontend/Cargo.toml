@@ -1,0 +1,13 @@
+[package]
+name = "hale-frontend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Hale's shared frontend: source providers and seed/import loading, for the CLI and the LSP"
+
+# LLVM-free by law: never hale-codegen (inkwell) and never hale-lsp,
+# its consumer. `crates/hale-graph/tests/architecture.rs` holds it.
+[dependencies]
+hale-syntax = { path = "../hale-syntax" }
+hale-types = { path = "../hale-types" }

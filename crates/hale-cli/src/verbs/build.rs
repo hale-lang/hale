@@ -17,6 +17,8 @@ use hale_syntax::ast::Program;
 use crate::shared::options::bind_build_env;
 use crate::build_env;
 use crate::shared::frontend::collect_ap_files;
+use crate::shared::frontend::LoadMode;
+use crate::shared::source::Disk;
 use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
@@ -61,7 +63,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // single-file-app-monolith friction; the file shape stays for
     // backwards compatibility and for one-off scripts.
     let (mut program, renames, sources, file_bases, output, entry_ctx) = if target.is_file() {
-        let (program, renames, sources, file_bases, ctx) = match parse_with_imports(target) {
+        let (program, renames, sources, file_bases, ctx) = match parse_with_imports(target, &Disk) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
@@ -69,14 +71,14 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
         let output = target.with_extension("");
         (program, renames, sources, file_bases, output, ctx)
     } else if target.is_dir() {
-        let files = match collect_ap_files(target) {
+        let files = match collect_ap_files(target, LoadMode::WholeSeed, &Disk) {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("{}", e);
                 return ExitCode::from(1);
             }
         };
-        let (programs, sources, mut dir_file_bases) = match parse_files(&files) {
+        let (programs, sources, mut dir_file_bases) = match parse_files(&files, &Disk) {
             Ok(x) => x,
             // As for `run`: located text, unchanged (GH #777).
             Err(f) => return f.report_text(),
@@ -149,6 +151,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             &mut effects,
             &target_scope,
             &mut alias_scopes,
+            &Disk,
         )
         .is_err()
             || !import_errors.is_empty()
@@ -288,6 +291,20 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check. The api pass finds the binding
+    // `bind_build_env` generated and leaves it alone.
+    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence {
+            import_renames: &renames,
+            api: options.api.as_deref(),
+            api_roles: options.api_roles.as_deref(),
+        },
+    ) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
     // by the same source map `check` mints with; the resolved program
     // below mints its merged program with it too.

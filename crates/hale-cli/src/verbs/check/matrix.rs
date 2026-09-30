@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
 use crate::shared::frontend::collect_checkable;
+use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
 use crate::shared::options::inject_adopt;
@@ -215,7 +216,7 @@ pub(crate) fn role_coverage(
     env: &str,
     table: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
-    let Ok((programs, _, _, _, _)) = collect_checkable(target) else {
+    let Ok((programs, _, _, _, _)) = collect_checkable(target, &Disk) else {
         return Vec::new();
     };
     let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
@@ -254,7 +255,7 @@ pub(crate) fn constitution_identities(
     target: &Path,
     adopt: &[String],
 ) -> Vec<(String, String)> {
-    let (programs, _s, _fb, renames, _own) = match collect_checkable(target)
+    let (programs, _s, _fb, renames, _own) = match collect_checkable(target, &Disk)
     {
         Ok(x) => x,
         Err(_) => return Vec::new(),

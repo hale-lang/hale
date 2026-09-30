@@ -12,6 +12,8 @@ use crate::shared::process::RunScratch;
 use crate::shared::options::bind_build_env;
 use crate::build_env;
 use crate::shared::frontend::collect_ap_files;
+use crate::shared::frontend::LoadMode;
+use crate::shared::source::Disk;
 use crate::shared::process::dies_with_us;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
@@ -170,13 +172,26 @@ pub(crate) fn run_program(
         // `build_executable_with_imports`, so qualified
         // `alias::Name` references in the entry file resolve the
         // same way `hale build` resolves them.
-        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
+        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target, &Disk) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
-        // F.40 phase 1.1b-iii: the snapshot. The file entry runs no
-        // desugar before the check, so it mints straight after the
-        // load, seeded by the source map `check` mints with.
+        // F.40 phase 2.1b: the declaration-shaping sequence, the one
+        // every entry point runs before its check, with the api inputs
+        // the resolve below reads.
+        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
+            &mut [&mut program],
+            &hale_types::desugar_sequence::Sequence {
+                import_renames: &renames,
+                api: options.api.as_deref(),
+                api_roles: options.api_roles.as_deref(),
+            },
+        ) {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+        // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
+        // by the source map `check` mints with.
         let target_name = target.display().to_string();
         let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
         let snapshot =
@@ -237,14 +252,14 @@ pub(crate) fn run_program(
         );
     }
 
-    let files = match collect_ap_files(target) {
+    let files = match collect_ap_files(target, LoadMode::WholeSeed, &Disk) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}", e);
             return ExitCode::from(1);
         }
     };
-    let (programs, sources, mut file_bases) = match parse_files(&files) {
+    let (programs, sources, mut file_bases) = match parse_files(&files, &Disk) {
         Ok(x) => x,
         // `run` has no machine-readable channel: the same located
         // text it always printed (GH #777 moved the printing here).
@@ -321,6 +336,7 @@ pub(crate) fn run_program(
         &mut effects,
         &target_scope,
         &mut alias_scopes,
+        &Disk,
     )
     .is_err()
         || !import_errors.is_empty()
@@ -379,6 +395,20 @@ pub(crate) fn run_program(
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check. The api pass finds the binding
+    // `bind_build_env` generated and leaves it alone.
+    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence {
+            import_renames: &renames,
+            api: options.api.as_deref(),
+            api_roles: options.api_roles.as_deref(),
+        },
+    ) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
     // by the source map `check` mints with.
     let target_name = target.display().to_string();

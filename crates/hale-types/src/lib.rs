@@ -34,6 +34,7 @@ pub mod check;
 pub mod handler_routing;
 pub mod claim_lowering;
 pub mod claims;
+pub mod desugar_sequence;
 pub mod model;
 pub mod judgment;
 pub mod mangle;
@@ -107,9 +108,20 @@ pub use crate::ty::Ty;
 ///
 /// A caller that deliberately holds a FRAGMENT (one file of a
 /// multi-file seed, a styleguide snippet) wants [`check_bundle`].
+///
+/// The program is checked as every entry point checks one: after the
+/// desugar sequence ([`desugar_sequence::desugar_before_check`]), run
+/// here on a copy. The sequence is idempotent, so a program that has
+/// already been through it is checked unchanged.
 pub fn check_program(program: &Program) -> Vec<Diag> {
+    let mut program = program.clone();
+    desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+    )
+    .expect("the sequence refuses only an `--api` injection, and none is asked for");
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
-    programs.insert(String::new(), program);
+    programs.insert(String::new(), &program);
     check_bundle_opts_whole_program(&Bundle::new(programs), false)
 }
 

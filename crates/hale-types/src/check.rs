@@ -130,9 +130,15 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
 /// diagnostic it already produced — when the name is not an alias,
 /// or when its target is not a NAME: nothing is constructible from
 /// `type Thing = Int;` or `type TwoRows = [Row; 2];` with `{ }` or
-/// `::`. Codegen's `resolve_construction_aliases` draws the same
-/// line over the same declarations, which is what keeps `check` and
-/// `build` from disagreeing about a literal.
+/// `::`. `resolve_construction_aliases` draws the same line over the
+/// same declarations, which is what keeps `check` and `build` from
+/// disagreeing about a literal.
+///
+/// Every entry point runs that pass in its desugar sequence before
+/// the check (F.40 phase 2.1b), so for a program a verb checks this
+/// hop finds no alias left to follow. It answers for a caller that
+/// checks a bundle without the sequence (`check_bundle` over a
+/// fragment).
 fn construction_target(top: &TopScope, name: &str) -> Option<String> {
     match top.lookup(name) {
         Some(TopSymbol::Type(TypeInfo {
@@ -635,7 +641,7 @@ pub fn check_bundle_scoped(
     //   - `on_unmatched: fallback` topics must have at least one
     //     `where key == _` subscriber program-wide.
     //   - `where key == _` is only legal on fallback topics.
-    check_phase3_fallback_subscribers(bundle, &mut diags);
+    check_phase3_fallback_subscribers(bundle, &top.topics, &mut diags);
     // GH #255 phase 2: bounded-topic pairing + subscriber-bound
     // placement rules.
     check_bounded_bus(bundle, &mut diags);
@@ -679,7 +685,7 @@ pub fn check_bundle_scoped(
     // discover that by overflowing its own stack in
     // `lower_locus_instantiation`. See `check_self_containing_locus`.
     check_self_containing_locus(bundle, &mut diags);
-    check_cooperative_pool_blocking(bundle, &mut diags);
+    check_cooperative_pool_blocking(bundle, &top.topics, &mut diags);
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
@@ -1752,13 +1758,17 @@ fn find_blocking_deep_in_expr(
 /// blocking gateway was moved onto a shared pool). A warning, not an
 /// error — a single-purpose blocking server with nothing co-scheduled
 /// is legitimate; the smell is real but situational.
-/// A comparable key for a bus subject (topic name / literal /
-/// qualified path) — used to tell whether a subscription is to a
-/// topic the locus also publishes.
-fn bus_subject_key(s: &BusSubject) -> String {
+/// A comparable key for a bus subject — used to tell whether a
+/// subscription is to a topic the locus also publishes. The key is the
+/// wire identity (spec/model.md rule 8): a literal subject is its own
+/// wire subject, a topic reference its row's; a qualified path, which
+/// no row of this bundle names by its written segments, is the path.
+fn bus_subject_key(s: &BusSubject, topics: &crate::topic_identity::TopicRows) -> String {
     match s {
         BusSubject::Literal { subject, .. } => subject.clone(),
-        BusSubject::Topic(id) => id.name.clone(),
+        BusSubject::Topic(id) => topics
+            .named(&id.name)
+            .map_or_else(|| id.name.clone(), |t| t.wire.clone()),
         BusSubject::QualifiedTopic(qn) => qn
             .segments
             .iter()
@@ -1773,7 +1783,10 @@ fn bus_subject_key(s: &BusSubject) -> String {
 /// self-publish→self-subscribe is devirtualized to a direct
 /// `self.handler(...)` call (same instance, same thread), not a bus
 /// receive, so it's excluded.
-fn external_subscription_handlers(decl: &LocusDecl) -> Vec<String> {
+fn external_subscription_handlers(
+    decl: &LocusDecl,
+    topics: &crate::topic_identity::TopicRows,
+) -> Vec<String> {
     let mut published: BTreeSet<String> = BTreeSet::new();
     let mut handlers: Vec<(String, String)> = Vec::new(); // (subject_key, handler)
     for m in &decl.members {
@@ -1781,10 +1794,10 @@ fn external_subscription_handlers(decl: &LocusDecl) -> Vec<String> {
         for bm in &b.members {
             match bm {
                 BusMember::Publish { subject, .. } => {
-                    published.insert(bus_subject_key(subject));
+                    published.insert(bus_subject_key(subject, topics));
                 }
                 BusMember::Subscribe { subject, handler, .. } => {
-                    handlers.push((bus_subject_key(subject), handler.name.clone()));
+                    handlers.push((bus_subject_key(subject, topics), handler.name.clone()));
                 }
             }
         }
@@ -2631,6 +2644,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// loop, or `where async_io`) is flagged by neither: it receives fine.
 fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
+    topics: &crate::topic_identity::TopicRows,
     diags: &mut Vec<Diag>,
 ) {
     // GH #825: all three passes flatten `module { … }`. The index of
@@ -2760,7 +2774,7 @@ fn check_cooperative_pool_blocking(
                 // Handlers for topics this locus does NOT itself publish
                 // (a self-publish→subscribe is a devirtualized direct
                 // call, not a bus receive).
-                let dead = external_subscription_handlers(decl);
+                let dead = external_subscription_handlers(decl, topics);
                 if pool_name != "main" && !dead.is_empty() && direct.is_some() {
                     let (call, span) = direct.expect("is_some checked");
                     errored_pools.insert(pool_name.to_string());
@@ -5611,23 +5625,16 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 
 fn check_phase3_fallback_subscribers(
     bundle: &Bundle<'_>,
+    topics: &crate::topic_identity::TopicRows,
     diags: &mut Vec<Diag>,
 ) {
-    // Collect all topics with their on_unmatched policy + wire
-    // subject. Indexed by both topic name and wire subject so
-    // subscribe-by-string can resolve.
-    let mut by_name: BTreeMap<String, (Option<UnmatchedPolicy>, Span)> =
-        BTreeMap::new();
-    let mut by_wire: BTreeMap<String, (Option<UnmatchedPolicy>, Span)> =
-        BTreeMap::new();
-    // Filter validity (2026-08-12): (is_keyed, key_is_string) per
-    // topic, for the `where key ==` rules below. The String
-    // question resolves the payload struct's keyed_by field type
-    // directly against the bundle's type decls.
-    let mut key_shape_by_name: BTreeMap<String, (bool, bool)> =
-        BTreeMap::new();
-    let mut key_shape_by_wire: BTreeMap<String, (bool, bool)> =
-        BTreeMap::new();
+    // A subscription's topic is the topic row its subject names: a
+    // topic reference by name, a literal subject by
+    // `topic_of_subject`. Filter validity (2026-08-12):
+    // (is_keyed, key_is_string) per topic, for the `where key ==`
+    // rules below. The String question resolves the payload
+    // struct's keyed_by field type directly against the bundle's
+    // type decls.
     let field_is_string = |payload: &TypeExpr, field: &str| -> bool {
         let TypeExpr::Named { path, .. } = payload else {
             return false;
@@ -5668,38 +5675,18 @@ fn check_phase3_fallback_subscribers(
         }
         answer.unwrap_or(false)
     };
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Topic(t) = item {
-                by_name.insert(
-                    t.name.name.clone(),
-                    (t.on_unmatched, t.span),
-                );
-                let key_shape = match &t.keyed_by {
-                    Some(f) => {
-                        (true, field_is_string(&t.payload, &f.name))
-                    }
-                    None => (false, false),
-                };
-                key_shape_by_name
-                    .insert(t.name.name.clone(), key_shape);
-                let wire = t
-                    .subject
-                    .clone()
-                    .unwrap_or_else(|| t.name.name.clone());
-                key_shape_by_wire.insert(wire.clone(), key_shape);
-                by_wire.insert(wire, (t.on_unmatched, t.span));
-            }
-        });
-    }
+    let key_shape = |t: &crate::topic_identity::TopicRow| match &t.keyed_by {
+        Some(f) => (true, field_is_string(&t.payload, f)),
+        None => (false, false),
+    };
 
     // Walk every subscriber. For each `where key == _` filter,
     // resolve the topic and validate it's a fallback topic.
     // Track which fallback topics have at least one `_` sub.
     let mut fallback_has_catchall: BTreeMap<String, bool> = BTreeMap::new();
-    for (name, (policy, _)) in &by_name {
-        if matches!(policy, Some(UnmatchedPolicy::Fallback)) {
-            fallback_has_catchall.insert(name.clone(), false);
+    for t in topics.iter() {
+        if matches!(t.on_unmatched, Some(UnmatchedPolicy::Fallback)) {
+            fallback_has_catchall.insert(t.name.clone(), false);
         }
     }
     for program in bundle.programs.values() {
@@ -5720,17 +5707,15 @@ fn check_phase3_fallback_subscribers(
                     // accepted without a word). Cross-seed / string
                     // subjects that resolve to no declared topic stay
                     // permissive, matching the rest of this pass.
+                    let row = match subject {
+                        BusSubject::Topic(i) => topics.named(&i.name),
+                        // a literal subscription is a delivery site: only the
+                        // topic that owns that wire subject
+                        BusSubject::Literal { subject: s, .. } => topics.by_wire(s),
+                        BusSubject::QualifiedTopic(_) => None,
+                    };
                     {
-                        let shape = match subject {
-                            BusSubject::Topic(i) => {
-                                key_shape_by_name.get(&i.name).copied()
-                            }
-                            BusSubject::Literal { subject: sname, .. } => {
-                                key_shape_by_wire.get(sname).copied()
-                            }
-                            BusSubject::QualifiedTopic(_) => None,
-                        };
-                        if let Some((is_keyed, key_is_string)) = shape {
+                        if let Some((is_keyed, key_is_string)) = row.map(key_shape) {
                             if !is_keyed {
                                 diags.push(Diag::ty(
                                     kf.span(),
@@ -5764,27 +5749,22 @@ fn check_phase3_fallback_subscribers(
                     if !is_catchall {
                         continue;
                     }
-                    let (topic_key, policy) = match subject {
-                        BusSubject::Topic(i) => (
-                            i.name.clone(),
-                            by_name.get(&i.name).map(|x| x.0).flatten(),
-                        ),
-                        BusSubject::Literal { subject: s, .. } => (
-                            s.clone(),
-                            by_wire.get(s).map(|x| x.0).flatten(),
-                        ),
+                    // The diagnostic names the subject as written; the
+                    // catch-all is recorded against the topic it names.
+                    let (topic_key, target) = match subject {
+                        BusSubject::Topic(i) => (i.name.clone(), row),
+                        BusSubject::Literal { subject: s, .. } => (s.clone(), row),
                         BusSubject::QualifiedTopic(qn) => {
                             let last = qn
                                 .segments
                                 .last()
                                 .map(|s| s.name.clone())
                                 .unwrap_or_default();
-                            (
-                                last.clone(),
-                                by_name.get(&last).map(|x| x.0).flatten(),
-                            )
+                            let target = topics.named(&last);
+                            (last, target)
                         }
                     };
+                    let policy = target.and_then(|t| t.on_unmatched);
                     if !matches!(policy, Some(UnmatchedPolicy::Fallback)) {
                         diags.push(Diag::ty(
                             kf.span(),
@@ -5805,8 +5785,8 @@ fn check_phase3_fallback_subscribers(
                                 },
                             ),
                         ));
-                    } else {
-                        fallback_has_catchall.insert(topic_key, true);
+                    } else if let Some(t) = target {
+                        fallback_has_catchall.insert(t.name.clone(), true);
                     }
                 }
             }
@@ -5816,7 +5796,7 @@ fn check_phase3_fallback_subscribers(
         if *has {
             continue;
         }
-        let span = by_name.get(name).map(|(_, s)| *s).unwrap_or(Span::new(0, 0));
+        let span = topics.named(name).map(|t| t.span).unwrap_or(Span::new(0, 0));
         diags.push(Diag::ty(
             span,
             format!(
@@ -5882,8 +5862,11 @@ fn check_main_and_bindings(
 
     // For role inference: gather, per wire-subject, whether ANY
     // locus in the bundle publishes / subscribes to it. Bindings
-    // reference topic-name, so map name → (publishes, subscribes).
-    let (topic_publishes, topic_subscribes) = collect_topic_pub_sub(bundle);
+    // reference a topic by name, and ask by its row's wire subject.
+    let (topic_publishes, topic_subscribes) = collect_topic_pub_sub(bundle, &top.topics);
+    let wire_of = |name: &str| {
+        top.topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
+    };
 
     // F.36 Slice 2 (2026-05-28): compute the bundle-wide purity
     // map so binding-site codec checks can assert the codec's
@@ -5957,10 +5940,9 @@ fn check_main_and_bindings(
                                 &entry.transport
                             {
                                 if role.is_none() {
-                                    let pubs = topic_publishes
-                                        .contains(&entry.topic.name);
-                                    let subs = topic_subscribes
-                                        .contains(&entry.topic.name);
+                                    let wire = wire_of(&entry.topic.name);
+                                    let pubs = topic_publishes.contains(&wire);
+                                    let subs = topic_subscribes.contains(&wire);
                                     if pubs && subs {
                                         diags.push(Diag::ty(
                                             entry.topic.span,
@@ -6189,7 +6171,7 @@ fn check_main_and_bindings(
         });
     }
     check_api_binding(&programs_vec, diags);
-    check_api_roles(&programs_vec, diags);
+    check_api_roles(&programs_vec, &top.topics, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -6392,7 +6374,11 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
+fn check_api_roles(
+    programs: &[&Program],
+    topics: &crate::topic_identity::TopicRows,
+    diags: &mut Vec<Diag>,
+) {
     use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -6519,10 +6505,17 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
         });
     }
 
+    // A topic reference joins on its row's wire subject (spec/model.md
+    // rule 8), and is named as written.
+    let topic_key = |name: &str| -> String {
+        topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
+    };
+    let bound: BTreeSet<String> = bound.iter().map(|n| topic_key(n)).collect();
     // The sites, and the gate each topic's subscribers and publishers
-    // state: (site, role, span).
-    let mut sub_gates: BTreeMap<String, Vec<(String, Option<String>, Span)>> = BTreeMap::new();
-    let mut pub_gates: BTreeMap<String, Vec<(String, Option<String>, Span)>> = BTreeMap::new();
+    // state: wire subject → (the topic as written, [(site, role, span)]).
+    type Gates = BTreeMap<String, (String, Vec<(String, Option<String>, Span)>)>;
+    let mut sub_gates: Gates = BTreeMap::new();
+    let mut pub_gates: Gates = BTreeMap::new();
     let mut loci: BTreeMap<String, &hale_syntax::ast::LocusDecl> = BTreeMap::new();
     for p in programs {
         walk_decls(&p.items, &mut |item| {
@@ -6538,14 +6531,15 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
             }
             // Every subscription, by handler: one handler may subscribe
             // several topics (review F5), and each is a site.
-            let mut subscribed: Vec<(&str, Option<String>)> = Vec::new();
+            // (handler, (wire key, topic as written)).
+            let mut subscribed: Vec<(&str, Option<(String, String)>)> = Vec::new();
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
                 for bm in &bb.members {
                     match bm {
                         BusMember::Subscribe { subject, handler, .. } => {
                             let topic = match subject {
-                                BusSubject::Topic(id) => Some(id.name.clone()),
+                                BusSubject::Topic(id) => Some((topic_key(&id.name), id.name.clone())),
                                 _ => None,
                             };
                             subscribed.push((handler.name.as_str(), topic));
@@ -6557,7 +6551,10 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                                 }
                             }
                             if let BusSubject::Topic(id) = subject {
-                                pub_gates.entry(id.name.clone()).or_default().push((
+                                let entry = pub_gates
+                                    .entry(topic_key(&id.name))
+                                    .or_insert_with(|| (id.name.clone(), Vec::new()));
+                                entry.1.push((
                                     format!("{} publishes it", l.name.name),
                                     gated.as_ref().map(|g| g.name.clone()),
                                     *span,
@@ -6574,7 +6571,7 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                         if !declared(&g.name) {
                             diags.push(undeclared(g, &format!("`@gated` on `{}.{}`", l.name.name, f.name.name)));
                         }
-                        let mine: Vec<&Option<String>> = subscribed
+                        let mine: Vec<&Option<(String, String)>> = subscribed
                             .iter()
                             .filter(|(h, _)| *h == f.name.name.as_str())
                             .map(|(_, t)| t)
@@ -6591,8 +6588,8 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                                 ),
                             ));
                         }
-                        for topic in mine.into_iter().flatten() {
-                            if bound.contains(topic) {
+                        for (key, topic) in mine.into_iter().flatten() {
+                            if bound.contains(key) {
                                 diags.push(Diag::ty(
                                     g.span,
                                     format!(
@@ -6605,7 +6602,10 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                                     ),
                                 ));
                             }
-                            sub_gates.entry(topic.clone()).or_default().push((
+                            let entry = sub_gates
+                                .entry(key.clone())
+                                .or_insert_with(|| (topic.clone(), Vec::new()));
+                            entry.1.push((
                                 format!("{}.{}", l.name.name, f.name.name),
                                 Some(g.name.clone()),
                                 g.span,
@@ -6630,7 +6630,7 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
             // Ungated subscribers count too: every subscriber of a
             // topic must agree.
             for (h, topic) in &subscribed {
-                let Some(t) = topic else { continue };
+                let Some((key, t)) = topic else { continue };
                 let gated = l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.name.name == *h && f.gated.is_some()));
                 if !gated {
                     let span = l
@@ -6641,13 +6641,17 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
                             _ => None,
                         })
                         .unwrap_or(l.name.span);
-                    sub_gates.entry(t.clone()).or_default().push((format!("{}.{}", l.name.name, h), None, span));
+                    let entry = sub_gates.entry(key.clone()).or_insert_with(|| (t.clone(), Vec::new()));
+                    entry.1.push((format!("{}.{}", l.name.name, h), None, span));
                 }
             }
         });
     }
     for (kind, gates) in [("subscribes", &sub_gates), ("publishes", &pub_gates)] {
-        for (topic, sites) in gates {
+        // Reported in the order of the topics' written names.
+        let mut groups: Vec<&(String, Vec<(String, Option<String>, Span)>)> = gates.values().collect();
+        groups.sort_by(|a, b| a.0.cmp(&b.0));
+        for (topic, sites) in groups {
             let distinct: BTreeSet<Option<String>> = sites.iter().map(|(_, r, _)| r.clone()).collect();
             if distinct.len() < 2 {
                 continue;
@@ -6774,52 +6778,43 @@ fn check_api_roles(programs: &[&Program], diags: &mut Vec<Diag>) {
     }
 }
 
-/// Walk the bundle and collect, per topic name (the binding-side
-/// identifier), the set of topics that have at least one publisher
-/// and the set that have at least one subscriber across all loci.
-/// Used by role-inference validation in `check_main_and_bindings`.
+/// Walk the bundle and collect, by wire subject (spec/model.md rule
+/// 8), the topics that have at least one publisher and the topics
+/// that have at least one subscriber across all loci. Used by
+/// role-inference validation in `check_main_and_bindings`, which asks
+/// by a binding's topic row. Only topic references count: the
+/// desugar's role rule (`binding_role_for`) reads those, and the check
+/// must not call a role inferable that the desugar cannot infer.
 fn collect_topic_pub_sub(
     bundle: &Bundle<'_>,
+    topics: &crate::topic_identity::TopicRows,
 ) -> (
     std::collections::BTreeSet<String>,
     std::collections::BTreeSet<String>,
 ) {
     let mut pubs = std::collections::BTreeSet::new();
     let mut subs = std::collections::BTreeSet::new();
-    fn walk(
-        items: &[TopDecl],
-        pubs: &mut std::collections::BTreeSet<String>,
-        subs: &mut std::collections::BTreeSet<String>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    for member in &l.members {
-                        if let LocusMember::Bus(bb) = member {
-                            for bm in &bb.members {
-                                match bm {
-                                    BusMember::Publish { subject, .. } => {
-                                        if let BusSubject::Topic(id) = subject {
-                                            pubs.insert(id.name.clone());
-                                        }
-                                    }
-                                    BusMember::Subscribe { subject, .. } => {
-                                        if let BusSubject::Topic(id) = subject {
-                                            subs.insert(id.name.clone());
-                                        }
-                                    }
-                                }
-                            }
+    let key = |id: &Ident| {
+        topics.named(&id.name).map_or_else(|| id.name.clone(), |t| t.wire.clone())
+    };
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            for member in &l.members {
+                let LocusMember::Bus(bb) = member else { continue };
+                for bm in &bb.members {
+                    match bm {
+                        BusMember::Publish { subject: BusSubject::Topic(id), .. } => {
+                            pubs.insert(key(id));
                         }
+                        BusMember::Subscribe { subject: BusSubject::Topic(id), .. } => {
+                            subs.insert(key(id));
+                        }
+                        _ => {}
                     }
                 }
-                TopDecl::Module(m) => walk(&m.items, pubs, subs),
-                _ => {}
             }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, &mut pubs, &mut subs);
+        });
     }
     (pubs, subs)
 }
@@ -13053,39 +13048,19 @@ impl<'a> Checker<'a> {
         // clause on Send is legal only when the target topic
         // declares `on_unmatched: fail`. Conversely, fail topics
         // REQUIRE the clause — a fail-policy publish without an
-        // or-disposition leaves the no-match err unhandled. We
-        // resolve the topic by name/literal-subject and validate
-        // both directions.
+        // or-disposition leaves the no-match err unhandled. The
+        // topic is the one the subject names in the topic rows — a
+        // literal by the wire subject it delivers on, a topic reference
+        // by its name — and both directions are validated.
         let target_topic: Option<(String, Option<UnmatchedPolicy>, bool)> =
             match subject {
-                Expr::Literal(Literal::String(s), _) => self
-                    .top
-                    .symbols
-                    .values()
-                    .find_map(|sym| match sym {
-                        TopSymbol::Topic(ti)
-                            if ti.subject == *s
-                                || ti.wire_subject == *s
-                                || ti.name == *s =>
-                        {
-                            Some((
-                                ti.name.clone(),
-                                ti.on_unmatched,
-                                ti.on_full_fail,
-                            ))
-                        }
-                        _ => None,
-                    }),
-                Expr::Ident(id) => match self.top.lookup(&id.name) {
-                    Some(TopSymbol::Topic(ti)) => Some((
-                        ti.name.clone(),
-                        ti.on_unmatched,
-                        ti.on_full_fail,
-                    )),
-                    _ => None,
-                },
+                // a literal send delivers on its bytes: only the topic
+                // that owns that wire subject carries a policy for it
+                Expr::Literal(Literal::String(s), _) => self.top.topics.by_wire(s),
+                Expr::Ident(id) => self.top.topics.named(&id.name),
                 _ => None,
-            };
+            }
+            .map(|t| (t.name.clone(), t.on_unmatched, t.on_full_fail));
         let target_policy = target_topic.as_ref().map(|(_, p, _)| *p);
         let target_full_fail =
             target_topic.as_ref().map_or(false, |(_, _, f)| *f);
@@ -13259,10 +13234,7 @@ impl<'a> Checker<'a> {
         // through the wildcard-publish path further below.
         let subject_str = match subject {
             Expr::Literal(Literal::String(s), _) => Some(s.clone()),
-            Expr::Ident(id) => match self.top.lookup(&id.name) {
-                Some(TopSymbol::Topic(_)) => Some(id.name.clone()),
-                _ => None,
-            },
+            Expr::Ident(id) => self.top.topics.named(&id.name).map(|_| id.name.clone()),
             // A7 (G16): cross-seed `alias::Topic <- payload;`. The
             // typechecker can't resolve cross-seed names directly
             // (mangling happens at the codegen-side pre-pass), so
@@ -15451,10 +15423,15 @@ impl<'a> Checker<'a> {
                 // `T::member(...)` names a wire-layout struct (a type with
                 // a `repr:`-tagged field), `member` must be one of its
                 // fields (read: `T::field`) or `set_<field>` (write). This
-                // catches a mistyped field at typecheck — otherwise the
-                // accessor desugars to an unknown `std::bytes::*` call and
-                // only fails at codegen. Valid accessors stay permissively
-                // typed (the desugar lowers them to the pack primitives).
+                // catches a mistyped field at typecheck, which the desugar
+                // leaves as written. A valid accessor never reaches here
+                // from an entry point: the desugar sequence rewrote it to
+                // its `std::bytes::*` call before the check (F.40 phase
+                // 2.1b), and that call is typed as the stdlib types it.
+                // What still arrives is what the desugar refused (an
+                // unknown field, the wrong arity) and a fragment checked
+                // without the sequence; a known field stays permissively
+                // typed.
                 if let Expr::Path(qn) = callee.as_ref() {
                     if qn.segments.len() == 2 {
                         let tname = &qn.segments[0].name;

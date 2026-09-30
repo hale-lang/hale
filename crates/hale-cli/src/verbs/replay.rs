@@ -9,6 +9,7 @@ use crate::shared::options::exec_digest;
 use crate::shared::options::model_identity;
 use crate::shared::options::parse_exec_build_options;
 use crate::shared::frontend::parse_with_imports;
+use crate::shared::source::Disk;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::replay;
@@ -211,12 +212,25 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // Same compile pipeline as `hale run` (parse → check → model
     // hash), so a recording is admitted against exactly what runs.
     let (mut program, renames, sources, file_bases, _ctx) =
-        match parse_with_imports(&prog) {
+        match parse_with_imports(&prog, &Disk) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
-    // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
-    // before the check, so it mints straight after the load, seeded by
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check, with the api inputs the
+    // resolve below reads.
+    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence {
+            import_renames: &renames,
+            api: build_options.api.as_deref(),
+            api_roles: build_options.api_roles.as_deref(),
+        },
+    ) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
+    // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded by
     // the source map `check` mints with.
     let prog_name = prog.display().to_string();
     let source_map = crate::shared::frontend::source_map(&prog, &file_bases, &sources);

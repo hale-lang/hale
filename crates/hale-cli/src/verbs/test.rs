@@ -13,6 +13,7 @@ use std::env;
 use std::fs;
 use crate::shared::diag::json_escape;
 use crate::shared::frontend::parse_with_imports;
+use crate::shared::source::Disk;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 /// Verdict for one `*_test.hl` file.
@@ -75,7 +76,7 @@ pub(crate) fn compile_test_binary(
     entry: &Path,
     scratch: &RunScratch,
 ) -> Result<PathBuf, String> {
-    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
+    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry, &Disk) {
         Ok(x) => x,
         Err(errors) => {
             let mut msg = String::new();
@@ -86,8 +87,32 @@ pub(crate) fn compile_test_binary(
             return Err(msg.trim_end().to_string());
         }
     };
-    // F.40 phase 1.1b-iii: the snapshot. The file entry runs no desugar
-    // before the check, so it mints straight after the load, seeded by
+    // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
+    // pond FRICTION "hale test cannot link @ffi libs"): a test that
+    // imports an FFI-bearing lib (sqlite et al.) needs the lib's
+    // hale.toml [ffi] link/csrc surface on the link line, or every
+    // such test dies with undefined lotus_* references regardless
+    // of the test's own correctness.
+    let mut options = collect_ffi_from_imports(
+        &ctx.imports,
+        &ctx.entry_dir,
+        ctx.workspace_root.as_deref(),
+    );
+    // Tests are rebuilt every run — take the dev profile's build
+    // latency win; the exit-code contract doesn't time anything.
+    options.dev_profile = true;
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check, with the api inputs the
+    // resolve below reads.
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence {
+            import_renames: &renames,
+            api: options.api.as_deref(),
+            api_roles: options.api_roles.as_deref(),
+        },
+    )?;
+    // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded by
     // the source map `check` mints with.
     let entry_name = entry.display().to_string();
     let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
@@ -127,20 +152,6 @@ pub(crate) fn compile_test_binary(
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
     let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
-    // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
-    // pond FRICTION "hale test cannot link @ffi libs"): a test that
-    // imports an FFI-bearing lib (sqlite et al.) needs the lib's
-    // hale.toml [ffi] link/csrc surface on the link line, or every
-    // such test dies with undefined lotus_* references regardless
-    // of the test's own correctness.
-    let mut options = collect_ffi_from_imports(
-        &ctx.imports,
-        &ctx.entry_dir,
-        ctx.workspace_root.as_deref(),
-    );
-    // Tests are rebuilt every run — take the dev profile's build
-    // latency win; the exit-code contract doesn't time anything.
-    options.dev_profile = true;
     if let Err(e) = hale_types::resolved::resolve_program(
         &program,
         &source_map,

@@ -221,6 +221,7 @@ const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
 const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
+const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
@@ -247,8 +248,8 @@ const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
 const CG_TARGET: &str = "crates/hale-codegen/src/target.rs";
 const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
-const FRONTEND: &str = "crates/hale-cli/src/shared/frontend.rs";
-const IMPORTS: &str = "crates/hale-cli/src/shared/imports.rs";
+const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
+const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const OPTIONS: &str = "crates/hale-cli/src/shared/options.rs";
 const BUILD_ENV: &str = "crates/hale-cli/src/build_env.rs";
 const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
@@ -282,13 +283,13 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Desugar,
         answers: "Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases.",
         inputs: &[".hl files", "import directives", "the workspace root (hale.toml)", "editor overlays (LSP)"],
-        producer: None,
+        producer: Some(site(FRONTEND, "parse_with_imports")),
         legacy: &[
-            legacy(FRONTEND, "parse_with_imports", "the file entry: parse, EffectTable::from_seed, resolve_imports, alias scoping, qualified-path renames", "phase 2: the shared frontend owns loading"),
             legacy(FRONTEND, "collect_checkable", "the directory entry for `hale check`; short-circuits a single file with no imports", "phase 2"),
             legacy(V_BUILD, "run_build", "a hand-copied directory body inside the build verb", "phase 2: one loader"),
             legacy(V_RUN, "run_program", "a hand-copied directory body inside the run verb", "phase 2: one loader"),
-            legacy(LSP, "analyze_seed", "the changed file's parent directory only; resolves no `import`; the same body is inlined into `check_and_publish`", "phase 2: the LSP loads through the shared frontend with an overlay source provider"),
+            legacy(FRONTEND, "SeedDirectoryOnly", "the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request", "the LSP loads the whole seed with imports (2.3, step 5)"),
+            legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the one in `check_and_publish`; neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("bench"), consumer("lsp"), consumer("dna (via the CLI)")],
         invariants: &[
@@ -311,52 +312,58 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(IMPORTS, "resolve_imports")),
         legacy: &[
             legacy(IMPORTS, "lib_canonical_id", "library identity by path, falling back to the file name outside a workspace (can collide)", "the snapshot's seed names the library (phase 2, when the frontend owns loading)"),
-            legacy(CHECK, "construction_target", "one alias hop in the top scope", "one alias resolution shared by checker and lowering"),
-            legacy(TY_MANGLE, "resolve_construction_aliases", "rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`", "one alias resolution shared by checker and lowering"),
+            legacy(CHECK, "construction_target", "one alias hop in the top scope; a no-op for every program an entry point checks, whose construction sites the desugar sequence already resolved, and the answer for a caller that checks a fragment without the sequence (`check_bundle`)", "every checker entry runs the desugar sequence"),
             legacy(TY_RESOLVED, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in the resolved-program step's clone", "one resolution, shared"),
             legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
             legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("lsp (hover, definition, references)")],
-        invariants: &["a name resolves once per snapshot; the checker and lowering see the same target"],
+        invariants: &[
+            "a name resolves once per snapshot; the checker and lowering see the same target",
+            "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name",
+        ],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md § Cross-seed namespace resolution", "spec/projects.md"],
-        owned: &[],
-        seams: &[],
+        owned: &[site(TY_MANGLE, "resolve_construction_aliases")],
+        seams: &[Seam { symbol: "resolve_construction_aliases(", allowed: &[(TY_MANGLE, 1), (DESUGAR_SEQ, 1)] }],
     },
     Family {
         name: "desugar_sequence",
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Desugar,
-        answers: "Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns.",
-        inputs: &["the merged program", "--api / --env (roles)"],
-        producer: None,
+        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
+        inputs: &["the merged program", "--api / --env (roles)", "the cross-seed rename table"],
+        producer: Some(site(DESUGAR_SEQ, "desugar_before_check")),
         legacy: &[
-            legacy(V_CHECK, "run_check_impl_labelled", "check: json_gen, sync inference, generate_api(roles = None)", "phase 2: one sequence in the shared frontend"),
-            legacy(V_BUILD, "run_build", "build: json_gen, inject_api_entry, bind_build_env (roles), then sync inference; a different order from check", "phase 2"),
-            legacy(V_RUN, "compile_and_exec", "run <file>: no json_gen, no api, no sync inference before the check", "phase 2"),
-            legacy(V_TEST, "compile_test_binary", "test: file entry only, no desugars before the check", "phase 2"),
-            legacy(V_REPLAY, "parse_file", "replay: file entry only", "phase 2"),
+            legacy(V_CHECK, "run_check_impl_labelled", "check: sync inference per file, outside the sequence, before it", "phase 2: one sequence in the shared frontend"),
+            legacy(V_BUILD, "run_build", "build: json_gen, inject_api_entry, bind_build_env (roles, constitution adoption), then sync inference, all before the sequence, whose JSON and api passes then find nothing left to do", "phase 2"),
+            legacy(V_RUN, "compile_and_exec", "run <file>: `desugar_before_check`, but no sync inference before the check; run <dir>: build's own prefix", "phase 2"),
+            legacy(V_TEST, "compile_test_binary", "test: file entry only; `desugar_before_check`, but no sync inference before the check", "phase 2"),
+            legacy(V_REPLAY, "parse_file", "replay: file entry only; `desugar_before_check`, but no sync inference before the check", "phase 2"),
             legacy(V_BENCH, "run_bench_file", "bench: a synthesized text driver and no check at all", "phase 2"),
-            legacy(LSP, "check_and_publish", "the LSP: json_gen and sync inference per file, then generate_api", "phase 2"),
-            legacy(TY_RESOLVED, "resolve_program", "the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`)", "one sequence, before the check (phase 2)"),
-            legacy(TY_RESOLVED, "normalize_unit_return_annotations", "unit-return normalization in the resolved-program step", "phase 2"),
-            legacy(DESUGAR, "desugar_omitted_run", "the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it", "the sequence runs once, before the check"),
-            legacy(CG, "build_executable_with_options", "codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard)", "the frontend is the only producer (phase 2)"),
+            legacy(LSP, "check_and_publish", "the LSP: sync inference per file, outside the sequence, before it", "phase 2"),
+            legacy(CG, "build_executable_with_options", "codegen's adapter for a bare program (the test harness builds this way) runs the sequence (`desugar_before_check`) and resolves (`resolve_program`) for itself, through the verbs' own fns; its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard)", "the frontend is the only producer (phase 2)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
         invariants: &[
             "one order, run once per snapshot, before the first law is judged",
+            "every entry point runs `desugar_before_check` before it mints its snapshot; the bundled stdlib goes through the same fn (`bundled_stdlib`)",
             "codegen never re-desugars",
-            "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): the file-entry verbs mint before the sequence and the resolved program mints again, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
+            "the topic-reference and intra-locus rewrites are lowering's, after the check, in `resolve_program` (with the qualified bus subjects they read), and each is recorded as a relation: `TopicRewrite` rows (`topic_rewrites`, and `written_topics` on the bus graph's subjects) and `IntraLocusRewrite` rows (`intra_locus`, and `direct_sends`); `resolve_program` otherwise appends the stdlib, mints and derives the tables",
+            "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): a verb mints after the sequence and the resolved program mints again after its rewrites, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
+            "the omitted `run` is synthesized in the sequence, before the check, and marked `LifecycleDecl::synthesized`: a rule about the run's body reads the empty body and answers both spellings alike (spec semantics.md § run()); what lists the hooks the author wrote (the application model, whose function and phase tables are the artifact's identity, the allocation summary, the effect contracts, the mint's `OmittedRun` origin) reads the marker, never the absence of author text, and a synthesized `run` moves no artifact and no diagnostic",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
+        tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs", "crates/hale-types/tests/topology_projection.rs (the_omitted_run_moves_no_artifact_and_no_diagnostic)", "crates/hale-types/tests/bus_graph.rs (a_rewritten_send_stays_on_the_resolved_graph, a_rewritten_topic_reference_stays_on_the_resolved_graph)"],
         spec: &["spec/semantics.md"],
-        owned: &[site(DESUGAR, "desugar_intra_locus_topics")],
+        owned: &[site(TY_RESOLVED, "resolve_program"), site(DESUGAR, "desugar_intra_locus_topics"), site(DESUGAR, "desugar_topics"), site(DESUGAR_SEQ, "bundled_stdlib"), site(DESUGAR, "desugar_omitted_run"), site(DESUGAR, "desugar_repr_accessors")],
         seams: &[
+            Seam { symbol: "desugar_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (CG, 1)] },
+            Seam { symbol: "desugar_omitted_run(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
+            Seam { symbol: "desugar_repr_accessors(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
             Seam { symbol: "desugar_intra_locus_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "build_executable_with_options(", allowed: &[(CG, 1)] },
@@ -390,7 +397,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index.",
         inputs: &["effect_names / defs per program"],
-        producer: Some(site(V_CHECK, "EffectTable")),
+        producer: Some(site(FRONTEND, "EffectTable")),
         legacy: &[
             legacy(FRONTEND, "merge_programs", "the merge remaps class indices by name", "the table is a declaration-layer row keyed by identity"),
             legacy(EFFECTS, "effect_names_of", "takes the first non-empty program's table; expansion of a class is copied five times across hale-types", "one expansion"),
@@ -640,21 +647,25 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["topic declarations", "send subjects", "subscribe bounds", "bindings (shm_ring)"],
         producer: Some(site(TOPIC_ID, "topic_wire_subjects")),
         legacy: &[
-            legacy(CHECK, "check_send", "subject → topic by a first match over a name-ordered map; ambiguous when two topics share a wire subject", "one join on the subject row"),
-            legacy(CHECK, "check_phase3_fallback_subscribers", "a second subject → topic table (`by_wire`, last writer wins)", "same"),
-            legacy(RESOLVE, "resolve_bus_subject", "wire-subject derivation that differs from topic_identity on a cycle or a missing parent", "one derivation"),
             legacy(CG, "collect_topic_wire_subjects", "codegen recomputes wire subjects five times per build, plus its shm-ring, routing-key and bound tables", "codegen reads the topic rows"),
             legacy(CG, "collect_shm_ring_subjects", "the shm-ring table", "same"),
             legacy(CG, "collect_routing_key_subjects", "the routing-key table", "same"),
             legacy(MODEL_BUILDER, "topic_wire_subjects", "rebuilt for the model", "phase 2"),
         ],
-        consumers: &[consumer("check"), consumer("model"), consumer("codegen (dispatch, bindings, runtime registration)"), consumer("topology (topic shapes)"), consumer_at("resolved program (the intra-locus relation's wire subjects)", TY_RESOLVED, "topic_wire_subjects")],
-        invariants: &["delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)"],
+        consumers: &[consumer_at("check (the topic rows, built once per bundle on the TopScope)", RESOLVE, "build_top_scope"), consumer("model"), consumer("codegen (dispatch, bindings, runtime registration)"), consumer("topology (topic shapes)"), consumer_at("resolved program (the intra-locus relation's wire subjects)", TY_RESOLVED, "topic_wire_subjects")],
+        invariants: &[
+            "delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)",
+            "a literal subject at a delivery site (a literal subscription, a literal send) names only the topic that OWNS that wire subject, `TopicRows::by_wire`, never one whose declared segment or name it happens to spell; a topic reference names its declaration; a wire subject two topics carry names neither and is an error",
+        ],
         missing: Missing::Hole,
-        tests: &["crates/hale-codegen/tests/topic_declarations.rs", "crates/hale-codegen/tests/replica_keys.rs", "crates/hale-codegen/tests/serializer_shape.rs"],
+        tests: &["crates/hale-codegen/tests/topic_declarations.rs", "crates/hale-codegen/tests/replica_keys.rs", "crates/hale-codegen/tests/serializer_shape.rs", "crates/hale-types/src/topic_identity.rs (a_subject_names_its_topic_by_one_rule, a_shared_subject_names_no_topic)"],
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
-        owned: &[],
-        seams: &[Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1), (CG, 2)] }],
+        owned: &[site(TOPIC_ID, "TopicRows::of"), site(TOPIC_ID, "by_wire")],
+        seams: &[
+            Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1), (CG, 2)] },
+            Seam { symbol: "TopicRows::of(", allowed: &[(TOPIC_ID, 1), (RESOLVE, 1)] },
+            Seam { symbol: "by_wire(", allowed: &[(TOPIC_ID, 6), (CHECK, 2)] },
+        ],
     },
     Family {
         name: "bindings",
@@ -1436,8 +1447,8 @@ pub const RULES: &[Rule] = &[
 
 /// Every Debug rendering with no prose around it (a `?}` placeholder in a
 /// formatting macro whose template holds no space: a value, never a
-/// message) in hale-syntax, hale-types, hale-model, hale-codegen, hale-cli
-/// and hale-lsp, frozen with a verdict and an invocation count. The
+/// message) in hale-syntax, hale-types, hale-model, hale-codegen,
+/// hale-frontend, hale-cli and hale-lsp, frozen with a verdict and an invocation count. The
 /// fragment is the invocation collapsed to one line, so a multi-line
 /// call is seen. A new one, or a changed count, fails registry_guard.rs.
 pub const DEBUG_SCANS: &[DebugScan] = &[
@@ -1467,7 +1478,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
-    DebugScan { path: TY_RESOLVED, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: DESUGAR_SEQ, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", fd)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },
@@ -1706,7 +1717,7 @@ pub fn render_markdown() -> String {
     o.push_str(
         "Every Debug rendering with no prose around it (a `?}` placeholder in a formatting \
          macro whose template holds no space) in `hale-syntax`, `hale-types`, `hale-model`, \
-         `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse \
+         `hale-codegen`, `hale-frontend`, `hale-cli` and `hale-lsp`, with the number of invocations that collapse \
          to the fragment. A message with prose around its `{:?}` is not listed: it is read by a \
          person. A site that *decides* derives a fact from a Debug string and is permitted only \
          until its family's table replaces it; a new site fails the guard.\n\n",

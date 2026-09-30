@@ -616,7 +616,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         FunctionKind::Method,
                         f.name.span,
                     ),
-                    LocusMember::Lifecycle(lc) => (
+                    // The model lists the hooks the author wrote, not
+                    // the omitted `run` (`LifecycleDecl::synthesized`).
+                    LocusMember::Lifecycle(lc) if !lc.synthesized => (
                         hook_name(&lc.kind).to_string(),
                         FunctionKind::Hook,
                         lc.span,
@@ -2015,14 +2017,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         // the engines never walk closure bodies —
                         // so a module-scoped one is vacuously
                         // analyzable, symmetric).
+                        // An omitted `run` produces no function
+                        // entity (`LifecycleDecl::synthesized`).
                         let executable =
-                            l.members.iter().any(|m| {
-                                matches!(
-                                    m,
-                                    LocusMember::Fn(_)
-                                        | LocusMember::Lifecycle(_)
-                                        | LocusMember::Mode(_)
-                                )
+                            l.members.iter().any(|m| match m {
+                                LocusMember::Fn(_) | LocusMember::Mode(_) => true,
+                                LocusMember::Lifecycle(lc) => !lc.synthesized,
+                                _ => false,
                             });
                         if executable {
                             out.insert(l.name.name.clone());

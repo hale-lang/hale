@@ -842,3 +842,84 @@ fn main() { App { }; }
         legacy
     );
 }
+
+/// F.40 phase 2.1b: the omitted `run` is synthesized in the desugar
+/// sequence before the check, so the checker and the model now see it.
+/// The spec makes the omitted and the empty spelling one program, and
+/// what an artifact's identity holds is the hooks the author wrote: a
+/// synthesized `run` (`LifecycleDecl::synthesized`) must move neither
+/// the artifact (the model half is replay admission's key) nor a
+/// diagnostic. Every corpus program is put through the sequence and
+/// compared with itself minus the hooks the sequence synthesized.
+#[test]
+fn the_omitted_run_moves_no_artifact_and_no_diagnostic() {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    fn strip(items: &mut [TopDecl]) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => l
+                    .members
+                    .retain(|m| !matches!(m, LocusMember::Lifecycle(lc) if lc.synthesized)),
+                TopDecl::Module(m) => strip(&mut m.items),
+                _ => {}
+            }
+        }
+    }
+    fn outputs(program: &hale_syntax::ast::Program) -> (String, Vec<String>) {
+        let mut programs = BTreeMap::new();
+        programs.insert("app.hl".to_string(), program);
+        let bundle = Bundle::new(programs);
+        let art = hale_types::topology::dump_topology_parts(&bundle);
+        let diags = hale_types::check_bundle_opts_whole_program(&bundle, false)
+            .into_iter()
+            .map(|d| format!("{:?} {:?} {}", d.kind, d.span, d.message))
+            .collect();
+        (art, diags)
+    }
+    let mut compared = 0usize;
+    let mut bad: Vec<String> = Vec::new();
+    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
+        let Ok(mut program) = hale_syntax::parse_source(&p.source) else {
+            continue;
+        };
+        let seq = hale_types::desugar_sequence::Sequence {
+            import_renames: &[],
+            api: None,
+            api_roles: None,
+        };
+        if hale_types::desugar_sequence::desugar_before_check(&mut [&mut program], &seq).is_err() {
+            continue;
+        }
+        let mut written = program.clone();
+        strip(&mut written.items);
+        if written == program {
+            continue;
+        }
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (outputs(&program), outputs(&written))
+        }));
+        let Ok(((art, diags), (art_w, diags_w))) = caught else {
+            bad.push(format!("{}: PANIC", p.origin));
+            continue;
+        };
+        compared += 1;
+        if art != art_w {
+            bad.push(format!("{}: artifact moved\n{}", p.origin, first_diff(&art_w, &art)));
+        }
+        // The stdlib's own seeds declare its loci under the names the
+        // bundled stdlib merges them in by, and the bundled twin carries
+        // its synthesized `run` too: stripping the seed's alone makes
+        // the two shapes differ, a program no entry point checks (the
+        // shadow over `hale check` of these files is unchanged). Their
+        // artifacts are still compared.
+        let stdlib_seed = p.origin.starts_with("crates/hale-stdlib/");
+        if diags != diags_w && !stdlib_seed {
+            bad.push(format!(
+                "{}: diagnostics moved\n  without: {:?}\n  with:    {:?}",
+                p.origin, diags_w, diags
+            ));
+        }
+    }
+    assert!(compared > 100, "the corpus must exercise omitted runs (got {compared})");
+    assert!(bad.is_empty(), "{} of {} programs moved:\n{}", bad.len(), compared, bad.join("\n\n"));
+}

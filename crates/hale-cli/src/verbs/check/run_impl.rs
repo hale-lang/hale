@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::path::Path;
 use hale_syntax::ast::Program;
 use crate::shared::frontend::collect_checkable;
+use crate::shared::source::Disk;
 use crate::verbs::model::diff_lines;
 use crate::shared::options::inject_adopt;
 use crate::shared::diag::render_diag_json;
@@ -26,92 +27,6 @@ use crate::shared::frontend::retain_owned_advisories;
 /// names, so a transitive util lib reached through two different
 /// libs lives twice in the binary — no re-export, no dedup, just
 /// per-importer scoped resolution.
-/// #345: the merged user effect-class table.
-///
-/// Carries declared-ness, not just names. A name reaches the table two
-/// ways — an `effect NAME;` DECLARATION, or a mere REFERENCE in an
-/// `@effects(...)` clause — and only the first makes the class real.
-/// Without the distinction a typo interns a fresh class that nothing
-/// carries, so `@effects(none: { monye })` is vacuously satisfied and
-/// reports success: the exact silently-false certificate this analysis
-/// exists to rule out.
-#[derive(Default)]
-pub(crate) struct EffectTable {
-    pub(crate) names: Vec<String>,
-    pub(crate) declared: std::collections::BTreeSet<String>,
-    /// #354: composed definitions, index-parallel to `names`. Members
-    /// are remapped into THIS table on absorb — a definition holds
-    /// `EffectClass::User` indices, so carrying it across a seed
-    /// boundary without remapping aliases it exactly like any other
-    /// class reference.
-    pub(crate) defs: Vec<Option<Vec<hale_syntax::ast::EffectClass>>>,
-}
-
-impl EffectTable {
-    pub(crate) fn from_seed(p: &Program) -> Self {
-        let mut t = EffectTable::default();
-        t.absorb(p);
-        t
-    }
-
-    /// Union `p`'s table into this one and return the index map that
-    /// rewrites `p`'s `User(i)` into this table.
-    pub(crate) fn absorb(&mut self, p: &Program) -> Vec<u16> {
-        for &i in &p.declared_effects {
-            if let Some(n) = p.effect_names.get(i as usize) {
-                self.declared.insert(n.clone());
-            }
-        }
-        let map: Vec<u16> = p
-            .effect_names
-            .iter()
-            .map(|n| {
-                let at = self
-                    .names
-                    .iter()
-                    .position(|e| e == n)
-                    .unwrap_or_else(|| {
-                        self.names.push(n.clone());
-                        self.defs.push(None);
-                        self.names.len() - 1
-                    });
-                at as u16
-            })
-            .collect();
-        // Carry definitions across, remapping their MEMBERS. A member
-        // is a `User(i)` in the source seed's numbering; storing it
-        // unremapped would silently point the definition at whatever
-        // class holds that index in the merged table.
-        for (i, def) in p.effect_defs.iter().enumerate() {
-            let Some(members) = def else { continue };
-            let Some(&to) = map.get(i) else { continue };
-            let remapped: Vec<hale_syntax::ast::EffectClass> = members
-                .iter()
-                .map(|m| match m {
-                    hale_syntax::ast::EffectClass::User(j) => map
-                        .get(*j as usize)
-                        .map(|&k| hale_syntax::ast::EffectClass::User(k))
-                        .unwrap_or(*m),
-                    other => *other,
-                })
-                .collect();
-            if let Some(slot) = self.defs.get_mut(to as usize) {
-                *slot = Some(remapped);
-            }
-        }
-        map
-    }
-
-    pub(crate) fn declared_indices(&self) -> Vec<u16> {
-        self.names
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| self.declared.contains(*n))
-            .map(|(i, _)| i as u16)
-            .collect()
-    }
-}
-
 pub(crate) fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     run_check_impl_env(target, gate_warnings, &[])
 }
@@ -153,7 +68,7 @@ pub(crate) fn run_check_impl_labelled(
     // these names all along; only the analysis phases could not see
     // them.
     let (mut programs, sources, file_bases, import_renames, own_files) =
-        match collect_checkable(target) {
+        match collect_checkable(target, &Disk) {
             Ok(x) => x,
             // GH #765: a failure that carries diagnostics renders them
             // here, honouring `--json` and resolving each span against
@@ -208,10 +123,6 @@ pub(crate) fn run_check_impl_labelled(
         }
     }
     for prog in programs.values_mut() {
-        // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite
-        // `T::from_json` before typecheck, so the generated parser is
-        // checked and callers must address its `fallible(JsonError)`.
-        hale_syntax::json_gen::generate_json_parsers(prog);
         // Downstream handoff (2026-08-11): the pre-pass's resolver
         // diagnostics are DISCARDED, not printed-and-bailed. They
         // are re-raised by `check_bundle` below through the normal
@@ -223,12 +134,26 @@ pub(crate) fn run_check_impl_labelled(
         // diagnostic correctly while the CLI did not.
         let _ = hale_types::apply_sync_inference(prog);
     }
-    // GH #1106: the api binding is bundle-wide (the main locus in one
-    // file, subscribers in another), so it runs over every program of
-    // the seed once the per-program passes are done.
     {
         let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-        hale_syntax::api_gen::generate_api(&mut refs, None);
+        // F.40 phase 2.1b: the desugar sequence, the one every entry
+        // point runs before its check: JSON Tier 2's parsers (so the
+        // generated parser is checked and callers must address its
+        // `fallible(JsonError)`), the api binding (GH #1106,
+        // bundle-wide: the main locus in one file, subscribers in
+        // another), then the passes that shape a declaration. `check`
+        // takes no `--api`, so there is no injection to refuse.
+        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
+            &mut refs,
+            &hale_types::desugar_sequence::Sequence {
+                import_renames: &import_renames,
+                api: None,
+                api_roles: None,
+            },
+        ) {
+            eprintln!("{}", msg);
+            return 2;
+        }
     }
 
     // GH #408 Phase 0: hand the source map to the artifact. Built

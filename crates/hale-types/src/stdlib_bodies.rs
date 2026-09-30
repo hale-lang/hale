@@ -19,13 +19,12 @@
 //! user programs alone; the stdlib only ever appears as callee
 //! bodies reached from a user root.
 
-use std::sync::OnceLock;
-
 use hale_syntax::ast::Program;
 
-static PARSED: OnceLock<Option<Program>> = OnceLock::new();
-
-/// The parsed Hale-source stdlib, or `None` if it fails to parse.
+/// The parsed Hale-source stdlib, after the desugar sequence user
+/// programs go through before their check — the same program the
+/// resolved program appends ([`crate::desugar_sequence::bundled_stdlib`])
+/// — or `None` if it fails to parse.
 ///
 /// A parse failure here is a compiler bug, but it must not take the
 /// user's build down: the analyzer degrades to the pre-existing
@@ -33,9 +32,7 @@ static PARSED: OnceLock<Option<Program>> = OnceLock::new();
 /// check the program. `stdlib_bodies_parse` in the test suite is
 /// what turns that silent degradation into a red build.
 pub fn program() -> Option<&'static Program> {
-    PARSED
-        .get_or_init(|| hale_syntax::parse_source(hale_stdlib::AP_SOURCE).ok())
-        .as_ref()
+    crate::desugar_sequence::bundled_stdlib().ok()
 }
 
 /// Summarize the user programs **plus** the Hale-source stdlib, so

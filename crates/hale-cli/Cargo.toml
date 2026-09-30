@@ -18,6 +18,7 @@ hale-graph = { path = "../hale-graph" }
 hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 hale-codegen = { path = "../hale-codegen" }
+hale-frontend = { path = "../hale-frontend" }
 hale-lsp = { path = "../hale-lsp" }
 hale-iris = { path = "../hale-iris" }
 hale-dna = { path = "../hale-dna" }

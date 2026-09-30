@@ -338,6 +338,13 @@ pub struct SubjectInfo {
     /// the rewritten program still knows every publish the rewrite
     /// removed from the program's text.
     pub direct_sends: Vec<(String, String)>,
+    /// The topic references the topic rewrite turned into this wire
+    /// subject, as (site, topic as written) pairs (F.40 phase 2.1b).
+    /// Empty from [`build_bus_graph`], as `direct_sends` is: the
+    /// resolved program fills it from the rewrite's relation, so a
+    /// graph keyed by wire subject still knows which declaration each
+    /// subscribe, publish and send named.
+    pub written_topics: Vec<(hale_syntax::ast::NodeId, String)>,
 }
 
 /// The whole-bundle bus graph, keyed by `BusSubject::canonical()`.
@@ -510,6 +517,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
                 ineligible_reason: reason,
                 direct_call_eligible,
                 direct_sends: Vec::new(),
+                written_topics: Vec::new(),
             },
         );
     }

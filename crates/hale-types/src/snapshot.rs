@@ -52,8 +52,8 @@ use crate::symbol::SourceFile;
 ///   `API_SYNTH_BASE`, so any site whose span starts there; and the api
 ///   codecs, which `json_gen` parses at 0, by their `__api_decode_` /
 ///   `__api_encode_` prefix.
-/// - `OmittedRun`: the `run` `desugar_omitted_run` adds carries its
-///   locus's own span, which no written lifecycle can.
+/// - `OmittedRun`: the `run` `desugar_omitted_run` adds, by its
+///   `LifecycleDecl::synthesized` marker.
 /// - `ChainDesugar`: the `let`s and assignments the chains rewrite
 ///   introduces bind `__hale_`-prefixed names. The calls it builds
 ///   (`.get(i)`, `.len()`) carry the chain's span and no marker, so
@@ -61,9 +61,10 @@ use crate::symbol::SourceFile;
 /// - `TopicDesugar`, `IntraLocusRewrite`, `ReprAccessors`: no row. Those
 ///   passes rewrite subjects and expressions in place and synthesize no
 ///   declaration; the calls the latter two build carry the rewritten
-///   node's span and no marker. They also run only in the resolved-
-///   program step (`crate::resolved`), after every entry point has
-///   minted.
+///   node's span and no marker. The topic and intra-locus rewrites run
+///   only in the resolved-program step (`crate::resolved`), after every
+///   entry point has minted; repr accessors run in the desugar sequence,
+///   before the entry point's mint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Origin {
     JsonParsers,
@@ -263,17 +264,32 @@ fn origins_of(p: &Program, out: &mut BTreeMap<u32, Origin>) {
     }
     items(&p.items, out);
 
-    let mut locus_span: Option<Span> = None;
-    for_each_named_site(p, &mut |kind, span, name, id| {
-        // Pre-order: a locus is visited before its members.
-        if kind == SiteKind::Locus {
-            locus_span = Some(span);
+    // The hooks `desugar_omitted_run` added, by the marker it leaves.
+    fn synthesized_hooks(decls: &[TopDecl], out: &mut std::collections::BTreeSet<u32>) {
+        for item in decls {
+            match item {
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let hale_syntax::ast::LocusMember::Lifecycle(lc) = m {
+                            if lc.synthesized {
+                                out.insert(lc.id.0);
+                            }
+                        }
+                    }
+                }
+                TopDecl::Module(md) => synthesized_hooks(&md.items, out),
+                _ => {}
+            }
         }
+    }
+    let mut synthesized = std::collections::BTreeSet::new();
+    synthesized_hooks(&p.items, &mut synthesized);
+    for_each_named_site(p, &mut |kind, span, name, id| {
         let origin = if span.start.0 >= hale_syntax::api_gen::API_SYNTH_BASE {
             Some(Origin::ApiSurface)
         } else {
             match kind {
-                SiteKind::Lifecycle if Some(span) == locus_span => Some(Origin::OmittedRun),
+                SiteKind::Lifecycle if synthesized.contains(&id.0) => Some(Origin::OmittedRun),
                 SiteKind::Let | SiteKind::Assign | SiteKind::For
                     if name.is_some_and(|n| n.starts_with("__hale_")) =>
                 {

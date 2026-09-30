@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use crate::EffectTable;
+use super::frontend::EffectTable;
 use super::diag::IoDiag;
 use std::path::Path;
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use hale_syntax::ast::Program;
 use super::frontend::collect_target_files;
 use super::diag::diag_file_name;
 use super::diag::display_relative;
-use std::fs;
+use super::source::SourceProvider;
 use super::workspace::sanitize_identifier;
 use super::workspace::seed_dir_for_entry_file;
 use super::workspace::top_decl_ident;
@@ -17,7 +17,7 @@ use super::workspace::top_decl_ident;
 /// (`__lib_foo_<stem>_Bar`). Passed to
 /// `build_executable_with_imports` so codegen can resolve
 /// `alias::Name` references in user code.
-pub(crate) type ImportRenames = Vec<(Vec<String>, String)>;
+pub type ImportRenames = Vec<(Vec<String>, String)>;
 
 /// GH #746: who declared which import alias, so an alias can be
 /// scoped to its declaring seed the way the language scopes it.
@@ -33,20 +33,20 @@ pub(crate) type ImportRenames = Vec<(Vec<String>, String)>;
 /// contested alias its own head and re-heads that seed's own
 /// references, so the one table can tell the two apart.
 #[derive(Default)]
-pub(crate) struct AliasScopes {
+pub struct AliasScopes {
     /// One row per import site: (declaring seed, alias, the lib the
     /// alias names). Seeds and libs are canonical paths — the same
     /// identity `seed_cache` and `lib_canonical_id` key off, so two
     /// aliases for the same lib agree and never look contested.
-    pub(crate) bindings: Vec<(PathBuf, String, PathBuf)>,
+    pub bindings: Vec<(PathBuf, String, PathBuf)>,
     /// Declaring seed -> its source files, canonical. A seed's files
     /// share one alias namespace (they share one decl namespace), so
     /// the rewrite applies to all of them.
-    pub(crate) files: BTreeMap<PathBuf, Vec<PathBuf>>,
+    pub files: BTreeMap<PathBuf, Vec<PathBuf>>,
 }
 
 impl AliasScopes {
-    pub(crate) fn record_binding(&mut self, seed: &Path, alias: &str, lib: &Path) {
+    pub fn record_binding(&mut self, seed: &Path, alias: &str, lib: &Path) {
         self.bindings.push((
             seed.to_path_buf(),
             alias.to_string(),
@@ -54,7 +54,7 @@ impl AliasScopes {
         ));
     }
 
-    pub(crate) fn record_files(&mut self, seed: &Path, files: Vec<PathBuf>) {
+    pub fn record_files(&mut self, seed: &Path, files: Vec<PathBuf>) {
         self.files
             .entry(seed.to_path_buf())
             .or_default()
@@ -63,7 +63,7 @@ impl AliasScopes {
 }
 
 /// What an `import "path" as alias;` resolved to on disk.
-pub(crate) enum ImportTarget {
+pub enum ImportTarget {
     /// `<importer_dir>/<path>.hl` (single-file lib).
     SingleFile(PathBuf),
     /// `<importer_dir>/<path>/` or `<workspace_root>/<path>/`
@@ -90,7 +90,7 @@ pub(crate) enum ImportTarget {
 ///
 /// All non-identifier characters in the path collapse to `_` so
 /// the result is a valid C / LLVM symbol component.
-pub(crate) fn lib_canonical_id(target: &ImportTarget, workspace_root: Option<&Path>) -> String {
+pub fn lib_canonical_id(target: &ImportTarget, workspace_root: Option<&Path>) -> String {
     let path = match target {
         ImportTarget::SingleFile(p) => p.clone(),
         ImportTarget::Directory(d) => d.clone(),
@@ -126,26 +126,27 @@ pub(crate) fn lib_canonical_id(target: &ImportTarget, workspace_root: Option<&Pa
     sanitize_identifier(basis_str)
 }
 
-pub(crate) fn resolve_import(
+pub fn resolve_import(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
     import_path: &str,
+    src: &dyn SourceProvider,
 ) -> Option<ImportTarget> {
     let single = importer_dir.join(format!("{}.hl", import_path));
-    if single.is_file() {
+    if src.exists(&single) {
         // GH #763: the entry file of a seed is the seed.
-        if let Some(dir) = seed_dir_for_entry_file(&single, importer_dir) {
+        if let Some(dir) = seed_dir_for_entry_file(&single, importer_dir, src) {
             return Some(ImportTarget::Directory(dir));
         }
         return Some(ImportTarget::SingleFile(single));
     }
     let dir_local = importer_dir.join(import_path);
-    if dir_local.is_dir() {
+    if src.is_dir(&dir_local) {
         return Some(ImportTarget::Directory(dir_local));
     }
     if let Some(root) = workspace_root {
         let dir_root = root.join(import_path);
-        if dir_root.is_dir() {
+        if src.is_dir(&dir_root) {
             return Some(ImportTarget::Directory(dir_root));
         }
     }
@@ -176,7 +177,7 @@ pub(crate) fn resolve_import(
 /// to print it and return a bare `Err(())`, which left `--json`
 /// empty. Every consumer of this vector already reports what is in
 /// it.
-pub(crate) enum ImportDiag {
+pub enum ImportDiag {
     /// A diagnostic raised in a file the resolver PARSED.
     Located {
         /// The file the diagnostic was raised in, as the resolver
@@ -218,7 +219,7 @@ impl ImportDiag {
     /// sentence its failing site composed, so it is printed as it
     /// stands; the path in its RECORD goes through the same rule
     /// ([`IoDiag::record`]).
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         match self {
             ImportDiag::Located {
                 file,
@@ -264,12 +265,13 @@ impl ImportDiag {
 /// otherwise reach `check` with a file window and no text to resolve
 /// a position against — and `render_located` would fall back to
 /// rendering it against whatever source came first.
-pub(crate) fn unresolved_import_diag(
+pub fn unresolved_import_diag(
     path_span: hale_syntax::Span,
     message: String,
     fallback: IoDiag,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &mut BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> ImportDiag {
     let off = path_span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
@@ -278,7 +280,7 @@ pub(crate) fn unresolved_import_diag(
         }
         let source = match sources.get(path) {
             Some(s) => s.clone(),
-            None => match fs::read_to_string(path) {
+            None => match src.read(path) {
                 Ok(s) => {
                     sources.insert(path.clone(), s.clone());
                     s
@@ -302,25 +304,25 @@ pub(crate) fn unresolved_import_diag(
 /// GH #820: which library a file of the build belongs to, and the
 /// `import` that put it there.
 #[derive(Clone)]
-pub(crate) struct FileClaim {
+pub struct FileClaim {
     /// The library's identity, as `seed_cache` keys it: the
     /// canonical directory for a directory import, the canonical
     /// file for a single-file one.
-    pub(crate) lib_key: PathBuf,
+    pub lib_key: PathBuf,
     /// The alias the claiming import bound.
-    pub(crate) alias: String,
+    pub alias: String,
     /// The path as WRITTEN in the claiming import, which is what the
     /// author has to change.
-    pub(crate) import_path: String,
+    pub import_path: String,
     /// The claiming import's path literal, for a located message.
-    pub(crate) path_span: hale_syntax::Span,
+    pub path_span: hale_syntax::Span,
     /// Did the claim come from the single-FILE spelling (resolution
     /// rule 1) rather than from a directory?
-    pub(crate) single_file: bool,
+    pub single_file: bool,
 }
 
 /// Canonical file path -> the library that claimed it.
-pub(crate) type FileClaims = BTreeMap<PathBuf, FileClaim>;
+pub type FileClaims = BTreeMap<PathBuf, FileClaim>;
 
 /// GH #820: `<file>:<line>` for an import's path literal.
 ///
@@ -334,10 +336,11 @@ pub(crate) type FileClaims = BTreeMap<PathBuf, FileClaim>;
 /// inside a library is not in it yet when a conflict is found. The
 /// file is then read from disk, for the same reason
 /// [`unresolved_import_diag`] reads it.
-pub(crate) fn import_site(
+pub fn import_site(
     path_span: hale_syntax::Span,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> Option<String> {
     let off = path_span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
@@ -346,7 +349,7 @@ pub(crate) fn import_site(
         }
         let text = match sources.get(path) {
             Some(s) => s.clone(),
-            None => fs::read_to_string(path).ok()?,
+            None => src.read(path).ok()?,
         };
         let (line, _) =
             path_span.shifted(base.wrapping_neg()).line_col(&text);
@@ -382,7 +385,7 @@ pub(crate) fn import_site(
 /// symlink (a file's parent directory is otherwise unique). There is
 /// no file spelling to refuse there, so the second import is refused
 /// and the message says which file is claimed twice.
-pub(crate) fn claim_library_files(
+pub fn claim_library_files(
     files: &[PathBuf],
     lib_key: &Path,
     alias: &str,
@@ -391,6 +394,7 @@ pub(crate) fn claim_library_files(
     claims: &mut FileClaims,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &mut BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> Option<ImportDiag> {
     for file in files {
         let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
@@ -413,7 +417,7 @@ pub(crate) fn claim_library_files(
         } else {
             (&fresh, &prev)
         };
-        let at = match import_site(other.path_span, file_bases, sources) {
+        let at = match import_site(other.path_span, file_bases, sources, src) {
             Some(s) => format!(" at {}", s),
             None => String::new(),
         };
@@ -441,12 +445,13 @@ pub(crate) fn claim_library_files(
             IoDiag::target(&canon, message),
             file_bases,
             sources,
+            src,
         ));
     }
     None
 }
 
-pub(crate) fn resolve_imports(
+pub fn resolve_imports(
     imports: &[hale_syntax::ast::Import],
     importer_dir: &Path,
     workspace_root: Option<&Path>,
@@ -484,6 +489,8 @@ pub(crate) fn resolve_imports(
     // followed. Every alias in `imports` is recorded against it.
     scope_key: &Path,
     alias_scopes: &mut AliasScopes,
+    // Where every file of the graph is read from (F.40 phase 2.1a).
+    src: &dyn SourceProvider,
 ) -> Result<(), ()> {
     // Defensive guards + env-gated tracing. The guards bound the
     // resolver's accumulators so a future bug (or pathological
@@ -539,7 +546,7 @@ pub(crate) fn resolve_imports(
             Some(a) => a.clone(),
             None => continue, // v1.x-IMPORT PR1 enforces; defensive.
         };
-        let target = match resolve_import(importer_dir, workspace_root, &imp.path) {
+        let target = match resolve_import(importer_dir, workspace_root, &imp.path, src) {
             Some(t) => t,
             None => {
                 // GH #860: the three places the resolver looked,
@@ -572,11 +579,12 @@ pub(crate) fn resolve_imports(
                     ),
                     file_bases,
                     sources,
+                    src,
                 ));
                 return Err(());
             }
         };
-        let files = match collect_target_files(&target) {
+        let files = match collect_target_files(&target, src) {
             Ok(f) => f,
             Err(e) => {
                 // GH #806: the sentence goes to the caller in the
@@ -618,6 +626,7 @@ pub(crate) fn resolve_imports(
             claims,
             file_bases,
             sources,
+            src,
         ) {
             errors.push(conflict);
             return Err(());
@@ -638,7 +647,7 @@ pub(crate) fn resolve_imports(
             if !visited.insert(canon.clone()) {
                 continue;
             }
-            let source = match fs::read_to_string(&file) {
+            let source = match src.read(&file) {
                 Ok(s) => s,
                 Err(e) => {
                     // GH #806: an imported file that will not open is
@@ -747,7 +756,7 @@ pub(crate) fn resolve_imports(
         // come from the path identity.
         let lib_id = lib_canonical_id(&target, workspace_root);
         let seed_renames =
-            hale_codegen::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
+            hale_types::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
         // GH #714: the names that may head a qualified path in this
         // seed (its type decls). Everything else a path head can be
         // is a module alias of the seed's own imports, which the
@@ -755,12 +764,12 @@ pub(crate) fn resolve_imports(
         // through the rename table — even when the seed also
         // declares a free fn of the alias's name.
         let seed_heads =
-            hale_codegen::mangle::seed_path_heads(&stem_prog_refs);
+            hale_types::mangle::seed_path_heads(&stem_prog_refs);
         // GH #774: the seed as a whole, for binding a claim group
         // reference no declaration in it answers.
-        let seed_binding = hale_codegen::mangle::SeedBinding {
+        let seed_binding = hale_types::mangle::SeedBinding {
             seed_id: &lib_id,
-            declares_main: hale_codegen::mangle::seed_declares_main(
+            declares_main: hale_types::mangle::seed_declares_main(
                 &stem_prog_refs,
             ),
         };
@@ -778,7 +787,7 @@ pub(crate) fn resolve_imports(
             if trace {
                 eprintln!("[import]     mangle start: {}", pf.path.display());
             }
-            hale_codegen::mangle::mangle_with_renames_in_seed(
+            hale_types::mangle::mangle_with_renames_in_seed(
                 &mut pf.program,
                 &seed_renames,
                 &seed_heads,
@@ -846,6 +855,7 @@ pub(crate) fn resolve_imports(
                 // against whoever imported it.
                 &lib_key,
                 alias_scopes,
+                src,
             )?;
         }
         // Move mangled items into the merged program; stash sources.
@@ -899,7 +909,7 @@ pub(crate) fn resolve_imports(
 /// libs. That is a single namespace disagreeing with itself, not a
 /// build-global leak; it keeps the historical last-writer-wins
 /// reading (deterministic here, by canonical-path order).
-pub(crate) fn scope_import_aliases(
+pub fn scope_import_aliases(
     program: &mut Program,
     renames: &mut ImportRenames,
     file_bases: &[(u32, PathBuf, u32)],
@@ -981,7 +991,7 @@ pub(crate) fn scope_import_aliases(
         for item in &mut program.items {
             let off = item.span().start.as_usize() as u32;
             if ranges.iter().any(|(lo, hi)| off >= *lo && off < *hi) {
-                hale_codegen::mangle::rewrite_import_alias_heads(item, map);
+                hale_types::mangle::rewrite_import_alias_heads(item, map);
             }
         }
     }
@@ -1002,18 +1012,18 @@ pub(crate) fn scope_import_aliases(
 /// `base` is the virtual base the file was parsed at, so a caller
 /// that renders against the file's own source (rather than through
 /// `render_located`) can shift the span back into it.
-pub(crate) struct UnscopedAliasUse {
-    pub(crate) file: PathBuf,
-    pub(crate) base: u32,
-    pub(crate) diag: hale_syntax::Diag,
+pub struct UnscopedAliasUse {
+    pub file: PathBuf,
+    pub base: u32,
+    pub diag: hale_syntax::Diag,
 }
 
 /// One qualified path as the lexer sees it: `head::next`, and the
 /// span covering both segments.
-pub(crate) struct QualifiedUse {
-    pub(crate) head: String,
-    pub(crate) text: String,
-    pub(crate) span: hale_syntax::Span,
+pub struct QualifiedUse {
+    pub head: String,
+    pub text: String,
+    pub span: hale_syntax::Span,
 }
 
 /// GH #762: every qualified path in `src`.
@@ -1023,7 +1033,7 @@ pub(crate) struct QualifiedUse {
 /// own text, whose byte offsets only approximate the file's when the
 /// body carries escapes — the same clamp `FStringPart::Interp`
 /// documents.
-pub(crate) fn collect_qualified_uses(
+pub fn collect_qualified_uses(
     src: &str,
     offset: u32,
     limit: u32,
@@ -1119,7 +1129,7 @@ pub(crate) fn collect_qualified_uses(
 /// build declares is left alone: nothing resolves through it, so it
 /// is already refused downstream, and this rule is about the
 /// reference that silently borrows another seed's import.
-pub(crate) fn unscoped_alias_uses(
+pub fn unscoped_alias_uses(
     program: &Program,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
