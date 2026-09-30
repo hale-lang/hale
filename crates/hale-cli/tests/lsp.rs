@@ -27,9 +27,20 @@ impl Lsp {
     }
 
     fn send(&mut self, v: serde_json::Value) {
-        let body = v.to_string();
-        write!(self.stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body)
-            .expect("write");
+        self.send_all(vec![v]);
+    }
+
+    /// Several messages in ONE write, so the server finds them queued
+    /// together. Only for small messages: this harness reads nothing
+    /// while it writes, so a burst past the pipe's buffer could block
+    /// on a server blocked on its own publishes.
+    fn send_all(&mut self, msgs: Vec<serde_json::Value>) {
+        let mut bytes = Vec::new();
+        for v in msgs {
+            let body = v.to_string();
+            write!(bytes, "Content-Length: {}\r\n\r\n{}", body.len(), body).expect("frame");
+        }
+        self.stdin.write_all(&bytes).expect("write");
         self.stdin.flush().expect("flush");
     }
 
@@ -1460,6 +1471,50 @@ fn lsp_rechecks_an_open_dependent_when_a_library_buffer_closes() {
         vec![(uri(&lib), vec![]), (uri(&main), vec![])],
         "the library's seed from disk, then the app against the disk copy"
     );
+}
+
+/// A burst of document events costs one check, not one per event
+/// (F.40 phase 2.4): five changes in one write are published by at most
+/// two passes — the first change may already be in its check when the
+/// rest arrive — and the last publish describes the LAST text. The
+/// fence behind the burst is answered after that publish.
+#[test]
+fn lsp_a_burst_of_changes_is_checked_once() {
+    let root = scratch_root("burst");
+    let main = root.canonicalize().expect("canonical dir").join("main.hl");
+    // Text `v` declares `v` lets; the fifth is a type error, so only
+    // the last text of the burst can raise it.
+    let text = |v: usize| {
+        let mut t = String::from("fn main() {\n");
+        for i in 1..=v {
+            let value = if i == 5 { "\"five\"".to_string() } else { i.to_string() };
+            t.push_str(&format!("    let x{i}: Int = {value};\n"));
+        }
+        t.push_str("}\n");
+        t
+    };
+
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, &text(0)));
+    assert_eq!(lsp.publications(), vec![(uri(&main), vec![])], "the clean open");
+    lsp.lsp.send_all((1..=5).map(|v| change(&main, 1 + v as u64, &text(v))).collect());
+    let burst = lsp.publications();
+    lsp.lsp.send(change(&main, 7, &text(4)));
+    let fixed = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(burst.iter().all(|(u, _)| *u == uri(&main)), "only the seed's file is published: {burst:?}");
+    assert!(
+        (1..=2).contains(&burst.len()),
+        "five changes cost at most two passes, not five: {burst:?}"
+    );
+    let (_, last) = burst.last().expect("a publish");
+    assert!(
+        last.len() == 1 && last[0].contains("expected `Int`"),
+        "the last publish carries the last text's error: {burst:?}"
+    );
+    assert_eq!(fixed, vec![(uri(&main), vec![])], "the change that fixes it clears it");
 }
 
 /// A scratch root of this test's own, empty.
