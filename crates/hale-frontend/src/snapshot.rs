@@ -240,9 +240,11 @@ pub struct SnapshotKey {
     /// is [`SourceProvider::overlay_digest`]'s zero.
     pub overlay_digest: u64,
     /// What the load actually read: every source unit's path and text
-    /// (imports included), or a bare program's rendering and its rename
-    /// table. Two loads that read different programs never share a key
-    /// (outside review of #1283, finding 2).
+    /// (imports included). A bare program has no source, so its key
+    /// carries the ordinal of its handoff instead: every
+    /// [`Snapshot::from_program`] is its own load. Two loads that read
+    /// different programs never share a key (outside review of #1283,
+    /// finding 2).
     pub sources_digest: u64,
 }
 
@@ -320,6 +322,10 @@ pub struct Snapshot {
 /// it names no file.
 const BARE_PROGRAM: &str = "program";
 
+/// How many bare programs this process has been handed: a bare
+/// snapshot's [`SnapshotKey::sources_digest`] is its handoff's ordinal.
+static BARE_HANDOFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// What a load mode read, before the sequence.
 struct Loaded {
     files: Vec<PathBuf>,
@@ -384,21 +390,17 @@ impl Snapshot {
         config: Config,
     ) -> Result<Snapshot, LoadError> {
         let entry = PathBuf::from(BARE_PROGRAM);
-        let mut h = Fnv::new();
-        h.write(format!("{:?}", program).as_bytes());
-        for (path, mangled) in &import_renames {
-            h.write(path.join("::").as_bytes());
-            h.write(b"=");
-            h.write(mangled.as_bytes());
-            h.write(b"\0");
-        }
+        // A bare program has no source to digest, and its in-memory
+        // shape is not a fact the key decides: every handoff is its own
+        // load, so the key carries the handoff's ordinal and two bare
+        // snapshots never share a key.
         let key = SnapshotKey {
             entry: entry.clone(),
             mode: None,
             target: config.target.name.clone(),
             config_digest: config.digest(),
             overlay_digest: 0,
-            sources_digest: h.finish(),
+            sources_digest: BARE_HANDOFFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         };
         let loaded = Loaded {
             files: Vec::new(),

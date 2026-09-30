@@ -271,7 +271,7 @@ fn a_snapshot_key_tells_different_loads_apart() {
     };
     let ka = bare(a);
     let kb = bare(b);
-    assert_ne!(ka.key(), kb.key(), "two bare programs, two keys");
+    assert_ne!(ka.key(), kb.key(), "two bare programs, two keys: each handoff is its own load");
 }
 
 /// The environment a snapshot's claims are checked for is the
