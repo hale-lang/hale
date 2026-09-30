@@ -586,17 +586,16 @@ pub fn class_mask_with(
 /// children, transitively) must have a declared failure policy —
 /// an `on_failure` handler somewhere up the tree. Supervision
 /// coverage, checked. Whether a locus has a handler is the handler
-/// rows' answer (F.40 phase 1.4).
+/// rows' answer (F.40 phase 1.4): the rows the checker reads, handed
+/// in (phase 2.3).
 pub fn supervised_diags(
     programs: &[&Program],
-    import_renames: &[(Vec<String>, String)],
-    snapshot: &crate::snapshot::Snapshot,
+    handlers: &crate::handler_routing::HandlerRouting,
 ) -> Vec<Diag> {
     // locus name -> (has on_failure, child locus type names, span)
     let mut info: BTreeMap<String, (bool, Vec<String>, Span)> =
         BTreeMap::new();
     let mut supervised_roots: Vec<(String, Span)> = Vec::new();
-    let handlers = crate::handler_routing::handler_rows(programs, import_renames, snapshot);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
