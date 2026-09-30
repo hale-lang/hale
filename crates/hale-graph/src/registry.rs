@@ -250,6 +250,7 @@ const CG_TARGET: &str = "crates/hale-codegen/src/target.rs";
 const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
+const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
 const OPTIONS: &str = "crates/hale-cli/src/shared/options.rs";
 const BUILD_ENV: &str = "crates/hale-cli/src/build_env.rs";
 const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
@@ -361,7 +362,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(TY_RESOLVED, "resolve_program"), site(DESUGAR, "desugar_intra_locus_topics"), site(DESUGAR, "desugar_topics"), site(DESUGAR_SEQ, "bundled_stdlib"), site(DESUGAR, "desugar_omitted_run"), site(DESUGAR, "desugar_repr_accessors")],
         seams: &[
             Seam { symbol: "desugar_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (CG, 1)] },
+            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (CG, 1), (SNAPSHOT, 1)] },
             Seam { symbol: "desugar_omitted_run(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "desugar_repr_accessors(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
@@ -388,7 +389,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/tests/placement.rs"],
         spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
         owned: &[],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1)] }],
+        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "effect_class_table",
@@ -429,7 +430,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (MODEL_BUILDER, 1), (SYNC, 1), (TY_RESOLVED, 1), (LSP, 7)] }],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (MODEL_BUILDER, 1), (SYNC, 1), (TY_RESOLVED, 1), (LSP, 7), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "expression_typing",
@@ -1198,8 +1199,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/demand_gate.rs", "crates/hale-model/tests/architecture.rs", "crates/hale-types/tests/topology_projection.rs"],
         spec: &["spec/model.md"],
-        owned: &[],
-        seams: &[Seam { symbol: "derive_application_model(", allowed: &[(MODEL_BUILDER, 1), (JUDGMENT, 1), (TOPOLOGY, 1), (V_CHECK, 1), (OPTIONS, 1)] }],
+        owned: &[site(MODEL_BUILDER, "derive_application_model_in")],
+        seams: &[
+            Seam { symbol: "derive_application_model(", allowed: &[(MODEL_BUILDER, 1), (JUDGMENT, 1), (TOPOLOGY, 1), (V_CHECK, 1), (OPTIONS, 1)] },
+            Seam { symbol: "derive_application_model_in(", allowed: &[(MODEL_BUILDER, 2), (SNAPSHOT, 1)] },
+        ],
     },
     Family {
         name: "claims",
@@ -1269,7 +1273,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 2), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1)] }],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 2), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "digests",
@@ -1290,7 +1294,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(DNA_DIGEST, "EMBEDDED_DIRS", "DNA's embedded-source identity, its own directory list", "one inventory of what each identity covers"),
             legacy(EVIDENCE, "analysis_inputs_digest", "the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry)", "same"),
             legacy(V_CHECK, "bundle.sources", "per-file FNV digests, rooted at hale.toml, set by check only; the LSP uses absolute paths; build leaves it empty", "one source map per snapshot"),
-            legacy(LSP, "source_files", "the LSP's own source map", "same"),
+            legacy(FRONTEND, "source_map_as_spelled", "the LSP's own source map (paths as the load spelled them, beside `source_map`'s workspace-relative ones): the snapshot builds the editor's with it, and the LSP's request handlers theirs", "the LSP loads the whole seed (2.3, step 5), and one source map serves every entry point"),
             legacy(M_OBS, "fn digest", "the observed entity-id digest, keyed by (kind, name)", "keyed by snapshot identity"),
         ],
         consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],

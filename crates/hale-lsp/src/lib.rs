@@ -39,7 +39,7 @@ use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
-use hale_frontend::frontend::{collect_ap_files, LoadMode};
+use hale_frontend::frontend::{collect_ap_files, source_map_as_spelled, LoadMode};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
@@ -592,7 +592,7 @@ fn check_and_publish(
         // be placed from raw bundle-global offsets alone. The editor
         // already has the bases, paths and text — there is no reason
         // to make the analyzer guess.
-        let source_map = source_files(&file_bases, &sources);
+        let source_map = source_map_as_spelled(&file_bases, &sources);
         // F.40 phase 1.1b-iii: the snapshot, after the last desugar
         // (`generate_api`), seeded from the source map.
         let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
@@ -872,41 +872,9 @@ impl SeedAnalysis {
                 .map(|(p, prog)| (p.display().to_string(), prog))
                 .collect(),
         );
-        b.sources = source_files(&self.file_bases, &self.sources);
+        b.sources = source_map_as_spelled(&self.file_bases, &self.sources);
         b
     }
-}
-
-/// The seed's source map, in the shape the analyzer's provenance
-/// resolves through. One per parsed file, in base order.
-fn source_files(
-    file_bases: &[(u32, PathBuf, u32)],
-    sources: &BTreeMap<PathBuf, String>,
-) -> Vec<hale_types::symbol::SourceFile> {
-    file_bases
-        .iter()
-        .enumerate()
-        .map(|(i, (base, path, len))| {
-            let digest = sources
-                .get(path)
-                .map(|src| {
-                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                    for b in src.as_bytes() {
-                        h ^= *b as u64;
-                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    format!("{:016x}", h)
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            hale_types::symbol::SourceFile {
-                id: i as u32,
-                path: path.display().to_string(),
-                digest,
-                base: *base,
-                len: *len,
-            }
-        })
-        .collect()
 }
 
 /// LSP (0-based line, UTF-16 col) → byte offset.

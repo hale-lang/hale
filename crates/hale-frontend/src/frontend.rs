@@ -805,6 +805,40 @@ pub fn source_map(
         .collect()
 }
 
+/// The LSP's source map: one unit per file of `file_bases`, in base
+/// order, each path as the load spelled it rather than relative to a
+/// workspace — the editor's provenance resolves within one process.
+/// (It moves to [`source_map`] when the LSP loads the whole seed, 2.3.)
+pub fn source_map_as_spelled(
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Vec<hale_types::symbol::SourceFile> {
+    file_bases
+        .iter()
+        .enumerate()
+        .map(|(i, (base, path, len))| {
+            let digest = sources
+                .get(path)
+                .map(|src| {
+                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                    for b in src.as_bytes() {
+                        h ^= *b as u64;
+                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    format!("{:016x}", h)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            hale_types::symbol::SourceFile {
+                id: i as u32,
+                path: path.display().to_string(),
+                digest,
+                base: *base,
+                len: *len,
+            }
+        })
+        .collect()
+}
+
 /// Drop WARNING-level diagnostics whose span resolves to a file the
 /// check target does not own. Errors always survive.
 pub fn retain_owned_advisories(

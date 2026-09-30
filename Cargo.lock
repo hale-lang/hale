@@ -117,6 +117,7 @@ version = "0.22.0"
 name = "hale-frontend"
 version = "0.22.0"
 dependencies = [
+ "hale-model",
  "hale-syntax",
  "hale-types",
 ]

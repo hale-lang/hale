@@ -27,6 +27,13 @@ pub trait SourceProvider {
     /// The `.hl` files directly in `dir`, sorted — the files of a seed,
     /// in merge order.
     fn hl_files(&self, dir: &Path) -> io::Result<Vec<PathBuf>>;
+    /// What this provider reads over the disk, as a digest: zero for
+    /// the disk itself. Part of a snapshot's key
+    /// ([`crate::snapshot::SnapshotKey`]), so an edited buffer is a
+    /// different snapshot.
+    fn overlay_digest(&self) -> u64 {
+        0
+    }
 }
 
 /// The file system, as it is.
@@ -135,6 +142,16 @@ impl SourceProvider for Overlay<'_> {
         }
         out.sort();
         Ok(out)
+    }
+
+    fn overlay_digest(&self) -> u64 {
+        let mut d = crate::snapshot::Digest::new();
+        d.count(self.overlays.len());
+        for (path, text) in self.overlays {
+            d.field(path.as_os_str().as_encoded_bytes());
+            d.field(text.as_bytes());
+        }
+        d.finish()
     }
 }
 

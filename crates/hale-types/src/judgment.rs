@@ -4423,7 +4423,19 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
         return Vec::new();
     }
     let model = crate::model_builder::derive_application_model(bundle);
-    let table = crate::claim_lowering::lower_claims(bundle, &model);
+    claim_law_diags_over(bundle, &model)
+}
+
+/// [`claim_law_diags`] over a model the caller already holds: the
+/// frontend's snapshot derives the model once, as a family of its own,
+/// and judges the laws over it. The caller has already asked
+/// [`has_claim_surface`]; a bundle with no surface judges nothing here
+/// either, but its model was paid for.
+pub fn claim_law_diags_over(
+    bundle: &crate::symbol::Bundle<'_>,
+    model: &hale_model::ApplicationModel,
+) -> Vec<Diag> {
+    let table = crate::claim_lowering::lower_claims(bundle, model);
     // Law-SELECTION invalidity (unknown/cyclic constitution, illegal
     // adoption, collisions) produced no row to judge, so it must be
     // reported from the table itself or it disappears between
@@ -4438,11 +4450,11 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
     // them for the artifact, whose law account must show every
     // issue in one document.
     let evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &table, &model,
+        bundle, &table, model,
     );
     let (pre, judged) = crate::topology_projection::judge_all(
         &table,
-        &model,
+        model,
         &evidence,
         &source_bases,
     );
@@ -4502,7 +4514,10 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// annotation-carried but judged here since Changes 5f–5h. Other annotations are
 /// deliberately NOT a claim surface: their rows are the certificate
 /// family, whose diagnostics belong to the effects engine.
-fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
+///
+/// The demand rule's question: a check demands the model only when
+/// this answers yes.
+pub fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
     fn judged_annotation(fd: &FnDecl) -> bool {
         fd.effects

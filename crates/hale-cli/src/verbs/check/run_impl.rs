@@ -6,7 +6,7 @@ use hale_syntax::ast::Program;
 use crate::shared::frontend::collect_checkable;
 use crate::shared::source::Disk;
 use crate::verbs::model::diff_lines;
-use crate::shared::options::inject_adopt;
+use hale_frontend::snapshot::inject_adopt;
 use crate::shared::diag::render_diag_json;
 use crate::shared::diag::render_flows;
 use crate::shared::diag::render_located;

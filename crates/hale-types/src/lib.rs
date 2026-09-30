@@ -270,17 +270,26 @@ pub fn check_bundle_opts_scoped(
     // whose indexing assumes lawfulness.
     //
     // So the model half runs only once the resolver and the checker
-    // agree the program denotes something. Claim errors do not gate
-    // it: a program whose only errors are broken LAWS still has a
-    // valid model, and refusing to judge the rest of its claims
-    // because one of them failed would hide law violations behind
-    // each other.
-    let denotes_a_model = !diags.iter().any(|d| {
-        d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim
-    });
-    if denotes_a_model {
+    // agree the program denotes something ([`denotes_a_model`]).
+    if denotes_a_model(&diags) {
         diags.extend(judgment::claim_law_diags(bundle));
     }
+    finish_check_diags(&mut diags);
+    diags
+}
+
+/// Whether a program the resolver and the checker reported `diags`
+/// for denotes a model: no error but a claim's. Claim errors do not
+/// gate it: a program whose only errors are broken LAWS still has a
+/// valid model, and refusing to judge the rest of its claims because
+/// one of them failed would hide law violations behind each other.
+pub fn denotes_a_model(diags: &[Diag]) -> bool {
+    !diags.iter().any(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
+}
+
+/// The check's last step, over everything it reported: the user's
+/// spelling, and no repeated diagnostic.
+pub fn finish_check_diags(diags: &mut Vec<Diag>) {
     // GH #470: diagnostics speak the user's spelling at EVERY
     // consumer — CLI, LSP, library callers, tests — not just the
     // CLI, which used to be the only layer applying the stdlib
@@ -289,7 +298,7 @@ pub fn check_bundle_opts_scoped(
     // CLI's own demangle pass additionally rewrites cross-seed
     // import renames, which only it knows; re-rewriting an
     // already-public stdlib name there is a no-op.)
-    stdlib_bodies::demangle_imports(&mut diags, &[]);
+    stdlib_bodies::demangle_imports(diags, &[]);
     // GH #469 A4: drop exact duplicates — same kind, same span,
     // same message.
     //
@@ -313,7 +322,6 @@ pub fn check_bundle_opts_scoped(
             d.message.clone(),
         ))
     });
-    diags
 }
 
 /// FUv0.8.2 #4 (2026-05-25): auto-apply sync inference.

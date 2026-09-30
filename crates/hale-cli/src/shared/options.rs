@@ -502,7 +502,7 @@ pub(crate) fn bind_build_env(
             ));
         }
         for c in env_adopts(spec, base) {
-            inject_adopt(program, &c);
+            hale_frontend::snapshot::inject_adopt(program, &c);
         }
     }
     let surface = hale_syntax::api_gen::generate_api(&mut [program], options.api_roles.as_deref());
@@ -593,50 +593,6 @@ pub(crate) fn resolve_env_spec(
             }
         }
     }
-}
-
-/// Shared core of `hale check` (advisories print, only errors
-/// fail) and `hale verify` (every finding fails — the CI
-/// discipline gate; same ~10 ms analysis, no execution).
-/// Returns the process exit CODE rather than an `ExitCode`, because
-/// `--workspace` runs this once per seed and has to aggregate the
-/// results — and `ExitCode` is opaque, so a caller cannot ask whether
-/// one succeeded.
-/// Add `adopt <name>;` to a program's main-locus `claims` block,
-/// creating the block if the main has none. Returns whether a main
-/// was found.
-///
-/// A duplicate is not added: an entrypoint that already writes
-/// `adopt Dev;` and is also deployed to an environment requiring
-/// `Dev` adopts it once, not twice.
-pub(crate) fn inject_adopt(prog: &mut hale_syntax::ast::Program, name: &str) -> bool {
-    use hale_syntax::ast::{ClaimsBlock, Ident, LocusMember, TopDecl};
-    let mut found = false;
-    for item in &mut prog.items {
-        let TopDecl::Locus(l) = item else { continue };
-        if !l.is_main {
-            continue;
-        }
-        found = true;
-        let id = Ident { name: name.to_string(), span: l.name.span };
-        if let Some(LocusMember::Claims(cb)) = l
-            .members
-            .iter_mut()
-            .find(|m| matches!(m, LocusMember::Claims(_)))
-        {
-            if !cb.adopts.iter().any(|a| a.name == name) {
-                cb.adopts.push(id);
-            }
-        } else {
-            l.members.push(LocusMember::Claims(ClaimsBlock {
-                entries: Vec::new(),
-                adopts: vec![id],
-                lib_tier: false,
-                span: l.name.span,
-            }));
-        }
-    }
-    found
 }
 
 /// GH #296: build-manifest identity — a FRAMED SHA-256 over the

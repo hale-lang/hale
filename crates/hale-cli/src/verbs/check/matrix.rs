@@ -7,7 +7,7 @@ use crate::shared::frontend::collect_checkable;
 use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
-use crate::shared::options::inject_adopt;
+use hale_frontend::snapshot::inject_adopt;
 use super::run_impl::run_check_impl;
 use super::run_impl::run_check_impl_labelled;
 /// GH #409: check every (entrypoint, environment) pair declared in

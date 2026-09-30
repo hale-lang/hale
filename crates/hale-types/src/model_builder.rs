@@ -187,6 +187,17 @@ fn type_descriptor(ty: &TypeExpr) -> String {
 }
 
 pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
+    let (top, _diags) = crate::resolve::build_top_scope(bundle);
+    derive_application_model_in(bundle, &top)
+}
+
+/// [`derive_application_model`] over the bundle's top scope, built by
+/// the caller: the frontend's snapshot builds one scope and passes it
+/// to every family that reads it.
+pub fn derive_application_model_in(
+    bundle: &Bundle<'_>,
+    top: &crate::resolve::TopScope,
+) -> ApplicationModel {
     BUILDS.fetch_add(1, Ordering::Relaxed);
     if std::env::var("HALE_MODEL_TRACE").as_deref() == Ok("1") {
         eprintln!("[hale-model] deriving ApplicationModel");
@@ -196,8 +207,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         bundle.programs.values().copied().collect();
     // GH #1159: the rename table once per derivation, not per string.
     let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
-    let (top, _diags) = crate::resolve::build_top_scope(bundle);
-    let graph = crate::bus_graph::build_bus_graph(bundle, &top);
+    let graph = crate::bus_graph::build_bus_graph(bundle, top);
     let summary = alloc_summary::summarize_programs_with_renames(
         &programs,
         &bundle.import_renames,
@@ -3430,7 +3440,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // capability account honest (RuntimeInheritedPlacement is
         // exactly this shape).
         let og = crate::ownership_graph::build_ownership_graph(
-            bundle, &top,
+            bundle, top,
         );
         let free_fn_births =
             crate::ownership_graph::free_fn_birth_sites(bundle);

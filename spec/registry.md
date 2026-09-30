@@ -159,7 +159,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `desugar_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
@@ -194,7 +194,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
+- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `effect_class_table` — Migrating · derivation
 
@@ -250,7 +250,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `expression_typing` — Migrating · derivation
 
@@ -1210,6 +1210,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Producer.** `crates/hale-types/src/model_builder.rs` · `derive_application_model`
 
+**Also owned.** `crates/hale-types/src/model_builder.rs` · `derive_application_model_in`
+
 **Consumers.** claims (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (`crates/hale-cli/src/verbs/check/run_impl.rs` · `derive_application_model`); dispatch, obs ids (`crates/hale-cli/src/shared/options.rs` · `derive_application_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
@@ -1228,6 +1230,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `derive_application_model(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
+- `derive_application_model_in(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×2, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `claims` — Migrating · law
 
@@ -1310,7 +1313,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
+- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `digests` — Migrating · digest
 
@@ -1332,7 +1335,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-dna/src/digest.rs` · `EMBEDDED_DIRS` — DNA's embedded-source identity, its own directory list. *Removed when:* one inventory of what each identity covers.
 - `crates/hale-types/src/evidence.rs` · `analysis_inputs_digest` — the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry). *Removed when:* same.
 - `crates/hale-cli/src/verbs/check/run_impl.rs` · `bundle.sources` — per-file FNV digests, rooted at hale.toml, set by check only; the LSP uses absolute paths; build leaves it empty. *Removed when:* one source map per snapshot.
-- `crates/hale-lsp/src/lib.rs` · `source_files` — the LSP's own source map. *Removed when:* same.
+- `crates/hale-frontend/src/frontend.rs` · `source_map_as_spelled` — the LSP's own source map (paths as the load spelled them, beside `source_map`'s workspace-relative ones): the snapshot builds the editor's with it, and the LSP's request handlers theirs. *Removed when:* the LSP loads the whole seed (2.3, step 5), and one source map serves every entry point.
 - `crates/hale-model/src/obs_ids.rs` · `fn digest` — the observed entity-id digest, keyed by (kind, name). *Removed when:* keyed by snapshot identity.
 
 **Consumers.** replay (admission); topology / fleet (admission); dna (schema 1.19, semantics 2, shape_hash, artifact_digest); the runtime obs header; the DNA host cache
