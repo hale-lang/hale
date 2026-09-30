@@ -341,7 +341,8 @@ pub struct BindingFacts {
 impl OwnerTable {
     /// The facts for the `let` whose snapshot identity is `id`. `None`
     /// for a `NONE` id and for a site the resolved program did not
-    /// contain; a consumer reads that as three `false`s.
+    /// contain. Lowering refuses a `let` with no row: its defaults are
+    /// the answers that dissolve the value.
     pub fn binding_facts(&self, id: NodeId) -> Option<&BindingFacts> {
         if id.is_none() {
             return None;

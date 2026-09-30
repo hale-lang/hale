@@ -17686,7 +17686,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Let { name, ty: ascribed, value, id, .. } => {
+            Stmt::Let { name, ty: ascribed, value, id, span, .. } => {
                 // m61b: when a let has both a generic-typed
                 // ascription and a bare-name struct literal as
                 // its value, rewrite the literal's path to the
@@ -17757,13 +17757,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // using scratch.
                 //
                 // F.40 1.2b: what the `let` knows about its own binding
-                // is the owner table's row for this site; a `let` with
-                // no row answers `false` three times.
-                let facts = self
-                    .owner_table
-                    .binding_facts(*id)
-                    .copied()
-                    .unwrap_or_default();
+                // is the owner table's row for this site. A `let` with
+                // no row (a `NONE` id, or a site the resolved program
+                // never saw) is a compiler bug, refused here: read as
+                // defaults, it would answer "not returned, not moved",
+                // the answers that dissolve the value.
+                let facts = *self.owner_table.binding_facts(*id).ok_or_else(|| {
+                    CodegenError::UnsupportedAt(
+                        format!(
+                            "no binding-facts row for `{}`: the resolved program did not mint this site",
+                            name.name
+                        ),
+                        *span,
+                    )
+                })?;
                 let saved_override_for_returned = self.current_arena_override;
                 let binding_is_returned =
                     self.current_method_scratch.is_some() && facts.returned;
