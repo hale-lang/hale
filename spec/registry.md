@@ -132,7 +132,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
 - `crates/hale-types/src/resolved.rs` · `normalize_unit_return_annotations` — unit-return normalization in the resolved-program step. *Removed when:* phase 2.
 - `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run` — the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it. *Removed when:* the sequence runs once, before the check.
-- `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way). *Removed when:* the frontend is the only producer (phase 2).
+- `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard). *Removed when:* the frontend is the only producer (phase 2).
+
+**Also owned.** `crates/hale-syntax/src/desugar.rs` · `desugar_intra_locus_topics`
 
 **Consumers.** check; build; run; test; replay; lsp; codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`)
 
@@ -150,6 +152,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
+- `desugar_intra_locus_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `build_executable_with_options(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1
 
 ### `sync_inference` — Migrating · derivation
 
@@ -442,7 +446,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 - `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
-- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-types/src/ownership.rs` ×4, `crates/hale-types/src/check.rs` ×1
+- `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/check.rs` ×1
+- `resolve_binding_facts(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 
@@ -461,6 +467,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-lsp/src/lib.rs` · `build_bus_graph` — rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass. *Removed when:* phase 2.
 - `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the model and the LSP still build their own over the un-desugared bundle, and the checker's rule 9 walks the bus itself. *Removed when:* one graph per snapshot (phase 2: the check over the resolved program).
 
+**Also owned.** `crates/hale-types/src/bus_graph.rs` · `dispatch_gates`
+
 **Consumers.** check (rules 9-12, 19); model; topology; dispatch; lsp (hale/busGraph); bus_inert
 
 **Invariants.**
@@ -478,6 +486,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
+- `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 
 ### `topics` — Migrating · derivation
 
@@ -511,7 +520,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×8
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×2
 
 ### `bindings` — Migrating · derivation
 
@@ -608,6 +617,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/frontier.rs` ×1
+- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
 
 ### `flows` — Migrating · derivation
 
@@ -647,6 +658,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/locus/restart.rs` · `locus_declares_failures` — which loci a failure can come from (and so get restart points) is a walk over closure and birth-check members in codegen. *Removed when:* a column of the restart rows.
 - `crates/hale-codegen/src/codegen.rs` · `RecoveryModifier::For` — the `for N` bound is lowered from the statement's own expression: lowering reads the bound from the statement; the row's `retry_bound` is the model's. *Removed when:* lowering reads the row.
 
+**Also owned.** `crates/hale-types/src/handler_routing.rs` · `recovery_ops`
+
 **Consumers.** codegen (__restart_<L>, __resume_<L>); model
 
 **Invariants.**
@@ -658,6 +671,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Focused tests.** crates/hale-codegen/tests/restart_in_place_params.rs; crates/hale-codegen/tests/restart_bound.rs
 
 **Spec.** spec/semantics.md § supervision
+
+**Guarded seams.**
+
+- `recovery_ops(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2
 
 ### `closures` — Migrating · law
 
@@ -1258,6 +1275,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Focused tests.** crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding); crates/hale-codegen/tests/owner_table.rs
 
 **Spec.** spec/decisions.md F.39, F.40
+
+**Guarded seams.**
+
+- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `digests` — Migrating · digest
 

@@ -344,7 +344,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(TY_RESOLVED, "resolve_program", "the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`)", "one sequence, before the check (phase 2)"),
             legacy(TY_RESOLVED, "normalize_unit_return_annotations", "unit-return normalization in the resolved-program step", "phase 2"),
             legacy(DESUGAR, "desugar_omitted_run", "the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it", "the sequence runs once, before the check"),
-            legacy(CG, "build_executable_with_options", "codegen resolves the program for itself when handed a bare one (the test harness builds this way)", "the frontend is the only producer (phase 2)"),
+            legacy(CG, "build_executable_with_options", "codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard)", "the frontend is the only producer (phase 2)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
         invariants: &[
@@ -354,9 +354,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
         spec: &["spec/semantics.md"],
-        owned: &[],
+        owned: &[site(DESUGAR, "desugar_intra_locus_topics")],
         seams: &[
             Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
+            Seam { symbol: "desugar_intra_locus_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "build_executable_with_options(", allowed: &[(CG, 1)] },
         ],
     },
     Family {
@@ -587,7 +589,9 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "resolve_owners(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1)] },
             Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "fresh_factories(", allowed: &[(TY_RESOLVED, 2), (TY_OWN, 4), (CHECK, 1)] },
+            Seam { symbol: "fresh_factories(", allowed: &[(TY_RESOLVED, 1), (TY_OWN, 1), (CHECK, 1)] },
+            Seam { symbol: "resolve_binding_facts(", allowed: &[(TY_OWN, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "bubble_plans(", allowed: &[(OWNERSHIP_GRAPH, 1), (TY_RESOLVED, 1)] },
         ],
     },
     Family {
@@ -611,10 +615,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/bus_graph.rs", "crates/hale-types/tests/bus_payload_handler.rs", "crates/hale-codegen/tests/bus_devirt_differential.rs"],
         spec: &["spec/semantics.md rules 9-12, 19", "spec/verification.md § Bus-graph property checks"],
-        owned: &[],
+        owned: &[site(BUS_GRAPH, "dispatch_gates")],
         seams: &[
             Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (MODEL_BUILDER, 1), (LSP, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2), (CHECK, 1)] },
+            Seam { symbol: "dispatch_gates(", allowed: &[(BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
         ],
     },
     Family {
@@ -640,7 +645,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/topic_declarations.rs", "crates/hale-codegen/tests/replica_keys.rs", "crates/hale-codegen/tests/serializer_shape.rs"],
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
         owned: &[],
-        seams: &[Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1), (CG, 8)] }],
+        seams: &[Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1), (CG, 2)] }],
     },
     Family {
         name: "bindings",
@@ -707,7 +712,11 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type)", "tests/hale/on_failure_per_child_type_test.hl", "crates/hale-types/tests/violate.rs"],
         spec: &["spec/semantics.md § failure", "spec/runtime.md (failure delivery)"],
         owned: &[site(HANDLER_ROUTING, "child_locus_name")],
-        seams: &[Seam { symbol: "handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1), (CHECK, 1), (MODEL_BUILDER, 1), (FRONTIER, 1)] }],
+        seams: &[
+            Seam { symbol: "handler_rows(", allowed: &[(HANDLER_ROUTING, 1), (TY_RESOLVED, 1), (CHECK, 1), (MODEL_BUILDER, 1), (FRONTIER, 1)] },
+            Seam { symbol: "child_locus_name(", allowed: &[(HANDLER_ROUTING, 2), (OWNERSHIP_GRAPH, 1), (TY_OWN, 1)] },
+            Seam { symbol: "DeclaredNames::of(", allowed: &[(HANDLER_ROUTING, 1), (OWNERSHIP_GRAPH, 1), (TY_OWN, 1)] },
+        ],
     },
     Family {
         name: "flows",
@@ -746,8 +755,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/restart_in_place_params.rs", "crates/hale-codegen/tests/restart_bound.rs"],
         spec: &["spec/semantics.md § supervision"],
-        owned: &[],
-        seams: &[],
+        owned: &[site(HANDLER_ROUTING, "recovery_ops")],
+        seams: &[Seam { symbol: "recovery_ops(", allowed: &[(HANDLER_ROUTING, 2)] }],
     },
     Family {
         name: "closures",
@@ -1229,7 +1238,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[],
-        seams: &[],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1)] }],
     },
     Family {
         name: "digests",

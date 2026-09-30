@@ -3483,10 +3483,13 @@ the reservations are `runs_under(locus, principal)`, `transitions`,
 
 **The guard** (`crates/hale-graph/tests/registry_guard.rs`). Three
 scans fail the build: a derivation-shaped function (`compute_`,
-`derive_`, `infer_`, `summarize_`, `classify_`) in a semantic crate
-that the registry does not name; a reference to a family's guarded
-seam (`build_bus_graph(`, `resolve_owners(`, ...) from a file the
-registry does not list; a Debug rendering with no prose around it (a
+`derive_`, `infer_`, `summarize_`, `classify_`, or named exactly like
+one of the producers the guard lists, phase 1's `mint`,
+`handler_rows`, `child_locus_name` and the rest) in a semantic crate
+that the registry does not name in that file; a reference to a
+family's guarded seam (`build_bus_graph(`, `resolve_owners(`, ...),
+counted as a whole name, from a file the registry does not list or
+more times than it lists; a Debug rendering with no prose around it (a
 `?}` placeholder in a formatting macro whose template holds no space)
 in any of six crates that is not in the frozen list. A registered rule
 without an evaluator fails the build. Every site the registry names

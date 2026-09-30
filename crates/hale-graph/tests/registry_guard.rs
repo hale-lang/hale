@@ -18,13 +18,17 @@
 //!    `derive_`, `infer_`, `summarize_` or `classify_` is a
 //!    derivation until proven otherwise, and must be the producer, a
 //!    legacy producer or an owned helper of some family **in that
-//!    file**. A consumer entry registers nothing: a mirror is born by
+//!    file**. So is a function named exactly like one of the producers
+//!    `REGISTERED_PRODUCER_NAMES` lists (the ones whose names carry no
+//!    such prefix). A consumer entry registers nothing: a mirror is born by
 //!    reusing a producer's name in another crate, and a name alone
 //!    would let it through.
 //! 2. **Seams carry per-file reference counts.** A family's guarded
 //!    entry symbols (`build_bus_graph(`, `resolve_owners(`, ...) may
 //!    be referenced only from the files the registry lists, and only
-//!    as many times as it lists. A new reference in an allowlisted
+//!    as many times as it lists. A reference is the symbol as a whole
+//!    name (the character before it is not an identifier character),
+//!    so `fresh_factories(` does not count `extend_fresh_factories(`. A new reference in an allowlisted
 //!    file is a new consumer or a new re-derivation, and either way
 //!    the registry entry changes first; a cutover shows up as a
 //!    decrement.
@@ -135,6 +139,31 @@ fn registered_definitions() -> BTreeSet<(String, String)> {
 
 const DERIVATION_PREFIXES: &[&str] = &["compute_", "derive_", "infer_", "summarize_", "classify_"];
 
+/// Producers whose names carry none of the prefixes, listed exactly
+/// (F.40 phase 1's: widening the prefixes to `resolve_` would take in
+/// half the tree). A definition with one of these names is checked like
+/// a prefixed one: it is registered in its file, or it is a second
+/// producer. `DeclaredNames::of` is a method named `of`, which no name
+/// scan can single out; its seam counts its callers instead.
+const REGISTERED_PRODUCER_NAMES: &[&str] = &[
+    "resolve_binding_facts",
+    "child_locus_name",
+    "bubble_plans",
+    "dispatch_gates",
+    "recovery_ops",
+    "mint",
+    "desugar_intra_locus_topics",
+    "handler_rows",
+    "build_executable_with_options",
+];
+
+/// A name the definition scan checks: a derivation prefix, or one of
+/// the producers listed by name.
+fn derivation_shaped(name: &str) -> bool {
+    DERIVATION_PREFIXES.iter().any(|p| name.starts_with(p))
+        || REGISTERED_PRODUCER_NAMES.contains(&name)
+}
+
 /// Derivation-shaped names that derive nothing about the program,
 /// each with the reason. Populated only with a stated reason; the
 /// goal state is empty.
@@ -166,7 +195,7 @@ fn derivation_shaped_definitions_are_registered_in_their_file() {
                     .chars()
                     .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
                     .collect();
-                if !DERIVATION_PREFIXES.iter().any(|p| name.starts_with(p)) {
+                if !derivation_shaped(&name) {
                     continue;
                 }
                 seen += 1;
@@ -184,7 +213,7 @@ fn derivation_shaped_definitions_are_registered_in_their_file() {
     let expected = registered
         .iter()
         .filter(|(path, name)| {
-            DERIVATION_PREFIXES.iter().any(|p| name.starts_with(p))
+            derivation_shaped(name)
                 && SEMANTIC_CRATES
                     .iter()
                     .any(|c| path.starts_with(&format!("crates/{c}/src/")))
@@ -209,6 +238,31 @@ fn derivation_shaped_definitions_are_registered_in_their_file() {
     );
 }
 
+/// How many times `symbol` occurs in `line` as a whole name: the
+/// character before it is not an identifier character, so
+/// `fresh_factories(` does not also count `extend_fresh_factories(`.
+/// A qualified reference (`snapshot::mint(`, `self.bubble_plans(`)
+/// still counts.
+fn word_bounded_count(line: &str, symbol: &str) -> usize {
+    line.match_indices(symbol)
+        .filter(|(i, _)| {
+            line[..*i]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+        })
+        .count()
+}
+
+#[test]
+fn seam_matching_is_word_bounded() {
+    assert_eq!(word_bounded_count("fresh_factories(&p)", "fresh_factories("), 1);
+    assert_eq!(word_bounded_count("extend_fresh_factories(&p)", "fresh_factories("), 0);
+    assert_eq!(word_bounded_count("t.extended_fresh_factories()", "fresh_factories("), 0);
+    assert_eq!(word_bounded_count("crate::snapshot::mint(x)", "mint("), 1);
+    assert_eq!(word_bounded_count("g.bubble_plans(); g.bubble_plans()", "bubble_plans("), 2);
+}
+
 #[test]
 fn seam_symbols_are_referenced_only_as_the_registry_counts() {
     let root = workspace_root();
@@ -229,13 +283,7 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
                 let n: usize = text
                     .lines()
                     .filter(|l| !l.trim_start().starts_with("//"))
-                    .map(|l| {
-                        l.split("//")
-                            .next()
-                            .unwrap_or(l)
-                            .matches(seam.symbol)
-                            .count()
-                    })
+                    .map(|l| word_bounded_count(l.split("//").next().unwrap_or(l), seam.symbol))
                     .sum();
                 if n == 0 {
                     continue;
@@ -248,7 +296,7 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
                         f.name, seam.symbol
                     )),
                     None => violations.push(format!(
-                        "family `{}`: `{}` is referenced from {rel}, which the registry does not list",
+                        "family `{}`: `{}` is referenced {n} time(s) from {rel}, which the registry does not list",
                         f.name, seam.symbol
                     )),
                 }
