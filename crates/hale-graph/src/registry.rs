@@ -568,7 +568,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(OWNERSHIP_GRAPH, "build_ownership_graph", "which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans", "one ownership table with both relations (phase 1.3)"),
             legacy(MODEL_BUILDER, "Owns", "the model's params-field tree from main, a third ownership account", "projected from the one table"),
-            legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it", "one factory row"),
+            legacy(TY_OWN, "compute_fresh_locus_factories", "which free fns return a fresh locus, keyed by name; the checker mirrors it", "one factory row"),
             legacy(CHECK, "fresh_locus_factory_products", "the checker's mirror of the factory set", "one factory row"),
             legacy(TY_OWN, "extend_fresh_factories", "the carrier-arm fixpoint that widens the factory set", "phase 1.2"),
             legacy(OWNERSHIP_GRAPH, "compute_forwarding_sets", "the interests a locus forwards for bubbling", "phase 1.3"),
@@ -1452,7 +1452,6 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
-    DebugScan { path: TY_OWN, fragment: "format!(\"{:?}\", other)", count: 1, verdict: ScanVerdict::Decides { family: "ownership" } },
     DebugScan { path: TY_RESOLVED, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },

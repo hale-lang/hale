@@ -2091,7 +2091,13 @@ fn block_arms<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) {
 ///   - that binding never escapes into argument position, another
 ///     literal, or a reassignment (receiver-position use such as
 ///     `m.set(i, v)` is fine — using a locus is not transferring it);
-///   - no syntax this walk does not explicitly recognize appears.
+///   - no statement form this walk does not explicitly recognize
+///     appears.
+///
+/// The escape walk matches every expression form and answers by
+/// identifier: a field, method or struct-init name that happens to
+/// spell the binding is not a use of it (F.40 phase 1.2c; it used to
+/// search the node's Debug rendering for the name).
 ///
 /// Every "don't know" answers NOT fresh, preserving the old
 /// program-lifetime behavior rather than risking a double dissolve.
@@ -2218,10 +2224,43 @@ pub fn compute_fresh_locus_factories(
             Expr::Struct { inits, .. } => {
                 inits.iter().all(|i| expr_ok(&i.value, x))
             }
-            Expr::Array(parts, _) => parts.iter().all(|p| expr_ok(p, x)),
+            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+                parts.iter().all(|p| expr_ok(p, x))
+            }
             Expr::Block(b) => block_ok(b, x),
-            other => !format!("{:?}", other)
-                .contains(&format!("name: \"{}\"", x)),
+            Expr::If(i) => if_ok(i, x),
+            Expr::Match(m) => {
+                expr_ok(&m.scrutinee, x)
+                    && m.arms.iter().all(|a| {
+                        pattern_ok(&a.pattern, x)
+                            && a.guard.as_ref().map_or(true, |g| expr_ok(g, x))
+                            && match &a.body {
+                                MatchArmBody::Expr(e) => expr_ok(e, x),
+                                MatchArmBody::Block(b) => block_ok(b, x),
+                            }
+                    })
+            }
+            Expr::Sum(inner, _) | Expr::Prod(inner, _) => expr_ok(inner, x),
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr_ok(left, x) && expr_ok(right, x) && expr_ok(tolerance, x)
+            }
+            Expr::Range { lo, hi, .. } => expr_ok(lo, x) && expr_ok(hi, x),
+            Expr::ArrayRepeat { val, .. } => expr_ok(val, x),
+            // A qualified path names a declaration, never a local
+            // binding, and `self` is not one either.
+            Expr::Path(_) | Expr::KwSelf(_) => true,
+        }
+    }
+
+    /// A match arm that binds the name shadows it, which the walk
+    /// treats as it treats a second `let` of it.
+    fn pattern_ok(p: &Pattern, x: &str) -> bool {
+        match p {
+            Pattern::Binding(i) => i.name != x,
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                args.iter().all(|a| pattern_ok(a, x))
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => true,
         }
     }
 

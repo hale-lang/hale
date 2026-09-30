@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 172 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 36 frozen Debug-string sites, of which 16 decide a fact.
+43 families: 3 canonical, 36 migrating (with 172 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 15 decide a fact.
 
 ## Families
 
@@ -416,7 +416,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/ownership_graph.rs` · `build_ownership_graph` — which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name; also run in codegen for the bubble plans. *Removed when:* one ownership table with both relations (phase 1.3).
 - `crates/hale-types/src/model_builder.rs` · `Owns` — the model's params-field tree from main, a third ownership account. *Removed when:* projected from the one table.
-- `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; its escape walk's catch-all reads the Debug string; the checker mirrors it. *Removed when:* one factory row.
+- `crates/hale-types/src/ownership.rs` · `compute_fresh_locus_factories` — which free fns return a fresh locus, keyed by name; the checker mirrors it. *Removed when:* one factory row.
 - `crates/hale-types/src/check.rs` · `fresh_locus_factory_products` — the checker's mirror of the factory set. *Removed when:* one factory row.
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 1.2.
 - `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets` — the interests a locus forwards for bubbling. *Removed when:* phase 1.3.
@@ -1359,7 +1359,6 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | decides (`snapshot_identity`) |
-| `crates/hale-types/src/ownership.rs` | `format!("{:?}", other)` | decides (`ownership`) |
 | `crates/hale-types/src/resolved.rs` | `format!("{:?}", d)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", op)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", subject)` | renders |

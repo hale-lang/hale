@@ -26,3 +26,9 @@ hale-graph = { path = "../hale-graph" }
 # asserting on substrings — the only shape of test that catches a
 # structural error, which is how an unclosed array once shipped.
 serde_json = "1"
+
+# F.40 phase 1.2c: the fresh-factory shadow, the record of the
+# correction; deleted with its fixture once the PR is reviewed.
+[[test]]
+name = "shadow_fresh_factories"
+path = "tests/shadow_fresh_factories.rs"
