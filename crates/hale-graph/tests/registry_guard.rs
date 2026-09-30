@@ -155,6 +155,7 @@ const REGISTERED_PRODUCER_NAMES: &[&str] = &[
     "recovery_ops",
     "mint",
     "desugar_intra_locus_topics",
+    "desugar_before_check",
     "handler_rows",
     "build_executable_with_options",
 ];

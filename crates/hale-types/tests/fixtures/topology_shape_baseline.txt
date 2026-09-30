@@ -502,6 +502,7 @@ crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 10f9617e7cef3887
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 04bacc10168e5f20
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 53f6481685bfc133
 crates/hale-codegen/tests/ffi_basic.rs#0 2e3bcfa59e8ffdd9
+crates/hale-codegen/tests/ffi_basic.rs#2 c3aa871c1af05509
 crates/hale-codegen/tests/ffi_basic.rs#4 fa5dd7e75807abda
 crates/hale-codegen/tests/ffi_basic.rs#6 837f9cf1510bee27
 crates/hale-codegen/tests/ffi_string_return.rs#0 dbae5e75cb0893de
@@ -1015,6 +1016,7 @@ crates/hale-codegen/tests/ownership_bubble_crosspool.rs#1 3b6eccc3bbab13c5
 crates/hale-codegen/tests/ownership_bubble_multi.rs#0 c965b87b96836c0f
 crates/hale-codegen/tests/ownership_bubble_multi.rs#1 c4b57be34d8f6c5e
 crates/hale-codegen/tests/ownership_bubble_multi.rs#2 bd0dcdbe8679fccf
+crates/hale-codegen/tests/panic_atexit.rs#1 4ed134a8ff8a34e8
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#0 76d6766b46cb1899
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#5 a6c953c024f38795
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#6 b6f5c37a20862edb
@@ -1342,6 +1344,7 @@ crates/hale-codegen/tests/wasm_target.rs#17 865d341109268295
 crates/hale-codegen/tests/wasm_target.rs#18 d3700f11332caa2b
 crates/hale-codegen/tests/wasm_target.rs#19 cee899a36c15eda8
 crates/hale-codegen/tests/wasm_target.rs#4 3218fa9dbdc01510
+crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#1 ec84d76cf468d9b4
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#0 865d341109268295
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#1 865d341109268295
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#2 865d341109268295

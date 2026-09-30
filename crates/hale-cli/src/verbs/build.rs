@@ -291,6 +291,12 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check.
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &renames },
+    );
     // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
     // by the same source map `check` mints with; the resolved program
     // below mints its merged program with it too.

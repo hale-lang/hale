@@ -176,9 +176,14 @@ pub(crate) fn run_program(
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
-        // F.40 phase 1.1b-iii: the snapshot. The file entry runs no
-        // desugar before the check, so it mints straight after the
-        // load, seeded by the source map `check` mints with.
+        // F.40 phase 2.1b: the declaration-shaping sequence, the one
+        // every entry point runs before its check.
+        hale_types::desugar_sequence::desugar_before_check(
+            &mut [&mut program],
+            &hale_types::desugar_sequence::Sequence { import_renames: &renames },
+        );
+        // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
+        // by the source map `check` mints with.
         let target_name = target.display().to_string();
         let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
         let snapshot =
@@ -382,6 +387,12 @@ pub(crate) fn run_program(
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
+    // entry point runs before its check.
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &renames },
+    );
     // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
     // by the source map `check` mints with.
     let target_name = target.display().to_string();

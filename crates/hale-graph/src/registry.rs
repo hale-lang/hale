@@ -221,6 +221,7 @@ const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
 const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
+const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
@@ -330,33 +331,34 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Desugar,
-        answers: "Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns.",
-        inputs: &["the merged program", "--api / --env (roles)"],
-        producer: None,
+        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
+        inputs: &["the merged program", "--api / --env (roles)", "the cross-seed rename table"],
+        producer: Some(site(DESUGAR_SEQ, "desugar_before_check")),
         legacy: &[
             legacy(V_CHECK, "run_check_impl_labelled", "check: json_gen, sync inference, generate_api(roles = None)", "phase 2: one sequence in the shared frontend"),
             legacy(V_BUILD, "run_build", "build: json_gen, inject_api_entry, bind_build_env (roles), then sync inference; a different order from check", "phase 2"),
-            legacy(V_RUN, "compile_and_exec", "run <file>: no json_gen, no api, no sync inference before the check", "phase 2"),
-            legacy(V_TEST, "compile_test_binary", "test: file entry only, no desugars before the check", "phase 2"),
-            legacy(V_REPLAY, "parse_file", "replay: file entry only", "phase 2"),
+            legacy(V_RUN, "compile_and_exec", "run <file>: `desugar_before_check`, but no json_gen, no api, no sync inference before the check", "phase 2"),
+            legacy(V_TEST, "compile_test_binary", "test: file entry only; `desugar_before_check`, but no json_gen, api or sync inference before the check", "phase 2"),
+            legacy(V_REPLAY, "parse_file", "replay: file entry only; `desugar_before_check`, but no json_gen, api or sync inference before the check", "phase 2"),
             legacy(V_BENCH, "run_bench_file", "bench: a synthesized text driver and no check at all", "phase 2"),
             legacy(LSP, "check_and_publish", "the LSP: json_gen and sync inference per file, then generate_api", "phase 2"),
             legacy(TY_RESOLVED, "resolve_program", "the frontend's resolved-program step re-runs json_gen, api injection, generate_api, the topic and intra-locus desugars and repr accessors on its own clone, after the check ran over the un-desugared program; the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`)", "one sequence, before the check (phase 2)"),
-            legacy(TY_RESOLVED, "normalize_unit_return_annotations", "unit-return normalization in the resolved-program step", "phase 2"),
             legacy(DESUGAR, "desugar_omitted_run", "the omitted `run` is synthesized in the resolved-program step, after the stdlib merge; the checker never sees it", "the sequence runs once, before the check"),
             legacy(CG, "build_executable_with_options", "codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard)", "the frontend is the only producer (phase 2)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
         invariants: &[
             "one order, run once per snapshot, before the first law is judged",
+            "every entry point runs `desugar_before_check` before it mints its snapshot; the bundled stdlib goes through the same fn (`bundled_stdlib`)",
             "codegen never re-desugars",
-            "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): the file-entry verbs mint before the sequence and the resolved program mints again, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
+            "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): a verb mints after the sequence and the resolved program mints again after its rewrites, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
         ],
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
         spec: &["spec/semantics.md"],
-        owned: &[site(DESUGAR, "desugar_intra_locus_topics")],
+        owned: &[site(DESUGAR, "desugar_intra_locus_topics"), site(DESUGAR_SEQ, "bundled_stdlib")],
         seams: &[
+            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 2), (TLIB, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (CG, 1)] },
             Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
             Seam { symbol: "desugar_intra_locus_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "build_executable_with_options(", allowed: &[(CG, 1)] },
@@ -1471,7 +1473,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
-    DebugScan { path: TY_RESOLVED, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: DESUGAR_SEQ, fragment: "format!(\"{:?}\", d)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: "crates/hale-types/src/secret_reveal.rs", fragment: "format!(\"{:?}\", fd)", count: 1, verdict: ScanVerdict::Decides { family: "effects" } },

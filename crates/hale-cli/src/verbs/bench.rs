@@ -280,13 +280,20 @@ pub(crate) fn run_bench_file(
             .into_iter()
             .map(|(base, p, len)| (base, relabel(p), len))
             .collect();
-        // F.40 phase 1.1b-iii: the snapshot, straight after the load
-        // (bench runs no desugar of its own), seeded by the source map
-        // `check` mints with — over the re-labelled files, so a seed
-        // names the bench file and not its temp copy. Bench runs no
-        // check, but it holds its snapshot on the same minimal bundle
-        // the other verbs build (the program, the rename table, the
-        // source map), and the resolve below reads its inputs from it.
+        // F.40 phase 2.1b: the declaration-shaping sequence, the one
+        // every entry point runs before its check. Bench runs no check,
+        // but it lowers the same program shape.
+        hale_types::desugar_sequence::desugar_before_check(
+            &mut [&mut prog],
+            &hale_types::desugar_sequence::Sequence { import_renames: &renames },
+        );
+        // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
+        // by the source map `check` mints with — over the re-labelled
+        // files, so a seed names the bench file and not its temp copy.
+        // Bench runs no check, but it holds its snapshot on the same
+        // minimal bundle the other verbs build (the program, the rename
+        // table, the source map), and the resolve below reads its
+        // inputs from it.
         let entry_name = entry.display().to_string();
         let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
         let snapshot =

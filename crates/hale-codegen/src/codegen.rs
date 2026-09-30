@@ -1046,8 +1046,10 @@ fn compile_cached_runtime_object_with(
 /// qualified-name paths. A caller with no imports passes `&[]`.
 ///
 /// This is the adapter for callers that hold a bare program (the test
-/// harness): it resolves the program through
-/// `hale_types::resolved::resolve_program` and lowers the envelope with
+/// harness): it runs the desugar sequence the verbs run before their
+/// check (`hale_types::desugar_sequence::desugar_before_check`), resolves
+/// the program through `hale_types::resolved::resolve_program` and
+/// lowers the envelope with
 /// [`build_resolved`]. The verbs resolve the program themselves and
 /// call [`build_resolved`].
 pub fn build_executable_with_options(
@@ -1056,9 +1058,17 @@ pub fn build_executable_with_options(
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
+    // A bare program has not been through the sequence every entry
+    // point runs before its check; run it here, through the same fn,
+    // so the resolved program never runs any of it again.
+    let mut program = program.clone();
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames },
+    );
     // A bare program has no source map: its sites seed by ordinal.
     let resolved = hale_types::resolved::resolve_program(
-        program,
+        &program,
         &[],
         import_renames,
         options.api.as_deref(),

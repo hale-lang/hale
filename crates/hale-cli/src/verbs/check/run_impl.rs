@@ -144,6 +144,12 @@ pub(crate) fn run_check_impl_labelled(
     {
         let mut refs: Vec<&mut Program> = programs.values_mut().collect();
         hale_syntax::api_gen::generate_api(&mut refs, None);
+        // F.40 phase 2.1b: the declaration-shaping sequence, the one
+        // every entry point runs before its check.
+        hale_types::desugar_sequence::desugar_before_check(
+            &mut refs,
+            &hale_types::desugar_sequence::Sequence { import_renames: &import_renames },
+        );
     }
 
     // GH #408 Phase 0: hand the source map to the artifact. Built

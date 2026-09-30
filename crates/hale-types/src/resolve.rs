@@ -1627,13 +1627,13 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
             Ty::Array(Box::new(resolve_type_expr(elem, known)), n)
         }
         TypeExpr::Tuple(parts, _) => {
-            // G2 follow-up: `()` parses as TypeExpr::Tuple([], _).
-            // Normalize the empty case to Ty::Unit so downstream
-            // checks (e.g. `or discard` requires success type to
-            // be Unit) treat `-> () fallible(E)` and bare
-            // `fallible(E)` interchangeably, matching the codegen
-            // ABI which already does this normalization at
-            // signature-lowering time (codegen.rs ~9948).
+            // `()` parses as TypeExpr::Tuple([], _), and is Unit. A
+            // declaration's `-> ()` never reaches here: the desugar
+            // sequence rewrote it to "no return type" before the
+            // check (F.40 phase 2.1b). What still spells it is a type
+            // position that is not a declaration's return — a fn
+            // type's return (`fn(i64) -> ()`), a type argument, a
+            // `let` annotation — and those resolve to Unit here.
             if parts.is_empty() {
                 Ty::Unit
             } else {

@@ -573,6 +573,13 @@ fn check_and_publish(
         {
             let mut refs: Vec<&mut Program> = programs.values_mut().collect();
             hale_syntax::api_gen::generate_api(&mut refs, None);
+            // F.40 phase 2.1b: the declaration-shaping sequence, the
+            // one every entry point runs before its check. The editor
+            // loads no import, so there is no rename table.
+            hale_types::desugar_sequence::desugar_before_check(
+                &mut refs,
+                &hale_types::desugar_sequence::Sequence { import_renames: &[] },
+            );
         }
         // GH #476 Change 9 (review round 1): install the SOURCE MAP.
         // Claim rows are judged over the canonical model, whose

@@ -35,7 +35,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
+use hale_syntax::ast::{Program, TopDecl};
 
 use hale_model::dispatch_plan::DispatchPlan;
 use hale_syntax::desugar::IntraLocusRewrite;
@@ -56,9 +56,9 @@ pub struct ResolvedProgram {
     /// row of the `bus_inert` family, until the verdict is a row of the
     /// envelope).
     pub user: Program,
-    /// `user` with the bundled stdlib's declarations appended, unit
-    /// returns normalized, construction aliases resolved and the
-    /// omitted `run` synthesized: what lowering walks.
+    /// `user` with the bundled stdlib's declarations appended,
+    /// construction aliases resolved and the omitted `run`
+    /// synthesized: what lowering walks.
     pub merged: Program,
     /// Every site's identity, minted over `merged` after the desugars
     /// with the bundle's source map (ids the bundle already minted are
@@ -130,6 +130,10 @@ impl ResolvedProgram {
 }
 
 /// Resolve `program` into the envelope codegen lowers.
+///
+/// `program` is the one the verb checked: it has been through
+/// [`crate::desugar_sequence::desugar_before_check`], and nothing here
+/// runs that sequence's passes again.
 ///
 /// `sources` is the bundle's source map, the one its snapshot was
 /// minted with: the resolved snapshot seeds each user site by the file
@@ -206,28 +210,15 @@ pub fn resolve_program(
     // `user_loci` alongside user-declared loci with no special
     // casing in the lowering passes; collision with user names is
     // prevented by the `__Std*` mangled prefix on bundled decls.
-    let stdlib_program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-        .map_err(|diags| {
-            let summary = diags
-                .iter()
-                .map(|d| format!("{:?}", d))
-                .collect::<Vec<_>>()
-                .join("; ");
-            format!("stdlib parse: {}", summary)
-        })?;
+    // The stdlib has been through the same desugar sequence the
+    // user program went through before its check (unit returns).
+    let stdlib_program = crate::desugar_sequence::bundled_stdlib()?.clone();
     let mut merged = user.clone();
     let user_items = merged.items.len();
     // The stdlib's items by span, in merge order: the split below
     // checks they are still the tail.
     let stdlib_spans: Vec<_> = stdlib_program.items.iter().map(TopDecl::span).collect();
     merged.items.extend(stdlib_program.items);
-    // Downstream handoff: `-> ()` is a no-op unit annotation. The
-    // fallible decl paths already recognized the empty tuple as
-    // Unit, but non-fallible methods and every call-site MethodSig
-    // consumer hit the 0-element-tuple reject. Normalize ONCE on
-    // the merged AST so `-> ()` and "no return type" are the same
-    // program everywhere downstream.
-    normalize_unit_return_annotations(&mut merged.items);
     // GH #831: and normalize the other spelling nothing downstream
     // should have to know about. `type Row2 = Row;` makes `Row2` a
     // second spelling of `Row` in every TYPE position (GH #759); the
@@ -256,17 +247,17 @@ pub fn resolve_program(
     //
     // The user's items seed by the bundle's source map; the stdlib's,
     // whose spans overlap the first file's, by the stdlib's own seed.
-    // No pass since the merge (the unit-return normalization, the
-    // construction aliases, the omitted run) adds, removes or reorders
-    // a top-level item, so the stdlib's are still the tail the merge
-    // appended, and go back after the mint. Asserted: a pass that broke
-    // it would seed user items as the stdlib's, or the reverse.
+    // No pass since the merge (the construction aliases, the omitted
+    // run) adds, removes or reorders a top-level item, so the stdlib's
+    // are still the tail the merge appended, and go back after the
+    // mint. Asserted: a pass that broke it would seed user items as the
+    // stdlib's, or the reverse.
     assert!(
         merged.items.len() == user_items + stdlib_spans.len()
             && merged.items[user_items..].iter().map(TopDecl::span).eq(stdlib_spans.iter().copied()),
         "the merged program's tail is no longer the stdlib's items: a pass between the merge \
-         and the mint (normalize_unit_return_annotations, resolve_construction_aliases, \
-         desugar_omitted_run) added, removed or reordered a top-level item"
+         and the mint (resolve_construction_aliases, desugar_omitted_run) added, removed or \
+         reordered a top-level item"
     );
     let mut stdlib = Program {
         effect_names: Vec::new(),
@@ -398,42 +389,6 @@ pub fn resolve_program(
         api_roles: api_roles.map(str::to_string),
         top,
     })
-}
-
-/// `-> ()` is spelled unit: rewrite an empty-tuple return
-/// annotation to "no return type" on every fn-shaped declaration,
-/// so downstream signature consumers never see a 0-element tuple.
-fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
-    fn norm(ret: &mut Option<TypeExpr>) {
-        if matches!(ret, Some(TypeExpr::Tuple(parts, _)) if parts.is_empty())
-        {
-            *ret = None;
-        }
-    }
-    for item in items {
-        match item {
-            TopDecl::Fn(f) => norm(&mut f.ret),
-            TopDecl::Interface(i) => {
-                for m in &mut i.methods {
-                    norm(&mut m.ret);
-                }
-            }
-            TopDecl::Locus(l) => {
-                for member in &mut l.members {
-                    match member {
-                        LocusMember::Fn(f) => norm(&mut f.ret),
-                        LocusMember::Mode(md) => norm(&mut md.ret),
-                        LocusMember::Lifecycle(lc) => norm(&mut lc.ret),
-                        _ => {}
-                    }
-                }
-            }
-            TopDecl::Module(m) => {
-                normalize_unit_return_annotations(&mut m.items)
-            }
-            _ => {}
-        }
-    }
 }
 
 /// The declaration a qualified path names: the stdlib's path renames
