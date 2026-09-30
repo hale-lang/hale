@@ -2587,7 +2587,7 @@ impl<'a> Walker<'a> {
                 self.walk_expr(subject, depth, Escape::Local);
                 self.walk_expr(value, depth, Escape::Sent);
             }
-            Stmt::For { name, iter, body, span } => {
+            Stmt::For { name, iter, body, span, .. } => {
                 self.walk_expr(iter, depth, Escape::Local);
                 // #382 receiver-typing: type the loop BINDER from the
                 // iterable's element type, so `for child in

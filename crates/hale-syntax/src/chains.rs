@@ -664,6 +664,7 @@ fn let_mut(n: &str, v: Expr, sp: Span) -> Stmt {
         ty: None,
         value: v,
         span: sp,
+        id: NodeId::NONE,
     }
 }
 fn let_val(n: &str, v: Expr, sp: Span) -> Stmt {
@@ -673,6 +674,7 @@ fn let_val(n: &str, v: Expr, sp: Span) -> Stmt {
         ty: None,
         value: v,
         span: sp,
+        id: NodeId::NONE,
     }
 }
 fn assign(n: &str, v: Expr, sp: Span) -> Stmt {
@@ -681,6 +683,7 @@ fn assign(n: &str, v: Expr, sp: Span) -> Stmt {
         op: AssignOp::Eq,
         value: v,
         span: sp,
+        id: NodeId::NONE,
     }
 }
 fn if_then(cond: Expr, then: Vec<Stmt>, sp: Span) -> Stmt {
@@ -725,6 +728,7 @@ fn get_or_break(
             span: sp,
         },
         span: sp,
+        id: NodeId::NONE,
     }
 }
 

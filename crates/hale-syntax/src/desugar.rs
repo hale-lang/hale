@@ -129,6 +129,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         unbounded: false,
         body,
         span: main_span,
+        id: NodeId::NONE,
     };
     let locus = LocusDecl {
         imported: false,
@@ -148,6 +149,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         bounded: false,
         members: vec![LocusMember::Lifecycle(birth)],
         span: main_span,
+        id: NodeId::NONE,
     };
     program.items[main_idx] = TopDecl::Locus(locus);
 
@@ -1537,6 +1539,7 @@ pub fn desugar_omitted_run(program: &mut Program) {
                             unbounded: false,
                             body: Block { stmts: Vec::new(), tail: None, span: l.span },
                             span: l.span,
+                            id: NodeId::NONE,
                         }));
                     }
                 }

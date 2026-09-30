@@ -223,6 +223,8 @@ pub struct GroupDecl {
     /// some configurations.
     pub may_be_empty: bool,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// GH #409: a named, composable claimset.
@@ -573,6 +575,8 @@ pub struct TopicDecl {
     /// topics — typecheck rejects.
     pub on_unmatched: Option<UnmatchedPolicy>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// shm-ring-interop Proposal B: a declared byte layout for an
@@ -704,6 +708,8 @@ pub struct InterfaceDecl {
     /// bodies are not allowed (no default methods at v0).
     pub methods: Vec<InterfaceMethodSig>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -828,6 +834,8 @@ pub struct LocusDecl {
     pub sealed: bool,
     pub members: Vec<LocusMember>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// v1.x-FORM-1: `@form(<name>, <args>...)` annotation.
@@ -1255,6 +1263,8 @@ pub struct PlacementEntry {
     /// across entries) live at typecheck.
     pub constraints: Vec<SpannedPlacementConstraint>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// F.31: per-entry thread placement specification.
@@ -1473,6 +1483,8 @@ pub struct BindingEntry {
     /// binding uses the m70 default serializer.
     pub codec: Option<CodecSpec>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// F.36 Slice 2: pluggable codec instance attached to a binding
@@ -1729,6 +1741,8 @@ pub struct ParamDecl {
     pub ty: Option<TypeExpr>,
     pub init: ParamInit,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1867,6 +1881,8 @@ pub enum BusMember {
         /// `bounded(N)` as min(topic, consumer).
         bound: Option<SubBound>,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     Publish {
         subject: BusSubject,
@@ -1877,6 +1893,8 @@ pub enum BusMember {
         /// stream through the api binding needs the role.
         gated: Option<Ident>,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
 }
 
@@ -1949,6 +1967,8 @@ pub struct LifecycleDecl {
     pub unbounded: bool,
     pub body: Block,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -1976,6 +1996,8 @@ pub struct ModeDecl {
     pub ret: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Copy)]
@@ -1990,6 +2012,8 @@ pub struct FailureDecl {
     pub params: Vec<Param>,
     pub body: Block,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2002,6 +2026,8 @@ pub struct ClosureDecl {
     pub assertion: Option<ClosureAssertion>,
     pub clauses: Vec<ClosureClause>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2066,6 +2092,8 @@ pub struct PerspectiveDecl {
     pub generics: Vec<GenericParam>,
     pub members: Vec<PerspectiveMember>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2092,6 +2120,8 @@ pub struct TypeDecl {
     pub generics: Vec<GenericParam>,
     pub body: TypeDeclBody,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2130,6 +2160,8 @@ pub struct ConstDecl {
     pub ty: TypeExpr,
     pub value: Expr,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 /// GH #265 step 6: a phase-indexed effect contract on a LOCUS —
@@ -2430,6 +2462,8 @@ pub struct FnDecl {
     pub decorators: Vec<FnDecorator>,
     pub body: Block,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2437,6 +2471,8 @@ pub struct ModuleDecl {
     pub name: Ident,
     pub items: Vec<TopDecl>,
     pub span: Span,
+    /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+    pub id: NodeId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2603,6 +2639,8 @@ pub enum Stmt {
         ty: Option<TypeExpr>,
         value: Expr,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     /// Tuple-destructuring let: `let (a, b) = pair;` (or with
     /// `mut`). Flat only — nested patterns wait until a real
@@ -2615,12 +2653,16 @@ pub enum Stmt {
         ty: Option<TypeExpr>,
         value: Expr,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     Assign {
         target: LValue,
         op: AssignOp,
         value: Expr,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     If(IfStmt),
     Match(MatchStmt),
@@ -2629,6 +2671,8 @@ pub enum Stmt {
         iter: Expr,
         body: Block,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     While {
         cond: Expr,
@@ -2714,6 +2758,8 @@ pub enum Stmt {
         value: Expr,
         or_disposition: Option<OrDisposition>,
         span: Span,
+        /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
+        id: NodeId,
     },
     /// A1 zero-copy ring write: `Topic.write(max) { w => body ; len }`.
     /// Reserves up to `max` bytes in the (layout-bound) `topic`'s ring,

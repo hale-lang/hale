@@ -1404,6 +1404,7 @@ impl Parser {
             members,
             may_be_empty,
             span: kw_tok.span.merge(semi.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -2319,6 +2320,7 @@ impl Parser {
             bounded,
             on_full_fail,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -3208,6 +3210,7 @@ impl Parser {
             name,
             methods,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -3323,6 +3326,7 @@ impl Parser {
             bounded: false,
             members,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -3808,6 +3812,7 @@ impl Parser {
                 constraints,
                 codec,
                 span: topic.span.merge(semi.span),
+                id: NodeId::NONE,
             });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
@@ -4097,6 +4102,7 @@ impl Parser {
                 spec,
                 constraints,
                 span: field.span.merge(semi.span),
+                id: NodeId::NONE,
             });
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
@@ -5080,6 +5086,7 @@ impl Parser {
                     name,
                     ty: None,
                     init: ParamInit::Inferred,
+                    id: NodeId::NONE,
                 });
             }
             Some(self.parse_type_expr()?)
@@ -5114,6 +5121,7 @@ impl Parser {
             name,
             ty,
             init,
+            id: NodeId::NONE,
         })
     }
 
@@ -5362,6 +5370,7 @@ impl Parser {
                     key_filter,
                     bound,
                     span: kw.span.merge(semi.span),
+                    id: NodeId::NONE,
                 })
             }
             TokenKind::Publish => {
@@ -5386,6 +5395,7 @@ impl Parser {
                     alias,
                     gated: None,
                     span: kw.span.merge(semi.span),
+                    id: NodeId::NONE,
                 })
             }
             other => Err(Diag::parse(
@@ -5484,6 +5494,7 @@ impl Parser {
             unbounded: false,
             span: kw_tok.span.merge(body.span),
             body,
+            id: NodeId::NONE,
         })
     }
 
@@ -5559,6 +5570,7 @@ impl Parser {
             ret,
             span: kw.span.merge(body.span),
             body,
+            id: NodeId::NONE,
         })
     }
 
@@ -5570,6 +5582,7 @@ impl Parser {
             params,
             span: kw.span.merge(body.span),
             body,
+            id: NodeId::NONE,
         })
     }
 
@@ -5616,6 +5629,7 @@ impl Parser {
             assertion,
             clauses,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -5831,6 +5845,7 @@ impl Parser {
             generics,
             members,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -5910,6 +5925,7 @@ impl Parser {
                     generics,
                     body: TypeDeclBody::Enum(variants),
                     span: kw.span.merge(close.span),
+                    id: NodeId::NONE,
                 });
             }
             // alias. It is the one `type` form that takes no generic
@@ -5939,6 +5955,7 @@ impl Parser {
                 generics,
                 body: TypeDeclBody::Alias(ty),
                 span: kw.span.merge(semi.span),
+                id: NodeId::NONE,
             })
         } else {
             // struct form: type X { fields }
@@ -5954,6 +5971,7 @@ impl Parser {
                 generics,
                 body: TypeDeclBody::Struct(fields),
                 span: kw.span.merge(close.span),
+                id: NodeId::NONE,
             })
         }
     }
@@ -6049,6 +6067,7 @@ impl Parser {
             name,
             ty,
             value,
+            id: NodeId::NONE,
         })
     }
 
@@ -6159,6 +6178,7 @@ impl Parser {
                 decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
+                id: NodeId::NONE,
             });
         }
         // Phase 2a: a bodyless contract signature (`fn foo(...);`)
@@ -6189,6 +6209,7 @@ impl Parser {
                 decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
+                id: NodeId::NONE,
             });
         }
         // Push/pop fallible-body context around the body so
@@ -6215,6 +6236,7 @@ impl Parser {
             decorators: Vec::new(),
             span: kw.span.merge(body.span),
             body,
+            id: NodeId::NONE,
         })
     }
 
@@ -6258,6 +6280,7 @@ impl Parser {
             name,
             items,
             span: kw.span.merge(close.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -6770,6 +6793,7 @@ impl Parser {
                 ty,
                 value,
                 span: kw.span.merge(semi.span),
+                id: NodeId::NONE,
             });
         }
         let name = self.expect_decl_name("variable name")?;
@@ -6787,6 +6811,7 @@ impl Parser {
             ty,
             value,
             span: kw.span.merge(semi.span),
+            id: NodeId::NONE,
         })
     }
 
@@ -7037,6 +7062,7 @@ impl Parser {
             iter,
             span: kw.span.merge(body.span),
             body,
+            id: NodeId::NONE,
         })
     }
 
@@ -7132,6 +7158,7 @@ impl Parser {
                 subject: expr,
                 value,
                 or_disposition,
+                id: NodeId::NONE,
             });
             return Ok(None);
         }
@@ -7146,6 +7173,7 @@ impl Parser {
                 target,
                 op,
                 value,
+                id: NodeId::NONE,
             });
             return Ok(None);
         }

@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     ApiBinding, ApiTransport, ApiUnauthorizedPolicy, BusMember, BusSubject, ContractDirection,
-    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit,
+    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, NodeId, ParamInit,
     PlacementBlock, Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
 };
 use crate::span::Span;
@@ -1974,6 +1974,7 @@ fn publish_reply_member(span: Span) -> BusMember {
         alias: None,
         gated: None,
         span,
+        id: NodeId::NONE,
     }
 }
 
