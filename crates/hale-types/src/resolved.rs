@@ -17,14 +17,16 @@
 //! phase 1.5).
 //!
 //! The sequence is codegen's former one, moved here unchanged: the
-//! same passes, in the same order, over the same inputs. The one
-//! addition is the mint over the merged program before the pre-pass,
-//! with the bundle's source map, so every stdlib and desugar-generated
-//! node has its identity (the mint keeps the ids the bundle already
-//! carries and continues the counter) and every site its seed: a user
-//! site the file its span falls in, a stdlib site the stdlib's own
-//! seed. The pre-pass numbers nothing; a `Struct` or `Call` it finds
-//! unnumbered is an error.
+//! same passes, in the same order, over the same inputs. The additions
+//! are two mints. One over the user program before the intra-locus
+//! rewrite, so every send it records is minted on every path, the
+//! harness adapter's included. And one over the merged program before
+//! the pre-pass, with the bundle's source map, so every stdlib and
+//! desugar-generated node has its identity (the mint keeps the ids
+//! already carried and continues the counter) and every site its seed:
+//! a user site the file its span falls in, a stdlib site the stdlib's
+//! own seed. The pre-pass numbers nothing; a `Struct` or `Call` it
+//! finds unnumbered is an error.
 //!
 //! Today the verbs still run `json_gen`, api injection and sync
 //! inference before the check, and this step re-runs the idempotent
@@ -183,6 +185,14 @@ pub fn resolve_program(
         hale_syntax::api_gen::inject_api_entry(&mut program_owned, path)?;
     }
     hale_syntax::api_gen::generate_api(&mut [&mut program_owned], api_roles);
+    // The intra-locus rewrite moves each send's id onto the call that
+    // replaces it and records it in the relation, so the sends have to
+    // be minted before it runs: a caller that did not mint (the
+    // harness adapter, `build_executable_with_options`) would otherwise
+    // get a relation of `NodeId::NONE` sends no call can be joined to.
+    // Idempotent: the ids a bundle already minted are kept, and the
+    // mint over the merged program below keeps these and continues.
+    crate::snapshot::mint([("program", &mut program_owned)], sources);
     let intra_locus =
         hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     hale_syntax::desugar::desugar_topics(&mut program_owned);
