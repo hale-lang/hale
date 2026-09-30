@@ -130,9 +130,15 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
 /// diagnostic it already produced — when the name is not an alias,
 /// or when its target is not a NAME: nothing is constructible from
 /// `type Thing = Int;` or `type TwoRows = [Row; 2];` with `{ }` or
-/// `::`. Codegen's `resolve_construction_aliases` draws the same
-/// line over the same declarations, which is what keeps `check` and
-/// `build` from disagreeing about a literal.
+/// `::`. `resolve_construction_aliases` draws the same line over the
+/// same declarations, which is what keeps `check` and `build` from
+/// disagreeing about a literal.
+///
+/// Every entry point runs that pass in its desugar sequence before
+/// the check (F.40 phase 2.1b), so for a program a verb checks this
+/// hop finds no alias left to follow. It answers for a caller that
+/// checks a bundle without the sequence (`check_bundle` over a
+/// fragment).
 fn construction_target(top: &TopScope, name: &str) -> Option<String> {
     match top.lookup(name) {
         Some(TopSymbol::Type(TypeInfo {

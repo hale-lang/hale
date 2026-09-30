@@ -2,14 +2,14 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 171 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 170 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
 | family | layer | state | kind | producer | legacy | answers |
 |---|---|---|---|---|---|---|
 | `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
-| `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 6 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
+| `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 10 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
 | `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
@@ -94,23 +94,29 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-frontend/src/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* the snapshot's seed names the library (phase 2, when the frontend owns loading).
-- `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope. *Removed when:* one alias resolution shared by checker and lowering.
-- `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases` — rewrites construction sites to the target name in the frontend's resolved-program step; the checker resolves the same alias for itself in `construction_target`. *Removed when:* one alias resolution shared by checker and lowering.
+- `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope; a no-op for every program an entry point checks, whose construction sites the desugar sequence already resolved, and the answer for a caller that checks a fragment without the sequence (`check_bundle`). *Removed when:* every checker entry runs the desugar sequence.
 - `crates/hale-types/src/resolved.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in the resolved-program step's clone. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/resolve.rs` · `resolve_bus_subject` — the checker's resolution of the same subjects. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/check.rs` · `imported_fn` — an imported fn's signature by path-string vector. *Removed when:* one resolution, shared.
+
+**Also owned.** `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases`
 
 **Consumers.** check; build; lsp (hover, definition, references)
 
 **Invariants.**
 
 - a name resolves once per snapshot; the checker and lowering see the same target
+- a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name
 
 **Missing data.** a missing required row is a compiler error
 
 **Focused tests.** crates/hale-cli/tests/import_library_key.rs; crates/hale-codegen/tests/cross_seed_imports.rs; crates/hale-types/tests/type_alias.rs
 
 **Spec.** spec/semantics.md § Cross-seed namespace resolution; spec/projects.md
+
+**Guarded seams.**
+
+- `resolve_construction_aliases(` may be referenced from: `crates/hale-types/src/mangle.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 
 ### `desugar_sequence` — Migrating · desugar
 
@@ -152,7 +158,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×2, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 - `resolve_program(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
 - `desugar_intra_locus_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `build_executable_with_options(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1

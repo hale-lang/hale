@@ -249,3 +249,46 @@ fn alias_of_a_generic_instantiation_is_its_monomorph() {
     "#;
     assert!(diags(src).is_empty(), "{:?}", diags(src));
 }
+
+/// F.40 phase 2.1b: the desugar sequence every entry point runs before
+/// its check resolves the alias at every construction position, across
+/// the files of a bundle, so the checker's own hop
+/// (`construction_target`) has nothing left to do for a program a verb
+/// checks: no struct literal, variant path or constructor pattern
+/// still names the alias. The hop stays for a caller that checks a
+/// bundle without the sequence (a fragment, as `diags` above does).
+///
+/// Last in the file: the corpus harvests this file's programs by
+/// ordinal, and the pinned baselines key them by it.
+#[test]
+fn after_the_sequence_no_construction_site_names_an_alias() {
+    let decls = r#"
+        type Row { id: Int; }
+        type Row2 = Row;
+        type Color = enum { Red, Green };
+        type C2 = Color;
+    "#;
+    let uses = r#"
+        fn main() {
+            let r = Row2 { id: 1 };
+            let c = C2::Red;
+            match c {
+                C2::Red -> { println(r.id); },
+                _ -> { println(0); },
+            }
+        }
+    "#;
+    let mut a = parse_source(decls).expect("parse");
+    let mut b = parse_source(uses).expect("parse");
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut a, &mut b],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[] },
+    );
+    // The alias names appear in `decls` only as the aliases' own
+    // declarations; `uses` holds nothing but construction sites.
+    let rendered = format!("{:?}", b.items);
+    for alias in ["\"Row2\"", "\"C2\""] {
+        assert!(!rendered.contains(alias), "{alias} survived the sequence: {rendered}");
+    }
+    assert!(rendered.contains("\"Row\"") && rendered.contains("\"Color\""), "{rendered}");
+}

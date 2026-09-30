@@ -11,6 +11,11 @@
 //!
 //! 1. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
+//! 2. construction aliases: a struct literal, variant path or
+//!    constructor pattern spelled with a type alias names the
+//!    declaration the alias chain ends at
+//!    ([`crate::mangle::resolve_construction_aliases`]), over the
+//!    whole bundle at once.
 //!
 //! The bundled stdlib goes through the same passes ([`bundled_stdlib`])
 //! before the resolved program appends it.
@@ -31,10 +36,21 @@ pub struct Sequence<'a> {
 /// Idempotent: a program the sequence already shaped comes back
 /// unchanged, so a caller that cannot tell whether its program went
 /// through it (the test harness) may run it again.
-pub fn desugar_before_check(programs: &mut [&mut Program], _seq: &Sequence<'_>) {
+pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
+    // The bundled stdlib is what a bundle-wide pass reads besides the
+    // bundle: the declarations an alias may end at. A stdlib that does
+    // not parse is reported where it is appended (`resolve_program`);
+    // here the passes run without it.
+    let stdlib = bundled_stdlib().ok();
+    shape(programs, seq, stdlib.as_slice());
+}
+
+/// The passes, in order. `context` is read and never rewritten.
+fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]) {
     for p in programs.iter_mut() {
         normalize_unit_return_annotations(&mut p.items);
     }
+    crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
 }
 
 /// The bundled stdlib, parsed once and put through the sequence: what
@@ -56,7 +72,7 @@ pub fn bundled_stdlib() -> Result<&'static Program, String> {
                         .join("; ");
                     format!("stdlib parse: {}", summary)
                 })?;
-            desugar_before_check(&mut [&mut stdlib], &Sequence { import_renames: &[] });
+            shape(&mut [&mut stdlib], &Sequence { import_renames: &[] }, &[]);
             Ok(stdlib)
         })
         .as_ref()

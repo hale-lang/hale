@@ -330,11 +330,23 @@ pub fn rewrite_import_alias_heads(
 /// `renames` is the build's cross-seed import table, which is what
 /// makes `lib::Row2 { }` resolve: the qualified spelling is a key
 /// of its own alongside the bare name.
+///
+/// It runs in the desugar sequence before the check (F.40 phase 2.1b),
+/// over every program of a bundle at once: an alias one file declares
+/// is constructed in another, so the table is the bundle's. `context`
+/// is read and never rewritten: the bundled stdlib, whose declarations
+/// an alias may end at (`type R = std::x::Y;`) and which the table
+/// counted when it ran over the stdlib-merged program.
 pub fn resolve_construction_aliases(
-    prog: &mut Program,
+    progs: &mut [&mut Program],
+    context: &[&Program],
     renames: &[(Vec<String>, String)],
 ) {
-    let targets = construction_alias_targets(prog, renames);
+    let targets = {
+        let read: Vec<&Program> =
+            progs.iter().map(|p| &**p).chain(context.iter().copied()).collect();
+        construction_alias_targets(&read, renames)
+    };
     if targets.is_empty() {
         return;
     }
@@ -348,8 +360,10 @@ pub fn resolve_construction_aliases(
         mangling: false,
         seed: SeedBinding::default(),
     };
-    for item in &mut prog.items {
-        walker.walk_top_decl(item);
+    for prog in progs.iter_mut() {
+        for item in &mut prog.items {
+            walker.walk_top_decl(item);
+        }
     }
 }
 
@@ -378,7 +392,7 @@ pub fn resolve_construction_aliases(
 /// (`Pair_Int`) — the same name `resolve_type_expr` gives the
 /// alias, so the two layers land on one declaration.
 fn construction_alias_targets(
-    prog: &Program,
+    progs: &[&Program],
     renames: &[(Vec<String>, String)],
 ) -> HashMap<String, String> {
     // Every alias declaration in the program, modules included: a
@@ -416,7 +430,9 @@ fn construction_alias_targets(
 
     let mut aliases: HashMap<String, TypeExpr> = HashMap::new();
     let mut declared: HashSet<String> = HashSet::new();
-    collect(&prog.items, &mut aliases, &mut declared);
+    for prog in progs {
+        collect(&prog.items, &mut aliases, &mut declared);
+    }
     if aliases.is_empty() {
         return HashMap::new();
     }
