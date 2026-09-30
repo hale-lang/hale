@@ -705,7 +705,23 @@ fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Defer
                 });
         }
         match mangled_prefix(have, stem, want) {
-            Some(prefix) => companion.is_empty() || world.fns.contains_key(&format!("{}{}", prefix, companion)),
+            Some(prefix) => {
+                // The prefix names a library and a file stem, but two
+                // single-file libraries with one basename share a library
+                // id (the importer's fallback outside a workspace), so the
+                // prefix alone proves nothing: the candidate's own file must
+                // have the pin's stem, and the companion must be declared in
+                // that same file. Without provenance, no pin (outside review
+                // of #1279).
+                let Some(here) = file else { return false };
+                if file_stem != *stem {
+                    return false;
+                }
+                companion.is_empty()
+                    || world.fns.get(&format!("{}{}", prefix, companion)).is_some_and(|c| {
+                        own_file(world, &c.site.0, c.site.1) == Some(here)
+                    })
+            }
             None => false,
         }
     }) else {

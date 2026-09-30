@@ -259,6 +259,13 @@ fn a_pins_companion_comes_from_its_own_module() {
     let app = "import \"../liba\" as a;\nimport \"../libb\" as b;\nfn main() { println(b::compute_client_final(a::salted_password(\"p\", \"s\"))); }\n";
     let (ok, out) = check(&[("app/main.hl", app), ("liba/scram.hl", liba), ("libb/scram.hl", libb)], "pin_two_libs");
     assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
+    // two SINGLE-FILE libraries with one basename share a library id
+    // outside a workspace (the importer's fallback), so their mangled
+    // prefixes coincide; the companion still has to come from the
+    // candidate's own file (outside review of #1279)
+    let single_files = "import \"../liba/scram\" as a;\nimport \"../libb/scram\" as b;\nfn main() { println(b::compute_client_final(a::salted_password(\"p\", \"s\"))); }\n";
+    let (ok, out) = check(&[("app/main.hl", single_files), ("liba/scram.hl", liba), ("libb/scram.hl", libb)], "pin_two_single_files");
+    assert!(ok && !out.contains("allowed") && !out.contains("pq::"), "{out}");
     // each alone is no pin either
     let alone_a = "import \"../liba\" as a;\nfn main() { println(a::salted_password(\"p\", \"s\")); }\n";
     let (ok, out) = check(&[("app/main.hl", alone_a), ("liba/scram.hl", liba)], "pin_lib_a");
@@ -274,6 +281,12 @@ fn a_pins_companion_comes_from_its_own_module() {
     let use_both = |x: &str, y: &str| {
         format!("{x}\n{y}\nfn main() {{ println(x::gs2_header() + y::gs2_header()); }}\n")
     };
+    let single_file_real = use_both("import \"../lib/scram\" as x;", "import \"../lib/scram\" as y;");
+    // (an imported seed's warnings are the importer's to ignore, so the
+    // deferral warning is not shown here; the pin is recognized, which a
+    // changed single-file copy proves by being refused AS a pin below)
+    let (ok, out) = check(&[("app/main.hl", &single_file_real), ("lib/scram.hl", &real)], "pin_single_file_real");
+    assert!(ok && !out.contains("this one has changed"), "{out}");
     let two_aliases = use_both("import \"../lib\" as x;", "import \"../lib\" as y;");
     let (ok, out) = check(&[("app/main.hl", &two_aliases), ("lib/scram.hl", &real)], "pin_two_aliases");
     assert!(ok && !out.contains("this one has changed"), "{out}");
@@ -286,6 +299,9 @@ fn a_pins_companion_comes_from_its_own_module() {
     let (ok, out) =
         check(&[("app/main.hl", &two_copies), ("lib1/scram.hl", &real), ("lib2/scram.hl", &changed)], "pin_copy_changed");
     assert!(!ok && out.contains("`pq::salted_password` is allowed by name only with the body that was reviewed"), "{out}");
+    let single_changed = use_both("import \"../lib/scram\" as x;", "import \"../lib/scram\" as y;");
+    let (ok, out) = check(&[("app/main.hl", &single_changed), ("lib/scram.hl", &changed)], "pin_single_file_changed");
+    assert!(!ok && out.contains("`pq::salted_password` is allowed by name only"), "{out}");
 }
 
 /// A copied, unchanged SCRAM module beside a `main.hl` is the module on
