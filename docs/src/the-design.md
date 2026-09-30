@@ -72,7 +72,7 @@ the guarantees.
 - **[`spec/design-rationale.md`](https://github.com/hale-lang/hale/blob/main/spec/design-rationale.md)**
   and **[`spec/decisions.md`](https://github.com/hale-lang/hale/blob/main/spec/decisions.md)**
   — the current rationale, and every numbered design decision
-  (`F.1` … `F.39`) with the alternatives considered and why each
+  (`F.1` … `F.40`) with the alternatives considered and why each
   commitment is shaped the way it is.
 
 You now have the whole arc: a small language at the top, a

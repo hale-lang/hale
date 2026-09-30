@@ -45,6 +45,69 @@ execution evidence. Each answers a different question, and keeping
 them separate is what lets each one be simple — and what keeps a
 second authority for one question from existing at all.
 
+## The graph registry (F.40)
+
+The law above was written for the model's consumers: artifact, fleet
+and claim code cannot walk source for a modeled fact. It never reached
+the producers, codegen or the CLI, which is why the bus graph is built
+eight times per build, ownership has three accounts, and a fixpoint
+over the call graph could land inside codegen without tripping
+anything (GH #1208). F.40 (`spec/decisions.md`) extends the law to
+**every semantic fact the compiler acts on**, in every crate, and
+makes it checkable:
+
+> One authoritative producer per semantic fact within a resolved
+> compilation snapshot. Consumers ask for the fact by name; they do not
+> re-encode its meaning from the AST, from another table's raw rows,
+> or from a Debug string.
+
+The registry is the index of that law. `spec/registry.md` — rendered
+from `crates/hale-graph/src/registry.rs` and held byte-equal by a test
+— lists every **semantic family** with its contract:
+
+- what it **answers**, in one sentence, and what it **reads**;
+- its **producer**: the authoritative one, or today's, or none yet;
+- its **legacy producers**, each with the condition under which it is
+  deleted — the exact inventory of what is permitted while the family
+  migrates;
+- its **consumers**, named, so a new reader is a registry change
+  before it is a code change;
+- its **invariants** and **missing-data policy**: whether a missing
+  row is a compiler error or a hole with a stated policy;
+- its **focused tests**, the ones a contributor runs to know a change
+  to that family is right;
+- where the **spec** states the contract.
+
+Each family is in one of three states, so the inventory can be exact
+without banning what exists today: **Reserved** (a future family or
+consumer, computing nothing), **Migrating** (the canonical producer is
+under development and the legacy list is complete), or **Canonical**
+(one production producer; consumers cannot reconstruct its meaning).
+The registry also lists the spec's numbered rules with the code that
+evaluates each — a registered rule with no evaluator fails the
+compiler's own build — and freezes the `format!("{:?}", ..)` sites
+that decide a fact from a Debug string, so no new one can appear.
+
+The guard (`crates/hale-graph/tests/registry_guard.rs`) makes the
+wrong workflow fail: a derivation-shaped function the registry does
+not name, a reference to a family's guarded seam from an unlisted
+file, a new Debug-string scan, a cited site that no longer exists.
+The right workflow is the one the registry describes: change the
+authoritative derivation or rule, update its contract tests, exercise
+the registered interactions and consumers, and never patch a second
+interpretation into codegen or the CLI.
+
+Reserved entries exist so the tables never change twice: the
+`runs_under(locus, principal)` relation column on the tower, the
+`view` family and its `adequate_for` law, the evented `transitions`,
+the `deployment` families, and `ui` and `bundle` as consumers beside
+the LSP, `--dump-topology` and the description. A reservation creates
+no production demand.
+
+The eight concepts this document keeps distinct (source, plan, model,
+`ClaimIr`, evidence, artifact, lowering plan, execution evidence) are
+the registry's coarsest partition; a family belongs to exactly one.
+
 ## What a model is
 
 A model is **known facts plus an explicit account of what it does
