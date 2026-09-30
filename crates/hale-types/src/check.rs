@@ -5709,7 +5709,9 @@ fn check_phase3_fallback_subscribers(
                     // permissive, matching the rest of this pass.
                     let row = match subject {
                         BusSubject::Topic(i) => topics.named(&i.name),
-                        BusSubject::Literal { subject: s, .. } => topics.topic_of_subject(s),
+                        // a literal subscription is a delivery site: only the
+                        // topic that owns that wire subject
+                        BusSubject::Literal { subject: s, .. } => topics.by_wire(s),
                         BusSubject::QualifiedTopic(_) => None,
                     };
                     {
@@ -13048,11 +13050,13 @@ impl<'a> Checker<'a> {
         // REQUIRE the clause — a fail-policy publish without an
         // or-disposition leaves the no-match err unhandled. The
         // topic is the one the subject names in the topic rows — a
-        // literal by `topic_of_subject`'s one rule, a topic reference
+        // literal by the wire subject it delivers on, a topic reference
         // by its name — and both directions are validated.
         let target_topic: Option<(String, Option<UnmatchedPolicy>, bool)> =
             match subject {
-                Expr::Literal(Literal::String(s), _) => self.top.topics.topic_of_subject(s),
+                // a literal send delivers on its bytes: only the topic
+                // that owns that wire subject carries a policy for it
+                Expr::Literal(Literal::String(s), _) => self.top.topics.by_wire(s),
                 Expr::Ident(id) => self.top.topics.named(&id.name),
                 _ => None,
             }

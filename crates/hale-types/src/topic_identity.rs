@@ -187,24 +187,18 @@ impl TopicRows {
         self.rows.values()
     }
 
-    /// The topic a written subject names, by one rule: its wire
-    /// identity first (spec/model.md rule 8), then a declared
-    /// `subject:` segment, then a topic name. Each step answers only
-    /// when exactly one topic matches: a wire subject two topics carry
-    /// is an error ([`TopicRows::shared_wires`]) and names neither, and
-    /// a segment two topics declare names neither.
-    pub fn topic_of_subject(&self, written: &str) -> Option<&TopicRow> {
-        if let Some(names) = self.by_wire.get(written) {
-            return match names.as_slice() {
-                [one] => self.rows.get(one),
-                _ => None,
-            };
+    /// The topic that OWNS a wire subject: the one delivery identity
+    /// (spec/model.md rule 8). A literal subject at a delivery site (a
+    /// literal subscription, a literal send) is matched by this and
+    /// nothing else: a literal that spells a topic's declared segment or
+    /// its name while its wire differs names no topic, since lowering
+    /// delivers on the bytes as written. Two topics carrying one wire
+    /// own neither.
+    pub fn by_wire(&self, wire: &str) -> Option<&TopicRow> {
+        match self.by_wire.get(wire).map(Vec::as_slice) {
+            Some([one]) => self.rows.get(one),
+            _ => None,
         }
-        let mut declared = self.rows.values().filter(|r| r.subject == written);
-        if let Some(r) = declared.next() {
-            return if declared.next().is_none() { Some(r) } else { None };
-        }
-        self.rows.get(written)
     }
 
     /// Every wire subject more than one topic carries, with those
@@ -381,8 +375,11 @@ mod tests {
 
     /// One rule: the wire identity, then the declared segment, then
     /// the name, each answering only for exactly one topic.
+    /// A wire subject names the topic that owns it and nothing else: a
+    /// declared segment or a topic name that is not the wire names no
+    /// topic (delivery is on the wire, spec/model.md rule 8).
     #[test]
-    fn a_subject_names_its_topic_by_one_rule() {
+    fn a_wire_subject_names_its_owner_and_nothing_else_does() {
         let r = rows(
             r#"
             type M { n: Int; }
@@ -391,13 +388,14 @@ mod tests {
             topic Plain { payload: M; }
         "#,
         );
-        let of = |s: &str| r.topic_of_subject(s).map(|t| t.name.as_str());
+        let of = |s: &str| r.by_wire(s).map(|t| t.name.as_str());
         assert_eq!(of("org.metrics"), Some("Metrics"));
-        assert_eq!(of("metrics"), Some("Metrics"));
-        assert_eq!(of("Metrics"), Some("Metrics"));
+        assert_eq!(of("metrics"), None, "a segment is not a wire");
+        assert_eq!(of("Metrics"), None, "a name is not a wire");
         assert_eq!(of("org"), Some("Org"));
-        assert_eq!(of("Plain"), Some("Plain"));
+        assert_eq!(of("Plain"), Some("Plain"), "a top-level topic's wire is its name");
         assert_eq!(of("nothing"), None);
+        assert_eq!(r.named("Metrics").map(|t| t.name.as_str()), Some("Metrics"));
         assert_eq!(r.named("Metrics").map(|t| t.wire.as_str()), Some("org.metrics"));
         assert_eq!(r.shared_wires().count(), 0);
     }
@@ -418,11 +416,11 @@ mod tests {
             topic Y : Q { payload: M; subject: "leaf"; }
         "#,
         );
-        assert!(r.topic_of_subject("same").is_none());
+        assert!(r.by_wire("same").is_none());
         let shared: Vec<(&str, &[String])> = r.shared_wires().collect();
         assert_eq!(shared, vec![("same", &["A".to_string(), "B".to_string()][..])]);
-        assert!(r.topic_of_subject("leaf").is_none());
-        assert_eq!(r.topic_of_subject("p.leaf").map(|t| t.name.as_str()), Some("X"));
+        assert!(r.by_wire("leaf").is_none());
+        assert_eq!(r.by_wire("p.leaf").map(|t| t.name.as_str()), Some("X"));
     }
 
     /// A broken parent chain keeps the rule's joined wire subject
@@ -439,8 +437,9 @@ mod tests {
         assert!(t.broken);
         assert_eq!(t.wire, "o");
         assert!(r.shared_wires().next().is_none());
-        // Not by the wire subject; by the declared segment it spells.
-        assert_eq!(r.topic_of_subject("o").map(|t| t.name.as_str()), Some("Orphan"));
+        // Not by the wire subject; only by its name.
+        assert!(r.by_wire("o").is_none());
+        assert!(r.named("Orphan").is_some());
     }
 
     /// Nested structs are name-free — a compound field is `struct`

@@ -522,14 +522,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects` — the routing-key table. *Removed when:* same.
 - `crates/hale-types/src/model_builder.rs` · `topic_wire_subjects` — rebuilt for the model. *Removed when:* phase 2.
 
-**Also owned.** `crates/hale-types/src/topic_identity.rs` · `TopicRows::of`; `crates/hale-types/src/topic_identity.rs` · `topic_of_subject`
+**Also owned.** `crates/hale-types/src/topic_identity.rs` · `TopicRows::of`; `crates/hale-types/src/topic_identity.rs` · `by_wire`
 
 **Consumers.** check (the topic rows, built once per bundle on the TopScope) (`crates/hale-types/src/resolve.rs` · `build_top_scope`); model; codegen (dispatch, bindings, runtime registration); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
 
 **Invariants.**
 
 - delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)
-- which topic a written subject names has one answer, `TopicRows::topic_of_subject`: the wire identity, then a declared segment, then a name, each only for exactly one topic; a wire subject two topics carry names neither, and the resolver reports the collision
+- a literal subject at a delivery site (a literal subscription, a literal send) names only the topic that OWNS that wire subject, `TopicRows::by_wire`, never one whose declared segment or name it happens to spell; a topic reference names its declaration; a wire subject two topics carry names neither and is an error
 
 **Missing data.** an unknown is a hole with a stated policy
 
@@ -541,7 +541,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×2
 - `TopicRows::of(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×1, `crates/hale-types/src/resolve.rs` ×1
-- `topic_of_subject(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
+- `by_wire(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
 
 ### `bindings` — Migrating · derivation
 

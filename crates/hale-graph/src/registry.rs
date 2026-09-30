@@ -655,16 +655,16 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("check (the topic rows, built once per bundle on the TopScope)", RESOLVE, "build_top_scope"), consumer("model"), consumer("codegen (dispatch, bindings, runtime registration)"), consumer("topology (topic shapes)"), consumer_at("resolved program (the intra-locus relation's wire subjects)", TY_RESOLVED, "topic_wire_subjects")],
         invariants: &[
             "delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)",
-            "which topic a written subject names has one answer, `TopicRows::topic_of_subject`: the wire identity, then a declared segment, then a name, each only for exactly one topic; a wire subject two topics carry names neither, and the resolver reports the collision",
+            "a literal subject at a delivery site (a literal subscription, a literal send) names only the topic that OWNS that wire subject, `TopicRows::by_wire`, never one whose declared segment or name it happens to spell; a topic reference names its declaration; a wire subject two topics carry names neither and is an error",
         ],
         missing: Missing::Hole,
         tests: &["crates/hale-codegen/tests/topic_declarations.rs", "crates/hale-codegen/tests/replica_keys.rs", "crates/hale-codegen/tests/serializer_shape.rs", "crates/hale-types/src/topic_identity.rs (a_subject_names_its_topic_by_one_rule, a_shared_subject_names_no_topic)"],
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
-        owned: &[site(TOPIC_ID, "TopicRows::of"), site(TOPIC_ID, "topic_of_subject")],
+        owned: &[site(TOPIC_ID, "TopicRows::of"), site(TOPIC_ID, "by_wire")],
         seams: &[
             Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (TY_RESOLVED, 1), (CG, 2)] },
             Seam { symbol: "TopicRows::of(", allowed: &[(TOPIC_ID, 1), (RESOLVE, 1)] },
-            Seam { symbol: "topic_of_subject(", allowed: &[(TOPIC_ID, 6), (CHECK, 2)] },
+            Seam { symbol: "by_wire(", allowed: &[(TOPIC_ID, 6), (CHECK, 2)] },
         ],
     },
     Family {
