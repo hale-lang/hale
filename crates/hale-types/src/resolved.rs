@@ -8,6 +8,11 @@
 //! program and the ownership tables the F.39 pre-pass derives from it.
 //! Codegen reads the envelope; it no longer builds any of it.
 //!
+//! The envelope also carries the ownership graph over the merged
+//! program (which accepting ancestor owns each method-body birth, and
+//! which locus accepts which child type) and the bubble plans lowering
+//! projects from it (F.40 phase 1.3), built here once.
+//!
 //! The sequence is codegen's former one, moved here unchanged: the
 //! same passes, in the same order, over the same inputs. The one
 //! addition is the mint over the merged program before the pre-pass,
@@ -26,6 +31,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::{LocusMember, Program, TopDecl, TypeExpr};
 
 use crate::ownership::OwnerTable;
+use crate::ownership_graph::{BubblePlans, OwnershipGraph};
 use crate::snapshot::Snapshot;
 
 /// The program codegen lowers, and the tables the frontend derives over it.
@@ -43,6 +49,11 @@ pub struct ResolvedProgram {
     pub owner_table: OwnerTable,
     /// Fresh factories, extended by the carrier-return fold.
     pub fresh_locus_factories: BTreeMap<String, (String, Option<String>)>,
+    /// Which accepting ancestor owns each method-body birth, and which
+    /// locus accepts which child type, over `merged`.
+    pub ownership: OwnershipGraph,
+    /// The bubble plans lowering acts on, projected from `ownership`.
+    pub bubble: BubblePlans,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -198,12 +209,29 @@ pub fn resolve_program(
             .or_insert_with(|| (locus.clone(), None));
     }
 
+    // F.40 phase 1.3: the ownership graph and the bubble plans, over
+    // the same merged and desugared program the bus graph is built
+    // from. The bundle's one program keeps the name codegen gave it,
+    // so nothing keyed by program name moves; the scope's diagnostics
+    // are the checker's to report, not this step's.
+    let (ownership, bubble) = {
+        let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+        programs.insert("__codegen_merged".to_string(), &merged);
+        let bundle = crate::symbol::Bundle::new(programs);
+        let (top, _diags) = crate::resolve::build_top_scope(&bundle);
+        let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
+        let bubble = graph.bubble_plans();
+        (graph, bubble)
+    };
+
     Ok(ResolvedProgram {
         user,
         merged,
         snapshot,
         owner_table,
         fresh_locus_factories,
+        ownership,
+        bubble,
         resolved_in: t_start.elapsed(),
     })
 }

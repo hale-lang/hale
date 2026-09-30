@@ -233,6 +233,86 @@ impl OwnershipGraph {
         }
         out
     }
+
+    /// The bubble plans lowering acts on: the graph's sites distilled to
+    /// the ones a bubble moves, plus [`Self::compute_forwarding_sets`].
+    /// Resolution depends only on `(enclosing_locus, child_ty)` (the
+    /// climb walks the static instantiated-by relation, not a runtime
+    /// path), so every plan keys on that pair.
+    pub fn bubble_plans(&self) -> BubblePlans {
+        let mut plan: BTreeMap<(String, String), String> = BTreeMap::new();
+        let mut nonsingleton: BTreeMap<(String, String), String> =
+            BTreeMap::new();
+        // Interest-based ownership #3: the cross-pool twin. A site
+        // resolving to `Ancestor(A)` with `OwnerKind::SingletonConst`
+        // AND `EdgeClass::CrossPool` (A a program-start singleton on a
+        // different thread than the enclosing locus) lands here — the
+        // child is born on A's thread via the async post+dispatch path.
+        // Non-singleton cross-pool has no compile-time pool handle for A
+        // → NOT admitted (stays transient, deferred).
+        let mut crosspool: BTreeMap<(String, String), String> =
+            BTreeMap::new();
+        for site in &self.sites {
+            if let OwnerResolution::Ancestor(owner) = &site.resolution {
+                let key =
+                    (site.enclosing_locus.clone(), site.child_ty.clone());
+                match (&site.edge_class, &site.owner_kind) {
+                    (EdgeClass::SameTower, OwnerKind::SingletonConst) => {
+                        plan.insert(key, owner.clone());
+                    }
+                    (EdgeClass::SameTower, OwnerKind::Ancestor) => {
+                        nonsingleton.insert(key, owner.clone());
+                    }
+                    (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
+                        crosspool.insert(key, owner.clone());
+                    }
+                    // CrossPool + non-singleton (no static pool handle),
+                    // Open, per-path, orphan: stay transient.
+                    _ => {}
+                }
+            }
+        }
+        let forwarding = self.compute_forwarding_sets();
+        BubblePlans {
+            singleton: plan,
+            nonsingleton,
+            crosspool,
+            forwarding,
+        }
+    }
+}
+
+/// The bubble plans lowering reads, projected from the graph by
+/// [`OwnershipGraph::bubble_plans`]. The three plans key on
+/// `(enclosing locus, child type)` and carry the owner locus type `A`;
+/// they are DISJOINT (a site has one edge class and one owner kind).
+/// Every other resolution (SelfOwned direct-parent, non-singleton
+/// cross-pool, per-path, orphan, open) is in none of them and stays
+/// transient. `BubblePlans::default()` is the empty plan: no bubble,
+/// no threading field, nothing stitched — the differential control
+/// arm codegen's `LOTUS_NO_OWNERSHIP_BUBBLE=1` selects.
+#[derive(Debug, Clone, Default)]
+pub struct BubblePlans {
+    /// Interest-based ownership #2, the SameTower + SingletonConst plan:
+    /// an `I{}` born deep inside locus `B` that resolves to a UNIQUE
+    /// accepting ancestor `A` where `A` is a `main locus` / `@export`
+    /// singleton on the same OS thread as `B`. `A`'s pointer folds to
+    /// a global, so the child bubbles to it directly.
+    pub singleton: BTreeMap<(String, String), String>,
+    /// #2b, the SameTower + Ancestor plan: the same bubble to an `A`
+    /// with MULTIPLE instances, whose pointer cannot be a constant and
+    /// is threaded down the birth chain in hidden `__owner_for_<I>`
+    /// fields (see `forwarding`).
+    pub nonsingleton: BTreeMap<(String, String), String>,
+    /// #3, the CrossPool + SingletonConst plan: `A` a singleton on a
+    /// DIFFERENT pool/thread than `B`, so the child is born on `A`'s
+    /// thread through the async post + dispatch path (a bare `I{};`
+    /// statement only).
+    pub crosspool: BTreeMap<(String, String), String>,
+    /// #2b's forwarding sets ([`OwnershipGraph::compute_forwarding_sets`]):
+    /// locus type → the interest types `I` it carries an
+    /// `__owner_for_I` field for.
+    pub forwarding: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// DFS upward from `node` toward `owner` via `instantiated_by`, adding

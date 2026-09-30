@@ -444,12 +444,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // would tighten this; deferred to v1.x. See the
         // resolution note in notes/hale-friction.md
         // `nested-locus-child-field-reads-return-garbage`.
+        //
+        // "The current self accepts this locus" is the ownership
+        // graph's `accepts` relation, from the resolved program: the
+        // child type a locus declares `accept(_: T)` for, the same
+        // relation `accept_param` spells (the checker admits one
+        // `accept` per locus). The graph records the child type as
+        // written and knows only the loci the program declares, so
+        // two shapes keep the lowering's own read, where the child
+        // type is resolved: a locus codegen monomorphised (`Holder<T>`
+        // lowered as `Holder_Int`, which has no graph row), and an
+        // accept param spelled other than the locus it resolves to
+        // (`accept_param_respelled`: an alias, generic arguments, a
+        // `std::` path).
         let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
-            self.user_loci
-                .get(&cs.locus_name)
-                .and_then(|p| p.accept_param.as_ref().cloned())
-                .map(|(_, child_ty)| child_ty == locus_name)
-                .unwrap_or(false)
+            let parent = self.user_loci.get(&cs.locus_name);
+            match self.ownership_accepts.get(&cs.locus_name) {
+                Some(accepts)
+                    if !parent.is_some_and(|p| p.accept_param_respelled) =>
+                {
+                    accepts.contains(locus_name)
+                }
+                _ => parent
+                    .and_then(|p| p.accept_param.as_ref())
+                    .is_some_and(|(_, child_ty)| child_ty == locus_name),
+            }
         } else {
             false
         };

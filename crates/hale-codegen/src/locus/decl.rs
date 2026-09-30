@@ -1240,6 +1240,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 defaults,
                 methods: BTreeMap::new(),
                 accept_param: None,
+                accept_param_respelled: false,
                 release_param: None,
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
@@ -1322,6 +1323,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let mut empty_lifecycle: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
         let mut accept_param: Option<(String, String)> = None;
+        let mut accept_param_respelled = false;
         let mut release_param: Option<(String, String)> = None;
         let mut user_methods: BTreeMap<String, FunctionValue<'ctx>> =
             BTreeMap::new();
@@ -1447,6 +1449,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 None,
                             );
                             methods.insert("accept", func);
+                            accept_param_respelled = !matches!(
+                                &p.ty,
+                                TypeExpr::Named { path, generic_args, .. }
+                                    if generic_args.is_empty()
+                                        && path.segments.len() == 1
+                                        && path.segments[0].name == child_locus
+                            );
                             accept_param =
                                 Some((p.name.name.clone(), child_locus));
                             if lc.body.stmts.is_empty() && lc.body.tail.is_none() {
@@ -2108,6 +2117,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.methods = methods;
         info.empty_lifecycle = empty_lifecycle;
         info.accept_param = accept_param;
+        info.accept_param_respelled = accept_param_respelled;
         info.release_param = release_param;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;

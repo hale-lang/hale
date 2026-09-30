@@ -1106,6 +1106,8 @@ pub fn build_resolved(
         merged,
         owner_table,
         fresh_locus_factories,
+        ownership,
+        bubble,
         ..
     } = resolved;
     let program = &user;
@@ -1286,101 +1288,24 @@ pub fn build_resolved(
         (ids, direct, direct_subs)
     };
 
-    // Interest-based ownership, artifact #2: singleton-owner, same-tower
-    // bubbling. Build the authoritative `OwnershipGraph` over the SAME
-    // merged/desugared bundle the bus graph consumes, then distil it to
-    // the only sites this artifact acts on: an `I{}` born deep inside
-    // locus `B` that resolves to a UNIQUE accepting ancestor `A` where
-    // `A` is a `main locus`/`@export` singleton (`OwnerKind::
-    // SingletonConst`) running on the same OS thread as `B`
-    // (`EdgeClass::SameTower`). Those bubble to `A`; every other
-    // resolution (SelfOwned direct-parent, non-singleton ancestor,
-    // cross-pool, per-path, orphan, open) is dropped and stays transient.
-    // Resolution depends only on `(enclosing_locus, child_ty)` (the graph
-    // climbs the static instantiated-by relation, not a runtime path), so
-    // the plan keys on that pair. `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties
-    // the plan — the differential-gate control arm that proves inertness
-    // (the corpus resolves `Ancestor: 0`, so the plan is empty either way
-    // and behavior is identical on/off).
+    // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
+    // plans (`hale_types::ownership_graph::BubblePlans`), projected in
+    // the resolved program from the ownership graph over the same
+    // merged and desugared program the bus graph above is built from.
+    // The seam routes a singleton hit to the global load, a
+    // non-singleton hit to the threaded-field load and a cross-pool hit
+    // to the async birth on the owner's thread; the forwarding sets
+    // drive both the hidden-field declaration (decl.rs) and the
+    // birth-time 3-way write (instantiation.rs).
     //
-    // Interest-based ownership, artifact #2b: NON-singleton owner
-    // threading (same-tower). #2 handled a SingletonConst ancestor `A`
-    // whose pointer folds to a global; #2b generalizes to an `A` with
-    // MULTIPLE instances, whose pointer cannot be a constant and must be
-    // threaded down the birth chain via hidden `__owner_for_<I>` fields
-    // (see `compute_forwarding_sets`). Both plans are keyed on
-    // `(enclosing_locus, child_ty)`; they are DISJOINT (a site is either
-    // SingletonConst or Ancestor). The seam routes a singleton hit to the
-    // global load and a non-singleton hit to the threaded-field load. The
-    // forwarding sets drive both the hidden-field declaration (decl.rs)
-    // and the birth-time 3-way write (instantiation.rs).
-    //
-    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties BOTH plans AND the forwarding
-    // sets — so the OFF build declares no threading fields, writes none,
-    // and stitches nothing: byte-identical to pre-#2 (the differential
-    // control arm).
-    let (
-        ownership_bubble_plan,
-        ownership_bubble_nonsingleton_plan,
-        ownership_forwarding_sets,
-        ownership_bubble_crosspool_plan,
-    ): (
-        std::collections::BTreeMap<(String, String), String>,
-        std::collections::BTreeMap<(String, String), String>,
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-        std::collections::BTreeMap<(String, String), String>,
-    ) = if options.no_ownership_bubble
-    {
-        (
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-            std::collections::BTreeMap::new(),
-        )
+    // `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties all three plans AND the
+    // forwarding sets — so the OFF build declares no threading fields,
+    // writes none, and stitches nothing: byte-identical to pre-#2 (the
+    // differential control arm).
+    let bubble = if options.no_ownership_bubble {
+        hale_types::ownership_graph::BubblePlans::default()
     } else {
-        use hale_types::ownership_graph::{EdgeClass, OwnerKind, OwnerResolution};
-        let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-        let graph =
-            hale_types::ownership_graph::build_ownership_graph(&bundle, &top);
-        let mut plan: std::collections::BTreeMap<(String, String), String> =
-            std::collections::BTreeMap::new();
-        let mut nonsingleton: std::collections::BTreeMap<
-            (String, String),
-            String,
-        > = std::collections::BTreeMap::new();
-        // Interest-based ownership #3: the cross-pool twin. A site
-        // resolving to `Ancestor(A)` with `OwnerKind::SingletonConst`
-        // AND `EdgeClass::CrossPool` (A a program-start singleton on a
-        // different thread than the enclosing locus) lands here — the
-        // child is born on A's thread via the async post+dispatch path.
-        // Non-singleton cross-pool has no compile-time pool handle for A
-        // → NOT admitted (stays transient, deferred).
-        let mut crosspool: std::collections::BTreeMap<
-            (String, String),
-            String,
-        > = std::collections::BTreeMap::new();
-        for site in &graph.sites {
-            if let OwnerResolution::Ancestor(owner) = &site.resolution {
-                let key =
-                    (site.enclosing_locus.clone(), site.child_ty.clone());
-                match (&site.edge_class, &site.owner_kind) {
-                    (EdgeClass::SameTower, OwnerKind::SingletonConst) => {
-                        plan.insert(key, owner.clone());
-                    }
-                    (EdgeClass::SameTower, OwnerKind::Ancestor) => {
-                        nonsingleton.insert(key, owner.clone());
-                    }
-                    (EdgeClass::CrossPool, OwnerKind::SingletonConst) => {
-                        crosspool.insert(key, owner.clone());
-                    }
-                    // CrossPool + non-singleton (no static pool handle),
-                    // Open, per-path, orphan: stay transient.
-                    _ => {}
-                }
-            }
-        }
-        let forwarding = graph.compute_forwarding_sets();
-        (plan, nonsingleton, forwarding, crosspool)
+        bubble
     };
 
     let context = Context::create();
@@ -1582,10 +1507,11 @@ pub fn build_resolved(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
-        ownership_bubble_plan,
-        ownership_bubble_nonsingleton_plan,
-        ownership_forwarding_sets,
-        ownership_bubble_crosspool_plan,
+        ownership_bubble_plan: bubble.singleton,
+        ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
+        ownership_forwarding_sets: bubble.forwarding,
+        ownership_bubble_crosspool_plan: bubble.crosspool,
+        ownership_accepts: ownership.accepts,
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
@@ -3674,6 +3600,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `LOTUS_NO_OWNERSHIP_BUBBLE=1`.
     pub(crate) ownership_bubble_crosspool_plan:
         std::collections::BTreeMap<(String, String), String>,
+    /// locus type → the child types it declares `accept(_: T)` for: the
+    /// ownership graph's `accepts` relation, from the resolved program.
+    /// `lower_locus_instantiation` reads it to decide whether the
+    /// enclosing locus accepts the child it births (SelfOwned). Not
+    /// emptied under `LOTUS_NO_OWNERSHIP_BUBBLE=1`: direct acceptance
+    /// is not a bubble.
+    pub(crate) ownership_accepts:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// Set true by `lower_stmt` immediately before it lowers a bare
     /// expression-statement locus instantiation (`I { ... };`), and
     /// consumed (mem::take) at the top of `lower_locus_instantiation`.
@@ -5967,6 +5901,14 @@ pub(crate) struct LocusInfo<'ctx> {
     /// lowering and child-instantiation sites (which must call
     /// parent.accept before child.birth, per F.7).
     pub(crate) accept_param: Option<(String, String)>,
+    /// True when the accept param's type is not spelled as the bare
+    /// name of the locus it resolves to: an alias (`accept(c: Kid)`
+    /// for `type Kid = Child`), generic arguments (`accept(c:
+    /// Cell<Int>)`, which lowers as `Cell_Int`) or a `std::` path. The
+    /// ownership graph records the spelling, so its `accepts` row does
+    /// not name the child lowering sees; `lower_locus_instantiation`
+    /// reads `accept_param` for such a locus instead.
+    pub(crate) accept_param_respelled: bool,
     /// For loci that declare `release(child: ChildLocus)` (2026-05-30,
     /// the death-side bookend), the child param's (binding name, child
     /// locus name). None otherwise. Its presence marks `ChildLocus` a
