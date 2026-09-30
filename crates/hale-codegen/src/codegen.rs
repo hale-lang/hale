@@ -12991,6 +12991,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ),
                     span: lc.span.clone(),
                     id: lc.id,
+                    synthesized: lc.synthesized,
                 },
             ),
             LocusMember::Fn(fd) => LocusMember::Fn(FnDecl {

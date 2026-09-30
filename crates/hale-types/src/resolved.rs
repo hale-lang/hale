@@ -56,8 +56,8 @@ pub struct ResolvedProgram {
     /// row of the `bus_inert` family, until the verdict is a row of the
     /// envelope).
     pub user: Program,
-    /// `user` with the bundled stdlib's declarations appended and the
-    /// omitted `run` synthesized: what lowering walks.
+    /// `user` with the bundled stdlib's declarations appended: what
+    /// lowering walks.
     pub merged: Program,
     /// Every site's identity, minted over `merged` after the desugars
     /// with the bundle's source map (ids the bundle already minted are
@@ -202,9 +202,15 @@ pub fn resolve_program(
     // `user_loci` alongside user-declared loci with no special
     // casing in the lowering passes; collision with user names is
     // prevented by the `__Std*` mangled prefix on bundled decls.
-    // The stdlib has been through the same desugar sequence the
-    // user program went through before its check (unit returns,
-    // construction aliases).
+    // The stdlib has been through the same declaration-shaping passes
+    // the user program went through before its check (unit returns,
+    // construction aliases, the omitted `run`). That the stdlib's loci
+    // carry their empty `run` as the user's do matters: pass A2
+    // declares lifecycle methods from whichever declaration of a name
+    // it keeps, and a user seed that spells a stdlib locus's name (the
+    // stdlib's own seeds, harvested into the corpus) would otherwise
+    // carry a `run` its bundled twin lacked, and the body lowering
+    // would find no declaration.
     let stdlib_program = crate::desugar_sequence::bundled_stdlib()?.clone();
     let mut merged = user.clone();
     let user_items = merged.items.len();
@@ -212,15 +218,6 @@ pub fn resolve_program(
     // checks they are still the tail.
     let stdlib_spans: Vec<_> = stdlib_program.items.iter().map(TopDecl::span).collect();
     merged.items.extend(stdlib_program.items);
-    // GH #735: an omitted `run` is an empty `run`, so a flow child is
-    // reclaimed when its (empty) run completes on both spellings. On
-    // the MERGED program, so a bundled stdlib locus is treated as a
-    // user one: pass A2 declares lifecycle methods from whichever
-    // declaration of a name it keeps, and a user seed that spells a
-    // stdlib locus's name (the stdlib's own seeds, harvested into
-    // the corpus) would otherwise carry a `run` its bundled twin
-    // lacked, and the body lowering would find no declaration.
-    hale_syntax::desugar::desugar_omitted_run(&mut merged);
 
     // F.40 phase 1.2a-ii: every site of the merged program has its
     // identity before the pre-pass runs — the stdlib's, and every node
@@ -230,15 +227,16 @@ pub fn resolve_program(
     //
     // The user's items seed by the bundle's source map; the stdlib's,
     // whose spans overlap the first file's, by the stdlib's own seed.
-    // No pass since the merge (the omitted run) adds, removes or
-    // reorders a top-level item, so the stdlib's are still the tail the
-    // merge appended, and go back after the mint. Asserted: a pass that
-    // broke it would seed user items as the stdlib's, or the reverse.
+    // No pass runs between the merge and the mint, so the stdlib's are
+    // still the tail the merge appended, and go back after the mint.
+    // Asserted: a pass put there that added, removed or reordered a
+    // top-level item would seed user items as the stdlib's, or the
+    // reverse.
     assert!(
         merged.items.len() == user_items + stdlib_spans.len()
             && merged.items[user_items..].iter().map(TopDecl::span).eq(stdlib_spans.iter().copied()),
         "the merged program's tail is no longer the stdlib's items: a pass between the merge \
-         and the mint (desugar_omitted_run) added, removed or reordered a top-level item"
+         and the mint added, removed or reordered a top-level item"
     );
     let mut stdlib = Program {
         effect_names: Vec::new(),

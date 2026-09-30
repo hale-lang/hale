@@ -5495,6 +5495,7 @@ impl Parser {
             span: kw_tok.span.merge(body.span),
             body,
             id: NodeId::NONE,
+            synthesized: false,
         })
     }
 

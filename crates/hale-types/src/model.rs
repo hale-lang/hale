@@ -132,7 +132,9 @@ impl Model {
                                 LocusMember::Fn(fd) => {
                                     (fd.name.name.clone(), false)
                                 }
-                                LocusMember::Lifecycle(lc) => (
+                                // The model lists the hooks the author
+                                // wrote, not the omitted `run`.
+                                LocusMember::Lifecycle(lc) if !lc.synthesized => (
                                     match lc.kind {
                                         LifecycleKind::Birth => "birth",
                                         LifecycleKind::Accept => {

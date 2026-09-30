@@ -1440,7 +1440,11 @@ pub fn summarize_programs_with_renames(
                                     param_var_elem_types(&decl.params),
                                 ));
                             }
-                            LocusMember::Lifecycle(lc) => {
+                            // The empty `run` a locus that declares none
+                            // is given has no body to summarize, and the
+                            // summary's keys are the model's functions:
+                            // it lists the hooks the author wrote.
+                            LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let (name, entry) = lifecycle_key(lc.kind);
                                 let key = FnKey::method(locus.clone(), name);
                                 if lc.unbounded {

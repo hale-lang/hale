@@ -23,6 +23,10 @@
 //!    declaration the alias chain ends at
 //!    ([`crate::mangle::resolve_construction_aliases`]), over the
 //!    whole bundle at once.
+//! 5. the omitted `run`: a locus that declares no `run` gets an empty
+//!    one (GH #735, spec `semantics.md` § `run()`: the two spellings
+//!    are the same program), carrying its locus's span, so the checker
+//!    and the model see the program lowering lowers.
 //!
 //! The first two generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
@@ -88,6 +92,9 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         normalize_unit_return_annotations(&mut p.items);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
+    for p in programs.iter_mut() {
+        hale_syntax::desugar::desugar_omitted_run(p);
+    }
 }
 
 /// The bundled stdlib, parsed once and put through the passes that

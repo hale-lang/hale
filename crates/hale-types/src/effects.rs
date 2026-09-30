@@ -366,8 +366,10 @@ fn phase_effects_diags(
                         LocusMember::Fn(fd) if fd.name.name == *phase => {
                             Some(fd.name.span)
                         }
+                        // An omitted `run` is the implicit hook below,
+                        // not a declared one (`LifecycleDecl::synthesized`).
                         LocusMember::Lifecycle(lc)
-                            if lifecycle_name(lc.kind) == *phase =>
+                            if lifecycle_name(lc.kind) == *phase && !lc.synthesized =>
                         {
                             Some(lc.span)
                         }
@@ -400,7 +402,7 @@ fn phase_effects_diags(
                             LocusMember::Fn(fd) => {
                                 candidates.push(fd.name.name.clone())
                             }
-                            LocusMember::Lifecycle(lc) => candidates
+                            LocusMember::Lifecycle(lc) if !lc.synthesized => candidates
                                 .push(lifecycle_name(lc.kind).to_string()),
                             _ => {}
                         }
@@ -1997,7 +1999,10 @@ pub fn effect_manifest_with_inference(
                             // notice a handler that starts doing
                             // filesystem I/O, which is the exact
                             // regression the CI gate exists to catch.
-                            LocusMember::Lifecycle(lc) => {
+                            // The hooks the author wrote: an omitted
+                            // `run` (`LifecycleDecl::synthesized`) does
+                            // nothing to fingerprint.
+                            LocusMember::Lifecycle(lc) if !lc.synthesized => {
                                 let phase = lifecycle_name(lc.kind);
                                 add(
                                     format!(

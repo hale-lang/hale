@@ -130,6 +130,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         body,
         span: main_span,
         id: NodeId::NONE,
+        synthesized: false,
     };
     let locus = LocusDecl {
         imported: false,
@@ -1595,6 +1596,7 @@ pub fn desugar_omitted_run(program: &mut Program) {
                             body: Block { stmts: Vec::new(), tail: None, span: l.span },
                             span: l.span,
                             id: NodeId::NONE,
+                            synthesized: true,
                         }));
                     }
                 }

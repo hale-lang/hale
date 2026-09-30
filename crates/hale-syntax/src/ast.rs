@@ -1969,6 +1969,13 @@ pub struct LifecycleDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// The empty `run` `desugar::desugar_omitted_run` gives a locus
+    /// that declares none (GH #735). The spec makes the two spellings
+    /// one program; what must still tell them apart (the application
+    /// model, whose function and phase tables are the artifact's
+    /// identity, lists the hooks the author wrote) reads this, never
+    /// the absence of author text. `false` for every written hook.
+    pub synthesized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
