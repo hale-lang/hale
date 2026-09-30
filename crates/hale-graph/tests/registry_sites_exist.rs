@@ -16,7 +16,8 @@
 //! is often a call that re-runs a producer or a row constructor, so
 //! its identifier must be used in a code line, not only a comment.
 //! Consumer and seam sites reference a symbol rather than define it,
-//! so they are held to the verbatim rule.
+//! so they are held to the verbatim rule. A family's focused tests are
+//! paths, and each must be a file.
 
 use std::path::{Path, PathBuf};
 
@@ -186,6 +187,18 @@ fn every_registered_site_exists() {
                 );
                 seen += 1;
             }
+        }
+        // A focused test is a path, optionally followed by a note
+        // (`path (the test's name)`): the path is what must exist.
+        for t in f.tests {
+            let path = t.split(' ').next().unwrap_or(t);
+            if !root.join(path).is_file() {
+                missing.push(format!(
+                    "family `{}` test: {path} does not exist",
+                    f.name
+                ));
+            }
+            seen += 1;
         }
         for s in f.seams {
             for (allowed, _) in s.allowed {
