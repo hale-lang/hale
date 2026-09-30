@@ -9,6 +9,7 @@ use crate::shared::diag::diag_file_name;
 use std::env;
 use std::fs;
 use crate::shared::frontend::parse_with_imports;
+use crate::shared::source::Disk;
 use crate::shared::diag::render_codegen_error;
 /// `hale bench [file | dir] [-run <substr>] [--json]` — the Layer-3
 /// runner (spec/testing.md). Discovers `*_bench.hl` files; each
@@ -244,7 +245,7 @@ pub(crate) fn run_bench_file(
     let bench_scratch = RunScratch::new("bench")?;
     let compile = (|| -> Result<PathBuf, String> {
         let (mut prog, renames, sources, file_bases, ctx) =
-            match parse_with_imports(&tmp_src) {
+            match parse_with_imports(&tmp_src, &Disk) {
                 Ok(x) => x,
                 Err(errors) => {
                     let msg = errors

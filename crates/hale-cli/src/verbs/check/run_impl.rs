@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::path::Path;
 use hale_syntax::ast::Program;
 use crate::shared::frontend::collect_checkable;
+use crate::shared::source::Disk;
 use crate::verbs::model::diff_lines;
 use crate::shared::options::inject_adopt;
 use crate::shared::diag::render_diag_json;
@@ -67,7 +68,7 @@ pub(crate) fn run_check_impl_labelled(
     // these names all along; only the analysis phases could not see
     // them.
     let (mut programs, sources, file_bases, import_renames, own_files) =
-        match collect_checkable(target) {
+        match collect_checkable(target, &Disk) {
             Ok(x) => x,
             // GH #765: a failure that carries diagnostics renders them
             // here, honouring `--json` and resolving each span against

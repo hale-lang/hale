@@ -287,7 +287,8 @@ pub const FAMILIES: &[Family] = &[
             legacy(FRONTEND, "collect_checkable", "the directory entry for `hale check`; short-circuits a single file with no imports", "phase 2"),
             legacy(V_BUILD, "run_build", "a hand-copied directory body inside the build verb", "phase 2: one loader"),
             legacy(V_RUN, "run_program", "a hand-copied directory body inside the run verb", "phase 2: one loader"),
-            legacy(LSP, "analyze_seed", "the changed file's parent directory only; resolves no `import`; the same body is inlined into `check_and_publish`", "phase 2: the LSP loads through the shared frontend with an overlay source provider"),
+            legacy(FRONTEND, "SeedDirectoryOnly", "the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request", "the LSP loads the whole seed with imports (2.3, step 5)"),
+            legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the one in `check_and_publish`; neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("bench"), consumer("lsp"), consumer("dna (via the CLI)")],
         invariants: &[

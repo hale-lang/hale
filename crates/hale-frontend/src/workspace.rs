@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::source::SourceProvider;
+
 /// Walk upward from `start` looking for a `Cargo.toml`; the first
 /// directory containing one is treated as the workspace root.
 /// Used for the workspace-root fallback in import resolution.
@@ -73,12 +75,16 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 ///
 /// `import "main"` from inside the directory itself is left alone —
 /// collapsing it would make a seed import itself.
-pub fn seed_dir_for_entry_file(single: &Path, importer_dir: &Path) -> Option<PathBuf> {
+pub fn seed_dir_for_entry_file(
+    single: &Path,
+    importer_dir: &Path,
+    src: &dyn SourceProvider,
+) -> Option<PathBuf> {
     if single.file_name().and_then(|s| s.to_str()) != Some("main.hl") {
         return None;
     }
     let dir = single.parent()?;
-    if !dir.is_dir() {
+    if !src.is_dir(dir) {
         return None;
     }
     let canon_dir = dir.canonicalize().ok()?;

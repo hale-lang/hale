@@ -12,6 +12,8 @@ use crate::shared::process::RunScratch;
 use crate::shared::options::bind_build_env;
 use crate::build_env;
 use crate::shared::frontend::collect_ap_files;
+use crate::shared::frontend::LoadMode;
+use crate::shared::source::Disk;
 use crate::shared::process::dies_with_us;
 use crate::shared::options::exec_digest;
 use crate::shared::workspace::find_workspace_root;
@@ -170,7 +172,7 @@ pub(crate) fn run_program(
         // `build_executable_with_imports`, so qualified
         // `alias::Name` references in the entry file resolve the
         // same way `hale build` resolves them.
-        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
+        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target, &Disk) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
@@ -237,14 +239,14 @@ pub(crate) fn run_program(
         );
     }
 
-    let files = match collect_ap_files(target) {
+    let files = match collect_ap_files(target, LoadMode::WholeSeed, &Disk) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}", e);
             return ExitCode::from(1);
         }
     };
-    let (programs, sources, mut file_bases) = match parse_files(&files) {
+    let (programs, sources, mut file_bases) = match parse_files(&files, &Disk) {
         Ok(x) => x,
         // `run` has no machine-readable channel: the same located
         // text it always printed (GH #777 moved the printing here).
@@ -321,6 +323,7 @@ pub(crate) fn run_program(
         &mut effects,
         &target_scope,
         &mut alias_scopes,
+        &Disk,
     )
     .is_err()
         || !import_errors.is_empty()

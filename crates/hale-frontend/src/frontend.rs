@@ -10,7 +10,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
 use super::workspace::find_workspace_root;
-use std::fs;
+use super::source::SourceProvider;
 use super::diag::render_diag_json;
 use super::diag::render_located;
 use super::imports::resolve_imports;
@@ -38,6 +38,7 @@ pub struct EntryCtx {
 
 pub fn parse_with_imports(
     entry: &Path,
+    src: &dyn SourceProvider,
 ) -> Result<
     (
         Program,
@@ -63,7 +64,7 @@ pub fn parse_with_imports(
         .to_path_buf();
 
     let entry_canon = entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf());
-    let entry_source = match fs::read_to_string(entry) {
+    let entry_source = match src.read(entry) {
         Ok(s) => s,
         Err(e) => {
             // GH #903: the last "print here, hand back nothing" site
@@ -134,6 +135,7 @@ pub fn parse_with_imports(
         &mut effects,
         &entry_scope,
         &mut alias_scopes,
+        src,
     )
     .is_err()
     {
@@ -212,19 +214,14 @@ pub fn parse_with_imports(
     Ok((merged, renames, sources, file_bases, ctx))
 }
 
-pub fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
+pub fn collect_target_files(
+    t: &ImportTarget,
+    src: &dyn SourceProvider,
+) -> Result<Vec<PathBuf>, String> {
     match t {
         ImportTarget::SingleFile(p) => Ok(vec![p.clone()]),
         ImportTarget::Directory(d) => {
-            let mut out = Vec::new();
-            for entry in fs::read_dir(d).map_err(|e| e.to_string())? {
-                let e = entry.map_err(|e| e.to_string())?;
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("hl") {
-                    out.push(p);
-                }
-            }
-            out.sort();
+            let out = src.hl_files(d).map_err(|e| e.to_string())?;
             if out.is_empty() {
                 return Err(format!(
                     "imported directory {} contains no .hl files",
@@ -236,30 +233,74 @@ pub fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
     }
 }
 
-pub fn collect_ap_files(target: &Path) -> Result<Vec<PathBuf>, String> {
-    if target.is_file() {
-        return Ok(vec![target.to_path_buf()]);
-    }
-    if target.is_dir() {
-        let mut out: Vec<PathBuf> = Vec::new();
-        for entry in fs::read_dir(target).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("hl") {
-                out.push(p);
-            }
-        }
-        out.sort();
+/// Which files a load starts from, given the target it was handed.
+///
+/// One mode per entry-point shape, so the difference between the CLI's
+/// load and the LSP's is this enum, not two walks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadMode {
+    /// The CLI (`check`, `build`, `run`, ...): the target as named — a
+    /// directory is the seed, a file is a seed of one — and the loaders
+    /// above then follow every `import` it declares
+    /// ([`parse_with_imports`], [`collect_checkable`]).
+    WholeSeed,
+    /// The LSP, until it loads through the whole-seed path (F.40 phase
+    /// 2.3, step 5): a FILE target stands for the directory around it
+    /// (the F.19 seed of the file being edited), and it is a member of
+    /// that directory even when it exists only as an editor buffer. No
+    /// `import` is followed — the LSP parses these files and checks
+    /// them as they are, so a name reached through an imported seed is
+    /// not seen, and the editor can disagree with `hale check` on a
+    /// seed that imports.
+    SeedDirectoryOnly,
+}
+
+/// The `.hl` files a load starts from: see [`LoadMode`].
+pub fn collect_ap_files(
+    target: &Path,
+    mode: LoadMode,
+    src: &dyn SourceProvider,
+) -> Result<Vec<PathBuf>, String> {
+    if src.is_dir(target) {
+        let out = src.hl_files(target).map_err(|e| e.to_string())?;
         if out.is_empty() {
             return Err(format!("no .hl files in {}", target.display()));
         }
         return Ok(out);
     }
-    Err(format!("not a file or directory: {}", target.display()))
+    match mode {
+        LoadMode::WholeSeed => {
+            if src.exists(target) {
+                return Ok(vec![target.to_path_buf()]);
+            }
+            Err(format!("not a file or directory: {}", target.display()))
+        }
+        LoadMode::SeedDirectoryOnly => {
+            let dir = target.parent().unwrap_or(Path::new("."));
+            // A directory that will not list leaves the target alone:
+            // the file being edited is always checked.
+            let mut out = src.hl_files(dir).unwrap_or_default();
+            if !out.iter().any(|f| same_file(f, target)) {
+                out.push(target.to_path_buf());
+                out.sort();
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Two spellings of one file: canonically equal when both are on disk,
+/// else equal as written.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
 }
 
 pub fn parse_files(
     files: &[PathBuf],
+    src: &dyn SourceProvider,
 ) -> Result<
     (
         BTreeMap<PathBuf, Program>,
@@ -282,7 +323,7 @@ pub fn parse_files(
     // printed here and nowhere else.
     let mut io_diags: Vec<IoDiag> = Vec::new();
     for f in files {
-        let source = match fs::read_to_string(f) {
+        let source = match src.read(f) {
             Ok(s) => s,
             Err(e) => {
                 io_diags.push(IoDiag::read(
@@ -468,6 +509,7 @@ impl CheckableFailure {
 #[allow(clippy::type_complexity)]
 pub fn collect_checkable(
     target: &Path,
+    src: &dyn SourceProvider,
 ) -> Result<
     (
         BTreeMap<PathBuf, Program>,
@@ -478,7 +520,7 @@ pub fn collect_checkable(
     ),
     CheckableFailure,
 > {
-    let files = match collect_ap_files(target) {
+    let files = match collect_ap_files(target, LoadMode::WholeSeed, src) {
         Ok(f) => f,
         Err(e) => {
             // GH #806: a target that is not there, or whose directory
@@ -493,7 +535,7 @@ pub fn collect_checkable(
     // same road an imported file's does — the diagnostics reach the
     // one reporting site, which honours `--json`.
     let (programs, sources, file_bases) =
-        parse_files(&files).map_err(CheckableFailure::from_parse)?;
+        parse_files(&files, src).map_err(CheckableFailure::from_parse)?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -545,7 +587,7 @@ pub fn collect_checkable(
     let mut claims: FileClaims = FileClaims::new();
     let mut file_bases = file_bases;
     let mut errors: Vec<ImportDiag> = Vec::new();
-    let importer_dir = if target.is_dir() {
+    let importer_dir = if src.is_dir(target) {
         target.to_path_buf()
     } else {
         target.parent().unwrap_or(Path::new(".")).to_path_buf()
@@ -571,6 +613,7 @@ pub fn collect_checkable(
         &mut effects,
         &target_scope,
         &mut alias_scopes,
+        src,
     )
     .is_err();
     // GH #765: `resolve_imports` reports an imported file's PARSE

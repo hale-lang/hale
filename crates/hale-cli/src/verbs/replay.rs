@@ -9,6 +9,7 @@ use crate::shared::options::exec_digest;
 use crate::shared::options::model_identity;
 use crate::shared::options::parse_exec_build_options;
 use crate::shared::frontend::parse_with_imports;
+use crate::shared::source::Disk;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::replay;
@@ -211,7 +212,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // Same compile pipeline as `hale run` (parse → check → model
     // hash), so a recording is admitted against exactly what runs.
     let (mut program, renames, sources, file_bases, _ctx) =
-        match parse_with_imports(&prog) {
+        match parse_with_imports(&prog, &Disk) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };

@@ -13,6 +13,7 @@ use std::env;
 use std::fs;
 use crate::shared::diag::json_escape;
 use crate::shared::frontend::parse_with_imports;
+use crate::shared::source::Disk;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 /// Verdict for one `*_test.hl` file.
@@ -75,7 +76,7 @@ pub(crate) fn compile_test_binary(
     entry: &Path,
     scratch: &RunScratch,
 ) -> Result<PathBuf, String> {
-    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry) {
+    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry, &Disk) {
         Ok(x) => x,
         Err(errors) => {
             let mut msg = String::new();

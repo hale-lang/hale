@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 // manifest through the CLI's `pkg`.
 pub(crate) use hale_frontend::workspace::*;
 
-use super::frontend::{collect_ap_files, collect_target_files};
+use super::frontend::{collect_ap_files, collect_target_files, LoadMode};
+use super::source::Disk;
 use super::imports::resolve_import;
 
 /// The transitive input set of a seed: its own `.hl` files and those
@@ -21,7 +22,7 @@ pub(crate) fn seed_inputs(target: &Path) -> Result<Vec<PathBuf>, String> {
     let workspace_root = find_workspace_root(target);
     let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
-    let mut queue: Vec<PathBuf> = collect_ap_files(target)?;
+    let mut queue: Vec<PathBuf> = collect_ap_files(target, LoadMode::WholeSeed, &Disk)?;
     while let Some(f) = queue.pop() {
         let canon = f.canonicalize().unwrap_or_else(|_| f.clone());
         if !seen.insert(canon.clone()) {
@@ -32,8 +33,8 @@ pub(crate) fn seed_inputs(target: &Path) -> Result<Vec<PathBuf>, String> {
         let Ok(src) = fs::read_to_string(&canon) else { continue };
         let Ok(program) = hale_syntax::parse_source(&src) else { continue };
         for imp in &program.imports {
-            if let Some(t) = resolve_import(&dir, workspace_root.as_deref(), &imp.path) {
-                if let Ok(files) = collect_target_files(&t) {
+            if let Some(t) = resolve_import(&dir, workspace_root.as_deref(), &imp.path, &Disk) {
+                if let Ok(files) = collect_target_files(&t, &Disk) {
                     queue.extend(files);
                 }
             }

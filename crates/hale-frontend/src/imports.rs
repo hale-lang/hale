@@ -7,7 +7,7 @@ use hale_syntax::ast::Program;
 use super::frontend::collect_target_files;
 use super::diag::diag_file_name;
 use super::diag::display_relative;
-use std::fs;
+use super::source::SourceProvider;
 use super::workspace::sanitize_identifier;
 use super::workspace::seed_dir_for_entry_file;
 use super::workspace::top_decl_ident;
@@ -130,22 +130,23 @@ pub fn resolve_import(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
     import_path: &str,
+    src: &dyn SourceProvider,
 ) -> Option<ImportTarget> {
     let single = importer_dir.join(format!("{}.hl", import_path));
-    if single.is_file() {
+    if src.exists(&single) {
         // GH #763: the entry file of a seed is the seed.
-        if let Some(dir) = seed_dir_for_entry_file(&single, importer_dir) {
+        if let Some(dir) = seed_dir_for_entry_file(&single, importer_dir, src) {
             return Some(ImportTarget::Directory(dir));
         }
         return Some(ImportTarget::SingleFile(single));
     }
     let dir_local = importer_dir.join(import_path);
-    if dir_local.is_dir() {
+    if src.is_dir(&dir_local) {
         return Some(ImportTarget::Directory(dir_local));
     }
     if let Some(root) = workspace_root {
         let dir_root = root.join(import_path);
-        if dir_root.is_dir() {
+        if src.is_dir(&dir_root) {
             return Some(ImportTarget::Directory(dir_root));
         }
     }
@@ -270,6 +271,7 @@ pub fn unresolved_import_diag(
     fallback: IoDiag,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &mut BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> ImportDiag {
     let off = path_span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
@@ -278,7 +280,7 @@ pub fn unresolved_import_diag(
         }
         let source = match sources.get(path) {
             Some(s) => s.clone(),
-            None => match fs::read_to_string(path) {
+            None => match src.read(path) {
                 Ok(s) => {
                     sources.insert(path.clone(), s.clone());
                     s
@@ -338,6 +340,7 @@ pub fn import_site(
     path_span: hale_syntax::Span,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> Option<String> {
     let off = path_span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
@@ -346,7 +349,7 @@ pub fn import_site(
         }
         let text = match sources.get(path) {
             Some(s) => s.clone(),
-            None => fs::read_to_string(path).ok()?,
+            None => src.read(path).ok()?,
         };
         let (line, _) =
             path_span.shifted(base.wrapping_neg()).line_col(&text);
@@ -391,6 +394,7 @@ pub fn claim_library_files(
     claims: &mut FileClaims,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &mut BTreeMap<PathBuf, String>,
+    src: &dyn SourceProvider,
 ) -> Option<ImportDiag> {
     for file in files {
         let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
@@ -413,7 +417,7 @@ pub fn claim_library_files(
         } else {
             (&fresh, &prev)
         };
-        let at = match import_site(other.path_span, file_bases, sources) {
+        let at = match import_site(other.path_span, file_bases, sources, src) {
             Some(s) => format!(" at {}", s),
             None => String::new(),
         };
@@ -441,6 +445,7 @@ pub fn claim_library_files(
             IoDiag::target(&canon, message),
             file_bases,
             sources,
+            src,
         ));
     }
     None
@@ -484,6 +489,8 @@ pub fn resolve_imports(
     // followed. Every alias in `imports` is recorded against it.
     scope_key: &Path,
     alias_scopes: &mut AliasScopes,
+    // Where every file of the graph is read from (F.40 phase 2.1a).
+    src: &dyn SourceProvider,
 ) -> Result<(), ()> {
     // Defensive guards + env-gated tracing. The guards bound the
     // resolver's accumulators so a future bug (or pathological
@@ -539,7 +546,7 @@ pub fn resolve_imports(
             Some(a) => a.clone(),
             None => continue, // v1.x-IMPORT PR1 enforces; defensive.
         };
-        let target = match resolve_import(importer_dir, workspace_root, &imp.path) {
+        let target = match resolve_import(importer_dir, workspace_root, &imp.path, src) {
             Some(t) => t,
             None => {
                 // GH #860: the three places the resolver looked,
@@ -572,11 +579,12 @@ pub fn resolve_imports(
                     ),
                     file_bases,
                     sources,
+                    src,
                 ));
                 return Err(());
             }
         };
-        let files = match collect_target_files(&target) {
+        let files = match collect_target_files(&target, src) {
             Ok(f) => f,
             Err(e) => {
                 // GH #806: the sentence goes to the caller in the
@@ -618,6 +626,7 @@ pub fn resolve_imports(
             claims,
             file_bases,
             sources,
+            src,
         ) {
             errors.push(conflict);
             return Err(());
@@ -638,7 +647,7 @@ pub fn resolve_imports(
             if !visited.insert(canon.clone()) {
                 continue;
             }
-            let source = match fs::read_to_string(&file) {
+            let source = match src.read(&file) {
                 Ok(s) => s,
                 Err(e) => {
                     // GH #806: an imported file that will not open is
@@ -846,6 +855,7 @@ pub fn resolve_imports(
                 // against whoever imported it.
                 &lib_key,
                 alias_scopes,
+                src,
             )?;
         }
         // Move mangled items into the merged program; stash sources.

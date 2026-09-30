@@ -12,5 +12,6 @@ pub(crate) use hale_frontend::frontend;
 pub(crate) use hale_frontend::imports;
 pub(crate) mod options;
 pub(crate) mod process;
+pub(crate) use hale_frontend::source;
 pub(crate) mod stale;
 pub(crate) mod workspace;

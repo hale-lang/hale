@@ -15,8 +15,11 @@
 //! - [`workspace`]: the workspace root and the seed walk.
 //! - [`diag`]: the located and `--json` renderers the loaders' failures
 //!   travel through.
+//! - [`source`]: where the loaders read from — the disk for the CLI,
+//!   the editor's buffers over the disk for the LSP.
 
 pub mod diag;
 pub mod frontend;
 pub mod imports;
+pub mod source;
 pub mod workspace;

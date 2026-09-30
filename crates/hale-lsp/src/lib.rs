@@ -39,6 +39,8 @@ use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
+use hale_frontend::frontend::{collect_ap_files, LoadMode};
+use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
 pub fn run_lsp() -> ExitCode {
@@ -510,26 +512,8 @@ fn check_and_publish(
         );
         return;
     }
-    let seed_dir = changed
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    // Gather the seed's .hl files (sorted, mirroring collect_ap_files);
-    // the changed file itself is included even if not yet on disk.
-    let mut files: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&seed_dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("hl") {
-                files.push(p);
-            }
-        }
-    }
-    if !files.iter().any(|f| same_file(f, changed)) {
-        files.push(changed.to_path_buf());
-    }
-    files.sort();
+    let src = Overlay::new(overlays);
+    let files = seed_files(changed, &src);
 
     // Parse each file at a distinct base (overlay text wins).
     let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
@@ -539,10 +523,9 @@ fn check_and_publish(
     let mut parse_diags: BTreeMap<PathBuf, Vec<hale_syntax::Diag>> =
         BTreeMap::new();
     for f in &files {
-        let source = overlay_or_disk(f, overlays);
-        let source = match source {
-            Some(s) => s,
-            None => continue,
+        let source = match src.read(f) {
+            Ok(s) => s,
+            Err(_) => continue,
         };
         let base = file_bases
             .last()
@@ -733,21 +716,14 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn overlay_or_disk(
-    path: &Path,
-    overlays: &BTreeMap<PathBuf, String>,
-) -> Option<String> {
-    if let Some(s) = overlays.get(path) {
-        return Some(s.clone());
-    }
-    // Overlay keys come from URIs (usually canonical); direct-read
-    // fallbacks handle the mismatch.
-    if let Ok(canon) = path.canonicalize() {
-        if let Some(s) = overlays.get(&canon) {
-            return Some(s.clone());
-        }
-    }
-    std::fs::read_to_string(path).ok()
+/// The files of the changed file's seed, as the LSP loads it today:
+/// the frontend's [`LoadMode::SeedDirectoryOnly`] — the file's own
+/// directory, the file itself even when it exists only as a buffer, and
+/// no `import` followed. A directory that will not list leaves the file
+/// alone.
+fn seed_files(changed: &Path, src: &Overlay<'_>) -> Vec<PathBuf> {
+    collect_ap_files(changed, LoadMode::SeedDirectoryOnly, src)
+        .unwrap_or_else(|_| vec![changed.to_path_buf()])
 }
 
 /// A merged-coordinate related span → LSP `DiagnosticRelatedInformation`,
@@ -841,32 +817,17 @@ fn analyze_seed(
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> SeedAnalysis {
-    let seed_dir = changed
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let mut files: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&seed_dir) {
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("hl") {
-                files.push(p);
-            }
-        }
-    }
-    if !files.iter().any(|f| same_file(f, changed)) {
-        files.push(changed.to_path_buf());
-    }
-    files.sort();
+    let src = Overlay::new(overlays);
+    let files = seed_files(changed, &src);
 
     let mut sources = BTreeMap::new();
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut programs = BTreeMap::new();
     let mut parse_ok = true;
     for f in &files {
-        let source = match overlay_or_disk(f, overlays) {
-            Some(s) => s,
-            None => continue,
+        let source = match src.read(f) {
+            Ok(s) => s,
+            Err(_) => continue,
         };
         let base = file_bases
             .last()
@@ -1009,7 +970,7 @@ fn formatting(
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     let path = text_document_path(msg)?;
-    let src = overlay_or_disk(&path, overlays)?;
+    let src = Overlay::new(overlays).read(&path).ok()?;
     let out = match hale_syntax::fmt::format_source(&src) {
         Ok(o) => o,
         Err(_) => return None,
@@ -1057,7 +1018,7 @@ fn document_symbols(
 ) -> Option<Value> {
     use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
     let path = text_document_path(msg)?;
-    let src = overlay_or_disk(&path, overlays)?;
+    let src = Overlay::new(overlays).read(&path).ok()?;
     let program = hale_syntax::parse_source(&src).ok()?;
 
     let mk = |name: &str,

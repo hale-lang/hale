@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::imports::{resolve_import, ImportTarget};
+use super::source::Disk;
 use crate::build_env;
 
 /// The `hale build` / `hale run` flags whose value is the NEXT argv
@@ -429,7 +430,7 @@ pub(crate) fn collect_ffi_from_imports(
         if imp.path.starts_with("std/") || imp.path == "std" {
             continue;
         }
-        let target = match resolve_import(importer_dir, workspace_root, &imp.path) {
+        let target = match resolve_import(importer_dir, workspace_root, &imp.path, &Disk) {
             Some(t) => t,
             None => continue,
         };

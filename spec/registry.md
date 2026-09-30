@@ -2,13 +2,13 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 174 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
 | family | layer | state | kind | producer | legacy | answers |
 |---|---|---|---|---|---|---|
-| `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 4 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
+| `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 6 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | — | 11 | Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
@@ -67,7 +67,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-frontend/src/frontend.rs` · `collect_checkable` — the directory entry for `hale check`; short-circuits a single file with no imports. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/build.rs` · `run_build` — a hand-copied directory body inside the build verb. *Removed when:* phase 2: one loader.
 - `crates/hale-cli/src/verbs/run.rs` · `run_program` — a hand-copied directory body inside the run verb. *Removed when:* phase 2: one loader.
-- `crates/hale-lsp/src/lib.rs` · `analyze_seed` — the changed file's parent directory only; resolves no `import`; the same body is inlined into `check_and_publish`. *Removed when:* phase 2: the LSP loads through the shared frontend with an overlay source provider.
+- `crates/hale-frontend/src/frontend.rs` · `SeedDirectoryOnly` — the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request. *Removed when:* the LSP loads the whole seed with imports (2.3, step 5).
+- `crates/hale-lsp/src/lib.rs` · `analyze_seed` — parses the files `seed_files` names at their own bases with its own loop, a copy of the one in `check_and_publish`; neither goes through `parse_files`. *Removed when:* the LSP loads the whole seed with imports (2.3, step 5).
 
 **Consumers.** check; build; run; test; replay; bench; lsp; dna (via the CLI)
 
