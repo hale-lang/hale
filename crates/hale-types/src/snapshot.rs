@@ -172,7 +172,15 @@ pub fn mint<'a>(
         });
     }
     sites.sort_by_key(|s| s.id.index);
-    sites.dedup_by_key(|s| s.id.index);
+    // One id, one site: a second site carrying an id is a walk that
+    // copied a node without minting it, and the rows keyed by that id
+    // would answer for both.
+    if let Some(w) = sites.windows(2).find(|w| w[0].id.index == w[1].id.index) {
+        panic!(
+            "two sites share snapshot id {}: {:?} at {:?} and {:?} at {:?}",
+            w[0].id.index, w[0].kind, w[0].span, w[1].kind, w[1].span
+        );
+    }
     let mut snapshot = Snapshot { sites, seeds, origins: Vec::new() };
 
     let mut by_index: BTreeMap<u32, Origin> = BTreeMap::new();

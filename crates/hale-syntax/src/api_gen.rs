@@ -1911,7 +1911,10 @@ fn subscriber_members(c: &ApiCommand, s: &ApiSubscriber, replies: bool) -> Resul
     );
     let members = parse_locus_members(&src)?;
     let mut member = s.member.clone();
-    if let BusMember::Subscribe { subject, handler, ty, bound, .. } = &mut member {
+    if let BusMember::Subscribe { subject, handler, ty, bound, id, .. } = &mut member {
+        // A new site, not the subscription it was copied from: the
+        // next mint numbers it (two sites with one id is a panic).
+        *id = NodeId::NONE;
         *subject = BusSubject::Topic(Ident {
             name: format!("__ApiCallT_{}", m),
             span: handler.span,
