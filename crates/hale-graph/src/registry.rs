@@ -1223,7 +1223,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "The identity of every semantic site in a snapshot: `(seed, index)`, minted once after desugar, with reliable provenance.",
         inputs: &["seed_loading", "desugar_sequence"],
-        producer: None,
+        producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[
             legacy(CG_OWN, "ExprId", "F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass", "the snapshot mints every id (phase 1.1)"),
             legacy(CG_OWN, "BindingKey", "a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210)", "same"),
@@ -1236,7 +1236,7 @@ pub const FAMILIES: &[Family] = &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
             "canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate",
-            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); the minting pass of phase 1.1b is the producer",
+            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches, once, after desugar, with one counter over the merged program (phase 1.1b); the verbs and the LSP call it, and the F.39 pre-pass keeps what it minted",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],

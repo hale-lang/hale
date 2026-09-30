@@ -7,6 +7,8 @@ license.workspace = true
 description = "Hale language: type checker (Phase 1 milestone 2)"
 
 [dependencies]
+# The graph core (F.40): snapshot identity, provenance mechanics.
+hale-graph = { path = "../hale-graph" }
 hale-model = { path = "../hale-model" }
 hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }

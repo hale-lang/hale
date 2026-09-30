@@ -1652,6 +1652,8 @@ crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/self_containing_locus.rs#10 7fcd9d3c87565eae
 crates/hale-types/tests/self_containing_locus.rs#11 1d9bb2dd607e1c91
 crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
+crates/hale-types/tests/snapshot.rs#0 36036aa68555ae99
+crates/hale-types/tests/snapshot.rs#1 79c6c4f8b494f43b
 crates/hale-types/tests/stdlib_name_check.rs#2 865d341109268295
 crates/hale-types/tests/stdlib_name_check.rs#4 7ba49c53bd84fd5d
 crates/hale-types/tests/stdlib_name_check.rs#5 f2c1228edb650960
