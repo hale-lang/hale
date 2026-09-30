@@ -280,13 +280,12 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "seed_loading",
         layer: Layer::Parse,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Desugar,
         answers: "Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases.",
         inputs: &[".hl files", "import directives", "the workspace root (hale.toml)", "editor overlays (LSP)"],
         producer: Some(site(FRONTEND, "collect_checkable")),
-        legacy: &[
-        ],
+        legacy: &[],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("bench"), consumer("lsp"), consumer("dna (via the CLI)")],
         invariants: &[
             "one loader, one merge order, for every entry point",
