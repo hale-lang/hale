@@ -169,9 +169,10 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         // err.locus / err.closure GEP into the violation struct).
         //
         // A locus may declare one handler per child type. Pass A
-        // pushed one (child type, fn) per `on_failure` in
-        // declaration order, so each body lowers into its OWN fn —
-        // never the first body into the last-declared handler's fn.
+        // pushed one (child type, fn) per routing row, in ordinal
+        // order — the declarations' order — so each body lowers into
+        // its OWN fn, never the first body into the last-declared
+        // handler's fn.
         let failure_decls = l.members.iter().filter_map(|m| match m {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,

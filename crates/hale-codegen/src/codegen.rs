@@ -1108,6 +1108,7 @@ pub fn build_resolved(
         fresh_locus_factories,
         ownership,
         bubble,
+        handlers,
         ..
     } = resolved;
     let program = &user;
@@ -1512,6 +1513,7 @@ pub fn build_resolved(
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
         ownership_accepts: ownership.accepts,
+        handlers,
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
         deferred_dissolves: Vec::new(),
@@ -1551,7 +1553,6 @@ pub fn build_resolved(
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
-        restart_in_place_targets: BTreeSet::new(),
         deployment: Default::default(),
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
@@ -3608,6 +3609,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// is not a bubble.
     pub(crate) ownership_accepts:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Which `on_failure` handler a failing child reaches: one row per
+    /// handler, the child type resolved once (F.40 phase 1.4). The
+    /// handler table, the failure route and restart-in-place
+    /// attribution read it.
+    pub(crate) handlers: hale_types::handler_routing::HandlerRouting,
     /// Set true by `lower_stmt` immediately before it lowers a bare
     /// expression-statement locus instantiation (`I { ... };`), and
     /// consumed (mem::take) at the top of `lower_locus_instantiation`.
@@ -3789,7 +3795,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// instantiated via struct-literal syntax + bare-name
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
-    generic_locus_templates: BTreeMap<String, LocusDecl>,
+    pub(crate) generic_locus_templates: BTreeMap<String, LocusDecl>,
     /// GH #921 A3, commit 6: this instantiation's struct must live
     /// for the PROGRAM, not for the frame that builds it — a
     /// `bindings { }` transport, adapter or codec, which the runtime
@@ -3979,9 +3985,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #1066: `__restart_<L>` / `__resume_<L>` for each locus a
     /// failure can come from (see `locus::restart`).
     pub(crate) restart_fns: BTreeMap<String, crate::locus::restart::RestartFns<'ctx>>,
-    /// Locus types some `on_failure` handler restarts in place: they
-    /// keep a copy of the params they were built with.
-    pub(crate) restart_in_place_targets: BTreeSet<String>,
 
     /// R3 (2026-07-29): the reified deployment arrangement — see
     /// `crate::deployment::DeploymentPlan`. Populated by
@@ -6011,15 +6014,15 @@ pub(crate) struct LocusInfo<'ctx> {
     /// with `tick_closures_fn`.
     pub(crate) tick_wrapper_fn: Option<FunctionValue<'ctx>>,
     /// `on_failure(child: ChildL, err: ClosureViolation)` handlers
-    /// declared on this locus, one entry per declaration, in
-    /// declaration order; each handler's first param names the
-    /// child type it accepts. Stored as (child_locus_name, llvm_fn).
-    /// When a child fails its closure, the violation routes to the
-    /// handler whose child type is the child's own locus type
-    /// (`failure_handler_for`; the first declared, if two name the
-    /// same type) instead of dprintf+exit. Every handler takes
-    /// `ClosureViolation`, so the child type is the only selector.
+    /// declared on this locus: one entry per handler row, in ordinal
+    /// order, stored as (the row's child locus name, llvm_fn). When a
+    /// child fails its closure, the violation routes to the handler
+    /// the routing row selects (`Cx::failure_handler_for`: the first
+    /// declared for the child's locus type) instead of dprintf+exit.
     pub(crate) failure_handlers: Vec<(String, FunctionValue<'ctx>)>,
+    /// The name the handler rows key this locus by: its own, or, for a
+    /// monomorph, its generic template's.
+    pub(crate) routing_name: String,
     /// When this locus declares `accept(child: T)` AND a method
     /// body iterates `for child in self.children`, every accept
     /// dispatch appends the child's self_ptr to a growable
@@ -6307,23 +6310,6 @@ pub(crate) struct LocusInfo<'ctx> {
     /// — for accept-in-a-loop patterns (`coord_with_churn`-style)
     /// that's the dominant per-child cost.
     pub(crate) empty_lifecycle: std::collections::BTreeSet<&'static str>,
-}
-
-impl<'ctx> LocusInfo<'ctx> {
-    /// The `on_failure` handler this locus declares for a child of
-    /// locus type `child_locus_name`, if any. Selection is by the
-    /// child's type alone: a locus with a handler per child type
-    /// routes each child's failure to its own handler, never to
-    /// whichever handler happens to be declared first or last.
-    pub(crate) fn failure_handler_for(
-        &self,
-        child_locus_name: &str,
-    ) -> Option<FunctionValue<'ctx>> {
-        self.failure_handlers
-            .iter()
-            .find(|(child, _)| child == child_locus_name)
-            .map(|(_, f)| *f)
-    }
 }
 
 /// F.22 slot record carried on every LocusInfo. v1 surface:
@@ -11032,14 +11018,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // main locus declares the matching on_failure, register
         // the loss dispatcher. Without the handler, the C drain
         // falls straight through to the structural exit — no
-        // dispatcher needed.
+        // dispatcher needed. The handler is main's routing row for
+        // the connect transport's locus type (picked by that name).
         if any_connect_binding {
             let main_handler = self
                 .deployment.main_locus_name
                 .as_ref()
-                .and_then(|n| self.user_loci.get(n))
-                .and_then(|info| {
-                    info.failure_handler_for("__StdBusUnixConnectTransport")
+                .and_then(|n| {
+                    self.failure_handler_for(n, "__StdBusUnixConnectTransport")
                 });
             if let Some(handler) = main_handler {
                 self.emit_transport_loss_dispatch(handler)?;

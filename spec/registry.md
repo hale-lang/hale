@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 168 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 15 decide a fact.
+43 families: 3 canonical, 36 migrating (with 166 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -25,9 +25,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 3 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Migrating | derivation | `declare_locus_methods` | 7 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Migrating | derivation | `declare_locus_methods` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
-| `restart` | Layer 3 | Migrating | derivation | — | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
+| `restart` | Layer 3 | Migrating | derivation | — | 1 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
 | `sealability` | Layer 3 | Migrating | law | `check_sealed_access` | 1 | Which loci confine their state (`@sealed`), and which could. |
@@ -589,13 +589,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/codegen.rs` · `failure_handler_for` — first match by mangled child locus-name string; declarations and fns paired by position. *Removed when:* keyed by identity, in the table.
-- `crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route` — the route is decided from the lowering context (supervising parent, then self, then params-init self). *Removed when:* lowering reads the route row.
-- `crates/hale-codegen/src/codegen.rs` · `__StdBusUnixConnectTransport` — the transport-loss handler is picked by a magic child-name string. *Removed when:* same.
+- `crates/hale-codegen/src/channels/mod.rs` · `failure_handler_for` — looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows). *Removed when:* the handler fn is a column of the row.
+- `crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route` — the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's. *Removed when:* the instance is a row of the instance tree (phase 2).
+- `crates/hale-codegen/src/codegen.rs` · `__StdBusUnixConnectTransport` — the transport-loss handler is picked by name through the routing table. *Removed when:* the bindings family names the transport's locus.
 - `crates/hale-types/src/check.rs` · `check_duplicate_failure_handlers` — duplicates are refused by `Ty::display()` string, a third way of naming the child type. *Removed when:* one identity.
 - `crates/hale-types/src/model_builder.rs` · `Supervises` — the model's supervision rows name the child by a raw path string. *Removed when:* projected from the table.
 - `crates/hale-types/src/frontier.rs` · `supervised_diags` — @supervised coverage from `has any handler`, no import renames. *Removed when:* a law over the rows.
-- `crates/hale-codegen/src/locus/restart.rs` · `declare_restart_fns` — restart-in-place attribution reads the handler bodies' Debug text. *Removed when:* reads the restart rows.
 
 **Consumers.** codegen (__parent_on_failure); model; check
 
@@ -638,13 +637,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** Which loci declare restart operations, which restart in place, and what the restart bound is.
 
-**Inputs.** closure and birth-check declarations; handler bodies (RestartInPlace)
+**Inputs.** closure and birth-check declarations; handler_routing (the rows' recovery ops)
 
 **Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/restart.rs` · `RestartInPlace` — in-place targets found by searching the handler body's Debug string; a global set keyed by child type, not per parent. *Removed when:* a recovery-op row.
 - `crates/hale-types/src/model_builder.rs` · `walk_ops` — the model's recovery-op walk. *Removed when:* projected from the row.
 
 **Consumers.** codegen (__restart_<L>, __resume_<L>); model
@@ -1335,7 +1333,6 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", program.items)` | decides (`bus_inert`) |
-| `crates/hale-codegen/src/locus/restart.rs` | `format!("{:?}", fd.body)` | decides (`restart`) |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity)` | decides (`placement`) |

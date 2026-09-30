@@ -12,7 +12,9 @@ use hale_syntax::ast::{
     TypeExpr,
 };
 use inkwell::types::BasicType;
-use inkwell::values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue,
+};
 use inkwell::AddressSpace;
 
 use crate::locus::dissolve::LocusDissolve;
@@ -35,15 +37,31 @@ use crate::stdlib::process::ProcessStdlib;
 use crate::stdlib::str::StrStdlib;
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The `on_failure` fn a failing child of locus type `child`
+    /// reaches in `parent`: the routing row (the first handler
+    /// `parent` declares for that type) looked up by its ordinal in
+    /// the parent's handler table.
+    pub(crate) fn failure_handler_for(
+        &self,
+        parent: &str,
+        child: &str,
+    ) -> Option<FunctionValue<'ctx>> {
+        let info = self.user_loci.get(parent)?;
+        let row = self.handlers.route(&info.routing_name, child)?;
+        info.failure_handlers
+            .get(row.ordinal as usize)
+            .map(|(_, f)| *f)
+    }
+
     /// Resolve the (parent_self, on_failure_fn) pair for a child
     /// of `child_locus_name` whose closure may fail at dissolve.
-    /// Reads `current_self` (set while we're in the parent's
-    /// lifecycle body) and that parent's `failure_handlers`. If
-    /// the parent declares an on_failure that takes this child
-    /// type, returns the parent's self_ptr + that handler's fn ptr
-    /// (a parent may declare one handler per child type).
-    /// Otherwise returns (null, null) — the closure-fail path
-    /// will fall back to the v0 dprintf+exit report.
+    /// Which parent INSTANCE is the lowering context's: the
+    /// supervising parent of a literal written as another literal's
+    /// field, else `current_self` (set while we're in the parent's
+    /// lifecycle body), else `params_init_self`. Which handler is the
+    /// routing row's (`failure_handler_for`). Otherwise returns
+    /// (null, null) — the closure-fail path will fall back to the v0
+    /// dprintf+exit report.
     pub(crate) fn resolve_failure_route(
         &self,
         child_locus_name: &str,
@@ -74,10 +92,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None => return (null_ptr, null_ptr),
             },
         };
-        let Some(parent_info) = self.user_loci.get(&cs.locus_name) else {
-            return (null_ptr, null_ptr);
-        };
-        let Some(handler_fn) = parent_info.failure_handler_for(child_locus_name)
+        let Some(handler_fn) =
+            self.failure_handler_for(&cs.locus_name, child_locus_name)
         else {
             return (null_ptr, null_ptr);
         };
