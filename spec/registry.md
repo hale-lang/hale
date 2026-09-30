@@ -584,7 +584,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-model/src/lib.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1
+- `DispatchPlan::derive(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
 - `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ### `handler_routing` — Migrating · derivation

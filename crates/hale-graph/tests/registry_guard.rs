@@ -285,12 +285,16 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
                     .filter(|l| !l.trim_start().starts_with("//"))
                     .map(|l| word_bounded_count(l.split("//").next().unwrap_or(l), seam.symbol))
                     .sum();
-                if n == 0 {
-                    continue;
-                }
                 seen_refs += n;
                 match allowed.get(rel.as_str()) {
                     Some(&k) if k == n => {}
+                    // No reference where the registry allows some: a
+                    // cutover the registry did not record.
+                    Some(&k) if n == 0 => violations.push(format!(
+                        "family `{}`: `{}` is no longer referenced from {rel}; the registry allows {k}",
+                        f.name, seam.symbol
+                    )),
+                    None if n == 0 => {}
                     Some(&k) => violations.push(format!(
                         "family `{}`: `{}` is referenced {n} time(s) from {rel}; the registry allows {k}",
                         f.name, seam.symbol

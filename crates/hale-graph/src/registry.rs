@@ -265,7 +265,6 @@ const DESUGAR: &str = "crates/hale-syntax/src/desugar.rs";
 const API_GEN: &str = "crates/hale-syntax/src/api_gen.rs";
 const PARSER: &str = "crates/hale-syntax/src/parser.rs";
 const M_DISPATCH: &str = "crates/hale-model/src/dispatch_plan.rs";
-const M_LIB: &str = "crates/hale-model/src/lib.rs";
 const M_IDS: &str = "crates/hale-model/src/ids.rs";
 const M_OBS: &str = "crates/hale-model/src/obs_ids.rs";
 const IRIS_BUILD_RS: &str = "crates/hale-iris/build.rs";
@@ -690,7 +689,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "DispatchPlan::derive(", allowed: &[(M_DISPATCH, 1), (M_LIB, 1), (MODEL_BUILDER, 1)] },
+            Seam { symbol: "DispatchPlan::derive(", allowed: &[(MODEL_BUILDER, 1)] },
             Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 2), (TY_RESOLVED, 1)] },
         ],
     },
