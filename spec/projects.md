@@ -440,8 +440,9 @@ declares has always been a located error there, qualified or not.
 Permissive, and for the same reason as above — the declaration is
 genuinely absent, or this is not a whole program: an import the
 bundle never RESOLVED (a consumer holding one seed without its
-libraries, such as the language server's per-directory bundle),
-and a check of a single FILE of a multi-file seed. `std::` is
+libraries; the language server is not one — it loads the seed and
+every import as `hale check <dir>` does), and a check of a single
+FILE of a multi-file seed. `std::` is
 exempt because the stdlib tables answer a `std::` path and report
 their own typos, and a head that names a declaration
 (`Color::Red`, a `type C2 = Color;` alias) is not an import at

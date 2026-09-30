@@ -100,7 +100,7 @@ fn load(entry: &Path, mode: LoadMode, src: &dyn SourceProvider, config: Config) 
 fn editor(file: &Path, text: &str) -> Snapshot {
     let mut buffers = BTreeMap::new();
     buffers.insert(file.to_path_buf(), text.to_string());
-    load(file, LoadMode::SeedDirectoryOnly, &Overlay::new(&buffers), Config::editor())
+    load(file, LoadMode::Editor, &Overlay::new(&buffers), Config::editor())
 }
 
 /// `hale check <target>`'s load.
@@ -265,18 +265,18 @@ fn the_harness_snapshot_lowers_without_a_check() {
 }
 
 /// The key names what was loaded, not only what was asked: the same
-/// entry through the whole-seed load and the editor's directory load
-/// reads different program sets and gets different keys; editing a
-/// file on disk changes the key; two bare programs differ (outside
-/// review of #1283, finding 2).
+/// file through the whole-seed load (a seed of one) and the editor's
+/// load (its directory) reads different file sets and gets different
+/// keys; editing a file on disk changes the key; two bare programs
+/// differ (outside review of #1283, finding 2).
 #[test]
 fn a_snapshot_key_tells_different_loads_apart() {
     let d = seed("key", NO_CLAIMS);
     std::fs::write(d.join("sibling.hl"), "fn helper() -> Int { return 1; }\n").unwrap();
     let entry = d.join("app.hl");
     let whole = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
-    let editor_load = load(&entry, LoadMode::SeedDirectoryOnly, &Disk, Config::editor());
-    assert_ne!(whole.programs().len(), editor_load.programs().len(), "the modes read different sets");
+    let editor_load = load(&entry, LoadMode::Editor, &Disk, Config::editor());
+    assert_ne!(whole.sources().len(), editor_load.sources().len(), "the modes read different sets");
     assert_ne!(whole.key(), editor_load.key(), "different loads, different keys");
     let again = load(&entry, LoadMode::WholeSeed, &Disk, Config::editor());
     assert_eq!(whole.key(), again.key(), "the same load, the same key");

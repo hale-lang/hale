@@ -39,8 +39,10 @@ use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
-use hale_frontend::frontend::{collect_ap_files, source_map_as_spelled, LoadMode};
-use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::frontend::{
+    collect_ap_files, retain_owned_advisories, source_map_as_spelled, LoadMode,
+};
+use hale_frontend::snapshot::{unreadable_message, Config, LoadError, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
@@ -513,26 +515,44 @@ fn check_and_publish(
         );
         return;
     }
-    // F.40 phase 2.2a: the seed as the editor loads it (the buffers
-    // over the disk, `LoadMode::SeedDirectoryOnly`), shaped and minted
+    // F.40 phase 2.3: the seed as `hale check <dir>` loads it — the
+    // file's directory and every seed its imports reach — read through
+    // the buffers over the disk (`LoadMode::Editor`), shaped and minted
     // once, and the check demanded from it. The editor's config holds
-    // the whole-program rules (GH #721): the snapshot checks only a
-    // seed whose every file parsed, so it holds a whole program and
-    // answers `hale check <dir>` exactly — including an identifier
-    // that binds nothing, a typo the editor shows while it is typed.
-    // The model is demanded only by a program that declares a law.
+    // the whole-program rules (GH #721) and the build rules `hale
+    // check` runs beside its check: the snapshot checks only a seed
+    // whose every member read and parsed, so it answers `hale check
+    // <dir>` exactly — including an identifier that binds nothing, a
+    // typo the editor shows while it is typed. The model is demanded
+    // only by a program that declares a law.
     let src = Overlay::new(overlays);
-    let Ok(snap) = Snapshot::load(changed, LoadMode::SeedDirectoryOnly, &src, Config::editor())
-    else {
-        // The editor's load takes no environment and no `--api`, so
-        // nothing refuses it: publish nothing rather than guess.
-        return;
-    };
-    let (sources, file_bases) = (snap.sources(), snap.file_bases());
-
     // path → published diagnostics (start EMPTY for every file so a
     // clean pass clears old squiggles).
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
+    let snap = match Snapshot::load(changed, LoadMode::Editor, &src, Config::editor()) {
+        Ok(snap) => snap,
+        // The import graph refused the seed (an import that does not
+        // resolve, a library that does not parse or read): what `hale
+        // check` prints, placed as it would place it.
+        Err(LoadError::Load(f)) => {
+            for (_, p, _) in &f.file_bases {
+                per_file.insert(p.clone(), Vec::new());
+            }
+            per_file.entry(changed.to_path_buf()).or_default();
+            place_checker_diags(&f.diags, &f.file_bases, &f.sources, &mut per_file);
+            for io in &f.io {
+                publish_file_level(&mut per_file, &io.path, changed, &io.text);
+            }
+            publish_all(writer, per_file);
+            return;
+        }
+        Err(LoadError::Refused(msg)) => {
+            per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(&msg));
+            publish_all(writer, per_file);
+            return;
+        }
+    };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
     for f in snap.files() {
         per_file.insert(f.clone(), Vec::new());
     }
@@ -540,12 +560,19 @@ fn check_and_publish(
         Ok(checked) => {
             let mut diags = checked.diags.clone();
             diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), true));
+            // What `hale check` does last: every name in the author's
+            // spelling, and an advisory about a seed the target imports
+            // left to that seed's own check.
+            hale_types::stdlib_bodies::demangle_imports(&mut diags, snap.import_renames());
+            retain_owned_advisories(&mut diags, snap.own_files(), file_bases);
             place_checker_diags(&diags, file_bases, sources, &mut per_file);
         }
-        // A seed with a file that did not parse is not checked (a parse
-        // hole would cascade phantom errors): its parse diagnostics are
-        // published against the files that hold them, un-shifted to
-        // file-local offsets.
+        // A seed with a member that did not parse or read is not checked
+        // (a hole would cascade phantom errors), as `hale check` checks
+        // none. Its parse diagnostics are published against the files
+        // that hold them, un-shifted to file-local offsets; a member
+        // that would not read is a file-level diagnostic against itself
+        // and against the file being edited, which is open.
         Err(_) => {
             for (f, diags) in snap.unparsed() {
                 let base = file_bases
@@ -558,9 +585,44 @@ fn check_and_publish(
                     out.push(diag_to_lsp(&d.clone().shifted(base.wrapping_neg()), src));
                 }
             }
+            for (f, os_error) in snap.unreadable() {
+                publish_file_level(&mut per_file, f, changed, &unreadable_message(f, os_error));
+            }
         }
     }
+    publish_all(writer, per_file);
+}
 
+/// A diagnostic about a whole file (one that would not read has no
+/// position): the range 0:0–0:0, an error.
+fn file_level_diag(message: &str) -> Value {
+    json!({
+        "range": {
+            "start": { "line": 0, "character": 0 },
+            "end":   { "line": 0, "character": 0 }
+        },
+        "severity": 1,
+        "source": "hale",
+        "code": "io error",
+        "message": message
+    })
+}
+
+/// Publish a file-level diagnostic against `file` and against the file
+/// being edited, so an editor that has only that one open still shows it.
+fn publish_file_level(
+    per_file: &mut BTreeMap<PathBuf, Vec<Value>>,
+    file: &Path,
+    changed: &Path,
+    message: &str,
+) {
+    per_file.entry(file.to_path_buf()).or_default().push(file_level_diag(message));
+    if !same_file(file, changed) {
+        per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(message));
+    }
+}
+
+fn publish_all(writer: &mut impl Write, per_file: BTreeMap<PathBuf, Vec<Value>>) {
     for (path, diags) in per_file {
         notify(
             writer,
@@ -670,13 +732,13 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The files of the changed file's seed, as the LSP loads it today:
-/// the frontend's [`LoadMode::SeedDirectoryOnly`] — the file's own
-/// directory, the file itself even when it exists only as a buffer, and
-/// no `import` followed. A directory that will not list leaves the file
-/// alone.
+/// The files of the changed file's seed, as the request handlers load
+/// it until they read the snapshot: the editor load's member list
+/// ([`LoadMode::Editor`]) — the file's own directory, the file itself
+/// even when it exists only as a buffer — and no `import` followed. A
+/// directory that will not list leaves the file alone.
 fn seed_files(changed: &Path, src: &Overlay<'_>) -> Vec<PathBuf> {
-    collect_ap_files(changed, LoadMode::SeedDirectoryOnly, src)
+    collect_ap_files(changed, LoadMode::Editor, src)
         .unwrap_or_else(|_| vec![changed.to_path_buf()])
 }
 

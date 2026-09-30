@@ -54,7 +54,7 @@ use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
 use crate::frontend::{
-    collect_ap_files, collect_checkable, merge_programs, source_map, source_map_as_spelled,
+    collect_ap_files, collect_checkable, link_checkable, merge_programs, seed_dir_of, source_map,
     CheckableFailure, LoadMode,
 };
 use crate::imports::ImportRenames;
@@ -190,10 +190,13 @@ impl Config {
         Config { check_gates_lowering: false, ..Config::build(target) }
     }
 
-    /// The LSP's: it checks a seed only once every file of it parsed,
-    /// so it holds a whole program (GH #721).
+    /// The LSP's: `hale check <dir>`'s report. It checks a seed only
+    /// once every member of it read and parsed, so it holds a whole
+    /// program (GH #721), and its check carries the build rules `hale
+    /// check` runs beside its own (the borrow rule, bare fallible
+    /// calls), so the editor shows every error the CLI prints.
     pub fn editor() -> Self {
-        Config::check(true, false)
+        Config { build_rules: true, ..Config::check(true, false) }
     }
 
     fn digest(&self) -> u64 {
@@ -246,8 +249,9 @@ impl Fnv {
 pub struct SnapshotKey {
     /// The target the load started from, canonical where it exists.
     pub entry: PathBuf,
-    /// How the target was loaded (the whole seed with its imports, or
-    /// the editor's directory); `None` for a bare program.
+    /// How the target was loaded (the CLI's whole seed, or the
+    /// editor's, which records a member it cannot load instead of
+    /// failing); `None` for a bare program.
     pub mode: Option<LoadMode>,
     pub target: String,
     pub config_digest: u64,
@@ -269,11 +273,21 @@ pub struct SnapshotKey {
 pub struct Blocked {
     pub family: &'static str,
     pub because: Vec<Diag>,
-    /// The family's own producer refused, with no position to report
-    /// it at: the lowering view's `resolve_program` (a bundled stdlib
-    /// that does not parse, a site the mint left unnumbered). `None`
-    /// when a prerequisite blocked it, whose errors are `because`.
+    /// What blocked it with no position to report it at: the lowering
+    /// view's own producer refusing (`resolve_program`: a bundled
+    /// stdlib that does not parse, a site the mint left unnumbered), or
+    /// the editor's seed members that would not read, one
+    /// [`unreadable_message`] each. `None` when every reason is a
+    /// diagnostic in `because`.
     pub refused: Option<String>,
+}
+
+/// What the editor reports for a seed member that would not read:
+/// `seed member <file name>: <the OS error>`, the file's name and the
+/// error `hale check` prints for it.
+pub fn unreadable_message(path: &Path, os_error: &str) -> String {
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    format!("seed member {name}: {os_error}")
 }
 
 /// Why a snapshot could not be made.
@@ -325,6 +339,9 @@ pub struct Snapshot {
     /// The files that did not parse, with their diagnostics (bundle-
     /// global spans). A load that leaves any blocks the scope.
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
+    /// The seed members that would not read, with the OS error. A load
+    /// that leaves any blocks the scope.
+    unreadable: BTreeMap<PathBuf, String>,
     scope: OnceCell<Result<Scope, Blocked>>,
     typing: OnceCell<Result<Vec<Diag>, Blocked>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
@@ -354,6 +371,7 @@ struct Loaded {
     import_renames: ImportRenames,
     entry_imports: Vec<Import>,
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
+    unreadable: BTreeMap<PathBuf, String>,
 }
 
 impl Snapshot {
@@ -363,10 +381,13 @@ impl Snapshot {
     /// identities minted with the source map. No family is computed
     /// yet.
     ///
-    /// [`LoadMode::WholeSeed`] fails on a file that does not parse;
-    /// [`LoadMode::SeedDirectoryOnly`] (the editor's) keeps the files
-    /// that did parse and blocks the scope instead, so the editor
-    /// reports the parse errors against the files that hold them.
+    /// [`LoadMode::WholeSeed`] fails on a file that does not parse or
+    /// read; [`LoadMode::Editor`] keeps the members that did and
+    /// records the rest ([`Snapshot::unparsed`],
+    /// [`Snapshot::unreadable`]), blocking the scope instead, so the
+    /// editor reports each against the file that holds it. Both fail
+    /// on what the import graph refuses (an import that does not
+    /// resolve, a library that does not parse or read).
     pub fn load(
         entry: &Path,
         mode: LoadMode,
@@ -374,9 +395,10 @@ impl Snapshot {
         config: Config,
     ) -> Result<Snapshot, LoadError> {
         let loaded = match mode {
-            LoadMode::WholeSeed => load_whole_seed(entry, src).map_err(LoadError::Load)?,
-            LoadMode::SeedDirectoryOnly => load_seed_directory(entry, src),
-        };
+            LoadMode::WholeSeed => load_whole_seed(entry, src),
+            LoadMode::Editor => load_editor(entry, src),
+        }
+        .map_err(LoadError::Load)?;
         // the key names what was read, so it is computed after the load
         let mut h = Fnv::new();
         for (path, text) in &loaded.sources {
@@ -429,6 +451,7 @@ impl Snapshot {
             import_renames,
             entry_imports: Vec::new(),
             unparsed: BTreeMap::new(),
+            unreadable: BTreeMap::new(),
         };
         Snapshot::shape(&entry, None, key, config, loaded)
     }
@@ -473,6 +496,7 @@ impl Snapshot {
             identities: hale_types::snapshot::Snapshot::default(),
             api_surface: None,
             unparsed: loaded.unparsed,
+            unreadable: loaded.unreadable,
             scope: OnceCell::new(),
             typing: OnceCell::new(),
             bus_graph: OnceCell::new(),
@@ -518,9 +542,10 @@ impl Snapshot {
                 }
             }
         }
-        // The editor's seed with a file that did not parse is not a
-        // program: nothing is shaped or minted, and the scope blocks.
-        if !snap.unparsed.is_empty() || snap.programs.is_empty() {
+        // The editor's seed with a member that did not parse or read is
+        // not a program: nothing is shaped or minted, and the scope
+        // blocks.
+        if snap.has_hole() {
             return Ok(snap);
         }
         for prog in snap.programs.values_mut() {
@@ -551,10 +576,7 @@ impl Snapshot {
         // with it (F.40 phase 1.1b-iii), so each site's seed is the
         // file its span falls in.
         snap.source_map = match mode {
-            Some(LoadMode::WholeSeed) => source_map(entry, &snap.file_bases, &snap.sources),
-            Some(LoadMode::SeedDirectoryOnly) => {
-                source_map_as_spelled(&snap.file_bases, &snap.sources)
-            }
+            Some(_) => source_map(entry, &snap.file_bases, &snap.sources),
             None => Vec::new(),
         };
         let names: Vec<String> = snap.programs.keys().map(|p| p.display().to_string()).collect();
@@ -581,7 +603,8 @@ impl Snapshot {
     }
 
     /// The target's own files, canonical: everything else arrived
-    /// through an `import`. Empty for the editor's load.
+    /// through an `import`. The editor's load spells a member that
+    /// exists only as a buffer by its canonical directory.
     pub fn own_files(&self) -> &BTreeSet<PathBuf> {
         &self.own_files
     }
@@ -604,7 +627,8 @@ impl Snapshot {
     }
 
     /// The target's own `import`s, as written: what a build reads each
-    /// library's `[ffi]` surface from. Empty for the editor's load.
+    /// library's `[ffi]` surface from. Empty for a seed with a hole,
+    /// whose imports are not followed.
     pub fn entry_imports(&self) -> &[Import] {
         &self.entry_imports
     }
@@ -615,9 +639,10 @@ impl Snapshot {
         self.api_surface.as_ref()
     }
 
-    /// The whole seed's program: a [`LoadMode::WholeSeed`] load holds
+    /// The whole seed's program: a load that read the whole seed holds
     /// exactly one, the target's files and every seed its imports
-    /// reach, merged. `None` for the editor's load of several files.
+    /// reach, merged. `None` for the editor's seed with a hole, which
+    /// holds one program per member that parsed.
     pub fn program(&self) -> Option<&Program> {
         match self.programs.len() {
             1 => self.programs.values().next(),
@@ -633,6 +658,33 @@ impl Snapshot {
     /// bundle-global spans (the editor's load only).
     pub fn unparsed(&self) -> &BTreeMap<PathBuf, Vec<Diag>> {
         &self.unparsed
+    }
+
+    /// The seed members that would not read, with the OS error (the
+    /// editor's load only).
+    pub fn unreadable(&self) -> &BTreeMap<PathBuf, String> {
+        &self.unreadable
+    }
+
+    /// A member did not parse or read, or none was loaded: the seed is
+    /// not a program, and its scope is blocked.
+    fn has_hole(&self) -> bool {
+        !self.unparsed.is_empty() || !self.unreadable.is_empty() || self.programs.is_empty()
+    }
+
+    /// Why a seed with a hole has no scope.
+    fn hole_blocked(&self) -> Blocked {
+        Blocked {
+            family: "top_scope",
+            because: self.unparsed.values().flatten().cloned().collect(),
+            refused: (!self.unreadable.is_empty()).then(|| {
+                self.unreadable
+                    .iter()
+                    .map(|(p, e)| unreadable_message(p, e))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }),
+        }
     }
 
     /// The programs as the checker's analyses take them: a view,
@@ -652,8 +704,6 @@ impl Snapshot {
         b
     }
 
-    /// How many times each family's producer ran for this snapshot:
-    /// every family of [`FAMILIES`], zero when never demanded.
     /// Run `f` with this snapshot's environment bound: what a demand
     /// runs under, and what a caller serializing this snapshot's
     /// artifact (`hale check --dump-topology`) wraps the serialization
@@ -663,6 +713,8 @@ impl Snapshot {
         hale_types::claims::with_env_binding(&self.env, f)
     }
 
+    /// How many times each family's producer ran for this snapshot:
+    /// every family of [`FAMILIES`], zero when never demanded.
     pub fn builds(&self) -> BTreeMap<&'static str, u32> {
         FAMILIES
             .iter()
@@ -679,18 +731,19 @@ impl Snapshot {
         self.builds[i].set(self.builds[i].get() + 1);
     }
 
+    /// The `top_scope` family's producer over the programs held, counted.
+    fn build_scope(&self) -> (TopScope, Vec<Diag>) {
+        self.count("top_scope");
+        hale_types::resolve::build_top_scope(&self.bundle())
+    }
+
     fn scope(&self) -> Result<&Scope, &Blocked> {
         self.scope
             .get_or_init(|| {
-                if !self.unparsed.is_empty() || self.programs.is_empty() {
-                    return Err(Blocked {
-                        family: "top_scope",
-                        because: self.unparsed.values().flatten().cloned().collect(),
-                        refused: None,
-                    });
+                if self.has_hole() {
+                    return Err(self.hole_blocked());
                 }
-                self.count("top_scope");
-                let (top, diags) = hale_types::resolve::build_top_scope(&self.bundle());
+                let (top, diags) = self.build_scope();
                 Ok(Scope { top, diags })
             })
             .as_ref()
@@ -885,23 +938,34 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
         import_renames,
         entry_imports,
         unparsed: BTreeMap::new(),
+        unreadable: BTreeMap::new(),
     })
 }
 
-/// The editor's load ([`LoadMode::SeedDirectoryOnly`]): the file's
-/// directory, each file parsed at its own base and kept as its own
-/// program. A file that will not read is skipped; one that does not
-/// parse is kept as text, with its diagnostics.
-fn load_seed_directory(entry: &Path, src: &dyn SourceProvider) -> Loaded {
+/// The editor's load ([`LoadMode::Editor`]): the seed of the file being
+/// edited, each member parsed at its own base, then linked as `hale
+/// check <dir>` links it ([`link_checkable`]: merged, every import
+/// followed). A member that will not read is recorded with its OS
+/// error, one that does not parse is kept as text with its diagnostics;
+/// either leaves the members that parsed unlinked, one program each,
+/// and blocks the scope.
+fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
     // A directory that will not list leaves the file alone.
-    let files = collect_ap_files(entry, LoadMode::SeedDirectoryOnly, src)
+    let files = collect_ap_files(entry, LoadMode::Editor, src)
         .unwrap_or_else(|_| vec![entry.to_path_buf()]);
     let mut programs = BTreeMap::new();
     let mut sources = BTreeMap::new();
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut unparsed = BTreeMap::new();
+    let mut unreadable = BTreeMap::new();
     for f in &files {
-        let Ok(source) = src.read(f) else { continue };
+        let source = match src.read(f) {
+            Ok(s) => s,
+            Err(e) => {
+                unreadable.insert(f.clone(), e.to_string());
+                continue;
+            }
+        };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
         match hale_syntax::parse_source_at(&source, base) {
@@ -914,16 +978,46 @@ fn load_seed_directory(entry: &Path, src: &dyn SourceProvider) -> Loaded {
         }
         sources.insert(f.clone(), source);
     }
-    Loaded {
+    // The seed's own members, canonical; a member that exists only as a
+    // buffer (or a link to nothing) by its canonical directory.
+    let own_files: BTreeSet<PathBuf> = files
+        .iter()
+        .map(|f| {
+            f.canonicalize().unwrap_or_else(|_| {
+                match (seed_dir_of(f).canonicalize(), f.file_name()) {
+                    (Ok(dir), Some(name)) => dir.join(name),
+                    _ => f.clone(),
+                }
+            })
+        })
+        .collect();
+    if !unparsed.is_empty() || !unreadable.is_empty() || programs.is_empty() {
+        return Ok(Loaded {
+            files,
+            own_files,
+            programs,
+            sources,
+            file_bases,
+            import_renames: Vec::new(),
+            entry_imports: Vec::new(),
+            unparsed,
+            unreadable,
+        });
+    }
+    let seed = if src.is_dir(entry) { entry } else { seed_dir_of(entry) };
+    let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
+        link_checkable(seed, &files, own_files, programs, sources, file_bases, src)?;
+    Ok(Loaded {
         files,
-        own_files: BTreeSet::new(),
+        own_files,
         programs,
         sources,
         file_bases,
-        import_renames: Vec::new(),
-        entry_imports: Vec::new(),
+        import_renames,
+        entry_imports,
         unparsed,
-    }
+        unreadable,
+    })
 }
 
 /// GH #409: adopt constitution `name` into `prog`'s main locus, as if
@@ -1030,7 +1124,7 @@ mod tests {
     }
 
     fn load(entry: &Path, src: &dyn SourceProvider, config: Config) -> Snapshot {
-        match Snapshot::load(entry, LoadMode::SeedDirectoryOnly, src, config) {
+        match Snapshot::load(entry, LoadMode::Editor, src, config) {
             Ok(s) => s,
             Err(_) => panic!("the editor's load does not fail"),
         }
@@ -1061,10 +1155,12 @@ mod tests {
         let one_file = load(&app, &Disk, Config::check(false, false));
         assert_ne!(disk.key().config_digest, one_file.key().config_digest);
 
-        // A build of the same seed refuses the build rules; an
-        // environment and a wrapped entry are passes of its load.
+        // A build of the same seed refuses the build rules in its check
+        // (as the editor's does), `hale check` runs them beside it; an
+        // environment and a wrapped entry are passes of a build's load.
+        let check = load(&app, &Disk, Config::check(true, false));
         let build = load(&app, &Disk, Config::build(Target::host()));
-        assert_ne!(disk.key().config_digest, build.key().config_digest);
+        assert_ne!(check.key().config_digest, build.key().config_digest);
         let mut deployed = Config::build(Target::host());
         deployed.environment = Some(Environment { name: "prod".to_string(), adopt: Vec::new() });
         assert_ne!(build.key().config_digest, deployed.digest());
@@ -1115,6 +1211,28 @@ mod tests {
         for f in FAMILIES.iter().filter(|f| **f != "seed_loading") {
             assert_eq!(builds[f], 0, "{f} ran for a seed that did not parse");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Contract 3 for a member that will not read (a dangling symlink):
+    /// the editor's load records it with the OS error, and the scope is
+    /// blocked with the message the LSP publishes, as it is for a file
+    /// that did not parse; `hale check`'s load of the same seed fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_member_that_will_not_read_blocks_the_scope() {
+        let d = scratch("unreadable");
+        std::fs::write(d.join("app.hl"), CLEAN).unwrap();
+        std::os::unix::fs::symlink("absent.hl", d.join("missing.hl")).unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        let os_error = s.unreadable().get(&d.join("missing.hl")).expect("the member is recorded").clone();
+        let blocked = s.demand_check().expect_err("a seed with a hole is not checked");
+        assert_eq!(blocked.family, "top_scope");
+        assert_eq!(blocked.refused.as_deref(), Some(format!("seed member missing.hl: {os_error}").as_str()));
+        for f in FAMILIES.iter().filter(|f| **f != "seed_loading") {
+            assert_eq!(s.builds()[f], 0, "{f} ran for a seed with an unreadable member");
+        }
+        assert!(load_whole_seed(&d, &Disk).is_err(), "the CLI's load of the seed fails");
         let _ = std::fs::remove_dir_all(&d);
     }
 

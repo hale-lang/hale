@@ -90,7 +90,12 @@ A few switches worth knowing from day one:
   and you get live diagnostics: type errors as errors, the
   advisory analyses (unbounded-alloc survey, hot-path lint,
   placement warnings) as warnings, re-checked whole-program on
-  every keystroke because the check runs in ~10 ms. Hover shows
+  every keystroke because the check runs in ~10 ms. The server loads
+  the seed exactly as `hale check <dir>` does — every file of the
+  open file's directory, every `import` followed, your unsaved
+  buffers in place of the files on disk — so the two never disagree;
+  a seed file that cannot be read is an error on the file you have
+  open, not a clean result. Hover shows
   signatures with their contracts (fallibility, `@hot`/`@budget`
   status, a topic's routing key), completion covers `self.`
   members, the `std::` surface, and your seed's symbols,

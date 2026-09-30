@@ -340,7 +340,8 @@ bare-type-name rules that follow it (`spec/types.md` § *Calls to bare
 names*) — are on for every command that HAS the whole program:
 `check` and `verify` on a seed, `build`, `run`, `test`, `replay` and
 `bench`, which compile exactly what they bundle, and `hale lsp`, which
-typechecks only once the whole seed has parsed. A call to a name
+loads the whole seed as `hale check <dir>` does, imports followed, and
+typechecks it only once every member has read and parsed. A call to a name
 nothing declares is therefore `path:line:col: type error: call to X:
 no free fn, generic fn or fn-pointer binding with that name is in
 scope` from all of them (2026-09-20, GH #911 B1 / #846; the callee

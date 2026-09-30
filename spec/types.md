@@ -1012,7 +1012,8 @@ refused by its own rule — it addresses a channel, it is not a
 value). In a **whole program** — every import resolved, which is
 `hale check <directory>`, every build (`hale build` / `hale run` /
 `hale test` compile exactly what they bundle) and `hale lsp`, which
-typechecks only once the whole seed has parsed — any other bare
+loads the whole seed as `hale check <dir>` does, imports followed, and
+typechecks it only once every member has read and parsed — any other bare
 identifier is a type error at its own span: `unknown identifier X:
 no binding, param, const or declaration with that name is in
 scope`, with a did-you-mean over the locals in scope and then the

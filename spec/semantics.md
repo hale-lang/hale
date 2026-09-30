@@ -4011,10 +4011,11 @@ against the imported contract and every seed's holders reach the one
 program-global slot. A path that resolves to nothing — a nested
 alias, a typo — is a located typecheck error at the path, reported
 with the alias as written. The one exception is a tool that holds a
-seed *without* its imports (`hale lsp` bundles one directory's own
-files): there a path behind an unresolved alias is opaque, exactly as
-`lib::Grid` or `lib::f()` already is, and the contract is checked
-when the whole seed is.
+seed *without* its imports (a partial program a harness assembles;
+`hale lsp` is not one, it loads the seed and every import as `hale
+check <dir>` does): there a path behind an unresolved alias is
+opaque, exactly as `lib::Grid` or `lib::f()` already is, and the
+contract is checked when the whole seed is.
 
 **The slot type `perspective(P)`.** A holder programs against
 `perspective(P)`, never a concrete impl. It is a handle: at the
