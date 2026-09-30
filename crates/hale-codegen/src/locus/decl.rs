@@ -2072,10 +2072,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // on_failure(child: ChildL, err: ClosureViolation): the handlers
         // closures route to when an unabsorbed violation reaches the
         // parent. The table is the routing rows' (F.40 phase 1.4): one
-        // fn per row, in ordinal order, so the body pass pairs each
-        // declaration with its own fn and a route resolves to the row's
-        // ordinal. The rows are per declaration, so a monomorph reads
-        // its template's (it keeps the template's identity).
+        // fn per row, in ordinal order, so a fn's index in the table IS
+        // its row's ordinal. Building it pairs each row with its
+        // declaration by position (the rows are made in declaration
+        // order); every reader then goes by the row's ordinal: the body
+        // pass (method.rs) and a route (`failure_handler_for`). The
+        // rows are per declaration, so a monomorph reads its template's
+        // (it keeps the template's identity).
         //
         // Sig: void(parent_self, child_self, violation). The first
         // handler keeps the plain `<L>.on_failure` symbol; later ones
@@ -2108,6 +2111,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,
         })) {
+            if row.ordinal as usize != failure_handlers.len() || row.span != fd.span {
+                return Err(CodegenError::Unsupported(format!(
+                    "locus `{}` on_failure handler {} is not routing row {} \
+                     of `{}`",
+                    l.name.name,
+                    failure_handlers.len(),
+                    row.ordinal,
+                    routing_name
+                )));
+            }
             let child_locus_name = match &row.child {
                 ChildRef::Locus(n) => n.clone(),
                 ChildRef::External(written) => {

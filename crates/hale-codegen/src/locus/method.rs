@@ -168,20 +168,37 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         // param as a TypeRef("ClosureViolation") local (so
         // err.locus / err.closure GEP into the violation struct).
         //
-        // A locus may declare one handler per child type. Pass A
-        // pushed one (child type, fn) per routing row, in ordinal
-        // order — the declarations' order — so each body lowers into
-        // its OWN fn, never the first body into the last-declared
-        // handler's fn.
+        // A locus may declare one handler per child type. Each
+        // declaration finds its routing row by span (a monomorph's
+        // members are its template's, spans included) and lowers into
+        // the fn at the row's ordinal in the handler table, never into
+        // another handler's fn (#1199).
         let failure_decls = l.members.iter().filter_map(|m| match m {
             LocusMember::Failure(fd) => Some(fd),
             _ => None,
         });
-        for (failure_decl, (child_locus_name, ff)) in
-            failure_decls.zip(info.failure_handlers.iter())
-        {
-            let child_locus_name = child_locus_name.clone();
-            let ff = *ff;
+        for failure_decl in failure_decls {
+            let row = self
+                .handlers
+                .handlers_of(&info.routing_name)
+                .find(|r| r.span == failure_decl.span)
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "locus `{}` declares an on_failure handler the \
+                         handler routing has no row for (rows of `{}`)",
+                        l.name.name, info.routing_name
+                    ))
+                })?;
+            let (child_locus_name, ff) = info
+                .failure_handlers
+                .get(row.ordinal as usize)
+                .cloned()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "locus `{}` has no handler fn for routing row {}",
+                        l.name.name, row.ordinal
+                    ))
+                })?;
             let entry = self.context.append_basic_block(ff, "entry");
             self.builder.position_at_end(entry);
             self.di_begin_function();
