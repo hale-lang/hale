@@ -290,7 +290,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(V_BUILD, "run_build", "a hand-copied directory body inside the build verb", "phase 2: one loader"),
             legacy(V_RUN, "run_program", "a hand-copied directory body inside the run verb", "phase 2: one loader"),
             legacy(FRONTEND, "SeedDirectoryOnly", "the LSP's load mode: a file target stands for its parent directory, the file is a member even when it exists only as an editor buffer (`source::Overlay`), and no `import` is followed; the LSP's `seed_files` asks for it, for diagnostics and for every request", "the LSP loads the whole seed with imports (2.3, step 5)"),
-            legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the one in `check_and_publish`; neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
+            legacy(LSP, "analyze_seed", "parses the files `seed_files` names at their own bases with its own loop, a copy of the snapshot's editor load (`load_seed_directory`, which `check_and_publish` demands through); neither goes through `parse_files`", "the LSP loads the whole seed with imports (2.3, step 5)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("bench"), consumer("lsp"), consumer("dna (via the CLI)")],
         invariants: &[
@@ -338,13 +338,12 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program", "--api / --env (roles)", "the cross-seed rename table"],
         producer: Some(site(DESUGAR_SEQ, "desugar_before_check")),
         legacy: &[
-            legacy(V_CHECK, "run_check_impl_labelled", "check: sync inference per file, outside the sequence, before it", "phase 2: one sequence in the shared frontend"),
+            legacy(SNAPSHOT, "apply_sync_inference", "check and the LSP, through the snapshot's load: sync inference per program, outside the sequence, before it", "phase 2: sync inference is a pass of the sequence"),
             legacy(V_BUILD, "run_build", "build: json_gen, inject_api_entry, bind_build_env (roles, constitution adoption), then sync inference, all before the sequence, whose JSON and api passes then find nothing left to do", "phase 2"),
             legacy(V_RUN, "compile_and_exec", "run <file>: `desugar_before_check`, but no sync inference before the check; run <dir>: build's own prefix", "phase 2"),
             legacy(V_TEST, "compile_test_binary", "test: file entry only; `desugar_before_check`, but no sync inference before the check", "phase 2"),
             legacy(V_REPLAY, "parse_file", "replay: file entry only; `desugar_before_check`, but no sync inference before the check", "phase 2"),
             legacy(V_BENCH, "run_bench_file", "bench: a synthesized text driver and no check at all", "phase 2"),
-            legacy(LSP, "check_and_publish", "the LSP: sync inference per file, outside the sequence, before it", "phase 2"),
             legacy(CG, "build_executable_with_options", "codegen's adapter for a bare program (the test harness builds this way) runs the sequence (`desugar_before_check`) and resolves (`resolve_program`) for itself, through the verbs' own fns; its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard)", "the frontend is the only producer (phase 2)"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
@@ -362,7 +361,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site(TY_RESOLVED, "resolve_program"), site(DESUGAR, "desugar_intra_locus_topics"), site(DESUGAR, "desugar_topics"), site(DESUGAR_SEQ, "bundled_stdlib"), site(DESUGAR, "desugar_omitted_run"), site(DESUGAR, "desugar_repr_accessors")],
         seams: &[
             Seam { symbol: "desugar_topics(", allowed: &[(DESUGAR, 1), (TY_RESOLVED, 1)] },
-            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (CG, 1), (SNAPSHOT, 1)] },
+            Seam { symbol: "desugar_before_check(", allowed: &[(DESUGAR_SEQ, 1), (TLIB, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (CG, 1), (SNAPSHOT, 1)] },
             Seam { symbol: "desugar_omitted_run(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "desugar_repr_accessors(", allowed: &[(DESUGAR, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "resolve_program(", allowed: &[(TY_RESOLVED, 1), (CG, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_BENCH, 1), (V_REPLAY, 1)] },
@@ -389,7 +388,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/tests/placement.rs"],
         spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
         owned: &[],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1), (SNAPSHOT, 1)] }],
+        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (V_BUILD, 1), (V_RUN, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "effect_class_table",
@@ -1189,7 +1188,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["a checked bundle", "top_scope", "bus_graph", "ownership", "placement", "effects", "alloc_summary", "topics", "bindings"],
         producer: Some(site(MODEL_BUILDER, "derive_application_model")),
         legacy: &[],
-        consumers: &[consumer_at("claims", JUDGMENT, "derive_application_model"), consumer_at("topology", TOPOLOGY, "derive_application_model"), consumer_at("model dump", V_CHECK, "derive_application_model"), consumer_at("dispatch, obs ids", OPTIONS, "derive_application_model"), consumer("fleet (admits the artifact, never the model)")],
+        consumers: &[consumer_at("claims", JUDGMENT, "derive_application_model"), consumer_at("topology", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("dispatch, obs ids", OPTIONS, "derive_application_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
             "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
@@ -1201,7 +1200,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/model.md"],
         owned: &[site(MODEL_BUILDER, "derive_application_model_in")],
         seams: &[
-            Seam { symbol: "derive_application_model(", allowed: &[(MODEL_BUILDER, 1), (JUDGMENT, 1), (TOPOLOGY, 1), (V_CHECK, 1), (OPTIONS, 1)] },
+            Seam { symbol: "derive_application_model(", allowed: &[(MODEL_BUILDER, 1), (JUDGMENT, 1), (TOPOLOGY, 1), (OPTIONS, 1)] },
             Seam { symbol: "derive_application_model_in(", allowed: &[(MODEL_BUILDER, 2), (SNAPSHOT, 1)] },
         ],
     },
@@ -1273,7 +1272,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 2), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1), (SNAPSHOT, 1)] }],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 2), (V_BUILD, 1), (V_RUN, 2), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "digests",
@@ -1293,7 +1292,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(IRIS_LIB, "toolchain_hash", "the cache key itself (version, compiler sources and manifests, stdlib, embedded iris and DNA trees)", "the cache key is derived from the snapshot identity"),
             legacy(DNA_DIGEST, "EMBEDDED_DIRS", "DNA's embedded-source identity, its own directory list", "one inventory of what each identity covers"),
             legacy(EVIDENCE, "analysis_inputs_digest", "the evidence inputs digest (semantics version, stdlib source, compiler version, renames, the surface registry)", "same"),
-            legacy(V_CHECK, "bundle.sources", "per-file FNV digests, rooted at hale.toml, set by check only; the LSP uses absolute paths; build leaves it empty", "one source map per snapshot"),
+            legacy(SNAPSHOT, "b.sources", "per-file FNV digests, set by the snapshot: rooted at hale.toml for check, paths as spelled for the LSP; build leaves it empty", "one source map per snapshot"),
             legacy(FRONTEND, "source_map_as_spelled", "the LSP's own source map (paths as the load spelled them, beside `source_map`'s workspace-relative ones): the snapshot builds the editor's with it, and the LSP's request handlers theirs", "the LSP loads the whole seed (2.3, step 5), and one source map serves every entry point"),
             legacy(M_OBS, "fn digest", "the observed entity-id digest, keyed by (kind, name)", "keyed by snapshot identity"),
         ],
