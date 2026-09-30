@@ -1163,6 +1163,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("claims", JUDGMENT, "derive_application_model"), consumer_at("topology", TOPOLOGY, "derive_application_model"), consumer_at("model dump", V_CHECK, "derive_application_model"), consumer_at("dispatch, obs ids", OPTIONS, "derive_application_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
+            "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
             "demand-gated: a no-claims check builds no model (GH #476 criterion 1, pinned by demand_gate.rs); phase 2 rewrites the gate as per-family accounting",
             "the model re-runs every derivation it consumes today (it reads nothing from the checker): those are listed under their families",
         ],
@@ -1235,6 +1236,7 @@ pub const FAMILIES: &[Family] = &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
             "canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate",
+            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); the minting pass of phase 1.1b is the producer",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],

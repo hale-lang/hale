@@ -7,11 +7,13 @@
 # dependency-direction canary in tests/architecture.rs enforces this
 # at test time; review enforces it at the boundary.
 #
-# Deliberately dependency-free: schema types, invariants, and laws —
-# nothing else. No serde: the external serialization surface is
-# Change 3+ (the legacy topology projection), and promising a wire
-# format from the schema crate would freeze exactly what the epic
-# says must stay evolvable during consolidation.
+# Deliberately dependency-light: schema types, invariants, and laws —
+# nothing else. Its identity and provenance mechanics come from
+# `hale-graph` (F.40 phase 1.1a), which depends on nothing. No serde:
+# the external serialization surface is Change 3+ (the legacy
+# topology projection), and promising a wire format from the schema
+# crate would freeze exactly what the epic says must stay evolvable
+# during consolidation.
 
 [package]
 name = "hale-model"
@@ -22,3 +24,4 @@ license.workspace = true
 description = "Hale language: canonical typed semantic model (ApplicationModel schema)"
 
 [dependencies]
+hale-graph = { path = "../hale-graph" }

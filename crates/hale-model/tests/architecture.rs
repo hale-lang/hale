@@ -21,26 +21,37 @@ use hale_model::*;
 // -----------------------------------------------------------------
 
 #[test]
-fn the_model_crate_depends_on_nothing() {
+fn the_model_crate_depends_on_the_graph_core_alone() {
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
         .expect("read own manifest");
     let deps = manifest
         .split("[dependencies]")
         .nth(1)
         .expect("dependencies section exists");
-    // Everything after [dependencies] must be empty (comments and
-    // whitespace aside) — no hale-syntax, no hale-types, no serde,
-    // no anything. The law is stronger than a denylist: source
-    // independence is guaranteed by having zero deps at all.
+    // Everything after [dependencies] must be `hale-graph` and
+    // nothing else (comments and whitespace aside) — no hale-syntax,
+    // no hale-types, no serde. The law is stronger than a denylist:
+    // source independence is guaranteed by the one dependency being
+    // a crate that itself depends on nothing (its own canary holds
+    // that), so nothing can reach the AST through it. F.40 phase
+    // 1.1a: the model's identity and provenance mechanics are the
+    // graph core's.
     for line in deps.lines() {
         let l = line.trim();
         assert!(
-            l.is_empty() || l.starts_with('#') || l.starts_with('['),
-            "hale-model must stay dependency-free; found dependency \
+            l.is_empty()
+                || l.starts_with('#')
+                || l.starts_with('[')
+                || l.starts_with("hale-graph = { path = \"../hale-graph\" }"),
+            "hale-model depends on hale-graph alone; found dependency \
              line: {}",
             l
         );
     }
+    assert!(
+        deps.contains("hale-graph"),
+        "hale-model is rebuilt on hale-graph (identity, provenance)"
+    );
 }
 
 // -----------------------------------------------------------------

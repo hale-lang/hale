@@ -12,19 +12,12 @@
 //!    (Change 3+) are stable canonical names, never these numbers —
 //!    an ID is meaningless outside the model value that minted it.
 
-macro_rules! table_id {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-        pub struct $name(pub u32);
-
-        impl $name {
-            pub fn index(self) -> usize {
-                self.0 as usize
-            }
-        }
-    };
-}
+// The macro, the seed id and the provenance ids are `hale-graph`'s
+// (F.40 phase 1.1a): the model's identity mechanics are the graph
+// core's, and its sorts stay here.
+use hale_graph::table_id;
+pub use hale_graph::ids::SeedId;
+pub use hale_graph::provenance::{ProvenanceId, SourceId};
 
 table_id!(
     /// A function, method, lifecycle hook, or mode body.
@@ -60,10 +53,6 @@ table_id!(
     PhaseId
 );
 table_id!(
-    /// A source seed (compilation unit set).
-    SeedId
-);
-table_id!(
     /// A thread domain: a pinned thread, a cooperative pool's
     /// worker, the main thread, an async-I/O pool.
     ThreadDomainId
@@ -91,16 +80,6 @@ table_id!(
     ///
     /// [`Declaration`]: crate::entity::Declaration
     DeclarationId
-);
-table_id!(
-    /// A source-neutral origin record in the [`ProvenanceTable`].
-    ///
-    /// [`ProvenanceTable`]: crate::provenance::ProvenanceTable
-    ProvenanceId
-);
-table_id!(
-    /// A source unit (path + content digest) provenance points into.
-    SourceId
 );
 
 /// A reference to any entity sort — the anchor vocabulary shared by
