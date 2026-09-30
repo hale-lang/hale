@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 16 decide a fact.
+43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 35 frozen Debug-string sites, of which 16 decide a fact.
 
 ## Families
 
@@ -1353,6 +1353,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-types/src/check.rs` | `format!("{:?}", p)` | decides (`snapshot_identity`) |
 | `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_key(inner))` | decides (`snapshot_identity`) |
 | `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind)` | renders |
+| `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | decides (`snapshot_identity`) |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", op)` | renders |
 | `crates/hale-types/src/purity.rs` | `format!("{:?}", subject)` | renders |

@@ -281,7 +281,8 @@ fn seam_symbols_are_referenced_only_as_the_registry_counts() {
 
 /// Every formatting-macro invocation in `text` whose template holds a
 /// `?}` placeholder and no space, collapsed to one line (its first 90
-/// characters). Parentheses inside string literals do not count.
+/// characters), nested invocations included. Parentheses inside string
+/// literals do not count.
 fn debug_renderings(text: &str) -> Vec<String> {
     const MACROS: &[&str] = &[
         "format!(",
@@ -335,7 +336,10 @@ fn debug_renderings(text: &str) -> Vec<String> {
                 out.push(collapsed.chars().take(90).collect());
             }
         }
-        i = end + 1;
+        // Continue just past the macro name, not past its closing
+        // parenthesis: a bare rendering nested inside another
+        // invocation's arguments is an invocation too.
+        i = start + m.len();
     }
     out
 }

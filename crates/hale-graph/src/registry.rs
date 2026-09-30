@@ -1449,6 +1449,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan { path: CHECK, fragment: "format!(\"{:?}\", p)", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
     DebugScan { path: CHECK, fragment: "format!(\"{:?}({})\", class, type_expr_key(inner))", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
     DebugScan { path: TLIB, fragment: "format!(\"{:?}\", d.kind)", count: 1, verdict: ScanVerdict::Renders },
+    DebugScan { path: MODEL_BUILDER, fragment: "format!(\"{:?}:{}\", d.kind, d.display)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: MODEL_BUILDER, fragment: "format!( \"projection:{:?}({})\", class, type_descriptor(inner) )", count: 1, verdict: ScanVerdict::Decides { family: "snapshot_identity" } },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", op)", count: 1, verdict: ScanVerdict::Renders },
     DebugScan { path: PURITY, fragment: "format!(\"{:?}\", subject)", count: 1, verdict: ScanVerdict::Renders },
