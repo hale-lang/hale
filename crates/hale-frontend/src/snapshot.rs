@@ -124,6 +124,10 @@ pub struct Config {
     /// the check's diagnostics, so they block lowering. `hale check`
     /// runs them itself, beside its reports.
     pub build_rules: bool,
+    /// Whether the lowering view waits for a check with no error. On
+    /// for every entry point; off only for the test harness's snapshot
+    /// ([`Config::harness`]), which lowers what it is handed.
+    pub check_gates_lowering: bool,
 }
 
 impl Config {
@@ -138,6 +142,7 @@ impl Config {
             allow_unowned_subscriber,
             wrap_main: false,
             build_rules: false,
+            check_gates_lowering: true,
         }
     }
 
@@ -155,7 +160,19 @@ impl Config {
             allow_unowned_subscriber: false,
             wrap_main: false,
             build_rules: true,
+            check_gates_lowering: true,
         }
+    }
+
+    /// The test harness's (codegen's `build_executable_with_options`,
+    /// over [`Snapshot::from_program`]): a build's config whose
+    /// lowering is not gated on a check. The harness runs no checker —
+    /// a test that wants the check calls it itself, and the agreement
+    /// sweep (`corpus_check_build_agreement`) compares the two — so its
+    /// snapshot lowers what it is handed. The check is still a family
+    /// of it, computed only when demanded.
+    pub fn harness(target: Target) -> Self {
+        Config { check_gates_lowering: false, ..Config::build(target) }
     }
 
     /// The LSP's: it checks a seed only once every file of it parsed,
@@ -186,6 +203,7 @@ impl Config {
         d.flag(self.allow_unowned_subscriber);
         d.flag(self.wrap_main);
         d.flag(self.build_rules);
+        d.flag(self.check_gates_lowering);
         d.finish()
     }
 }
@@ -269,6 +287,10 @@ pub struct Snapshot {
     builds: [Cell<u32>; FAMILIES.len()],
 }
 
+/// What [`Snapshot::from_program`]'s program is keyed and minted by:
+/// it names no file.
+const BARE_PROGRAM: &str = "program";
+
 /// What a load mode read, before the sequence.
 struct Loaded {
     files: Vec<PathBuf>,
@@ -298,6 +320,61 @@ impl Snapshot {
         src: &dyn SourceProvider,
         config: Config,
     ) -> Result<Snapshot, LoadError> {
+        let key = SnapshotKey {
+            entry: entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf()),
+            target: config.target.name.clone(),
+            config_digest: config.digest(),
+            overlay_digest: src.overlay_digest(),
+        };
+        let loaded = match mode {
+            LoadMode::WholeSeed => load_whole_seed(entry, src).map_err(LoadError::Load)?,
+            LoadMode::SeedDirectoryOnly => load_seed_directory(entry, src),
+        };
+        Snapshot::shape(entry, Some(mode), key, config, loaded)
+    }
+
+    /// A snapshot of a program a caller already holds: the test
+    /// harness's (codegen's `build_executable_with_options`), whose
+    /// program was parsed from a string and carries its imports
+    /// already merged under `import_renames`. It is shaped as
+    /// [`Snapshot::load`] shapes a loaded seed; it has no files, so no
+    /// source map, and its sites are seeded by ordinal.
+    pub fn from_program(
+        program: Program,
+        import_renames: ImportRenames,
+        config: Config,
+    ) -> Result<Snapshot, LoadError> {
+        let entry = PathBuf::from(BARE_PROGRAM);
+        let key = SnapshotKey {
+            entry: entry.clone(),
+            target: config.target.name.clone(),
+            config_digest: config.digest(),
+            overlay_digest: 0,
+        };
+        let loaded = Loaded {
+            files: Vec::new(),
+            own_files: BTreeSet::new(),
+            programs: std::iter::once((entry.clone(), program)).collect(),
+            sources: BTreeMap::new(),
+            file_bases: Vec::new(),
+            import_renames,
+            entry_imports: Vec::new(),
+            unparsed: BTreeMap::new(),
+        };
+        Snapshot::shape(&entry, None, key, config, loaded)
+    }
+
+    /// Shape what a load read, as `config` says: the wasm entry wrap,
+    /// the environment's constitutions, sync inference, the desugar
+    /// sequence, then the identities minted with the source map `mode`
+    /// builds (none for a bare program).
+    fn shape(
+        entry: &Path,
+        mode: Option<LoadMode>,
+        key: SnapshotKey,
+        config: Config,
+        loaded: Loaded,
+    ) -> Result<Snapshot, LoadError> {
         // GH #409: the claims name the environment they were checked
         // for; its label travels beside the evaluation.
         hale_types::claims::set_env_binding(hale_types::claims::EnvBinding {
@@ -308,17 +385,7 @@ impl Snapshot {
                 .map(|e| e.adopt.clone())
                 .unwrap_or_default(),
         });
-        let key = SnapshotKey {
-            entry: entry.canonicalize().unwrap_or_else(|_| entry.to_path_buf()),
-            target: config.target.name.clone(),
-            config_digest: config.digest(),
-            overlay_digest: src.overlay_digest(),
-        };
         let builds: [Cell<u32>; FAMILIES.len()] = Default::default();
-        let loaded = match mode {
-            LoadMode::WholeSeed => load_whole_seed(entry, src).map_err(LoadError::Load)?,
-            LoadMode::SeedDirectoryOnly => load_seed_directory(entry, src),
-        };
         let mut snap = Snapshot {
             key,
             config,
@@ -408,8 +475,11 @@ impl Snapshot {
         // with it (F.40 phase 1.1b-iii), so each site's seed is the
         // file its span falls in.
         snap.source_map = match mode {
-            LoadMode::WholeSeed => source_map(entry, &snap.file_bases, &snap.sources),
-            LoadMode::SeedDirectoryOnly => source_map_as_spelled(&snap.file_bases, &snap.sources),
+            Some(LoadMode::WholeSeed) => source_map(entry, &snap.file_bases, &snap.sources),
+            Some(LoadMode::SeedDirectoryOnly) => {
+                source_map_as_spelled(&snap.file_bases, &snap.sources)
+            }
+            None => Vec::new(),
         };
         let names: Vec<String> = snap.programs.keys().map(|p| p.display().to_string()).collect();
         snap.identities = hale_types::snapshot::mint(
@@ -627,14 +697,17 @@ impl Snapshot {
     /// rewrites as relations, the stdlib merge, the mint over the
     /// merged program, and the tables. A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
+    /// The harness's snapshot ([`Config::harness`]) is not gated.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
         self.lowering
             .get_or_init(|| {
-                let checked = self.demand_check().map_err(Clone::clone)?;
-                let errors: Vec<Diag> =
-                    checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
-                if !errors.is_empty() {
-                    return Err(Blocked { family: "lowering_view", because: errors, refused: None });
+                if self.config.check_gates_lowering {
+                    let checked = self.demand_check().map_err(Clone::clone)?;
+                    let errors: Vec<Diag> =
+                        checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
+                    if !errors.is_empty() {
+                        return Err(Blocked { family: "lowering_view", because: errors, refused: None });
+                    }
                 }
                 // A whole seed's load holds one program; the editor's
                 // holds one per file, merged here as a directory build

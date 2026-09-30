@@ -480,36 +480,6 @@ pub(crate) fn resolve_build_env(
     Ok(Some((spec, base)))
 }
 
-/// GH #1109: bind the resolved environment to the parsed program —
-/// adopt its constitution as `check --env` does — and lower the api
-/// binding with the role table. Says so, once, when the program gates
-/// something and no environment mapped its roles.
-pub(crate) fn bind_build_env(
-    program: &mut hale_syntax::ast::Program,
-    env_spec: &Option<(crate::pkg::EnvSpec, Option<String>)>,
-    options: &hale_codegen::BuildOptions,
-) -> Result<(), String> {
-    if let Some((spec, base)) = env_spec {
-        let has_main = program
-            .items
-            .iter()
-            .any(|i| matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main));
-        if !has_main {
-            return Err(format!(
-                "`--env {}` names a deployment target, and a deployment target is an \
-                 ENTRYPOINT — this program declares no `main locus`",
-                options.env.as_deref().unwrap_or("")
-            ));
-        }
-        for c in env_adopts(spec, base) {
-            hale_frontend::snapshot::inject_adopt(program, &c);
-        }
-    }
-    let surface = hale_syntax::api_gen::generate_api(&mut [program], options.api_roles.as_deref());
-    note_unmapped_roles(surface.as_ref(), options);
-    Ok(())
-}
-
 /// GH #1109: the config a build's snapshot is loaded with, from its
 /// flags: the target it compiles for, `--api`, and `--env`'s role
 /// table and constitutions (resolved by [`resolve_build_env`]). The
@@ -739,23 +709,6 @@ pub(crate) fn model_identity<'s>(
     };
     Ok((plan_digest, hale_model::obs_ids::obs_entity_ids(model)))
 }
-
-/// [`model_identity`] for the verbs not yet on a snapshot (`run`,
-/// `replay`): the model derived from their own checked bundle.
-pub(crate) fn model_identity_of_bundle(
-    bundle: &hale_types::Bundle<'_>,
-    resolved: &hale_types::resolved::LoweringView,
-    options: &hale_codegen::BuildOptions,
-) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
-    let model = hale_types::model_builder::derive_application_model(bundle);
-    let plan_digest = if options.no_bus_devirt {
-        hale_model::dispatch_plan::DispatchPlan::default().digest()
-    } else {
-        resolved.plan.digest()
-    };
-    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
-}
-
 /// A `--flag value` / `--flag=value` reader over an explicit argv
 /// slice. `flag_value` inside `run_check_impl` reads the process
 /// argv; the arg parser needs the same rules before it has decided

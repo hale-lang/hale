@@ -12,7 +12,13 @@
 //!   load over its buffers, `Config::editor()`;
 //! - `hale check` (`run_check_impl_labelled`): the whole seed from the
 //!   disk, `Config::check`, and `--dump-model` demanding the model after
-//!   the check.
+//!   the check;
+//! - every build path (`build`, `run`, `test`, `replay`, `bench`, F.40
+//!   phase 2.2b): the whole seed with a build's config, the check, the
+//!   lowering view, and the model the build's identity reads;
+//! - the test harness (codegen's `build_executable_with_options`): a
+//!   bare program's snapshot (`Snapshot::from_program`), whose lowering
+//!   is not gated on the check.
 //!
 //! A program that swears to nothing builds no model on the editor path;
 //! one that declares a law builds exactly one on `hale check`, which a
@@ -26,7 +32,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use hale_frontend::frontend::LoadMode;
-use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_frontend::source::{Disk, Overlay, SourceProvider};
 
 const NO_CLAIMS: &str = r#"
@@ -102,6 +108,11 @@ fn check(target: &Path) -> Snapshot {
     load(target, LoadMode::WholeSeed, &Disk, Config::check(target.is_dir(), false))
 }
 
+/// A build path's load (`hale build <target>` for the host, no flags).
+fn build(target: &Path) -> Snapshot {
+    load(target, LoadMode::WholeSeed, &Disk, Config::build(Target::host()))
+}
+
 /// A fixture must be CLEAN, or the check may stop before the gate
 /// and the count proves nothing.
 fn assert_clean(s: &Snapshot) {
@@ -168,14 +179,19 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
     for (name, text) in [("once-plain", NO_CLAIMS), ("once-law", WITH_CLAIM)] {
         let d = seed(name, text);
         let consumers = [
-            ("lsp", editor(&d.join("app.hl"), text)),
-            ("check <file>", check(&d.join("app.hl"))),
-            ("check <dir>", check(&d)),
+            ("lsp", editor(&d.join("app.hl"), text), false),
+            ("check <file>", check(&d.join("app.hl")), false),
+            ("check <dir>", check(&d), false),
+            ("build <file>", build(&d.join("app.hl")), true),
+            ("build <dir>", build(&d), true),
         ];
-        for (consumer, s) in &consumers {
+        for (consumer, s, lowers) in &consumers {
             for _ in 0..2 {
                 s.demand_scope().expect("scoped");
                 s.demand_check().expect("checked");
+                if *lowers {
+                    assert!(s.demand_lowering().is_ok(), "{consumer}: a clean program is lowered");
+                }
                 s.demand_model().expect("a clean program has a model");
                 let _ = s.bundle();
             }
@@ -183,8 +199,47 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
             for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "top_scope", "expression_typing", "model"] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }
+            assert_eq!(builds["lowering_view"], u32::from(*lowers), "{consumer}: `lowering_view`");
             assert_at_most_once(s, consumer);
         }
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+/// The build path's order: the lowering view waits for the check, and a
+/// program that swears to nothing lowers without a model until the
+/// build's identity asks for one.
+#[test]
+fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
+    let d = seed("build-order", NO_CLAIMS);
+    let s = build(&d.join("app.hl"));
+    assert!(s.demand_lowering().is_ok(), "a clean program is lowered");
+    let builds = s.builds();
+    assert_eq!(builds["expression_typing"], 1, "the check ran before lowering");
+    assert_eq!(builds["lowering_view"], 1);
+    assert_eq!(builds["model"], 0, "nothing asked for the model yet");
+    s.demand_model().expect("the build's identity reads the model");
+    assert_eq!(s.builds()["model"], 1);
+    assert_at_most_once(&s, "build");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The harness's snapshot: a bare program, shaped by the one load and
+/// lowered without a check (`Config::harness`).
+#[test]
+fn the_harness_snapshot_lowers_without_a_check() {
+    let program = hale_syntax::parse_source(NO_CLAIMS).expect("the fixture parses");
+    let s = match Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("a bare program's snapshot is not refused"),
+    };
+    assert!(s.demand_lowering().is_ok(), "the harness lowers what it is handed");
+    let builds = s.builds();
+    for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "lowering_view"] {
+        assert_eq!(builds[family], 1, "harness: `{family}`");
+    }
+    for family in ["top_scope", "expression_typing", "model", "claims"] {
+        assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
+    }
+    assert!(s.source_map().is_empty(), "a bare program has no files");
 }

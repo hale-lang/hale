@@ -1,19 +1,20 @@
-use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
 use crate::shared::process::RunScratch;
 use crate::shared::options::VALUE_FLAGS;
 use crate::build_env;
+use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
-use crate::shared::options::model_identity_of_bundle;
+use crate::shared::options::model_identity;
 use crate::shared::options::parse_exec_build_options;
-use crate::shared::frontend::parse_with_imports;
+use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
+use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::replay;
-use crate::shared::diag::report_import_diags;
+use hale_frontend::snapshot::{LoadError, Snapshot};
 /// `hale replay <recording> <program.hl> [--diff [--json]] [--at N]`
 /// — GH #296. Re-runs a recorded execution: the same binary (model
 /// identity checked against the recording header), with the
@@ -209,69 +210,59 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    // Same compile pipeline as `hale run` (parse → check → model
-    // hash), so a recording is admitted against exactly what runs.
-    let (mut program, renames, sources, file_bases, _ctx) =
-        match parse_with_imports(&prog, &Disk) {
-            Ok(x) => x,
-            Err(errors) => return report_import_diags(&errors),
-        };
-    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
-    // entry point runs before its check, with the api inputs the
-    // resolve below reads.
-    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence {
-            import_renames: &renames,
-            api: build_options.api.as_deref(),
-            api_roles: build_options.api_roles.as_deref(),
-        },
-    ) {
-        eprintln!("{}", msg);
-        return ExitCode::from(2);
-    }
-    // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded by
-    // the source map `check` mints with.
-    let prog_name = prog.display().to_string();
-    let source_map = crate::shared::frontend::source_map(&prog, &file_bases, &sources);
-    let snapshot = hale_types::snapshot::mint([(prog_name.as_str(), &mut program)], &source_map);
-    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bundle_programs.insert(prog_name.clone(), &program);
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = renames.clone();
-    // The map the snapshot minted with, as `check` hands it over.
-    bundle.sources = source_map.clone();
-    bundle.snapshot = snapshot;
-    let diags = hale_types::check_bundle_for_build(&bundle, false);
+    // The snapshot `hale run` loads (parse → check → model hash), so a
+    // recording is admitted against exactly what runs. `replay` binds
+    // no environment and has no `--allow-unowned-subscriber`.
+    let mut config = build_config(&build_options, &None);
+    config.allow_unowned_subscriber = false;
+    let snap = match Snapshot::load(&prog, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => s,
+        Err(LoadError::Load(f)) => {
+            eprintln!("{}", f.text());
+            return ExitCode::from(f.code);
+        }
+        Err(LoadError::Refused(msg)) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
+    let diags = match snap.demand_check() {
+        Ok(c) => &c.diags,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
     if !diags.is_empty() {
-        for d in &diags {
-            eprintln!("{}", render_located(d, &file_bases, &sources));
+        for d in diags {
+            eprintln!("{}", render_located(d, file_bases, sources));
         }
         if diags.iter().any(|d| d.is_error()) {
             return ExitCode::from(1);
         }
     }
+    let bundle = snap.bundle();
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    // Resolved before the identity: the dispatch plan the digest frames
-    // is the resolved program's, the one codegen lowers below (F.40
-    // phase 1.5).
-    let resolved = match hale_types::resolved::resolve_program(
-        &program,
-        &source_map,
-        &renames,
-        build_options.api.as_deref(),
-        build_options.api_roles.as_deref(),
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            let e = hale_codegen::CodegenError::Unsupported(e);
-            eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
+    // The view before the identity: the dispatch plan the digest frames
+    // is the view's, the one codegen lowers below once the recording is
+    // admitted (F.40 phase 1.5).
+    let resolved = match snap.demand_lowering() {
+        Ok(v) => v,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
             return ExitCode::from(1);
         }
     };
     let options_fp = build_env::options_fingerprint(&build_options);
-    let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &build_options);
-    let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
+    let (plan_digest, obs_ids) = match model_identity(&snap, resolved, &build_options) {
+        Ok(x) => x,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
+    let digest = exec_digest(sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or
@@ -483,8 +474,8 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         obs_entity_ids: obs_ids.clone(),
         ..build_options
     };
-    if let Err(e) = hale_codegen::build_resolved(&resolved, &bin, &options) {
-        eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
+    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {
+        eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
 

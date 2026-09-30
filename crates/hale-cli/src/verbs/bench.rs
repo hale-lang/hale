@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
-use crate::shared::imports::ImportDiag;
 use std::path::Path;
 use std::path::PathBuf;
 use crate::shared::process::RunScratch;
@@ -8,16 +7,19 @@ use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::diag::diag_file_name;
 use std::env;
 use std::fs;
-use crate::shared::frontend::parse_with_imports;
-use crate::shared::source::Disk;
+use crate::shared::frontend::LoadMode;
+use crate::shared::source::Overlay;
+use crate::shared::workspace::find_workspace_root;
+use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
+use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// `hale bench [file | dir] [-run <substr>] [--json]` — the Layer-3
 /// runner (spec/testing.md). Discovers `*_bench.hl` files; each
 /// zero-param free fn named `bench_*` is a benchmark. The runner
-/// appends a synthesized driver `main` to a temp copy IN THE SAME
-/// DIRECTORY (so relative imports resolve identically), compiles at
-/// the release profile with the same `[ffi]` pickup as build/test,
-/// and runs it. The driver self-calibrates: batch sizes grow ×10
+/// appends a synthesized driver `main` to the file, read in place of
+/// the file itself (an overlay on its path, so relative imports
+/// resolve identically), checks and compiles it at the release
+/// profile with the same `[ffi]` pickup as build/test, and runs it. The driver self-calibrates: batch sizes grow ×10
 /// until a batch takes ≥100ms, then reports ns/op and allocs/op
 /// (`std::diag::heap_alloc_count` — shown as `-` when the counting
 /// shim is absent). Baselines and `-compare` remain planned.
@@ -226,112 +228,37 @@ pub(crate) fn run_bench_file(
     }
     driver.push_str("}\n");
 
-    // Temp copy in the SAME directory so relative imports resolve.
-    let dir = entry.parent().unwrap_or(Path::new("."));
-    let stem = entry
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "bench".into());
-    let tmp_src = dir.join(format!(
-        ".{}_driver_{}.hl",
-        stem,
-        std::process::id()
-    ));
+    // The bench file with the driver appended, read AS the bench file:
+    // an overlay on its own path, so relative imports resolve from its
+    // directory, and every position — the user's text is a prefix of
+    // the overlay — names the file the reader can open (GH #848). There
+    // is no temp copy to write, re-label or delete.
     let mut augmented = src.clone();
     augmented.push_str(&driver);
-    fs::write(&tmp_src, &augmented)
-        .map_err(|e| format!("write driver: {}", e))?;
+    let buffers: BTreeMap<PathBuf, String> = std::iter::once((entry.to_path_buf(), augmented)).collect();
 
     let bench_scratch = RunScratch::new("bench")?;
-    let compile = (|| -> Result<PathBuf, String> {
-        let (mut prog, renames, sources, file_bases, ctx) =
-            match parse_with_imports(&tmp_src, &Disk) {
-                Ok(x) => x,
-                Err(errors) => {
-                    let msg = errors
-                        .iter()
-                        .map(ImportDiag::render)
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    return Err(msg);
-                }
-            };
-        // GH #848: the compile runs against a temp COPY of the bench
-        // file with the synthesized driver appended, and that copy is
-        // deleted a moment later — so a located codegen error would
-        // name a path the reader cannot open. The user's text is a
-        // prefix of the copy, so re-labelling the copy as the bench
-        // file itself leaves every position of theirs exactly right.
-        let tmp_canon = tmp_src
-            .canonicalize()
-            .unwrap_or_else(|_| tmp_src.clone());
-        let relabel = |p: PathBuf| -> PathBuf {
-            if p == tmp_canon {
-                entry.to_path_buf()
-            } else {
-                p
-            }
-        };
-        let sources: BTreeMap<PathBuf, String> = sources
-            .into_iter()
-            .map(|(p, t)| (relabel(p), t))
-            .collect();
-        let file_bases: Vec<(u32, PathBuf, u32)> = file_bases
-            .into_iter()
-            .map(|(base, p, len)| (base, relabel(p), len))
-            .collect();
-        let options = collect_ffi_from_imports(
-            &ctx.imports,
-            &ctx.entry_dir,
-            ctx.workspace_root.as_deref(),
-        );
-        // F.40 phase 2.1b: the declaration-shaping sequence, the one
-        // every entry point runs before its check. Bench runs no check,
-        // but it lowers the same program shape.
-        hale_types::desugar_sequence::desugar_before_check(
-            &mut [&mut prog],
-            &hale_types::desugar_sequence::Sequence {
-                import_renames: &renames,
-                api: options.api.as_deref(),
-                api_roles: options.api_roles.as_deref(),
-            },
-        )?;
-        // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
-        // by the source map `check` mints with — over the re-labelled
-        // files, so a seed names the bench file and not its temp copy.
-        // Bench runs no check, but it holds its snapshot on the same
-        // minimal bundle the other verbs build (the program, the rename
-        // table, the source map), and the resolve below reads its
-        // inputs from it.
-        let entry_name = entry.display().to_string();
-        let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
-        let snapshot =
-            hale_types::snapshot::mint([(entry_name.as_str(), &mut prog)], &source_map);
-        let mut bundle = hale_types::Bundle::new(
-            std::iter::once((entry_name.clone(), &prog)).collect(),
-        );
-        bundle.import_renames = renames;
-        bundle.sources = source_map;
-        bundle.snapshot = snapshot;
-        let bin = bench_scratch.path("bench");
-        // Release profile on purpose: benchmarks measure the
-        // shipped optimization level.
-        hale_types::resolved::resolve_program(
-            &prog,
-            &bundle.sources,
-            &bundle.import_renames,
-            options.api.as_deref(),
-            options.api_roles.as_deref(),
-        )
-        .map_err(hale_codegen::CodegenError::Unsupported)
-        .and_then(|resolved| {
-            hale_codegen::build_resolved(&resolved, &bin, &options)
-        })
-        .map_err(|e| render_codegen_error(&e, &file_bases, &sources))?;
-        Ok(bin)
-    })();
-    let _ = fs::remove_file(&tmp_src);
-    let bin = compile?;
+    // F.40 phase 2.2b: the snapshot every build path loads, for the
+    // host, and the lowering view demanded from it after the check.
+    let snap = match Snapshot::load(entry, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::build(Target::host())) {
+        Ok(s) => s,
+        Err(LoadError::Load(f)) => return Err(f.text()),
+        Err(LoadError::Refused(msg)) => return Err(msg),
+    };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
+    let entry_dir = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let options = collect_ffi_from_imports(
+        snap.entry_imports(),
+        &entry_dir,
+        find_workspace_root(entry).as_deref(),
+    );
+    let bin = bench_scratch.path("bench");
+    // Release profile on purpose: benchmarks measure the shipped
+    // optimization level. A check that reports an error blocks the
+    // view, and is the failure; a warning is not printed.
+    let view = snap.demand_lowering().map_err(|b| render_blocked(b, file_bases, sources))?;
+    hale_codegen::build_resolved(view, &bin, &options)
+        .map_err(|e| render_codegen_error(&e, file_bases, sources))?;
 
     let out = std::process::Command::new(&bin)
         .output()

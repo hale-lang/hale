@@ -1,66 +1,29 @@
-use crate::shared::imports::AliasScopes;
 use std::collections::BTreeMap;
-use crate::EffectTable;
 use std::process::ExitCode;
-use crate::shared::imports::FileClaims;
-use crate::shared::imports::ImportDiag;
-use crate::shared::imports::ImportRenames;
 use std::path::Path;
 use std::path::PathBuf;
-use hale_syntax::ast::Program;
 use crate::shared::process::RunScratch;
-use crate::shared::options::bind_build_env;
 use crate::build_env;
-use crate::shared::frontend::collect_ap_files;
 use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::shared::process::dies_with_us;
+use crate::shared::options::build_config;
 use crate::shared::options::exec_digest;
-use crate::shared::workspace::find_workspace_root;
-use crate::shared::frontend::merge_programs;
-use crate::shared::options::model_identity_of_bundle;
-use crate::shared::frontend::parse_files;
-use crate::shared::frontend::parse_with_imports;
+use crate::shared::options::model_identity;
+use crate::shared::options::note_unmapped_roles;
+use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
-use crate::shared::diag::report_import_diags;
 use crate::shared::options::resolve_build_env;
-use crate::shared::imports::resolve_imports;
-use crate::shared::imports::scope_import_aliases;
-use crate::shared::imports::unscoped_alias_uses;
 use crate::shared::process::wait_passing_signals;
-/// Resolve the checked `program` into the envelope codegen lowers
-/// (`hale_types::resolved`). It runs before the execution identity is
-/// computed: the identity folds in the dispatch plan the envelope
-/// carries. A refused resolve is reported as the build would report it.
-fn resolve_checked(
-    program: &Program,
-    source_map: &[hale_types::symbol::SourceFile],
-    renames: &[(Vec<String>, String)],
-    options: &hale_codegen::BuildOptions,
-    file_bases: &[(u32, PathBuf, u32)],
-    sources: &BTreeMap<PathBuf, String>,
-) -> Result<hale_types::resolved::LoweringView, ExitCode> {
-    hale_types::resolved::resolve_program(
-        program,
-        source_map,
-        renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(|e| {
-        let e = hale_codegen::CodegenError::Unsupported(e);
-        eprintln!("{}", render_codegen_error(&e, file_bases, sources));
-        ExitCode::from(1)
-    })
-}
+use hale_frontend::snapshot::{LoadError, Snapshot};
 
-/// Compile the resolved program to a temporary native binary and
+/// Compile the lowering view to a temporary native binary and
 /// execute it, forwarding `user_args` as the program's trailing argv.
 /// This is the whole of `hale run` — the same codegen backend as
 /// `hale build`, so there is no `run`-vs-`build` behavioral divergence.
 pub(crate) fn compile_and_exec(
-    resolved: hale_types::resolved::LoweringView,
+    resolved: &hale_types::resolved::LoweringView,
     user_args: &[String],
     // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
     observe: bool,
@@ -92,7 +55,7 @@ pub(crate) fn compile_and_exec(
         obs_entity_ids,
         ..options
     };
-    if let Err(e) = hale_codegen::build_resolved(&resolved, &bin, &options) {
+    if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
@@ -152,8 +115,8 @@ pub(crate) fn run_program(
 ) -> ExitCode {
     // GH #1109: `--env` names the deployment target; its role table is
     // part of the binary (and so of the fingerprint below), so it is
-    // resolved first. The constitution it binds is adopted once the
-    // program is parsed.
+    // resolved first. The constitution it binds is adopted by the
+    // snapshot's load.
     let env_spec = match resolve_build_env(target, &mut options) {
         Ok(e) => e,
         Err(msg) => {
@@ -161,281 +124,40 @@ pub(crate) fn run_program(
             return ExitCode::from(2);
         }
     };
-    // Both single-file and directory targets resolve cross-seed
-    // imports and thread the per-build path-rename table into
-    // codegen — `run` and `build` agree (WS3.3). A single file
-    // follows `import "..."` from its own directory; a directory
-    // bundles its `.hl` files as one seed and resolves the union
-    // of their imports (see the directory branch below).
-    if target.is_file() {
-        // `compile_and_exec` passes `renames` to
-        // `build_executable_with_imports`, so qualified
-        // `alias::Name` references in the entry file resolve the
-        // same way `hale build` resolves them.
-        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target, &Disk) {
-            Ok(x) => x,
-            Err(errors) => return report_import_diags(&errors),
-        };
-        // F.40 phase 2.1b: the declaration-shaping sequence, the one
-        // every entry point runs before its check, with the api inputs
-        // the resolve below reads.
-        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
-            &mut [&mut program],
-            &hale_types::desugar_sequence::Sequence {
-                import_renames: &renames,
-                api: options.api.as_deref(),
-                api_roles: options.api_roles.as_deref(),
-            },
-        ) {
+    // F.40 phase 2.2b: one snapshot, the one `hale build` loads, and
+    // the lowering view demanded from it. A file follows `import
+    // "..."` from its own directory; a directory bundles its `.hl`
+    // files as one seed and resolves the union of their imports (WS3.3:
+    // `run` and `build` produce the same merged-and-resolved program;
+    // `run` execs it instead of writing a binary).
+    let config = build_config(&options, &env_spec);
+    let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => s,
+        // `run` has no machine-readable channel: the located text.
+        Err(LoadError::Load(f)) => {
+            eprintln!("{}", f.text());
+            return ExitCode::from(f.code);
+        }
+        Err(LoadError::Refused(msg)) => {
             eprintln!("{}", msg);
             return ExitCode::from(2);
         }
-        // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded
-        // by the source map `check` mints with.
-        let target_name = target.display().to_string();
-        let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
-        let snapshot =
-            hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
-        let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-        bundle_programs.insert(target_name.clone(), &program);
-        // The rename table must reach the analysis here too, not only in
-        // `check`. Without it a cross-seed call is an unresolved edge, so
-        // an effect assertion violated one seed away compiles, links and
-        // ships — a downstream fleet gates on `build` across 109 binaries,
-        // and "it built" must not be weaker than "it checked" on a
-        // contract the compiler already knows how to evaluate.
-        let mut bundle = hale_types::Bundle::new(bundle_programs);
-        bundle.import_renames = renames.clone();
-        // The map the snapshot minted with, as `check` hands it over.
-        bundle.sources = source_map.clone();
-        bundle.snapshot = snapshot;
-        let allow_unowned =
-            std::env::args().any(|a| a == "--allow-unowned-subscriber");
-        let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
-        if !diags.is_empty() {
-            for d in &diags {
-                eprintln!("{}", render_located(d, &file_bases, &sources));
-            }
-            // Warnings print but don't fail the build; only errors do.
-            if diags.iter().any(|d| d.is_error()) {
-                return ExitCode::from(1);
-            }
-        }
-        // P26: stamp the model identity of the bundle just checked.
-        let model_hash =
-            hale_types::topology::model_shape_hash(&bundle);
-        let resolved = match resolve_checked(
-            &program,
-            &source_map,
-            &renames,
-            &options,
-            &file_bases,
-            &sources,
-        ) {
-            Ok(r) => r,
-            Err(code) => return code,
-        };
-        let options_fp = build_env::options_fingerprint(&options);
-        let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &options);
-        let digest =
-            exec_digest(&sources, target, &options_fp, plan_digest);
-        return compile_and_exec(
-            resolved,
-            user_args,
-            observe,
-            model_hash,
-            digest,
-            obs_ids,
-            &file_bases,
-            &sources,
-            options,
-        );
-    }
-
-    let files = match collect_ap_files(target, LoadMode::WholeSeed, &Disk) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("{}", e);
+    };
+    note_unmapped_roles(snap.api_surface(), &options);
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
+    // The check, with the build's rules: the rename table reaches the
+    // analysis through the snapshot's bundle, so "it ran" is not
+    // weaker than "it checked" on a contract one seed away.
+    let diags = match snap.demand_check() {
+        Ok(c) => &c.diags,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
             return ExitCode::from(1);
         }
     };
-    let (programs, sources, mut file_bases) = match parse_files(&files, &Disk) {
-        Ok(x) => x,
-        // `run` has no machine-readable channel: the same located
-        // text it always printed (GH #777 moved the printing here).
-        Err(f) => return f.report_text(),
-    };
-
-    // WS3.3 (2026-06-11): a directory `hale run` now resolves
-    // cross-seed imports the same way `hale build <dir>` does.
-    // Previously it bundled the directory's files but silently
-    // dropped every `import "..."`, so a dir-seed app importing a
-    // vendored library failed on `alias::Name` references — the
-    // exact pond / downstream apps "qualified type not in path-renames table"
-    // friction, and the reason a topic decl had to live in the same
-    // file as its publisher. `run` and `build` now produce the same
-    // merged-and-resolved program for a directory; `run` execs it
-    // instead of writing a binary.
-    let mut union_imports: Vec<hale_syntax::ast::Import> = Vec::new();
-    for prog in programs.values() {
-        for imp in &prog.imports {
-            union_imports.push(imp.clone());
-        }
-    }
-    let merged = match merge_programs(programs.values()) {
-        Some(m) => m,
-        None => {
-            eprintln!("no .hl files in {}", target.display());
-            return ExitCode::from(1);
-        }
-    };
-    let workspace_root = find_workspace_root(target);
-    let mut effects = EffectTable::from_seed(&merged);
-    let mut merged_items = merged.items;
-    // Same identity-seeding rule as the entry path: `merged`'s own
-    // items are already in `merged_items` and are never walked, so its
-    // table must come first.
-    let mut renames: ImportRenames = Vec::new();
-    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
-    let mut path_sources: BTreeMap<PathBuf, String> = sources.into_iter().collect();
-    let mut visited: std::collections::BTreeSet<PathBuf> =
-        std::collections::BTreeSet::new();
-    for f in &files {
-        match f.canonicalize() {
-            Ok(c) => visited.insert(c),
-            Err(_) => visited.insert(f.clone()),
-        };
-    }
-    // GH #820: as on the entry path — the seed being built is not one
-    // of the libraries its imports name.
-    let mut claims: FileClaims = FileClaims::new();
-    let mut import_errors: Vec<ImportDiag> = Vec::new();
-    // GH #746: the directory is one seed; its aliases are scoped to it.
-    let target_scope =
-        target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-    let mut alias_scopes = AliasScopes::default();
-    alias_scopes.record_files(
-        &target_scope,
-        files
-            .iter()
-            .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
-            .collect(),
-    );
-    if resolve_imports(
-        &union_imports,
-        target,
-        workspace_root.as_deref(),
-        &mut visited,
-        &mut claims,
-        &mut path_sources,
-        &mut file_bases,
-        &mut import_errors,
-        &mut merged_items,
-        &mut renames,
-        &mut seed_cache,
-        &mut effects,
-        &target_scope,
-        &mut alias_scopes,
-        &Disk,
-    )
-    .is_err()
-        || !import_errors.is_empty()
-    {
-        return report_import_diags(&import_errors);
-    }
-    let mut program = Program {
-        declared_effects: effects.declared_indices(),
-        effect_defs: effects.defs,
-        effect_names: effects.names,
-        imports: Vec::new(),
-        items: merged_items,
-        span: merged.span,
-    };
-    // GH #762: refuse a reference to an alias this seed never
-    // declared, the same as `check` does.
-    let unscoped = unscoped_alias_uses(
-        &program,
-        &file_bases,
-        &path_sources,
-        &alias_scopes,
-        &seed_cache,
-    );
-    if !unscoped.is_empty() {
-        for u in &unscoped {
-            eprintln!("{}", render_located(&u.diag, &file_bases, &path_sources));
-        }
-        return ExitCode::from(1);
-    }
-    // Rewrite qualified-path TypeExprs + synthesize JSON parsers +
-    // apply sync inference before typecheck — the same pre-passes
-    // `hale build <dir>` runs, so a directory `run` and `build`
-    // agree.
-    scope_import_aliases(
-        &mut program,
-        &mut renames,
-        &file_bases,
-        &alias_scopes,
-        &seed_cache,
-    );
-    hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
-    hale_syntax::json_gen::generate_json_parsers(&mut program);
-    // GH #1106: `--api` injects the entry; the pass lowers it (and any
-    // entry the source spelled) before the checker sees the program.
-    if let Some(path) = &options.api {
-        if let Err(msg) = hale_syntax::api_gen::inject_api_entry(&mut program, path) {
-            eprintln!("{}", msg);
-            return ExitCode::from(2);
-        }
-    }
-    if let Err(msg) = bind_build_env(&mut program, &env_spec, &options) {
-        eprintln!("{}", msg);
-        return ExitCode::from(2);
-    }
-    // Pre-pass diags are re-raised by `check_bundle_opts` below
-    // through the normal rendering — bailing here double-reported
-    // (see the `check` site for the full story).
-    let _ = hale_types::apply_sync_inference(&mut program);
-    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
-    // entry point runs before its check. The api pass finds the binding
-    // `bind_build_env` generated and leaves it alone.
-    if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence {
-            import_renames: &renames,
-            api: options.api.as_deref(),
-            api_roles: options.api_roles.as_deref(),
-        },
-    ) {
-        eprintln!("{}", msg);
-        return ExitCode::from(2);
-    }
-    // F.40 phase 1.1b-iii: the snapshot, after the last desugar, seeded
-    // by the source map `check` mints with.
-    let target_name = target.display().to_string();
-    let source_map = crate::shared::frontend::source_map(target, &file_bases, &path_sources);
-    let snapshot =
-        hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &source_map);
-
-    let bundle_programs: BTreeMap<String, &Program> =
-        std::iter::once((target_name.clone(), &program)).collect();
-    // The rename table must reach the analysis here too, not only in
-    // `check`. Without it a cross-seed call is an unresolved edge, so
-    // an effect assertion violated one seed away compiles, links and
-    // ships — a downstream fleet gates on `build` across 109 binaries,
-    // and "it built" must not be weaker than "it checked" on a
-    // contract the compiler already knows how to evaluate.
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = renames.clone();
-    // The map the snapshot minted with, as `check` hands it over: the
-    // program key here is the DIRECTORY, which names no file.
-    bundle.sources = source_map.clone();
-    bundle.snapshot = snapshot;
-    let allow_unowned =
-        std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
     if !diags.is_empty() {
-        for d in &diags {
-            eprintln!("{}", render_located(d, &file_bases, &path_sources));
+        for d in diags {
+            eprintln!("{}", render_located(d, file_bases, sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -443,32 +165,35 @@ pub(crate) fn run_program(
         }
     }
     // P26: stamp the model identity of the bundle just checked.
-    let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let resolved =
-        match resolve_checked(
-            &program,
-            &source_map,
-            &renames,
-            &options,
-            &file_bases,
-            &path_sources,
-        ) {
-            Ok(r) => r,
-            Err(code) => return code,
-        };
+    let model_hash = hale_types::topology::model_shape_hash(&snap.bundle());
+    // The view before the execution identity: the identity folds in
+    // the dispatch plan the view carries. A refused resolve is
+    // reported as the build would report it.
+    let view = match snap.demand_lowering() {
+        Ok(v) => v,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
     let options_fp = build_env::options_fingerprint(&options);
-    let (plan_digest, obs_ids) = model_identity_of_bundle(&bundle, &resolved, &options);
-    let digest =
-        exec_digest(&path_sources, target, &options_fp, plan_digest);
+    let (plan_digest, obs_ids) = match model_identity(&snap, view, &options) {
+        Ok(x) => x,
+        Err(b) => {
+            eprintln!("{}", render_blocked(b, file_bases, sources));
+            return ExitCode::from(1);
+        }
+    };
+    let digest = exec_digest(sources, target, &options_fp, plan_digest);
     compile_and_exec(
-        resolved,
+        view,
         user_args,
         observe,
         model_hash,
         digest,
         obs_ids,
-        &file_bases,
-        &path_sources,
+        file_bases,
+        sources,
         options,
     )
 }

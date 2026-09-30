@@ -1046,40 +1046,44 @@ fn compile_cached_runtime_object_with(
 /// qualified-name paths. A caller with no imports passes `&[]`.
 ///
 /// This is the adapter for callers that hold a bare program (the test
-/// harness): it runs the desugar sequence the verbs run before their
-/// check (`hale_types::desugar_sequence::desugar_before_check`), resolves
-/// the program through `hale_types::resolved::resolve_program` and
-/// lowers the view with [`build_resolved`]. The verbs demand the view
-/// from their snapshot and call [`build_resolved`].
+/// harness): it builds the harness's snapshot of the program
+/// (`hale_frontend::snapshot::Snapshot::from_program`, shaped as every
+/// verb's load shapes a seed, with no source map) and demands the
+/// lowering view from it, as the verbs demand theirs, then lowers it
+/// with [`build_resolved`]. The harness's snapshot does not gate
+/// lowering on a check (`Config::harness`): a test that wants the check
+/// runs it itself.
 pub fn build_executable_with_options(
     program: &Program,
     output_path: &Path,
     import_renames: &[(Vec<String>, String)],
     options: &BuildOptions,
 ) -> Result<(), CodegenError> {
-    // A bare program has not been through the sequence every entry
-    // point runs before its check; run it here, through the same fn,
-    // so the resolved program never runs any of it again.
-    let mut program = program.clone();
-    hale_types::desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence {
-            import_renames,
-            api: options.api.as_deref(),
-            api_roles: options.api_roles.as_deref(),
+    use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
+    let spec = options.target.spec();
+    let target = Target {
+        name: match options.target {
+            CompileTarget::Native => "host".to_string(),
+            _ => spec.triple.to_string(),
         },
-    )
-    .map_err(CodegenError::Unsupported)?;
-    // A bare program has no source map: its sites seed by ordinal.
-    let resolved = hale_types::resolved::resolve_program(
-        &program,
-        &[],
-        import_renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(CodegenError::Unsupported)?;
-    build_resolved(&resolved, output_path, options)
+        has_async_io: spec.has_async_io(),
+        label: spec.platform_label(),
+    };
+    let mut config = Config::harness(target);
+    config.api = options.api.clone();
+    config.api_roles = options.api_roles.clone();
+    let snap = match Snapshot::from_program(program.clone(), import_renames.to_vec(), config) {
+        Ok(s) => s,
+        Err(LoadError::Refused(msg)) => return Err(CodegenError::Unsupported(msg)),
+        // A bare program is not read from anywhere; kept for totality.
+        Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
+    };
+    let view = snap.demand_lowering().map_err(|b| {
+        CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
+            b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
+        }))
+    })?;
+    build_resolved(view, output_path, options)
 }
 
 /// Lower the view the frontend produced

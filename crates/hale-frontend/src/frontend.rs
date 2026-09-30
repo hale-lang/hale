@@ -550,8 +550,19 @@ pub fn collect_checkable(
     // GH #777: a parse failure in the target's own files travels the
     // same road an imported file's does — the diagnostics reach the
     // one reporting site, which honours `--json`.
-    let (programs, sources, file_bases) =
-        parse_files(&files, src).map_err(CheckableFailure::from_parse)?;
+    let (programs, sources, file_bases) = parse_files(&files, src).map_err(|mut f| {
+        // A FILE target that will not open is the entry of a build: its
+        // text is the sentence every build path has printed for it
+        // (GH #903, `could not read <path>: <os error>`). A directory's
+        // file keeps `<path>: <os error>`; the record is the OS error
+        // either way.
+        if !src.is_dir(target) {
+            for io in &mut f.io {
+                io.text = format!("could not read {}: {}", io.path.display(), io.message);
+            }
+        }
+        CheckableFailure::from_parse(f)
+    })?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.

@@ -27,7 +27,6 @@ use verbs::misc::run_parse_file;
 use verbs::test::run_test;
 use verbs::replay::run_replay;
 use verbs::check::cli::{run_check_cli};
-use shared::frontend::EffectTable;
 use verbs::fmt::run_fmt;
 use verbs::doc::run_doc;
 use verbs::bench::run_bench;
