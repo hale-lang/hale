@@ -237,7 +237,8 @@ const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
 const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 const CG_DECL: &str = "crates/hale-codegen/src/locus/decl.rs";
-const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
+const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
+const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
 const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
@@ -349,6 +350,7 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "one order, run once per snapshot, before the first law is judged",
             "codegen never re-desugars",
+            "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): the file-entry verbs mint before the sequence and the resolved program mints again, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
         ],
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
@@ -713,6 +715,8 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_CHANNELS, "resolve_failure_route", "the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's", "the instance is a row of the instance tree (phase 2)"),
             legacy(CG, "__StdBusUnixConnectTransport", "the transport-loss handler is picked by name through the routing table", "the bindings family names the transport's locus"),
             legacy(MODEL_BUILDER, "fn_rows", "the model's function rows key a failure handler by a signature string built from its params' written types", "keyed by the row's SiteId (phase 2)"),
+            legacy(MODEL_BUILDER, "SupervisedRef::External", "a child the routing rows resolve as external is recorded by its written name", "keyed by the row's SiteId (phase 2)"),
+            legacy(CG_INST, "settles_failures", "whether the parent has any handler, read from the lowering's handler table at the params-settle bracket", "a query over the routing rows (phase 2)"),
         ],
         consumers: &[consumer_at("codegen (the handler table)", CG_DECL, "handlers_of"), consumer_at("codegen (handler bodies, by the row's ordinal)", CG_METHOD, "handlers_of"), consumer_at("codegen (__parent_on_failure)", CG_CHANNELS, "resolve_failure_route"), consumer_at("codegen (restart in place)", CG_RESTART, "restarts_in_place"), consumer_at("model (supervises)", MODEL_BUILDER, "Supervises"), consumer_at("check (duplicate handlers)", CHECK, "check_duplicate_failure_handlers"), consumer_at("check (@supervised)", FRONTIER, "supervised_diags")],
         invariants: &["the child type is resolved once, by `child_locus_name`; lowering, the checker and the model read the same row"],
@@ -927,13 +931,14 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "SCRATCH_LOCAL_BUILTINS", "the bare builtins a scratch-local fn may call: a hand-kept subset of the checker's `BARE_BUILTIN_CALLEES`, with no agreement test", "same"),
             legacy(CG, "SCRATCH_LOCAL_STD_NAMESPACES", "the `std::` namespaces whose runtime primitives the scratch-local classification takes to keep no argument, a per-namespace claim no stdlib_surface row states", "same"),
             legacy(CG, "ScratchPaths", "the scratch-local classification's own qualified-path lookup (`call_ok`: import renames first, then `PATH_RENAMES`); `resolved::lookup_qualified_path` checks them in the other order", "same"),
+            legacy(CG, "current_user_fn_scratch_local", "the per-fn flag lowering sets from the scratch-local set while it emits a fn's body", "same"),
             legacy(CG, "compute_elidable_methods", "methods whose scratch arena can be elided; recomputed on the fly per method by `method_scratch_elidable`", "same"),
             legacy(CG, "method_scratch_elidable", "the on-the-fly copy; lifecycle hooks are decided only here", "same"),
             legacy(CG, "locus_arena_elidable", "arena elision per locus, with an empty interprocedural context on purpose", "same"),
             legacy(CG, "let dbg = format!(\"{:?}\", f.body);", "the caller-arena TLS publish gate decides from the body's Debug string", "same"),
             legacy(ALLOC, "ReclaimScope", "the checker's reclaim model, stale for scratch-local fns since #1208", "one model"),
         ],
-        consumers: &[consumer("check (unbounded allocation, hot path)"), consumer("lsp (hale/allocSummary)"), consumer("claims (@budget)"), consumer("codegen (arena routing, elision)"), consumer("resource_budget")],
+        consumers: &[consumer("check (unbounded allocation, hot path)"), consumer("lsp (hale/allocSummary)"), consumer("claims (@budget)"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer("resource_budget")],
         invariants: &["the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment"],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/hot_path_alloc.rs", "crates/hale-codegen/tests/scratch_local_free_fn.rs", "crates/hale-codegen/tests/fn_nonalloc_add.rs", "crates/hale-codegen/tests/method_scratch_elision.rs"],
