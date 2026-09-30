@@ -2,11 +2,21 @@
 //! lowers.
 //!
 //! [`resolve_program`] takes the program a verb checked and produces
-//! what lowering walks — the user program after the codegen-shape
-//! desugars, the same program merged with the bundled stdlib and
-//! normalized — together with the snapshot minted over the merged
-//! program and the ownership tables the F.39 pre-pass derives from it.
-//! Codegen reads the envelope; it no longer builds any of it.
+//! what lowering walks — the user program after the two lowering
+//! rewrites, the same program merged with the bundled stdlib —
+//! together with the snapshot minted over the merged program and the
+//! ownership tables the F.39 pre-pass derives from it. Codegen reads
+//! the envelope; it no longer builds any of it.
+//!
+//! The two lowering rewrites are the intra-locus rewrite (a publish to
+//! a subscriber in the same tree becomes a direct call) and the topic
+//! rewrite (every topic reference becomes its wire literal). They are
+//! not desugars: each erases a written declaration reference that the
+//! checker's laws and the model read, so they run here, after the
+//! check, and each is kept as a relation — `intra_locus` and
+//! `topic_rewrites`, recorded on the bus graph's subjects — so the
+//! program's account still holds what the text no longer does (F.40
+//! phase 2.1b).
 //!
 //! The envelope also carries the ownership graph over the merged
 //! program (which accepting ancestor owns each method-body birth, and
@@ -16,20 +26,20 @@
 //! the same program with the dispatch plan lowering reads (F.40
 //! phase 1.5).
 //!
-//! The sequence is codegen's former one, moved here unchanged: the
-//! same passes, in the same order, over the same inputs. The additions
-//! are two mints. One over the user program before the intra-locus
-//! rewrite, so every send it records is minted on every path, the
-//! harness adapter's included. And one over the merged program before
-//! the pre-pass, with the bundle's source map, so every stdlib and
-//! desugar-generated node has its identity (the mint keeps the ids
-//! already carried and continues the counter) and every site its seed:
-//! a user site the file its span falls in, a stdlib site the stdlib's
-//! own seed. The pre-pass numbers nothing; a `Struct` or `Call` it
-//! finds unnumbered is an error.
+//! After the rewrites, the stdlib is appended and the merged program
+//! minted before the pre-pass, with the bundle's source map, so every
+//! stdlib and rewrite-generated node has its identity (the mint keeps
+//! the ids the bundle already carries and continues the counter) and
+//! every site its seed: a user site the file its span falls in, a
+//! stdlib site the stdlib's own seed. The pre-pass numbers nothing; a
+//! `Struct` or `Call` it finds unnumbered is an error.
 //!
-//! The passes that shape a declaration are not among them: every
-//! caller ran the desugar sequence
+//! Before the intra-locus rewrite the user program is minted once
+//! more, so every send the relation records is minted on every path,
+//! the harness adapter's included.
+//!
+//! The passes that shape a declaration are not run here: every caller
+//! ran the desugar sequence
 //! ([`crate::desugar_sequence::desugar_before_check`]) before its
 //! check, and this step does not run any of it again (F.40 phase 2.1b).
 
@@ -38,7 +48,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::{Program, TopDecl};
 
 use hale_model::dispatch_plan::DispatchPlan;
-use hale_syntax::desugar::IntraLocusRewrite;
+use hale_syntax::desugar::{IntraLocusRewrite, TopicRewrite};
 
 use crate::bus_graph::BusGraph;
 use crate::handler_routing::HandlerRouting;
@@ -76,9 +86,9 @@ pub struct ResolvedProgram {
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
     /// The message graph over `merged`, keyed by wire subject (the
-    /// topic desugars have run), with its devirtualization gates
-    /// (F.40 phase 1.5), and on each subject the sends `intra_locus`
-    /// rewrote.
+    /// topic rewrite has run), with its devirtualization gates (F.40
+    /// phase 1.5), and on each subject the sends `intra_locus` rewrote
+    /// and the topic references `topic_rewrites` turned into it.
     pub bus: BusGraph,
     /// Lowering's dispatch plan, derived from `bus`'s gates with an
     /// empty domain map: the flavor each subject is lowered to.
@@ -87,6 +97,11 @@ pub struct ResolvedProgram {
     /// the relation that keeps the publish in the program's account
     /// after the rewrite erased it from the text (boundary 7).
     pub intra_locus: Vec<IntraLocusRewrite>,
+    /// Every topic reference the topic rewrite replaced with its wire
+    /// subject: the relation that keeps the declaration a subscribe,
+    /// publish or send named in the program's account after the rewrite
+    /// erased the name from the text (F.40 phase 2.1b).
+    pub topic_rewrites: Vec<TopicRewrite>,
     /// What producing the envelope cost, so a build's phase timing
     /// (`HALE_TIME`, `BuildOptions::time_phases`) can report the
     /// resolve step beside the phases codegen times itself.
@@ -167,20 +182,17 @@ pub fn resolve_program(
     let t_start = std::time::Instant::now();
     let mut program_owned = program.clone();
     resolve_qualified_bus_subjects(&mut program_owned, import_renames);
-    // Topic-reference desugaring: rewrite `BusSubject::Topic`
-    // and `Foo <- expr` (where Foo is a topic) into the
-    // equivalent literal-subject forms. The rest of codegen
-    // sees only the legacy AST shape, no topic-specific
-    // branching needed.
+    // The two lowering rewrites. They are not desugars: each erases a
+    // written declaration reference (a topic name) that the checker's
+    // laws and the model read, so they run here, after the check, and
+    // each returns what it rewrote as a relation the envelope keeps.
     //
-    // The intra-locus optimization runs FIRST while sends still
-    // carry the cheap `Expr::Ident(Topic)` shape; it rewrites
-    // optimizable Send statements into direct `self.handler(...)`
-    // method calls. desugar_topics then handles whatever bus refs
-    // remain.
-    // JSON Tier 2 and the api binding (GH #1106) are not run here: every
-    // caller ran them in the desugar sequence before its check, with the
-    // `api` and roles it hands this step, which the envelope records.
+    // The intra-locus optimization runs FIRST while sends still carry
+    // the cheap `Expr::Ident(Topic)` shape; it rewrites optimizable
+    // Send statements into direct `self.handler(...)` method calls.
+    // The topic rewrite then turns every remaining `BusSubject::Topic`
+    // and `Foo <- expr` into its literal wire subject, so lowering sees
+    // only literal subjects, with no topic-specific branching.
     // The intra-locus rewrite moves each send's id onto the call that
     // replaces it and records it in the relation, so the sends have to
     // be minted before it runs: a caller that did not mint (the
@@ -191,7 +203,7 @@ pub fn resolve_program(
     crate::snapshot::mint([("program", &mut program_owned)], sources);
     let intra_locus =
         hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
-    hale_syntax::desugar::desugar_topics(&mut program_owned);
+    let topic_rewrites = hale_syntax::desugar::desugar_topics(&mut program_owned);
     let user = program_owned;
 
     // m73a: parse the bundled stdlib source and merge its decls
@@ -328,6 +340,17 @@ pub fn resolve_program(
                 info.direct_sends.push((rw.locus.clone(), rw.handler.clone()));
             }
         }
+        // And the topic references the topic rewrite turned into wire
+        // literals: each is recorded on the subject it now carries, with
+        // the declaration it named, so the graph lowering reads still
+        // knows the topic behind every literal. A subject no bus block
+        // declares (a send from a free fn) has no row to hold it; the
+        // envelope's `topic_rewrites` keeps every one regardless.
+        for rw in &topic_rewrites {
+            if let Some(info) = bus.subjects.get_mut(&rw.wire) {
+                info.written_topics.push((rw.site, rw.written.clone()));
+            }
+        }
         // The gates are the ones the rewritten program was judged by,
         // as before: the relation is recorded, not yet read.
         //
@@ -359,6 +382,7 @@ pub fn resolve_program(
         bus,
         plan,
         intra_locus,
+        topic_rewrites,
         resolved_in: t_start.elapsed(),
         import_renames: import_renames.to_vec(),
         api: api.map(str::to_string),

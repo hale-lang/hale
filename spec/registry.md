@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 169 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 168 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -10,7 +10,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 |---|---|---|---|---|---|---|
 | `seed_loading` | Layer 1 | Migrating | desugar | `parse_with_imports` | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
-| `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 9 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
+| `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 8 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
 | `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 2 | What every top-level name denotes: the symbol table over the merged program. |
@@ -135,10 +135,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: file entry only; `desugar_before_check`, but no sync inference before the check. *Removed when:* phase 2.
 - `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: a synthesized text driver and no check at all. *Removed when:* phase 2.
 - `crates/hale-lsp/src/lib.rs` · `check_and_publish` — the LSP: sync inference per file, outside the sequence, before it. *Removed when:* phase 2.
-- `crates/hale-types/src/resolved.rs` · `resolve_program` — the frontend's resolved-program step runs the topic and intra-locus desugars on its own clone, after the check (JSON parsers, the api surface and repr accessors are the sequence's since phase 2.1b); the intra-locus rewrite returns what it rewrote, kept as `intra_locus` and recorded on the bus graph's subjects (`direct_sends`). *Removed when:* one sequence, before the check (phase 2).
-- `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen resolves the program for itself when handed a bare one (the test harness builds this way); its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard). *Removed when:* the frontend is the only producer (phase 2).
+- `crates/hale-codegen/src/codegen.rs` · `build_executable_with_options` — codegen's adapter for a bare program (the test harness builds this way) runs the sequence (`desugar_before_check`) and resolves (`resolve_program`) for itself, through the verbs' own fns; its seam allows only the definition, so no non-test caller bypasses the frontend (tests are not scanned by the seam guard). *Removed when:* the frontend is the only producer (phase 2).
 
-**Also owned.** `crates/hale-syntax/src/desugar.rs` · `desugar_intra_locus_topics`; `crates/hale-types/src/desugar_sequence.rs` · `bundled_stdlib`; `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run`; `crates/hale-syntax/src/desugar.rs` · `desugar_repr_accessors`
+**Also owned.** `crates/hale-types/src/resolved.rs` · `resolve_program`; `crates/hale-syntax/src/desugar.rs` · `desugar_intra_locus_topics`; `crates/hale-syntax/src/desugar.rs` · `desugar_topics`; `crates/hale-types/src/desugar_sequence.rs` · `bundled_stdlib`; `crates/hale-syntax/src/desugar.rs` · `desugar_omitted_run`; `crates/hale-syntax/src/desugar.rs` · `desugar_repr_accessors`
 
 **Consumers.** check; build; run; test; replay; lsp; codegen (`crates/hale-codegen/src/codegen.rs` · `build_resolved`)
 
@@ -147,17 +146,19 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - one order, run once per snapshot, before the first law is judged
 - every entry point runs `desugar_before_check` before it mints its snapshot; the bundled stdlib goes through the same fn (`bundled_stdlib`)
 - codegen never re-desugars
+- the topic-reference and intra-locus rewrites are lowering's, after the check, in `resolve_program` (with the qualified bus subjects they read), and each is recorded as a relation: `TopicRewrite` rows (`topic_rewrites`, and `written_topics` on the bus graph's subjects) and `IntraLocusRewrite` rows (`intra_locus`, and `direct_sends`); `resolve_program` otherwise appends the stdlib, mints and derives the tables
 - a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): a verb mints after the sequence and the resolved program mints again after its rewrites, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test
 - the omitted `run` is synthesized in the sequence, before the check, and marked `LifecycleDecl::synthesized`: a rule about the run's body reads the empty body and answers both spellings alike (spec semantics.md § run()); what lists the hooks the author wrote (the application model, whose function and phase tables are the artifact's identity, the allocation summary, the effect contracts, the mint's `OmittedRun` origin) reads the marker, never the absence of author text, and a synthesized `run` moves no artifact and no diagnostic
 
 **Missing data.** n/a
 
-**Focused tests.** crates/hale-cli/tests/api_description.rs; crates/hale-codegen/tests/framework_elision.rs; crates/hale-types/tests/topology_projection.rs (the_omitted_run_moves_no_artifact_and_no_diagnostic)
+**Focused tests.** crates/hale-cli/tests/api_description.rs; crates/hale-codegen/tests/framework_elision.rs; crates/hale-types/tests/topology_projection.rs (the_omitted_run_moves_no_artifact_and_no_diagnostic); crates/hale-types/tests/bus_graph.rs (a_rewritten_send_stays_on_the_resolved_graph, a_rewritten_topic_reference_stays_on_the_resolved_graph)
 
 **Spec.** spec/semantics.md
 
 **Guarded seams.**
 
+- `desugar_topics(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `desugar_before_check(` may be referenced from: `crates/hale-types/src/desugar_sequence.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
 - `desugar_omitted_run(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
 - `desugar_repr_accessors(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1

@@ -72,8 +72,13 @@ hale-ts-shim  staticlib; no dependents; linked by path
 2. **Parse**: `hale-syntax/src/lexer.rs`, `parser.rs`. Parse-time
    sugar: `@no_*` (`effect_assert_for`), chains
    (`chains::desugar_chains`).
-3. **Pre-check passes** (CLI): `json_gen::generate_json_parsers`,
-   `hale_types::apply_sync_inference`, `--wrap-main`.
+3. **Pre-check passes**: the verb's own prefix
+   (`hale_types::apply_sync_inference`, `--wrap-main`, build's
+   `--api` / `--env` binding), then the one desugar sequence every
+   entry point runs before it mints and checks,
+   `hale_types::desugar_sequence::desugar_before_check`: JSON parsers,
+   the api surface, unit returns, construction aliases, the omitted
+   `run` (marked `LifecycleDecl::synthesized`), repr accessors.
 4. **Resolve + check**: `hale_types::check_bundle_opts_scoped`
    (`hale-types/src/lib.rs`): `resolve::build_top_scope`, then
    `check::check_bundle_scoped` (`check.rs`).
@@ -81,27 +86,30 @@ hale-ts-shim  staticlib; no dependents; linked by path
 6. **Judgment**: `judgment::claim_law_diags`, from the check path
    only when no non-`Claim` error exists and claims are present.
 7. **The resolved program**: `hale_types::resolved::resolve_program`
-   (the codegen-shape desugars, the stdlib merge, the snapshot mint
-   with the bundle's source map, the ownership, handler-routing and
-   bus tables; the envelope keeps the renames and api it was resolved
-   with, its top scope, and hands out its bundle view), then
-   **codegen**: `hale_codegen::build_resolved` (`codegen.rs`), which
-   refuses options whose api disagrees with the envelope's.
-   `build_executable_with_options` is the adapter the test harness
-   uses; it resolves and then lowers.
+   (the two lowering rewrites, kept as relations, the stdlib merge,
+   the snapshot mint with the bundle's source map, the ownership,
+   handler-routing and bus tables; the envelope keeps the renames and
+   api it was resolved with, its top scope, and hands out its bundle
+   view), then **codegen**: `hale_codegen::build_resolved`
+   (`codegen.rs`), which refuses options whose api disagrees with the
+   envelope's. `build_executable_with_options` is the adapter the test
+   harness uses; it runs the desugar sequence, resolves and then
+   lowers.
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
 Inside `resolve_program` (hale-types), in order:
-`resolve_qualified_bus_subjects`; the topic desugars in
-`hale-syntax/src/desugar.rs` (`desugar_intra_locus_topics`, whose
-rewrites are recorded as a relation, `desugar_topics`,
-`desugar_repr_accessors`), **which run after check, so the checker
-sees topics unsugared** (F.40 phase 2 moves the sequence before the
-check); the stdlib merge (`hale_stdlib::AP_SOURCE` parsed and
-appended); unit and alias normalization; `desugar_omitted_run`; the
-snapshot mint over the merged program (the stdlib's sites under their
-own seed); the ownership pre-pass (`ownership::resolve_owners`, F.39
+`resolve_qualified_bus_subjects`; the two lowering rewrites in
+`hale-syntax/src/desugar.rs`, `desugar_intra_locus_topics` and
+`desugar_topics`, **which run after check, so the checker sees topic
+references as written**: they are not desugars (each erases a
+declaration reference the checker's laws and the model read), and each
+returns what it rewrote as a relation (`intra_locus`,
+`topic_rewrites`, recorded on the bus graph's subjects); the stdlib
+merge (`desugar_sequence::bundled_stdlib`, the stdlib put through the
+same declaration-shaping passes); the snapshot mint over the merged
+program (the stdlib's sites under their own seed); the ownership
+pre-pass (`ownership::resolve_owners`, F.39
 in `spec/decisions.md`: it numbers nothing and refuses an unminted
 literal or call, and an instantiation with no owner row is a
 `CodegenError`), the binding

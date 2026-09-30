@@ -772,3 +772,62 @@ fn main() { App { }; }
     assert_eq!(call_ids, vec![rw.send.0], "the direct call carries the recorded send's id");
     assert!(resolved.snapshot.site_id(rw.send).is_some(), "the send's id is a site of the snapshot");
 }
+
+/// F.40 phase 2.1b: the topic rewrite turns every topic reference into
+/// its wire literal after the check, erasing the declaration name from
+/// the program lowering walks. The resolved program keeps each as a
+/// `TopicRewrite` row (the site, the topic as written, the wire), and
+/// the graph over the rewritten program records them on the wire
+/// subject. Publisher and subscriber are unrelated loci, so the
+/// intra-locus rewrite leaves the send to the topic rewrite.
+#[test]
+fn a_rewritten_topic_reference_stays_on_the_resolved_graph() {
+    let src = r#"
+type Tick { n: Int = 0; }
+topic Beat { payload: Tick; subject: "b.beat"; }
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Beat as on_beat; }
+    fn on_beat(t: Tick) { self.seen = t.n; }
+}
+locus Clock {
+    bus { publish Beat; }
+    run() { Beat <- Tick { n: 1 }; }
+}
+main locus App {
+    params { w: Worker = Worker { }; c: Clock = Clock { }; }
+}
+fn main() { App { }; }
+"#;
+    // As an entry point: the sequence, the mint, then the resolve.
+    let mut prog = parse_source(src).expect("parse failed");
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut prog],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+    )
+    .expect("no --api to refuse");
+    hale_types::snapshot::mint([("app.hl", &mut prog)], &[]);
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None)
+        .expect("resolves");
+    assert!(resolved.intra_locus.is_empty(), "{:?}", resolved.intra_locus);
+
+    // The subscribe, the publish and the send, each by its minted site.
+    let rows = &resolved.topic_rewrites;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for rw in rows {
+        assert_eq!((rw.written.as_str(), rw.wire.as_str()), ("Beat", "b.beat"), "{rw:?}");
+        assert!(!rw.site.is_none(), "the site keeps its identity: {rw:?}");
+    }
+    // `NodeId`'s equality ignores the id (it compares shapes), so the
+    // sites are compared by their index.
+    let sites: std::collections::BTreeSet<u32> = rows.iter().map(|rw| rw.site.0).collect();
+    assert_eq!(sites.len(), 3, "three distinct sites: {rows:?}");
+
+    let info = resolved.bus.subjects.get("b.beat").expect("the wire subject is in the graph");
+    let mut on_graph: Vec<(u32, String)> =
+        info.written_topics.iter().map(|(s, t)| (s.0, t.clone())).collect();
+    on_graph.sort();
+    let mut expected: Vec<(u32, String)> = rows.iter().map(|rw| (rw.site.0, rw.written.clone())).collect();
+    expected.sort();
+    assert_eq!(on_graph, expected);
+}

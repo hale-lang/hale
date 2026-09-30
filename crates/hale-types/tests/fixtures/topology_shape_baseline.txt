@@ -1407,6 +1407,7 @@ crates/hale-types/tests/bus_graph.rs#17 1267f8745a99b7f0
 crates/hale-types/tests/bus_graph.rs#18 46b94d56a5a94fcf
 crates/hale-types/tests/bus_graph.rs#19 96cddb6a7bae345f
 crates/hale-types/tests/bus_graph.rs#2 a5b806976b754c77
+crates/hale-types/tests/bus_graph.rs#20 c5f2312e3d13f331
 crates/hale-types/tests/bus_graph.rs#3 69161ab43c42fd49
 crates/hale-types/tests/bus_graph.rs#4 759965f77f282f63
 crates/hale-types/tests/bus_graph.rs#5 b67c7512d736b6ec

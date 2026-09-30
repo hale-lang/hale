@@ -49,11 +49,32 @@ struct TopicEntry {
     wire_subject: String,
 }
 
+/// One topic reference the topic desugar replaced with its wire
+/// subject: the relation that keeps the written declaration reference
+/// in the program's account after the rewrite erased it from the text
+/// (F.40 phase 2.1b, the same shape as [`IntraLocusRewrite`]). The
+/// rewrite is lowering's, after the check: the checker's laws and the
+/// model read the reference itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicRewrite {
+    /// The identity of the `subscribe`, `publish` or send whose subject
+    /// was rewritten; the node keeps it across the rewrite
+    /// (`NodeId::NONE` when the program was not minted before it).
+    pub site: NodeId,
+    /// The topic the site named, by its declaration name.
+    pub written: String,
+    /// The literal subject the site carries now: the topic's wire
+    /// subject, or the name itself for a reference to no declared topic
+    /// (the checker has reported that one already).
+    pub wire: String,
+}
+
 /// Walk `program` and rewrite topic references into literal
-/// forms in place. Caller invokes this after typecheck and
-/// before codegen / interpretation. Idempotent: re-running on
-/// already-desugared input is a no-op.
-pub fn desugar_topics(program: &mut Program) {
+/// forms in place, returning one [`TopicRewrite`] per reference it
+/// rewrote. Caller invokes this after typecheck and before codegen /
+/// interpretation. Idempotent: re-running on already-desugared input
+/// is a no-op returning an empty vector.
+pub fn desugar_topics(program: &mut Program) -> Vec<TopicRewrite> {
     let mut topics: BTreeMap<String, TopicEntry> = BTreeMap::new();
     collect_topics(&program.items, &mut topics);
     // BEFORE the rewrite: role inference reads `BusSubject::Topic`
@@ -67,7 +88,9 @@ pub fn desugar_topics(program: &mut Program) {
     // authored AST where the topic ends are still visible, so the
     // two must actually agree.
     desugar_binding_roles(program);
-    rewrite_items(&mut program.items, &topics);
+    let mut out = Vec::new();
+    rewrite_items(&mut program.items, &topics, &mut out);
+    out
 }
 
 /// `--wrap-main` (browser playground): turn a bare-`main` program into a
@@ -392,94 +415,83 @@ fn collect_topics(items: &[TopDecl], topics: &mut BTreeMap<String, TopicEntry>) 
     }
 }
 
-fn rewrite_items(items: &mut [TopDecl], topics: &BTreeMap<String, TopicEntry>) {
+type Topics = BTreeMap<String, TopicEntry>;
+
+fn rewrite_items(items: &mut [TopDecl], topics: &Topics, out: &mut Vec<TopicRewrite>) {
     for item in items {
         match item {
-            TopDecl::Locus(l) => rewrite_locus(l, topics),
-            TopDecl::Fn(f) => rewrite_block(&mut f.body, topics),
-            TopDecl::Module(m) => rewrite_items(&mut m.items, topics),
+            TopDecl::Locus(l) => rewrite_locus(l, topics, out),
+            TopDecl::Fn(f) => rewrite_block(&mut f.body, topics, out),
+            TopDecl::Module(m) => rewrite_items(&mut m.items, topics, out),
             _ => {}
         }
     }
 }
 
-fn rewrite_locus(l: &mut LocusDecl, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_locus(l: &mut LocusDecl, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     for member in &mut l.members {
         match member {
             LocusMember::Bus(bb) => {
                 for bm in &mut bb.members {
-                    rewrite_bus_member(bm, topics);
+                    rewrite_bus_member(bm, topics, out);
                 }
             }
-            LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, topics),
-            LocusMember::Mode(md) => rewrite_block(&mut md.body, topics),
-            LocusMember::Fn(fd) => rewrite_block(&mut fd.body, topics),
+            LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, topics, out),
+            LocusMember::Mode(md) => rewrite_block(&mut md.body, topics, out),
+            LocusMember::Fn(fd) => rewrite_block(&mut fd.body, topics, out),
             _ => {}
         }
     }
 }
 
-fn rewrite_bus_member(bm: &mut BusMember, topics: &BTreeMap<String, TopicEntry>) {
-    match bm {
-        BusMember::Subscribe { subject, ty, .. } => {
-            if let BusSubject::Topic(ident) = subject {
-                let name = ident.name.clone();
-                let span = ident.span;
-                if let Some(entry) = topics.get(&name) {
-                    if ty.is_none() {
-                        *ty = Some(entry.payload.clone());
-                    }
-                    *subject = BusSubject::Literal {
-                        subject: entry.wire_subject.clone(),
-                        span,
-                    };
-                } else {
-                    // Defensive: unresolved topic-ref keeps the
-                    // ident name so a downstream "unknown subject"
-                    // error has something to cite.
-                    *subject = BusSubject::Literal { subject: name, span };
-                }
+fn rewrite_bus_member(bm: &mut BusMember, topics: &Topics, out: &mut Vec<TopicRewrite>) {
+    let (subject, ty, id) = match bm {
+        BusMember::Subscribe { subject, ty, id, .. } => (subject, ty, *id),
+        BusMember::Publish { subject, ty, id, .. } => (subject, ty, *id),
+    };
+    if let BusSubject::Topic(ident) = subject {
+        let name = ident.name.clone();
+        let span = ident.span;
+        let wire = if let Some(entry) = topics.get(&name) {
+            if ty.is_none() {
+                *ty = Some(entry.payload.clone());
             }
-        }
-        BusMember::Publish { subject, ty, .. } => {
-            if let BusSubject::Topic(ident) = subject {
-                let name = ident.name.clone();
-                let span = ident.span;
-                if let Some(entry) = topics.get(&name) {
-                    if ty.is_none() {
-                        *ty = Some(entry.payload.clone());
-                    }
-                    *subject = BusSubject::Literal {
-                        subject: entry.wire_subject.clone(),
-                        span,
-                    };
-                } else {
-                    *subject = BusSubject::Literal { subject: name, span };
-                }
-            }
-        }
+            entry.wire_subject.clone()
+        } else {
+            // Defensive: unresolved topic-ref keeps the
+            // ident name so a downstream "unknown subject"
+            // error has something to cite.
+            name.clone()
+        };
+        *subject = BusSubject::Literal { subject: wire.clone(), span };
+        out.push(TopicRewrite { site: id, written: name, wire });
     }
 }
 
-fn rewrite_block(b: &mut Block, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_block(b: &mut Block, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     for stmt in &mut b.stmts {
-        rewrite_stmt(stmt, topics);
+        rewrite_stmt(stmt, topics, out);
     }
     if let Some(tail) = &mut b.tail {
-        rewrite_expr(tail, topics);
+        rewrite_expr(tail, topics, out);
     }
 }
 
-fn rewrite_stmt(s: &mut Stmt, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_stmt(s: &mut Stmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     match s {
-        Stmt::Send { subject, .. } => {
+        Stmt::Send { subject, id, .. } => {
             // Rewrite `Foo <- value` to `"<wire_subject>" <- value`
             // when `Foo` is a declared topic. Subject is the only
             // place a topic ident appears in expression position
             // (typechecker rejects topic idents elsewhere).
-            if let Expr::Ident(id) = subject {
-                if let Some(entry) = topics.get(&id.name) {
-                    let span = id.span;
+            if let Expr::Ident(ident) = subject {
+                if let Some(entry) = topics.get(&ident.name) {
+                    let span = ident.span;
+                    out.push(TopicRewrite {
+                        site: *id,
+                        written: ident.name.clone(),
+                        wire: entry.wire_subject.clone(),
+                    });
                     *subject = Expr::Literal(
                         Literal::String(entry.wire_subject.clone()),
                         span,
@@ -487,35 +499,35 @@ fn rewrite_stmt(s: &mut Stmt, topics: &BTreeMap<String, TopicEntry>) {
                 }
             }
         }
-        Stmt::If(if_stmt) => rewrite_if(if_stmt, topics),
-        Stmt::Match(m) => rewrite_match(m, topics),
-        Stmt::For { body, .. } => rewrite_block(body, topics),
-        Stmt::While { body, .. } => rewrite_block(body, topics),
-        Stmt::Block(b) => rewrite_block(b, topics),
-        Stmt::Expr(e) => rewrite_expr(e, topics),
+        Stmt::If(if_stmt) => rewrite_if(if_stmt, topics, out),
+        Stmt::Match(m) => rewrite_match(m, topics, out),
+        Stmt::For { body, .. } => rewrite_block(body, topics, out),
+        Stmt::While { body, .. } => rewrite_block(body, topics, out),
+        Stmt::Block(b) => rewrite_block(b, topics, out),
+        Stmt::Expr(e) => rewrite_expr(e, topics, out),
         _ => {}
     }
 }
 
-fn rewrite_if(if_stmt: &mut IfStmt, topics: &BTreeMap<String, TopicEntry>) {
-    rewrite_block(&mut if_stmt.then_block, topics);
+fn rewrite_if(if_stmt: &mut IfStmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
+    rewrite_block(&mut if_stmt.then_block, topics, out);
     if let Some(else_branch) = &mut if_stmt.else_block {
-        rewrite_else_branch(else_branch, topics);
+        rewrite_else_branch(else_branch, topics, out);
     }
 }
 
-fn rewrite_else_branch(eb: &mut ElseBranch, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_else_branch(eb: &mut ElseBranch, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     match eb {
-        ElseBranch::Else(b) => rewrite_block(b, topics),
-        ElseBranch::ElseIf(if_stmt) => rewrite_if(if_stmt, topics),
+        ElseBranch::Else(b) => rewrite_block(b, topics, out),
+        ElseBranch::ElseIf(if_stmt) => rewrite_if(if_stmt, topics, out),
     }
 }
 
-fn rewrite_match(m: &mut MatchStmt, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_match(m: &mut MatchStmt, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     for arm in &mut m.arms {
         match &mut arm.body {
-            MatchArmBody::Block(b) => rewrite_block(b, topics),
-            MatchArmBody::Expr(e) => rewrite_expr(e, topics),
+            MatchArmBody::Block(b) => rewrite_block(b, topics, out),
+            MatchArmBody::Expr(e) => rewrite_expr(e, topics, out),
         }
     }
 }
@@ -853,11 +865,11 @@ fn acc_expr(e: &mut Expr, w: &WireLayouts) {
     }
 }
 
-fn rewrite_expr(e: &mut Expr, topics: &BTreeMap<String, TopicEntry>) {
+fn rewrite_expr(e: &mut Expr, topics: &Topics, out: &mut Vec<TopicRewrite>) {
     match e {
-        Expr::Block(b) => rewrite_block(b, topics),
-        Expr::If(if_stmt) => rewrite_if(if_stmt, topics),
-        Expr::Match(m) => rewrite_match(m, topics),
+        Expr::Block(b) => rewrite_block(b, topics, out),
+        Expr::If(if_stmt) => rewrite_if(if_stmt, topics, out),
+        Expr::Match(m) => rewrite_match(m, topics, out),
         _ => {}
     }
 }
