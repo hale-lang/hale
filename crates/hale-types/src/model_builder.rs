@@ -22,11 +22,11 @@
 //! Nothing calls this on the ordinary check path. The model is
 //! built only when a consumer asks (`hale model dump` today; the
 //! claims evaluator from Change 5a; the artifact encoder from
-//! Change 3). [`builds`] counts invocations in-process, and
+//! Change 3). The frontend's snapshot counts its derivations per
+//! snapshot (`Snapshot::builds`, read by `tests/demand_gate.rs`), and
 //! `HALE_MODEL_TRACE=1` prints one stderr line per derivation —
-//! the cross-process hook the no-claims LSP/check test uses to
-//! prove the builder never ran ("cached" must not become "always
-//! built").
+//! the cross-process hook the no-claims check test uses to prove the
+//! builder never ran ("cached" must not become "always built").
 //!
 //! ## What Change 2 deliberately leaves empty
 //!
@@ -39,7 +39,6 @@
 //! must be retrofitted.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use hale_model::{
     ApplicationModel, Call, Capabilities, DeadInterfaceCall, DeclKind,
@@ -66,8 +65,6 @@ use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::handler_routing::ChildRef;
 use crate::symbol::Bundle;
 
-static BUILDS: AtomicU64 = AtomicU64::new(0);
-
 /// A named TypeExpr's raw path (joined `::`), `"?"` otherwise.
 fn te_name_of(t: &TypeExpr) -> String {
     match t {
@@ -79,13 +76,6 @@ fn te_name_of(t: &TypeExpr) -> String {
             .join("::"),
         _ => "?".to_string(),
     }
-}
-
-/// How many times the builder has run in this process — the
-/// demand-gating instrumentation. The no-claims check path must
-/// leave this at zero.
-pub fn builds() -> u64 {
-    BUILDS.load(Ordering::Relaxed)
 }
 
 /// Derive the canonical application model. Pure with respect to
@@ -187,7 +177,17 @@ fn type_descriptor(ty: &TypeExpr) -> String {
 }
 
 pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
-    BUILDS.fetch_add(1, Ordering::Relaxed);
+    let (top, _diags) = crate::resolve::build_top_scope(bundle);
+    derive_application_model_in(bundle, &top)
+}
+
+/// [`derive_application_model`] over the bundle's top scope, built by
+/// the caller: the frontend's snapshot builds one scope and passes it
+/// to every family that reads it.
+pub fn derive_application_model_in(
+    bundle: &Bundle<'_>,
+    top: &crate::resolve::TopScope,
+) -> ApplicationModel {
     if std::env::var("HALE_MODEL_TRACE").as_deref() == Ok("1") {
         eprintln!("[hale-model] deriving ApplicationModel");
     }
@@ -196,8 +196,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         bundle.programs.values().copied().collect();
     // GH #1159: the rename table once per derivation, not per string.
     let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
-    let (top, _diags) = crate::resolve::build_top_scope(bundle);
-    let graph = crate::bus_graph::build_bus_graph(bundle, &top);
+    let graph = crate::bus_graph::build_bus_graph(bundle, top);
     let summary = alloc_summary::summarize_programs_with_renames(
         &programs,
         &bundle.import_renames,
@@ -3430,7 +3429,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // capability account honest (RuntimeInheritedPlacement is
         // exactly this shape).
         let og = crate::ownership_graph::build_ownership_graph(
-            bundle, &top,
+            bundle, top,
         );
         let free_fn_births =
             crate::ownership_graph::free_fn_birth_sites(bundle);

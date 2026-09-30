@@ -39,7 +39,8 @@ use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
-use hale_frontend::frontend::{collect_ap_files, LoadMode};
+use hale_frontend::frontend::{collect_ap_files, source_map_as_spelled, LoadMode};
+use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
@@ -512,110 +513,52 @@ fn check_and_publish(
         );
         return;
     }
+    // F.40 phase 2.2a: the seed as the editor loads it (the buffers
+    // over the disk, `LoadMode::SeedDirectoryOnly`), shaped and minted
+    // once, and the check demanded from it. The editor's config holds
+    // the whole-program rules (GH #721): the snapshot checks only a
+    // seed whose every file parsed, so it holds a whole program and
+    // answers `hale check <dir>` exactly — including an identifier
+    // that binds nothing, a typo the editor shows while it is typed.
+    // The model is demanded only by a program that declares a law.
     let src = Overlay::new(overlays);
-    let files = seed_files(changed, &src);
-
-    // Parse each file at a distinct base (overlay text wins).
-    let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
-    let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
-    // path → its own (never merged-span) parse diags.
-    let mut parse_diags: BTreeMap<PathBuf, Vec<hale_syntax::Diag>> =
-        BTreeMap::new();
-    for f in &files {
-        let source = match src.read(f) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let base = file_bases
-            .last()
-            .map(|(b, _, l)| b + l + 1)
-            .unwrap_or(0);
-        file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
-            Ok(p) => {
-                programs.insert(f.clone(), p);
-            }
-            Err(diags) => {
-                // Un-shift the spans back to file-local offsets so
-                // position mapping below is uniform.
-                let local: Vec<_> = diags
-                    .into_iter()
-                    .map(|d| d.shifted(base.wrapping_neg()))
-                    .collect();
-                parse_diags.insert(f.clone(), local);
-            }
-        }
-        sources.insert(f.clone(), source);
-    }
+    let Ok(snap) = Snapshot::load(changed, LoadMode::SeedDirectoryOnly, &src, Config::editor())
+    else {
+        // The editor's load takes no environment and no `--api`, so
+        // nothing refuses it: publish nothing rather than guess.
+        return;
+    };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
 
     // path → published diagnostics (start EMPTY for every file so a
     // clean pass clears old squiggles).
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
-    for f in files.iter() {
+    for f in snap.files() {
         per_file.insert(f.clone(), Vec::new());
     }
-    for (f, diags) in &parse_diags {
-        let src = sources.get(f).map(String::as_str).unwrap_or("");
-        let out = per_file.entry(f.clone()).or_default();
-        for d in diags {
-            out.push(diag_to_lsp(d, src));
+    match snap.demand_check() {
+        Ok(checked) => {
+            let mut diags = checked.diags.clone();
+            diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), true));
+            place_checker_diags(&diags, file_bases, sources, &mut per_file);
         }
-    }
-
-    // Typecheck only when the whole seed parsed (the bundle needs
-    // every program; a parse hole would cascade phantom errors).
-    if parse_diags.is_empty() && !programs.is_empty() {
-        for prog in programs.values_mut() {
-            let _ = hale_types::apply_sync_inference(prog);
+        // A seed with a file that did not parse is not checked (a parse
+        // hole would cascade phantom errors): its parse diagnostics are
+        // published against the files that hold them, un-shifted to
+        // file-local offsets.
+        Err(_) => {
+            for (f, diags) in snap.unparsed() {
+                let base = file_bases
+                    .iter()
+                    .find(|(_, p, _)| p == f)
+                    .map_or(0, |(b, _, _)| *b);
+                let src = sources.get(f).map(String::as_str).unwrap_or("");
+                let out = per_file.entry(f.clone()).or_default();
+                for d in diags {
+                    out.push(diag_to_lsp(&d.clone().shifted(base.wrapping_neg()), src));
+                }
+            }
         }
-        {
-            let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-            // F.40 phase 2.1b: the desugar sequence, the one every
-            // entry point runs before its check (JSON parsers and the
-            // api surface first). The editor loads no import, so there
-            // is no rename table, and takes no `--api`, so there is no
-            // injection to refuse.
-            let _ = hale_types::desugar_sequence::desugar_before_check(
-                &mut refs,
-                &hale_types::desugar_sequence::Sequence {
-                    import_renames: &[],
-                    api: None,
-                    api_roles: None,
-                },
-            );
-        }
-        // GH #476 Change 9 (review round 1): install the SOURCE MAP.
-        // Claim rows are judged over the canonical model, whose
-        // provenance resolves through `bundle.sources`; without it
-        // every claim diagnostic in a multi-file seed would have to
-        // be placed from raw bundle-global offsets alone. The editor
-        // already has the bases, paths and text — there is no reason
-        // to make the analyzer guess.
-        let source_map = source_files(&file_bases, &sources);
-        // F.40 phase 1.1b-iii: the snapshot, after the last desugar
-        // (`generate_api`), seeded from the source map.
-        let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
-        let snapshot = hale_types::snapshot::mint(
-            names.iter().map(String::as_str).zip(programs.values_mut()),
-            &source_map,
-        );
-        let bundle_programs: BTreeMap<String, &Program> = programs
-            .iter()
-            .map(|(p, prog)| (p.display().to_string(), prog))
-            .collect();
-        let mut bundle = hale_types::Bundle::new(bundle_programs);
-        bundle.sources = source_map;
-        bundle.snapshot = snapshot;
-        // GH #721: the server typechecks only once the WHOLE seed
-        // parsed (above), so it holds a whole program and answers
-        // `hale check <dir>` exactly — including an identifier that
-        // binds nothing, which is a typo the editor should show while
-        // it is being typed rather than at the next build.
-        let mut diags =
-            hale_types::check_bundle_opts_whole_program(&bundle, false);
-        diags.extend(hale_types::unbounded_alloc_warnings(&bundle, true));
-        place_checker_diags(&diags, &file_bases, &sources, &mut per_file);
     }
 
     for (path, diags) in per_file {
@@ -872,41 +815,9 @@ impl SeedAnalysis {
                 .map(|(p, prog)| (p.display().to_string(), prog))
                 .collect(),
         );
-        b.sources = source_files(&self.file_bases, &self.sources);
+        b.sources = source_map_as_spelled(&self.file_bases, &self.sources);
         b
     }
-}
-
-/// The seed's source map, in the shape the analyzer's provenance
-/// resolves through. One per parsed file, in base order.
-fn source_files(
-    file_bases: &[(u32, PathBuf, u32)],
-    sources: &BTreeMap<PathBuf, String>,
-) -> Vec<hale_types::symbol::SourceFile> {
-    file_bases
-        .iter()
-        .enumerate()
-        .map(|(i, (base, path, len))| {
-            let digest = sources
-                .get(path)
-                .map(|src| {
-                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-                    for b in src.as_bytes() {
-                        h ^= *b as u64;
-                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-                    }
-                    format!("{:016x}", h)
-                })
-                .unwrap_or_else(|| "unknown".to_string());
-            hale_types::symbol::SourceFile {
-                id: i as u32,
-                path: path.display().to_string(),
-                digest,
-                base: *base,
-                len: *len,
-            }
-        })
-        .collect()
 }
 
 /// LSP (0-based line, UTF-16 col) → byte offset.

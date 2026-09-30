@@ -1,12 +1,11 @@
 use super::MODEL_DUMP_DEMANDED;
-use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::path::Path;
 use hale_syntax::ast::Program;
-use crate::shared::frontend::collect_checkable;
+use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::verbs::model::diff_lines;
-use crate::shared::options::inject_adopt;
+use hale_frontend::snapshot::{Config, Environment, LoadError, Snapshot};
 use crate::shared::diag::render_diag_json;
 use crate::shared::diag::render_flows;
 use crate::shared::diag::render_located;
@@ -54,129 +53,45 @@ pub(crate) fn run_check_impl_labelled(
     adopt_env: &[String],
     env_label: Option<&str>,
 ) -> u8 {
-    hale_types::claims::set_env_binding(hale_types::claims::EnvBinding {
-        name: env_label.map(str::to_string),
-        injected: adopt_env.to_vec(),
+    // F.18: a whole seed (a directory) is checked to what `build`
+    // accepts — a call to a bare name nothing binds is an error here;
+    // one file of a seed keeps the permissive reading for a sibling's fn
+    //
+    // GH #721: a bare IDENTIFIER nothing binds follows the same line.
+    // One file of a multi-file seed reads consts its siblings declare,
+    // so the leniency is load-bearing there and only there.
+    let mut config = Config::check(
+        target.is_dir(),
+        std::env::args().any(|a| a == "--allow-unowned-subscriber"),
+    );
+    // GH #409: an environment binds law to an ENTRYPOINT; the snapshot
+    // refuses a seed with no main locus, and adopts the environment's
+    // constitutions into the one it has.
+    config.environment = env_label.map(|name| Environment {
+        name: name.to_string(),
+        adopt: adopt_env.to_vec(),
     });
-    // `check` MUST resolve cross-seed imports the same way `build`
-    // and `run` do. It used to bundle only the target's own `.hl`
-    // files, so an imported seed's bodies were never in the program
-    // the analysis walked — and every cross-seed call was an
-    // unresolved edge. Effect assertions, budgets and taint therefore
-    // stopped dead at a seed boundary while still reporting success,
-    // and a cross-seed payload type rendered as `?`. Codegen resolved
-    // these names all along; only the analysis phases could not see
-    // them.
-    let (mut programs, sources, file_bases, import_renames, own_files) =
-        match collect_checkable(target, &Disk) {
-            Ok(x) => x,
-            // GH #765: a failure that carries diagnostics renders them
-            // here, honouring `--json` and resolving each span against
-            // the file it lives in — including a file reached only
-            // through an `import`.
-            Err(f) => return f.report(),
-        };
-
-    // FUv0.8.2 #4: auto-apply sync inference before typecheck so
-    // `hale check` validates the post-inference shape the build
-    // path will see. Without this, `check` warns on
-    // auto-inferable cross-pool calls while `build` silently
-    // applies — same source, divergent answers.
-    // An environment binds law to an ENTRYPOINT, so the target must
-    // be one — whether or not that environment happens to contribute
-    // a constitution. Checking this only while injecting meant a
-    // `source_only` environment with no workspace base injected
-    // nothing, checked nothing, and reported success for a library
-    // path; a matrix could count that as a covered pair.
-    if env_label.is_some() {
-        let has_main = programs.values().any(|p| {
-            p.items.iter().any(|i| {
-                matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
-            })
-        });
-        if !has_main {
-            eprintln!(
-                "{}: `--env` names a deployment target, and a \
-                 deployment target is an ENTRYPOINT — this seed \
-                 declares no `main locus`",
-                target.display()
-            );
-            return 2;
-        }
-    }
-    for cname in adopt_env {
-        let mut injected = false;
-        for prog in programs.values_mut() {
-            if inject_adopt(prog, cname) {
-                injected = true;
-            }
-        }
-        if !injected {
-            eprintln!(
-                "{}: no `main locus` to adopt `{}` into — an \
-                 environment binds a constitution to an ENTRYPOINT, \
-                 and this seed declares none",
-                target.display(),
-                cname
-            );
-            return 2;
-        }
-    }
-    for prog in programs.values_mut() {
-        // Downstream handoff (2026-08-11): the pre-pass's resolver
-        // diagnostics are DISCARDED, not printed-and-bailed. They
-        // are re-raised by `check_bundle` below through the normal
-        // reporting path — which honours `--json`, names the file,
-        // and resolves multi-file spans; the bare `render` bail here
-        // did none of those (empty NDJSON on a duplicate `main`, a
-        // position from the wrong file). `hale lsp` has always done
-        // exactly this — it is why the LSP attributed the same
-        // diagnostic correctly while the CLI did not.
-        let _ = hale_types::apply_sync_inference(prog);
-    }
-    {
-        let mut refs: Vec<&mut Program> = programs.values_mut().collect();
-        // F.40 phase 2.1b: the desugar sequence, the one every entry
-        // point runs before its check: JSON Tier 2's parsers (so the
-        // generated parser is checked and callers must address its
-        // `fallible(JsonError)`), the api binding (GH #1106,
-        // bundle-wide: the main locus in one file, subscribers in
-        // another), then the passes that shape a declaration. `check`
-        // takes no `--api`, so there is no injection to refuse.
-        if let Err(msg) = hale_types::desugar_sequence::desugar_before_check(
-            &mut refs,
-            &hale_types::desugar_sequence::Sequence {
-                import_renames: &import_renames,
-                api: None,
-                api_roles: None,
-            },
-        ) {
+    // F.40 phase 2.2a: one snapshot, and the check demanded from it.
+    // `check` resolves cross-seed imports the same way `build` and
+    // `run` do (an imported seed's bodies are in the program the
+    // analysis walks, so effect assertions, budgets and taint do not
+    // stop at a seed boundary), then runs the one sequence before the
+    // check: sync inference, the desugars, the mint.
+    let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
+        Ok(s) => s,
+        // GH #765: a failure that carries diagnostics renders them
+        // here, honouring `--json` and resolving each span against
+        // the file it lives in — including a file reached only
+        // through an `import`.
+        Err(LoadError::Load(f)) => return f.report(),
+        Err(LoadError::Refused(msg)) => {
             eprintln!("{}", msg);
             return 2;
         }
-    }
-
-    // GH #408 Phase 0: hand the source map to the artifact. Built
-    // before the bundle, because the snapshot (below) seeds each site
-    // from it.
-    let source_map = crate::shared::frontend::source_map(target, &file_bases, &sources);
-    // F.40 phase 1.1b-iii: the snapshot, minted once the last desugar
-    // (`generate_api`) has run and the source map exists, so each
-    // site's seed is the file its span falls in.
-    let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
-    let snapshot = hale_types::snapshot::mint(
-        names.iter().map(String::as_str).zip(programs.values_mut()),
-        &source_map,
-    );
-
-    let bundle_programs: BTreeMap<String, &Program> = programs
-        .iter()
-        .map(|(p, prog)| (p.display().to_string(), prog))
-        .collect();
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = import_renames.clone();
-    bundle.sources = source_map;
-    bundle.snapshot = snapshot;
+    };
+    let (sources, file_bases, import_renames, own_files) =
+        (snap.sources(), snap.file_bases(), snap.import_renames(), snap.own_files());
+    let bundle = snap.bundle();
     // GH #18 item 1 (step 1): dump the per-method allocation summary +
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.
@@ -291,26 +206,14 @@ pub(crate) fn run_check_impl_labelled(
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
     // One analysis pass, shared by the artifact gate below and the
-    // diagnostic report further down. `check_bundle_opts` is the
-    // expensive part of `check`, and nothing mutates `bundle`
-    // between the two, so running it twice would just double the
-    // cost of every `--dump-topology` invocation.
-    let allow_unowned =
-        std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    // F.18: a whole seed (a directory) is checked to what `build`
-    // accepts — a call to a bare name nothing binds is an error here;
-    // one file of a seed keeps the permissive reading for a sibling's fn
-    //
-    // GH #721: a bare IDENTIFIER nothing binds follows the same line.
-    // One file of a multi-file seed reads consts its siblings declare,
-    // so the leniency is load-bearing there and only there.
-    let whole_seed = target.is_dir();
-    let checked = hale_types::check_bundle_opts_scoped(
-        &bundle,
-        allow_unowned,
-        whole_seed,
-        whole_seed,
-    );
+    // diagnostic report further down: the snapshot computes the check
+    // once, and the model with it when the program declares a law.
+    // Its whole-load success means nothing blocks it; a block would
+    // report what blocked it.
+    let checked: Vec<hale_syntax::Diag> = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
 
     if dump_topology || dump_topology_to.is_some() {
         // The artifact's EXISTENCE means the model is sound.
@@ -342,7 +245,7 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let artifact = hale_types::topology::dump_topology(&bundle);
+        let artifact = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         match &dump_topology_to {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &artifact) {
@@ -414,8 +317,21 @@ pub(crate) fn run_check_impl_labelled(
             );
             return 1;
         }
-        let model =
-            hale_types::model_builder::derive_application_model(&bundle);
+        // The check's own model when the program declares a law, so a
+        // dump of a claim-bearing program derives it once.
+        let model = match snap.demand_model() {
+            Ok(m) => m,
+            Err(b) => {
+                eprintln!(
+                    "refusing to derive a model: `{}` does not typecheck, \
+                     so its model is not a truthful description of \
+                     any program. Fix the {} first.",
+                    target.display(),
+                    b.because.first().map_or("error", |d| d.kind_str())
+                );
+                return 1;
+            }
+        };
         if let Err(e) = model.validate() {
             // A builder bug, never user error: the derivation
             // produced a value that is not a model. Loud, named, and
@@ -429,7 +345,7 @@ pub(crate) fn run_check_impl_labelled(
         }
         print!(
             "{}",
-            hale_types::model_builder::render_internal(&model)
+            hale_types::model_builder::render_internal(model)
         );
     }
     // P2 from the devex review: `--check-topology` compares the
@@ -452,7 +368,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = shape_gate {
-        let current = hale_types::topology::dump_topology(&bundle);
+        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         // The hash VALUE, not the raw line — the gate's whole point
         // is that this is the model's identity, and a diagnostic
         // that makes you read past `"shape_hash": ` and a trailing
@@ -525,7 +441,7 @@ pub(crate) fn run_check_impl_labelled(
         }
     };
     if let Some(path) = check_topology_path {
-        let current = hale_types::topology::dump_topology(&bundle);
+        let current = snap.with_env(|| hale_types::topology::dump_topology(&bundle));
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
                 if expected != current {
@@ -674,7 +590,7 @@ pub(crate) fn run_check_impl_labelled(
         let progs: Vec<&hale_syntax::ast::Program> =
             bundle.programs.values().copied().collect();
         let flows = hale_types::flows::survey(&progs);
-        eprint!("{}", render_flows(&flows, &file_bases, &sources, &import_renames));
+        eprint!("{}", render_flows(&flows, file_bases, sources, import_renames));
     }
     if std::env::args().any(|a| a == "--strict-secret") {
         let progs: Vec<&hale_syntax::ast::Program> =
@@ -717,14 +633,14 @@ pub(crate) fn run_check_impl_labelled(
     // for one — still emitted `__lib_lib_a_b_OrderBook.query_bulk`,
     // a symbol that appears nowhere in their program. Doing it once
     // here covers every pass rather than each remembering.
-    hale_types::stdlib_bodies::demangle_imports(&mut diags, &import_renames);
-    retain_owned_advisories(&mut diags, &own_files, &file_bases);
+    hale_types::stdlib_bodies::demangle_imports(&mut diags, import_renames);
+    retain_owned_advisories(&mut diags, own_files, file_bases);
     if !diags.is_empty() {
         for d in &diags {
             if json_mode {
-                println!("{}", render_diag_json(d, &file_bases, &sources));
+                println!("{}", render_diag_json(d, file_bases, sources));
             } else {
-                eprintln!("{}", render_located(d, &file_bases, &sources));
+                eprintln!("{}", render_located(d, file_bases, sources));
             }
         }
         // check: warnings print but don't fail; only errors do.
@@ -746,7 +662,7 @@ pub(crate) fn run_check_impl_labelled(
     if !json_mode {
         // Count the target's own files, not `programs` entries — a
         // multi-file seed merges into one program before checking.
-        let n_files = own_files.len().max(programs.len());
+        let n_files = own_files.len().max(snap.programs().len());
         if gate_warnings {
             eprintln!("verified: {} file(s), 0 findings", n_files);
         } else {

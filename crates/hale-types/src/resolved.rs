@@ -1,12 +1,18 @@
-//! The resolved program (F.40 phase 1.2a-ii): the envelope codegen
-//! lowers.
+//! The lowering view (F.40 phase 1.2a-ii, a demanded family since
+//! phase 2.2b): what codegen lowers.
 //!
 //! [`resolve_program`] takes the program a verb checked and produces
 //! what lowering walks — the user program after the two lowering
 //! rewrites, the same program merged with the bundled stdlib —
 //! together with the snapshot minted over the merged program and the
 //! ownership tables the F.39 pre-pass derives from it. Codegen reads
-//! the envelope; it no longer builds any of it.
+//! the view; it no longer builds any of it.
+//!
+//! The view is a family of the frontend's snapshot
+//! (`hale_frontend::snapshot::Snapshot::demand_lowering`), which runs
+//! this function once, after the check it is gated on, over the
+//! snapshot's programs, source map, renames and config. The only other
+//! caller is codegen's harness adapter, for a bare program.
 //!
 //! The two lowering rewrites are the intra-locus rewrite (a publish to
 //! a subscriber in the same tree becomes a direct call) and the topic
@@ -58,8 +64,9 @@ use crate::resolve::TopScope;
 use crate::snapshot::Snapshot;
 use crate::symbol::{Bundle, SourceFile};
 
-/// The program codegen lowers, and the tables the frontend derives over it.
-pub struct ResolvedProgram {
+/// The program codegen lowers, and the tables the frontend derives over
+/// it: the snapshot's `lowering_view` family.
+pub struct LoweringView {
     /// The user's program after the codegen-shape desugars, before the
     /// stdlib merge: a second copy of `merged`'s user half, which only
     /// codegen's tier-1 bus-inert Debug scan reads (a registered legacy
@@ -134,16 +141,18 @@ fn merged_bundle<'a>(merged: &'a Program, import_renames: &[(Vec<String>, String
     bundle
 }
 
-impl ResolvedProgram {
-    /// The bundle view of `merged` the envelope's graphs were built
-    /// over, with the envelope's import renames: lowering reads
-    /// program-wide facts through it instead of building its own.
+impl LoweringView {
+    /// The bundle view of `merged` the view's graphs were built over,
+    /// with the view's import renames: lowering reads program-wide
+    /// facts through it instead of building its own.
     pub fn bundle(&self) -> Bundle<'_> {
         merged_bundle(&self.merged, &self.import_renames)
     }
 }
 
-/// Resolve `program` into the envelope codegen lowers.
+/// Resolve `program` into the view codegen lowers: the producer of the
+/// snapshot's `lowering_view` family, run by the snapshot and by
+/// codegen's harness adapter and by nothing else.
 ///
 /// `program` is the one the verb checked: it has been through
 /// [`crate::desugar_sequence::desugar_before_check`], and nothing here
@@ -167,7 +176,7 @@ pub fn resolve_program(
     import_renames: &[(Vec<String>, String)],
     api: Option<&str>,
     api_roles: Option<&str>,
-) -> Result<ResolvedProgram, String> {
+) -> Result<LoweringView, String> {
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
     // single-segment `BusSubject::Topic(Ident(mangled_name))`
@@ -370,7 +379,7 @@ pub fn resolve_program(
     // with the child type resolved the way lowering resolves it.
     let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
 
-    Ok(ResolvedProgram {
+    Ok(LoweringView {
         user,
         merged,
         snapshot,

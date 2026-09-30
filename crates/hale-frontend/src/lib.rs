@@ -17,9 +17,12 @@
 //!   travel through.
 //! - [`source`]: where the loaders read from — the disk for the CLI,
 //!   the editor's buffers over the disk for the LSP.
+//! - [`snapshot`]: one load, shaped and minted, and the families
+//!   derived from it on demand, each at most once.
 
 pub mod diag;
 pub mod frontend;
 pub mod imports;
+pub mod snapshot;
 pub mod source;
 pub mod workspace;

@@ -328,16 +328,18 @@ never reaches codegen and is unaffected (2026-09-20, GH #848; before
 it only `build` used the span, and the rest printed the error's Rust
 debug form — `UnsupportedAt("…", Span { start: Pos(55), end:
 Pos(60) })` — so `hale run` could refuse a program without naming a
-line to open). `bench` names the bench file itself, not the temporary
-copy with the synthesized driver appended that it actually compiles
-and then deletes.
+line to open). `bench` names the bench file itself: it compiles the
+file with the synthesized driver appended, read in place of the file,
+with no temporary copy (2026-09-30, F.40 phase 2.2b; before it `bench`
+compiled a copy it wrote beside the file and deleted, and re-labelled
+the copy's positions).
 
 Nor, finally, is the **rule set**. The checks that need the whole
 program — the F.18 bare-callee rule and the bare-identifier and
 bare-type-name rules that follow it (`spec/types.md` § *Calls to bare
 names*) — are on for every command that HAS the whole program:
-`check` and `verify` on a seed, `build`, `run`, `test` and `replay`,
-which compile exactly what they bundle, and `hale lsp`, which
+`check` and `verify` on a seed, `build`, `run`, `test`, `replay` and
+`bench`, which compile exactly what they bundle, and `hale lsp`, which
 typechecks only once the whole seed has parsed. A call to a name
 nothing declares is therefore `path:line:col: type error: call to X:
 no free fn, generic fn or fn-pointer binding with that name is in
@@ -349,17 +351,27 @@ compiler-internal symbols. Two answers to one question, and the
 useful one was the one the build did not give). `hale check <file>`
 keeps the permissive reading, because the sibling it was not handed
 may declare the name: the line is drawn by what the command was
-given, not by which command it is. `hale bench` typechecks nothing
-today, so its only answers still come from codegen.
+given, not by which command it is.
+
+Every command that compiles checks what it compiles the same way,
+from one load: the seed and its imports, shaped by one sequence (the
+`--env` constitutions, sync inference, the desugars) and checked with
+the build's rules, and a check that reports an error is the command's
+failure before anything is lowered (2026-09-30, F.40 phase 2.2b).
+Before it each command had its own copy of that pipeline, and they
+differed: `hale bench` typechecked nothing, so its only answers came
+from codegen; `run <file>`, `test` and `replay` ran no sync inference
+before their check; and `run <file>` bound no `--env`.
 
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,
 `vendor/` and dot-dirs skipped); every **zero-param free fn named
 `bench_*`** is a benchmark. The runner appends a synthesized
-driver `main` (a bench file must not define its own), compiles at
-the release profile with the same `hale.toml [ffi]` pickup as
-build/test, and runs it. The driver self-calibrates Go-style:
+driver `main` (a bench file must not define its own), checks and
+compiles the result at the release profile with the same `hale.toml
+[ffi]` pickup as build/test, and runs it; a check error is the
+file's failure, and a warning is not printed. The driver self-calibrates Go-style:
 batch sizes grow ×10 until one batch takes ≥100 ms, then the
 final batch reports **ns/op** and **allocs/op**
 (`std::diag::heap_alloc_count` deltas; shown as `-` in sanitizer

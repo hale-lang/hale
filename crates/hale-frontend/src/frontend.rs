@@ -237,7 +237,7 @@ pub fn collect_target_files(
 ///
 /// One mode per entry-point shape, so the difference between the CLI's
 /// load and the LSP's is this enum, not two walks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LoadMode {
     /// The CLI (`check`, `build`, `run`, ...): the target as named — a
     /// directory is the seed, a file is a seed of one — and the loaders
@@ -464,6 +464,19 @@ impl CheckableFailure {
         }
     }
 
+    /// The located text a command with no machine-readable channel
+    /// prints (`build`, `run`, `test`, `replay`, `bench`): the
+    /// unreadable inputs first, then the diagnostics, one per line —
+    /// what [`Self::report`] prints on stderr outside `--json`.
+    pub fn text(&self) -> String {
+        self.io
+            .iter()
+            .map(|io| io.text.clone())
+            .chain(self.diags.iter().map(|d| render_located(d, &self.file_bases, &self.sources)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Render through the same two helpers the checker's own findings
     /// go through — so `--json` carries the offending file, line and
     /// message, and a span resolves against the file it actually lives
@@ -506,6 +519,8 @@ impl CheckableFailure {
 /// directory bundles its `.hl` files as one seed and resolves the
 /// union of their imports — the same shapes `hale build` handles, so
 /// `check` and `build` finally agree about what a program contains.
+/// The last element is that union as written, the target's own
+/// `import`s (the build reads each library's `[ffi]` from it).
 #[allow(clippy::type_complexity)]
 pub fn collect_checkable(
     target: &Path,
@@ -517,6 +532,7 @@ pub fn collect_checkable(
         Vec<(u32, PathBuf, u32)>,
         ImportRenames,
         std::collections::BTreeSet<PathBuf>,
+        Vec<hale_syntax::ast::Import>,
     ),
     CheckableFailure,
 > {
@@ -534,8 +550,19 @@ pub fn collect_checkable(
     // GH #777: a parse failure in the target's own files travels the
     // same road an imported file's does — the diagnostics reach the
     // one reporting site, which honours `--json`.
-    let (programs, sources, file_bases) =
-        parse_files(&files, src).map_err(CheckableFailure::from_parse)?;
+    let (programs, sources, file_bases) = parse_files(&files, src).map_err(|mut f| {
+        // A FILE target that will not open is the entry of a build: its
+        // text is the sentence every build path has printed for it
+        // (GH #903, `could not read <path>: <os error>`). A directory's
+        // file keeps `<path>: <os error>`; the record is the OS error
+        // either way.
+        if !src.is_dir(target) {
+            for io in &mut f.io {
+                io.text = format!("could not read {}: {}", io.path.display(), io.message);
+            }
+        }
+        CheckableFailure::from_parse(f)
+    })?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -551,7 +578,7 @@ pub fn collect_checkable(
     // `check` while `build` (which merges the seed) resolved it.
     let has_imports = programs.values().any(|p| !p.imports.is_empty());
     if !has_imports && programs.len() <= 1 {
-        return Ok((programs, sources, file_bases, Vec::new(), own));
+        return Ok((programs, sources, file_bases, Vec::new(), own, Vec::new()));
     }
 
     let union_imports: Vec<hale_syntax::ast::Import> = programs
@@ -702,7 +729,7 @@ pub fn collect_checkable(
 
     let mut out: BTreeMap<PathBuf, Program> = BTreeMap::new();
     out.insert(target.to_path_buf(), program);
-    Ok((out, path_sources, file_bases, renames, own))
+    Ok((out, path_sources, file_bases, renames, own, union_imports))
 }
 
 /// GH #408 Phase 0: the bundle's source map, one unit per file of
@@ -797,6 +824,40 @@ pub fn source_map(
             hale_types::symbol::SourceFile {
                 id: i as u32,
                 path: rel,
+                digest,
+                base: *base,
+                len: *len,
+            }
+        })
+        .collect()
+}
+
+/// The LSP's source map: one unit per file of `file_bases`, in base
+/// order, each path as the load spelled it rather than relative to a
+/// workspace — the editor's provenance resolves within one process.
+/// (It moves to [`source_map`] when the LSP loads the whole seed, 2.3.)
+pub fn source_map_as_spelled(
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Vec<hale_types::symbol::SourceFile> {
+    file_bases
+        .iter()
+        .enumerate()
+        .map(|(i, (base, path, len))| {
+            let digest = sources
+                .get(path)
+                .map(|src| {
+                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                    for b in src.as_bytes() {
+                        h ^= *b as u64;
+                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    format!("{:016x}", h)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            hale_types::symbol::SourceFile {
+                id: i as u32,
+                path: path.display().to_string(),
                 digest,
                 base: *base,
                 len: *len,

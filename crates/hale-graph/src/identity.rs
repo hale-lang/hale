@@ -24,11 +24,13 @@ use std::path::{Path, PathBuf};
 ///
 /// `hale-cli` is here because the DNA toolchain cache builds a host
 /// by invoking the CLI's `build` verb, and that verb's Rust still owns
-/// semantic work: import handling and the pre-check sequence
-/// (json_gen, api, bind_build_env, sync inference, the source map,
-/// the mint). A change there changes the binary a cached host is. It
-/// leaves this list when that work has moved into hale-frontend and
-/// the verb only drives it; the replay identity then keeps walking
+/// semantic work: the config its snapshot is loaded with (the target,
+/// `--env`'s roles and constitutions, read from hale.toml), the
+/// `[ffi]` pickup, and the identity it stamps. The load, the pre-check
+/// sequence and the mint are hale-frontend's since F.40 phase 2.2b. A
+/// change in what the verb still owns changes the binary a cached host
+/// is. It leaves this list when that work has moved into hale-frontend
+/// and the verb only drives it; the replay identity then keeps walking
 /// the CLI as its own extra, since the CLI produces and serves
 /// recordings. It is last so the replay identity's file order, and so
 /// its digest, is what it was when the CLI was that extra.

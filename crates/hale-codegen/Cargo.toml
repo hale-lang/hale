@@ -9,6 +9,7 @@ description = "Hale codegen targeting LLVM"
 autotests = false
 
 [dependencies]
+hale-frontend = { path = "../hale-frontend" }
 hale-model = { path = "../hale-model" }
 hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }

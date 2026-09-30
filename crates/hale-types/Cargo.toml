@@ -20,6 +20,10 @@ serde_json = "1"
 
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
+# The demand gate (tests/demand_gate.rs) loads programs the way the
+# check and the LSP do, through the frontend's snapshot, and reads its
+# per-family accounting.
+hale-frontend = { path = "../hale-frontend" }
 # The F.40 shadow facility (tests/shadow_*.rs); dependency-free.
 hale-graph = { path = "../hale-graph" }
 # The artifact contract tests PARSE the whole document rather than

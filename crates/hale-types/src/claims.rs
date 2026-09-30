@@ -284,9 +284,27 @@ thread_local! {
         }) };
 }
 
-/// Record the environment this evaluation is for.
-pub fn set_env_binding(b: EnvBinding) {
-    ENV_BINDING.with(|e| *e.borrow_mut() = b);
+/// Run `f` with `b` as the environment this evaluation is for, and
+/// restore whatever was bound before, unwinding included: the binding
+/// belongs to the snapshot being demanded or serialized, never to the
+/// last one loaded on the thread (outside review of #1283, finding 1).
+pub fn with_env_binding<R>(b: &EnvBinding, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<EnvBinding>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(prev) = self.0.take() {
+                ENV_BINDING.with(|e| *e.borrow_mut() = prev);
+            }
+        }
+    }
+    let prev = ENV_BINDING.with(|e| {
+        std::mem::replace(
+            &mut *e.borrow_mut(),
+            EnvBinding { name: b.name.clone(), injected: b.injected.clone() },
+        )
+    });
+    let _restore = Restore(Some(prev));
+    f()
 }
 
 pub fn current_environment() -> Option<String> {

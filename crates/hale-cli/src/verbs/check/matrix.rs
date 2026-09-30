@@ -7,7 +7,7 @@ use crate::shared::frontend::collect_checkable;
 use crate::shared::source::Disk;
 use crate::shared::workspace::collect_seeds;
 use std::fs;
-use crate::shared::options::inject_adopt;
+use hale_frontend::snapshot::inject_adopt;
 use super::run_impl::run_check_impl;
 use super::run_impl::run_check_impl_labelled;
 /// GH #409: check every (entrypoint, environment) pair declared in
@@ -216,7 +216,7 @@ pub(crate) fn role_coverage(
     env: &str,
     table: &BTreeMap<String, Vec<String>>,
 ) -> Vec<String> {
-    let Ok((programs, _, _, _, _)) = collect_checkable(target, &Disk) else {
+    let Ok((programs, _, _, _, _, _)) = collect_checkable(target, &Disk) else {
         return Vec::new();
     };
     let refs: Vec<&hale_syntax::ast::Program> = programs.values().collect();
@@ -255,7 +255,7 @@ pub(crate) fn constitution_identities(
     target: &Path,
     adopt: &[String],
 ) -> Vec<(String, String)> {
-    let (programs, _s, _fb, renames, _own) = match collect_checkable(target, &Disk)
+    let (programs, _s, _fb, renames, _own, _imports) = match collect_checkable(target, &Disk)
     {
         Ok(x) => x,
         Err(_) => return Vec::new(),

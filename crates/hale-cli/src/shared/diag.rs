@@ -51,3 +51,24 @@ pub(crate) fn render_codegen_error(
         None => format!("codegen error: {}", e),
     }
 }
+
+/// A snapshot family a build demanded and did not get, rendered as a
+/// compiling command reports it: the errors that blocked it, located,
+/// or its producer's own refusal as the codegen error it is (the
+/// lowering view's `resolve_program`). One line each, joined.
+pub(crate) fn render_blocked(
+    b: &hale_frontend::snapshot::Blocked,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> String {
+    let mut lines: Vec<String> =
+        b.because.iter().map(|d| render_located(d, file_bases, sources)).collect();
+    if let Some(msg) = &b.refused {
+        lines.push(render_codegen_error(
+            &hale_codegen::CodegenError::Unsupported(msg.clone()),
+            file_bases,
+            sources,
+        ));
+    }
+    lines.join("\n")
+}

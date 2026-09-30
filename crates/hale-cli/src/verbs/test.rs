@@ -1,21 +1,22 @@
 use std::hash::Hasher;
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::path::Path;
 use std::path::PathBuf;
-use hale_syntax::ast::Program;
 use crate::shared::process::RunScratch;
 use crate::shared::options::collect_ffi_from_imports;
 use crate::shared::diag::diag_file_name;
 use std::env;
 use std::fs;
 use crate::shared::diag::json_escape;
-use crate::shared::frontend::parse_with_imports;
+use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
+use crate::shared::workspace::find_workspace_root;
+use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
+use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// Verdict for one `*_test.hl` file.
 pub(crate) struct TestOutcome {
     pub(crate) file: PathBuf,
@@ -69,72 +70,50 @@ pub(crate) fn collect_test_files(target: &Path, out: &mut Vec<PathBuf>) -> Resul
 /// Compile one test file to a temporary native binary, returning
 /// its path on success or a rendered diagnostic string on failure.
 /// A compile/typecheck error is a test failure — it comes back as
-/// the `Err` message. Mirrors `run_program`'s single-file pipeline
-/// (parse_with_imports → check_bundle_opts → build) but stops at
-/// the binary so the caller can `.output()`-capture the run.
+/// the `Err` message. The same snapshot `hale run` loads (a build's
+/// config, for the host), with the dev profile, stopping at the binary
+/// so the caller can `.output()`-capture the run.
 pub(crate) fn compile_test_binary(
     entry: &Path,
     scratch: &RunScratch,
 ) -> Result<PathBuf, String> {
-    let (mut program, renames, sources, file_bases, ctx) = match parse_with_imports(entry, &Disk) {
-        Ok(x) => x,
-        Err(errors) => {
-            let mut msg = String::new();
-            for e in &errors {
-                msg.push_str(&e.render());
-                msg.push('\n');
-            }
-            return Err(msg.trim_end().to_string());
-        }
+    // F.40 phase 2.2b: one snapshot, and the lowering view demanded
+    // from it after the check.
+    let snap = match Snapshot::load(entry, LoadMode::WholeSeed, &Disk, Config::build(Target::host())) {
+        Ok(s) => s,
+        Err(LoadError::Load(f)) => return Err(f.text()),
+        Err(LoadError::Refused(msg)) => return Err(msg),
     };
+    let (sources, file_bases) = (snap.sources(), snap.file_bases());
     // Stage-2 FFI pickup, same as `hale build` (2026-07-18; closes
     // pond FRICTION "hale test cannot link @ffi libs"): a test that
     // imports an FFI-bearing lib (sqlite et al.) needs the lib's
     // hale.toml [ffi] link/csrc surface on the link line, or every
     // such test dies with undefined lotus_* references regardless
     // of the test's own correctness.
+    let entry_dir = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut options = collect_ffi_from_imports(
-        &ctx.imports,
-        &ctx.entry_dir,
-        ctx.workspace_root.as_deref(),
+        snap.entry_imports(),
+        &entry_dir,
+        find_workspace_root(entry).as_deref(),
     );
     // Tests are rebuilt every run — take the dev profile's build
     // latency win; the exit-code contract doesn't time anything.
     options.dev_profile = true;
-    // F.40 phase 2.1b: the declaration-shaping sequence, the one every
-    // entry point runs before its check, with the api inputs the
-    // resolve below reads.
-    hale_types::desugar_sequence::desugar_before_check(
-        &mut [&mut program],
-        &hale_types::desugar_sequence::Sequence {
-            import_renames: &renames,
-            api: options.api.as_deref(),
-            api_roles: options.api_roles.as_deref(),
-        },
-    )?;
-    // F.40 phase 1.1b-iii: the snapshot, after the sequence, seeded by
-    // the source map `check` mints with.
-    let entry_name = entry.display().to_string();
-    let source_map = crate::shared::frontend::source_map(entry, &file_bases, &sources);
-    let snapshot = hale_types::snapshot::mint([(entry_name.as_str(), &mut program)], &source_map);
-    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-    bundle_programs.insert(entry_name.clone(), &program);
-    // The rename table must reach the analysis here too, not only in
-    // `check`. Without it a cross-seed call is an unresolved edge, so
-    // an effect assertion violated one seed away compiles, links and
-    // ships — a downstream fleet gates on `build` across 109 binaries,
-    // and "it built" must not be weaker than "it checked" on a
-    // contract the compiler already knows how to evaluate.
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = renames.clone();
-    // The map the snapshot minted with, as `check` hands it over.
-    bundle.sources = source_map.clone();
-    bundle.snapshot = snapshot;
-    let diags = hale_types::check_bundle_for_build(&bundle, false);
+    // The check, with the build's rules. The rename table reaches the
+    // analysis through the snapshot's bundle: without it a cross-seed
+    // call is an unresolved edge, so an effect assertion violated one
+    // seed away compiles, links and ships — and "it built" must not be
+    // weaker than "it checked" on a contract the compiler already knows
+    // how to evaluate. Errors fail the test; warnings are not printed.
+    let diags = match snap.demand_check() {
+        Ok(c) => &c.diags,
+        Err(b) => return Err(render_blocked(b, file_bases, sources)),
+    };
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
         for d in diags.iter().filter(|d| d.is_error()) {
-            msg.push_str(&render_located(d, &file_bases, &sources));
+            msg.push_str(&render_located(d, file_bases, sources));
             msg.push('\n');
         }
         return Err(msg.trim_end().to_string());
@@ -152,22 +131,13 @@ pub(crate) fn compile_test_binary(
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
     let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
-    if let Err(e) = hale_types::resolved::resolve_program(
-        &program,
-        &source_map,
-        &renames,
-        options.api.as_deref(),
-        options.api_roles.as_deref(),
-    )
-    .map_err(hale_codegen::CodegenError::Unsupported)
-    .and_then(|resolved| {
-        hale_codegen::build_resolved(resolved, &bin, &options)
-    }) {
+    let view = snap.demand_lowering().map_err(|b| render_blocked(b, file_bases, sources))?;
+    if let Err(e) = hale_codegen::build_resolved(view, &bin, &options) {
         // GH #848: the per-fixture failure message is the located
         // rendering `build` prints, so a test that will not compile
         // names the line to open — it used to be the `{:?}` of the
         // error, span struct and all.
-        return Err(render_codegen_error(&e, &file_bases, &sources));
+        return Err(render_codegen_error(&e, file_bases, sources));
     }
     Ok(bin)
 }

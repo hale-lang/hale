@@ -97,6 +97,7 @@ name = "hale-codegen"
 version = "0.22.0"
 dependencies = [
  "hale-corpus",
+ "hale-frontend",
  "hale-model",
  "hale-stdlib",
  "hale-syntax",
@@ -117,6 +118,7 @@ version = "0.22.0"
 name = "hale-frontend"
 version = "0.22.0"
 dependencies = [
+ "hale-model",
  "hale-syntax",
  "hale-types",
 ]
@@ -176,6 +178,7 @@ name = "hale-types"
 version = "0.22.0"
 dependencies = [
  "hale-corpus",
+ "hale-frontend",
  "hale-graph",
  "hale-model",
  "hale-stdlib",
