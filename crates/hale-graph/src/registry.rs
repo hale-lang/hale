@@ -1140,7 +1140,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the AST", "the lowering context"],
         producer: None,
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states; for a placed locus the checker types as Unknown, and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator", "one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead"),
+            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states (rule 6's checker evaluator landed in phase 0; the backstop stays for harness builds that skip the checker); for a placed locus the checker types as Unknown, for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), and for an adapter locus instantiated inline in a `bindings { }` block (which lowering pins without a placement entry), it is the only evaluator", "one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead"),
         ],
         consumers: &[consumer("codegen harness builds")],
         invariants: &["a law is judged once, with a span"],
@@ -1318,9 +1318,9 @@ pub const RULES: &[Rule] = &[
     },
     Rule {
         id: "semantics/placement/6",
-        gist: "pinned-class restrictions (no accept(), no closures) at the placement entry",
-        family: "law_backstops",
-        evaluator: Some(site(CG_INST, "declares `accept()`")),
+        gist: "pinned-class restrictions (no accept(), no closure whose epoch is birth or dissolve, the default) at the placement entry",
+        family: "placement",
+        evaluator: Some(site(CHECK, "is placed `pinned` but")),
         state: State::Migrating,
     },
     Rule {

@@ -243,6 +243,12 @@ pub struct ClosureSymInfo {
     /// closures fire only via `violate`; auto-epoch closures fire
     /// at epoch boundaries and do not accept `violate`.
     pub is_inline: bool,
+    /// The closure's epoch, by the AST's one rule (`ClosureDecl::epoch`:
+    /// the last clause, `Dissolve` by default). `Birth` and `Dissolve`
+    /// fire inside the lifecycle cascade, which a pinned locus's owner
+    /// cannot reach across threads (rule 6); a tick, duration,
+    /// explicit or inline closure fires on the locus's own thread.
+    pub epoch: hale_syntax::ast::EpochSpec,
     /// Field names from the `captures:` clause (if any). Each
     /// must reference an existing locus param/state field.
     pub captures: Vec<String>,

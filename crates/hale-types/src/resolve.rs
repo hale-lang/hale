@@ -1240,9 +1240,8 @@ fn register_locus(
     let mut closures: Vec<ClosureSymInfo> = Vec::new();
     for member in &decl.members {
         if let LocusMember::Closure(cd) = member {
-            let is_inline = cd.clauses.iter().any(|c| {
-                matches!(c, ClosureClause::Epoch(EpochSpec::Inline))
-            });
+            let epoch = cd.epoch();
+            let is_inline = matches!(epoch, EpochSpec::Inline);
             let captures = cd
                 .clauses
                 .iter()
@@ -1256,6 +1255,7 @@ fn register_locus(
             closures.push(ClosureSymInfo {
                 name: cd.name.name.clone(),
                 is_inline,
+                epoch,
                 captures,
                 span: cd.span,
             });

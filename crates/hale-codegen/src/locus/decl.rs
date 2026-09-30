@@ -635,9 +635,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let mut duration_last_fire_field_idxs: Vec<u32> = Vec::new();
         for member in &l.members {
             if let LocusMember::Closure(c) = member {
-                let is_duration = c.clauses.iter().any(|cl| {
-                    matches!(cl, ClosureClause::Epoch(EpochSpec::Duration(_)))
-                });
+                let is_duration = matches!(c.epoch(), EpochSpec::Duration(_));
                 if is_duration {
                     duration_last_fire_field_idxs.push(idx);
                     llvm_field_tys.push(i64_t_struct.into());
@@ -1758,27 +1756,14 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
                 LocusMember::Closure(c) => {
                     // m39 + m42 + m43 + m44: all five closure
-                    // epochs now lower. Default (no epoch
-                    // clause) = Dissolve, matching pre-m39
-                    // semantics.
-                    let mut epoch = EpochSpec::Dissolve;
-                    for clause in &c.clauses {
-                        match clause {
-                            ClosureClause::Epoch(spec) => {
-                                epoch = spec.clone();
-                            }
-                            ClosureClause::PersistsThrough(_)
-                            | ClosureClause::ResetsOn(_)
-                            | ClosureClause::ResetsPerEpoch(_)
-                            | ClosureClause::Captures(_) => {
-                                // Recovery-event hooks +
-                                // v1.x-VIOLATE captures clause +
-                                // v1.x-WINDOWED per-epoch reset
-                                // (handled in the duration-fn body,
-                                // not the epoch dispatch table).
-                            }
-                        }
-                    }
+                    // epochs now lower. The epoch is the AST's
+                    // one rule (`ClosureDecl::epoch`: the last
+                    // clause, `Dissolve` by default), which the
+                    // checker's rule 6 reads too. The recovery
+                    // hooks, the captures clause and the per-epoch
+                    // reset are handled in the duration-fn body,
+                    // not the epoch dispatch table.
+                    let epoch = c.epoch();
                     // v1.x-VIOLATE (F.27): assertion-less inline
                     // closures don't go through this auto-epoch
                     // lowering pipeline (they fire via `violate`,

@@ -21,4 +21,3 @@ crates/hale-codegen/tests/wasm_target.rs#4
 crates/hale-types/tests/diag_quality.rs#16
 crates/hale-types/tests/model_builder.rs#12
 crates/hale-types/tests/model_costs.rs#3
-crates/hale-types/tests/ownership_graph.rs#7

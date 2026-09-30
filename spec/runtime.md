@@ -1049,9 +1049,12 @@ each arena stays single-threaded territory. Bimodality holds.
 Still gated: pinned loci cannot declare `accept()` (children
 of pinned would need cross-thread cascade-dissolve
 coordination, which is meaningful new infrastructure beyond
-m28b's mailbox post-and-continue) or closures (cross-thread
-violation routing). Codegen errors clearly if those are
-present.
+m28b's mailbox post-and-continue) or a closure whose epoch is
+`birth` or `dissolve` — dissolve being the default with no
+`epoch` clause — (cross-thread routing inside the cascade). Tick, duration, explicit and inline closures fire on
+the pinned thread and are supported. The typechecker refuses
+the two gated shapes at the placement entry (rule 6); codegen
+keeps a backstop for builds that skip the checker.
 
 **m28c (CPU-core affinity):** When a pinned locus declares
 `: schedule pinned(core = N)`, codegen emits a call to

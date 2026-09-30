@@ -312,3 +312,26 @@ fn main() { Parent { }; }
     assert!(msgs.iter().any(|m| m.contains("takes exactly two params")), "the arity error stands: {:?}", msgs);
     assert!(msgs.iter().all(|m| !m.contains("already has an `on_failure`")), "{:?}", msgs);
 }
+
+/// A closure has one epoch (F.40 phase 0): `ClosureDecl::epoch` is the
+/// one rule the checker and lowering read, and the parser refuses a
+/// second clause so "the last clause" and "any clause" never differ.
+#[test]
+fn a_second_epoch_clause_is_refused_by_the_parser() {
+    let src = r#"
+locus L {
+    closure c { epoch inline; epoch dissolve; }
+    fn step() { violate c; }
+}
+fn main() { L { }; }
+"#;
+    let errs = hale_syntax::parse_source(src)
+        .err()
+        .expect("a second epoch clause is a parse error");
+    assert!(
+        errs.iter()
+            .any(|d| d.message.contains("closure `c` declares 2 `epoch` clauses")),
+        "got: {:?}",
+        errs.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+    );
+}
