@@ -1258,6 +1258,49 @@ fn lsp_and_check_agree_over_a_seed_that_imports() {
     );
 }
 
+/// The overlay parity fixture over a seed with generated source (F.40
+/// phase 2.4): a `json:`-tagged type, whose parser the sequence
+/// synthesizes, and an api binding, whose envelope types, topics and
+/// socket loci it synthesizes. Both channels run the same sequence, so
+/// the author's errors beside the generated declarations (a mismatch
+/// in the handler the binding calls, a bare fallible `from_json`) land
+/// at the same author positions, and nothing is reported at a position
+/// inside generated code.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_generated_source() {
+    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        let bad: String = o.id;\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-generated.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        let o = Order::from_json(\"{}\");\n\
+        println(o.id);\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n";
+
+    let check = agree_three_ways("generated", &[("main.hl", APP)], &[]);
+    assert!(
+        check.iter().all(|(file, ..)| file == "main.hl"),
+        "a finding positioned outside the author's file (inside generated source?): {check:?}"
+    );
+    for line in [7u64, 15u64] {
+        assert!(
+            check.iter().any(|(_, l, ..)| *l == line),
+            "no finding at main.hl:{line}: {check:?}"
+        );
+    }
+}
+
 /// A seed member that will not read (a dangling symlink here; any
 /// unreadable `.hl` member is the same case): `hale check` refuses the
 /// load, and the editor says so instead of publishing a clean seed —

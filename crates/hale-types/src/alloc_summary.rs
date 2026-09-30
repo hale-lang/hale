@@ -2042,10 +2042,26 @@ pub fn unbounded_alloc_diags(
     ids: &crate::snapshot::Snapshot,
     include_all: bool,
 ) -> Vec<Diag> {
+    unbounded_alloc_diags_except(programs, ids, include_all, &|_| false)
+}
+
+/// [`unbounded_alloc_diags`] with the sites owned by a synthesized
+/// declaration left out: a desugar's own code (the api binding's socket
+/// loci, a generated parser) is not the author's to bound or acknowledge,
+/// and a finding in it has no author position to land at (F.40 phase
+/// 2.4: the generated-source parity fixture). `synthesized` answers for
+/// the owning fn's key.
+pub fn unbounded_alloc_diags_except(
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    include_all: bool,
+    synthesized: &dyn Fn(&FnKey) -> bool,
+) -> Vec<Diag> {
     let summary = summarize_programs(programs, ids);
     summary
         .leak_sites()
         .iter()
+        .filter(|ls| !synthesized(&ls.owner))
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
