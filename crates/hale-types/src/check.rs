@@ -3280,10 +3280,12 @@ type ContainmentEdge = (ContainmentState, Option<String>);
 /// ([`crate::ownership::fresh_factories`], the one producer the
 /// ownership pre-pass reads too, F.40 phase 1.2c): the rule reads each
 /// row's `products`, the (locus, supplied fields) a call constructs.
-/// The rows are computed per program of the bundle and merged by fn
-/// name, as the loci are, with no rename table: a call it cannot see
-/// as fresh — an accessor, a method, a `std::` or cross-seed path, a
-/// factory whose returned binding escapes — takes no edge and stays
+/// The rows are computed over the bundle's files together, with the
+/// bundle's import renames, as lowering computes them (lowering then
+/// widens its set with the carrier fold, which this rule does not
+/// read): a call it cannot see as fresh — an accessor, a method, a
+/// `std::` path, a factory whose returned binding escapes — takes no
+/// edge and stays
 /// accepted, exactly as before; a program like that recurses at RUN
 /// time only if the callee really does build one, which is what
 /// `@no_recursion` is the contract for.
@@ -3327,11 +3329,11 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     // GH #870: which fns hand back a locus they freshly built, and
     // what each call constructs: the fresh-factory rows over the
     // bundle's files together (a factory in one file may hand back
-    // what a sibling file's factory built), for the loci this bundle
-    // declares.
+    // what a sibling file's factory built), with the bundle's import
+    // renames, for the loci this bundle declares.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let factories: BTreeMap<String, Vec<ContainmentState>> =
-        crate::ownership::fresh_factories(&programs, &[])
+        crate::ownership::fresh_factories(&programs, &bundle.import_renames)
             .into_iter()
             .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
             .map(|(name, row)| (name, row.products))

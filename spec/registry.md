@@ -431,6 +431,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - a locus instantiation with no row is a CodegenError (F.39)
 - ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files
 - the ownership matrix stays green with an empty KNOWN_OPEN
+- `fresh_factories` is read by lowering and the checker with the bundle's import renames; the carrier fold (`extend_fresh_factories`) is lowering-only
 
 **Missing data.** a missing required row is a compiler error
 

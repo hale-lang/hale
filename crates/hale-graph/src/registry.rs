@@ -580,6 +580,7 @@ pub const FAMILIES: &[Family] = &[
             "a locus instantiation with no row is a CodegenError (F.39)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
             "the ownership matrix stays green with an empty KNOWN_OPEN",
+            "`fresh_factories` is read by lowering and the checker with the bundle's import renames; the carrier fold (`extend_fresh_factories`) is lowering-only",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/owner_table.rs", "crates/hale-codegen/tests/ownership_matrix.rs", "crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/ownership_bubble.rs"],
