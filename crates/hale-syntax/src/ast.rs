@@ -2030,6 +2030,24 @@ pub enum ClosureClause {
     Captures(Vec<Ident>),
 }
 
+impl ClosureDecl {
+    /// The closure's epoch: the last `epoch` clause, or `Dissolve`
+    /// when there is none (the pre-m39 default). The one rule the
+    /// checker and lowering both read; a rule with two copies is how
+    /// a closure with no clause once passed `hale check` and failed
+    /// `hale build` on a pinned locus (F.40 phase 0).
+    pub fn epoch(&self) -> EpochSpec {
+        self.clauses
+            .iter()
+            .rev()
+            .find_map(|c| match c {
+                ClosureClause::Epoch(spec) => Some(spec.clone()),
+                _ => None,
+            })
+            .unwrap_or(EpochSpec::Dissolve)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EpochSpec {
     Tick,

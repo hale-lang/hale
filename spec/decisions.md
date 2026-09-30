@@ -3545,10 +3545,23 @@ through `model_query` with shared witness rendering; the judgment
 path stays for user claims; the two converge once hundreds of laws
 have been measured. `constitution Hale` remains the direction, but
 the vocabulary grows incrementally and is not a prerequisite for
-moving checks. Placement rule 6 (pinned-locus restrictions) is
-confirmed to have no checker code — its only evaluator is a spanless
-refusal at lowering — and is registered as such; the correction is
-its own reviewed change.
+moving checks. Placement rule 6 (pinned-locus restrictions) had no
+checker code — its only evaluator was a spanless refusal at lowering,
+so `hale check` and the LSP accepted a program `hale build` refused —
+and phase 0 corrected it as its own reviewed change: the checker
+judges the rule at the placement entry, with the entry's span, and
+the lowering backstop stays for harness builds that skip the checker
+and for the one shape the checker does not see, an adapter locus
+instantiated inline in a `bindings { }` block, which lowering pins.
+The correction settled a spec/implementation disagreement by
+decision rather than by extraction: the rule said "no closure
+declarations" while lowering refused only `epoch birth` and `epoch
+dissolve` closures (dissolve being the default when no clause is
+written, by the AST's one epoch rule that the checker and lowering
+now both read), and pinned loci with inline, tick and duration
+closures ship (example 40, the pinned restart tests, DNA's nerves
+connection). The rule now says what ships, with one regression test
+per epoch.
 
 **Approximate** is legitimate only in layers 5 and 7, where F.38 makes
 it so; everywhere else a backend lowers or rejects, with the row's

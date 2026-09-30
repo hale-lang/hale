@@ -9819,9 +9819,9 @@ impl<'a> Checker<'a> {
         // when present. The parser already enforced "main-only"
         // and required-Ident keys; here we check that each entry
         // references an actual main-locus `params` field whose
-        // type is a locus. Pinned-restrictions (no accept(),
-        // no closures) are checked at codegen time when
-        // placement → runtime wiring fires.
+        // type is a locus, and (rule 6) that a field placed
+        // `pinned` names a locus with no `accept()` and no
+        // birth or dissolve closure.
         let placement_blocks: Vec<_> = decl
             .members
             .iter()
@@ -9979,11 +9979,11 @@ impl<'a> Checker<'a> {
     ///      primitives or structs.
     ///   3. No duplicate field keys.
     ///
-    /// Pinned-class restrictions (no `accept()`, no closures
-    /// on a locus placed `pinned`) move to placement-time
-    /// enforcement in Phase 3 codegen; the spec lock is here
-    /// but the typecheck implementation is deferred until
-    /// codegen reads placement.
+    ///   4. Rule 6: a locus placed `pinned` declares neither
+    ///      `accept()` nor a closure with `epoch birth` or `epoch
+    ///      dissolve` (judged at the entry, with its span; codegen
+    ///      keeps a spanless backstop for harness builds that skip
+    ///      the checker).
     fn check_placement_block(
         &mut self,
         info: &crate::symbol::LocusInfo,
@@ -10045,6 +10045,56 @@ impl<'a> Checker<'a> {
                                 param.ty.display()
                             ),
                         ));
+                    }
+                    // Rule 6 (F.31): a locus placed `pinned` owns its
+                    // own OS thread, so it cannot accept children
+                    // (their cascade would cross threads) and cannot
+                    // declare a closure that fires inside the cascade
+                    // (epoch birth or dissolve, dissolve being the
+                    // default when no clause is written, routed by the
+                    // owner's thread). A tick, duration, explicit or
+                    // inline closure fires on the pinned thread itself
+                    // and ships (example 40's pinned heartbeat, the
+                    // pinned restart tests, DNA's nerves connection).
+                    // The restriction belongs to the placement entry,
+                    // not the declaration: the same locus placed
+                    // cooperative is fine. Judged here, with the
+                    // entry's span, since F.40 phase 0; until then the
+                    // only evaluator was a spanless refusal at
+                    // lowering, so `hale check` and the LSP accepted a
+                    // program `hale build` refused.
+                    if is_locus && matches!(entry.spec, PlacementSpec::Pinned { .. }) {
+                        let conflict = match self.top.lookup(name) {
+                            Some(TopSymbol::Locus(li)) if li.accept_param.is_some() => {
+                                Some("declares `accept()`: a pinned locus owns its own \
+                                      thread and cannot accept children")
+                            }
+                            Some(TopSymbol::Locus(li))
+                                if li.closures.iter().any(|c| {
+                                    matches!(
+                                        c.epoch,
+                                        hale_syntax::ast::EpochSpec::Birth
+                                            | hale_syntax::ast::EpochSpec::Dissolve
+                                    )
+                                }) =>
+                            {
+                                Some("declares a closure whose epoch is `birth` or \
+                                      `dissolve` (dissolve is the default): the \
+                                      lifecycle cascade cannot route it across a pinned \
+                                      locus's thread")
+                            }
+                            _ => None,
+                        };
+                        if let Some(why) = conflict {
+                            self.diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "placement entry `{}`: `{}` is placed `pinned` but {}; \
+                                     place it `cooperative`, or drop the feature (rule 6)",
+                                    entry.field.name, name, why
+                                ),
+                            ));
+                        }
                     }
                 }
                 Ty::Unknown => {
@@ -11809,9 +11859,7 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 // v1.x-VIOLATE (F.27): structural rules on the
                 // closure declaration itself.
-                let is_inline = cd.clauses.iter().any(|c| {
-                    matches!(c, ClosureClause::Epoch(EpochSpec::Inline))
-                });
+                let is_inline = matches!(cd.epoch(), EpochSpec::Inline);
                 let captures: Vec<&Ident> = cd
                     .clauses
                     .iter()
@@ -11886,12 +11934,7 @@ impl<'a> Checker<'a> {
                 // and the other epochs either don't recur — birth /
                 // dissolve / inline — or recur too fast to be a
                 // useful rate-budget window — tick).
-                let is_duration = cd.clauses.iter().any(|c| {
-                    matches!(
-                        c,
-                        ClosureClause::Epoch(EpochSpec::Duration(_))
-                    )
-                });
+                let is_duration = matches!(cd.epoch(), EpochSpec::Duration(_));
                 let resets_pe_fields: Vec<&Ident> = cd
                     .clauses
                     .iter()

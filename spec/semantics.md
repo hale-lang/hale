@@ -3198,14 +3198,23 @@ main locus App {
    all placement entries in the bundle. Pool `main` is always
    available; it refers to the program's main OS thread.
 6. **Locus-pinning compatibility.** A locus placed `pinned` is
-   subject to the existing pinned-class restrictions (no
-   `accept(c: Child)` accept-method, no `closure` declarations
-   in v1). These restrictions move from the locus declaration
-   site (pre-F.31) to the placement site: the typechecker walks
-   each placement entry and applies the relevant restriction to
-   the named locus type. A locus that uses neither feature can
-   be placed either cooperative or pinned at the deployment's
-   discretion.
+   subject to the pinned-class restrictions: no `accept(c:
+   Child)` accept-method, and no closure whose epoch is `birth` or
+   `dissolve` (dissolve is the default when no `epoch` clause is
+   written). Those two epochs fire inside the lifecycle
+   cascade, which the owner's thread runs and cannot route
+   across the pinned thread; a tick, duration, explicit or
+   inline closure fires on the pinned thread itself and is
+   permitted (a pinned heartbeat with `epoch duration`, a pinned
+   connection with an inline closure). These restrictions belong
+   to the placement site, not the declaration: the typechecker
+   walks each placement entry and applies them to the named
+   locus type, at the entry's span, and a locus that uses
+   neither feature can be placed either cooperative or pinned at
+   the deployment's discretion. (F.40 phase 0: until then the
+   rule was stated as "no closure declarations" while lowering
+   refused only birth and dissolve closures; the rule now says
+   what ships, and the typechecker judges it.)
 7. **Dead bus receiver (error).** A locus that declares
    `bus { subscribe ... }`, is placed `cooperative(pool = X)` with
    `X != main` (and not `where async_io`), **and** whose `run()`

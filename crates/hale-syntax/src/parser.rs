@@ -5593,6 +5593,24 @@ impl Parser {
             clauses.push(self.parse_closure_clause()?);
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
+        // A closure has one epoch. `ClosureDecl::epoch` is the one
+        // rule every reader applies (the last clause, dissolve by
+        // default); refusing a second clause here is what makes
+        // "the last clause" and "any clause" the same thing at
+        // every site (F.40 phase 0).
+        let epochs = clauses
+            .iter()
+            .filter(|c| matches!(c, ClosureClause::Epoch(_)))
+            .count();
+        if epochs > 1 {
+            return Err(Diag::parse(
+                kw.span.merge(close.span),
+                format!(
+                    "closure `{}` declares {epochs} `epoch` clauses; a closure has one epoch",
+                    name.name
+                ),
+            ));
+        }
         Ok(ClosureDecl {
             name,
             assertion,

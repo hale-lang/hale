@@ -5,8 +5,9 @@
 //!   1. Field exists in this locus's params block.
 //!   2. Field type is a locus type.
 //!   3. No duplicate field keys across placement entries.
-//! Pinned-class restrictions (no accept(), no closures on
-//! placed-pinned loci) move to codegen-time in Phase 3.
+//!   4. Rule 6: a locus placed `pinned` declares neither `accept()`
+//!      nor a birth or dissolve closure (F.40 phase 0; codegen keeps
+//!      a spanless backstop).
 
 use hale_syntax::parse_source;
 use hale_types::check_program;
@@ -2408,6 +2409,224 @@ fn main() { }
     assert!(
         !msgs.iter().any(|m| m.contains(UNCONSUMED)),
         "an imported seed's main is not the deployment root: {:?}",
+        msgs
+    );
+}
+
+// Rule 6 (F.31), judged by the checker since F.40 phase 0. Before
+// that the only evaluator was a spanless CodegenError at lowering,
+// so `hale check` and the LSP accepted a program `hale build` refused.
+
+#[test]
+fn pinned_locus_that_accepts_children_is_refused_at_the_entry() {
+    let src = r#"
+locus Child { run() { } }
+locus Coord {
+    accept(c: Child) { }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Coord = Coord { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("placement entry `w`")
+            && m.contains("`Coord` is placed `pinned`")
+            && m.contains("accept()")
+            && m.contains("rule 6")),
+        "expected the rule 6 refusal at the placement entry, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_locus_with_a_birth_closure_is_refused_at_the_entry() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure ready { self.n ~~ self.n within 0; epoch birth; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("placement entry `w`")
+            && m.contains("`birth`")
+            && m.contains("rule 6")),
+        "expected the rule 6 refusal for a birth closure, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_locus_with_a_dissolve_closure_is_refused_at_the_entry() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure settled { self.n ~~ self.n within 0; epoch dissolve; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("placement entry `w`") && m.contains("rule 6")),
+        "expected the rule 6 refusal for a dissolve closure, got: {:?}",
+        msgs
+    );
+}
+
+/// A closure with no `epoch` clause is a dissolve closure (the AST's
+/// one rule), so it is refused too: a first cut of this rule looked
+/// only for a written `epoch dissolve` and let it through `hale
+/// check` while `hale build` refused it.
+#[test]
+fn pinned_locus_with_an_epoch_less_closure_is_refused_as_dissolve() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure settled { self.n ~~ self.n within 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("placement entry `w`")
+            && m.contains("dissolve is the default")
+            && m.contains("rule 6")),
+        "expected the rule 6 refusal for an epoch-less (dissolve) closure, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_locus_with_an_explicit_closure_is_clean() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure audited { self.n ~~ self.n within 0; epoch explicit; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("rule 6")),
+        "an explicit closure fires on the pinned thread, got: {:?}",
+        msgs
+    );
+}
+
+/// The epochs that fire on the pinned thread itself ship today
+/// (example 40's pinned heartbeat with `epoch duration`, the pinned
+/// restart tests with `epoch inline`, DNA's nerves connection): rule
+/// 6 restricts only what the cascade must route.
+#[test]
+fn pinned_locus_with_inline_tick_and_duration_closures_is_clean() {
+    let src = r#"
+locus Worker {
+    params { n: Int = 0; }
+    closure fatal { epoch inline; }
+    closure steady { self.n ~~ self.n within 0; epoch tick; }
+    closure paced { self.n ~~ self.n within 0; epoch duration(20ms); }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("rule 6")),
+        "inline, tick and duration closures are not restricted on a pinned locus, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn the_same_locus_placed_cooperative_is_clean() {
+    let src = r#"
+locus Child { run() { } }
+locus Coord {
+    accept(c: Child) { }
+    closure fatal { epoch inline; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Coord = Coord { };
+    }
+    placement {
+        w: cooperative(pool = workers);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().all(|m| !m.contains("rule 6")),
+        "rule 6 restricts pinned placement only, got: {:?}",
         msgs
     );
 }

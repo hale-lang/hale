@@ -1589,7 +1589,6 @@ crates/hale-types/tests/ownership_graph.rs#3 cfc3e38749c718c5
 crates/hale-types/tests/ownership_graph.rs#4 a650508b938fd80a
 crates/hale-types/tests/ownership_graph.rs#5 5bb8e742c071c47c
 crates/hale-types/tests/ownership_graph.rs#6 988dc0459891b89d
-crates/hale-types/tests/ownership_graph.rs#7 f4cebc02ecc78733
 crates/hale-types/tests/ownership_graph.rs#8 16924f2abbf29e62
 crates/hale-types/tests/ownership_graph.rs#9 13d329996d7ce475
 crates/hale-types/tests/perspective_serves.rs#0 f21b62040e0c874a
@@ -1635,6 +1634,9 @@ crates/hale-types/tests/placement.rs#58 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#59 520622987fb37156
 crates/hale-types/tests/placement.rs#6 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#62 6267f265ccca37f8
+crates/hale-types/tests/placement.rs#67 eb89d2367f0fe029
+crates/hale-types/tests/placement.rs#68 eb89d2367f0fe029
+crates/hale-types/tests/placement.rs#69 638b42602935f283
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
 crates/hale-types/tests/placement_pairings.rs#6 19fbfff324159117
