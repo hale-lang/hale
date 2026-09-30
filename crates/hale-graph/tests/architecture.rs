@@ -14,7 +14,9 @@ fn hale_graph_depends_on_nothing() {
     for line in manifest.lines() {
         let t = line.trim();
         if t.starts_with('[') {
-            in_deps = t == "[dependencies]";
+            // `[dependencies]` and every `[target.<cfg>.dependencies]`.
+            in_deps = t == "[dependencies]"
+                || (t.starts_with("[target.") && t.ends_with(".dependencies]"));
             continue;
         }
         if in_deps && !t.is_empty() && !t.starts_with('#') {

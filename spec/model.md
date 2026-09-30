@@ -104,10 +104,6 @@ the `deployment` families, and `ui` and `bundle` as consumers beside
 the LSP, `--dump-topology` and the description. A reservation creates
 no production demand.
 
-The eight concepts this document keeps distinct (source, plan, model,
-`ClaimIr`, evidence, artifact, lowering plan, execution evidence) are
-the registry's coarsest partition; a family belongs to exactly one.
-
 ## What a model is
 
 A model is **known facts plus an explicit account of what it does

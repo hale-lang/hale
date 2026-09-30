@@ -110,11 +110,15 @@ pub struct Consumer {
     pub site: Option<Site>,
 }
 
-/// A guarded entry symbol: the files that may reference it.
+/// A guarded entry symbol: the files that may reference it, each
+/// with the number of references it holds today. A new reference in
+/// an allowlisted file is a change to the count, so "one consumer
+/// per commit" shows up as a decrement and a new re-derivation as an
+/// increment.
 #[derive(Debug, Clone, Copy)]
 pub struct Seam {
     pub symbol: &'static str,
-    pub allowed: &'static [&'static str],
+    pub allowed: &'static [(&'static str, usize)],
 }
 
 /// One semantic family and its contract.
@@ -132,6 +136,10 @@ pub struct Family {
     /// when one exists today).
     pub producer: Option<Site>,
     pub legacy: &'static [Legacy],
+    /// Other derivation-shaped definitions the producer owns: its
+    /// helpers and variants. Registered like the producer, never a
+    /// second authority.
+    pub owned: &'static [Site],
     pub consumers: &'static [Consumer],
     pub invariants: &'static [&'static str],
     pub missing: Missing,
@@ -162,12 +170,16 @@ pub enum ScanVerdict {
     Renders,
 }
 
-/// A frozen `format!("{:?}", ..)` site in a semantic crate.
+/// A frozen Debug-formatting site (`{:?}`, `{x:?}`, `{:#?}` inside
+/// `format!`, `write!`, `writeln!`, `println!` or `eprintln!`) in
+/// hale-types, hale-codegen, hale-cli or hale-lsp.
 #[derive(Debug, Clone, Copy)]
 pub struct DebugScan {
     pub path: &'static str,
     /// A distinctive fragment of the line.
     pub fragment: &'static str,
+    /// How many lines of the file contain the fragment.
+    pub count: usize,
     pub verdict: ScanVerdict,
 }
 
@@ -233,6 +245,7 @@ const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
 const FRONTEND: &str = "crates/hale-cli/src/shared/frontend.rs";
 const IMPORTS: &str = "crates/hale-cli/src/shared/imports.rs";
 const OPTIONS: &str = "crates/hale-cli/src/shared/options.rs";
+const BUILD_ENV: &str = "crates/hale-cli/src/build_env.rs";
 const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
 const V_CHECK: &str = "crates/hale-cli/src/verbs/check/run_impl.rs";
 const V_MATRIX: &str = "crates/hale-cli/src/verbs/check/matrix.rs";
@@ -281,6 +294,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key)", "crates/hale-cli/tests/source_map.rs"],
         spec: &["spec/projects.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -304,6 +318,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md § Cross-seed namespace resolution", "spec/projects.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -334,6 +349,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-codegen/tests/framework_elision.rs"],
         spec: &["spec/semantics.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -346,14 +362,16 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(SYNC, "infer_sync_for_bundle")),
         legacy: &[
             legacy(TLIB, "apply_sync_inference", "injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives, and only when a verb ran it (check, build, run <dir>, the LSP per file; never run <file>, test, replay, bench)", "the inferred discipline is a row lowering reads; no AST mutation"),
-            legacy(CHECK, "form_has_explicit_sync_discipline", "one of two incompatible definitions of `has a sync discipline` (`sync = none` counts in one, not the other), read by eight sites", "one predicate over the form rows"),
+            legacy(CHECK, "form_has_explicit_sync_discipline", "the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check)", "one predicate over the form rows"),
+            legacy(SYNC, "form_has_explicit_sync", "sync inference's own predicate, which counts `sync = none` where the checker's does not", "one predicate over the form rows"),
         ],
         consumers: &[consumer("check (F.31 cross-pool verdicts)"), consumer_at("codegen", CG_DECL, "sync_mode"), consumer("lsp")],
         invariants: &["every entry point sees the same discipline for the same program"],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/placement.rs", "crates/hale-codegen/tests/form_hashmap_sync.rs"],
         spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[TLIB, V_CHECK, V_BUILD, V_RUN, LSP] }],
+        owned: &[],
+        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 5), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (LSP, 1)] }],
     },
     Family {
         name: "effect_class_table",
@@ -372,6 +390,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/cross_seed_effects.rs"],
         spec: &["spec/verification.md § Default-on & opt-in analyses"],
+        owned: &[],
         seams: &[],
     },
     // ---------------------------------------------------- Declarations
@@ -392,18 +411,21 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs"],
         spec: &["spec/semantics.md"],
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[RESOLVE, TLIB, MODEL_BUILDER, CLAIM_LOWERING, TOPOLOGY, SYNC, CG, LSP, V_MATRIX] }],
+        owned: &[],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (MODEL_BUILDER, 1), (CLAIM_LOWERING, 1), (TOPOLOGY, 1), (SYNC, 1), (CG, 2), (LSP, 7), (V_MATRIX, 1)] }],
     },
     Family {
         name: "expression_typing",
         layer: Layer::Declarations,
-        state: State::Canonical,
+        state: State::Migrating,
         kind: Kind::Derivation,
         answers: "The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from.",
         inputs: &["top_scope", "declarations", "bodies"],
         producer: Some(site(CHECK, "check_bundle_scoped")),
-        legacy: &[],
-        consumers: &[consumer("every layer"), consumer_at("literal typing", RESOLVE, "infer_literal_ty"), consumer_at("codegen accumulator typing", CG, "infer_accumulator_inner_type")],
+        legacy: &[
+            legacy(CG, "infer_accumulator_inner_type", "codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across", "the resolved program carries the checker's types"),
+        ],
+        consumers: &[consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
             "codegen types a value only where the checker's type is not yet carried across (the accumulator case); that residue is deleted when the resolved program carries types",
@@ -411,6 +433,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["cargo test -p hale-types", "crates/hale-cli/tests/corpus_check_build_agreement.rs"],
         spec: &["spec/types.md"],
+        owned: &[site(RESOLVE, "infer_literal_ty")],
         seams: &[],
     },
     Family {
@@ -431,6 +454,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/generic_monomorph_agreement.rs"],
         spec: &["spec/types.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -450,6 +474,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs"],
         spec: &["spec/types.md", "spec/semantics.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -468,6 +493,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/reserved_locus_members.rs", "crates/hale-codegen/tests/form_vec_bce.rs"],
         spec: &["spec/forms.md", "spec/memory.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -480,6 +506,8 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(STDLIB_SURFACE, "signature_for")),
         legacy: &[
             legacy(CG, "lower_stdlib_path_call_expr", "271 `[\"std\", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`", "codegen dispatches from the registry row"),
+            legacy(CG, "lower_stdlib_path_call", "the statement-form twin of the expression dispatch: 191 more `[\"std\", ..]` literals", "same"),
+            legacy(CG_CHANNELS, "lower_fallible_call", "the fallible-call dispatch, a third copy of the stdlib call shapes (150 literals)", "same"),
             legacy(CG, "value_to_string_supports", "the printable set, kept in lockstep by hand with the checker's `ty_is_printable`", "one predicate"),
             legacy(CHECK, "ty_is_printable", "the checker's copy of the printable set", "one predicate"),
             legacy(CG, "declare_builtin_closure_violation_type", "a hand-maintained mirror of the checker's injected builtin types", "one declaration"),
@@ -491,6 +519,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/stdlib_registry_parity.rs", "crates/hale-cli/tests/corpus_check_build_agreement.rs", "crates/hale-cli/tests/doc_effects_catalogue.rs"],
         spec: &["spec/stdlib.md"],
+        owned: &[],
         seams: &[],
     },
     // ------------------------------------------------------------ Locus
@@ -509,13 +538,16 @@ pub const FAMILIES: &[Family] = &[
             legacy(CHECK, "check_bus_graph", "closed world = a top-level main only; a module-nested main disables rule 9", "same"),
             legacy(V_MATRIX, "seed_entry_kind", "parse-only main detection for the check matrix", "same"),
             legacy(OPTIONS, "bind_build_env", "has_main for the build env", "same"),
-            legacy(CG, "collect_main_placement", "`is_main && !__lib_` over flat declarations; `is_main_locus` compares type names", "same"),
+            legacy(CG, "collect_main_placement", "`is_main && !__lib_` over flat declarations", "same"),
+            legacy(CG_INST, "let is_main_locus", "`is_main_locus` compares type names at instantiation (and twice more in dissolve.rs)", "same"),
+            legacy(CG_DISSOLVE, "let is_main_locus", "the same comparison in the cascade", "same"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("dna"), consumer("codegen")],
         invariants: &["nine sites use three definitions today; the row has one"],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -540,6 +572,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(OWNERSHIP_GRAPH, "classify_owner_kind", "owner classification for the bubble plan", "phase 1.3"),
             legacy(OWNERSHIP_GRAPH, "classify_edge", "edge classification for the bubble plan", "phase 1.3"),
             legacy(CG_INST, "parent_accepts_us", "decides acceptance from the lowering context, not the table", "lowering reads the table"),
+            legacy("crates/hale-types/src/borrow_lifetime.rs", "accepts", "the borrow-lifetime law rebuilds the accept sets from the AST for itself", "reads `accepts_ancestor`"),
             legacy(CHECK, "check_unowned_subscriber_locus", "the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others", "a law over the table, on every entry point"),
         ],
         consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("codegen", CG_DISSOLVE, "emit_locus_field_dissolves"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer("model"), consumer("alloc_summary (eager-only accept sets)")],
@@ -551,10 +584,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/owner_table.rs", "crates/hale-codegen/tests/ownership_matrix.rs", "crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/ownership_bubble.rs"],
         spec: &["spec/decisions.md F.39", "spec/semantics.md § Dissolve timing rules"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "resolve_owners(", allowed: &[CG, CG_OWN] },
-            Seam { symbol: "build_ownership_graph(", allowed: &[OWNERSHIP_GRAPH, MODEL_BUILDER, CG] },
-            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[CG] },
+            Seam { symbol: "resolve_owners(", allowed: &[(CG, 1), (CG_OWN, 1)] },
+            Seam { symbol: "build_ownership_graph(", allowed: &[(OWNERSHIP_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 1)] },
+            Seam { symbol: "compute_fresh_locus_factories(", allowed: &[(CG, 2)] },
         ],
     },
     Family {
@@ -566,7 +600,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["topics", "bus blocks", "sends", "bindings", "placement (for gates)"],
         producer: Some(site(BUS_GRAPH, "build_bus_graph")),
         legacy: &[
-            legacy(CHECK, "check_bus_graph", "the checker builds the graph for rule 9 (and once more at the check's end for claim selection)", "one graph per snapshot"),
+            legacy(CHECK, "check_bus_graph", "rule 9 runs `collect_bus_walk` itself; the checker also builds the full graph once for the #265 frontier (causality, supervision, taint)", "one graph per snapshot"),
             legacy(CHECK, "check_bus_cycles", "rule 10 keeps its own adjacency (`BusAdj`) instead of reading the graph", "a law over the graph"),
             legacy(CHECK, "external_subscription_handlers", "handler discovery joined with `::` where the graph uses the last segment", "one subject key"),
             legacy(MODEL_BUILDER, "build_bus_graph", "rebuilt for the model", "phase 1.5"),
@@ -581,9 +615,10 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/bus_graph.rs", "crates/hale-types/tests/bus_payload_handler.rs", "crates/hale-codegen/tests/bus_devirt_differential.rs"],
         spec: &["spec/semantics.md rules 9-12, 19", "spec/verification.md § Bus-graph property checks"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "build_bus_graph(", allowed: &[BUS_GRAPH, CHECK, MODEL_BUILDER, CLAIM_LOWERING, TOPOLOGY, V_MATRIX, LSP, CG] },
-            Seam { symbol: "collect_bus_walk(", allowed: &[BUS_GRAPH, CHECK] },
+            Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (CHECK, 1), (MODEL_BUILDER, 1), (CLAIM_LOWERING, 1), (TOPOLOGY, 1), (V_MATRIX, 1), (LSP, 1), (CG, 1)] },
+            Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2), (CHECK, 1)] },
         ],
     },
     Family {
@@ -608,7 +643,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/topic_declarations.rs", "crates/hale-codegen/tests/replica_keys.rs", "crates/hale-codegen/tests/serializer_shape.rs"],
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
-        seams: &[Seam { symbol: "topic_wire_subjects(", allowed: &[TOPIC_ID, BUS_GRAPH, MODEL_BUILDER, CG] }],
+        owned: &[],
+        seams: &[Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (MODEL_BUILDER, 1), (CG, 8)] }],
     },
     Family {
         name: "bindings",
@@ -630,7 +666,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/bindings_roles.rs", "crates/hale-types/tests/bindings.rs"],
         spec: &["spec/decisions.md F.36, F.37", "spec/semantics.md § Operational constraints (Form K)"],
-        seams: &[Seam { symbol: "binding_role_for(", allowed: &[DESUGAR, MODEL_BUILDER] }],
+        owned: &[],
+        seams: &[Seam { symbol: "binding_role_for(", allowed: &[(DESUGAR, 1), (MODEL_BUILDER, 1)] }],
     },
     Family {
         name: "dispatch",
@@ -650,9 +687,10 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/dispatch_plan_cli.rs", "crates/hale-codegen/tests/bus_devirt_direct.rs"],
         spec: &["spec/model.md § Derived products", "spec/decisions.md F.38"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "DispatchPlan::derive(", allowed: &[M_DISPATCH, M_LIB, MODEL_BUILDER, OPTIONS] },
-            Seam { symbol: "from_gates(", allowed: &[M_DISPATCH, CG] },
+            Seam { symbol: "DispatchPlan::derive(", allowed: &[(M_DISPATCH, 1), (M_LIB, 1), (MODEL_BUILDER, 1), (OPTIONS, 1)] },
+            Seam { symbol: "from_gates(", allowed: &[(M_DISPATCH, 2), (CG, 1)] },
         ],
     },
     Family {
@@ -662,7 +700,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "Which `on_failure` handler a failing child's locus type reaches, and from which parent.",
         inputs: &["failure declarations", "ownership (the supervising parent)", "restart declarations"],
-        producer: Some(site(CG_DECL, "failure_handlers")),
+        producer: Some(site(CG_DECL, "declare_locus_methods")),
         legacy: &[
             legacy(CG, "failure_handler_for", "first match by mangled child locus-name string; declarations and fns paired by position", "keyed by identity, in the table"),
             legacy(CG_CHANNELS, "resolve_failure_route", "the route is decided from the lowering context (supervising parent, then self, then params-init self)", "lowering reads the route row"),
@@ -677,6 +715,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/lifecycle_flow.rs (on_failure_dispatch_by_child_type)", "tests/hale/on_failure_per_child_type_test.hl", "crates/hale-types/tests/violate.rs"],
         spec: &["spec/semantics.md § failure", "spec/runtime.md (failure delivery)"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -696,6 +735,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/release_reclaims_flow.rs", "crates/hale-codegen/tests/release_two_parents.rs"],
         spec: &["spec/semantics.md § release(c) and flow children"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -715,6 +755,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/restart_in_place_params.rs", "crates/hale-codegen/tests/restart_bound.rs"],
         spec: &["spec/semantics.md § supervision"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -733,6 +774,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/closure_epoch.rs", "crates/hale-types/tests/violate.rs"],
         spec: &["spec/semantics.md § closures"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -753,6 +795,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/api_description.rs", "crates/hale-types/tests/api_binding_check.rs"],
         spec: &["spec/model.md § The description", "spec/semantics.md § The api binding (GH #1106)"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -771,6 +814,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/sealed_locus.rs"],
         spec: &["spec/verification.md § Secrets — confine, classify, claim"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -787,6 +831,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &[],
         spec: &["RFC #1212, the authority comment"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -803,6 +848,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &[],
         spec: &["RFC #1212 §6 (F.41 sketch)"],
+        owned: &[],
         seams: &[],
     },
     // ---------------------------------------------------------- Effects
@@ -827,10 +873,11 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/effect_assertions.rs", "crates/hale-cli/tests/effects_baseline_gate.rs", "crates/hale-cli/tests/effects_manifest.rs"],
         spec: &["spec/verification.md § Default-on & opt-in analyses", "spec/verification.md § Claims"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "infer_effects(", allowed: &[FRONTIER, EFFECTS, CLAIMS, MODEL_BUILDER, TOPOLOGY] },
-            Seam { symbol: "effect_manifest_with_inference(", allowed: &[EFFECTS, TLIB, V_REPLAY] },
-            Seam { symbol: "infer_purity_for_bundle(", allowed: &[PURITY, CHECK] },
+            Seam { symbol: "infer_effects(", allowed: &[(FRONTIER, 4), (EFFECTS, 1), (CLAIMS, 1), (MODEL_BUILDER, 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "effect_manifest_with_inference(", allowed: &[(EFFECTS, 1), (TLIB, 1), (V_REPLAY, 1)] },
+            Seam { symbol: "infer_purity_for_bundle(", allowed: &[(PURITY, 2), (CHECK, 1)] },
         ],
     },
     Family {
@@ -844,14 +891,15 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CHECK, "blocking_free_fns", "a name-keyed callgraph fixpoint for the BLOCK class, beside the effects fixpoint's own BLOCK propagation", "one fixpoint (the effects rows)"),
             legacy(CHECK, "blocking_self_methods", "the method half of the same fixpoint; no cross-locus hop", "same"),
-            legacy(CG, "program_has_offthread", "codegen scans top-level items for off-thread placement and socket bindings (misses module-nested loci)", "codegen reads the placement rows"),
-            legacy(BUS_GRAPH, "has_offthread_placement", "the same question, walking modules", "same"),
+            legacy(CG, "program_has_offthread", "codegen's predicate: its placement term calls the bus graph's `has_offthread_placement` (which walks modules); its bindings term scans top-level items only, so a module-nested main's socket binding is missed", "codegen reads the placement rows"),
+            legacy(BUS_GRAPH, "has_offthread_placement", "the placement half of the same predicate, walking modules; a component of codegen's, not a second copy", "one placement table"),
         ],
         consumers: &[consumer("check (rules 7, 8)"), consumer("effects (@no_block)"), consumer("codegen (mark_pinned, no_pinned dispatch)")],
         invariants: &["one leaf set (GH #830) and one propagation"],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/placement.rs", "crates/hale-codegen/tests/bus_devirt_no_pinned.rs"],
         spec: &["spec/semantics.md rules 7, 8"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -879,9 +927,10 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/hot_path_alloc.rs", "crates/hale-codegen/tests/scratch_local_free_fn.rs", "crates/hale-codegen/tests/fn_nonalloc_add.rs", "crates/hale-codegen/tests/method_scratch_elision.rs"],
         spec: &["spec/memory.md § Allocation routing", "spec/styleguide.md"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "summarize_programs", allowed: &[ALLOC, TLIB, LSP, "crates/hale-types/src/budget_check.rs", FRONTIER, MODEL_BUILDER, "crates/hale-types/src/quantitative.rs", "crates/hale-types/src/resource_budget.rs", STDLIB_BODIES, TOPOLOGY] },
-            Seam { symbol: "unbounded_alloc_warnings(", allowed: &[TLIB, V_CHECK, LSP] },
+            Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (STDLIB_BODIES, 2), (TOPOLOGY, 1)] },
+            Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (LSP, 1)] },
         ],
     },
     Family {
@@ -894,11 +943,12 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site("crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags")),
         legacy: &[],
         consumers: &[consumer_at("check", V_CHECK, "borrow_lifetime_diags"), consumer_at("build, run, test, replay", TLIB, "check_bundle_for_build")],
-        invariants: &["runs on every entry point: it does not run in the LSP or bench today (phase 2 closes that)", "re-derives accept sets from the AST (an ownership residue, listed there)"],
+        invariants: &["runs on every entry point: it does not run in the LSP or bench today (phase 2 closes that)", "its accept-set walk is an ownership residue, listed under `ownership` (borrow_lifetime.rs `accepts`)"],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/check_borrow_lifetime.rs"],
         spec: &["spec/semantics.md § A borrow outlives its holder", "spec/decisions.md F.39"],
-        seams: &[Seam { symbol: "borrow_lifetime_diags", allowed: &["crates/hale-types/src/borrow_lifetime.rs", TLIB, V_CHECK] }],
+        owned: &[],
+        seams: &[Seam { symbol: "borrow_lifetime_diags", allowed: &[("crates/hale-types/src/borrow_lifetime.rs", 3), (TLIB, 1), (V_CHECK, 1)] }],
     },
     Family {
         name: "bare_fallible",
@@ -916,7 +966,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/check_strict_fallible.rs"],
         spec: &["spec/semantics.md § fallible"],
-        seams: &[Seam { symbol: "bare_fallible_calls(", allowed: &["crates/hale-types/src/bare_fallible.rs", TLIB, V_CHECK] }],
+        owned: &[],
+        seams: &[Seam { symbol: "bare_fallible_calls(", allowed: &[("crates/hale-types/src/bare_fallible.rs", 1), (TLIB, 1), (V_CHECK, 1)] }],
     },
     Family {
         name: "nonreturning",
@@ -935,6 +986,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/birth_order_trap.rs", "crates/hale-codegen/tests/birth_order_trap.rs"],
         spec: &["spec/semantics.md"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -946,11 +998,12 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["declared shapes", "@locality"],
         producer: Some(site("crates/hale-types/src/working_set.rs", "compute_program_working_set")),
         legacy: &[],
-        consumers: &[consumer_at("build", V_BUILD, "compute_program_working_set"), consumer_at("per-locus", "crates/hale-types/src/working_set.rs", "compute_locus_working_set"), consumer_at("per-locus", "crates/hale-types/src/working_set.rs", "compute_program_returns_entry_per_locus")],
+        consumers: &[consumer_at("build", V_BUILD, "compute_program_working_set"), ],
         invariants: &["build-only today, and a warning without --strict; layer 7 (layout) reads it later"],
         missing: Missing::Hole,
         tests: &["crates/hale-cli/tests/target_model.rs"],
         spec: &["spec/memory.md"],
+        owned: &[site("crates/hale-types/src/working_set.rs", "compute_locus_working_set"), site("crates/hale-types/src/working_set.rs", "compute_program_returns_entry_per_locus")],
         seams: &[],
     },
     // -------------------------------------------------------- Placement
@@ -977,9 +1030,10 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
+        owned: &[],
         seams: &[
-            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[CHECK, TLIB] },
-            Seam { symbol: "collect_main_placement(", allowed: &[CG] },
+            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (TLIB, 1)] },
+            Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],
     },
     Family {
@@ -994,7 +1048,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CHECK, "wasm_unavailable_stdlib", "a hand-kept slice-pattern table keyed by leading namespace, consulted only when the SOURCE declares `target wasm` (never from `--target wasm32`), and only for call forms", "one CapabilityMatrix consulted by the driver before lowering"),
             legacy(CHECK, "wasm_target", "the source-declaration flag the table is gated on", "same"),
             legacy(CG, "link_wasm", "link-time refusals (link_libs) and the export list", "same"),
-            legacy(CG_INST, "replay_start_ingress", "one of the per-site wasm skips; instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not", "same"),
+            legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not", "same"),
             legacy(CG, "is_wasm", "the backend configuration scattered across a dozen sites", "same"),
             legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
             legacy(CG_TARGET, "TargetSpec", "has_async_io is true for wasm32; the checker sees the target only under `hale build`", "the matrix is the one statement, on every entry point"),
@@ -1004,7 +1058,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/wasm_target_gating.rs", "crates/hale-codegen/tests/wasm_target.rs", "crates/hale-cli/tests/target_model.rs"],
         spec: &["spec/decisions.md F.35", "docs/src/systems/webassembly.md"],
-        seams: &[Seam { symbol: "wasm_unavailable_stdlib(", allowed: &[CHECK] }],
+        owned: &[],
+        seams: &[Seam { symbol: "wasm_unavailable_stdlib(", allowed: &[(CHECK, 2)] }],
     },
     Family {
         name: "deployment",
@@ -1020,6 +1075,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::NotApplicable,
         tests: &[],
         spec: &["RFC #1212, the implementation plan §8", "GH #262"],
+        owned: &[],
         seams: &[],
     },
     // -------------------------------------------------------- Lifecycle
@@ -1048,6 +1104,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/lifecycle_flow.rs", "crates/hale-codegen/tests/reclamation_spine.rs", "crates/hale-codegen/tests/main_locus_deferred_pool_join.rs", "crates/hale-codegen/tests/teardown_pinned_join_order.rs"],
         spec: &["spec/runtime.md (failure delivery; pool join rule b)", "spec/semantics.md § lifecycle"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -1067,6 +1124,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/drain_elision.rs", "crates/hale-codegen/tests/log_routing.rs"],
         spec: &["spec/runtime.md § drain"],
+        owned: &[],
         seams: &[],
     },
     // --------------------------------------------------------- Lowering
@@ -1079,13 +1137,14 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the AST", "the lowering context"],
         producer: None,
         legacy: &[
-            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker (or nobody) already states", "one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead"),
+            legacy(CG_INST, "CodegenError::Unsupported", "spanless refusals at lowering for rules the checker already states; for a placed locus the checker types as Unknown, and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator", "one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead"),
         ],
         consumers: &[consumer("codegen harness builds")],
         invariants: &["a law is judged once, with a span"],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/self_containing_locus.rs", "crates/hale-codegen/tests/self_containing_locus.rs"],
         spec: &["spec/semantics.md rules 6, 17, 18; GH #813, #876"],
+        owned: &[],
         seams: &[],
     },
     // -------------------------------------------------------------- Law
@@ -1107,7 +1166,8 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/demand_gate.rs", "crates/hale-model/tests/architecture.rs", "crates/hale-types/tests/topology_projection.rs"],
         spec: &["spec/model.md"],
-        seams: &[Seam { symbol: "derive_application_model(", allowed: &[MODEL_BUILDER, JUDGMENT, TOPOLOGY, V_CHECK, OPTIONS] }],
+        owned: &[],
+        seams: &[Seam { symbol: "derive_application_model(", allowed: &[(MODEL_BUILDER, 1), (JUDGMENT, 1), (TOPOLOGY, 1), (V_CHECK, 1), (OPTIONS, 1)] }],
     },
     Family {
         name: "claims",
@@ -1131,6 +1191,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/claim_diags_snapshot.rs", "crates/hale-cli/tests/law_selection_reaches_the_artifact.rs", "crates/hale-cli/tests/dna_law.rs", "crates/hale-types/tests/one_reachability_engine.rs"],
         spec: &["spec/verification.md § Claims", "spec/model.md § Adding a judgment family"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -1147,6 +1208,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Hole,
         tests: &[],
         spec: &["RFC #1212, the UI comment"],
+        owned: &[],
         seams: &[],
     },
     // --------------------------------------------------------- Identity
@@ -1174,6 +1236,7 @@ pub const FAMILIES: &[Family] = &[
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
+        owned: &[],
         seams: &[],
     },
     Family {
@@ -1201,11 +1264,12 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("replay (admission)"), consumer("topology / fleet (admission)"), consumer("dna (schema 1.19, semantics 2, shape_hash, artifact_digest)"), consumer("the runtime obs header"), consumer("the DNA host cache")],
         invariants: &[
             "external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)",
-            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity",
+            "a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key walk every identity-covered crate; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design",
         ],
         missing: Missing::NotApplicable,
         tests: &["crates/hale-cli/tests/obs_model_hash.rs", "crates/hale-cli/tests/model_diff.rs", "crates/hale-cli/tests/replay_cli.rs", "crates/hale-cli/tests/stale_dna_warning.rs", "crates/hale-cli/tests/source_map.rs"],
         spec: &["spec/model.md § Identity and versioning"],
+        owned: &[],
         seams: &[],
     },
 ];
@@ -1349,12 +1413,14 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
-/// Every `format!("{:?}", ..)` site in the semantic crates, frozen
-/// with a verdict. A new one fails registry_guard.rs.
+/// Every Debug-formatting line in hale-types, hale-codegen, hale-cli
+/// and hale-lsp, frozen with a verdict and a line count. A new one,
+/// or a changed count, fails registry_guard.rs.
 pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CG,
         fragment: "let dbg = format!(\"{:?}\", program.items);",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "bus_inert",
         },
@@ -1362,6 +1428,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CG,
         fragment: "decls.push((name, surface, format!(\"{:?}\", it)));",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "bus_inert",
         },
@@ -1369,6 +1436,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CG,
         fragment: "other => !format!(\"{:?}\", other)",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "ownership",
         },
@@ -1376,6 +1444,7 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CG,
         fragment: "let dbg = format!(\"{:?}\", f.body);",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "alloc_summary",
         },
@@ -1383,21 +1452,31 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CG,
         fragment: ".map(|d| format!(\"{:?}\", d))",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: CG,
         fragment: "other => format!(\"{:?}\", other),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: CG,
+        fragment: "format!(\"clang failed compiling {:?} for wasm32\", src)",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: CG_RESTART,
         fragment: "format!(\"{:?}\", fd.body).contains(\"RestartInPlace\")",
+        count: 1,
         verdict: ScanVerdict::Decides { family: "restart" },
     },
     DebugScan {
         path: CHECK,
         fragment: "methods.insert(format!(\"{:?}\", kind), body);",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "nonreturning",
         },
@@ -1405,6 +1484,15 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: CHECK,
         fragment: "TypeExpr::Primitive(p, _) => format!(\"{:?}\", p),",
+        count: 1,
+        verdict: ScanVerdict::Decides {
+            family: "snapshot_identity",
+        },
+    },
+    DebugScan {
+        path: CHECK,
+        fragment: "format!(\"{:?}({})\", class, type_expr_key(inner))",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "snapshot_identity",
         },
@@ -1412,54 +1500,180 @@ pub const DEBUG_SCANS: &[DebugScan] = &[
     DebugScan {
         path: TLIB,
         fragment: "format!(\"{:?}\", d.kind),",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: PURITY,
         fragment: "subject_repr: format!(\"{:?}\", subject),",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: PURITY,
         fragment: "fn_name: format!(\"{:?}\", op),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: MODEL_BUILDER,
+        fragment: "format!(\"{:?}:{}\", d.kind, d.display)",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: MODEL_BUILDER,
+        fragment: "format!(\" key {:?}\", other)",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "let mut text = format!(\"{:?}\", fd);",
+        count: 1,
         verdict: ScanVerdict::Decides { family: "effects" },
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "other => backstop(format!(\"{:?}\", other), p.span, diags),",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "other => backstop(format!(\"{:?}\", other), other.span(), diags),",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "body(&format!(\"{:?}\", lc.kind).to_lowercase()",
+        count: 1,
         verdict: ScanVerdict::Decides { family: "effects" },
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "backstop(format!(\"{:?}\", other), member_span(other), diags)",
+        count: 1,
         verdict: ScanVerdict::Renders,
     },
     DebugScan {
         path: "crates/hale-types/src/secret_reveal.rs",
         fragment: "let raw = format!(\"{:?}\", m);",
+        count: 1,
         verdict: ScanVerdict::Decides { family: "effects" },
     },
     DebugScan {
         path: "crates/hale-types/src/stdlib_names.rs",
         fragment: "let mut text = format!(\"{:?}\", d);",
+        count: 1,
         verdict: ScanVerdict::Decides {
             family: "stdlib_surface",
         },
+    },
+    DebugScan {
+        path: BUILD_ENV,
+        fragment: "fp.push_str(&format!(\";lto={l:?}\"));",
+        count: 1,
+        verdict: ScanVerdict::Decides { family: "digests" },
+    },
+    DebugScan {
+        path: "crates/hale-cli/src/verbs/fmt.rs",
+        fragment: "eprintln!(\"hale fmt: {:?}\", d);",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: "crates/hale-cli/src/verbs/misc.rs",
+        fragment: "println!(\"{:>4}:{:<3} {:?}\", line, col, t.kind);",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: "crates/hale-cli/src/verbs/misc.rs",
+        fragment: "println!(\"{:#?}\", prog);",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: "crates/hale-cli/src/pkg.rs",
+        fragment: "format!(\"git {:?} failed in {}\", args, repo.display())",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: "crates/hale-cli/src/pkg.rs",
+        fragment: "format!(\"git {:?} failed in {}\", args, dir.display())",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "\"placement\": format!(\"{:?}\", s.placement),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: ".map(|r| format!(\"{:?}\", r)),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "format!(\"{:?}\", affinity).contains(\"Any\")",
+        count: 1,
+        verdict: ScanVerdict::Decides {
+            family: "placement",
+        },
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "format!(\"pinned({:?})\", affinity)",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: ".map(|c| format!(\"{:?}\", c.kind))",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "TypeExpr::Primitive(p, _) => format!(\"{:?}\", p),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "\"kind\": format!(\"{:?}\", site.kind),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "\"escape\": format!(\"{:?}\", site.escape),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "\"reason\": format!(\"{:?}\", site.reason),",
+        count: 1,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "format!(\"{:?}\", ExitCode::SUCCESS)",
+        count: 2,
+        verdict: ScanVerdict::Renders,
+    },
+    DebugScan {
+        path: LSP,
+        fragment: "(replies, format!(\"{code:?}\"))",
+        count: 1,
+        verdict: ScanVerdict::Renders,
     },
 ];
 
@@ -1624,6 +1838,10 @@ pub fn render_markdown() -> String {
                 }
                 o.push('\n');
             }
+            if !f.owned.is_empty() {
+                let owned: Vec<String> = f.owned.iter().map(site_md).collect();
+                o.push_str(&format!("**Also owned.** {}\n\n", owned.join("; ")));
+            }
             o.push_str("**Consumers.** ");
             let cs: Vec<String> = f
                 .consumers
@@ -1652,7 +1870,11 @@ pub fn render_markdown() -> String {
             if !f.seams.is_empty() {
                 o.push_str("**Guarded seams.**\n\n");
                 for s in f.seams {
-                    let allowed: Vec<String> = s.allowed.iter().map(|a| format!("`{a}`")).collect();
+                    let allowed: Vec<String> = s
+                        .allowed
+                        .iter()
+                        .map(|(a, n)| format!("`{a}` ×{n}"))
+                        .collect();
                     o.push_str(&format!(
                         "- `{}` may be referenced from: {}\n",
                         s.symbol,
@@ -1682,11 +1904,12 @@ pub fn render_markdown() -> String {
     o.push('\n');
     o.push_str("## Frozen Debug-string sites\n\n");
     o.push_str(
-        "Every `format!(\"{:?}\", ..)` in `hale-types` and `hale-codegen`. A site that *decides* \
-         derives a fact from a Debug string and is permitted only until its family's table \
-         replaces it; a new site fails the guard.\n\n",
+        "Every Debug-formatting line (`{:?}`, `{x:?}`, `{:#?}` in a formatting macro) in \
+         `hale-types`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of lines the \
+         fragment matches. A site that *decides* derives a fact from a Debug string and is \
+         permitted only until its family's table replaces it; a new site fails the guard.\n\n",
     );
-    o.push_str("| path | fragment | verdict |\n|---|---|---|\n");
+    o.push_str("| path | fragment | lines | verdict |\n|---|---|---|---|\n");
     for d in DEBUG_SCANS {
         let v = match d.verdict {
             ScanVerdict::Decides { family } => format!("decides (`{family}`)"),

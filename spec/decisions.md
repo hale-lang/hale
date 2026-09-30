@@ -3477,10 +3477,9 @@ family or consumer; computes nothing), **Migrating** (the canonical
 producer is under development; the legacy list is exact), or
 **Canonical** (one production producer; consumers cannot reconstruct
 its meaning) — so the inventory can be exact without banning what
-exists today. Phase 0's inventory: 43 families, of which 4 are
-canonical, 35 migrating with 168 permitted legacy producers, and 4
-reserved (`runs_under(locus, principal)`, `transitions`, `deployment`,
-`view`, with `ui` and `bundle` as reserved consumers).
+exists today. `spec/registry.md` carries the inventory and its counts;
+the reservations are `runs_under(locus, principal)`, `transitions`,
+`deployment` and `view`, with `ui` and `bundle` as reserved consumers.
 
 **The guard** (`crates/hale-graph/tests/registry_guard.rs`). Three
 scans fail the build: a derivation-shaped function (`compute_`,
@@ -3506,7 +3505,8 @@ friction on the wrong one, which is what made
 3. **Identity is `(seed, index)`**, minted once after desugar.
    Snapshot-local uniqueness and reliable provenance are the
    requirement; persistent identity across editor revisions is a
-   separate problem. Addresses are not identities (declarations are
+   separate problem, and a snapshot identity is not a persistent
+   deployment identity. Addresses are not identities (declarations are
    cloned) and spans are not (the stdlib's coordinates overlap user
    files; desugars stamp one span on several declarations, GH #1140 /
    PR #1210). During migration the shadow compares through an explicit

@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 4 canonical, 35 migrating (with 168 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 19 frozen Debug-string sites, of which 11 decide a fact.
+43 families: 3 canonical, 36 migrating (with 175 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 40 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -11,21 +11,21 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `seed_loading` | Layer 1 | Migrating | desugar | — | 5 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 6 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | — | 10 | Which rewrites the program receives before checking, in which order: JSON parsers, the api surface, topic desugars, intra-locus rewrites, repr accessors, the omitted `run`, unit returns. |
-| `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 2 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
+| `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
 | `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 2 | What every top-level name denotes: the symbol table over the merged program. |
-| `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
+| `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 3 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
-| `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | — | 7 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
-| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 14 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`. |
+| `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
+| `entrypoint` | Layer 3 | Migrating | derivation | — | 9 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 15 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 9 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 3 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Migrating | derivation | `failure_handlers` | 7 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Migrating | derivation | `declare_locus_methods` | 7 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | — | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
@@ -157,7 +157,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/lib.rs` · `apply_sync_inference` — injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives, and only when a verb ran it (check, build, run <dir>, the LSP per file; never run <file>, test, replay, bench). *Removed when:* the inferred discipline is a row lowering reads; no AST mutation.
-- `crates/hale-types/src/check.rs` · `form_has_explicit_sync_discipline` — one of two incompatible definitions of `has a sync discipline` (`sync = none` counts in one, not the other), read by eight sites. *Removed when:* one predicate over the form rows.
+- `crates/hale-types/src/check.rs` · `form_has_explicit_sync_discipline` — the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check). *Removed when:* one predicate over the form rows.
+- `crates/hale-types/src/sync_inference.rs` · `form_has_explicit_sync` — sync inference's own predicate, which counts `sync = none` where the checker's does not. *Removed when:* one predicate over the form rows.
 
 **Consumers.** check (F.31 cross-pool verdicts); codegen (`crates/hale-codegen/src/locus/decl.rs` · `sync_mode`); lsp
 
@@ -173,7 +174,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs`, `crates/hale-cli/src/verbs/check/run_impl.rs`, `crates/hale-cli/src/verbs/build.rs`, `crates/hale-cli/src/verbs/run.rs`, `crates/hale-lsp/src/lib.rs`
+- `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×5, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `effect_class_table` — Migrating · derivation
 
@@ -229,17 +230,23 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs`, `crates/hale-types/src/lib.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-types/src/claim_lowering.rs`, `crates/hale-types/src/topology.rs`, `crates/hale-types/src/sync_inference.rs`, `crates/hale-codegen/src/codegen.rs`, `crates/hale-lsp/src/lib.rs`, `crates/hale-cli/src/verbs/check/matrix.rs`
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×2, `crates/hale-lsp/src/lib.rs` ×7, `crates/hale-cli/src/verbs/check/matrix.rs` ×1
 
-### `expression_typing` — Canonical · derivation
+### `expression_typing` — Migrating · derivation
 
 **Answers.** The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from.
 
 **Inputs.** top_scope; declarations; bodies
 
-**Producer.** `crates/hale-types/src/check.rs` · `check_bundle_scoped`
+**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_bundle_scoped`
 
-**Consumers.** every layer; literal typing (`crates/hale-types/src/resolve.rs` · `infer_literal_ty`); codegen accumulator typing (`crates/hale-codegen/src/codegen.rs` · `infer_accumulator_inner_type`)
+**Legacy producers (permitted until removal).**
+
+- `crates/hale-codegen/src/codegen.rs` · `infer_accumulator_inner_type` — codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across. *Removed when:* the resolved program carries the checker's types.
+
+**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`
+
+**Consumers.** every layer
 
 **Invariants.**
 
@@ -338,6 +345,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call_expr` — 271 `["std", ..]` literals dispatch stdlib calls inside codegen; the registry's own comment calls this dispatch `reality`. *Removed when:* codegen dispatches from the registry row.
+- `crates/hale-codegen/src/codegen.rs` · `lower_stdlib_path_call` — the statement-form twin of the expression dispatch: 191 more `["std", ..]` literals. *Removed when:* same.
+- `crates/hale-codegen/src/channels/mod.rs` · `lower_fallible_call` — the fallible-call dispatch, a third copy of the stdlib call shapes (150 literals). *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `value_to_string_supports` — the printable set, kept in lockstep by hand with the checker's `ty_is_printable`. *Removed when:* one predicate.
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
 - `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
@@ -374,7 +383,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `check_bus_graph` — closed world = a top-level main only; a module-nested main disables rule 9. *Removed when:* same.
 - `crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind` — parse-only main detection for the check matrix. *Removed when:* same.
 - `crates/hale-cli/src/shared/options.rs` · `bind_build_env` — has_main for the build env. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — `is_main && !__lib_` over flat declarations; `is_main_locus` compares type names. *Removed when:* same.
+- `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — `is_main && !__lib_` over flat declarations. *Removed when:* same.
+- `crates/hale-codegen/src/locus/instantiation.rs` · `let is_main_locus` — `is_main_locus` compares type names at instantiation (and twice more in dissolve.rs). *Removed when:* same.
+- `crates/hale-codegen/src/locus/dissolve.rs` · `let is_main_locus` — the same comparison in the cascade. *Removed when:* same.
 
 **Consumers.** check; build; dna; codegen
 
@@ -411,6 +422,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind` — owner classification for the bubble plan. *Removed when:* phase 1.3.
 - `crates/hale-types/src/ownership_graph.rs` · `classify_edge` — edge classification for the bubble plan. *Removed when:* phase 1.3.
 - `crates/hale-codegen/src/locus/instantiation.rs` · `parent_accepts_us` — decides acceptance from the lowering context, not the table. *Removed when:* lowering reads the table.
+- `crates/hale-types/src/borrow_lifetime.rs` · `accepts` — the borrow-lifetime law rebuilds the accept sets from the AST for itself. *Removed when:* reads `accepts_ancestor`.
 - `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` — the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others. *Removed when:* a law over the table, on every entry point.
 
 **Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); codegen (`crates/hale-codegen/src/locus/dissolve.rs` · `emit_locus_field_dissolves`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model; alloc_summary (eager-only accept sets)
@@ -429,9 +441,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `resolve_owners(` may be referenced from: `crates/hale-codegen/src/codegen.rs`, `crates/hale-codegen/src/ownership.rs`
-- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-codegen/src/codegen.rs`
-- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-codegen/src/codegen.rs`
+- `resolve_owners(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1, `crates/hale-codegen/src/ownership.rs` ×1
+- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `compute_fresh_locus_factories(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 
 ### `bus_graph` — Migrating · derivation
 
@@ -443,7 +455,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `check_bus_graph` — the checker builds the graph for rule 9 (and once more at the check's end for claim selection). *Removed when:* one graph per snapshot.
+- `crates/hale-types/src/check.rs` · `check_bus_graph` — rule 9 runs `collect_bus_walk` itself; the checker also builds the full graph once for the #265 frontier (causality, supervision, taint). *Removed when:* one graph per snapshot.
 - `crates/hale-types/src/check.rs` · `check_bus_cycles` — rule 10 keeps its own adjacency (`BusAdj`) instead of reading the graph. *Removed when:* a law over the graph.
 - `crates/hale-types/src/check.rs` · `external_subscription_handlers` — handler discovery joined with `::` where the graph uses the last segment. *Removed when:* one subject key.
 - `crates/hale-types/src/model_builder.rs` · `build_bus_graph` — rebuilt for the model. *Removed when:* phase 1.5.
@@ -467,8 +479,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs`, `crates/hale-types/src/check.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-types/src/claim_lowering.rs`, `crates/hale-types/src/topology.rs`, `crates/hale-cli/src/verbs/check/matrix.rs`, `crates/hale-lsp/src/lib.rs`, `crates/hale-codegen/src/codegen.rs`
-- `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs`, `crates/hale-types/src/check.rs`
+- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×1
+- `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
 
 ### `topics` — Migrating · derivation
 
@@ -502,7 +514,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs`, `crates/hale-types/src/bus_graph.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-codegen/src/codegen.rs`
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×8
 
 ### `bindings` — Migrating · derivation
 
@@ -534,7 +546,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `binding_role_for(` may be referenced from: `crates/hale-syntax/src/desugar.rs`, `crates/hale-types/src/model_builder.rs`
+- `binding_role_for(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1
 
 ### `dispatch` — Migrating · derivation
 
@@ -565,8 +577,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs`, `crates/hale-model/src/lib.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-cli/src/shared/options.rs`
-- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs`, `crates/hale-codegen/src/codegen.rs`
+- `DispatchPlan::derive(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×1, `crates/hale-model/src/lib.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
+- `from_gates(` may be referenced from: `crates/hale-model/src/dispatch_plan.rs` ×2, `crates/hale-codegen/src/codegen.rs` ×1
 
 ### `handler_routing` — Migrating · derivation
 
@@ -574,7 +586,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** failure declarations; ownership (the supervising parent); restart declarations
 
-**Producer (today's authority, migrating).** `crates/hale-codegen/src/locus/decl.rs` · `failure_handlers`
+**Producer (today's authority, migrating).** `crates/hale-codegen/src/locus/decl.rs` · `declare_locus_methods`
 
 **Legacy producers (permitted until removal).**
 
@@ -794,9 +806,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `infer_effects(` may be referenced from: `crates/hale-types/src/frontier.rs`, `crates/hale-types/src/effects.rs`, `crates/hale-types/src/claims.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-types/src/topology.rs`
-- `effect_manifest_with_inference(` may be referenced from: `crates/hale-types/src/effects.rs`, `crates/hale-types/src/lib.rs`, `crates/hale-cli/src/verbs/replay.rs`
-- `infer_purity_for_bundle(` may be referenced from: `crates/hale-types/src/purity.rs`, `crates/hale-types/src/check.rs`
+- `infer_effects(` may be referenced from: `crates/hale-types/src/frontier.rs` ×4, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/claims.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/topology.rs` ×1
+- `effect_manifest_with_inference(` may be referenced from: `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1
+- `infer_purity_for_bundle(` may be referenced from: `crates/hale-types/src/purity.rs` ×2, `crates/hale-types/src/check.rs` ×1
 
 ### `blocking` — Migrating · derivation
 
@@ -810,8 +822,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `crates/hale-types/src/check.rs` · `blocking_free_fns` — a name-keyed callgraph fixpoint for the BLOCK class, beside the effects fixpoint's own BLOCK propagation. *Removed when:* one fixpoint (the effects rows).
 - `crates/hale-types/src/check.rs` · `blocking_self_methods` — the method half of the same fixpoint; no cross-locus hop. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `program_has_offthread` — codegen scans top-level items for off-thread placement and socket bindings (misses module-nested loci). *Removed when:* codegen reads the placement rows.
-- `crates/hale-types/src/bus_graph.rs` · `has_offthread_placement` — the same question, walking modules. *Removed when:* same.
+- `crates/hale-codegen/src/codegen.rs` · `program_has_offthread` — codegen's predicate: its placement term calls the bus graph's `has_offthread_placement` (which walks modules); its bindings term scans top-level items only, so a module-nested main's socket binding is missed. *Removed when:* codegen reads the placement rows.
+- `crates/hale-types/src/bus_graph.rs` · `has_offthread_placement` — the placement half of the same predicate, walking modules; a component of codegen's, not a second copy. *Removed when:* one placement table.
 
 **Consumers.** check (rules 7, 8); effects (@no_block); codegen (mark_pinned, no_pinned dispatch)
 
@@ -860,8 +872,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs`, `crates/hale-types/src/lib.rs`, `crates/hale-lsp/src/lib.rs`, `crates/hale-types/src/budget_check.rs`, `crates/hale-types/src/frontier.rs`, `crates/hale-types/src/model_builder.rs`, `crates/hale-types/src/quantitative.rs`, `crates/hale-types/src/resource_budget.rs`, `crates/hale-types/src/stdlib_bodies.rs`, `crates/hale-types/src/topology.rs`
-- `unbounded_alloc_warnings(` may be referenced from: `crates/hale-types/src/lib.rs`, `crates/hale-cli/src/verbs/check/run_impl.rs`, `crates/hale-lsp/src/lib.rs`
+- `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×5, `crates/hale-types/src/lib.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×2, `crates/hale-types/src/topology.rs` ×1
+- `unbounded_alloc_warnings(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `borrow_lifetime` — Canonical · law
 
@@ -876,7 +888,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - runs on every entry point: it does not run in the LSP or bench today (phase 2 closes that)
-- re-derives accept sets from the AST (an ownership residue, listed there)
+- its accept-set walk is an ownership residue, listed under `ownership` (borrow_lifetime.rs `accepts`)
 
 **Missing data.** a missing required row is a compiler error
 
@@ -886,7 +898,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `borrow_lifetime_diags` may be referenced from: `crates/hale-types/src/borrow_lifetime.rs`, `crates/hale-types/src/lib.rs`, `crates/hale-cli/src/verbs/check/run_impl.rs`
+- `borrow_lifetime_diags` may be referenced from: `crates/hale-types/src/borrow_lifetime.rs` ×3, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
 ### `bare_fallible` — Migrating · law
 
@@ -914,7 +926,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs`, `crates/hale-types/src/lib.rs`, `crates/hale-cli/src/verbs/check/run_impl.rs`
+- `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
 ### `nonreturning` — Migrating · law
 
@@ -949,7 +961,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Producer.** `crates/hale-types/src/working_set.rs` · `compute_program_working_set`
 
-**Consumers.** build (`crates/hale-cli/src/verbs/build.rs` · `compute_program_working_set`); per-locus (`crates/hale-types/src/working_set.rs` · `compute_locus_working_set`); per-locus (`crates/hale-types/src/working_set.rs` · `compute_program_returns_entry_per_locus`)
+**Also owned.** `crates/hale-types/src/working_set.rs` · `compute_locus_working_set`; `crates/hale-types/src/working_set.rs` · `compute_program_returns_entry_per_locus`
+
+**Consumers.** build (`crates/hale-cli/src/verbs/build.rs` · `compute_program_working_set`)
 
 **Invariants.**
 
@@ -997,8 +1011,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `compute_pool_of_locus_type(` may be referenced from: `crates/hale-types/src/check.rs`, `crates/hale-types/src/lib.rs`
-- `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs`
+- `compute_pool_of_locus_type(` may be referenced from: `crates/hale-types/src/check.rs` ×2, `crates/hale-types/src/lib.rs` ×1
+- `collect_main_placement(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×2
 
 ### `target_capability` — Migrating · capability
 
@@ -1013,7 +1027,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `wasm_unavailable_stdlib` — a hand-kept slice-pattern table keyed by leading namespace, consulted only when the SOURCE declares `target wasm` (never from `--target wasm32`), and only for call forms. *Removed when:* one CapabilityMatrix consulted by the driver before lowering.
 - `crates/hale-types/src/check.rs` · `wasm_target` — the source-declaration flag the table is gated on. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `link_wasm` — link-time refusals (link_libs) and the export list. *Removed when:* same.
-- `crates/hale-codegen/src/locus/instantiation.rs` · `replay_start_ingress` — one of the per-site wasm skips; instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not. *Removed when:* same.
+- `crates/hale-codegen/src/locus/instantiation.rs` · `lotus_replay_start_ingress` — one of the per-site wasm skips; instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `is_wasm` — the backend configuration scattered across a dozen sites. *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `ffi_type_unportable` — FFI portability per type. *Removed when:* a capability row.
 - `crates/hale-codegen/src/target.rs` · `TargetSpec` — has_async_io is true for wasm32; the checker sees the target only under `hale build`. *Removed when:* the matrix is the one statement, on every entry point.
@@ -1033,7 +1047,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `wasm_unavailable_stdlib(` may be referenced from: `crates/hale-types/src/check.rs`
+- `wasm_unavailable_stdlib(` may be referenced from: `crates/hale-types/src/check.rs` ×2
 
 ### `deployment` — Reserved · derivation
 
@@ -1124,7 +1138,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker (or nobody) already states. *Removed when:* one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead.
+- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker already states; for a placed locus the checker types as Unknown, and for an `accept()` with no parameter (the checker keys on `accept_param`, codegen on the method name), it is the only evaluator. *Removed when:* one pipeline guarantees the checker ran before lowering (phase 2), and the refusals become dead.
 
 **Consumers.** codegen harness builds
 
@@ -1164,7 +1178,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `derive_application_model(` may be referenced from: `crates/hale-types/src/model_builder.rs`, `crates/hale-types/src/judgment.rs`, `crates/hale-types/src/topology.rs`, `crates/hale-cli/src/verbs/check/run_impl.rs`, `crates/hale-cli/src/shared/options.rs`
+- `derive_application_model(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-cli/src/shared/options.rs` ×1
 
 ### `claims` — Migrating · law
 
@@ -1273,7 +1287,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - external contracts are frozen through extraction: additive and unhashed sections are free; hash and replay identity change only through explicit versioned transitions with an exact diagnostic (#476's rule)
-- a semantic producer moving between crates never makes a later edit invisible to cache or replay identity
+- a semantic producer moving between crates never makes a later edit invisible to cache or replay identity: the replay identity and the cache key walk every identity-covered crate; the stale-binary hash is a cheap warning over codegen.rs, the runtime and the stdlib seeds by design
 
 **Missing data.** n/a
 
@@ -1309,22 +1323,26 @@ A registered rule without an evaluator fails the compiler's own build.
 
 ## Frozen Debug-string sites
 
-Every `format!("{:?}", ..)` in `hale-types` and `hale-codegen`. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
+Every Debug-formatting line (`{:?}`, `{x:?}`, `{:#?}` in a formatting macro) in `hale-types`, `hale-codegen`, `hale-cli` and `hale-lsp`, with the number of lines the fragment matches. A site that *decides* derives a fact from a Debug string and is permitted only until its family's table replaces it; a new site fails the guard.
 
-| path | fragment | verdict |
-|---|---|---|
+| path | fragment | lines | verdict |
+|---|---|---|---|
 | `crates/hale-codegen/src/codegen.rs` | `let dbg = format!("{:?}", program.items);` | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `decls.push((name, surface, format!("{:?}", it)));` | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `other => !format!("{:?}", other)` | decides (`ownership`) |
 | `crates/hale-codegen/src/codegen.rs` | `let dbg = format!("{:?}", f.body);` | decides (`alloc_summary`) |
 | `crates/hale-codegen/src/codegen.rs` | `.map(\|d\| format!("{:?}", d))` | renders |
 | `crates/hale-codegen/src/codegen.rs` | `other => format!("{:?}", other),` | renders |
+| `crates/hale-codegen/src/codegen.rs` | `format!("clang failed compiling {:?} for wasm32", src)` | renders |
 | `crates/hale-codegen/src/locus/restart.rs` | `format!("{:?}", fd.body).contains("RestartInPlace")` | decides (`restart`) |
 | `crates/hale-types/src/check.rs` | `methods.insert(format!("{:?}", kind), body);` | decides (`nonreturning`) |
 | `crates/hale-types/src/check.rs` | `TypeExpr::Primitive(p, _) => format!("{:?}", p),` | decides (`snapshot_identity`) |
+| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_key(inner))` | decides (`snapshot_identity`) |
 | `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind),` | renders |
 | `crates/hale-types/src/purity.rs` | `subject_repr: format!("{:?}", subject),` | renders |
 | `crates/hale-types/src/purity.rs` | `fn_name: format!("{:?}", op),` | renders |
+| `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | renders |
+| `crates/hale-types/src/model_builder.rs` | `format!(" key {:?}", other)` | renders |
 | `crates/hale-types/src/secret_reveal.rs` | `let mut text = format!("{:?}", fd);` | decides (`effects`) |
 | `crates/hale-types/src/secret_reveal.rs` | `other => backstop(format!("{:?}", other), p.span, diags),` | renders |
 | `crates/hale-types/src/secret_reveal.rs` | `other => backstop(format!("{:?}", other), other.span(), diags),` | renders |
@@ -1332,3 +1350,20 @@ Every `format!("{:?}", ..)` in `hale-types` and `hale-codegen`. A site that *dec
 | `crates/hale-types/src/secret_reveal.rs` | `backstop(format!("{:?}", other), member_span(other), diags)` | renders |
 | `crates/hale-types/src/secret_reveal.rs` | `let raw = format!("{:?}", m);` | decides (`effects`) |
 | `crates/hale-types/src/stdlib_names.rs` | `let mut text = format!("{:?}", d);` | decides (`stdlib_surface`) |
+| `crates/hale-cli/src/build_env.rs` | `fp.push_str(&format!(";lto={l:?}"));` | decides (`digests`) |
+| `crates/hale-cli/src/verbs/fmt.rs` | `eprintln!("hale fmt: {:?}", d);` | renders |
+| `crates/hale-cli/src/verbs/misc.rs` | `println!("{:>4}:{:<3} {:?}", line, col, t.kind);` | renders |
+| `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog);` | renders |
+| `crates/hale-cli/src/pkg.rs` | `format!("git {:?} failed in {}", args, repo.display())` | renders |
+| `crates/hale-cli/src/pkg.rs` | `format!("git {:?} failed in {}", args, dir.display())` | renders |
+| `crates/hale-lsp/src/lib.rs` | `"placement": format!("{:?}", s.placement),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `.map(\|r\| format!("{:?}", r)),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity).contains("Any")` | decides (`placement`) |
+| `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `.map(\|c\| format!("{:?}", c.kind))` | renders |
+| `crates/hale-lsp/src/lib.rs` | `TypeExpr::Primitive(p, _) => format!("{:?}", p),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `"kind": format!("{:?}", site.kind),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `"escape": format!("{:?}", site.escape),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `"reason": format!("{:?}", site.reason),` | renders |
+| `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | renders |
+| `crates/hale-lsp/src/lib.rs` | `(replies, format!("{code:?}"))` | renders |
