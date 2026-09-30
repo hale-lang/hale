@@ -101,6 +101,12 @@ pub struct Divergence {
     /// The new producer's fact, or `None` when it has no row; for a
     /// collision, every new row the key collected, as for `old`.
     pub new: Option<String>,
+    /// `old` as the report prints it: the fact itself, or for a
+    /// collision its rows as `native=value; …`. For the reader only;
+    /// `old` is what a classification is held to.
+    pub old_shown: Option<String>,
+    /// `new` as the report prints it, as for `old_shown`.
+    pub new_shown: Option<String>,
     /// What decided the two rows, rendered for the fixer.
     pub witnesses: Vec<String>,
     /// The smallest slice that depends on the row: the consumers
@@ -182,13 +188,86 @@ pub fn program_id(origin: &str, source: &str) -> String {
 }
 
 /// One side's rows behind a collided key, as the fact the fixture
-/// pins: every `native=value`, sorted, joined by `; `. Carrying all of
-/// them rather than the first is what makes a change to any colliding
-/// row, or a row joining or leaving the collision, unexplained again.
+/// pins: the complete `(native key, value)` tuples in canonical
+/// (sorted) order, each component length-framed as `<bytes>:<text>`, a
+/// row `<native>=<value>`, rows joined by `; `. Carrying all of them
+/// rather than the first is what makes a change to any colliding row,
+/// or a row joining or leaving the collision, unexplained again; the
+/// framing is what makes the text an identity at all — unframed, a key
+/// or value holding `=` or `; ` reads as another split of the same rows
+/// (`a=b` → `c` and `a` → `b=c` both read `a=b=c`), so a changed
+/// collision kept its classification (outside review of #1278,
+/// finding 1).
 fn collision_facts<V: Display>(rows: &[(String, &V)]) -> String {
-    let mut facts: Vec<String> = rows.iter().map(|(nk, v)| format!("{nk}={v}")).collect();
-    facts.sort();
-    facts.join("; ")
+    collision_rows(rows)
+        .iter()
+        .map(|(nk, v)| format!("{}:{nk}={}:{v}", nk.len(), v.len()))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The same rows as the report prints them, `native=value; …`: for the
+/// reader, and not an identity (two collisions can print alike).
+fn collision_shown<V: Display>(rows: &[(String, &V)]) -> String {
+    collision_rows(rows)
+        .iter()
+        .map(|(nk, v)| format!("{nk}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn collision_rows<V: Display>(rows: &[(String, &V)]) -> Vec<(String, String)> {
+    let mut tuples: Vec<(String, String)> =
+        rows.iter().map(|(nk, v)| (nk.clone(), v.to_string())).collect();
+    tuples.sort();
+    tuples
+}
+
+/// A fixture field as the TSV carries it: `\` as `\\`, a tab as `\t`, a
+/// newline as `\n`, a carriage return as `\r`, and a field that is
+/// exactly `-` (which reads as "no row") as `\-`, so every field
+/// survives [`parse_fixture`] as it was.
+fn escape_field(s: &str) -> String {
+    if s == "-" {
+        return "\\-".to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// [`escape_field`] undone; an escape it never writes is an error.
+fn unescape_field(s: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('-') if s == "\\-" => out.push('-'),
+            other => {
+                return Err(format!(
+                    "unknown escape `\\{}` in `{s}`",
+                    other.map(String::from).unwrap_or_default()
+                ))
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The shadow's result over a corpus.
@@ -244,6 +323,8 @@ impl Report {
                     key: k.to_string(),
                     old: Some(v.to_string()),
                     new: None,
+                    old_shown: Some(v.to_string()),
+                    new_shown: None,
                     witnesses: Vec::new(),
                     slice: Vec::new(),
                     natives: vec![format!("old `{k}` = {v}")],
@@ -260,6 +341,8 @@ impl Report {
                     key: k.to_string(),
                     old: None,
                     new: Some(v.to_string()),
+                    old_shown: None,
+                    new_shown: Some(v.to_string()),
                     witnesses: Vec::new(),
                     slice: Vec::new(),
                     natives: vec![format!("new `{k}` = {v}")],
@@ -289,6 +372,8 @@ impl Report {
                     key: k.to_string(),
                     old: o.map(|rows| collision_facts(rows)),
                     new: n.map(|rows| collision_facts(rows)),
+                    old_shown: o.map(|rows| collision_shown(rows)),
+                    new_shown: n.map(|rows| collision_shown(rows)),
                     witnesses: witness(k),
                     slice: slice(k),
                     natives,
@@ -312,6 +397,8 @@ impl Report {
                 key: k.to_string(),
                 old: o.map(|v| v.to_string()),
                 new: n.map(|v| v.to_string()),
+                old_shown: o.map(|v| v.to_string()),
+                new_shown: n.map(|v| v.to_string()),
                 witnesses: witness(k),
                 slice: slice(k),
                 natives: Vec::new(),
@@ -359,8 +446,8 @@ impl Report {
                 d.program,
                 d.key,
                 d.kind.label(),
-                d.old.as_deref().unwrap_or("(no row)"),
-                d.new.as_deref().unwrap_or("(no row)")
+                d.old_shown.as_deref().unwrap_or("(no row)"),
+                d.new_shown.as_deref().unwrap_or("(no row)")
             ));
             for w in &d.witnesses {
                 s.push_str(&format!("  because: {w}\n"));
@@ -424,7 +511,9 @@ impl Report {
              # regeneration mode (the test's doc says how); classify each `unclassified` line by\n\
              # hand (known-old-bug, correction, spec-disagreement) with a note, or fix the\n\
              # regression. Columns:\n\
-             # program <TAB> key <TAB> kind <TAB> class <TAB> old <TAB> new <TAB> note\n",
+             # program <TAB> key <TAB> kind <TAB> class <TAB> old <TAB> new <TAB> note\n\
+             # A field writes `\\` as `\\\\`, a tab as `\\t`, a newline as `\\n`, a carriage return\n\
+             # as `\\r`; an old or new of `-` is no row, and a field that is `-` itself is `\\-`.\n",
         );
         for d in &self.divergences {
             let prev = existing
@@ -444,15 +533,16 @@ impl Report {
                 ),
                 None => (Class::Unclassified, String::new()),
             };
+            let fact = |f: &Option<String>| f.as_deref().map(escape_field).unwrap_or_else(|| "-".to_string());
             s.push_str(&format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                d.program,
-                d.key,
+                escape_field(&d.program),
+                escape_field(&d.key),
                 d.kind.label(),
                 class.label(),
-                d.old.as_deref().unwrap_or("-"),
-                d.new.as_deref().unwrap_or("-"),
-                note
+                fact(&d.old),
+                fact(&d.new),
+                escape_field(&note)
             ));
         }
         s
@@ -480,15 +570,16 @@ pub fn parse_fixture(text: &str) -> Result<Vec<Classified>, String> {
             .ok_or_else(|| format!("line {}: unknown kind `{}`", i + 1, cols[2]))?;
         let class = Class::parse(cols[3])
             .ok_or_else(|| format!("line {}: unknown class `{}`", i + 1, cols[3]))?;
-        let cell = |c: &str| if c == "-" { None } else { Some(c.to_string()) };
+        let field = |c: &str| unescape_field(c).map_err(|e| format!("line {}: {e}", i + 1));
+        let cell = |c: &str| if c == "-" { Ok(None) } else { field(c).map(Some) };
         out.push(Classified {
-            program: cols[0].to_string(),
-            key: cols[1].to_string(),
+            program: field(cols[0])?,
+            key: field(cols[1])?,
             kind,
             class,
-            old: cell(cols[4]),
-            new: cell(cols[5]),
-            note: cols[6].to_string(),
+            old: cell(cols[4])?,
+            new: cell(cols[5])?,
+            note: field(cols[6])?,
         });
     }
     Ok(out)
@@ -516,8 +607,8 @@ pub fn gate_message(
             d.program,
             d.key,
             d.kind.label(),
-            d.old.as_deref().unwrap_or("(no row)"),
-            d.new.as_deref().unwrap_or("(no row)"),
+            d.old_shown.as_deref().unwrap_or("(no row)"),
+            d.new_shown.as_deref().unwrap_or("(no row)"),
             match c {
                 None => "not in the fixture".to_string(),
                 Some(c) => format!("{} — {}", c.class.label(), c.note),
@@ -621,9 +712,15 @@ mod tests {
         assert_eq!(r.rows_compared, 0, "a collided key is not compared");
         assert_eq!(
             r.divergences[0].old.as_deref(),
+            Some("8:(10, 12)=6:caller; 8:(40, 42)=7:binding")
+        );
+        assert_eq!(r.divergences[0].new.as_deref(), Some("1:7=6:caller"));
+        // the report prints the rows for the reader, unframed
+        assert_eq!(
+            r.divergences[0].old_shown.as_deref(),
             Some("(10, 12)=caller; (40, 42)=binding")
         );
-        assert_eq!(r.divergences[0].new.as_deref(), Some("7=caller"));
+        assert!(r.render().contains("  old: (10, 12)=caller; (40, 42)=binding\n"));
     }
 
     /// The collision probe: old rows `span1`, `span2` and new row `7`,
@@ -662,7 +759,7 @@ mod tests {
         let fixture = classified(&base);
         assert_eq!(
             fixture[0].old.as_deref(),
-            Some("span1=caller; span2=binding"),
+            Some("5:span1=6:caller; 5:span2=7:binding"),
             "the fixture pins every colliding row"
         );
         assert!(base.explain(&fixture).0.is_empty());
@@ -719,6 +816,104 @@ mod tests {
             1,
             "the classification is stale"
         );
+    }
+
+    /// A collision's identity is injective over its rows: a separator
+    /// inside a key or a value cannot make two different sets of rows
+    /// read alike (outside review of #1278, finding 1).
+    #[test]
+    fn a_collisions_identity_tells_every_set_of_rows_apart() {
+        let old_of = |rows: &[(&str, &str)]| collide(rows).divergences[0].old.clone().unwrap();
+        for (a, b) in [
+            (
+                vec![("a=b", "c"), ("d", "e")],
+                vec![("a", "b=c"), ("d", "e")],
+            ),
+            (
+                vec![("a", "one; b=two"), ("c", "three")],
+                vec![("a", "one"), ("b", "two; c=three")],
+            ),
+        ] {
+            assert_ne!(old_of(&a), old_of(&b), "{a:?} and {b:?}");
+            // the unframed rendering is the ambiguity, which is why it
+            // is only shown
+            assert_eq!(
+                collide(&a).divergences[0].old_shown,
+                collide(&b).divergences[0].old_shown
+            );
+        }
+
+        // `=` and `; ` inside a key and inside a value: the fixture
+        // round-trips, a reorder is still explained, and a change, an
+        // added row and a removed one are unexplained again
+        let rows = [("k=1; x", "v; y=2"), ("k2", "a=b; c"), ("k3", "plain")];
+        let base = collide(&rows);
+        let fixture = classified(&base);
+        assert_eq!(fixture[0].old, base.divergences[0].old);
+        assert!(base.explain(&fixture).0.is_empty());
+        let reordered = collide(&[rows[2], rows[0], rows[1]]);
+        assert!(reordered.explain(&fixture).0.is_empty(), "a reorder is explained");
+        for (what, changed) in [
+            ("a changed value", vec![("k=1; x", "v; y=3"), rows[1], rows[2]]),
+            ("a changed key", vec![("k=1; y", "v; y=2"), rows[1], rows[2]]),
+            (
+                "an added row",
+                vec![rows[0], rows[1], rows[2], ("k4", "=; ")],
+            ),
+            ("a removed row", vec![rows[0], rows[1]]),
+            // the same text split differently
+            (
+                "a separator moved across a row",
+                vec![("k=1; x", "v"), ("y=2", ""), rows[1], rows[2]],
+            ),
+        ] {
+            let r = collide(&changed);
+            assert_eq!(r.divergences[0].kind, Kind::Collision, "{what}");
+            assert_eq!(r.explain(&fixture).0.len(), 1, "{what} is unexplained again");
+        }
+    }
+
+    /// Every fixture field survives the TSV: a tab, a newline, a
+    /// carriage return, a backslash, and a fact that is `-` itself.
+    #[test]
+    fn a_fixture_field_round_trips_whatever_it_holds() {
+        let mut r = Report::new("placement");
+        let old: BTreeMap<&str, &str> = [
+            ("tab", "one\ttwo"),
+            ("newline", "first\nsecond\r\n"),
+            ("slash", "a\\tb\\"),
+            ("dash", "-"),
+            ("key\twith\ntab", "x"),
+        ]
+        .into();
+        let new: BTreeMap<&str, &str> = [("tab", "y"), ("newline", "y"), ("slash", "y"), ("dash", "y")].into();
+        r.compare("p\t.hl", &old, &new, |_| vec![]);
+        assert_eq!(r.divergences.len(), 5);
+        let text = r.render_fixture(&[]);
+        let fixture = parse_fixture(&text).unwrap();
+        assert_eq!(fixture.len(), 5);
+        for (c, d) in fixture.iter().zip(&r.divergences) {
+            assert_eq!((&c.program, &c.key, &c.old, &c.new), (&d.program, &d.key, &d.old, &d.new));
+        }
+        // the dash is a fact, not "no row"; the only-old key's new is none
+        let dash = fixture.iter().find(|c| c.key == "dash").unwrap();
+        assert_eq!(dash.old.as_deref(), Some("-"));
+        let only_old = fixture.iter().find(|c| c.key == "key\twith\ntab").unwrap();
+        assert_eq!((only_old.kind, only_old.new.as_deref()), (Kind::OnlyOld, None));
+        // a note with a newline survives a regeneration too
+        let noted: Vec<Classified> = fixture
+            .into_iter()
+            .map(|mut c| {
+                c.class = Class::Correction;
+                c.note = "decided\tin\n#123".into();
+                c
+            })
+            .collect();
+        assert!(r.explain(&noted).0.is_empty());
+        assert_eq!(parse_fixture(&r.render_fixture(&noted)).unwrap(), noted);
+        // an escape the writer never writes is an error, not a guess
+        assert!(parse_fixture("a\\q\tb\tonly-old\tcorrection\tx\t-\tn").is_err());
+        assert!(parse_fixture("a\tb\tonly-old\tcorrection\tx\\\t-\tn").is_err());
     }
 
     #[test]
