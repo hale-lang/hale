@@ -1839,3 +1839,49 @@ fn main() {
         row
     );
 }
+
+/// Review of F.40 phase 1, finding 1: the handler rows are the
+/// bundle's. The LSP's bundle holds one program per file, so a handler
+/// whose child locus is declared in a sibling file must still name that
+/// locus: routing it per file made it an external type, and the model
+/// recorded `SupervisedRef::External` where lowering routes a locus.
+#[test]
+fn a_child_locus_in_a_sibling_file_is_a_locus() {
+    let parent_src = r#"
+locus Boss {
+    params { w: Worker = Worker { }; }
+    on_failure(c: Worker, e: ClosureViolation) {
+        restart(c) for 2;
+    }
+}
+fn main() { Boss { }; }
+"#;
+    let child_src = r#"
+locus Worker {
+    params { n: Int = 0; }
+}
+"#;
+    let parent = hale_syntax::parse_source(parent_src).expect("parse parent");
+    let child = hale_syntax::parse_source(child_src).expect("parse child");
+
+    let routing =
+        hale_types::handler_routing::handler_rows(&[&parent, &child], &[]);
+    let row = routing.route("Boss", "Worker").expect("Boss routes Worker");
+    assert_eq!(
+        row.child,
+        hale_types::handler_routing::ChildRef::Locus("Worker".to_string())
+    );
+
+    let mut programs = BTreeMap::new();
+    programs.insert("boss.hl".to_string(), &parent);
+    programs.insert("worker.hl".to_string(), &child);
+    let m = derive_application_model(&Bundle::new(programs));
+    m.validate().expect("derived model is lawful");
+    let e = &m.entities;
+    let sup = &m.relations.supervises[..];
+    assert_eq!(sup.len(), 1, "one handler, one row: {:?}", sup);
+    match &sup[0].child {
+        SupervisedRef::Locus(id) => assert_eq!(e.loci[id.index()].name, "Worker"),
+        other => panic!("the sibling-file child is a locus, got {:?}", other),
+    }
+}

@@ -255,17 +255,24 @@ fn written_name(te: &TypeExpr) -> String {
     }
 }
 
-/// Every `on_failure` handler of `program` that takes the two params
+/// Every `on_failure` handler of `programs` that takes the two params
 /// (child, error) the signature rule requires. A handler with any other
 /// arity makes no row: the checker refuses it, and it is not the one
 /// that runs.
+///
+/// `programs` is the bundle, not one file of it: a child type resolves
+/// against every locus the bundle declares, so a child declared in a
+/// sibling file (the LSP's bundle holds one program per file) is that
+/// locus, not an external type. Rows come in program order, then
+/// declaration order.
 pub fn handler_rows(
-    program: &Program,
+    programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> HandlerRouting {
-    let declared = DeclaredNames::of(&[program]);
+    let declared = DeclaredNames::of(programs);
     let mut routing = HandlerRouting::default();
-    for item in hale_syntax::ast::flat_decls(&program.items) {
+    let items = programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items));
+    for item in items {
         let TopDecl::Locus(l) = item else { continue };
         let mut ordinal: u32 = 0;
         for member in &l.members {

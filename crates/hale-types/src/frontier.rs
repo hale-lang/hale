@@ -595,8 +595,8 @@ pub fn supervised_diags(
     let mut info: BTreeMap<String, (bool, Vec<String>, Span)> =
         BTreeMap::new();
     let mut supervised_roots: Vec<(String, Span)> = Vec::new();
+    let handlers = crate::handler_routing::handler_rows(programs, import_renames);
     for p in programs {
-        let handlers = crate::handler_routing::handler_rows(p, import_renames);
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
             let has_failure = handlers.handlers_of(&l.name.name).next().is_some();

@@ -1751,34 +1751,33 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // The authored ordinal stays the handler's position in the bundle
     // walk (the rows come in that order), not the row's per-parent
     // ordinal, so the canonical key keeps its values.
-    let mut authored: u32 = 0;
-    for p in &programs {
-        let routing =
-            crate::handler_routing::handler_rows(p, &bundle.import_renames);
-        for row in routing.rows() {
-            let parent = locus_id[&row.parent];
-            let declared = match &row.child {
-                ChildRef::Locus(n) => {
-                    locus_id.get(n).or_else(|| locus_id.get(&row.written))
-                }
-                ChildRef::External(_) => None,
-            };
-            let child = match declared {
-                Some(id) => SupervisedRef::Locus(*id),
-                None => SupervisedRef::External(row.written.clone()),
-            };
-            let ops: Vec<String> = row
-                .ops
-                .iter()
-                .map(|op| crate::handler_routing::op_name(*op).to_string())
-                .collect();
-            let pid = intern_span(&mut records, row.span);
-            sup.insert(
-                (parent, child, row.error_type.clone(), authored),
-                (ops, row.retry_bound, pid),
-            );
-            authored += 1;
-        }
+    //
+    // The rows are the bundle's, computed once: a child declared in a
+    // sibling file is a locus here as it is to lowering.
+    let routing =
+        crate::handler_routing::handler_rows(&programs, &bundle.import_renames);
+    for (authored, row) in routing.rows().iter().enumerate() {
+        let parent = locus_id[&row.parent];
+        let declared = match &row.child {
+            ChildRef::Locus(n) => {
+                locus_id.get(n).or_else(|| locus_id.get(&row.written))
+            }
+            ChildRef::External(_) => None,
+        };
+        let child = match declared {
+            Some(id) => SupervisedRef::Locus(*id),
+            None => SupervisedRef::External(row.written.clone()),
+        };
+        let ops: Vec<String> = row
+            .ops
+            .iter()
+            .map(|op| crate::handler_routing::op_name(*op).to_string())
+            .collect();
+        let pid = intern_span(&mut records, row.span);
+        sup.insert(
+            (parent, child, row.error_type.clone(), authored as u32),
+            (ops, row.retry_bound, pid),
+        );
     }
 
     // groups: authored selectors + resolved membership.

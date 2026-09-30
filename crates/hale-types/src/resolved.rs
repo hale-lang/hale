@@ -285,7 +285,7 @@ pub fn resolve_program(
 
     // F.40 phase 1.4: the handler rows, over the same merged program,
     // with the child type resolved the way lowering resolves it.
-    let handlers = crate::handler_routing::handler_rows(&merged, import_renames);
+    let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames);
 
     Ok(ResolvedProgram {
         user,

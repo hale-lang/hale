@@ -575,6 +575,12 @@ pub fn check_bundle_scoped(
             }
         }
     }
+    // F.40 phase 1.4: the handler rows, over the whole bundle, so a
+    // child locus declared in a sibling file resolves as lowering and
+    // the model resolve it.
+    let bundle_programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let handlers =
+        crate::handler_routing::handler_rows(&bundle_programs, &bundle.import_renames);
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -604,7 +610,7 @@ pub fn check_bundle_scoped(
             generic_fns,
             generic_types,
             generic_loci,
-            handlers: crate::handler_routing::handler_rows(program, &bundle.import_renames),
+            handlers: &handlers,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -8201,9 +8207,9 @@ struct Checker<'a> {
     /// checker). A locus's `params` are its fields — the monomorph's
     /// are the template's with the arguments substituted.
     generic_loci: BTreeMap<String, &'a LocusDecl>,
-    /// F.40 phase 1.4: the `on_failure` handler rows of the program
-    /// being checked, the child type resolved as lowering resolves it.
-    handlers: crate::handler_routing::HandlerRouting,
+    /// F.40 phase 1.4: the bundle's `on_failure` handler rows, the
+    /// child type resolved as lowering resolves it.
+    handlers: &'a crate::handler_routing::HandlerRouting,
     /// GH #255 phase 1: topic names with a declared transport
     /// binding (any `bindings { }` entry, bundle-wide). Gates
     /// `or wait` on publishes — the loss window it waits out
@@ -9747,6 +9753,11 @@ impl<'a> Checker<'a> {
             // `ClosureViolation`) takes no slot: it is not the one
             // that runs
             let Some(fd) = handler_decls.get(row.ordinal as usize) else { continue };
+            // the rows are the bundle's: a same-named locus in another
+            // file has rows of its own, which are not this one's
+            if fd.span != row.span {
+                continue;
+            }
             let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
             let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
             if !is_violation && !matches!(err_ty, Ty::Unknown) {

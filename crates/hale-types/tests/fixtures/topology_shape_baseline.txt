@@ -1556,6 +1556,7 @@ crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
 crates/hale-types/tests/model_builder.rs#25 16638d003fd75bff
+crates/hale-types/tests/model_builder.rs#27 61f8e4862b142236
 crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
 crates/hale-types/tests/model_builder.rs#8 d3041c260f7ea233
