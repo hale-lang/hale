@@ -54,21 +54,25 @@ use hale_syntax::Span;
 
 /// The sites allowed until `pq` takes a `std::secret::Credential`:
 /// `(file stem, locus or "" for a free fn, fn, qualified name, the
-/// fingerprint of the fn's body)`. The fingerprint is [`fingerprint`]
+/// fingerprint of the fn's body, a companion free fn the same module
+/// declares)`. The stem and the companion identify the module: a
+/// program's own fn that happens to share a pinned name, in a file
+/// that does not also declare the companion, is no pin. The fingerprint is [`fingerprint`]
 /// of the declaration as the checker sees it; an edit to one of these
 /// fns refuses it until the pin is updated here, so the exemption covers
 /// the reviewed code and nothing added to it.
-const PQ_DEFERRED: &[(&str, &str, &str, &str, &str)] = &[
-    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333"),
+const PQ_DEFERRED: &[(&str, &str, &str, &str, &str, &str)] = &[
+    ("memory_schema", "", "role_password", "dna::role_password", "9c4445e325202333", "role_vault_name"),
     (
         "infra",
         "ReferenceInfrastructure",
         "knowledge_database",
         "dna::ReferenceInfrastructure.knowledge_database",
         "0aa957e955be225f",
+        "transport_kind",
     ),
-    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c"),
-    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0"),
+    ("scram", "", "salted_password", "pq::salted_password", "01506142ce37f56c", "compute_client_final"),
+    ("scram", "", "compute_client_final", "pq::compute_client_final", "23267b5a65b98ff0", "salted_password"),
 ];
 
 const DEFERRED_LINE: &str = "Deferred: `pq` takes a `std::secret::Credential`";
@@ -190,6 +194,9 @@ struct World {
     /// free fns proven transparent
     transparent: BTreeSet<String>,
     renames: Vec<(Vec<String>, String)>,
+    /// the bundle's source map: (path, base, len), so a declaration's
+    /// file is known from its span
+    sources: Vec<(String, u32, u32)>,
 }
 
 impl World {
@@ -255,6 +262,15 @@ impl World {
             }
             _ => None,
         }
+    }
+
+    /// The source unit a bundle-global offset falls in, when the bundle
+    /// has a source map.
+    fn file_of(&self, at: u32) -> Option<&str> {
+        self.sources
+            .iter()
+            .find(|(_, base, len)| at >= *base && at < base.saturating_add(*len))
+            .map(|(path, _, _)| path.as_str())
     }
 
     fn gather(programs: &[&Program], renames: &[(Vec<String>, String)]) -> World {
@@ -530,12 +546,17 @@ fn pattern_bindings(p: &Pattern, out: &mut Vec<String>) {
 
 /// The reveal rule over `programs` (the user's seeds, keyed by source
 /// path), resolving imported seeds through `renames`.
-pub fn secret_reveal_diags(programs: &BTreeMap<String, &Program>, renames: &[(Vec<String>, String)]) -> Vec<Diag> {
+pub fn secret_reveal_diags(
+    programs: &BTreeMap<String, &Program>,
+    renames: &[(Vec<String>, String)],
+    sources: &[crate::symbol::SourceFile],
+) -> Vec<Diag> {
     let list: Vec<&Program> = programs.values().copied().collect();
-    let world = World::gather(&list, renames);
+    let mut world = World::gather(&list, renames);
+    world.sources = sources.iter().map(|u| (u.path.clone(), u.base, u.len)).collect();
     let mut diags = Vec::new();
-    for p in programs.values() {
-        walk_items(&world, &p.items, &mut diags);
+    for (key, p) in programs {
+        walk_items(&world, key, &p.items, &mut diags);
     }
     diags
 }
@@ -546,26 +567,33 @@ pub fn secret_reveal_diags(programs: &BTreeMap<String, &Program>, renames: &[(Ve
 fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
     // positions (`Pos(12)`) and the snapshot's numbering (`NodeId(7)`)
     // depend on where the text sits, not what it says
-    let mut text = format!("{:?}", fd);
-    for open in ["Pos(", "NodeId("] {
-        let mut out = String::with_capacity(text.len());
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find(open) {
-            let digits = &rest[at + open.len()..];
-            let n = digits.bytes().take_while(u8::is_ascii_digit).count();
-            out.push_str(&rest[..at + open.len()]);
-            rest = &digits[n..];
+    // The stripping applies outside string literals only: an authored
+    // literal that spells `Pos(12)` or `id: NodeId(123), ` is body text
+    // and counts in full (outside review, finding 2).
+    let text = outside_strings(&format!("{:?}", fd), |seg| {
+        let mut text = seg.to_string();
+        for open in ["Pos(", "NodeId("] {
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(open) {
+                let digits = &rest[at + open.len()..];
+                let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+                out.push_str(&rest[..at + open.len()]);
+                rest = &digits[n..];
+            }
+            out.push_str(rest);
+            text = out;
         }
-        out.push_str(rest);
-        text = out;
-    }
-    // F.40 1.1b: every declaration, member and statement carries a
-    // snapshot identity field, `id: NodeId(..)`, which says where the
-    // site is, not what the body says. The field text goes too, so a
-    // change to identity never reads as a change to a secret's body.
-    for field in ["id: NodeId(), ", ", id: NodeId()"] {
-        text = text.replace(field, "");
-    }
+        // F.40 1.1b: every declaration, member and statement carries a
+        // snapshot identity field, `id: NodeId(..)`, which says where the
+        // site is, not what the body says. The field text goes too, so a
+        // change to identity never reads as a change to a secret's body.
+        for field in ["id: NodeId(), ", ", id: NodeId()"] {
+            text = text.replace(field, "");
+        }
+        text
+    });
+    let mut text = text;
     // an imported seed's names arrive mangled (`__lib_<id>_<stem>_<name>`)
     for (path, mangled) in renames {
         if let Some(last) = path.last() {
@@ -580,17 +608,73 @@ fn fingerprint(fd: &FnDecl, renames: &[(Vec<String>, String)]) -> String {
     format!("{:016x}", h)
 }
 
+/// `f` applied to every segment of `text` outside a Rust-escaped string
+/// literal (`"…"`, with `\\"` and `\\\\` escapes); the literals' bytes are
+/// kept exactly.
+fn outside_strings(text: &str, f: impl Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut seg = String::new();
+    let mut in_str = false;
+    let mut esc = false;
+    for c in text.chars() {
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if c == '"' {
+            out.push_str(&f(&seg));
+            seg.clear();
+            out.push(c);
+            in_str = true;
+        } else {
+            seg.push(c);
+        }
+    }
+    out.push_str(&f(&seg));
+    out
+}
+
 /// The deferral a declaration is allowed by: its name (as written, or
 /// mangled from the file stem) and its pinned body.
-fn deferral(world: &World, locus: Option<&str>, fd: &FnDecl) -> Deferral {
+fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Deferral {
     let fn_name = fd.name.name.as_str();
-    let named = |have: &str, stem: &str, want: &str| {
-        have == want || have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want))
+    // The declaration is identified by its module, not its spelling: the
+    // source unit its span falls in (or the program's own path when the
+    // bundle has no source map) must have the pin's stem, and the module
+    // must declare the pin's companion fn. A program's own fn that
+    // happens to be called `role_password` is no pin (outside review,
+    // finding 1). An imported seed's declarations arrive mangled
+    // (`__lib_<id>_<stem>_<name>`), the companion included. The
+    // directory is not part of the identity: the DNA seeds are checked
+    // from the tree, from a scratch copy and from the embedded host
+    // cache, and only the file names travel with them.
+    let file = world.file_of(fd.name.span.start.0).unwrap_or(key);
+    let file_stem = std::path::Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let mangled = |have: &str, stem: &str, want: &str| {
+        have.starts_with("__lib_") && have.ends_with(&format!("_{}_{}", stem, want))
     };
-    let Some((_, _, _, q, pin)) = PQ_DEFERRED.iter().find(|(stem, l, f, _, _)| match locus {
-        // a method's name is never mangled: its locus pins it
-        Some(have) => !l.is_empty() && named(have, stem, l) && fn_name == *f,
-        None => l.is_empty() && named(fn_name, stem, f),
+    let declares = |stem: &str, companion: &str| {
+        companion.is_empty()
+            || world.fns.keys().any(|n| n == companion || mangled(n, stem, companion))
+    };
+    let Some((_, _, _, q, pin, _)) = PQ_DEFERRED.iter().find(|(stem, l, f, _, _, companion)| {
+        if !declares(stem, companion) {
+            return false;
+        }
+        let own = file_stem == *stem;
+        match locus {
+            // a method's name is never mangled: its locus pins it
+            Some(have) => !l.is_empty() && fn_name == *f && ((own && have == *l) || mangled(have, stem, l)),
+            None => l.is_empty() && ((own && fn_name == *f) || mangled(fn_name, stem, f)),
+        }
     }) else {
         return Deferral::None;
     };
@@ -610,18 +694,18 @@ enum Deferral {
     Changed { qualified: &'static str, have: String, at: Span },
 }
 
-fn walk_fn(world: &World, locus: Option<&str>, fd: &FnDecl, diags: &mut Vec<Diag>) {
-    let deferred = deferral(world, locus, fd);
+fn walk_fn(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl, diags: &mut Vec<Diag>) {
+    let deferred = deferral(world, key, locus, fd);
     let mut b = Body::new(world, locus, Context::of(locus, &fd.name.name), &fd.params, deferred, diags);
     b.block(&fd.body, &Flow::leaks("is returned"));
     b.finish();
 }
 
-fn walk_items(world: &World, items: &[TopDecl], diags: &mut Vec<Diag>) {
+fn walk_items(world: &World, key: &str, items: &[TopDecl], diags: &mut Vec<Diag>) {
     for item in items {
         match item {
-            TopDecl::Module(m) => walk_items(world, &m.items, diags),
-            TopDecl::Fn(fd) => walk_fn(world, None, fd, diags),
+            TopDecl::Module(m) => walk_items(world, key, &m.items, diags),
+            TopDecl::Fn(fd) => walk_fn(world, key, None, fd, diags),
             TopDecl::Const(c) => {
                 let mut b = Body::new(world, None, Context::Const(c.name.name.clone()), &[], Deferral::None, diags);
                 b.expr(&c.value, &Flow::leaks("is a constant"));
@@ -630,14 +714,14 @@ fn walk_items(world: &World, items: &[TopDecl], diags: &mut Vec<Diag>) {
             TopDecl::Locus(l) => {
                 let locus = Some(l.name.name.as_str());
                 for m in &l.members {
-                    walk_member(world, locus, &l.name.name, m, diags);
+                    walk_member(world, key, locus, &l.name.name, m, diags);
                 }
             }
             TopDecl::Perspective(p) => {
                 let locus = Some(p.name.name.as_str());
                 for m in &p.members {
                     match m {
-                        PerspectiveMember::Fn(fd) => walk_fn(world, locus, fd, diags),
+                        PerspectiveMember::Fn(fd) => walk_fn(world, key, locus, fd, diags),
                         PerspectiveMember::Params(pb) => {
                             let mut b =
                                 Body::new(world, locus, Context::of(locus, "params"), &[], Deferral::None, diags);
@@ -669,14 +753,14 @@ fn walk_items(world: &World, items: &[TopDecl], diags: &mut Vec<Diag>) {
     }
 }
 
-fn walk_member(world: &World, locus: Option<&str>, locus_name: &str, m: &LocusMember, diags: &mut Vec<Diag>) {
+fn walk_member(world: &World, key: &str, locus: Option<&str>, locus_name: &str, m: &LocusMember, diags: &mut Vec<Diag>) {
     let body = |name: &str, params: &[Param], blk: &Block, diags: &mut Vec<Diag>| {
         let mut b = Body::new(world, locus, Context::of(locus, name), params, Deferral::None, diags);
         b.block(blk, &Flow::leaks("is returned"));
         b.finish();
     };
     match m {
-        LocusMember::Fn(fd) => walk_fn(world, locus, fd, diags),
+        LocusMember::Fn(fd) => walk_fn(world, key, locus, fd, diags),
         LocusMember::Lifecycle(lc) => body(&format!("{:?}", lc.kind).to_lowercase(), &lc.params, &lc.body, diags),
         LocusMember::Mode(md) => body("<mode>", &md.params, &md.body, diags),
         LocusMember::Failure(fd) => body("on_failure", &fd.params, &fd.body, diags),

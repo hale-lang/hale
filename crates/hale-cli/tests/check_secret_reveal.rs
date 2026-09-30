@@ -188,11 +188,63 @@ fn the_postgres_sites_are_allowed_by_name_and_body_and_a_fifth_is_refused() {
     let fifth = site.replace("fn role_password(", "fn admin_password(");
     let (ok, out) = check(&[("dna/core/memory_schema.hl", &fifth)], "pq_fifth");
     assert!(!ok && out.contains("may be called only in a locus method") && !out.contains("allowed here by name"), "{out}");
-    // an imported seed's own `memory_schema.hl` gets no pass for its name
+    // an imported seed's own `memory_schema.hl` outside a `dna`
+    // directory is no pin at all: a fifth site, refused by the rule
     let copy = "fn role_password(role: String) -> String {\n    return std::secret::Credential { vault: role }.reveal_text();\n}\n";
     let app = "import \"../lib\" as evil;\nfn main() { println(evil::role_password(\"x\")); }\n";
     let (ok, out) = check(&[("app/main.hl", app), ("lib/memory_schema.hl", copy)], "pq_imported_copy");
+    assert!(!ok && out.contains("may be called only in a locus method") && !out.contains("allowed"), "{out}");
+}
+
+/// A pin names a declaration by its file (the pinned stem, under the
+/// pinned library's directory), never by its spelling: a program's own
+/// fn or method that happens to share a pinned name is no pin, checks
+/// clean, and hears nothing about pins (outside review, finding 1).
+#[test]
+fn an_unrelated_declaration_that_spells_a_pinned_name_is_not_a_pin() {
+    let benign_fn = "fn role_password(role: String) -> String { return role; }\nfn main() { println(role_password(\"x\")); }\n";
+    for (path, tag) in [("main.hl", "pin_spell_main"), ("app/memory_schema.hl", "pin_spell_stem")] {
+        let (ok, out) = check(&[(path, benign_fn)], tag);
+        assert!(ok && !out.contains("allowed") && !out.contains("pin"), "{path}: {out}");
+    }
+    let benign_method = "locus ReferenceInfrastructure {\n    fn knowledge_database(project: String) -> Int { return 1; }\n}\nfn main() { let r = ReferenceInfrastructure { }; println(r.knowledge_database(\"p\")); }\n";
+    let (ok, out) = check(&[("app/infra.hl", benign_method)], "pin_spell_method");
+    assert!(ok && !out.contains("allowed") && !out.contains("pin"), "{out}");
+    // one pinned name in a `scram.hl` that does not declare its
+    // companion: no pin
+    let scram = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\nfn main() { println(salted_password(\"p\", \"s\")); }\n";
+    let (ok, out) = check(&[("app/scram.hl", scram)], "pin_spell_scram");
+    assert!(ok && !out.contains("allowed"), "{out}");
+    // a `scram.hl` that reproduces the module's identity (both pinned
+    // names) is taken for the module: its bodies are held to the pins
+    let module = "fn salted_password(@secret password: String, salt: String) -> String { return salt; }\nfn compute_client_final(a: String) -> String { return a; }\nfn main() { println(compute_client_final(salted_password(\"p\", \"s\"))); }\n";
+    let (ok, out) = check(&[("app/scram.hl", module)], "pin_spell_module");
     assert!(!ok && out.contains("this one has changed"), "{out}");
+}
+
+/// The fingerprint strips positions and identity fields outside string
+/// literals only: a literal that spells `id: NodeId(123), ` or `Pos(12)`
+/// is body text, so changing it changes the pin (outside review,
+/// finding 2).
+#[test]
+fn a_pinned_body_counts_its_string_literals() {
+    let site = real_role_password();
+    let fp = |out: &str| -> String {
+        let at = out.find("(fingerprint ").expect("a fingerprint in the refusal");
+        out[at + 13..at + 29].to_string()
+    };
+    let a = site.replace("vault: role_vault_name(role)", "vault: role_vault_name(role + \"id: NodeId(123), \")");
+    let b = site.replace("vault: role_vault_name(role)", "vault: role_vault_name(role + \"Pos(12)\")");
+    let c = site.replace("vault: role_vault_name(role)", "vault: role_vault_name(role + \"Pos(13)\")");
+    assert!(a != site && b != site && c != site, "the edits apply");
+    let (ok_a, out_a) = check(&[("dna/core/memory_schema.hl", &a)], "pq_lit_field");
+    let (ok_b, out_b) = check(&[("dna/core/memory_schema.hl", &b)], "pq_lit_pos12");
+    let (ok_c, out_c) = check(&[("dna/core/memory_schema.hl", &c)], "pq_lit_pos13");
+    assert!(!ok_a && out_a.contains("this one has changed"), "{out_a}");
+    assert!(!ok_b && out_b.contains("this one has changed"), "{out_b}");
+    assert!(!ok_c && out_c.contains("this one has changed"), "{out_c}");
+    assert_ne!(fp(&out_b), fp(&out_c), "the literal's digits count: {out_b}\n{out_c}");
+    assert_ne!(fp(&out_a), fp(&out_b), "{out_a}\n{out_b}");
 }
 
 /// `hale check` over an in-tree seed directory; returns (success, output).
