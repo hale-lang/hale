@@ -191,6 +191,8 @@ pub(crate) fn run_program(
         // contract the compiler already knows how to evaluate.
         let mut bundle = hale_types::Bundle::new(bundle_programs);
         bundle.import_renames = renames.clone();
+        // The map the snapshot minted with, as `check` hands it over.
+        bundle.sources = source_map.clone();
         bundle.snapshot = snapshot;
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
@@ -394,6 +396,9 @@ pub(crate) fn run_program(
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    // The map the snapshot minted with, as `check` hands it over: the
+    // program key here is the DIRECTORY, which names no file.
+    bundle.sources = source_map.clone();
     bundle.snapshot = snapshot;
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");

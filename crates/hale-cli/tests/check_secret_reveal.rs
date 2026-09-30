@@ -247,6 +247,38 @@ fn a_pinned_body_counts_its_string_literals() {
     assert_ne!(fp(&out_a), fp(&out_b), "{out_a}\n{out_b}");
 }
 
+/// A copied, unchanged SCRAM module beside a `main.hl` is the module on
+/// every entry point: `check`, `build` and `run` of the directory each
+/// read the pin's file from the source map (a directory target's program
+/// key is the directory, which names no file), so each allows the pinned
+/// bodies with the deferral warning (outside review of #1277, finding 1).
+#[test]
+fn a_directory_target_reads_a_pin_the_same_on_check_build_and_run() {
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_secret_reveal_{}_dir_verbs", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    let client = d.join("client");
+    std::fs::create_dir_all(&client).unwrap();
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core/pond/pq/scram.hl"), client.join("scram.hl"))
+        .unwrap();
+    std::fs::write(client.join("main.hl"), "fn main() { println(\"client ran\"); }\n").unwrap();
+    for verb in ["check", "build", "run"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args([verb, &client.to_string_lossy()])
+            .current_dir(&d)
+            .output()
+            .expect("hale");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success() && text.contains("It is allowed here by name, in `pq::salted_password`"),
+            "hale {verb} client:\n{text}"
+        );
+        if verb == "run" {
+            assert!(text.contains("client ran"), "{text}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// `hale check` over an in-tree seed directory; returns (success, output).
 fn check_tree(dir: &str) -> (bool, String) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

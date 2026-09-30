@@ -310,6 +310,10 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    // The map the snapshot minted with, as `check` hands it over: a
+    // check that places a span in its file (a pin's module) reads the
+    // same file on every entry point.
+    bundle.sources = source_map.clone();
     bundle.snapshot = snapshot;
     bundle.target_has_async_io = options.target.spec().has_async_io();
     bundle.target_label = options.target.spec().platform_label();

@@ -639,23 +639,37 @@ fn outside_strings(text: &str, f: impl Fn(&str) -> String) -> String {
     out
 }
 
+/// The file a declaration at `at` sits in, in the program keyed `key`.
+/// The source map says, when the bundle has one; every verb that checks
+/// hands its bundle the map it minted with, and a caller that wants a
+/// pin to match supplies one. Without it the program's key is the file
+/// only when the key names one (a `.hl` path): a directory target's key
+/// is the directory, whose name says nothing of which file declared
+/// what, so there the declaration has no file and no pin matches it
+/// (outside review of #1277, finding 1).
+fn own_file<'w>(world: &'w World, key: &'w str, at: u32) -> Option<&'w str> {
+    if !world.sources.is_empty() {
+        return world.file_of(at);
+    }
+    (std::path::Path::new(key).extension().and_then(|e| e.to_str()) == Some("hl")).then_some(key)
+}
+
 /// The deferral a declaration is allowed by: its name (as written, or
 /// mangled from the file stem) and its pinned body.
 fn deferral(world: &World, key: &str, locus: Option<&str>, fd: &FnDecl) -> Deferral {
     let fn_name = fd.name.name.as_str();
     // The declaration is identified by its module, not its spelling: the
-    // source unit its span falls in (or the program's own path when the
-    // bundle has no source map) must have the pin's stem, and the module
-    // must declare the pin's companion fn. A program's own fn that
+    // source unit its span falls in must have the pin's stem, and the
+    // module must declare the pin's companion fn. A program's own fn that
     // happens to be called `role_password` is no pin (outside review,
     // finding 1). An imported seed's declarations arrive mangled
     // (`__lib_<id>_<stem>_<name>`), the companion included. The
     // directory is not part of the identity: the DNA seeds are checked
     // from the tree, from a scratch copy and from the embedded host
     // cache, and only the file names travel with them.
-    let file = world.file_of(fd.name.span.start.0).unwrap_or(key);
-    let file_stem = std::path::Path::new(file)
-        .file_stem()
+    let file = own_file(world, key, fd.name.span.start.0);
+    let file_stem = file
+        .and_then(|f| std::path::Path::new(f).file_stem())
         .and_then(|s| s.to_str())
         .unwrap_or("");
     let mangled = |have: &str, stem: &str, want: &str| {
