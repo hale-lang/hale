@@ -19,6 +19,7 @@ pub mod json_gen;
 pub mod keywords;
 pub mod lexer;
 pub mod parser;
+pub mod sites;
 pub mod span;
 pub mod time_literal;
 
