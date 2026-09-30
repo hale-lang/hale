@@ -119,6 +119,53 @@ fn supervised_satisfied_by_a_root_policy() {
     assert!(ds.is_empty(), "the program checks clean: {:?}", ds);
 }
 
+/// Review of phase 1, finding 24: the handler rows are the bundle's, so
+/// a same-named locus in another file, which has a policy, lends this
+/// one none (here the supervised root itself, whose own policy would
+/// cover the tree). The law matches a row to its declaration by span.
+#[test]
+fn supervised_takes_no_policy_from_a_same_named_locus_elsewhere() {
+    let other = hale_syntax::parse_source_at(
+        r#"
+        locus Leaf { params { n: Int = 0; } }
+        locus Mid { params { leaf: Leaf = Leaf { }; } }
+        locus App {
+            params { mid: Mid = Mid { }; }
+            on_failure(c: Mid, err: ClosureViolation) { }
+        }
+    "#,
+        0,
+    )
+    .expect("parse");
+    let app = hale_syntax::parse_source_at(
+        r#"
+        locus Leaf { params { n: Int = 0; } }
+        locus Mid { params { leaf: Leaf = Leaf { }; } }
+        @supervised
+        main locus App {
+            params { mid: Mid = Mid { }; }
+            run() { }
+        }
+        fn main() { App { }; }
+    "#,
+        10_000,
+    )
+    .expect("parse");
+    let ds: Vec<String> = hale_types::frontier::supervised_diags(
+        &[&other, &app],
+        &[],
+        &hale_types::snapshot::Snapshot::default(),
+    )
+    .into_iter()
+    .map(|d| d.message)
+    .collect();
+    assert!(
+        ds.iter().any(|m| m.contains("@supervised` violated") && m.contains("App, Mid")),
+        "the other file's `App` handler does not cover this `App`: {:?}",
+        ds
+    );
+}
+
 /// Coarse secret taint: a `@secret` param must not reach a publish
 /// or a log sink.
 #[test]

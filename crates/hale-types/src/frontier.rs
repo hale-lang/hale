@@ -600,7 +600,22 @@ pub fn supervised_diags(
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
-            let has_failure = handlers.handlers_of(&l.name.name).next().is_some();
+            // The rows are the bundle's: a same-named locus in another
+            // file has rows of its own, which are not this one's. A row
+            // is this declaration's when the two-param handler at its
+            // ordinal is the row's span, as the checker's duplicate-
+            // handler law matches them.
+            let handler_decls: Vec<Span> = l
+                .members
+                .iter()
+                .filter_map(|m| match m {
+                    LocusMember::Failure(fd) if fd.params.len() == 2 => Some(fd.span),
+                    _ => None,
+                })
+                .collect();
+            let has_failure = handlers
+                .handlers_of(&l.name.name)
+                .any(|row| handler_decls.get(row.ordinal as usize) == Some(&row.span));
             let mut children = Vec::new();
             for m in &l.members {
                 if let LocusMember::Params(pb) = m {
