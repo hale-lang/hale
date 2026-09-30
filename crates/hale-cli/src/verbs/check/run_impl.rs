@@ -232,19 +232,14 @@ pub(crate) fn run_check_impl_labelled(
         hale_syntax::api_gen::generate_api(&mut refs, None);
     }
 
-    let bundle_programs: BTreeMap<String, &Program> = programs
-        .iter()
-        .map(|(p, prog)| (p.display().to_string(), prog))
-        .collect();
-    let mut bundle = hale_types::Bundle::new(bundle_programs);
-    bundle.import_renames = import_renames.clone();
     // GH #408 Phase 0: hand the source map to the artifact, so a span
     // resolves to a file outside this process. Paths are relative to
     // the checked target (an absolute path would make the artifact
     // differ per machine, and it is meant to be comparable), with
     // forward slashes so a Windows-built artifact matches a
-    // Linux-built one.
-    {
+    // Linux-built one. Built before the bundle, because the snapshot
+    // (below) seeds each site from it.
+    let source_map: Vec<hale_types::symbol::SourceFile> = {
         // Root at the WORKSPACE, not the target. An imported seed
         // usually lives outside the target directory (`apps/api`
         // importing `../../lib`), so relativizing to the target left
@@ -294,7 +289,7 @@ pub(crate) fn run_check_impl_labelled(
             }
             common.unwrap_or(start)
         });
-        bundle.sources = file_bases
+        file_bases
             .iter()
             .enumerate()
             .map(|(i, (base, path, len))| {
@@ -329,8 +324,25 @@ pub(crate) fn run_check_impl_labelled(
                     len: *len,
                 }
             })
-            .collect();
-    }
+            .collect()
+    };
+    // F.40 phase 1.1b-iii: the snapshot, minted once the last desugar
+    // (`generate_api`) has run and the source map exists, so each
+    // site's seed is the file its span falls in.
+    let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
+    let snapshot = hale_types::snapshot::mint(
+        names.iter().map(String::as_str).zip(programs.values_mut()),
+        &source_map,
+    );
+
+    let bundle_programs: BTreeMap<String, &Program> = programs
+        .iter()
+        .map(|(p, prog)| (p.display().to_string(), prog))
+        .collect();
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = import_renames.clone();
+    bundle.sources = source_map;
+    bundle.snapshot = snapshot;
     // GH #18 item 1 (step 1): dump the per-method allocation summary +
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.

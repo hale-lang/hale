@@ -138,6 +138,9 @@ dependencies = [
 [[package]]
 name = "hale-model"
 version = "0.22.0"
+dependencies = [
+ "hale-graph",
+]
 
 [[package]]
 name = "hale-stdlib"

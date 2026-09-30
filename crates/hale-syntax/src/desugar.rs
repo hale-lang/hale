@@ -129,6 +129,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         unbounded: false,
         body,
         span: main_span,
+        id: NodeId::NONE,
     };
     let locus = LocusDecl {
         imported: false,
@@ -148,6 +149,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         bounded: false,
         members: vec![LocusMember::Lifecycle(birth)],
         span: main_span,
+        id: NodeId::NONE,
     };
     program.items[main_idx] = TopDecl::Locus(locus);
 
@@ -375,7 +377,14 @@ fn collect_topics(items: &[TopDecl], topics: &mut BTreeMap<String, TopicEntry>) 
         topics.insert(
             name.clone(),
             TopicEntry {
-                payload: r.payload.clone(),
+                // Copied into every bus member that names the topic, a
+                // new site each time: an array size is an expression
+                // and may hold a call, whose id stays on the topic.
+                payload: {
+                    let mut t = r.payload.clone();
+                    crate::sites::clear_ids_in_type(&mut t);
+                    t
+                },
                 wire_subject: chain.join("."),
             },
         );
@@ -1537,6 +1546,7 @@ pub fn desugar_omitted_run(program: &mut Program) {
                             unbounded: false,
                             body: Block { stmts: Vec::new(), tail: None, span: l.span },
                             span: l.span,
+                            id: NodeId::NONE,
                         }));
                     }
                 }

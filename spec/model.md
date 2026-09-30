@@ -10,7 +10,10 @@ not know, the laws it must satisfy, and the rules a new consumer
 has to obey.
 
 The crate is `hale-model` — 106 public types, no dependency on the
-AST, the checker, or codegen.
+AST, the checker, or codegen. Its identity and provenance mechanics
+(`SeedId`, `SourceId`, `ProvenanceId`, `Provenance`, `SourceUnit`,
+`ProvenanceTable`) are `hale-graph`'s, the graph core F.40 rebuilds
+it on, re-exported under the model's own paths.
 
 ## The architectural law
 

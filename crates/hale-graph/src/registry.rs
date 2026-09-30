@@ -1163,6 +1163,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer_at("claims", JUDGMENT, "derive_application_model"), consumer_at("topology", TOPOLOGY, "derive_application_model"), consumer_at("model dump", V_CHECK, "derive_application_model"), consumer_at("dispatch, obs ids", OPTIONS, "derive_application_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
+            "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
             "demand-gated: a no-claims check builds no model (GH #476 criterion 1, pinned by demand_gate.rs); phase 2 rewrites the gate as per-family accounting",
             "the model re-runs every derivation it consumes today (it reads nothing from the checker): those are listed under their families",
         ],
@@ -1222,7 +1223,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "The identity of every semantic site in a snapshot: `(seed, index)`, minted once after desugar, with reliable provenance.",
         inputs: &["seed_loading", "desugar_sequence"],
-        producer: None,
+        producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[
             legacy(CG_OWN, "ExprId", "F.39's expression identity: a NodeId written into Struct and Call nodes by the ownership pre-pass", "the snapshot mints every id (phase 1.1)"),
             legacy(CG_OWN, "BindingKey", "a binding's identity is its declaring span, with a by-name fallback where desugared copies share one span (#1210)", "same"),
@@ -1235,6 +1236,7 @@ pub const FAMILIES: &[Family] = &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
             "canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate",
+            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches, once, after desugar, with one counter over the merged program (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar and the bundle carries the result; a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass keeps what was minted and numbers past it",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],

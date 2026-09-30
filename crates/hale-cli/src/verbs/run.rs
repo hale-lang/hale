@@ -147,12 +147,18 @@ pub(crate) fn run_program(
         // `build_executable_with_imports`, so qualified
         // `alias::Name` references in the entry file resolve the
         // same way `hale build` resolves them.
-        let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
+        let (mut program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
             Ok(x) => x,
             Err(errors) => return report_import_diags(&errors),
         };
+        // F.40 phase 1.1b-iii: the snapshot. The file entry runs no
+        // desugar before the check, so it mints straight after the
+        // load; with no source map here, the seed is the program's
+        // ordinal.
+        let target_name = target.display().to_string();
+        let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
-        bundle_programs.insert(target.display().to_string(), &program);
+        bundle_programs.insert(target_name.clone(), &program);
         // The rename table must reach the analysis here too, not only in
         // `check`. Without it a cross-seed call is an unresolved edge, so
         // an effect assertion violated one seed away compiles, links and
@@ -161,6 +167,7 @@ pub(crate) fn run_program(
         // contract the compiler already knows how to evaluate.
         let mut bundle = hale_types::Bundle::new(bundle_programs);
         bundle.import_renames = renames.clone();
+        bundle.snapshot = snapshot;
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
         let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);
@@ -336,9 +343,13 @@ pub(crate) fn run_program(
     // through the normal rendering — bailing here double-reported
     // (see the `check` site for the full story).
     let _ = hale_types::apply_sync_inference(&mut program);
+    // F.40 phase 1.1b-iii: the snapshot, after the last desugar. This
+    // path builds no source map, so the seed is the program's ordinal.
+    let target_name = target.display().to_string();
+    let snapshot = hale_types::snapshot::mint([(target_name.as_str(), &mut program)], &[]);
 
     let bundle_programs: BTreeMap<String, &Program> =
-        std::iter::once((target.display().to_string(), &program)).collect();
+        std::iter::once((target_name.clone(), &program)).collect();
     // The rename table must reach the analysis here too, not only in
     // `check`. Without it a cross-seed call is an unresolved edge, so
     // an effect assertion violated one seed away compiles, links and
@@ -347,6 +358,7 @@ pub(crate) fn run_program(
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    bundle.snapshot = snapshot;
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_for_build(&bundle, allow_unowned);

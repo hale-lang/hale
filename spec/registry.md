@@ -49,7 +49,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `model` | The law engine | Canonical | derivation | `derive_application_model` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
-| `snapshot_identity` | Identity | Migrating | derivation | — | 5 | The identity of every semantic site in a snapshot: `(seed, index)`, minted once after desugar, with reliable provenance. |
+| `snapshot_identity` | Identity | Migrating | derivation | `mint` | 5 | The identity of every semantic site in a snapshot: `(seed, index)`, minted once after desugar, with reliable provenance. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -1167,6 +1167,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - one constructor; no artifact → model, no plan → model, no hand-authored model
+- hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other
 - demand-gated: a no-claims check builds no model (GH #476 criterion 1, pinned by demand_gate.rs); phase 2 rewrites the gate as per-family accounting
 - the model re-runs every derivation it consumes today (it reads nothing from the checker): those are listed under their families
 
@@ -1235,7 +1236,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** seed_loading; desugar_sequence
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer (today's authority, migrating).** `crates/hale-types/src/snapshot.rs` · `mint`
 
 **Legacy producers (permitted until removal).**
 
@@ -1252,6 +1253,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)
 - snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem
 - canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate
+- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches, once, after desugar, with one counter over the merged program (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar and the bundle carries the result; a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass keeps what was minted and numbers past it
 
 **Missing data.** a missing required row is a compiler error
 

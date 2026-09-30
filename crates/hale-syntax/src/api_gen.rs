@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
     ApiBinding, ApiTransport, ApiUnauthorizedPolicy, BusMember, BusSubject, ContractDirection,
-    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, ParamInit,
+    ContractKind, ContractName, Expr, Ident, Literal, LocusDecl, LocusMember, NodeId, ParamInit,
     PlacementBlock, Program, ShedPolicy, StructField, TopDecl, TopicDecl, TypeDeclBody, TypeExpr,
 };
 use crate::span::Span;
@@ -1910,7 +1910,11 @@ fn subscriber_members(c: &ApiCommand, s: &ApiSubscriber, replies: bool) -> Resul
         body = body
     );
     let members = parse_locus_members(&src)?;
+    // A new site, not the subscription it was copied from: the next
+    // mint numbers it and everything inside it, the key filter's
+    // expression included (two sites with one id is a panic).
     let mut member = s.member.clone();
+    crate::sites::clear_ids_in_bus_member(&mut member);
     if let BusMember::Subscribe { subject, handler, ty, bound, .. } = &mut member {
         *subject = BusSubject::Topic(Ident {
             name: format!("__ApiCallT_{}", m),
@@ -1974,6 +1978,7 @@ fn publish_reply_member(span: Span) -> BusMember {
         alias: None,
         gated: None,
         span,
+        id: NodeId::NONE,
     }
 }
 
@@ -2049,13 +2054,22 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
         found
     })?;
 
+    // Every expression copied out of the entry (the socket path,
+    // `roles:`, `principals:`, the HTTP host and port) is a new site
+    // beside the entry, which stays: the next mint numbers the copy
+    // (two sites with one id is a panic).
+    let copied = |e: &Expr| {
+        let mut e = e.clone();
+        crate::sites::clear_ids_in_expr(&mut e);
+        e
+    };
     let (path, bound, watch_bound, drop_old) = {
         let b = &surface.binding;
         let ApiTransport::Unix { path, .. } = &b.transport;
         let bound = b.bound.map(|(n, _)| n).unwrap_or(DEV_BOUND);
         let watch_bound = b.watch_bound.map(|(n, _)| n).unwrap_or(bound);
         let drop_old = !matches!(b.on_watch_full, Some((ShedPolicy::DropNew, _)));
-        (path.clone(), bound, watch_bound, drop_old)
+        (copied(path), bound, watch_bound, drop_old)
     };
     let path_span = surface.binding.transport_span();
 
@@ -2165,7 +2179,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
                     name: "roles".to_string(),
                     span: r.span,
                 },
-                value: r.expr.clone(),
+                value: copied(&r.expr),
                 span: r.span,
             });
         }
@@ -2181,7 +2195,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
             if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut new_param.init {
                 inits.push(crate::ast::StructInit {
                     name: Ident { name: "principals".to_string(), span: h.span },
-                    value: p.clone(),
+                    value: copied(p),
                     span: h.span,
                 });
             }
@@ -2199,7 +2213,7 @@ pub fn generate_api(programs: &mut [&mut Program], roles_table: Option<&str>) ->
                 LocusMember::Params(pb) => {
                     for mut p in pb.params {
                         if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut p.init {
-                            for (name, value) in [("host", h.host.clone()), ("port", h.port.clone())] {
+                            for (name, value) in [("host", copied(&h.host)), ("port", copied(&h.port))] {
                                 inits.push(crate::ast::StructInit { name: Ident { name: name.to_string(), span: h.span }, value, span: h.span });
                             }
                         }

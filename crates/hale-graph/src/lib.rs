@@ -31,10 +31,12 @@
 //!   reconstruct its meaning.
 //!
 //! Phase 1 adds the generic mechanics the families share: snapshot
-//! identity (`(seed, index)`, minted once after desugar), typed
-//! tables with provenance, shared query support and the shadow
-//! facility. Row meanings never move here: `hale-graph` depends on
-//! nothing and knows no family by anything but its name.
+//! identity ([`ids::SiteId`], `(seed, index)`, minted once after
+//! desugar), typed tables with provenance ([`provenance`], the
+//! model's store moved down so `hale-model` is rebuilt on this
+//! crate), shared query support and the shadow facility
+//! ([`shadow`]). Row meanings never move here: `hale-graph` depends
+//! on nothing and knows no family by anything but its name.
 //!
 //! The parent of this work is GH #476, which made every verification
 //! consumer read one typed model and deleted the second evaluator.
@@ -42,7 +44,10 @@
 
 #![forbid(unsafe_code)]
 
+#[macro_use]
+pub mod ids;
 pub mod identity;
+pub mod provenance;
 pub mod registry;
 pub mod shadow;
 

@@ -12729,7 +12729,7 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Stmt::Send { subject, value, span, or_disposition } => {
+            Stmt::Send { subject, value, span, or_disposition, .. } => {
                 self.check_send(subject, value, or_disposition.as_ref(), *span);
             }
             Stmt::If(if_stmt) => self.check_if(if_stmt),

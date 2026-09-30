@@ -591,11 +591,6 @@ fn check_and_publish(
             let mut refs: Vec<&mut Program> = programs.values_mut().collect();
             hale_syntax::api_gen::generate_api(&mut refs, None);
         }
-        let bundle_programs: BTreeMap<String, &Program> = programs
-            .iter()
-            .map(|(p, prog)| (p.display().to_string(), prog))
-            .collect();
-        let mut bundle = hale_types::Bundle::new(bundle_programs);
         // GH #476 Change 9 (review round 1): install the SOURCE MAP.
         // Claim rows are judged over the canonical model, whose
         // provenance resolves through `bundle.sources`; without it
@@ -603,7 +598,21 @@ fn check_and_publish(
         // be placed from raw bundle-global offsets alone. The editor
         // already has the bases, paths and text — there is no reason
         // to make the analyzer guess.
-        bundle.sources = source_files(&file_bases, &sources);
+        let source_map = source_files(&file_bases, &sources);
+        // F.40 phase 1.1b-iii: the snapshot, after the last desugar
+        // (`generate_api`), seeded from the source map.
+        let names: Vec<String> = programs.keys().map(|p| p.display().to_string()).collect();
+        let snapshot = hale_types::snapshot::mint(
+            names.iter().map(String::as_str).zip(programs.values_mut()),
+            &source_map,
+        );
+        let bundle_programs: BTreeMap<String, &Program> = programs
+            .iter()
+            .map(|(p, prog)| (p.display().to_string(), prog))
+            .collect();
+        let mut bundle = hale_types::Bundle::new(bundle_programs);
+        bundle.sources = source_map;
+        bundle.snapshot = snapshot;
         // GH #721: the server typechecks only once the WHOLE seed
         // parsed (above), so it holds a whole program and answers
         // `hale check <dir>` exactly — including an identifier that

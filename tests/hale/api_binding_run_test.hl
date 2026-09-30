@@ -1,0 +1,74 @@
+// F.40 phase 1, review finding 19 — the api binding's expressions are
+// copied into the binding it lowers to, and each copy is a new site.
+//
+// `hale test`, like `hale run <file>`, numbers the program's sites
+// before any desugar, and the lowering then copies the entry's socket
+// path, `roles:`, `principals:`, host and port into the `__api` and
+// `__api_http` params while the entry itself stays. A copy that kept
+// the original's ids put one id on two sites, and the second numbering
+// refused the program. Here every copied expression holds a site of its
+// own — a call for the path and the port, a struct literal for the
+// role and bearer sources — and the program answers a call through the
+// binding they built.
+
+fn api_sock() -> String {
+    return "/tmp/hale-api-run-" + to_string(std::process::pid()) + ".sock";
+}
+
+// A port for the HTTP transport, bound and closed here, so it is free.
+fn free_port() -> Int {
+    let mut port = 30000 + (std::process::pid() * 11) % 17000;
+    let mut probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    while probe < 0 {
+        port = port + 1;
+        probe = std::io::tcp::__listen_socket("127.0.0.1", port);
+    }
+    std::io::tcp::__close_fd(probe);
+    return port;
+}
+
+locus Table {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return true; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+type Ping { n: Int; }
+type Pong { n: Int; }
+topic Pings { payload: Ping; subject: "run.ping"; }
+
+locus Echo {
+    bus { subscribe Pings as on_ping; }
+    fn on_ping(p: Ping) -> Pong { return Pong { n: p.n + 1 }; }
+}
+
+main locus App {
+    params { echo: Echo = Echo { }; }
+    placement { echo: cooperative(pool = work) where async_io; }
+    bindings {
+        api: unix(api_sock(), bound: 8, on_full: refuse, roles: Table { }),
+        http("127.0.0.1", free_port(), principals: Tokens { });
+    }
+    run() {
+        let fd = std::io::unix::connect_wait(api_sock(), 10s) or - 1;
+        std::test::assert(fd >= 0, "connected to the binding's socket");
+        std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
+        let stream = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        stream.send("{\"id\":1,\"call\":\"Pings\",\"payload\":{\"n\":41}}\n") or discard;
+        let mut got = "";
+        let mut i = 0;
+        while !std::str::contains(got, "\n") && i < 25 {
+            let chunk = stream.recv(65536) or "";
+            if len(chunk) == 0 { i = i + 1; } else { got = got + chunk; }
+        }
+        std::test::assert(std::str::contains(got, "\"ok\":true") && std::str::contains(got, "\"n\":42"), "the call answered through the binding: " + got);
+        std::io::fs::unlink(api_sock()) or discard;
+    }
+}
+
+fn main() { App { }; }

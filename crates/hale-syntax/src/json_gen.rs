@@ -491,7 +491,7 @@ pub fn generate_json_parsers(program: &mut Program) {
     }
     if !src.trim().is_empty() {
         match parse_source(&src) {
-            Ok(generated) => program.items.extend(generated.items),
+            Ok(generated) => program.items.extend(mark_synthetic(generated.items)),
             // The generator emits well-formed source; a parse failure is a
             // generator bug, not user error. Say so on stderr and leave the
             // program unchanged so the (un-rewritten) call surfaces a normal
@@ -508,6 +508,19 @@ pub fn generate_json_parsers(program: &mut Program) {
 
     let names: HashSet<String> = types.iter().map(|t| t.name.clone()).collect();
     rewrite_items(&mut program.items, &names);
+}
+
+/// Mark the generated `JsonError` as synthesized. The generated fns
+/// carry their marker in their names (`__json_parse_`, `__json_to_json_`,
+/// `__api_decode_`, `__api_encode_`); `JsonError` is a name a program
+/// may declare itself, so it carries a flag instead.
+fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
+    for item in &mut items {
+        if let TopDecl::Type(t) = item {
+            t.synthetic = true;
+        }
+    }
+    items
 }
 
 // ---- `T::from_json(s)` -> `__json_parse_T(s)` rewrite (full expr walk) ----
@@ -727,7 +740,7 @@ pub fn generate_api_codecs(programs: &mut [&mut Program], main_idx: usize, names
         return;
     }
     match parse_source(&src) {
-        Ok(generated) => programs[main_idx].items.extend(generated.items),
+        Ok(generated) => programs[main_idx].items.extend(mark_synthetic(generated.items)),
         Err(ds) => eprintln!(
             "json_gen: generated api codec did not parse: {}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")

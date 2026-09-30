@@ -1075,8 +1075,20 @@ pub fn resolve_owners(
         owner_locus: String::new(),
         returned: ReturnedBindings::default(),
     };
+    // The counter starts past the largest id already present: the
+    // snapshot (F.40 1.1b) mints every site before lowering, and the
+    // stdlib re-parsed in codegen arrives unnumbered, so numbering
+    // from zero here would collide a stdlib literal with a minted user
+    // site in the table. `numbered` stays "ids this run assigned".
+    let mut start: u32 = 0;
+    hale_syntax::sites::for_each_site(program, &mut |_, _, id| {
+        if !id.is_none() {
+            start = start.max(id.0 + 1);
+        }
+    });
+    r.next_id = start;
     r.walk_decls(&mut program.items, "");
-    r.table.numbered = r.next_id;
+    r.table.numbered = r.next_id - start;
     r.table
 }
 
