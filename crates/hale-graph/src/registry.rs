@@ -1188,7 +1188,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(TOPOLOGY, "fn model_shape_hash", "renders the whole artifact and scrapes `shape_hash` out of the text", "reads the digest from the rendered value"),
             legacy(V_CHECK, "--check-topology-shape", "scrapes `shape_hash` from text a second time", "same"),
             legacy(OPTIONS, "exec_digest", "the replay identity: HALE_TOOLCHAIN_SHA256 + version + options fingerprint + plan digest + sources; its logical source paths fall back to file names; build and run fingerprint `debug` differently, so a build's recording never replays", "one stated coverage, with tests that a covered change moves it"),
-            legacy(CLI_BUILD_RS, "HALE_TOOLCHAIN_SHA256", "covers hale-syntax, hale-types, hale-codegen (src + runtime) and hale-cli; NOT hale-model, NOT the stdlib's .hl (contrary to two doc comments)", "covers hale-model and hale-graph (phase 0 PR: identity coverage)"),
+            legacy(CLI_BUILD_RS, "toolchain_digest", "covers hale-syntax, hale-types, hale-codegen (src + runtime) and hale-cli; NOT hale-model, NOT the stdlib's .hl (contrary to two doc comments)", "covers hale-model and hale-graph (phase 0 PR: identity coverage)"),
             legacy(STALE, "compute_codegen_src_hash", "the stale-binary hash: codegen.rs, lotus_arena.c and a stdlib directory that no longer exists", "same"),
             legacy(IRIS_BUILD_RS, "const DIRS", "the DNA toolchain cache key's compiler-source half; omits hale-model, so a model-shape change does not bust a cached host", "same"),
             legacy(IRIS_LIB, "toolchain_hash", "the cache key itself (version, compiler sources, stdlib, embedded iris and DNA trees)", "same"),
