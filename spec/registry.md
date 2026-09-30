@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 167 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 3 canonical, 37 migrating (with 174 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -50,6 +50,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 4 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance. |
+| `demand` | Identity | Migrating | derivation | `Snapshot` | 7 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 12 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests. |
 
 ## Layer 1 — parse and desugar
@@ -232,10 +233,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker and never passed on: model_builder, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it. *Removed when:* one scope per snapshot, passed by reference (phase 2).
+- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker of a caller not yet on the snapshot (the build path's `check_bundle_for_build`, `check_program`, tests) and passed on to nothing: the model's direct callers (`derive_application_model`), sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP's request handlers (seven times) rebuild it. `hale check` and the LSP's diagnostics build one per snapshot (`demand_scope`) and pass it to the checker and the model. *Removed when:* every consumer demands the scope from a snapshot (2.2b, 2.3).
 - `crates/hale-types/src/check.rs` · `collect_known_names` — a second name table the checker keeps beside the scope. *Removed when:* one table.
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (`crates/hale-lsp/src/lib.rs` · `build_top_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); demand (check and the LSP's diagnostics: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (request handlers) (`crates/hale-lsp/src/lib.rs` · `build_top_scope`)
 
 **Invariants.**
 
@@ -1211,13 +1212,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/model_builder.rs` · `derive_application_model_in`
 
-**Consumers.** claims (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); dispatch, obs ids (`crates/hale-cli/src/shared/options.rs` · `derive_application_model`); fleet (admits the artifact, never the model)
+**Consumers.** demand (check and the LSP: the claims, over the snapshot's scope) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_in`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); dispatch, obs ids (`crates/hale-cli/src/shared/options.rs` · `derive_application_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
 
 - one constructor; no artifact → model, no plan → model, no hand-authored model
 - hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other
-- demand-gated: a no-claims check builds no model (GH #476 criterion 1, pinned by demand_gate.rs); phase 2 rewrites the gate as per-family accounting
+- demand-gated: a no-claims check builds no model (GH #476 criterion 1); demand_gate.rs pins it as per-family accounting over `Snapshot::builds` (the `demand` family): the LSP's diagnostics path builds none, `hale check` of a program with claims builds one, which `--dump-model` reuses
 - the model re-runs every derivation it consumes today (it reads nothing from the checker): those are listed under their families
 
 **Missing data.** an unknown is a hole with a stated policy
@@ -1302,7 +1303,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)
 - snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem
 - canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate
-- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step, over the user program before the intra-locus rewrite (the rewrite moves a send's id onto its call and records it) and over the merged program, each numbering only what an earlier mint did not see (phase 1.1b); every entry point (check, build, run, test, replay, bench, the LSP) calls it after its last desugar with the source map check builds and the bundle carries the result; the resolved program mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error
+- the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step, over the user program before the intra-locus rewrite (the rewrite moves a send's id onto its call and records it) and over the merged program, each numbering only what an earlier mint did not see (phase 1.1b); every entry point calls it after its last desugar with its source map and the bundle carries the result (check and the LSP through the snapshot's load, build, run, test, replay and bench for themselves); the resolved program mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error
 
 **Missing data.** a missing required row is a compiler error
 
@@ -1313,6 +1314,46 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×2, `crates/hale-cli/src/verbs/build.rs` ×1, `crates/hale-cli/src/verbs/run.rs` ×2, `crates/hale-cli/src/verbs/test.rs` ×1, `crates/hale-cli/src/verbs/replay.rs` ×1, `crates/hale-cli/src/verbs/bench.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+
+### `demand` — Migrating · derivation
+
+**Answers.** Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the model, the check), each at most once, blocking a family whose prerequisite reported errors.
+
+**Inputs.** seed_loading; desugar_sequence; snapshot_identity; the config (target, api, api roles, environment, the check's rules); editor overlays (LSP); a consumer's request
+
+**Producer (today's authority, migrating).** `crates/hale-frontend/src/snapshot.rs` · `Snapshot`
+
+**Legacy producers (permitted until removal).**
+
+- `crates/hale-cli/src/verbs/build.rs` · `run_build` — build: its own load, sequence, mint and check, in its own order. *Removed when:* 2.2b: build demands the lowering view from a snapshot.
+- `crates/hale-cli/src/verbs/run.rs` · `compile_and_exec` — run: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
+- `crates/hale-cli/src/verbs/test.rs` · `compile_test_binary` — test: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
+- `crates/hale-cli/src/verbs/replay.rs` · `parse_file` — replay: its own load, sequence, mint and check, in its own order. *Removed when:* 2.3.
+- `crates/hale-cli/src/verbs/bench.rs` · `run_bench_file` — bench: its own load, sequence and mint, and no check. *Removed when:* 2.3.
+- `crates/hale-lsp/src/lib.rs` · `analyze_seed` — the LSP's request handlers (hover, completion, definition, references, the bus graph, placement): their own load per request, and a top scope each. *Removed when:* 2.3, step 5.
+- `crates/hale-types/src/topology.rs` · `dump_topology` — the artifact derives its own model (`derive_application_model`), outside the snapshot, so `hale check --dump-topology` of a program with claims derives two. *Removed when:* 2.3: the artifact demands the snapshot's model.
+
+**Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
+
+**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); lsp (`crates/hale-lsp/src/lib.rs` · `demand_check`)
+
+**Invariants.**
+
+- a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's producer runs, and no count exceeds one on any consumer on the snapshot
+- a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1)
+- a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a file that did not parse has no scope, a program that does not typecheck has no model; a ready result may still hold typed holes
+- a changed entry, target, config or overlay is a distinct snapshot (`SnapshotKey`); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)
+- the bundle is a borrowed view (`Snapshot::bundle`), built per call, never stored
+
+**Missing data.** a missing required row is a compiler error
+
+**Focused tests.** crates/hale-types/tests/demand_gate.rs; crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, a_program_that_does_not_typecheck_blocks_the_model)
+
+**Spec.** spec/decisions.md F.40; RFC #1212 § phase 2 (demand and readiness)
+
+**Guarded seams.**
+
+- `Snapshot::load(` may be referenced from: `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `digests` — Migrating · digest
 
