@@ -201,6 +201,9 @@ pub fn resolve_program(
         })?;
     let mut merged = user.clone();
     let user_items = merged.items.len();
+    // The stdlib's items by span, in merge order: the split below
+    // checks they are still the tail.
+    let stdlib_spans: Vec<_> = stdlib_program.items.iter().map(TopDecl::span).collect();
     merged.items.extend(stdlib_program.items);
     // Downstream handoff: `-> ()` is a no-op unit annotation. The
     // fallible decl paths already recognized the empty tuple as
@@ -237,8 +240,18 @@ pub fn resolve_program(
     //
     // The user's items seed by the bundle's source map; the stdlib's,
     // whose spans overlap the first file's, by the stdlib's own seed.
-    // No pass above adds or removes a top-level item, so the stdlib's
-    // are still the tail the merge appended, and go back after the mint.
+    // No pass since the merge (the unit-return normalization, the
+    // construction aliases, the omitted run) adds, removes or reorders
+    // a top-level item, so the stdlib's are still the tail the merge
+    // appended, and go back after the mint. Asserted: a pass that broke
+    // it would seed user items as the stdlib's, or the reverse.
+    assert!(
+        merged.items.len() == user_items + stdlib_spans.len()
+            && merged.items[user_items..].iter().map(TopDecl::span).eq(stdlib_spans.iter().copied()),
+        "the merged program's tail is no longer the stdlib's items: a pass between the merge \
+         and the mint (normalize_unit_return_annotations, resolve_construction_aliases, \
+         desugar_omitted_run) added, removed or reordered a top-level item"
+    );
     let mut stdlib = Program {
         effect_names: Vec::new(),
         declared_effects: Vec::new(),
