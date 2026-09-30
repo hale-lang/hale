@@ -255,7 +255,7 @@ fn dispatch(
             "textDocument/didOpen" => {
                 if let Some((path, text)) = did_open_params(&msg) {
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didChange" => {
@@ -265,7 +265,7 @@ fn dispatch(
                         panic!("injected checker panic");
                     }
                     overlays.insert(path.clone(), text);
-                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didSave" => {
@@ -279,15 +279,16 @@ fn dispatch(
                     {
                         overlays.insert(path.clone(), text.to_string());
                     }
-                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/didClose" => {
                 if let Some(path) = text_document_path(&msg) {
                     overlays.remove(&path);
                     // Re-check from disk so remaining files' diags
-                    // reflect the on-disk truth again.
-                    check_and_publish(&mut writer, &path, overlays, &mut state.published);
+                    // reflect the on-disk truth again — in this seed and
+                    // in every open seed that imported the buffer.
+                    check_open_seeds(&mut writer, &path, state);
                 }
             }
             "textDocument/completion" => {
@@ -499,6 +500,34 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
             .starts_with("stdlib-")
 }
 
+/// A document event for `changed`: check its seed, then every OTHER
+/// seed an open buffer sits in, each through `check_and_publish`. The
+/// snapshot reads an imported file from its buffer, so editing a
+/// library's buffer changes the program of every open seed that imports
+/// it, and closing that buffer changes it again (the importer then
+/// reads the disk copy). Every open seed is rechecked, not only the
+/// ones that import `changed`: at ~10 ms a load, a reverse-dependency
+/// index would buy nothing yet.
+fn check_open_seeds(writer: &mut impl Write, changed: &Path, state: &mut State) {
+    // (seed key, the file it is checked through): `changed`'s first,
+    // then each other seed through one of its open buffers, so a
+    // file-level diagnostic lands on a file the editor has open.
+    let mut seeds = vec![(seed_key(changed), changed.to_path_buf())];
+    for path in state.overlays.keys() {
+        if is_stdlib_cache_path(path) {
+            continue;
+        }
+        let key = seed_key(path);
+        if !seeds.iter().any(|(k, _)| *k == key) {
+            seeds.push((key, path.clone()));
+        }
+    }
+    let checked: BTreeSet<PathBuf> = seeds.iter().map(|(k, _)| k.clone()).collect();
+    for (_, via) in &seeds {
+        check_and_publish(writer, via, &state.overlays, &mut state.published, &checked);
+    }
+}
+
 /// Check the seed of `changed` and publish it: every file the check
 /// placed a list on, and, EMPTY, every file the last publication for
 /// this seed covered that this one does not — a library the seed no
@@ -507,16 +536,29 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
 /// diagnostics until that URI is published again, so what is cleared
 /// is decided by what the client was sent (`published`, keyed by the
 /// seed's directory), not by the graph the snapshot now describes.
+///
+/// A file whose own seed is among `checked` (the seeds this event
+/// checks) is that seed's to publish, and this one neither publishes
+/// nor clears it: the passes of one event would otherwise overwrite
+/// each other's answer for one file — an importer drops a library's
+/// own advisories, and would clear them.
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
     published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    checked: &BTreeSet<PathBuf>,
 ) {
+    let own = seed_key(changed);
+    let ours = |p: &Path| {
+        let key = seed_key(p);
+        key == own || !checked.contains(&key)
+    };
     let mut per_file = seed_diagnostics(changed, overlays);
+    per_file.retain(|p, _| ours(p));
     let covered: BTreeSet<PathBuf> = per_file.keys().cloned().collect();
-    let before = published.insert(seed_key(changed), covered).unwrap_or_default();
-    for gone in before {
+    let before = published.insert(own.clone(), covered).unwrap_or_default();
+    for gone in before.into_iter().filter(|p| ours(p)) {
         per_file.entry(gone).or_default();
     }
     publish_all(writer, per_file);
