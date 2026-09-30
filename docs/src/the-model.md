@@ -27,9 +27,21 @@ the single-binary checker is the *reachability engine* and the
 *admitted contract*, not the value. That's the boundary, and it's
 where the wire form would earn its keep.
 
-Eight concepts stay distinct: source, plan, model, lowered law,
-evidence, artifact, lowering plan, execution evidence. Keeping them
-un-conflated is what lets each one be simple.
+Eight concepts stay distinct: source, plan, model, the lowered law
+(`ClaimIr`), evidence, artifact, lowering plan, execution evidence.
+Keeping them un-conflated is what lets each one be simple.
+
+The principle was first enforced for the model's consumers: artifact
+and fleet code cannot walk source for a modeled fact. It now covers
+every semantic fact the compiler acts on, in every crate, through the
+**graph registry** (F.40): one entry per family — ownership, the bus
+graph, dispatch, placement, effects, allocation, lifecycle order and
+the rest — naming its authoritative producer, the legacy producers
+still permitted while it migrates, its consumers and its tests. A
+build fails when the tree grows a derivation the registry does not
+name. The rendered index is
+[`spec/registry.md`](https://github.com/hale-lang/hale/blob/main/spec/registry.md);
+the contract is `spec/model.md` § *The graph registry*.
 
 ## Facts, and an account of what is missing
 
