@@ -271,13 +271,10 @@ pub(crate) fn constitution_identities(
         .collect();
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames;
-    let (top, _d) = hale_types::resolve::build_top_scope(&bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
     let progs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     let ids = hale_types::claims::constitution_identities(
         &progs,
-        &graph,
         &bundle.import_renames,
     );
     // ROOTS, not the whole closure: the manifest asked for these by

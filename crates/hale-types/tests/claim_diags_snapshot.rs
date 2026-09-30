@@ -75,11 +75,8 @@ fn bundle_of<'a>(
 fn check_law_diags(bundle: &Bundle<'_>) -> Vec<String> {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let (top, _) = hale_types::resolve::build_top_scope(bundle);
-    let graph = hale_types::bus_graph::build_bus_graph(bundle, &top);
     let mut out = hale_types::claims::selection_diags(
         &programs,
-        &graph,
         &bundle.import_renames,
     );
     out.extend(hale_types::judgment::claim_law_diags(bundle));

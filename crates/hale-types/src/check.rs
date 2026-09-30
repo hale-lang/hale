@@ -718,43 +718,39 @@ pub fn check_bundle_scoped(
             &programs_vec,
             &bundle.import_renames,
         ));
-        {
-            let graph = crate::bus_graph::build_bus_graph(bundle, top);
-            // GH #265 frontier: cross-actor causality (needs the
-            // bus graph), supervision coverage, and secret taint.
-            // GH #476 Change 5f/5g: `causes:` and its backward dual
-            // `depends:` (RFC #330) are judged over the model with
-            // the other migrated families — see `check_bundle_opts`.
-            // GH #382 phase 1: bundle-level claims — group
-            // resolution (unknown name = error, vacuity) and
-            // `forbid reaches` evaluation with countermodel
-            // witnesses. Errors, gating check from day one: an
-            // advisory claim reads as law and doesn't bind.
-            // GH #476 Change 9: ONE authority per question. Law
-            // SELECTION (which laws exist: constitutions, group
-            // resolution, the tier rule) stays with the claim
-            // surface; the VERDICTS come from the judgment engines
-            // over the canonical model — the same judgment the
-            // artifact projects, instead of a second evaluator
-            // that re-derived the same four families from source.
-            // `tests/claim_diags_differential.rs` held the two
-            // byte-equal over the corpus through the cutover.
-            diags.extend(crate::claims::selection_diags(
-                &programs_vec,
-                &graph,
-                &bundle.import_renames,
-            ));
-            // The VERDICTS are appended by `check_bundle_opts`,
-            // after this whole pass establishes that the program
-            // denotes a valid model — see the note there. Selection
-            // stays here: it reads the claim surface directly and is
-            // meaningful even for a program that does not typecheck.
-            diags.extend(crate::frontier::supervised_diags(
-                &programs_vec,
-                &bundle.import_renames,
-            ));
-            diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
-        }
+        // GH #265 frontier: supervision coverage and secret taint
+        // (cross-actor causality is judged over the model).
+        // GH #476 Change 5f/5g: `causes:` and its backward dual
+        // `depends:` (RFC #330) are judged over the model with
+        // the other migrated families — see `check_bundle_opts`.
+        // GH #382 phase 1: bundle-level claims — group
+        // resolution (unknown name = error, vacuity) and
+        // `forbid reaches` evaluation with countermodel
+        // witnesses. Errors, gating check from day one: an
+        // advisory claim reads as law and doesn't bind.
+        // GH #476 Change 9: ONE authority per question. Law
+        // SELECTION (which laws exist: constitutions, group
+        // resolution, the tier rule) stays with the claim
+        // surface; the VERDICTS come from the judgment engines
+        // over the canonical model — the same judgment the
+        // artifact projects, instead of a second evaluator
+        // that re-derived the same four families from source.
+        // `tests/claim_diags_differential.rs` held the two
+        // byte-equal over the corpus through the cutover.
+        diags.extend(crate::claims::selection_diags(
+            &programs_vec,
+            &bundle.import_renames,
+        ));
+        // The VERDICTS are appended by `check_bundle_opts`,
+        // after this whole pass establishes that the program
+        // denotes a valid model — see the note there. Selection
+        // stays here: it reads the claim surface directly and is
+        // meaningful even for a program that does not typecheck.
+        diags.extend(crate::frontier::supervised_diags(
+            &programs_vec,
+            &bundle.import_renames,
+        ));
+        diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
         for d in &mut diags[law_start..] {
             if d.kind == hale_syntax::error::DiagKind::Type {
                 d.kind = hale_syntax::error::DiagKind::Claim;

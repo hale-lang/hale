@@ -235,8 +235,6 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
 pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
-    let (top, _resolve_diags) = crate::resolve::build_top_scope(bundle);
-    let graph = crate::bus_graph::build_bus_graph(bundle, &top);
     // User code only — an app's artifact describes the app, the
     // same ruling as the effects manifest (a library's own artifact
     // comes from checking that library).
@@ -397,7 +395,6 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     // takes the constitution identities from it and nothing else.
     let identities = crate::claims::constitution_identities(
         &programs,
-        &graph,
         &bundle.import_renames,
     );
     let vmodel = crate::model_builder::derive_application_model(bundle);

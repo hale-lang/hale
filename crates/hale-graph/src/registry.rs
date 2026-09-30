@@ -230,7 +230,6 @@ const PURITY: &str = "crates/hale-types/src/purity.rs";
 const TOPOLOGY: &str = "crates/hale-types/src/topology.rs";
 const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
 const CLAIMS: &str = "crates/hale-types/src/claims.rs";
-const CLAIM_LOWERING: &str = "crates/hale-types/src/claim_lowering.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
@@ -411,16 +410,16 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program", "import renames"],
         producer: Some(site(RESOLVE, "build_top_scope")),
         legacy: &[
-            legacy(TLIB, "check_bundle_opts_scoped", "built here for the checker and never passed on: model_builder, claim_lowering, topology, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it", "one scope per snapshot, passed by reference (phase 2)"),
+            legacy(TLIB, "check_bundle_opts_scoped", "built here for the checker and never passed on: model_builder, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it", "one scope per snapshot, passed by reference (phase 2)"),
             legacy(CHECK, "collect_known_names", "a second name table the checker keeps beside the scope", "one table"),
         ],
-        consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("model", MODEL_BUILDER, "derive_application_model"), consumer_at("claims", CLAIM_LOWERING, "lower_claims"), consumer_at("topology", TOPOLOGY, "dump_topology"), consumer_at("resolved program (lowering)", TY_RESOLVED, "build_top_scope"), consumer_at("lsp", LSP, "build_top_scope"), consumer_at("check --matrix", V_MATRIX, "build_top_scope")],
+        consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("model", MODEL_BUILDER, "derive_application_model"), consumer_at("resolved program (lowering)", TY_RESOLVED, "build_top_scope"), consumer_at("lsp", LSP, "build_top_scope")],
         invariants: &["one namespace decision: module-nested declarations and imported seeds resolve the same way everywhere"],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (MODEL_BUILDER, 1), (CLAIM_LOWERING, 1), (TOPOLOGY, 1), (SYNC, 1), (TY_RESOLVED, 1), (LSP, 7), (V_MATRIX, 1)] }],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (MODEL_BUILDER, 1), (SYNC, 1), (TY_RESOLVED, 1), (LSP, 7)] }],
     },
     Family {
         name: "expression_typing",
@@ -601,24 +600,21 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["topics", "bus blocks", "sends", "bindings", "placement (for gates)"],
         producer: Some(site(BUS_GRAPH, "build_bus_graph")),
         legacy: &[
-            legacy(CHECK, "check_bus_graph", "rule 9 runs `collect_bus_walk` itself; the checker also builds the full graph once for the #265 frontier (causality, supervision, taint)", "one graph per snapshot"),
+            legacy(CHECK, "check_bus_graph", "rule 9 runs `collect_bus_walk` itself", "one graph per snapshot"),
             legacy(CHECK, "check_bus_cycles", "rule 10 keeps its own adjacency (`BusAdj`) instead of reading the graph", "a law over the graph"),
             legacy(CHECK, "external_subscription_handlers", "handler discovery joined with `::` where the graph uses the last segment", "one subject key"),
             legacy(MODEL_BUILDER, "build_bus_graph", "rebuilt for the model", "phase 1.5"),
-            legacy(CLAIM_LOWERING, "build_bus_graph", "rebuilt for claim lowering (and ignored by selection)", "phase 1.5"),
-            legacy(TOPOLOGY, "build_bus_graph", "rebuilt for the artifact", "phase 1.5"),
-            legacy(V_MATRIX, "build_bus_graph", "rebuilt for constitution identities", "phase 1.5"),
             legacy(LSP, "build_bus_graph", "rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass", "phase 2"),
-            legacy(TY_RESOLVED, "build_bus_graph", "built once in the resolved program, over the desugared program, for lowering; the checker, the model, claim lowering, the topology artifact, the matrix and the LSP still build their own over the un-desugared bundle", "one graph per snapshot (phase 2: the check over the resolved program)"),
+            legacy(TY_RESOLVED, "build_bus_graph", "built once in the resolved program, over the desugared program, for lowering; the model and the LSP still build their own over the un-desugared bundle, and the checker's rule 9 walks the bus itself", "one graph per snapshot (phase 2: the check over the resolved program)"),
         ],
-        consumers: &[consumer("check (rules 9-12, 19)"), consumer("model"), consumer("claims"), consumer("topology"), consumer("dispatch"), consumer("lsp (hale/busGraph)"), consumer("bus_inert")],
+        consumers: &[consumer("check (rules 9-12, 19)"), consumer("model"), consumer("topology"), consumer("dispatch"), consumer("lsp (hale/busGraph)"), consumer("bus_inert")],
         invariants: &["one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it", "the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)"],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/bus_graph.rs", "crates/hale-types/tests/bus_payload_handler.rs", "crates/hale-codegen/tests/bus_devirt_differential.rs"],
         spec: &["spec/semantics.md rules 9-12, 19", "spec/verification.md § Bus-graph property checks"],
         owned: &[],
         seams: &[
-            Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (CHECK, 1), (MODEL_BUILDER, 1), (CLAIM_LOWERING, 1), (TOPOLOGY, 1), (V_MATRIX, 1), (LSP, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "build_bus_graph(", allowed: &[(BUS_GRAPH, 1), (MODEL_BUILDER, 1), (LSP, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "collect_bus_walk(", allowed: &[(BUS_GRAPH, 2), (CHECK, 1)] },
         ],
     },

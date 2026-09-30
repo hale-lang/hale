@@ -258,11 +258,6 @@ fn lowering_matches_evaluator_outcomes_over_the_corpus() {
                     .map_err(|e| format!("{:?}", e))?;
                 let programs_v: Vec<&hale_syntax::ast::Program> =
                     vec![&program];
-                let top =
-                    hale_types::resolve::build_top_scope(&bundle).0;
-                let graph = hale_types::bus_graph::build_bus_graph(
-                    &bundle, &top,
-                );
                 // Change 10: the parity partner is law SELECTION,
                 // not the deleted evaluator. That is the truer
                 // statement of the obligation anyway — the lowering
@@ -271,7 +266,6 @@ fn lowering_matches_evaluator_outcomes_over_the_corpus() {
                 let selected =
                     hale_types::claims::selected_clauses(
                         &programs_v,
-                        &graph,
                         &[],
                     );
                 let lowered: Vec<(String, Option<String>)> = table

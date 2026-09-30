@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-43 families: 3 canonical, 36 migrating (with 162 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+43 families: 3 canonical, 36 migrating (with 159 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -21,7 +21,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | — | 9 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 7 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
-| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 9 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
+| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 6 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 7 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
@@ -218,10 +218,10 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker and never passed on: model_builder, claim_lowering, topology, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it. *Removed when:* one scope per snapshot, passed by reference (phase 2).
+- `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — built here for the checker and never passed on: model_builder, sync inference, the resolved program (once, for the ownership graph and the bus graph) and the LSP (seven times) rebuild it. *Removed when:* one scope per snapshot, passed by reference (phase 2).
 - `crates/hale-types/src/check.rs` · `collect_known_names` — a second name table the checker keeps beside the scope. *Removed when:* one table.
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); claims (`crates/hale-types/src/claim_lowering.rs` · `lower_claims`); topology (`crates/hale-types/src/topology.rs` · `dump_topology`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (`crates/hale-lsp/src/lib.rs` · `build_top_scope`); check --matrix (`crates/hale-cli/src/verbs/check/matrix.rs` · `build_top_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); model (`crates/hale-types/src/model_builder.rs` · `derive_application_model`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (`crates/hale-lsp/src/lib.rs` · `build_top_scope`)
 
 **Invariants.**
 
@@ -235,7 +235,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7, `crates/hale-cli/src/verbs/check/matrix.rs` ×1
+- `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-lsp/src/lib.rs` ×7
 
 ### `expression_typing` — Migrating · derivation
 
@@ -455,17 +455,14 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `check_bus_graph` — rule 9 runs `collect_bus_walk` itself; the checker also builds the full graph once for the #265 frontier (causality, supervision, taint). *Removed when:* one graph per snapshot.
+- `crates/hale-types/src/check.rs` · `check_bus_graph` — rule 9 runs `collect_bus_walk` itself. *Removed when:* one graph per snapshot.
 - `crates/hale-types/src/check.rs` · `check_bus_cycles` — rule 10 keeps its own adjacency (`BusAdj`) instead of reading the graph. *Removed when:* a law over the graph.
 - `crates/hale-types/src/check.rs` · `external_subscription_handlers` — handler discovery joined with `::` where the graph uses the last segment. *Removed when:* one subject key.
 - `crates/hale-types/src/model_builder.rs` · `build_bus_graph` — rebuilt for the model. *Removed when:* phase 1.5.
-- `crates/hale-types/src/claim_lowering.rs` · `build_bus_graph` — rebuilt for claim lowering (and ignored by selection). *Removed when:* phase 1.5.
-- `crates/hale-types/src/topology.rs` · `build_bus_graph` — rebuilt for the artifact. *Removed when:* phase 1.5.
-- `crates/hale-cli/src/verbs/check/matrix.rs` · `build_bus_graph` — rebuilt for constitution identities. *Removed when:* phase 1.5.
 - `crates/hale-lsp/src/lib.rs` · `build_bus_graph` — rebuilt for hale/busGraph without sync inference, so eligibility can disagree with the diagnostics pass. *Removed when:* phase 2.
-- `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the checker, the model, claim lowering, the topology artifact, the matrix and the LSP still build their own over the un-desugared bundle. *Removed when:* one graph per snapshot (phase 2: the check over the resolved program).
+- `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the model and the LSP still build their own over the un-desugared bundle, and the checker's rule 9 walks the bus itself. *Removed when:* one graph per snapshot (phase 2: the check over the resolved program).
 
-**Consumers.** check (rules 9-12, 19); model; claims; topology; dispatch; lsp (hale/busGraph); bus_inert
+**Consumers.** check (rules 9-12, 19); model; topology; dispatch; lsp (hale/busGraph); bus_inert
 
 **Invariants.**
 
@@ -480,7 +477,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-cli/src/verbs/check/matrix.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `build_bus_graph(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
 
 ### `topics` — Migrating · derivation
