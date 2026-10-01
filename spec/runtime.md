@@ -1517,6 +1517,30 @@ zero_copy binding produces.
     decision before it restarts, carries on or is reclaimed,
     exactly as a held failure is waited for today
     (`lotus_failure_await`).
+  - **Delivery makes progress while the owner joins its
+    children.** The owner must remain able to complete
+    outstanding failure decisions until its dependent children
+    have quiesced, and shutdown must never silently discard a
+    failure cell whose child is awaiting it. A child's failure
+    may come after the owner's last drain: from a pinned child
+    the owner is joining, or from a pool child while the pool
+    workers are joined. The owner then has to be able to run that
+    cell even though it is inside the join. Otherwise the owner
+    waits for the child's thread while the child waits for the
+    owner's decision. This decision adopts the requirement; F.40
+    phase 3's L1 (the obligation) and L5 (the implementation)
+    supply the mechanism.
+  - **Restart during drain is converted to cancellation.** A
+    restart the handler asks for after the owner has entered
+    teardown, or while the process drains, is not performed. The
+    child ends as if the handler had returned without asking: it
+    reaches its ordinary run end, where it is reclaimed if it is
+    a flow or terminated child and otherwise kept for its owner's
+    cascade. For the process drain this is shipped
+    (`emit_restart_requested`,
+    `crates/hale-codegen/src/locus/restart.rs`, refuses a restart
+    while `lotus_process_draining_flag` is up). For an owner's
+    teardown nothing checks it yet.
   - A failure held while the owner's params are open is still
     delivered when they settle (`spec/semantics.md` §
     "on_failure(c, err)").
@@ -1548,6 +1572,17 @@ zero_copy binding produces.
   `notes/f40-lifecycle-inventory.md` lists these sites as rows
   C36–C40. No test asserts the thread a handler runs on.
 
+  Teardown pumps no owner queue while it joins. A dissolving
+  parent joins a pinned child with a blocking `pthread_join`
+  (`emit_deferred_entry_teardown`,
+  `crates/hale-codegen/src/codegen.rs`) and drains the bus only
+  after the join returns. `lotus_coop_pool_shutdown_all` joins
+  each pool worker with no drain in between. Neither join is a
+  hazard while the handler is called in place. With delivery
+  through the owner's queue, both are the wait cycle that the
+  progress requirement above rules out (inventory rows C18 and
+  R20).
+
   **Regression (added with the implementation, F.40 phase 3
   L5).** `lifecycle_flow
   failure_delivery_domain::a_childs_failure_runs_on_its_owners_thread`
@@ -1560,9 +1595,37 @@ zero_copy binding produces.
   - a pinned child failing during the owner's params loop. This
     case is held and delivered at settle, and is the control.
 
-  Each case also asserts that the restart the handler asks for
-  still takes effect, and the test runs under ASan with
-  heap-backed child fields.
+  In each of these cases the owner is running, not in teardown,
+  and the case asserts that the restart the handler asks for
+  takes effect.
+
+  Two further cases run under a deadline: a hang fails the test
+  rather than stalling the suite.
+  - a pinned child raises a failure after the owner has entered
+    teardown;
+  - a pool child raises a failure after the owner has entered
+    teardown.
+
+  A handshake forces the order, never a sleep: the child raises
+  only after it observes the owner's teardown. The pinned child
+  sees its mailbox shut down. The pool child sees its pool's
+  shutdown flag, which a classic-pool accept already returns on.
+  Each of the two cases asserts:
+  - the handler ran on the owner's domain;
+  - the handler completed exactly once;
+  - the owner's teardown completed exactly once;
+  - the child and the violation's payload were live until the
+    handler returned.
+
+  **Restart during drain** has a case of its own. It uses the same
+  handshake: a pinned child fails after the owner has entered
+  teardown, and the handler asks for a restart. The case asserts
+  the conversion to cancellation described above:
+  - `birth()` ran once;
+  - the child reached its ordinary end;
+  - the child was torn down exactly once.
+
+  The test runs under ASan with heap-backed child fields.
 
 ### Native observation emission (iris P4, 2026-07-27)
 
