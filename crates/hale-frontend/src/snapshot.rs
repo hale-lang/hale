@@ -569,23 +569,10 @@ impl Snapshot {
             }
         }
         if let Some(env) = &snap.config.environment {
-            // An environment binds law to an ENTRYPOINT, so the target
-            // must be one — whether or not the environment contributes
-            // a constitution. Checking this only while injecting meant
-            // an environment with nothing to inject checked nothing,
-            // and a matrix counted a library path as a covered pair.
-            let has_main = snap.programs.values().any(|p| {
-                p.items.iter().any(|i| matches!(i, TopDecl::Locus(l) if l.is_main))
-            });
-            if !has_main {
-                return Err(LoadError::Refused(format!(
-                    "{}: `--env` names a deployment target, and a \
-                     deployment target is an ENTRYPOINT — this seed \
-                     declares no `main locus`",
-                    entry.display()
-                )));
-            }
-            // The main locus exists, so every constitution lands.
+            // The constitutions land in the main locus. Whether there is
+            // an entry to deploy is the entry row's, read once the load
+            // is minted (below): a seed without one is refused, so what
+            // landed here is never checked.
             for c in &env.adopt {
                 for prog in snap.programs.values_mut() {
                     inject_adopt(prog, c);
@@ -594,7 +581,9 @@ impl Snapshot {
         }
         // The editor's seed with a member that did not parse or read, or
         // whose imports did not link, is not a program: nothing is
-        // shaped or minted, and the scope blocks.
+        // shaped or minted, and the scope blocks. (No editor config
+        // carries an environment, and the other loads fail on a hole,
+        // so no environment reaches here.)
         if snap.has_hole() {
             return Ok(snap);
         }
@@ -605,13 +594,13 @@ impl Snapshot {
             // (downstream handoff, 2026-08-11).
             let _ = hale_types::apply_sync_inference(prog);
         }
-        {
+        let sequenced = {
             // F.40 phase 2.1b: the desugar sequence, the one every
             // entry point runs before its check: JSON Tier 2's parsers,
             // the api binding (GH #1106, bundle-wide), then the passes
             // that shape a declaration.
             let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
-            snap.api_surface = hale_types::desugar_sequence::desugar_before_check(
+            hale_types::desugar_sequence::desugar_before_check(
                 &mut refs,
                 &hale_types::desugar_sequence::Sequence {
                     import_renames: &snap.import_renames,
@@ -619,9 +608,15 @@ impl Snapshot {
                     api_roles: snap.config.api_roles.as_deref(),
                 },
             )
-            .map_err(LoadError::Refused)?;
-        }
-        snap.count("desugar_sequence");
+        };
+        let refused = match sequenced {
+            Ok(surface) => {
+                snap.api_surface = surface;
+                snap.count("desugar_sequence");
+                None
+            }
+            Err(msg) => Some(msg),
+        };
         // GH #408 Phase 0: the source map, then the identities minted
         // with it (F.40 phase 1.1b-iii), so each site's seed is the
         // file its span falls in.
@@ -635,7 +630,29 @@ impl Snapshot {
             &snap.source_map,
         );
         snap.count("snapshot_identity");
-        Ok(snap)
+        if snap.config.environment.is_some() {
+            // An environment binds law to an ENTRYPOINT, so the target
+            // must be one — whether or not the environment contributes
+            // a constitution. Checking this only while injecting meant
+            // an environment with nothing to inject checked nothing,
+            // and a matrix counted a library path as a covered pair.
+            // The entry row answers (an imported or a module-nested
+            // `main locus` is not the entry), before the sequence's own
+            // refusal: an `--api` entry with no main locus to go on is
+            // the same missing entry, and the environment names it.
+            if !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
+                return Err(LoadError::Refused(format!(
+                    "{}: `--env` names a deployment target, and a \
+                     deployment target is an ENTRYPOINT — this seed \
+                     declares no `main locus`",
+                    entry.display()
+                )));
+            }
+        }
+        match refused {
+            Some(msg) => Err(LoadError::Refused(msg)),
+            None => Ok(snap),
+        }
     }
 
     pub fn key(&self) -> &SnapshotKey {
