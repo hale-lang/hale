@@ -15,9 +15,26 @@ use crate::span::Span;
 
 /// Parse a token stream into a Program. Source string is needed
 /// for error rendering and for slicing literal text.
-pub fn parse(tokens: Vec<Token>, _source: &str) -> Result<Program, Vec<Diag>> {
+pub fn parse(tokens: Vec<Token>, source: &str) -> Result<Program, Vec<Diag>> {
+    parse_in(tokens, source, &mut EffectClasses::default())
+}
+
+/// [`parse`], interning user effect classes into `classes` — the load's
+/// one table, shared by every seed it parses — and leaving it as this
+/// parse left it, whether or not the parse succeeded.
+pub fn parse_in(
+    tokens: Vec<Token>,
+    _source: &str,
+    classes: &mut EffectClasses,
+) -> Result<Program, Vec<Diag>> {
     let mut p = Parser::new(tokens);
+    p.effect_names = std::mem::take(&mut classes.names);
+    p.declared_effects = std::mem::take(&mut classes.declared);
+    p.effect_defs = std::mem::take(&mut classes.defs);
     let prog = p.parse_program();
+    classes.names = std::mem::take(&mut p.effect_names);
+    classes.declared = std::mem::take(&mut p.declared_effects);
+    classes.defs = std::mem::take(&mut p.effect_defs);
     match prog {
         Ok(mut prog) if p.diags.is_empty() => {
             // #353 cluster B: rewrite recognized element chains into
@@ -574,9 +591,11 @@ impl Parser {
 
         let end = self.peek_token().span.end;
         Ok(Program {
-            effect_names: std::mem::take(&mut self.effect_names),
-            declared_effects: std::mem::take(&mut self.declared_effects),
-            effect_defs: std::mem::take(&mut self.effect_defs),
+            // the table as this parse leaves it; the parser keeps it for
+            // the load's next seed (`parse_in`)
+            effect_names: self.effect_names.clone(),
+            declared_effects: self.declared_effects.clone(),
+            effect_defs: self.effect_defs.clone(),
             imports,
             items,
             span: Span {

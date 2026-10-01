@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 5 canonical, 35 migrating (with 144 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 10 canonical, 30 migrating (with 131 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
 
 ## Families
 
@@ -12,8 +12,8 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 2 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
-| `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
-| `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 2 | What every top-level name denotes: the symbol table over the merged program. |
+| `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
+| `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 3 | Which monomorph a generic call instantiates and how its bindings unify. |
 | `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
@@ -21,12 +21,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | — | 12 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
-| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 6 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
-| `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 3 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
+| `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 5 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
+| `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
-| `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
+| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
@@ -44,13 +44,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `target_capability` | Layer 5 | Migrating | capability | — | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 10 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
-| `bus_inert` | Layer 6 | Migrating | derivation | — | 3 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
+| `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
 | `law_backstops` | Layer 8 | Migrating | law | — | 1 | The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
 | `snapshot_identity` | Identity | Migrating | derivation | `mint` | 3 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (numbered over the user program before the intra-locus rewrite, so the sends it records are numbered on every path, and minted over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance; and which declaration each use names (`binding_of`), resolved once by the mint. |
-| `demand` | Identity | Migrating | derivation | `Snapshot` | 1 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
+| `demand` | Identity | Canonical | derivation | `Snapshot` | 0 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 9 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under. |
 
 ## Layer 1 — parse and desugar
@@ -69,11 +69,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - one loader, one merge order, for every entry point
 - an unresolved import is a diagnostic, never a silently smaller program
-- one seed for every entry point: the editor's load (`LoadMode::Editor`) is `hale check <dir>`'s — the open file's directory, every `import` followed through the buffers (`link_checkable`) — and differs only in tolerance: a member that does not parse or will not read is recorded (`Snapshot::unparsed`, `Snapshot::unreadable`) and blocks the scope instead of failing the load, and the LSP publishes an unreadable member as `seed member <name>: <os error>` against the member and the open file, never a clean seed the CLI cannot load
+- one seed for every entry point: the editor's load (`LoadMode::Editor`) is `hale check <dir>`'s — the open file's directory, every `import` followed through the buffers (`link_checkable`) — and differs only in tolerance: a member that does not parse or will not read is recorded (`Snapshot::unparsed`, `Snapshot::unreadable`) and blocks the scope instead of failing the load, a link the import graph refuses keeps the members as they parsed with the refusal recorded (`Snapshot::unlinked`) and blocks the scope, which every request but the outline reads as the refused load (`Snapshot::linked`), and the LSP publishes an unreadable member as `seed member <name>: <os error>` against the member and the open file, never a clean seed the CLI cannot load
 
 **Missing data.** n/a
 
-**Focused tests.** crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key); crates/hale-cli/tests/source_map.rs; crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does)
+**Focused tests.** crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key); crates/hale-cli/tests/source_map.rs; crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does, lsp_outline_survives_a_link_failure)
 
 **Spec.** spec/projects.md
 
@@ -184,30 +184,33 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-frontend/src/snapshot.rs` ×1
 
-### `effect_class_table` — Migrating · derivation
+### `effect_class_table` — Canonical · derivation
 
-**Answers.** The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index.
+**Answers.** The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class.
 
-**Inputs.** effect_names / defs per program
+**Inputs.** `effect` declarations and class references per seed; the load's parse order (a seed after the seeds it imports)
 
-**Producer (today's authority, migrating).** `crates/hale-frontend/src/frontend.rs` · `EffectTable`
+**Producer.** `crates/hale-syntax/src/ast.rs` · `EffectClasses`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-syntax/src/lib.rs` · `parse_source_at_in`; `crates/hale-types/src/effect_classes.rs` · `EffectClassTable`
 
-- `crates/hale-frontend/src/frontend.rs` · `merge_programs` — the merge remaps class indices by name. *Removed when:* the table is a declaration-layer row keyed by identity.
-- `crates/hale-types/src/effects.rs` · `effect_names_of` — takes the first non-empty program's table; expansion of a class is copied five times across hale-types. *Removed when:* one expansion.
-
-**Consumers.** check; effects; claims
+**Consumers.** the load (own files, the editor's members, every imported seed after its imports) (`crates/hale-frontend/src/frontend.rs` · `parse_source_at_in`); effects (contracts, phase contracts, the declared manifest) (`crates/hale-types/src/effects.rs` · `EffectClassTable::of(`); the effect rows (one table per snapshot, carried on the rows: the model's effect-class rows and atoms, and the inferred manifest's class names, read it there) (`crates/hale-types/src/effect_rows.rs` · `EffectClassTable::of(`); effects (causes) (`crates/hale-types/src/frontier.rs` · `EffectClassTable::of(`); alloc_summary (what `@effects(is: …)` carries) (`crates/hale-types/src/alloc_summary.rs` · `EffectClassTable::of(`); quantitative (user-class budgets) (`crates/hale-types/src/quantitative.rs` · `EffectClassTable::of(`); claims (lowering: class references, undeclared classes) (`crates/hale-types/src/claim_lowering.rs` · `EffectClassTable::of(`); topology (derived effect sets) (`crates/hale-types/src/topology.rs` · `EffectClassTable::of(`)
 
 **Invariants.**
 
-- one class, one index, per snapshot
+- one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in
+- one expansion: a composed class's mask, its atoms and whether its definition is cyclic are `EffectClassTable`'s; no analysis walks a definition itself or reads a program's table directly
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/cross_seed_effects.rs
+**Focused tests.** crates/hale-cli/tests/cross_seed_effects.rs; crates/hale-cli/tests/xseed_user_effects.rs; crates/hale-types/src/effect_classes.rs (one_table_one_expansion); crates/hale-frontend/src/snapshot.rs (a_seed_is_numbered_after_the_seeds_it_imports)
 
 **Spec.** spec/verification.md § Default-on & opt-in analyses
+
+**Guarded seams.**
+
+- `EffectClassTable::of(` may be referenced from: `crates/hale-types/src/effect_classes.rs` ×1, `crates/hale-types/src/effects.rs` ×3, `crates/hale-types/src/effect_rows.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1
+- `effect_defs` may be referenced from: `crates/hale-syntax/src/ast.rs` ×1, `crates/hale-syntax/src/parser.rs` ×9, `crates/hale-frontend/src/frontend.rs` ×3, `crates/hale-types/src/effect_classes.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ## Layer 2 — declaration graphs
 
@@ -222,18 +225,18 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped` — `check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), sync inference and the lowering view (once, for the ownership graph and the bus graph) rebuild it; every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs. *Removed when:* every consumer demands the scope from a snapshot (2.3).
-- `crates/hale-types/src/check.rs` · `collect_known_names` — a second name table the checker keeps beside the scope. *Removed when:* one table.
 
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (the snapshot's scope, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (definition, placement, the allocation survey: the snapshot's scope) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_bundle_scoped`); check (type expressions: the scope's name table) (`crates/hale-types/src/check.rs` · `&top.names`); demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot) (`crates/hale-frontend/src/snapshot.rs` · `build_top_scope`); model (the snapshot's scope, handed in) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); resolved program (lowering) (`crates/hale-types/src/resolved.rs` · `build_top_scope`); lsp (definition, placement, the allocation survey: the snapshot's scope) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`)
 
 **Invariants.**
 
 - one namespace decision: module-nested declarations and imported seeds resolve the same way everywhere
 - the editor's scope over a seed with a hole (`demand_editor_scope`) is the same producer over the members that parsed, counted as this family; the whole scope, the check and everything after it stay blocked, so no check runs over a partial program
+- one name table: the checker resolves every type expression against the scope's own (`TopScope::names`, the declared loci, types and perspectives with each alias's expanded target and the bundle's import renames), built once with the symbols, and keeps none of its own
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/checks_inside_modules.rs; crates/hale-cli/tests/check_unknown_identifier.rs
+**Focused tests.** crates/hale-types/tests/checks_inside_modules.rs; crates/hale-cli/tests/check_unknown_identifier.rs; crates/hale-types/tests/type_alias.rs
 
 **Spec.** spec/semantics.md
 
@@ -470,16 +473,16 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `external_subscription_handlers` — handler discovery joined with `::` where the graph uses the last segment. *Removed when:* phase 3, as a judgment migration: the graph's canonical key splits a topic published by name and subscribed by its literal subject into two subjects, which changes the dead-receiver error's handler list (measured on the 2.3 checker branch).
 - `crates/hale-types/src/lib.rs` · `derive_application_model` — the model of a bundle no snapshot holds (the test entry's: `claim_law_diags`, the hale-types tests, the artifact's bundle entry) builds the bus graph, the ownership graph and the handler rows for itself, once each; every verb's model reads its snapshot's. *Removed when:* those callers hold a snapshot.
 - `crates/hale-types/src/resolved.rs` · `build_bus_graph` — built once in the resolved program, over the desugared program, for lowering; the snapshot builds a second over the checked programs for the model and hale/busGraph (`demand_bus_graph`), and the checker's rule 9 walks the bus itself. *Removed when:* phase 3, one graph per snapshot, when the lowering view's graphs fold into the snapshot: the check still runs over the checked programs, not the resolved one, so lowering's graph (with the intra-locus and topic rewrites recorded on it) and the snapshot's are built over two program forms (at the phase-2 close).
-- `crates/hale-codegen/src/codegen.rs` · `intra_locus_publish_target` — lowering classifies a handler-named method call with a struct argument as a rewritten publish for the probes and the reclaimed subregion, re-deriving the relation the resolved program records. *Removed when:* phase 3, when lowering reads `LoweringView::intra_locus` by the call's id, shadowed against this classification over the corpus: the rows carry the rewritten send's id (`IntraLocusRewrite::send`, kept by the call that replaces it), and no codegen code reads them yet (at the phase-2 close).
 
 **Also owned.** `crates/hale-types/src/bus_graph.rs` · `dispatch_gates`
 
-**Consumers.** check (rules 9-12, 19); model (subjects, endpoints and gates: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`); topology; dispatch; lsp (hale/busGraph: the model's graph, so eligibility is the diagnostics pass's) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); bus_inert
+**Consumers.** check (rules 9-12, 19); model (subjects, endpoints and gates: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`); topology; dispatch; lsp (hale/busGraph: the model's graph, so eligibility is the diagnostics pass's) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); codegen (a rewritten publish, found by its call's id in the relation: the probes and the reclaimed subregion) (`crates/hale-codegen/src/codegen.rs` · `intra_locus_rewrite`)
 
 **Invariants.**
 
 - one graph, over one program shape, per snapshot; rule 10's cycle graph is a query over it
 - the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)
+- lowering reads the relation (`LoweringView::intra_locus`) by the call's id, which the call that replaces a send keeps (`IntraLocusRewrite::send`); it never classifies a call as a rewritten publish from the call's shape
 
 **Missing data.** an unknown is a hole with a stated policy
 
@@ -493,28 +496,23 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
 - `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 
-### `topics` — Migrating · derivation
+### `topics` — Canonical · derivation
 
 **Answers.** What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names.
 
 **Inputs.** topic declarations; send subjects; subscribe bounds; bindings (shm_ring)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/topic_identity.rs` · `topic_wire_subjects`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-codegen/src/codegen.rs` · `collect_topic_wire_subjects` — codegen recomputes wire subjects five times per build, plus its shm-ring, routing-key and bound tables. *Removed when:* codegen reads the topic rows.
-- `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring table. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects` — the routing-key table. *Removed when:* same.
+**Producer.** `crates/hale-types/src/topic_identity.rs` · `topic_wire_subjects`
 
 **Also owned.** `crates/hale-types/src/topic_identity.rs` · `TopicRows::of`; `crates/hale-types/src/topic_identity.rs` · `by_wire`
 
-**Consumers.** check (the topic rows, built once per bundle on the TopScope) (`crates/hale-types/src/resolve.rs` · `build_top_scope`); model (the scope's topic rows: each topic's wire, and the gate merge per wire) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); codegen (dispatch, bindings, runtime registration); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
+**Consumers.** check (the topic rows, built once per bundle on the TopScope) (`crates/hale-types/src/resolve.rs` · `build_top_scope`); model (the scope's topic rows: each topic's wire, and the gate merge per wire) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); codegen (the lowering view's rows: dispatch, bindings, codecs, runtime shape registration) (`crates/hale-codegen/src/codegen.rs` · `topics: &resolved.top.topics`); codegen (the shm-ring bindings: each bound topic's wire and payload, from its row) (`crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects`); codegen (the routing-key, on_full-fail and subscriber-bound tables, from the rows) (`crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects`); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
 
 **Invariants.**
 
 - delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)
 - a literal subject at a delivery site (a literal subscription, a literal send) names only the topic that OWNS that wire subject, `TopicRows::by_wire`, never one whose declared segment or name it happens to spell; a topic reference names its declaration; a wire subject two topics carry names neither and is an error
+- lowering reads the topic rows of the lowering view's scope (`Cx::topics`, over the program it lowers): a topic's wire subject, payload, routing key, bound and on_full policy come from its row, and codegen computes no wire subject of its own
 
 **Missing data.** an unknown is a hole with a stated policy
 
@@ -524,7 +522,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×2
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `TopicRows::of(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×1, `crates/hale-types/src/resolve.rs` ×1
 - `by_wire(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
 
@@ -627,33 +625,34 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
-- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
-- `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
+- `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
 
-### `flows` — Migrating · derivation
+### `flows` — Canonical · derivation
 
 **Answers.** Which children are flows (released per completion) and which are resident.
 
-**Inputs.** release declarations; accept declarations
+**Inputs.** release declarations; accept declarations; declared loci and type aliases (handler_routing's resolver); import renames
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/flows.rs` · `survey`
+**Producer.** `crates/hale-types/src/flows.rs` · `survey`
 
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-codegen/src/locus/instantiation.rs` · `release_param` — codegen classifies a flow by `release_param == L` at three sites (run elision, run-end reclaim, the release call). *Removed when:* codegen reads the flow row.
-- `crates/hale-types/src/check.rs` · `check_accept_release` — the checker's own accept/release survey by type name. *Removed when:* a law over the rows.
-
-**Consumers.** check --flows; codegen
+**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`); codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies) (`crates/hale-codegen/src/codegen.rs` · `specialize(`)
 
 **Invariants.**
 
-- flows.rs states it mirrors codegen (GH #736); the row ends the mirror
+- a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own
+- the flow facts cover the specializations lowering creates: a clause whose type mentions its owner's type parameters names no locus by itself and carries its template (`FlowClause::template`: the owner's identity, its parameters in order, the type as written); `FlowRows::specialize` answers for one specialization by resolving the template's type under the substitution lowering's synthesis applied, so `Manager<Worker>`'s `release(c: T)` makes `Worker` a flow exactly as a concrete `release(c: Worker)` does
+- the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/release_reclaims_flow.rs; crates/hale-codegen/tests/release_two_parents.rs
+**Focused tests.** crates/hale-codegen/tests/release_reclaims_flow.rs; crates/hale-codegen/tests/release_two_parents.rs; crates/hale-codegen/tests/release_generic_owner.rs; tests/hale/release_generic_owner_test.hl; crates/hale-types/src/flows.rs (a_clause_names_the_locus_lowering_names, a_template_clause_names_the_specialization_s_argument)
 
 **Spec.** spec/semantics.md § release(c) and flow children
+
+**Guarded seams.**
+
+- `flows::survey(` may be referenced from: `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
 ### `restart` — Migrating · derivation
 
@@ -1141,31 +1140,32 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/semantics.md § lifecycle
 
-### `bus_inert` — Migrating · derivation
+### `bus_inert` — Canonical · derivation
 
 **Answers.** Whether the program can ever have a bus cell in flight, so drains can be elided.
 
-**Inputs.** bus_graph; stdlib_surface (which namespaces publish)
+**Inputs.** the user program's declarations (topics, perspectives, bus and bindings blocks, accepts); the names the user program spells (`hale_syntax::names`); the stdlib's bus-taint column (which `std::` namespaces reach bus surface)
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer.** `crates/hale-types/src/bus_inert.rs` · `bus_inert`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/bus_inert.rs` · `bus_tainted_namespaces`; `crates/hale-syntax/src/names.rs` · `for_each_spelled`
 
-- `crates/hale-codegen/src/codegen.rs` · `let dbg = format!("{:?}", program.items);` — decided by searching the program's Debug string for `__Std`, `name: "std"` and tainted namespaces. *Removed when:* a query over the message graph.
-- `crates/hale-codegen/src/codegen.rs` · `stdlib_bus_tainted_namespaces` — the stdlib taint fixpoint, also over Debug strings, cached per process. *Removed when:* a column of the stdlib_surface rows.
-- `crates/hale-types/src/resolved.rs` · `user` — the resolved program carries the desugared user program a second time so lowering's tier-1 bus-inert scan reads the same Debug text it always did. *Removed when:* phase 3, when the bus-inert verdict is a row of the resolved program, computed structurally and shadowed against the scan: lowering still decides it from the Debug text (`bus_inert` in `build_resolved`), and no structural verdict exists to shadow it against (at the phase-2 close).
-
-**Consumers.** codegen (`crates/hale-codegen/src/bus/runtime.rs` · `emit_bus_drain`)
+**Consumers.** the resolved program (a row of the lowering view, over the user program before the stdlib merge) (`crates/hale-types/src/resolved.rs` · `bus_inert::bus_inert(`); codegen (drain elision: the row, read) (`crates/hale-codegen/src/codegen.rs` · `resolved.bus_inert`); codegen (`crates/hale-codegen/src/bus/runtime.rs` · `emit_bus_drain`)
 
 **Invariants.**
 
-- a drain elision is a conclusion of the message graph, never of a string
+- a drain elision is a conclusion of structural rows, never of a rendering: the declarations the user program carries, and the names it spells (`hale_syntax::names`, an exhaustive walk) against the stdlib's bus-taint column (`bus_tainted_namespaces`, a fixpoint over the stdlib's declarations by the same walk); lowering reads the verdict (`LoweringView::bus_inert`) and derives none
+- the test is by name and over-approximates (a local spelled like a tainted namespace keeps the drains); a query over the message graph that follows which stdlib subscribers a program actually reaches would elide more, and is a separate change with its own shadow
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/drain_elision.rs; crates/hale-codegen/tests/log_routing.rs
+**Focused tests.** crates/hale-codegen/tests/drain_elision.rs; crates/hale-codegen/tests/log_routing.rs; crates/hale-types/src/bus_inert.rs (the_verdict_reads_declarations_and_names)
 
 **Spec.** spec/runtime.md § drain
+
+**Guarded seams.**
+
+- `bus_inert(` may be referenced from: `crates/hale-types/src/bus_inert.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ## Layer 8 — lowering
 
@@ -1311,24 +1311,21 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×1
 
-### `demand` — Migrating · derivation
+### `demand` — Canonical · derivation
 
-**Answers.** Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.
+**Answers.** Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.
 
 **Inputs.** seed_loading; desugar_sequence; snapshot_identity; the config (target, api, api roles, environment, the check's rules); editor overlays (LSP); a consumer's request
 
-**Producer (today's authority, migrating).** `crates/hale-frontend/src/snapshot.rs` · `Snapshot`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-lsp/src/lib.rs` · `document_symbols` — textDocument/documentSymbol parses its one buffer itself (`parse_source`, file-local spans): a syntactic outline of the open file, answered while another member of the seed does not parse; every other request reads the snapshot. *Removed when:* the snapshot keeps each member's own program beside the merged one.
+**Producer.** `crates/hale-frontend/src/snapshot.rs` · `Snapshot`
 
 **Also owned.** `crates/hale-frontend/src/snapshot.rs` · `demand_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_editor_scope`; `crates/hale-frontend/src/snapshot.rs` · `demand_bus_graph`; `crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`; `crates/hale-frontend/src/snapshot.rs` · `demand_handlers`; `crates/hale-frontend/src/snapshot.rs` · `demand_effects`; `crates/hale-frontend/src/snapshot.rs` · `demand_effect_certificates`; `crates/hale-frontend/src/snapshot.rs` · `demand_model`; `crates/hale-frontend/src/snapshot.rs` · `demand_check`; `crates/hale-frontend/src/snapshot.rs` · `demand_lowering`; `crates/hale-frontend/src/snapshot.rs` · `from_program`; `crates/hale-frontend/src/snapshot.rs` · `SnapshotKey`
 
-**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); the checker's rules (the handler rows: duplicate handlers, `@supervised`), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion (`crates/hale-frontend/src/snapshot.rs` · `CheckInputs`); topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `api_surface`); the model dump (`--dump-model`: the check's own model when it judged a law) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity (build, run, replay: the model hash and the obs ids from the snapshot's model, the plan digest from its lowering view) (`crates/hale-cli/src/shared/options.rs` · `model_identity`); build (`crates/hale-cli/src/verbs/build.rs` · `demand_lowering`); run <file> and run <dir> (`crates/hale-cli/src/verbs/run.rs` · `demand_lowering`); test (a build config for the host, the dev profile) (`crates/hale-cli/src/verbs/test.rs` · `demand_lowering`); replay (the identity admitted before lowering) (`crates/hale-cli/src/verbs/replay.rs` · `demand_lowering`); bench (the driver an overlay on the bench file) (`crates/hale-cli/src/verbs/bench.rs` · `demand_lowering`); the test harness (`Snapshot::from_program`, lowering not gated on a check) (`crates/hale-codegen/src/codegen.rs` · `demand_lowering`); lsp (diagnostics: one snapshot per document event) (`crates/hale-lsp/src/lib.rs` · `demand_check`); lsp (every request loads the snapshot the diagnostics load, `editor_snapshot`, one per request) (`crates/hale-lsp/src/lib.rs` · `editor_snapshot`); lsp (definition, placement, the allocation survey) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`); lsp (hale/busGraph) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); model (the effect rows, demanded with the graphs it reads) (`crates/hale-frontend/src/snapshot.rs` · `demand_effects`); the effects manifest (`--dump-effects-manifest`, `--check-effects-manifest`) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effects`); replay (the live-effects gate) (`crates/hale-cli/src/verbs/replay.rs` · `demand_effects`); the check's laws (their certificate evidence reads the typing's effects certificate report) (`crates/hale-frontend/src/snapshot.rs` · `demand_effect_certificates`); topology (the artifact's law evidence reads the same report) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effect_certificates`)
+**Consumers.** check (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_check`); the checker's rules (the handler rows: duplicate handlers, `@supervised`), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion (`crates/hale-frontend/src/snapshot.rs` · `CheckInputs`); topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `api_surface`); the model dump (`--dump-model`: the check's own model when it judged a law) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity (build, run, replay: the model hash and the obs ids from the snapshot's model, the plan digest from its lowering view) (`crates/hale-cli/src/shared/options.rs` · `model_identity`); build (`crates/hale-cli/src/verbs/build.rs` · `demand_lowering`); run <file> and run <dir> (`crates/hale-cli/src/verbs/run.rs` · `demand_lowering`); test (a build config for the host, the dev profile) (`crates/hale-cli/src/verbs/test.rs` · `demand_lowering`); replay (the identity admitted before lowering) (`crates/hale-cli/src/verbs/replay.rs` · `demand_lowering`); bench (the driver an overlay on the bench file) (`crates/hale-cli/src/verbs/bench.rs` · `demand_lowering`); the test harness (`Snapshot::from_program`, lowering not gated on a check) (`crates/hale-codegen/src/codegen.rs` · `demand_lowering`); lsp (diagnostics: one snapshot per document event) (`crates/hale-lsp/src/lib.rs` · `demand_check`); lsp (every request loads the snapshot the diagnostics load, `editor_snapshot`, one per request) (`crates/hale-lsp/src/lib.rs` · `editor_snapshot`); lsp (definition, placement, the allocation survey) (`crates/hale-lsp/src/lib.rs` · `demand_scope`); lsp (completion, hover, references, enforcement) (`crates/hale-lsp/src/lib.rs` · `demand_editor_scope`); lsp (hale/busGraph) (`crates/hale-lsp/src/lib.rs` · `demand_bus_graph`); model (the effect rows, demanded with the graphs it reads) (`crates/hale-frontend/src/snapshot.rs` · `demand_effects`); the effects manifest (`--dump-effects-manifest`, `--check-effects-manifest`) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effects`); replay (the live-effects gate) (`crates/hale-cli/src/verbs/replay.rs` · `demand_effects`); the check's laws (their certificate evidence reads the typing's effects certificate report) (`crates/hale-frontend/src/snapshot.rs` · `demand_effect_certificates`); topology (the artifact's law evidence reads the same report) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_effect_certificates`); lsp (documentSymbol: the open file's member program, its own declarations as written) (`crates/hale-lsp/src/lib.rs` · `snap.member(`)
 
 **Invariants.**
 
+- every editor request reads the snapshot: the outline reads the open file's member program (`Snapshot::member`, the file as it parsed, before the merge and the sequence), so it answers while another member does not parse or an import does not resolve (the editor's load keeps the members of a seed whose link it refused, every family blocked) and lists only what the file itself declares; a file that does not parse has no outline
 - a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: sync inference builds a single-program top scope per file before the sequence, and the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `apply_sync_inference` (sync_inference, desugar_sequence), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)
 - a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads
 - the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it
@@ -1419,9 +1416,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | 1 | decides (`digests`) |
 | `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | 1 | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", f.body)` | 1 | decides (`alloc_summary`) |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | 1 | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | 1 | renders |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", program.items)` | 1 | decides (`bus_inert`) |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | 1 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | 2 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity)` | 1 | decides (`placement`) |

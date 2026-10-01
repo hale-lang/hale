@@ -658,7 +658,7 @@ pub(crate) fn run_check_impl_labelled(
     if std::env::args().any(|a| a == "--flows") {
         let progs: Vec<&hale_syntax::ast::Program> =
             bundle.programs.values().copied().collect();
-        let flows = hale_types::flows::survey(&progs);
+        let flows = hale_types::flows::survey(&progs, &bundle.import_renames);
         eprint!("{}", render_flows(&flows, file_bases, sources, import_renames));
     }
     if std::env::args().any(|a| a == "--strict-secret") {

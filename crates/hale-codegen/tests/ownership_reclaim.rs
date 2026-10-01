@@ -35,6 +35,8 @@ mod method_scratch_reclaim;
 mod noalias_self;
 #[path = "reclamation_spine.rs"]
 mod reclamation_spine;
+#[path = "release_generic_owner.rs"]
+mod release_generic_owner;
 #[path = "release_reclaims_flow.rs"]
 mod release_reclaims_flow;
 #[path = "release_two_parents.rs"]

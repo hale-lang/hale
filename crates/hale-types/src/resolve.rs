@@ -25,11 +25,48 @@ pub struct TopScope {
     /// F.40 phase 2.1b: the bundle's topic rows, built once here; the
     /// checker reads a bus subject through them.
     pub topics: crate::topic_identity::TopicRows,
+    /// The name table the checker resolves a type expression against:
+    /// every locus, type and perspective the scope declares (the
+    /// bundled stdlib's and the injected error types included), each
+    /// alias's expanded target, and the bundle's import renames. A
+    /// projection of `symbols`, built once with them, so the checker
+    /// keeps no second table. Interfaces are left out on purpose: an
+    /// interface-typed slot resolves to `Unknown` in the checker (see
+    /// `Ty::assignable_from`).
+    pub names: KnownNames,
 }
 
 impl TopScope {
     pub fn lookup(&self, name: &str) -> Option<&TopSymbol> {
         self.symbols.get(name)
+    }
+
+    /// The scope's name table, from its symbols and the bundle's
+    /// renames: see [`TopScope::names`].
+    fn name_table(&self, import_renames: &[(Vec<String>, String)]) -> KnownNames {
+        let mut m = KnownNames::default();
+        // GH #833: without the bundle's rename rows a qualified
+        // cross-seed annotation would come back `Unknown` in the
+        // checker even though `build_top_scope` had just typed the
+        // same annotation in a signature.
+        m.set_imports(import_renames);
+        for (name, sym) in &self.symbols {
+            if matches!(
+                sym,
+                TopSymbol::Locus(_) | TopSymbol::Type(_) | TopSymbol::Perspective(_)
+            ) {
+                m.insert(name.clone(), sym.span());
+            }
+            // GH #759: the alias targets, already expanded by the
+            // register pass, so a `type Thing = Int;` use resolves to
+            // `Int` and unifies with it.
+            if let TopSymbol::Type(info) = sym {
+                if let TypeKind::Alias(t) = &info.kind {
+                    m.set_alias(name.clone(), t.clone());
+                }
+            }
+        }
+        m
     }
 }
 
@@ -418,6 +455,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     check_stdlib_error_shadowing(&scope, &stdlib_usage, &mut diags);
 
     scope.topics = topics;
+    scope.names = scope.name_table(&bundle.import_renames);
     (scope, diags)
 }
 

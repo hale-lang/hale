@@ -494,9 +494,7 @@ fn quantitative_report(
         import_renames,
     );
     let frames = frame_map(programs);
-    let names = crate::effects::effect_names_of(programs);
-    let declared = crate::effects::declared_of(programs);
-    let defs = crate::effects::defs_of(programs);
+    let classes = crate::effect_classes::EffectClassTable::of(programs);
     let mut diags = Vec::new();
     let mut rows = Vec::new();
     // Where each row's own diagnostics begin (Change 5h) — the
@@ -516,23 +514,8 @@ fn quantitative_report(
             // DECLARED class — the misspelt-class rule, applied to
             // budget keys.
             if let QuantDim::UserClass(i) = dim {
-                if !declared.contains(i) {
-                    let bad = names
-                        .get(*i as usize)
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut near: Vec<&String> = names
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| declared.contains(&(*j as u16)))
-                        .map(|(_, n)| n)
-                        .filter(|n| crate::effects::close(n, &bad))
-                        .collect();
-                    near.sort();
-                    let hint = match near.first() {
-                        Some(n) => format!(" Did you mean `{}`?", n),
-                        None => String::new(),
-                    };
+                if !classes.declared().contains(i) {
+                    let (bad, hint) = classes.undeclared(*i);
                     diags.push(Diag::ty(
                         *span,
                         format!(
@@ -560,12 +543,7 @@ fn quantitative_report(
                 }
                 _ => {
                     let mask = match dim {
-                        QuantDim::UserClass(i) => {
-                            crate::frontier::class_mask_with(
-                                EffectClass::User(*i),
-                                &defs,
-                            )
-                        }
+                        QuantDim::UserClass(i) => classes.mask(EffectClass::User(*i)),
                         _ => crate::stdlib_surface::EffectSet::PURE,
                     };
                     let mut path = Vec::new();
@@ -581,7 +559,7 @@ fn quantitative_report(
                 subject: key.display(),
                 form: format!(
                     "bound {} <= {} on paths from {{{}}}",
-                    dim_display(*dim, &names),
+                    dim_display(*dim, classes.names()),
                     cap,
                     key.display()
                 ),
@@ -619,7 +597,7 @@ fn quantitative_report(
                     "budget exceeded: `{}` declares `@budget({} = {})` but \
                      the compiler measures {} {}.{}",
                     key.display(),
-                    dim_display(*dim, &names),
+                    dim_display(*dim, classes.names()),
                     cap,
                     measured.render(),
                     dim_unit(*dim),

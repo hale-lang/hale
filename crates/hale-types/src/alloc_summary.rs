@@ -1083,13 +1083,13 @@ impl AllocSummary {
 /// #345: the classes an `@effects(is: {…})` clause declares.
 fn carried_by(
     effects: &[hale_syntax::ast::EffectAssert],
-    defs: &[Option<Vec<hale_syntax::ast::EffectClass>>],
+    classes: &crate::effect_classes::EffectClassTable,
 ) -> crate::stdlib_surface::EffectSet {
     let mut acc = crate::stdlib_surface::EffectSet::PURE;
     for a in effects {
         if let hale_syntax::ast::EffectAssert::Carries(cs) = a {
             for c in cs {
-                acc = acc.union(crate::frontier::class_mask_with(*c, defs));
+                acc = acc.union(classes.mask(*c));
             }
         }
     }
@@ -1130,6 +1130,9 @@ pub fn summarize_identified(
 ) -> AllocSummary {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
+    // #345: what each `@effects(is: {…})` declares, through the bundle's
+    // one class table.
+    let classes = crate::effect_classes::EffectClassTable::of(programs);
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
@@ -1345,7 +1348,7 @@ pub fn summarize_identified(
             match item {
                 TopDecl::Fn(decl) => {
                     {
-                        let c = carried_by(&decl.effects, &program.effect_defs);
+                        let c = carried_by(&decl.effects, &classes);
                         if c.0 != 0 {
                             carries.insert(
                                 FnKey::free_fn(decl.name.name.clone()),
@@ -1438,7 +1441,7 @@ pub fn summarize_identified(
                             }
                             LocusMember::Fn(decl) => {
                                 let key = FnKey::method(locus.clone(), decl.name.name.clone());
-                                let c = carried_by(&decl.effects, &program.effect_defs);
+                                let c = carried_by(&decl.effects, &classes);
                                 if c.0 != 0 {
                                     carries.insert(key.clone(), c);
                                 }

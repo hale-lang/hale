@@ -364,7 +364,8 @@ pub fn dump_topology_over(
     // walk — what an effect-class claim endpoint evaluates against.
     // PURE fns are omitted; an unclassifiable walk renders as
     // ["unclassified"], honestly.
-    let effect_names = crate::effects::effect_names_of(&programs);
+    let effect_classes = crate::effect_classes::EffectClassTable::of(&programs);
+    let effect_names = effect_classes.names();
     let ffi = crate::effects::ffi_names(&programs);
     let mut derived_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();

@@ -18,6 +18,7 @@ pub mod fstring;
 pub mod json_gen;
 pub mod keywords;
 pub mod lexer;
+pub mod names;
 pub mod parser;
 pub mod sites;
 pub mod span;
@@ -44,6 +45,37 @@ pub fn parse_source(source: &str) -> Result<ast::Program, Vec<Diag>> {
 /// entry file. `base` is a virtual coordinate; no combined source string
 /// is built.
 pub fn parse_source_at(source: &str, base: u32) -> Result<ast::Program, Vec<Diag>> {
+    parse_source_at_in(source, base, &mut ast::EffectClasses::default())
+}
+
+/// [`parse_source_at`], interning user effect classes into `classes`:
+/// the load's one table, which every seed of the load is parsed
+/// through, so a class has one index in every seed.
+pub fn parse_source_at_in(
+    source: &str,
+    base: u32,
+    classes: &mut ast::EffectClasses,
+) -> Result<ast::Program, Vec<Diag>> {
+    let tokens = lex_at(source, base)?;
+    // GH #765: the PARSER's diagnostics must NOT be shifted again — it
+    // takes the tokens `lex_at` shifted, whose spans already carry
+    // `base`, and cites them. Shifting a second time put a parse error
+    // at `2 * base + local`, outside its own file's `base..base+len`
+    // range: the span demultiplexed to no file at all (an imported
+    // seed's parse error rendered with no filename, positioned against
+    // whichever source happened to be first) and a consumer that
+    // un-shifts once — `parse_files`, `hale lsp` — landed `base` bytes
+    // past the real position, so a parse error in the second or later
+    // file of a seed pointed at the wrong line.
+    // (GH #725 found the same double shift independently, from the
+    // reserved-word cascade: the same one-line fix.)
+    parser::parse_in(tokens, source, classes)
+}
+
+/// The tokens [`parse_source_at`] parses: `source` lexed, every span
+/// (a diagnostic's too) offset by `base`. A caller that parses one text
+/// twice (`parser::parse_in`) lexes it once.
+pub fn lex_at(source: &str, base: u32) -> Result<Vec<Token>, Vec<Diag>> {
     // The LEXER works on the unshifted source, so its diagnostics have
     // to be shifted here.
     let mut tokens =
@@ -65,17 +97,5 @@ pub fn parse_source_at(source: &str, base: u32) -> Result<ast::Program, Vec<Diag
             }
         }
     }
-    // GH #765: the PARSER's diagnostics must NOT be shifted again — it
-    // takes the tokens above, whose spans already carry `base`, and
-    // cites them. Shifting a second time put a parse error at
-    // `2 * base + local`, outside its own file's `base..base+len`
-    // range: the span demultiplexed to no file at all (an imported
-    // seed's parse error rendered with no filename, positioned against
-    // whichever source happened to be first) and a consumer that
-    // un-shifts once — `parse_files`, `hale lsp` — landed `base` bytes
-    // past the real position, so a parse error in the second or later
-    // file of a seed pointed at the wrong line.
-    // (GH #725 found the same double shift independently, from the
-    // reserved-word cascade: the same one-line fix.)
-    parse(tokens, source)
+    Ok(tokens)
 }

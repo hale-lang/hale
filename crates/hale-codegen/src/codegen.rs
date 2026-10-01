@@ -871,6 +871,20 @@ impl LtoMode {
 /// lld is the single biggest dev-loop latency lever. Linux-only
 /// (macOS's system ld64 is fine and ld64.lld is not a drop-in).
 /// `BuildOptions::no_lld` forces the default linker for debugging.
+/// A topic payload's struct name when it is written as one bare,
+/// non-generic segment: the only payload shape the shm-ring and
+/// routing-key lowering handle today.
+fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
+    match payload {
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 && generic_args.is_empty() =>
+        {
+            Some(path.segments[0].name.clone())
+        }
+        _ => None,
+    }
+}
+
 fn lld_on_path() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -1133,12 +1147,9 @@ pub fn build_resolved(
     // `program_has_offthread` below for why it matters.
     let has_offthread_placement =
         hale_types::bus_graph::has_offthread_placement(&resolved.bundle());
-    // The view the frontend produced (`hale_types::resolved`): `user`
-    // is the desugared program before the stdlib merge, which only the
-    // tier-1 bus-inert scan below reads; `merged` is what lowering
-    // walks.
+    // The view the frontend produced (`hale_types::resolved`): `merged`
+    // is what lowering walks.
     let LoweringView {
-        user,
         merged,
         owner_table,
         fresh_locus_factories,
@@ -1149,7 +1160,6 @@ pub fn build_resolved(
         import_renames,
         ..
     } = resolved;
-    let program = user;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
@@ -1357,78 +1367,14 @@ pub fn build_resolved(
     module.set_data_layout(&target_data.get_data_layout());
     module.set_triple(&triple);
 
-    // Static drain elision (2026-08-03, bench attribution): a bundle
-    // that can never enqueue a bus cell makes every emitted
+    // Static drain elision (2026-08-03, bench attribution): a program
+    // that can never have a bus cell in flight makes every emitted
     // `lotus_bus_queue_drain` a provable no-op — and codegen emits one
     // at every statement boundary, scope exit, `yield` and sleep
-    // slice, so a compute-only program pays the call thousands of
-    // times for nothing (two per locus instantiation on the
-    // birth+dissolve microbench). Cells are produced only by
-    // subscriber dispatch, wire ingest into a registered subscriber,
-    // the cross-pool accept handoff, and transport-loss dispatch.
-    //
-    // Three tiers, each conservative:
-    //  1. The USER program (all user seeds — imports are merged
-    //     before codegen) must declare no topics, no bus blocks, no
-    //     bindings, no accepts and no perspectives. Runtime bus
-    //     config (LOTUS_BUS_CONFIG) cannot defeat this: with no
-    //     declared topics there is nothing to bind, and with no
-    //     subscribers an ingested message registers no cell.
-    //  2. The STDLIB also carries bus surface (`std::log` sinks,
-    //     `std::http`, `std::io::tcp`, `std::bus`) — merged below,
-    //     so tier 1 alone was unsound (the log_routing CI failure:
-    //     a bus-free user program whose `std::log` sink never got
-    //     its events drained). A user program that references no
-    //     stdlib path at all (`name: "std"` absent from its AST,
-    //     and no direct `__Std` mention) cannot instantiate a
-    //     stdlib subscriber, so it stays inert.
-    //  3. A program that DOES reference `std::` paths is inert only
-    //     if none of the referenced namespaces can transitively
-    //     reach a bus-surfaced stdlib decl
-    //     (`stdlib_bus_tainted_namespaces`, a decl-level taint
-    //     fixpoint over the parsed stdlib).
-    //
-    // The reference checks run on the Debug rendering of the user
-    // AST. Deliberate: a hand-rolled expression walker would
-    // silently MISS newly-added Expr variants — an unsound elision —
-    // while substring containment can only over-match, which merely
-    // keeps the drains. A user identifier that happens to be named
-    // like a tainted namespace ("log", "http") costs the
-    // optimization, never correctness.
-    let bus_inert = {
-        // GH #884: `flat_decls`, not `items.iter()` — a topic, a
-        // perspective or a locus with a `bus` block inside a
-        // `module { }` fell through the catch-all as clean, which
-        // would elide the drains for a program that does have bus
-        // surface. Tier 1 is the conservative gate; it has to see
-        // every declaration the resolver sees.
-        let user_clean = hale_syntax::ast::flat_decls(&program.items)
-            .all(|it| match it {
-                TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
-                TopDecl::Locus(l) => l.members.iter().all(|m| match m {
-                    LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
-                    LocusMember::Lifecycle(ld) => {
-                        ld.kind != LifecycleKind::Accept
-                    }
-                    _ => true,
-                }),
-                _ => true,
-            });
-        if !user_clean {
-            false
-        } else {
-            let dbg = format!("{:?}", program.items);
-            if dbg.contains("__Std") {
-                false
-            } else if !dbg.contains("name: \"std\"") {
-                true
-            } else {
-                !stdlib_bus_tainted_namespaces().iter().any(|ns| {
-                    dbg.contains(&format!("name: \"{}\"", ns))
-                })
-            }
-        }
-    };
+    // slice, so a compute-only program would pay the call thousands of
+    // times for nothing. The verdict is the resolved program's row
+    // (`hale_types::bus_inert`), read here and derived nowhere else.
+    let bus_inert = resolved.bus_inert;
 
     let mut cx = Cx {
         context: &context,
@@ -1444,6 +1390,10 @@ pub fn build_resolved(
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
         program: merged,
+        topics: &resolved.top.topics,
+        flows: &resolved.flows,
+        specialized_flows: Vec::new(),
+        intra_locus: &resolved.intra_locus,
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
@@ -3146,94 +3096,6 @@ fn locate_ts_shim_staticlib(options: &BuildOptions) -> Option<PathBuf> {
     None
 }
 
-
-
-/// Look up the mangled name for a bundled-stdlib path (`std::*`).
-/// Returns `None` when the path isn't recognized; callers then
-/// surface the path-as-typed in their error message.
-/// Which `std::` namespaces (second path segment) can transitively
-/// reach a bus-surfaced stdlib decl? Drives tier 3 of the static
-/// drain elision above. Decl-level taint fixpoint over the parsed
-/// stdlib: seeds are loci with a bus / bindings block or an accept
-/// lifecycle (and perspectives); taint propagates to any decl whose
-/// AST mentions a tainted decl's name (checked as the exact
-/// `name: "<ident>"` Debug rendering, so short names can't
-/// over-cascade), covering stdlib free fns that instantiate a
-/// subscriber internally (`std::http::serve` → `Server`). Tainted
-/// decls map to user-reachable namespaces through PATH_RENAMES —
-/// the complete user-visible stdlib surface (stdlib_mangled_for_path
-/// is table-driven from it); tainted decls with no table entry are
-/// reachable only via a literal `__Std` mention, which tier 2
-/// rejects wholesale. Computed once per process: AP_SOURCE is a
-/// compile-time constant, so the first call parses it for itself
-/// (the resolved program carries the stdlib only merged into the
-/// user's) and every later call reads the cached answer.
-fn stdlib_bus_tainted_namespaces() -> &'static [String] {
-    use std::sync::OnceLock;
-    static TAINT: OnceLock<Vec<String>> = OnceLock::new();
-    TAINT.get_or_init(|| {
-        // `resolve_program` parsed the same text before any build
-        // reaches here, and refuses the build when it does not parse.
-        let stdlib = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-            .expect("the bundled stdlib parses (resolve_program parsed it first)");
-        let mut decls: Vec<(String, bool, String)> = Vec::new();
-        for it in &stdlib.items {
-            let (name, surface) = match it {
-                TopDecl::Locus(l) => (
-                    l.name.name.clone(),
-                    l.members.iter().any(|m| match m {
-                        LocusMember::Bus(_)
-                        | LocusMember::Bindings(_) => true,
-                        LocusMember::Lifecycle(ld) => {
-                            ld.kind == LifecycleKind::Accept
-                        }
-                        _ => false,
-                    }),
-                ),
-                TopDecl::Perspective(p) => (p.name.name.clone(), true),
-                TopDecl::Fn(f) => (f.name.name.clone(), false),
-                TopDecl::Type(t) => (t.name.name.clone(), false),
-                TopDecl::Topic(t) => (t.name.name.clone(), false),
-                TopDecl::Const(c) => (c.name.name.clone(), false),
-                _ => continue,
-            };
-            decls.push((name, surface, format!("{:?}", it)));
-        }
-        let mut tainted: std::collections::BTreeSet<String> = decls
-            .iter()
-            .filter(|(_, s, _)| *s)
-            .map(|(n, _, _)| n.clone())
-            .collect();
-        loop {
-            let mut changed = false;
-            for (n, _, dbg) in &decls {
-                if tainted.contains(n) {
-                    continue;
-                }
-                if tainted
-                    .iter()
-                    .any(|t| dbg.contains(&format!("name: \"{}\"", t)))
-                {
-                    tainted.insert(n.clone());
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let mut ns: Vec<String> = hale_stdlib::PATH_RENAMES
-            .iter()
-            .filter(|(_, m)| tainted.contains(*m))
-            .filter_map(|(p, _)| p.get(1).map(|s| s.to_string()))
-            .collect();
-        ns.sort();
-        ns.dedup();
-        ns
-    })
-}
-
-
 /// GH #767: most stack bytes one fn's array literals may take.
 ///
 /// 8 KiB is one eighth of `LOTUS_CORO_STACK_BYTES` (the 64 KiB
@@ -3311,6 +3173,24 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// returns and self-field stores keep their zero-copy skips.
     pub(crate) cell_owned_clone: bool,
     pub(crate) program: &'p Program,
+    /// The topic rows over `program` (the lowering view's scope): what
+    /// each topic is on the wire and the policies its sends and
+    /// subscriptions are held to. Lowering reads a topic's wire
+    /// subject, payload, routing key and bound here and derives none.
+    pub(crate) topics: &'p hale_types::topic_identity::TopicRows,
+    /// The flow rows over `program` (the lowering view's): a locus is a
+    /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
+    /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
+    pub(crate) flows: &'p hale_types::flows::FlowRows,
+    /// The loci the specializations lowering created make flows: each
+    /// generic owner's template clause, specialized by the row with the
+    /// instantiation queue's own substitution (`(owner, child)`, the
+    /// owner by its mangled name). Filled before any body is lowered.
+    pub(crate) specialized_flows: Vec<(String, String)>,
+    /// Every send the intra-locus rewrite replaced with a direct handler
+    /// call (the lowering view's relation): the call keeps the send's
+    /// id, so lowering finds a rewritten publish by the call's id.
+    pub(crate) intra_locus: &'p [hale_syntax::desugar::IntraLocusRewrite],
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
     pub(crate) current_fn: Option<FunctionValue<'ctx>>,
@@ -7645,16 +7525,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self_ptr: self_arg,
                 fields: info.fields.clone(),
             });
-            // A locus is a flow iff some declared locus has a
-            // `release(c: T)` whose child type T is this locus.
-            let release_fn = self.user_loci.values().find_map(|p| {
-                match &p.release_param {
-                    Some((_, child)) if child == locus_name => {
-                        p.methods.get("release").copied()
-                    }
-                    _ => None,
-                }
-            });
+            // A locus is a flow iff the flow row names it: some declared
+            // locus has a `release(c: T)` whose T denotes this locus.
+            let is_flow = self.is_flow(locus_name);
             // drain (children first, then self).
             self.emit_locus_field_drains(&info, self_arg, locus_name)?;
             if let Some(drain_fn) = info.methods.get("drain") {
@@ -7673,13 +7546,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             //
             // GH #526 F.6: the fn CALLED is the one the accept'ing
             // parent stored in `__owner_release` at accept dispatch,
-            // not `release_fn` (which is only "some parent releases
-            // this type" — the flow-ness decision). Two parents may
-            // accept one child type; each owner's own body must run
-            // over its own self. A null pointer (this owner declares no
-            // release for the type, or the child was never accept'd)
-            // skips the call.
-            if let Some(rfn) = release_fn {
+            // not one picked by type (flow-ness is only "some parent
+            // releases this type"). Two parents may accept one child
+            // type; each owner's own body must run over its own self. A
+            // null pointer (this owner declares no release for the type,
+            // or the child was never accept'd) skips the call.
+            if is_flow {
+                // every release bookend is `fn(parent, child)` (decl.rs)
+                let release_ty = self
+                    .context
+                    .void_type()
+                    .fn_type(&[ptr_t.into(), ptr_t.into()], false);
                 let owner_ptr = self
                     .builder
                     .build_struct_gep(
@@ -7730,7 +7607,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(fire_bb);
                 self.builder
                     .build_indirect_call(
-                        rfn.get_type(),
+                        release_ty,
                         rel_fn_ptr,
                         &[owner.into(), self_arg.into()],
                         &format!("{}.reclaim.release.call", locus_name),
@@ -8589,19 +8466,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // idempotent arena-destroy latch makes a later
             // parent-dissolve of the same locus a no-op.
             //
-            // A locus is a flow iff some declared locus has a
-            // `release(c: T)` whose child type T is this locus —
-            // then `release_fn` is that parent's release method.
-            let release_fn = self.user_loci.values().find_map(|p| {
-                match &p.release_param {
-                    Some((_, child)) if child == locus_name => {
-                        p.methods.get("release").copied()
-                    }
-                    _ => None,
-                }
-            });
+            // A locus is a flow iff the flow row names it: some declared
+            // locus has a `release(c: T)` whose T denotes this locus.
             let i64_t = self.context.i64_type();
-            let terminating = if release_fn.is_some() {
+            let terminating = if self.is_flow(locus_name) {
                 // Flow: run-completion always reclaims.
                 self.context.bool_type().const_int(1, false)
             } else {
@@ -9166,6 +9034,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Self::synthesize_generic_locus_instantiation(
                         template, &args, &mangled,
                     )?;
+                // The flow row answers for this specialization: the
+                // template's release clauses with the substitution the
+                // synthesis just applied.
+                let subst = Self::generic_locus_subst(template, &args);
+                for child in self
+                    .flows
+                    .specialize(template, |t| Self::substitute_type_expr(t, &subst))
+                {
+                    self.specialized_flows.push((mangled.clone(), child));
+                }
                 // Walk synthesized locus's substituted member
                 // type positions for nested generic uses.
                 for member in &synthesized.members {
@@ -9802,19 +9680,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rows key by the joined dot-path, so a parented topic's
             // shape registered under its bare subject was never found
             // and its manifest row hashed the empty shape.
-            let wire = hale_types::topic_identity::topic_wire_subjects(
-                &self.program.items,
-            );
             let shapes: Vec<(String, String)> = self
                 .program
                 .items
                 .iter()
                 .filter_map(|it| match it {
                     TopDecl::Topic(t) => {
-                        let subj = wire
-                            .get(&t.name.name)
-                            .cloned()
-                            .unwrap_or_else(|| t.name.name.clone());
+                        let subj = self.topic_wire(&t.name.name);
                         let shape = hale_types::topic_identity::
                             canonical_topic_shape(
                                 &self.program.items,
@@ -10221,31 +10093,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// path (which fails at codegen time for publisher-only
     /// programs).
     fn collect_shm_ring_subjects(&mut self) {
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
         let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
         let Some(l) = main_locus else { return };
-        // Walk topic decls to get each topic's payload-type
-        // name (we need this for the size_of lookup at
-        // codegen). For now require single-segment TypeExpr;
-        // post-v1 can widen.
-        let mut topic_payload: BTreeMap<String, String> = BTreeMap::new();
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
-            if let TopDecl::Topic(t) = item {
-                if let TypeExpr::Named { path, generic_args, .. } = &t.payload {
-                    if path.segments.len() == 1 && generic_args.is_empty() {
-                        topic_payload.insert(
-                            t.name.name.clone(),
-                            path.segments[0].name.clone(),
-                        );
-                    }
-                }
-            }
-        }
         for m in &l.members {
             if let LocusMember::Bindings(b) = m {
                 for entry in &b.entries {
@@ -10253,13 +10106,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name, slot_count, overflow, layout, ..
                     } = &entry.transport
                     {
-                        let subj = wire_subjects
-                            .get(&entry.topic.name)
-                            .cloned()
-                            .unwrap_or_else(|| entry.topic.name.clone());
-                        let payload_name = topic_payload
-                            .get(&entry.topic.name)
-                            .cloned()
+                        let subj = self.topic_wire(&entry.topic.name);
+                        // The topic's payload-type name, from its row
+                        // (the size_of lookup at codegen). For now a
+                        // single-segment TypeExpr only; post-v1 can
+                        // widen.
+                        let payload_name = self
+                            .topics
+                            .named(&entry.topic.name)
+                            .and_then(|row| single_segment_type_name(&row.payload))
                             .unwrap_or_default();
                         // Proposal B: resolve `layout: Name` to its
                         // decl (validated upstream in hale-types) so
@@ -10323,53 +10178,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to the legacy `lotus_bus_dispatch` path when a publish's
     /// subject isn't in this map.
     fn collect_routing_key_subjects(&mut self) {
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
-            if let TopDecl::Topic(t) = item {
-                // GH #255 phase 2: record on_full-fail capacities.
-                if let (Some((cap, _)), Some(_)) =
-                    (t.bounded, t.on_full_fail)
-                {
-                    let wire = wire_subjects
-                        .get(&t.name.name)
-                        .cloned()
-                        .unwrap_or_else(|| t.name.name.clone());
-                    self.full_fail_subjects.insert(wire, cap);
-                }
-                let keyed_field = match &t.keyed_by {
-                    Some(f) => f.name.clone(),
-                    None => continue,
-                };
-                let payload_name = match &t.payload {
-                    TypeExpr::Named { path, generic_args, .. }
-                        if path.segments.len() == 1 && generic_args.is_empty() =>
-                    {
-                        path.segments[0].name.clone()
-                    }
-                    _ => continue,
-                };
-                let wire = wire_subjects
-                    .get(&t.name.name)
-                    .cloned()
-                    .unwrap_or_else(|| t.name.name.clone());
-                self.routing_key_subjects.insert(
-                    wire,
-                    RoutingKeySubjectInfo {
-                        payload_type_name: payload_name,
-                        keyed_by_field: keyed_field,
-                        policy: t.on_unmatched,
-                    },
-                );
+        for row in self.topics.iter() {
+            // GH #255 phase 2: record on_full-fail capacities.
+            if let (Some(cap), true) = (row.bounded, row.on_full_fail) {
+                self.full_fail_subjects.insert(row.wire.clone(), cap);
             }
+            let Some(keyed_field) = row.keyed_by.clone() else { continue };
+            let Some(payload_name) = single_segment_type_name(&row.payload) else { continue };
+            self.routing_key_subjects.insert(
+                row.wire.clone(),
+                RoutingKeySubjectInfo {
+                    payload_type_name: payload_name,
+                    keyed_by_field: keyed_field,
+                    policy: row.on_unmatched,
+                },
+            );
         }
         // GH #255 phase 2: subscriber shed bounds, keyed by
         // (locus, wire subject).
-        let mut wire_subjects2: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(
-            &self.program.items,
-            &mut wire_subjects2,
-        );
         for item in hale_syntax::ast::flat_decls(&self.program.items) {
             let TopDecl::Locus(l) = item else { continue };
             for member in &l.members {
@@ -10383,11 +10209,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     else {
                         continue;
                     };
-                    let canon = subject.canonical().to_string();
-                    let wire = wire_subjects2
-                        .get(&canon)
-                        .cloned()
-                        .unwrap_or(canon);
+                    let wire = self.topic_wire(subject.canonical());
                     let policy = match b.policy {
                         hale_syntax::ast::ShedPolicy::DropNew => 1u8,
                         hale_syntax::ast::ShedPolicy::DropOld => 2u8,
@@ -10688,12 +10510,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
-        // Build a name → wire_subject map for declared topics so
-        // each binding entry can resolve its topic ref. Topic-graph
-        // cycle / unknown-parent diagnostics already fired during
-        // typecheck; we just consume the resolved chain here.
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
+        // Each binding entry resolves its topic ref through the topic
+        // rows. Topic-graph cycle / unknown-parent diagnostics already
+        // fired during typecheck; we just consume the resolved chain.
 
         // Locate the (single) main locus, if any. Multiple-mains
         // would have errored in typecheck; we defensively pick the
@@ -10721,14 +10540,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         for block in bindings {
             for entry in block.entries {
-                // Resolve subject. Fall back to the topic name if
-                // the wire-subject map is missing it (defensive —
-                // typecheck would have flagged the missing topic
-                // already).
-                let subject = wire_subjects
-                    .get(&entry.topic.name)
-                    .cloned()
-                    .unwrap_or_else(|| entry.topic.name.clone());
+                // Resolve subject. Fall back to the topic name if no
+                // row declares it (defensive — typecheck would have
+                // flagged the missing topic already).
+                let subject = self.topic_wire(&entry.topic.name);
 
                 // Emit per transport spec: unix entries become
                 // __StdBusUnix{Listen,Connect}Transport locus
@@ -11832,11 +11647,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let Some(l) = main_locus else { return Ok(()) };
 
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(
-            &self.program.items, &mut wire_subjects,
-        );
-
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let saved_block = self.builder.get_insert_block();
 
@@ -11849,10 +11659,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for entry in &bb.entries {
                     let Some(codec) = &entry.codec else { continue };
                     let topic_name = entry.topic.name.clone();
-                    let subject = wire_subjects
-                        .get(&topic_name)
-                        .cloned()
-                        .unwrap_or_else(|| topic_name.clone());
+                    let subject = self.topic_wire(&topic_name);
                     let payload_type = self
                         .lookup_topic_payload_type_name(&topic_name)?;
                     to_synth.push((
@@ -12210,22 +12017,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    /// Walk every `topic Foo : Parent { subject: "..."; }` decl
-    /// and produce a (name → wire_subject) table. Wire subject is
-    /// the dot-joined chain of own-subject segments root-to-leaf;
-    /// own segment defaults to the topic name when no `subject:`
-    /// is declared.
-    fn collect_topic_wire_subjects(
-        items: &[TopDecl],
-        out: &mut BTreeMap<String, String>,
-    ) {
-        // #399: the rule moved to `hale_types::topic_identity` so
-        // bus routing, observer shape registration, and the
-        // topology artifact's exported identity all read ONE
-        // implementation.
-        out.extend(hale_types::topic_identity::topic_wire_subjects(
-            items,
-        ));
+    /// Whether `locus` is a flow (spec/semantics.md, "Flow and resident
+    /// children"): a concrete clause of the flow row names it, or a
+    /// generic owner's clause does once specialized for a specialization
+    /// lowering created.
+    pub(crate) fn is_flow(&self, locus: &str) -> bool {
+        hale_types::flows::is_flow(self.flows, locus)
+            || self.specialized_flows.iter().any(|(_, child)| child == locus)
+    }
+
+    /// The wire subject of the topic declared as `name`, read from the
+    /// topic rows (the dot-joined chain of own-subject segments
+    /// root-to-leaf; #399's one rule). A name no topic declares is its
+    /// own subject: a subscription or binding that already names a wire
+    /// subject, or a topic typecheck reported missing.
+    fn topic_wire(&self, name: &str) -> String {
+        self.topics
+            .named(name)
+            .map(|row| row.wire.clone())
+            .unwrap_or_else(|| name.to_string())
     }
 
     fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {
@@ -12844,6 +12654,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// surfaces would need m63b. The body walk for lifecycle /
     /// fn methods only substitutes let / let-tuple ascriptions
     /// (matching the m62 fn-body shallow substitution).
+    /// A generic locus's type parameters by the specialization's
+    /// arguments, by position: what its synthesis substitutes, and what
+    /// the flow row specializes the template's release clauses with.
+    fn generic_locus_subst(
+        template: &LocusDecl,
+        type_args: &[TypeExpr],
+    ) -> BTreeMap<String, TypeExpr> {
+        template
+            .generics
+            .iter()
+            .zip(type_args.iter())
+            .map(|(gp, arg)| (gp.name.name.clone(), arg.clone()))
+            .collect()
+    }
+
     fn synthesize_generic_locus_instantiation(
         template: &LocusDecl,
         type_args: &[TypeExpr],
@@ -12863,10 +12688,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &template.generics,
             type_args,
         )?;
-        let mut subst: BTreeMap<String, TypeExpr> = BTreeMap::new();
-        for (gp, arg) in template.generics.iter().zip(type_args.iter()) {
-            subst.insert(gp.name.name.clone(), arg.clone());
-        }
+        let subst = Self::generic_locus_subst(template, type_args);
         let new_members: Vec<LocusMember> = template
             .members
             .iter()
@@ -16616,65 +16438,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// so a location never attaches to a foreign function's
     /// instructions (LLVM verifier: "!dbg attachment points at
     /// wrong subprogram"). No-op end to end when `di` is None.
-    /// Resolve a self-relative field chain (`self`, `self.child`,
-    /// `self.a.b`) to the locus type at its tip, without emitting IR.
-    /// `None` for any receiver that isn't such a chain of LocusRef
-    /// fields. Used only to recognize the intra-locus-publish desugar's
-    /// direct call to a subscriber handler.
-    fn receiver_locus_name(&self, e: &Expr) -> Option<String> {
-        match e {
-            Expr::KwSelf(_) => {
-                self.current_self.as_ref().map(|cs| cs.locus_name.clone())
-            }
-            Expr::Field { receiver, name, .. } => {
-                let base = self.receiver_locus_name(receiver)?;
-                let info = self.user_loci.get(&base)?;
-                match info.fields.get(&name.name) {
-                    Some((_, CodegenTy::LocusRef(l))) => Some(l.clone()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Is this statement-position call the intra-locus-publish desugar's
-    /// direct handler call (`self.<child>.<handler>(payload)`)? A bus
-    /// subscription handler is not callable from Hale source, so a call
-    /// to one can only be that desugar. The payload is the struct-literal
-    /// argument. Recognizing this lets the caller reclaim the payload the
-    /// bus queue would have — see the call site.
-    fn is_intra_locus_publish_call(
-        &self,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> bool {
-        self.intra_locus_publish_target(callee, args).is_some()
-    }
-
-    /// The matched subscription behind an intra-locus-publish direct
-    /// call: `(wire_subject, payload_type_name)`. `None` when the call
-    /// is not that desugar. The subject is the same registration-side
-    /// string every other dispatch flavor probes with, so the fused
-    /// manifest row is shared.
-    fn intra_locus_publish_target(
-        &self,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> Option<(String, String)> {
-        let Expr::Field { receiver, name, .. } = callee else {
+    /// The rewritten publish behind a statement-position call, read from
+    /// the resolved program's relation by the call's id:
+    /// `(wire_subject, payload_type_name)`. `None` when no rewrite
+    /// recorded this call, or when its payload is not a struct literal
+    /// (nothing to confine). The subject is the topic's wire, the
+    /// registration-side string every other dispatch flavor probes with,
+    /// so the fused manifest row is shared.
+    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Option<(String, String)> {
+        if id.is_none() {
             return None;
-        };
-        let recv_locus = self.receiver_locus_name(receiver)?;
-        let info = self.user_loci.get(&recv_locus)?;
-        let (subject, _, payload_ty, _) = info
-            .subscriptions
-            .iter()
-            .find(|(_, h, _, _)| h == &name.name)?;
+        }
+        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)?;
         if !args.iter().any(|a| matches!(a, Expr::Struct { .. })) {
             return None;
         }
-        Some((subject.clone(), payload_ty.clone()))
+        let payload = self
+            .topics
+            .named(&row.subject)
+            .and_then(|t| single_segment_type_name(&t.payload))
+            .unwrap_or_default();
+        Some((self.topic_wire(&row.subject), payload))
     }
 
     /// Lower an intra-locus-publish direct handler call with its payload
@@ -16685,10 +16469,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// on every field store, so nothing the handler kept still points
     /// into the freed region — the same lifetime the bus queue's cell
     /// reclaim gives a delivered payload.
+    /// `target` is the rewrite's `(wire_subject, payload_type_name)`
+    /// (`intra_locus_rewrite`).
     fn lower_reclaimed_publish_call(
         &mut self,
         callee: &Expr,
         args: &[Expr],
+        target: (String, String),
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         // P23 (iris handoff-11): this rewrite was the last probe-less
@@ -16706,9 +16493,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // attribution; the publish probe passes the publisher's.
         // The first probe call also creates the topic's manifest row.
         {
-            let (subject, payload_ty) = self
-                .intra_locus_publish_target(callee, args)
-                .expect("caller gated on is_intra_locus_publish_call");
+            let (subject, payload_ty) = target;
             let func = self
                 .builder
                 .get_insert_block()
@@ -16805,7 +16590,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_override = self.current_arena_override;
         self.current_arena_override = Some(subregion);
         let Expr::Field { receiver, name, .. } = callee else {
-            unreachable!("is_intra_locus_publish_call gated on a Field callee");
+            unreachable!("a rewritten publish's callee is a Field (gated on it)");
         };
         let call_result = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
             self.lower_self_method_call(&name.name, args, scope)
@@ -17515,7 +17300,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Expr(Expr::Call { callee, args, .. }) => {
+            Stmt::Expr(Expr::Call { callee, args, id: call_id, .. }) => {
                 match callee.as_ref() {
                     Expr::Ident(i) => {
                         let name = i.name.as_str();
@@ -17658,16 +17443,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // builds as an ordinary call argument in the
                     // method's scratch subregion and is not freed until
                     // `run()` returns, so a long-running publish loop
-                    // accrues one payload per delivery. Reclaim it: a
-                    // bus handler is not callable from Hale source, so a
-                    // statement-position call to one is unambiguously
-                    // this desugar, and the payload is dead the moment
-                    // the synchronous handler returns.
+                    // accrues one payload per delivery. Reclaim it: the
+                    // resolved program records every send the rewrite
+                    // replaced (`LoweringView::intra_locus`), and the
+                    // call keeps the send's id, so the relation names
+                    // this call; the payload is dead the moment the
+                    // synchronous handler returns.
                     Expr::Field { .. }
-                        if self.is_intra_locus_publish_call(callee, args) =>
+                        if self.intra_locus_rewrite(*call_id, args).is_some() =>
                     {
+                        let target = self
+                            .intra_locus_rewrite(*call_id, args)
+                            .expect("matched by the guard");
                         return self
-                            .lower_reclaimed_publish_call(callee, args, scope);
+                            .lower_reclaimed_publish_call(callee, args, target, scope);
                     }
                     Expr::Field { receiver, name, .. }
                         if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>

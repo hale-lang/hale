@@ -772,6 +772,92 @@ fn lsp_v5_formatting_symbols_enforcement() {
     let _ = std::fs::remove_dir_all(&seed);
 }
 
+/// The outline reads the open file's member program, which the editor's
+/// load keeps however the rest of the seed fares (outside review of
+/// #1295, finding 2): an import that does not resolve blocks the check
+/// but not the outline, which answers what the file declares as for a
+/// healthy seed and for a seed whose sibling does not parse. A file that
+/// does not parse itself has no outline. The diagnostics of the
+/// missing-import seed are still the import failure `hale check` reports.
+#[test]
+fn lsp_outline_survives_a_link_failure() {
+    const BODY: &str = "fn helper() -> Int { return 1; }\nfn main() { println(helper()); }\n";
+    let root = std::env::temp_dir().join(format!("hale_lsp_outline_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // (seed, files) — the outline is asked of each seed's main.hl
+    let seeds: [(&str, Vec<(&str, String)>); 4] = [
+        ("healthy", vec![("main.hl", BODY.to_string())]),
+        ("missing_import", vec![("main.hl", format!("import \"missing\" as m;\n{BODY}"))]),
+        ("malformed_sibling", vec![("main.hl", BODY.to_string()), ("broken.hl", "fn broken( {\n".to_string())]),
+        ("unparseable", vec![("main.hl", format!("fn broken( {{\n{BODY}"))]),
+    ];
+    for (name, files) in &seeds {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for (f, text) in files {
+            std::fs::write(dir.join(f), text).expect("write");
+        }
+    }
+    let uri = |name: &str| format!("file://{}", root.join(name).join("main.hl").display());
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    let mut outline = |id: u64, name: &str| -> Vec<String> {
+        lsp.send(serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "textDocument/documentSymbol",
+            "params": { "textDocument": { "uri": uri(name) } }
+        }));
+        let resp = lsp.recv();
+        assert_eq!(resp["id"], id, "{resp}");
+        resp["result"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name}: an array: {resp}"))
+            .iter()
+            .filter_map(|s| s["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    let own = vec!["helper".to_string(), "main".to_string()];
+    assert_eq!(outline(2, "healthy"), own, "a healthy seed");
+    assert_eq!(outline(3, "missing_import"), own, "an import that does not resolve");
+    assert_eq!(outline(4, "malformed_sibling"), own, "a sibling that does not parse");
+    assert_eq!(outline(5, "unparseable"), Vec::<String>::new(), "a file that does not parse has no outline");
+
+    // the check still refuses the missing-import seed, as `hale check` does
+    let text = &seeds[1].1[0].1;
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri("missing_import"), "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    // one publish per file the load names; the open file's is among them
+    let open = loop {
+        let msg = lsp.recv();
+        if msg.pointer("/params/uri").and_then(|u| u.as_str()) == Some(uri("missing_import").as_str()) {
+            break msg;
+        }
+    };
+    let diags = open.pointer("/params/diagnostics").and_then(|d| d.as_array()).expect("diagnostics");
+    assert!(
+        diags.iter().any(|d| d["severity"] == 1 && d["message"].as_str().is_some_and(|m| m.contains("missing"))),
+        "the import failure is published: {open}"
+    );
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 6, "method": "shutdown", "params": null
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": null
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Downstream handoff (2026-08-11): a diagnostic with a secondary
 /// location — duplicate top-level name pointing at the previous
 /// declaration — publishes `relatedInformation`, which clients

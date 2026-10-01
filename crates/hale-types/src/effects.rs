@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::effect_classes::EffectClassTable;
 use crate::snapshot::Snapshot;
 use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, FnKey};
@@ -150,21 +151,6 @@ fn demangle_stdlib(rendered: &str) -> String {
 /// frontier call); the rest reuse the same leaf lattice as
 /// `@effects(...)`. A phase omitted from the annotation is
 /// unconstrained; a phase present with `{}` forbids everything.
-/// The seed's user effect-class intern table. Single-seed at v1, so the
-/// first non-empty table is the one every `User(i)` indexes into.
-pub(crate) fn effect_names_of(programs: &[&Program]) -> Vec<String> {
-    programs
-        .iter()
-        .map(|p| &p.effect_names)
-        .find(|n| !n.is_empty())
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Indices in the seed's table that came from an `effect NAME;`
-/// DECLARATION, as opposed to a bare reference in an `@effects(...)`
-/// clause. Interning happens for both, so without this a misspelt
-/// class is indistinguishable from a real one.
 /// Cheap near-miss test for the did-you-mean hint: one edit apart, or
 /// a shared prefix long enough that a transposition is the likely
 /// cause. Not a general spell-checker — it only has to catch typing.
@@ -216,25 +202,6 @@ fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass
     ];
     out.extend(declared.iter().map(|i| EffectClass::User(*i)));
     out
-}
-
-/// #354: the seed's composed-class definitions, index-parallel to
-/// `effect_names`.
-pub(crate) fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
-    programs
-        .iter()
-        .map(|p| &p.effect_defs)
-        .find(|d| !d.is_empty())
-        .cloned()
-        .unwrap_or_default()
-}
-
-pub(crate) fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
-    programs
-        .iter()
-        .find(|p| !p.effect_names.is_empty())
-        .map(|p| p.declared_effects.iter().copied().collect())
-        .unwrap_or_default()
 }
 
 /// #392 §8: a fn-grained certificate lowered to the claim IR's
@@ -346,9 +313,7 @@ fn phase_effects_diags(
     ranges: &mut Vec<(usize, usize, usize)>,
     out: &mut DiagSink,
 ) {
-    let names = &effect_names_of(programs);
-    let defs = &defs_of(programs);
-    let declared = declared_of(programs);
+    let table = &EffectClassTable::of(programs);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
@@ -464,12 +429,14 @@ fn phase_effects_diags(
                     // `secret_use` during run.
                     EffectClass::SecretUse,
                 ];
-                classes.extend(declared.iter().filter_map(|i| {
-                    match defs.get(*i as usize) {
-                        Some(Some(_)) => None, // composed: atomic-only
-                        _ => Some(EffectClass::User(*i)),
-                    }
-                }));
+                classes.extend(
+                    table
+                        .declared()
+                        .iter()
+                        // composed: atomic-only
+                        .filter(|i| !table.is_composed(**i))
+                        .map(|i| EffectClass::User(*i)),
+                );
                 let phase_before = out.len();
                 let cert_start = out.len();
                 for class in classes {
@@ -477,7 +444,7 @@ fn phase_effects_diags(
                         continue;
                     }
                     let before = out.len();
-                    check_class(summary, &key, span, class, ffi, names, defs, out);
+                    check_class(summary, &key, span, class, ffi, table, out);
                     // Re-label the generic message with the phase.
                     for d in out.diags.iter_mut().skip(before) {
                         d.message = format!(
@@ -493,7 +460,7 @@ fn phase_effects_diags(
                         "only effects {{{}}} on {{{}}} during {}",
                         allowed
                             .iter()
-                            .map(|c| cls_name(*c, names))
+                            .map(|c| table.display(*c))
                             .collect::<Vec<_>>()
                             .join(", "),
                         l.name.name,
@@ -858,15 +825,13 @@ pub fn effect_report_three_way(
         return (sink.diags, Vec::new(), Vec::new(), groups);
     }
     let ffi = ffi_names(programs);
-    let names = effect_names_of(programs);
     // #345: a user class must be DECLARED before it can be asserted
     // about. Both a declaration and a bare reference intern a name, so
     // a typo silently became a brand-new class that nothing carries —
     // and `@effects(none: { monye })` then held vacuously and reported
     // success. A certificate that is quietly true of nothing is the
     // same failure as one that is quietly false.
-    let declared = declared_of(programs);
-    let defs_v = defs_of(programs);
+    let table = &EffectClassTable::of(programs);
     // No per-declaration span survives to here (`effect NAME;` produces
     // no AST item), so a cycle is reported against the program.
     let program_span = programs
@@ -876,43 +841,17 @@ pub fn effect_report_three_way(
     // #354: `effect a = { b }; effect b = { a };` resolves to PURE in
     // the mask walk, which would make both classes silently inert —
     // a contract naming either would hold vacuously. Reject it.
-    for (i, def) in defs_v.iter().enumerate() {
-        if def.is_none() {
-            continue;
-        }
-        let mut seen = vec![i as u16];
-        let mut frontier_q: Vec<u16> = Vec::new();
-        if let Some(Some(ms)) = defs_v.get(i) {
-            for m in ms {
-                if let EffectClass::User(j) = m {
-                    frontier_q.push(*j);
-                }
-            }
-        }
-        while let Some(j) = frontier_q.pop() {
-            if j == i as u16 {
-                sink.push(Diag::ty(
-                    program_span,
-                    format!(
-                        "effect class `{}` is defined in terms of itself. \
-                         A cyclic definition resolves to no effect at all, \
-                         so every contract naming it would hold vacuously.",
-                        names.get(i).cloned().unwrap_or_default()
-                    ),
-                ));
-                break;
-            }
-            if seen.contains(&j) {
-                continue;
-            }
-            seen.push(j);
-            if let Some(Some(ms)) = defs_v.get(j as usize) {
-                for m in ms {
-                    if let EffectClass::User(k) = m {
-                        frontier_q.push(*k);
-                    }
-                }
-            }
+    for (i, name) in table.names().iter().enumerate() {
+        if table.is_composed(i as u16) && table.defined_in_terms_of_itself(i as u16) {
+            sink.push(Diag::ty(
+                program_span,
+                format!(
+                    "effect class `{}` is defined in terms of itself. \
+                     A cyclic definition resolves to no effect at all, \
+                     so every contract naming it would hold vacuously.",
+                    name
+                ),
+            ));
         }
     }
     let pre_len = sink.len();
@@ -927,24 +866,9 @@ pub fn effect_report_three_way(
             };
             for c in cs {
                 if let EffectClass::User(i) = c {
-                    if !declared.contains(i) && !seen.contains(i) {
+                    if !table.declared().contains(i) && !seen.contains(i) {
                         seen.push(*i);
-                        let bad = names
-                            .get(*i as usize)
-                            .cloned()
-                            .unwrap_or_default();
-                        let mut near: Vec<&String> = names
-                            .iter()
-                            .enumerate()
-                            .filter(|(j, _)| declared.contains(&(*j as u16)))
-                            .map(|(_, n)| n)
-                            .filter(|n| close(n, &bad))
-                            .collect();
-                        near.sort();
-                        let hint = match near.first() {
-                            Some(n) => format!(" Did you mean `{}`?", n),
-                            None => String::new(),
-                        };
+                        let (bad, hint) = table.undeclared(*i);
                         sink.push(Diag::ty(
                             *span,
                             format!(
@@ -973,7 +897,7 @@ pub fn effect_report_three_way(
                     for c in classes {
                         let before = sink.len();
                         check_class(
-                            &summary, key, *span, *c, &ffi, &names, &defs_v,
+                            &summary, key, *span, *c, &ffi, table,
                             &mut sink,
                         );
                         ranges.push((rows.len(), before, sink.len()));
@@ -982,7 +906,7 @@ pub fn effect_report_three_way(
                             form: format!(
                                 "forbid reaches({{{}}}, effects({}))",
                                 key.display(),
-                                cls_name(*c, &names)
+                                table.display(*c)
                             ),
                             result: if sink.len() > before {
                         Verdict::Violated
@@ -1001,9 +925,9 @@ pub fn effect_report_three_way(
                 // stale.
                 EffectAssert::Only(allowed) => {
                     let set: Vec<String> =
-                        allowed.iter().map(|c| cls_name(*c, &names)).collect();
+                        allowed.iter().map(|c| table.display(*c)).collect();
                     let only_before = sink.len();
-                    for c in class_universe(&declared) {
+                    for c in class_universe(table.declared()) {
                         if allowed.contains(&c) {
                             continue;
                         }
@@ -1021,16 +945,13 @@ pub fn effect_report_three_way(
                         // existed for any hand-written composed
                         // class.
                         if let EffectClass::User(i) = c {
-                            if defs_v
-                                .get(i as usize)
-                                .map_or(false, |d| d.is_some())
-                            {
+                            if table.is_composed(i) {
                                 continue;
                             }
                         }
                         let before = sink.len();
                         check_class(
-                            &summary, key, *span, c, &ffi, &names, &defs_v,
+                            &summary, key, *span, c, &ffi, table,
                             &mut sink,
                         );
                         // Re-label with the contract that was actually
@@ -1174,28 +1095,17 @@ fn assemble_groups(
 /// `@no_*` flag desugars to `Forbid([class])` at parse time, so this
 /// is the single place a class's meaning is defined — no flag can
 /// drift from the general form.
-/// #345: resolve an effect class to the name the USER wrote. Built-ins
-/// are static; a `User(i)` is an index into the seed's intern table, so
-/// a diagnostic that reaches for `as_str()` prints `<user effect>` and
-/// loses the one thing the author named it for.
-fn cls_name(class: EffectClass, names: &[String]) -> String {
-    match class {
-        EffectClass::User(i) => names
-            .get(i as usize)
-            .cloned()
-            .unwrap_or_else(|| "<user effect>".to_string()),
-        _ => class.as_str().to_string(),
-    }
-}
-
+/// #345: a diagnostic names a class as the USER wrote it
+/// (`EffectClassTable::display`): a `User(i)` rendered with `as_str()`
+/// prints `<user effect>` and loses the one thing the author named it
+/// for.
 fn check_class(
     summary: &AllocSummary,
     key: &FnKey,
     span: Span,
     class: EffectClass,
     ffi: &BTreeSet<String>,
-    names: &[String],
-    defs: &[Option<Vec<EffectClass>>],
+    table: &EffectClassTable,
     diags: &mut DiagSink,
 ) {
     use crate::stdlib_surface::EffectSet;
@@ -1306,7 +1216,7 @@ fn check_class(
                          drop the `{}` assertion.",
                         key.display(),
                         chain_s,
-                        cls_name(class, names)
+                        table.display(class)
                     ),
                 ));
                 diags.push_flagged(
@@ -1314,7 +1224,7 @@ fn check_class(
                         site_span,
                         format!(
                             "the `{}` effect happens here",
-                            cls_name(class, names)
+                            table.display(class)
                         ),
                     ),
                     is_stdlib_fn(&site_fn),
@@ -1351,7 +1261,7 @@ fn check_class(
         // #345: a user class queries the frontier exactly like a
         // built-in — the bit differs, the machinery does not.
         EffectClass::User(_) => (
-            crate::frontier::class_mask_with(class, defs),
+            table.mask(class),
             "an operation in this effect class",
         ),
         _ => unreachable!("handled above"),
@@ -1531,7 +1441,7 @@ fn check_class(
         Probe::Site(_) | Probe::Resolved(..) => None,
     };
     report(
-        summary, key, span, &cls_name(class, names), &mut pred, diags,
+        summary, key, span, &table.display(class), &mut pred, diags,
         "Move the effect behind a locus this fn doesn't reach (the \
          reader/writer-locus shape), or pass the value in as a parameter.",
     );
@@ -1808,7 +1718,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
     // worse than in a diagnostic: every user class renders identically,
     // so two different classes produce the same line and a real change
     // can diff to nothing.
-    let names = effect_names_of(programs);
+    let table = EffectClassTable::of(programs);
     let mut push = |name: String, fd: &FnDecl| {
         let mut forbids = Vec::new();
         let mut onlys: Option<Vec<String>> = None;
@@ -1821,12 +1731,12 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                     // baseline must be able to tell a closed contract
                     // from an open one.
                     onlys = Some(
-                        cs.iter().map(|c| cls_name(*c, &names)).collect(),
+                        cs.iter().map(|c| table.display(*c)).collect(),
                     );
                 }
                 EffectAssert::Forbid(cs) => {
                     for c in cs {
-                        forbids.push(cls_name(*c, &names));
+                        forbids.push(table.display(*c));
                     }
                 }
                 EffectAssert::PublishSet(items) => {
@@ -1837,7 +1747,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                 }
                 EffectAssert::Causes(cs) => {
                     for c in cs {
-                        forbids.push(format!("causes:{}", cls_name(*c, &names)));
+                        forbids.push(format!("causes:{}", table.display(*c)));
                     }
                 }
             }
@@ -1926,7 +1836,7 @@ pub fn effect_manifest_with_inference(
     effects: &crate::effect_rows::EffectRows,
 ) -> Vec<EffectManifestRow> {
     let summary = &effects.summary;
-    let names = &effects.class_names;
+    let names = effects.classes.names();
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()
         .map(|r| (r.func.clone(), r))

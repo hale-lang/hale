@@ -4529,9 +4529,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // completes, via the run-wrapper. So it must NOT elide the
             // run block / skip posting even when run() is empty: the
             // wrapper still has to fire to run the reclaim.
-            let is_flow = self.user_loci.values().any(|p| {
-                matches!(&p.release_param, Some((_, c)) if c == locus_name)
-            });
+            let is_flow = self.is_flow(locus_name);
             // Whole-block elide when run() body is empty AND no
             // tick/duration closures need to fire after run AND it's
             // not a flow. The quarantine guard would otherwise stand

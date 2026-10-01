@@ -62,7 +62,7 @@ use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
 use crate::frontend::{
-    collect_ap_files, collect_checkable, link_checkable, merge_programs, seed_dir_of, source_map,
+    collect_ap_files, link_checkable, merge_programs, parse_checkable, seed_dir_of, source_map,
     CheckableFailure, LoadMode,
 };
 use crate::imports::ImportRenames;
@@ -346,6 +346,9 @@ pub struct Snapshot {
     config: Config,
     files: Vec<PathBuf>,
     own_files: BTreeSet<PathBuf>,
+    /// Each of the seed's own files as it parsed (at its base), before
+    /// the merge and the sequence: what the file itself declares.
+    members: BTreeMap<PathBuf, Program>,
     programs: BTreeMap<PathBuf, Program>,
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
@@ -362,6 +365,11 @@ pub struct Snapshot {
     /// The seed members that would not read, with the OS error. A load
     /// that leaves any blocks the scope.
     unreadable: BTreeMap<PathBuf, String>,
+    /// What the import graph refused for the editor's seed whose every
+    /// member parsed (an import that does not resolve, a library that
+    /// does not parse or read): the members are kept, unlinked, and the
+    /// scope blocks.
+    unlinked: Option<CheckableFailure>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -391,6 +399,7 @@ static BARE_HANDOFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 struct Loaded {
     files: Vec<PathBuf>,
     own_files: BTreeSet<PathBuf>,
+    members: BTreeMap<PathBuf, Program>,
     programs: BTreeMap<PathBuf, Program>,
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
@@ -398,6 +407,7 @@ struct Loaded {
     entry_imports: Vec<Import>,
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
     unreadable: BTreeMap<PathBuf, String>,
+    unlinked: Option<CheckableFailure>,
 }
 
 impl Snapshot {
@@ -411,9 +421,11 @@ impl Snapshot {
     /// read; [`LoadMode::Editor`] keeps the members that did and
     /// records the rest ([`Snapshot::unparsed`],
     /// [`Snapshot::unreadable`]), blocking the scope instead, so the
-    /// editor reports each against the file that holds it. Both fail
-    /// on what the import graph refuses (an import that does not
-    /// resolve, a library that does not parse or read).
+    /// editor reports each against the file that holds it. On what the
+    /// import graph refuses (an import that does not resolve, a library
+    /// that does not parse or read) the whole seed's load fails, and the
+    /// editor's keeps its members as they parsed and records the refusal
+    /// ([`Snapshot::linked`]), the scope blocked.
     pub fn load(
         entry: &Path,
         mode: LoadMode,
@@ -471,6 +483,7 @@ impl Snapshot {
         let loaded = Loaded {
             files: Vec::new(),
             own_files: BTreeSet::new(),
+            members: BTreeMap::new(),
             programs: std::iter::once((entry.clone(), program)).collect(),
             sources: BTreeMap::new(),
             file_bases: Vec::new(),
@@ -478,6 +491,7 @@ impl Snapshot {
             entry_imports: Vec::new(),
             unparsed: BTreeMap::new(),
             unreadable: BTreeMap::new(),
+            unlinked: None,
         };
         Snapshot::shape(&entry, None, key, config, loaded)
     }
@@ -513,6 +527,7 @@ impl Snapshot {
             config,
             files: loaded.files,
             own_files: loaded.own_files,
+            members: loaded.members,
             programs: loaded.programs,
             sources: loaded.sources,
             file_bases: loaded.file_bases,
@@ -523,6 +538,7 @@ impl Snapshot {
             api_surface: None,
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
+            unlinked: loaded.unlinked,
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             typing: OnceCell::new(),
@@ -570,9 +586,9 @@ impl Snapshot {
                 }
             }
         }
-        // The editor's seed with a member that did not parse or read is
-        // not a program: nothing is shaped or minted, and the scope
-        // blocks.
+        // The editor's seed with a member that did not parse or read, or
+        // whose imports did not link, is not a program: nothing is
+        // shaped or minted, and the scope blocks.
         if snap.has_hole() {
             return Ok(snap);
         }
@@ -641,6 +657,22 @@ impl Snapshot {
         &self.programs
     }
 
+    /// One of the seed's own files as it parsed, at its base: before the
+    /// merge, the imports and the sequence, so it holds what the file
+    /// itself declares and nothing else. Kept beside the merged program
+    /// for a reader that asks about one file (the editor's outline);
+    /// `None` for a file that did not parse, is not the seed's, or a
+    /// bare program. Any spelling of the path that names the file.
+    pub fn member(&self, path: &Path) -> Option<&Program> {
+        self.members.get(path).or_else(|| {
+            let canon = path.canonicalize().ok()?;
+            self.members
+                .iter()
+                .find(|(p, _)| p.canonicalize().ok().as_ref() == Some(&canon))
+                .map(|(_, prog)| prog)
+        })
+    }
+
     /// The identities the load minted over [`Snapshot::programs`]: every
     /// site, and which declaration each use names.
     pub fn identities(&self) -> &hale_types::snapshot::Snapshot {
@@ -700,24 +732,52 @@ impl Snapshot {
         &self.unreadable
     }
 
-    /// A member did not parse or read, or none was loaded: the seed is
-    /// not a program, and its scope is blocked.
+    /// What the import graph refused for the editor's seed, if it
+    /// refused it: the snapshot then holds its members as they parsed
+    /// ([`Snapshot::member`], with their sources and bases) and nothing
+    /// linked, and every family is blocked.
+    pub fn unlinked(&self) -> Option<&CheckableFailure> {
+        self.unlinked.as_ref()
+    }
+
+    /// The snapshot, unless the import graph refused its seed: a reader
+    /// that needs the seed linked (every editor request but the outline)
+    /// gets the refusal as the whole seed's load reports it.
+    pub fn linked(mut self) -> Result<Snapshot, CheckableFailure> {
+        match self.unlinked.take() {
+            Some(failure) => Err(failure),
+            None => Ok(self),
+        }
+    }
+
+    /// A member did not parse or read, the imports did not link, or no
+    /// member was loaded: the seed is not a program, and its scope is
+    /// blocked.
     fn has_hole(&self) -> bool {
-        !self.unparsed.is_empty() || !self.unreadable.is_empty() || self.programs.is_empty()
+        !self.unparsed.is_empty()
+            || !self.unreadable.is_empty()
+            || self.unlinked.is_some()
+            || self.programs.is_empty()
     }
 
     /// Why a seed with a hole has no scope.
     fn hole_blocked(&self) -> Blocked {
+        let refused: Vec<String> = self
+            .unreadable
+            .iter()
+            .map(|(p, e)| unreadable_message(p, e))
+            .chain(self.unlinked.iter().flat_map(|f| f.io.iter().map(|io| io.text.clone())))
+            .collect();
         Blocked {
             family: "top_scope",
-            because: self.unparsed.values().flatten().cloned().collect(),
-            refused: (!self.unreadable.is_empty()).then(|| {
-                self.unreadable
-                    .iter()
-                    .map(|(p, e)| unreadable_message(p, e))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }),
+            because: self
+                .unparsed
+                .values()
+                .flatten()
+                .chain(self.unlinked.iter().flat_map(|f| &f.diags))
+                .cloned()
+                .collect(),
+            refused: (!refused.is_empty()).then(|| refused.join("\n")),
         }
     }
 
@@ -797,8 +857,8 @@ impl Snapshot {
     /// a seed with a hole never builds the whole scope, so the count
     /// stays one. Nothing else reads it — the check, the graphs and the
     /// model stay blocked, so no check runs over a partial program.
-    /// Blocked when no member parsed, and for any other load with a
-    /// hole.
+    /// Blocked when no member parsed or the imports did not link, and for
+    /// any other load with a hole.
     pub fn demand_editor_scope(&self) -> Result<EditorScope<'_>, &Blocked> {
         if !self.has_hole() {
             return self.demand_scope().map(|top| EditorScope { top, hole: Vec::new() });
@@ -1039,11 +1099,14 @@ impl Snapshot {
 
 /// `hale check`'s load: the target and every seed its imports reach.
 fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
+    let (files, own, programs, sources, file_bases, effects) = parse_checkable(entry, src)?;
+    let members = programs.clone();
     let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        collect_checkable(entry, src)?;
+        link_checkable(entry, &files, own, programs, sources, file_bases, effects, src)?;
     Ok(Loaded {
         files: own_files.iter().cloned().collect(),
         own_files,
+        members,
         programs,
         sources,
         file_bases,
@@ -1051,6 +1114,7 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
         entry_imports,
         unparsed: BTreeMap::new(),
         unreadable: BTreeMap::new(),
+        unlinked: None,
     })
 }
 
@@ -1060,7 +1124,10 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
 /// followed). A member that will not read is recorded with its OS
 /// error, one that does not parse is kept as text with its diagnostics;
 /// either leaves the members that parsed unlinked, one program each,
-/// and blocks the scope.
+/// and blocks the scope. A link the import graph refuses keeps the
+/// members as they parsed and no program, with the refusal recorded
+/// (`Snapshot::unlinked`): the scope blocks, and the outline still
+/// reads each member.
 fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
     // A directory that will not list leaves the file alone.
     let files = collect_ap_files(entry, LoadMode::Editor, src)
@@ -1070,6 +1137,8 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut unparsed = BTreeMap::new();
     let mut unreadable = BTreeMap::new();
+    // #345: the load's one effect-class table, as `parse_files` keeps it.
+    let mut effects = hale_syntax::ast::EffectClasses::default();
     for f in &files {
         let source = match src.read(f) {
             Ok(s) => s,
@@ -1080,7 +1149,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
+        match hale_syntax::parse_source_at_in(&source, base, &mut effects) {
             Ok(p) => {
                 programs.insert(f.clone(), p);
             }
@@ -1090,6 +1159,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         }
         sources.insert(f.clone(), source);
     }
+    let members = programs.clone();
     // The seed's own members, canonical; a member that exists only as a
     // buffer (or a link to nothing) by its canonical directory.
     let own_files: BTreeSet<PathBuf> = files
@@ -1107,6 +1177,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         return Ok(Loaded {
             files,
             own_files,
+            members,
             programs,
             sources,
             file_bases,
@@ -1114,22 +1185,46 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
             entry_imports: Vec::new(),
             unparsed,
             unreadable,
+            unlinked: None,
         });
     }
     let seed = if src.is_dir(entry) { entry } else { seed_dir_of(entry) };
-    let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        link_checkable(seed, &files, own_files, programs, sources, file_bases, src)?;
-    Ok(Loaded {
-        files,
-        own_files,
-        programs,
-        sources,
-        file_bases,
-        import_renames,
-        entry_imports,
-        unparsed,
-        unreadable,
-    })
+    // What the members read, kept for a link the import graph refuses.
+    let read = (own_files.clone(), sources.clone(), file_bases.clone());
+    match link_checkable(seed, &files, own_files, programs, sources, file_bases, effects, src) {
+        Ok((programs, sources, file_bases, import_renames, own_files, entry_imports)) => Ok(Loaded {
+            files,
+            own_files,
+            members,
+            programs,
+            sources,
+            file_bases,
+            import_renames,
+            entry_imports,
+            unparsed,
+            unreadable,
+            unlinked: None,
+        }),
+        // An import that does not resolve, a library that does not parse
+        // or read: the members stay as they parsed, with their sources
+        // and bases, and nothing is linked.
+        Err(failure) => {
+            let (own_files, sources, file_bases) = read;
+            Ok(Loaded {
+                files,
+                own_files,
+                members,
+                programs: BTreeMap::new(),
+                sources,
+                file_bases,
+                import_renames: Vec::new(),
+                entry_imports: Vec::new(),
+                unparsed,
+                unreadable,
+                unlinked: Some(failure),
+            })
+        }
+    }
 }
 
 /// GH #409: adopt constitution `name` into `prog`'s main locus, as if
@@ -1236,14 +1331,134 @@ mod tests {
     }
 
     fn load(entry: &Path, src: &dyn SourceProvider, config: Config) -> Snapshot {
-        match Snapshot::load(entry, LoadMode::Editor, src, config) {
+        load_as(entry, LoadMode::Editor, src, config)
+    }
+
+    fn load_as(entry: &Path, mode: LoadMode, src: &dyn SourceProvider, config: Config) -> Snapshot {
+        match Snapshot::load(entry, mode, src, config) {
             Ok(s) => s,
-            Err(_) => panic!("the editor's load does not fail"),
+            Err(_) => panic!("the {mode:?} load does not fail"),
         }
     }
 
     fn errors(s: &Snapshot) -> usize {
         s.demand_check().expect("checked").diags.iter().filter(|d| d.is_error()).count()
+    }
+
+    /// Each member's own program is kept beside the merged one: what the
+    /// file itself declares, at its base, before the merge and the
+    /// sequence; kept whole beside a member that did not parse.
+    #[test]
+    fn each_member_keeps_its_own_program_beside_the_merged_one() {
+        let d = scratch("members");
+        std::fs::write(d.join("app.hl"), CLEAN).unwrap();
+        std::fs::write(d.join("extra.hl"), "fn helper() -> Int { return 1; }\n").unwrap();
+        let names = |p: &Program| -> Vec<String> {
+            p.items
+                .iter()
+                .filter_map(|i| match i {
+                    TopDecl::Fn(f) => Some(f.name.name.clone()),
+                    TopDecl::Locus(l) => Some(l.name.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // the editor's load of a file is its directory's seed; `hale
+        // check`'s is the directory itself
+        for (entry, mode) in [(d.join("app.hl"), LoadMode::Editor), (d.clone(), LoadMode::WholeSeed)] {
+            let s = load_as(&entry, mode, &Disk, Config::editor());
+            assert_eq!(s.programs().len(), 1, "{mode:?}: one merged program");
+            let merged = names(s.program().unwrap());
+            assert!(merged.contains(&"helper".to_string()) && merged.contains(&"App".to_string()), "{mode:?}: {merged:?}");
+            let app = s.member(&d.join("app.hl")).expect("app.hl is a member");
+            assert_eq!(names(app), vec!["W", "App", "main"], "{mode:?}");
+            let extra = s.member(&d.join("extra.hl")).expect("extra.hl is a member");
+            assert_eq!(names(extra), vec!["helper"], "{mode:?}");
+            let base = s.file_bases().iter().find(|(_, p, _)| p.ends_with("extra.hl")).unwrap().0;
+            assert_eq!(extra.items[0].span().start.0, base, "{mode:?}: at the member's base");
+        }
+        std::fs::write(d.join("broken.hl"), "fn broken( {\n").unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        assert!(s.member(&d.join("broken.hl")).is_none());
+        assert_eq!(names(s.member(&d.join("extra.hl")).expect("parsed")), vec!["helper"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// An import that does not resolve: the whole seed's load fails, and
+    /// the editor's keeps each member as it parsed, at its base, with the
+    /// refusal recorded; nothing is linked, every family is blocked, and
+    /// a reader that needs the seed linked gets the refusal (outside
+    /// review of #1295, finding 2).
+    #[test]
+    fn an_unlinked_editor_seed_keeps_its_members_and_blocks_its_families() {
+        let d = scratch("unlinked");
+        std::fs::write(d.join("app.hl"), "import \"missing\" as m;\nfn helper() -> Int { return 1; }\nfn main() { }\n")
+            .unwrap();
+        assert!(load_whole_seed(&d.join("app.hl"), &Disk).is_err(), "the whole seed's load fails");
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        assert!(s.unlinked().is_some_and(|f| !f.diags.is_empty() || !f.io.is_empty()), "the refusal is recorded");
+        let app = s.member(&d.join("app.hl")).expect("the member is kept");
+        assert!(matches!(&app.items[..], [TopDecl::Fn(h), TopDecl::Fn(m)] if h.name.name == "helper" && m.name.name == "main"));
+        assert!(s.sources().contains_key(&d.join("app.hl")) && !s.file_bases().is_empty(), "with its source and base");
+        assert!(s.programs().is_empty(), "nothing is linked");
+        assert!(s.demand_scope().is_err() && s.demand_editor_scope().is_err());
+        assert!(s.demand_check().is_err() && s.demand_bus_graph().is_err() && s.demand_model().is_err());
+        assert!(s.demand_lowering().is_err());
+        assert_eq!(s.builds()["top_scope"], 0, "no scope is built");
+        assert!(s.linked().is_err(), "a reader that needs it linked is refused");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #345: a load parses every seed through one effect-class table,
+    /// and numbers an imported seed after the seeds it imports: `a`
+    /// refers to `money` before `b` (which it imports) declares it, and
+    /// still `b`'s classes come first, as the merge's renumbering used
+    /// to leave them. Every use names one index.
+    #[test]
+    fn a_seed_is_numbered_after_the_seeds_it_imports() {
+        let d = scratch("effect-order");
+        std::fs::create_dir_all(d.join("a")).unwrap();
+        std::fs::create_dir_all(d.join("b")).unwrap();
+        std::fs::write(
+            d.join("app.hl"),
+            "import \"a\" as a;\nfn main() { println(a::f(1)); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("a/a.hl"),
+            "import \"../b\" as b;\neffect audit;\n\
+             @effects(is: { money })\nfn f(n: Int) -> Int { return b::g(n); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("b/b.hl"),
+            "effect pii;\neffect money;\n@effects(is: { pii })\nfn g(n: Int) -> Int { return n; }\n",
+        )
+        .unwrap();
+        let s = load_as(&d.join("app.hl"), LoadMode::WholeSeed, &Disk, Config::check(true, false));
+        let p = s.program().expect("one merged program");
+        assert_eq!(p.effect_names, ["pii", "money", "audit"]);
+        assert_eq!(p.declared_effects, [0, 1, 2]);
+        // each fn's `is:` class, by the fn's last name segment
+        let carried: BTreeMap<String, u16> = p
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                TopDecl::Fn(f) => f.effects.iter().find_map(|a| match a {
+                    hale_syntax::ast::EffectAssert::Carries(cs) => match cs.as_slice() {
+                        [hale_syntax::ast::EffectClass::User(c)] => {
+                            Some((f.name.name.rsplit('_').next().unwrap_or("").to_string(), *c))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        let want: BTreeMap<String, u16> = [("f".to_string(), 1), ("g".to_string(), 0)].into_iter().collect();
+        assert_eq!(carried, want, "a's `money` and b's `pii`");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Contract 4: a changed entry, target, config or overlay is a

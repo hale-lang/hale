@@ -67,14 +67,8 @@ use crate::symbol::{Bundle, SourceFile};
 /// The program codegen lowers, and the tables the frontend derives over
 /// it: the snapshot's `lowering_view` family.
 pub struct LoweringView {
-    /// The user's program after the codegen-shape desugars, before the
-    /// stdlib merge: a second copy of `merged`'s user half, which only
-    /// codegen's tier-1 bus-inert Debug scan reads (a registered legacy
-    /// row of the `bus_inert` family, until the verdict is a row of the
-    /// envelope).
-    pub user: Program,
-    /// `user` with the bundled stdlib's declarations appended: what
-    /// lowering walks.
+    /// The user's program after the codegen-shape desugars, with the
+    /// bundled stdlib's declarations appended: what lowering walks.
     pub merged: Program,
     /// Every site's identity, minted over `merged` after the desugars
     /// with the bundle's source map (ids the bundle already minted are
@@ -92,6 +86,14 @@ pub struct LoweringView {
     /// Which `on_failure` handler a failing child reaches, one row per
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
+    /// Which children are flows, over `merged`: every `release(c: T)`
+    /// clause with the locus `T` denotes as lowering names it, and a
+    /// generic owner's clause as its template, which lowering
+    /// specializes with its own substitution.
+    pub flows: crate::flows::FlowRows,
+    /// Whether the program can ever have a bus cell in flight, so
+    /// lowering can elide every drain (`crate::bus_inert`).
+    pub bus_inert: bool,
     /// The message graph over `merged`, keyed by wire subject (the
     /// topic rewrite has run), with its devirtualization gates (F.40
     /// phase 1.5), and on each subject the sends `intra_locus` rewrote
@@ -215,7 +217,9 @@ pub fn resolve_program(
     let intra_locus =
         hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
     let topic_rewrites = hale_syntax::desugar::desugar_topics(&mut program_owned);
-    let user = program_owned;
+    // The bus-inert verdict, over the user's program before the stdlib
+    // merge: whether a bus cell can ever be in flight (`bus_inert`).
+    let bus_inert = crate::bus_inert::bus_inert(&program_owned);
 
     // m73a: parse the bundled stdlib source and merge its decls
     // into the user program before lowering. Stdlib loci land in
@@ -232,7 +236,7 @@ pub fn resolve_program(
     // carry a `run` its bundled twin lacked, and the body lowering
     // would find no declaration.
     let stdlib_program = crate::desugar_sequence::bundled_stdlib()?.clone();
-    let mut merged = user.clone();
+    let mut merged = program_owned;
     let user_items = merged.items.len();
     // The stdlib's items by span, in merge order: the split below
     // checks they are still the tail.
@@ -381,9 +385,11 @@ pub fn resolve_program(
     // F.40 phase 1.4: the handler rows, over the same merged program,
     // with the child type resolved the way lowering resolves it.
     let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
+    // The flow rows over the same merged program, each clause's child
+    // resolved to the locus lowering names: lowering reads flow-ness here.
+    let flows = crate::flows::survey(&[&merged], import_renames);
 
     Ok(LoweringView {
-        user,
         merged,
         snapshot,
         owner_table,
@@ -391,6 +397,8 @@ pub fn resolve_program(
         ownership,
         bubble,
         handlers,
+        flows,
+        bus_inert,
         bus,
         plan,
         intra_locus,

@@ -8,7 +8,7 @@ use super::imports::ImportTarget;
 use super::diag::IoDiag;
 use std::path::Path;
 use std::path::PathBuf;
-use hale_syntax::ast::Program;
+use hale_syntax::ast::{EffectClasses, Program};
 use super::workspace::find_workspace_root;
 use super::source::SourceProvider;
 use super::diag::render_diag_json;
@@ -113,6 +113,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn parse_files(
     files: &[PathBuf],
     src: &dyn SourceProvider,
@@ -121,9 +122,13 @@ pub fn parse_files(
         BTreeMap<PathBuf, Program>,
         BTreeMap<PathBuf, String>,
         Vec<(u32, PathBuf, u32)>,
+        EffectClasses,
     ),
     ParseFailure,
 > {
+    // #345: one effect-class table for the load; every file interns
+    // into it, so a class has one index in every file.
+    let mut effects = EffectClasses::default();
     let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
     // (virtual base, path, len) — each file parsed at a distinct base so
@@ -152,7 +157,7 @@ pub fn parse_files(
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        let parsed = hale_syntax::parse_source_at(&source, base);
+        let parsed = hale_syntax::parse_source_at_in(&source, base, &mut effects);
         // A file that did not parse still contributes its text: the
         // renderers resolve a span against the source of the file whose
         // base window holds it, and that file is this one.
@@ -175,7 +180,7 @@ pub fn parse_files(
             sources,
         });
     }
-    Ok((programs, sources, file_bases))
+    Ok((programs, sources, file_bases, effects))
 }
 
 /// GH #777: a file the target itself OWNS did not parse.
@@ -351,6 +356,30 @@ pub fn collect_checkable(
     ),
     CheckableFailure,
 > {
+    let (files, own, programs, sources, file_bases, effects) = parse_checkable(target, src)?;
+    link_checkable(target, &files, own, programs, sources, file_bases, effects, src)
+}
+
+/// The first half of a whole seed's load: the target's own files,
+/// each parsed at its own base, before any `import` is followed, and
+/// the effect-class table they were parsed through (the load's one,
+/// which the link continues). [`collect_checkable`] links them after;
+/// the snapshot's whole-seed load keeps them too, as its members.
+#[allow(clippy::type_complexity)]
+pub fn parse_checkable(
+    target: &Path,
+    src: &dyn SourceProvider,
+) -> Result<
+    (
+        Vec<PathBuf>,
+        std::collections::BTreeSet<PathBuf>,
+        BTreeMap<PathBuf, Program>,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+        EffectClasses,
+    ),
+    CheckableFailure,
+> {
     let files = match collect_ap_files(target, LoadMode::WholeSeed, src) {
         Ok(f) => f,
         Err(e) => {
@@ -365,7 +394,7 @@ pub fn collect_checkable(
     // GH #777: a parse failure in the target's own files travels the
     // same road an imported file's does — the diagnostics reach the
     // one reporting site, which honours `--json`.
-    let (programs, sources, file_bases) = parse_files(&files, src).map_err(|mut f| {
+    let (programs, sources, file_bases, effects) = parse_files(&files, src).map_err(|mut f| {
         // A FILE target that will not open is the entry of a build: its
         // text is the sentence every build path has printed for it
         // (GH #903, `could not read <path>: <os error>`). A directory's
@@ -383,7 +412,7 @@ pub fn collect_checkable(
     // from here arrived through an `import`.
     let own: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
-    link_checkable(target, &files, own, programs, sources, file_bases, src)
+    Ok((files, own, programs, sources, file_bases, effects))
 }
 
 /// The second half of a whole seed's load, over its own files already
@@ -392,8 +421,10 @@ pub fn collect_checkable(
 /// editor's load ([`LoadMode::Editor`]) after its own, so the two loads
 /// link a seed by one path. `target` is the seed (the directory, or
 /// the one file), `own` the target's files as the caller canonicalized
-/// them.
-#[allow(clippy::type_complexity)]
+/// them, `effects` the effect-class table they were parsed through: the
+/// imported seeds are parsed through it too, so the merged program's
+/// classes need no renumbering.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn link_checkable(
     target: &Path,
     files: &[PathBuf],
@@ -401,6 +432,7 @@ pub fn link_checkable(
     programs: BTreeMap<PathBuf, Program>,
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
+    effects: EffectClasses,
     src: &dyn SourceProvider,
 ) -> Result<
     (
@@ -439,11 +471,10 @@ pub fn link_checkable(
         }
     };
     let workspace_root = find_workspace_root(target);
-    let mut effects = EffectTable::from_seed(&merged);
+    // The load's one effect-class table: the imported seeds intern into
+    // it as they are parsed.
+    let mut effects = effects;
     let mut merged_items = merged.items;
-    // Same identity-seeding rule as the entry path: `merged`'s own
-    // items are already in `merged_items` and are never walked, so its
-    // table must come first.
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<
         PathBuf,
@@ -527,10 +558,13 @@ pub fn link_checkable(
     }
 
     let mut program = Program {
-        // The UNIONED table from the merge above, not `merged`'s own —
-        // `merged.effect_names` is the pre-import table and every
-        // imported seed's `User(i)` was remapped into this one.
-        declared_effects: effects.declared_indices(),
+        // The load's table as the last imported seed's parse left it,
+        // not `merged`'s own, which predates the imports.
+        declared_effects: {
+            let mut d = effects.declared;
+            d.sort_unstable();
+            d
+        },
         effect_defs: effects.defs,
         effect_names: effects.names,
         imports: Vec::new(),
@@ -738,120 +772,27 @@ pub fn merge_programs<'a, I>(programs: I) -> Option<Program>
 where
     I: IntoIterator<Item = &'a Program>,
 {
-    let mut iter = programs.into_iter();
-    let first = iter.next()?;
-    // #345: same per-seed index hazard as the import path. Each file
-    // interns its own `effect NAME;` from zero, so concatenating items
-    // without remapping makes file A's class 0 and file B's class 0
-    // the same bit — `@effects(none: {money})` in one file would then
-    // be checked against `pii` in another. (Observed: the diagnostic
-    // reported reaching `pii` for a `none: {money}` assertion.)
-    let mut effects = EffectTable::default();
-    let mut take = |p: &Program| -> Vec<hale_syntax::ast::TopDecl> {
-        let mut items = p.items.clone();
-        if !p.effect_names.is_empty() {
-            let map = effects.absorb(p);
-            hale_syntax::ast::remap_user_effects(&mut items, &map);
-        }
-        items
-    };
-    let mut items = take(first);
-    for p in iter {
-        items.extend(take(p));
-    }
+    let programs: Vec<&Program> = programs.into_iter().collect();
+    let first = *programs.first()?;
+    // #345: every file of a load is parsed through one effect-class
+    // table, so concatenating items renumbers nothing; the merged
+    // program carries the table as the load's last parse left it, the
+    // longest one, every other being a prefix of it.
+    let table = programs
+        .iter()
+        .max_by_key(|p| p.effect_names.len())
+        .expect("at least one program");
+    let mut declared: Vec<u16> =
+        programs.iter().flat_map(|p| p.declared_effects.iter().copied()).collect();
+    declared.sort_unstable();
+    declared.dedup();
     let merged = Program {
-        declared_effects: effects.declared_indices(),
-        effect_defs: effects.defs,
-        effect_names: effects.names,
-        items,
+        declared_effects: declared,
+        effect_defs: table.effect_defs.clone(),
+        effect_names: table.effect_names.clone(),
+        items: programs.iter().flat_map(|p| p.items.iter().cloned()).collect(),
         imports: Vec::new(),
         span: first.span,
     };
     Some(merged)
-}
-
-/// #345: the merged user effect-class table.
-///
-/// Carries declared-ness, not just names. A name reaches the table two
-/// ways — an `effect NAME;` DECLARATION, or a mere REFERENCE in an
-/// `@effects(...)` clause — and only the first makes the class real.
-/// Without the distinction a typo interns a fresh class that nothing
-/// carries, so `@effects(none: { monye })` is vacuously satisfied and
-/// reports success: the exact silently-false certificate this analysis
-/// exists to rule out.
-#[derive(Default)]
-pub struct EffectTable {
-    pub names: Vec<String>,
-    pub declared: std::collections::BTreeSet<String>,
-    /// #354: composed definitions, index-parallel to `names`. Members
-    /// are remapped into THIS table on absorb — a definition holds
-    /// `EffectClass::User` indices, so carrying it across a seed
-    /// boundary without remapping aliases it exactly like any other
-    /// class reference.
-    pub defs: Vec<Option<Vec<hale_syntax::ast::EffectClass>>>,
-}
-
-impl EffectTable {
-    pub fn from_seed(p: &Program) -> Self {
-        let mut t = EffectTable::default();
-        t.absorb(p);
-        t
-    }
-
-    /// Union `p`'s table into this one and return the index map that
-    /// rewrites `p`'s `User(i)` into this table.
-    pub fn absorb(&mut self, p: &Program) -> Vec<u16> {
-        for &i in &p.declared_effects {
-            if let Some(n) = p.effect_names.get(i as usize) {
-                self.declared.insert(n.clone());
-            }
-        }
-        let map: Vec<u16> = p
-            .effect_names
-            .iter()
-            .map(|n| {
-                let at = self
-                    .names
-                    .iter()
-                    .position(|e| e == n)
-                    .unwrap_or_else(|| {
-                        self.names.push(n.clone());
-                        self.defs.push(None);
-                        self.names.len() - 1
-                    });
-                at as u16
-            })
-            .collect();
-        // Carry definitions across, remapping their MEMBERS. A member
-        // is a `User(i)` in the source seed's numbering; storing it
-        // unremapped would silently point the definition at whatever
-        // class holds that index in the merged table.
-        for (i, def) in p.effect_defs.iter().enumerate() {
-            let Some(members) = def else { continue };
-            let Some(&to) = map.get(i) else { continue };
-            let remapped: Vec<hale_syntax::ast::EffectClass> = members
-                .iter()
-                .map(|m| match m {
-                    hale_syntax::ast::EffectClass::User(j) => map
-                        .get(*j as usize)
-                        .map(|&k| hale_syntax::ast::EffectClass::User(k))
-                        .unwrap_or(*m),
-                    other => *other,
-                })
-                .collect();
-            if let Some(slot) = self.defs.get_mut(to as usize) {
-                *slot = Some(remapped);
-            }
-        }
-        map
-    }
-
-    pub fn declared_indices(&self) -> Vec<u16> {
-        self.names
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| self.declared.contains(*n))
-            .map(|(i, _)| i as u16)
-            .collect()
-    }
 }

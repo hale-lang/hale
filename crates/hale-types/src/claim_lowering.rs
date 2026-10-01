@@ -295,8 +295,8 @@ pub fn lower_claims(
             provenance: intern(recs, span),
         }
     };
-    let effect_names = crate::effects::effect_names_of(&programs);
-    let class_ref_named = |recs: &mut Vec<Provenance>,
+    let effect_classes = crate::effect_classes::EffectClassTable::of(&programs);
+    let class_ref_named =|recs: &mut Vec<Provenance>,
                            name: &str,
                            span: hale_syntax::Span|
      -> EffectClassRef {
@@ -320,7 +320,8 @@ pub fn lower_claims(
                      span: hale_syntax::Span|
      -> EffectClassRef {
         let name = match c {
-            EffectClass::User(i) => effect_names
+            EffectClass::User(i) => effect_classes
+                .names()
                 .get(*i as usize)
                 .cloned()
                 .unwrap_or_else(|| format!("<user:{}>", i)),
@@ -556,9 +557,8 @@ pub fn lower_claims(
     }
     let mut ann_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
     let mut budget_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
-    let effect_names = crate::effects::effect_names_of(&programs);
-    let declared_classes = crate::effects::declared_of(&programs);
-    let lower_fn_anns = |recs: &mut Vec<Provenance>,
+    let declared_classes = effect_classes.declared();
+    let lower_fn_anns =|recs: &mut Vec<Provenance>,
                          rows: &mut Vec<(
         String,
         ClaimOrigin,
@@ -605,24 +605,7 @@ pub fn lower_claims(
                     continue;
                 }
                 seen_undeclared.push(*i);
-                let bad = effect_names
-                    .get(*i as usize)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut near: Vec<&String> = effect_names
-                    .iter()
-                    .enumerate()
-                    .filter(|(j, _)| {
-                        declared_classes.contains(&(*j as u16))
-                    })
-                    .map(|(_, n)| n)
-                    .filter(|n| crate::effects::close(n, &bad))
-                    .collect();
-                near.sort();
-                let hint = match near.first() {
-                    Some(n) => format!(" Did you mean `{}`?", n),
-                    None => String::new(),
-                };
+                let (bad, hint) = effect_classes.undeclared(*i);
                 issues_out.push((
                     format!(
                         "`{}` asserts about effect class `{}`, \
@@ -707,24 +690,7 @@ pub fn lower_claims(
             // verdict consequence (Invalid).
             if let QuantDim::UserClass(i) = dim {
                 if !declared_classes.contains(i) {
-                    let bad = effect_names
-                        .get(*i as usize)
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut near: Vec<&String> = effect_names
-                        .iter()
-                        .enumerate()
-                        .filter(|(j, _)| {
-                            declared_classes.contains(&(*j as u16))
-                        })
-                        .map(|(_, n)| n)
-                        .filter(|n| crate::effects::close(n, &bad))
-                        .collect();
-                    near.sort();
-                    let hint = match near.first() {
-                        Some(n) => format!(" Did you mean `{}`?", n),
-                        None => String::new(),
-                    };
+                    let (bad, hint) = effect_classes.undeclared(*i);
                     // Change 5h: routed to the BUDGET bucket. The
                     // quantitative engine used to say this in
                     // check; it no longer runs there, so this issue
