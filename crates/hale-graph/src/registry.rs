@@ -225,6 +225,7 @@ const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
+const ENTRY: &str = "crates/hale-types/src/entry.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -557,8 +558,8 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "Which locus is the program's `main`, whether the world is closed, and which declarations are imported.",
-        inputs: &["locus declarations (is_main, imported, the __lib_ prefix)"],
-        producer: None,
+        inputs: &["locus declarations (is_main, imported, the __lib_ prefix, module nesting)", "the minted sites"],
+        producer: Some(site(ENTRY, "entry_row")),
         legacy: &[
             legacy(CHECK, "check_main_and_bindings", "defines `imported main` via `l.imported`", "one definition of the entry, as a row"),
             legacy(CHECK, "check_pinned_locus_in_loop", "finds main by a `__lib_` name filter", "same"),
@@ -574,12 +575,18 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it", "same"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("dna"), consumer("codegen")],
-        invariants: &["the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one"],
+        invariants: &[
+            "one row per snapshot (`Snapshot::demand_entry`, the `entrypoint` count): the entry by its minted site, and every `main locus` the bundle declares as the witness, each with whether it is imported and whether it is module-nested; it reads declarations only, so no diagnostic blocks it, and a seed with a hole (no identities) blocks it with its scope",
+            "an imported `main` is not the entry (decision 1, E0): a library's `main locus` is a declaration the importing seed does not run, and the entry is the importing seed's own; a seed whose only `main` is imported has no entry (`NoEntry::OnlyImported`). Imported is one definition, the rename pass's mark (`imported`, GH #1104 piece 5); the `__lib_` name the same pass gives is spelling, not a second test",
+            "a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry",
+            "with more than one candidate (rule 1's error) the entry is the last, as the checker's pool map always took it",
+            "the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
+        tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[],
+        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "ownership",

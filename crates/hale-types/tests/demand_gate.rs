@@ -285,6 +285,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
         ];
         for (consumer, s, lowers) in &consumers {
             for _ in 0..2 {
+                s.demand_entry().expect("the entry row");
                 s.demand_scope().expect("scoped");
                 s.demand_check().expect("checked");
                 if *lowers {
@@ -298,6 +299,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "seed_loading",
                 "desugar_sequence",
                 "snapshot_identity",
+                "entrypoint",
                 "top_scope",
                 "expression_typing",
                 "bus_graph",

@@ -19,7 +19,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | — | 12 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 12 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 5 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
@@ -383,9 +383,9 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Answers.** Which locus is the program's `main`, whether the world is closed, and which declarations are imported.
 
-**Inputs.** locus declarations (is_main, imported, the __lib_ prefix)
+**Inputs.** locus declarations (is_main, imported, the __lib_ prefix, module nesting); the minted sites
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer (today's authority, migrating).** `crates/hale-types/src/entry.rs` · `entry_row`
 
 **Legacy producers (permitted until removal).**
 
@@ -406,13 +406,21 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Invariants.**
 
+- one row per snapshot (`Snapshot::demand_entry`, the `entrypoint` count): the entry by its minted site, and every `main locus` the bundle declares as the witness, each with whether it is imported and whether it is module-nested; it reads declarations only, so no diagnostic blocks it, and a seed with a hole (no identities) blocks it with its scope
+- an imported `main` is not the entry (decision 1, E0): a library's `main locus` is a declaration the importing seed does not run, and the entry is the importing seed's own; a seed whose only `main` is imported has no entry (`NoEntry::OnlyImported`). Imported is one definition, the rename pass's mark (`imported`, GH #1104 piece 5); the `__lib_` name the same pass gives is spelling, not a second test
+- a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry
+- with more than one candidate (rule 1's error) the entry is the last, as the checker's pool map always took it
 - the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/entry_point_placement.rs; crates/hale-types/tests/bus_graph.rs
+**Focused tests.** crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus); crates/hale-cli/tests/entry_point_placement.rs; crates/hale-types/tests/bus_graph.rs
 
 **Spec.** spec/semantics.md § Bundle-wide rules
+
+**Guarded seams.**
+
+- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `ownership` — Migrating · derivation
 

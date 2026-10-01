@@ -6,6 +6,8 @@
 //! sequence already run and the identities minted after it. Everything
 //! else is a family, demanded by name:
 //!
+//! - [`Snapshot::demand_entry`]: the entry row, which `main locus` is
+//!   the program's entry, by identity.
 //! - [`Snapshot::demand_scope`]: the top scope, with its topic rows.
 //!   [`Snapshot::demand_editor_scope`] is the editor's reading of it:
 //!   over a seed with a hole, the scope of the members that parsed,
@@ -54,6 +56,7 @@ use hale_syntax::Diag;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
+use hale_types::entry::EntryRow;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
@@ -80,6 +83,7 @@ pub const FAMILIES: [&str; 12] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
+    "entrypoint",
     "top_scope",
     "expression_typing",
     "bus_graph",
@@ -370,6 +374,7 @@ pub struct Snapshot {
     /// does not parse or read): the members are kept, unlinked, and the
     /// scope blocks.
     unlinked: Option<CheckableFailure>,
+    entry: OnceCell<Result<EntryRow, Blocked>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -539,6 +544,7 @@ impl Snapshot {
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
             unlinked: loaded.unlinked,
+            entry: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             typing: OnceCell::new(),
@@ -823,6 +829,23 @@ impl Snapshot {
             .position(|f| *f == family)
             .expect("a snapshot counts only its own families");
         self.builds[i].set(self.builds[i].get() + 1);
+    }
+
+    /// The entry row: which `main locus` is the program's entry, by the
+    /// identity the load minted, with every `main locus` declared as its
+    /// witness ([`hale_types::entry`]). It reads declarations only, so
+    /// no diagnostic blocks it; a seed with a hole is not a program and
+    /// has no identities, so its entry is blocked with its scope.
+    pub fn demand_entry(&self) -> Result<&EntryRow, &Blocked> {
+        self.entry
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "entrypoint", ..self.hole_blocked() });
+                }
+                self.count("entrypoint");
+                Ok(hale_types::entry::entry_row(&self.bundle()))
+            })
+            .as_ref()
     }
 
     /// The `top_scope` family's producer over the programs held, counted.
@@ -1619,6 +1642,67 @@ mod tests {
         assert!(!blocked.because.is_empty() && blocked.because.iter().all(|d| d.is_error()));
         assert!(blocked.refused.is_none());
         assert_eq!(s.builds()["lowering_view"], 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The entry row (F.40 phase 3, E0): the seed's own top-level `main
+    /// locus`, by the site the load minted; the three ways to have none
+    /// (no `main`, only an imported one, only a module-nested one), and
+    /// a seed with an imported, a module-nested and a top-level one
+    /// keeping the top-level one. Demanded twice, built once.
+    #[test]
+    fn the_entry_row_is_the_seeds_own_top_level_main_locus() {
+        use hale_types::entry::NoEntry;
+        let d = scratch("entry");
+        let lib = d.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("main.hl"), "main locus LibHead { params { n: Int = 0; } }\n").unwrap();
+        let row_of = |name: &str, text: &str| {
+            let seed = d.join(name);
+            std::fs::create_dir_all(&seed).unwrap();
+            std::fs::write(seed.join("main.hl"), text).unwrap();
+            // The editor's load links a seed's imports as `hale check
+            // <dir>` does.
+            let s = load(&seed, &Disk, Config::check(true, false));
+            let row = s.demand_entry().expect("an entry row").clone();
+            assert!(std::ptr::eq(s.demand_entry().unwrap(), s.demand_entry().unwrap()));
+            assert_eq!(s.builds()["entrypoint"], 1, "{name}: built once");
+            for m in &row.mains {
+                let decl = m.decl(&s.bundle()).expect("the row names a declaration");
+                assert_eq!(decl.name.name, m.name);
+                assert_eq!(m.site, s.identities().site_id(decl.id), "{name}: by the minted site");
+                assert!(m.site.is_some(), "{name}: the load minted it");
+            }
+            row
+        };
+
+        let none = row_of("none", "fn main() { }\n");
+        assert_eq!(none.no_entry(), Some(NoEntry::NoMain));
+        assert!(none.mains.is_empty());
+
+        let imported = row_of("imported", "import \"../lib\" as lib;\nfn main() { }\n");
+        assert_eq!(imported.no_entry(), Some(NoEntry::OnlyImported), "decision 1: {imported:?}");
+        assert_eq!(imported.mains.len(), 1);
+        assert!(imported.mains[0].imported && !imported.mains[0].module_nested);
+        assert!(imported.mains[0].name.starts_with("__lib_"), "the rename pass marked what it renamed");
+
+        let nested = row_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { }\n");
+        assert_eq!(nested.no_entry(), Some(NoEntry::OnlyModuleNested), "decision 2: {nested:?}");
+        assert!(nested.mains[0].module_nested && !nested.mains[0].imported);
+
+        let all = row_of(
+            "all",
+            "import \"../lib\" as lib;\n\
+             module inner {\n    main locus Other { params { n: Int = 0; } }\n}\n\
+             main locus App { params { n: Int = 0; } }\n\
+             fn main() { App { }; }\n",
+        );
+        let entry = all.entry().expect("the top-level one is the entry");
+        assert_eq!(entry.name, "App");
+        assert!(!entry.imported && !entry.module_nested);
+        assert_eq!(all.mains.len(), 3, "the witness keeps every declaration: {all:?}");
+        assert_eq!(all.candidates().count(), 1);
+        assert_eq!(all.own().count(), 2, "rule 1 counts the module-nested one");
         let _ = std::fs::remove_dir_all(&d);
     }
 

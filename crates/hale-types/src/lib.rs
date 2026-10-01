@@ -31,6 +31,7 @@ pub mod callgraph;
 pub mod effect_classes;
 pub mod effect_rows;
 pub mod effects;
+pub mod entry;
 pub mod evidence;
 pub mod frontier;
 pub mod check;
