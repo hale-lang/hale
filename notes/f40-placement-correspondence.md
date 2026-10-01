@@ -34,26 +34,39 @@ pub struct PlacementTable {
     pub holes: Vec<Hole>,                  // what the producer could not decide, with its policy
 }
 
-/// Instance identity: the deployed root, the field path from it, the replica.
+/// Static instance identity: a construction template of the deployed root,
+/// the field path from it, the replica. A key names a template, never a
+/// runtime occurrence (see "Templates, occurrences, incarnations" below).
 pub struct InstanceKey {
-    pub root: SiteId,                      // the main locus declaration lowering deploys
-    pub path: Vec<String>,                 // field names from the root; [] is the root itself
+    pub construction: SiteId,              // the root literal (`App { … }`) the tree is built from: one template per literal site
+    pub path: Vec<Step>,                   // the fields from the root; [] is the root itself
     pub replica: Option<u32>,              // Some(i) on a `replicas = K > 1` field and on every row nested under it
+}
+
+pub struct Step {
+    pub field: String,
+    pub alternative: Option<SiteId>,       // the literal taken, when the field's initializer chooses among literals; None when it has one
 }
 
 pub struct RootRow {
     pub decl: MainLocus,                   // EntryRow::lowering_root, never EntryRow::entry
     pub is_entry: bool,                    // false when lowering deploys a module-nested main (NoEntry::OnlyModuleNested)
-    pub instantiations: Vec<(SiteId, Bound)>, // each root literal and how often it can be live
+    pub constructions: Vec<Construction>,  // every literal of the root declaration, each a template
+}
+
+pub struct Construction {
+    pub literal: SiteId,                   // the root literal; the `construction` of every key under it
+    pub bound: Bound,                      // how many occurrences of this template can be live at once
 }
 
 pub struct InstanceRow {
     pub realizes: DeclRef,                 // the declaration actually built (an override literal's, not the field's declared type)
     pub literal: Option<SiteId>,           // the literal that builds it (default or override); None = a hole
-    pub owner: Option<InstanceKey>,        // None only for the root
+    pub owner: Option<InstanceKey>,        // None only for a root row
     pub domain: DomainId,
     pub decided_by: Decision,
     pub owner_relative: OwnerRelative,     // SameAsOwner | OffOwner
+    pub guarded: bool,                     // on or under a step with an `alternative`: live only in occurrences that took it
 }
 
 pub struct DeclRef {
@@ -85,13 +98,30 @@ pub struct DynamicSite {                   // a locus literal in a method body, 
 
 ### Invariants
 
-1. **One row per static instance.** The static tower is the root's params fields and, recursively, their params fields, each with the literal that built it. Keys are unique. Replica rows are exactly `0..K` for a `replicas = K > 1` entry, and every row nested under replica `i` carries `Some(i)`.
+1. **One row per static instance of each construction template.** A construction template is one literal of the root declaration. Its static tower is the root's params fields as that literal builds them (its overrides, else the declaration's defaults) and, recursively, their params fields, each with the literal that built it. Two literals of the root are two templates even when their trees agree, so a key's `construction` decides every row under it: `App { gw: Gateway { router: RouterV2 { } } }` and `App { gw: Gateway { router: RouterV3 { } } }` give `gw.router` two keys, each with one `realizes`, one `literal` and one set of generic arguments. A field whose initializer chooses among literals (an `if` or `match` whose arms are literals) gives one step per literal, each with its `alternative`, and every row on or under it is `guarded`. An initializer whose literals cannot be enumerated (a call) is a hole on that field. Keys are unique. Replica rows are exactly `0..K` for a `replicas = K > 1` entry, and every row nested under replica `i` carries `Some(i)`.
 2. **Nested rows inherit.** A row's domain is its owner's domain unless the row is decided by an `Entry`, which only a root field can be (rule 1, sem:3216), or by a `Binding`.
 3. **Pinned domains are per instance.** Two rows share a pinned domain only if one is nested under the other, so each replica is its own domain. Pool domains are per name: every row on pool `X` shares one domain, and that domain carries at most one affinity (rule 16, sem:3400).
 4. **The root is `lowering_root`, never `entry`.** The table describes what lowering deploys. Until L4 has lowering read the entry, that root can be a module-nested `main` that is not the entry (`ent:96-113`, `ent:185`). `RootRow::is_entry` records the difference, so a consumer bound to the entry (rule 9's closed world, `--env`, `--matrix`) can tell. An imported `main` is never the root: a seed whose only `main` is imported has an empty table.
-5. **Every root entry decides exactly one field row** (rule 18, sem:3438). An entry that decides none is a hole with a stated policy. It is never dropped silently.
+5. **Every root entry decides exactly one field row in each construction template** (rule 18, sem:3438). An entry that decides none is a hole with a stated policy. It is never dropped silently.
 6. **Unknown is a hole, not a default** (registry, `placement` § Missing data). A field whose realized declaration cannot be resolved still gets its domain from its owner or its entry. Only `realizes` holds the hole.
 7. **F.38** (dec:3219). No column of the table changes who receives a message. Domains decide threads and routes, never delivery sets.
+
+### Templates, occurrences, incarnations
+
+Three identities are easy to run together, and the table holds only the first.
+
+- **A template** is static: a construction literal of the root, a path of steps from it, a replica index. It is what `InstanceKey` names, and what every safety rule and lowering decision is stated over.
+- **An occurrence** is one execution of a template's literal: `fn main() { App { }; }` has one, a factory called in a loop has as many as the loop runs. The table does not key occurrences. It counts them, through `Construction::bound` and `DynamicSite::bound`, and every occurrence of a template has the same domains, decisions and realized declarations, because they are all decided statically.
+- **An incarnation** is a runtime identity: which live object an observation came from. It belongs to the runtime and the observation stream (P2 and the model's arrangement read it), never to the table. A consumer that needs one joins it to a template; the table never mints one.
+
+### How live bounds combine
+
+A count over the table (threads, pinned anchors, arenas) is a sum over the templates that can be live at once. The rule:
+
+- **Across templates, sum.** Two construction templates, or two dynamic sites, can be live together. The table proves nothing about disjoint lifetimes, so a program that tears one root down before building the next is still counted as if both were live, and the budget says so.
+- **Within one template, multiply by its bound.** A template counts once per occurrence that can be live: `Once` is 1, `AtMost(n)` is `n`, `Unbounded` makes the whole count an uncertainty with the template's reason.
+- **Across the alternatives of one step, take the maximum.** One occurrence takes exactly one alternative, so its guarded subtrees are exclusive. The maximum is over each alternative's own subtree count.
+- **Replicas are already rows.** `replicas = K` is K rows in the template, so it is counted by the sum over rows and never multiplied again.
 
 ### What each legacy question becomes
 
@@ -224,7 +254,7 @@ pub struct DynamicSite {                   // a locus literal in a method body, 
 | R-2 | instances on one pool | the name is deduplicated: 1 | one worker per pool domain | agreement, and the decision ("instances on one pool are not workers") is pinned so the switch cannot count rows | rt:354-362 (one worker per pool name) | `resource_budget.rs` · `three_instances_on_one_pool_are_one_worker` |
 | R-3 | `cooperative(pool = io, cores = 2..4)`, and two entries naming one pool, one with an affinity | 0 threads, 1 pool | the same: affinity is a column of the pool domain, never a thread | agreement, pinned by the decision ("affinity entries are not threads") | sem:3400-3410 | `resource_budget.rs` · `pool_affinity_adds_no_thread` |
 | R-4 | an imported `__lib_` root, or a module-nested non-root `main`, with pinned entries | counted | not counted: only the deployed root's rows count | known old bug → approved correction | `ent:1-31`; sem:3411-3437 | `resource_budget.rs` · `an_imported_roots_entries_cost_nothing` |
-| R-5 | the root built at several sites or in a loop (a factory called in a loop is legal, sem:3432-3436) | counted once | threads × the root's `Bound`; `Unbounded` renders as an uncertainty, and a ceiling against an uncertain count fails with that reason | known old bug → approved correction ("dynamic instantiation needs a bound or an uncertainty") | sem:3411-3437 | `resource_budget.rs` · `a_root_built_in_a_called_loop_is_uncertain` |
+| R-5 | the root built at several sites or in a loop (a factory called in a loop is legal, sem:3432-3436) | counted once | each construction template's threads × its `bound`, summed over the templates (§ 1, how live bounds combine); `Unbounded` renders as an uncertainty, and a ceiling against an uncertain count fails with that reason | known old bug → approved correction ("dynamic instantiation needs a bound or an uncertainty") | sem:3411-3437 | `resource_budget.rs` · `a_root_built_in_a_called_loop_is_uncertain` |
 | R-6 | adapter loci in `bindings { }` (pinned-equivalent threads, `cg:10494-10508`) | 0 | 1 thread each | **unresolved disagreement** → U-3. The decision covers placement, not bindings; recommendation: count them, since they are threads | — | `resource_budget.rs` · `an_inline_adapter_is_a_thread` |
 | R-7 | `cooperative` or `pool = main` spelled | `main` is counted as a pool, and only when spelled | `main` adds no worker | **unresolved disagreement** → U-2. Recommendation: pools are worker pools; `main` is rendered on its own line. A declared ceiling can only loosen | rt:354-362 | `resource_budget.rs` · `the_main_pool_is_not_a_worker` |
 
@@ -257,7 +287,8 @@ Threads the runtime spawns outside placement are not placement facts. Examples a
 7. **Module-nested and module-qualified.** A root field `k: m::K = m::K { }`, and a seed whose only `main` is inside `module app { … }`. `RootRow::is_entry == false`, rows present, because lowering deploys it (`ent:96-113`; the nested-main transition test `nested_main_transition.rs`).
 8. **Imported roots.** A seed importing a library whose `main locus` has pinned entries, with and without the seed's own `main`. The import gives no rows (K-2, B-4, M-1, R-4). With the seed's main, the rows are the seed's. Run from `tests/hale` through the snapshot, since a parse-only shadow cannot see it.
 9. **Adapter bindings.** An inline adapter in `bindings { }`: a `Decision::Binding` row with a pinned domain (G-4, R-6).
-10. **Dynamic sites.** A locus literal in a root method in a loop, an `accept`ed child, and the root built by a factory called in a loop. These produce `DynamicSite` rows with the enclosing domains and the bound, and the root's `Unbounded` bound (R-5).
+10. **Dynamic sites.** A locus literal in a root method in a loop, an `accept`ed child, and the root built by a factory called in a loop. These produce `DynamicSite` rows with the enclosing domains and the bound, and the factory's literal is one construction template with an `Unbounded` bound (R-5).
+11. **Two constructions of one root with different nested overrides.** `App { gw: Gateway { router: RouterV2 { } } }` in one function and `App { gw: Gateway { router: RouterV3 { } } }` in another, with `gw` placed `pinned` and `RouterV3` generic. Two `Construction` rows, and two keys for each of `gw` and `gw.router`, which differ only in `construction`: each `gw.router` row has its own `realizes`, `literal` and `args`, and each `gw` its own pinned domain. A third construction `App { gw: if c { Gateway { router: RouterV2 { } } } else { Gateway { } } }` gives two `alternative` steps at `gw`, every row under them `guarded`, and its budget contribution is the larger of the two subtrees, not their sum. The case first pins whether rule 3 and the checker admit a literal-armed `if` as a param initializer; if they refuse it, the third construction is dropped from the case and `alternative` stays for `match` arms only if those are admitted, else it is removed from the schema.
 
 ## 4. The runtime test the correction needs
 
@@ -284,7 +315,7 @@ Six PRs follow this document. Each consumer switches in a commit of its own, and
 
 | # | PR | shape | carries | oracle |
 |---|---|---|---|---|
-| 1 | **The producer.** `crates/hale-types/src/placement.rs` · `placement_table`, `Snapshot::demand_placement` and a `FAMILIES` entry. The shadow rewritten as § 3 describes, with the fixture extended and every row cited by id. `placement_table.rs` with § 3's ten cases. The registry names the producer. No consumer reads it. | S · Opus | the producer commit; the shadow commit; the cases commit; the registry commit | shadow: zero unexplained or stale over the corpus, `tests/hale` and `dna/`; `cargo nextest run --release --workspace`. **L1 stacks on this PR's producer commit.** |
+| 1 | **The producer.** `crates/hale-types/src/placement.rs` · `placement_table`, `Snapshot::demand_placement` and a `FAMILIES` entry. The shadow rewritten as § 3 describes, with the fixture extended and every row cited by id. `placement_table.rs` with § 3's eleven cases. The registry names the producer. No consumer reads it. | S · Opus | the producer commit; the shadow commit; the cases commit; the registry commit | shadow: zero unexplained or stale over the corpus, `tests/hale` and `dna/`; `cargo nextest run --release --workspace`. **L1 stacks on this PR's producer commit.** |
 | 2 | **The lowering view.** The desugar's read (D, agreement), then `DeploymentPlan` as the table's lowering view, with replicas folded in and the type sets from `realizes.lowered`. Each of G-2 and G-3 that § 3 confirmed lands first as its own J commit with a runtime test. | S, with J for confirmed G rows · Opus | registry: `collect_off_owner_thread_fields`, `collect_main_placement` and `DeploymentPlan` leave the legacy list, and the seam `collect_main_placement(` goes | dispatch-plan digest and build identity identical over the corpus; `IntraLocusRewrite` relation identical; `LOTUS_ASAN=1 … --test corpus_oracle -- --ignored`; the ownership-matrix sample |
 | 3 | **The checker.** F.31 reads `domain` and `owner_relative` (K-1, J). `compute_pool_of_locus_type` becomes a projection for sync inference (K-5's per-instance rule, S). Pinned-in-a-loop and entry-consumed read the root rows (S). Instance aliasing reads them too (intentional correction, J). `enclosing_field_placement` goes. | J + S · Opus for K-1 and K-5, Sonnet for the rest | the K-1 test; `two_owners_on_two_pools_infer_none` and the sync-inference shadow; `an_imported_seeds_aliasing_is_not_reported`; the registry's checker row removed and the seam `compute_pool_of_locus_type(` narrowed or gone; a fragment for the qualified-field diagnostic; sem § Placement block (rule 3 names qualified stdlib loci) and the docs chapter `docs/src/services/concurrency.md` | diagnostics identical over the corpus and `tests/hale` except the pinned K-1 cases |
 | 4 | **`PlacedIn`.** The model's arrangement projected from the table: M-1 (J), M-3 (J), and the M-2 and M-4 projections as U-4 and U-5 decide. | J · Sonnet after PR 3 | `--dump-model` pins; `shape_hash` and obs ids identical over the corpus (stated in the body); the registry row removed; a fragment | `hale check --dump-model` over the corpus differs only in the pinned cases |
