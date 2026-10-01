@@ -284,9 +284,14 @@ pub(crate) fn constitution_identities(
     ids.roots.into_iter().map(|i| (i.name, i.digest)).collect()
 }
 
-/// Is this seed an entrypoint? Parse-only — an entrypoint is a
-/// structural fact, and a seed that fails to TYPECHECK is still an
-/// entrypoint whose absence from the matrix must be reported.
+/// Is this seed an entrypoint? Its entry row says (F.40 phase 3, E0):
+/// the seed's own top-level `main locus`. Declarations only — an
+/// entrypoint is a structural fact, and a seed that fails to TYPECHECK
+/// is still an entrypoint whose absence from the matrix must be
+/// reported. An imported `main locus` is never the entry (decision 1),
+/// so the row is built over the seed's own files and no import is
+/// followed: a seed whose import does not resolve is still known to be
+/// an entrypoint, and its pair reports the import.
 ///
 /// A seed that fails to PARSE is `Unknown`, never `No`. Treating an
 /// unparseable file as "not a main" made a syntax error erase an
@@ -311,22 +316,27 @@ pub(crate) fn seed_entry_kind(dir: &Path) -> EntryKind {
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
         .collect();
     files.sort();
+    // The files in order, up to the first that does not read or parse:
+    // an entry before it answers; without one, the seed is unknown.
+    let mut parsed: Vec<(String, Program)> = Vec::new();
+    let mut broken = None;
     for p in files {
-        let Ok(src) = fs::read_to_string(&p) else {
-            return EntryKind::Unparseable(p);
-        };
-        match hale_syntax::parse_source(&src) {
-            Ok(prog) => {
-                if prog.items.iter().any(|i| {
-                    matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
-                }) {
-                    return EntryKind::Yes;
-                }
+        match fs::read_to_string(&p).ok().and_then(|src| hale_syntax::parse_source(&src).ok()) {
+            Some(prog) => parsed.push((p.display().to_string(), prog)),
+            None => {
+                broken = Some(p);
+                break;
             }
-            Err(_) => return EntryKind::Unparseable(p),
         }
     }
-    EntryKind::No
+    let bundle = hale_types::Bundle::new(parsed.iter().map(|(p, prog)| (p.clone(), prog)).collect());
+    if hale_types::entry::entry_row(&bundle).entry().is_some() {
+        return EntryKind::Yes;
+    }
+    match broken {
+        Some(p) => EntryKind::Unparseable(p),
+        None => EntryKind::No,
+    }
 }
 
 /// `--workspace`: check EVERY seed under the target, independently.

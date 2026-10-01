@@ -779,8 +779,11 @@ will be deployed.
 `--matrix` checks every pair. **An entrypoint listed in no environment
 is an error**, not a skip — that is the one hole composition cannot
 close by construction, since no single compilation can see that a
-sibling was left out. A seed with no `main locus` is not an entrypoint
-and is not demanded of the manifest.
+sibling was left out. A seed with no `main locus` of its own at the
+top level is not an entrypoint and is not demanded of the manifest —
+one that only imports a library's `main locus`, or keeps its `main
+locus` inside a `module { }`, included — and `--env` refuses it as a
+deployment target.
 
 ### Groups must be declared by every adopting entrypoint
 

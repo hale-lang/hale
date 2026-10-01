@@ -506,11 +506,12 @@ fn substitute_generic_ty(
 
 /// What the checker reads from the families it does not own, each
 /// built once over the programs it checks (F.40 phase 2.3): the top
-/// scope with its topic rows, and the handler rows. The frontend's
-/// snapshot demands each as a family of its own
-/// (`Snapshot::demand_scope`, `demand_handlers`) and hands them here, as
-/// it hands the model its [`crate::model_builder::ModelInputs`]; the
-/// checker builds none of them.
+/// scope with its topic rows, the handler rows, and the entry row (F.40
+/// phase 3, E0). The frontend's snapshot demands each as a family of
+/// its own (`Snapshot::demand_scope`, `demand_handlers`,
+/// `demand_entry`) and hands them here, as it hands the model its
+/// [`crate::model_builder::ModelInputs`]; the checker builds none of
+/// them.
 pub struct CheckInputs<'a> {
     pub top: &'a TopScope,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
@@ -521,12 +522,13 @@ pub struct CheckInputs<'a> {
     /// are blocked, which they never are once the scope the check reads
     /// exists.
     pub effects: &'a dyn Fn() -> Option<&'a crate::effect_rows::EffectRows>,
+    pub entry: &'a crate::entry::EntryRow,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
-/// once each ([`crate::bundle_handler_rows`]; the effect rows when a
-/// rule asks).
+/// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`];
+/// the effect rows when a rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -535,7 +537,8 @@ pub fn check_bundle(
     let handlers = crate::bundle_handler_rows(bundle);
     let rows = std::cell::OnceCell::new();
     let effects = || Some(rows.get_or_init(|| crate::effect_rows::derive_effect_rows(bundle, top)));
-    let inputs = CheckInputs { top, handlers: &handlers, effects: &effects };
+    let entry = crate::entry::entry_row(bundle);
+    let inputs = CheckInputs { top, handlers: &handlers, effects: &effects, entry: &entry };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
 
@@ -672,7 +675,7 @@ pub fn check_bundle_reporting(
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
-    check_main_and_bindings(bundle, top, inputs.effects, &mut diags);
+    check_main_and_bindings(bundle, top, inputs.effects, inputs.entry, &mut diags);
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -690,13 +693,13 @@ pub fn check_bundle_reporting(
     // self's. Cross-pool coordination must go through the bus,
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
-    check_placement_single_thread(bundle, top, &mut diags);
+    check_placement_single_thread(bundle, top, inputs.entry, &mut diags);
     // GH #826: a `pinned` placement entry gives its field an OS
     // thread whose join record is one alloca per instantiation SITE,
     // so instantiating the placing locus inside a loop orphans every
     // thread but the last and leaks its arena. Placement describes a
     // static topology; the loop is rejected.
-    check_pinned_locus_in_loop(bundle, top, &mut diags);
+    check_pinned_locus_in_loop(bundle, top, inputs.entry, &mut diags);
     // GH #890: a placement entry is carried by the locus LITERAL
     // lowered for its field and by nothing else, so a field built any
     // other way (a factory call the commonest) leaves the entry
@@ -816,10 +819,10 @@ pub fn check_bundle_reporting(
     check_unowned_subscriber_locus(bundle, allow_unowned_subscriber, &mut diags);
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
-    // wired to only one end. Gated on a closed-world program (a
-    // `main` locus present), so library seeds whose consumers are
-    // external aren't falsely flagged.
-    check_bus_graph(bundle, top, &mut diags);
+    // wired to only one end. Gated on a closed-world program (one
+    // with an entry), so library seeds whose consumers are external
+    // aren't falsely flagged.
+    check_bus_graph(bundle, top, inputs.entry, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
     // an intra-locus loop is devirtualized synchronous self-dispatch
@@ -3692,30 +3695,20 @@ impl PoolId {
 /// two towers with different pools is rare in v1; we pick the
 /// first.
 ///
-/// Returns an empty map for programs without a main locus
-/// (free-fn-main scripts), so callers can skip the rest of
-/// the analysis cheaply.
+/// Returns an empty map for programs lowering deploys no `main locus`
+/// in (free-fn-main scripts, libraries), so callers can skip the rest
+/// of the analysis cheaply.
 pub fn compute_pool_of_locus_type(
     bundle: &Bundle<'_>,
     top: &TopScope,
+    entry: &crate::entry::EntryRow,
 ) -> BTreeMap<String, PoolId> {
-    // GH #825: `main locus` inside a `module { … }` is still the
-    // program's main locus — the resolver keys `TopScope` by the bare
-    // name and codegen finds it the same way. A lookup that stops at
-    // the top level returns an EMPTY map for such a program, and
-    // every caller reads an empty map as "no placement to reason
-    // about" and returns early: the whole F.31 layer switched off.
-    let mut main_locus: Option<&LocusDecl> = None;
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                if l.is_main {
-                    main_locus = Some(l);
-                }
-            }
-        });
-    }
-    let Some(main) = main_locus else {
+    // The entry row's lowering root (F.40 phase 3, E0), not its entry:
+    // the map says where lowering runs each locus, and until lowering
+    // reads the entry (L4) it deploys a module-nested `main locus` too
+    // (GH #825), so that one seeds the map. An imported one seeds
+    // nothing.
+    let Some(main) = entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)) else {
         return BTreeMap::new();
     };
 
@@ -3854,25 +3847,13 @@ fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 fn check_placement_single_thread(
     bundle: &Bundle<'_>,
     top: &TopScope,
+    entry: &crate::entry::EntryRow,
     diags: &mut Vec<Diag>,
 ) {
-    let pool_of_locus_type = compute_pool_of_locus_type(bundle, top);
+    let pool_of_locus_type = compute_pool_of_locus_type(bundle, top, entry);
     if pool_of_locus_type.is_empty() {
         return;
     }
-    // The main locus is needed downstream for the cross-pool
-    // walk's `enclosing_locus`; re-locate it (cheap).
-    let mut main_locus: Option<&LocusDecl> = None;
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                if l.is_main {
-                    main_locus = Some(l);
-                }
-            }
-        });
-    }
-    let _main = main_locus;
 
     // 4. Walk every locus method body in the bundle and emit
     //    diagnostics for direct cross-pool calls. The check
@@ -3986,33 +3967,27 @@ fn check_placement_single_thread(
 fn check_pinned_locus_in_loop(
     bundle: &Bundle<'_>,
     top: &TopScope,
+    entry: &crate::entry::EntryRow,
     diags: &mut Vec<Diag>,
 ) {
-    // Loci that pin at least one field. Mirrors codegen's
-    // `collect_main_placement`: an imported seed's main locus is
-    // renamed `__lib_*` and is NOT the deployment root, so its
-    // placement entries never reach the plan and never spawn a
-    // thread — flagging it would be a false positive.
+    // Loci that pin at least one field: the deployment root's, the
+    // entry row's lowering root (F.40 phase 3, E0), module-nested or
+    // not, since its placement is what spawns the threads. An imported
+    // seed's main locus is NOT the deployment root, so its placement
+    // entries never reach the plan and never spawn a thread — flagging
+    // it would be a false positive.
     let mut pinned_by: BTreeMap<String, (String, Span)> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let TopDecl::Locus(l) = item else { return };
-            if !l.is_main || l.name.name.starts_with("__lib_") {
-                return;
-            }
-            for m in &l.members {
-                let LocusMember::Placement(pb) = m else { continue };
-                for entry in &pb.entries {
-                    if matches!(entry.spec, PlacementSpec::Pinned { .. }) {
-                        pinned_by
-                            .entry(l.name.name.clone())
-                            .or_insert_with(|| {
-                                (entry.field.name.clone(), entry.span)
-                            });
-                    }
+    for l in entry.lowering_root.iter().filter_map(|m| m.decl(bundle)) {
+        for m in &l.members {
+            let LocusMember::Placement(pb) = m else { continue };
+            for entry in &pb.entries {
+                if matches!(entry.spec, PlacementSpec::Pinned { .. }) {
+                    pinned_by
+                        .entry(l.name.name.clone())
+                        .or_insert_with(|| (entry.field.name.clone(), entry.span));
                 }
             }
-        });
+        }
     }
     if pinned_by.is_empty() {
         return;
@@ -5903,9 +5878,16 @@ fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
     effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
+    entry: &crate::entry::EntryRow,
     diags: &mut Vec<Diag>,
 ) {
-    let mut mains: Vec<(String, Span)> = Vec::new();
+    // Rule 1 counts the entry row's witness (F.40 phase 3, E0): the
+    // seed's own `main locus` declarations, module-nested ones
+    // included (GH #825: a count that skips half the declarations is
+    // not a count). An imported seed's main locus is not this
+    // program's entry and does not count: a composed head imports the
+    // standalone head, main locus and all (GH #1104 piece 5).
+    let mains: Vec<(&str, Span)> = entry.own().map(|m| (m.name.as_str(), m.span)).collect();
     let mut bound: BTreeMap<String, Span> = BTreeMap::new();
 
     // For role inference: gather, per wire-subject, whether ANY
@@ -5923,22 +5905,13 @@ fn check_main_and_bindings<'e>(
     // never builds them).
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
 
-    // GH #825: a `main locus` and a `bindings { }` block inside a
-    // `module { … }` are ordinary bundle members. The at-most-one-main
-    // rule in particular is a whole-bundle count, and a count that
-    // skips half the declarations is not a count.
-    // (`collect_topic_pub_sub`, which feeds role inference, already
-    // recursed — it grew its own `TopDecl::Module` arm.)
+    // GH #825: a `bindings { }` block inside a `module { … }` is an
+    // ordinary bundle member. (`collect_topic_pub_sub`, which feeds
+    // role inference, already recursed — it grew its own
+    // `TopDecl::Module` arm.)
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                // An imported seed's main locus is renamed `__lib_*` and
-                // is not this program's entry (its bindings are inert),
-                // so it does not count: a composed head imports the
-                // standalone head, main locus and all (GH #1104 piece 5).
-                if l.is_main && !l.imported {
-                    mains.push((l.name.name.clone(), l.span));
-                }
                 // An imported main's bindings are inert (GH #1104 piece 5):
                 // they bind nothing here and count toward nothing — not
                 // "already bound", not a role to infer.
@@ -6884,16 +6857,14 @@ fn collect_topic_pub_sub(
 fn check_bus_graph(
     bundle: &Bundle<'_>,
     top: &TopScope,
+    entry: &crate::entry::EntryRow,
     diags: &mut Vec<Diag>,
 ) {
-    // Closed-world gate: only a complete program (has `main`) has
-    // both ends of every channel in-bundle.
-    let has_main = bundle.programs.values().any(|p| {
-        p.items
-            .iter()
-            .any(|i| matches!(i, TopDecl::Locus(l) if l.is_main))
-    });
-    if !has_main {
+    // Closed-world gate: only a complete program (one with an entry,
+    // F.40 phase 3, E0) has both ends of every channel in-bundle. A
+    // seed whose only `main locus` is imported or module-nested has
+    // none, and is checked as a library is.
+    if entry.entry().is_none() {
         return;
     }
 

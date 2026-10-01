@@ -720,6 +720,86 @@ fn env_requires_the_target_to_be_an_entrypoint() {
     assert!(out.contains("declares no `main locus`"), "{}", out);
 }
 
+/// F.40 phase 3, E0: the entry row decides what an entrypoint is, for
+/// `--env` and for the matrix alike. A seed whose only `main locus` is
+/// an imported library's (decision 1) or sits inside a `module { }`
+/// (decision 2) has no entry: `--env` refuses it as it refuses a
+/// library, and the matrix does not count it as an entrypoint. Before
+/// the row, `--env` took any top-level `main locus` of the merged
+/// program, the library's included.
+const HEAD: &str = "main locus Head { params { n: Int = 0; } }\nfn main() { Head { }; }\n";
+
+fn entry_workspace(tag: &str) -> PathBuf {
+    let r = root(tag);
+    write(&r, "head/main.hl", HEAD);
+    write(&r, "importer/main.hl", "import \"../head\" as h;\nfn main() { }\n");
+    write(
+        &r,
+        "nested/main.hl",
+        "module inner {\n    main locus Head { params { n: Int = 0; } }\n}\nfn main() { }\n",
+    );
+    write(
+        &r,
+        "both/main.hl",
+        "import \"../head\" as h;\nmain locus Own { params { n: Int = 0; } }\nfn main() { Own { }; }\n",
+    );
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"head\", \"both\"]\n",
+    );
+    r
+}
+
+#[test]
+fn env_refuses_a_seed_whose_only_main_is_imported_or_module_nested() {
+    let r = entry_workspace("entryenv");
+    let check = |seed: &str| {
+        let dir = r.join(seed);
+        hale(&["check".as_ref(), dir.as_os_str(), "--env".as_ref(), "dev".as_ref()])
+    };
+    for seed in ["importer", "nested"] {
+        let (out, code) = check(seed);
+        assert_eq!(code, 2, "{seed}: no entry, no deployment target: {out}");
+        assert!(
+            out.contains(&format!(
+                "{}: `--env` names a deployment target, and a deployment target is an ENTRYPOINT — this seed declares no `main locus`",
+                r.join(seed).display()
+            )),
+            "{seed}: {out}"
+        );
+    }
+    // The seed's own top-level main is the entry, an imported one beside it
+    // or not.
+    for seed in ["head", "both"] {
+        let (out, code) = check(seed);
+        assert_eq!(code, 0, "{seed}: {out}");
+    }
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+#[test]
+fn the_matrix_counts_only_seeds_with_an_entry() {
+    let r = entry_workspace("entrymatrix");
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 0, "`importer` and `nested` are not entrypoints, so nothing is unbound: {out}");
+    assert!(!out.contains("in no environment"), "{out}");
+}
+
+/// No import holds the entry, so the matrix reads a seed's row from its
+/// own files: one whose import does not resolve is still an entrypoint,
+/// and unlisted, it is still named.
+#[test]
+fn a_seed_whose_import_does_not_resolve_is_still_an_entrypoint() {
+    let r = entry_workspace("entryunresolved");
+    write(&r, "dangling/main.hl", &format!("import \"../absent\" as gone;\n{HEAD}"));
+    let (out, code) = hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("dangling") && out.contains("in no environment"), "{out}");
+}
+
 /// The artifact must say WHICH deployment it certifies, not only
 /// which law applied — two environment labels can select identical
 /// law and would otherwise produce indistinguishable certificates.

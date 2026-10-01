@@ -1898,7 +1898,8 @@ description carries what `serve:` named, `"serve": [{"param":
 imported *topic* a seed's own locus subscribes or publishes is served
 as any other, under its qualified name. An imported seed's `main locus` is not the entrypoint
 either: renamed with its seed, it does not count toward the one-main
-rule, and an `api:` entry it carries is inert — a composed head that
+rule, its `placement { }` places nothing here, and an `api:` entry
+it carries is inert — a composed head that
 imports the standalone head declares its own entry to get a socket. A subscription by literal subject
 (`subscribe "log.**" ...`) names no topic and is not part of the
 API; a command reaches the loci that subscribe the topic by name,
@@ -2713,6 +2714,37 @@ produces a clear diagnostic naming the transport limitation.
 Existing bindings without a `where` clause continue to work
 unchanged.
 
+**The entry locus.** A program's entry is its seed's own top-level
+`main locus`; the checker reads it from one row (`hale_types::entry`,
+the registry's `entrypoint` family) for rule 1's count and rule 9's
+closed world, and `--env` and `--matrix` read the same row for what an
+entrypoint is. Two shapes are not the entry (F.40 phase 3, E0):
+
+- **An imported `main locus`** — a library's, renamed with its seed —
+  is a declaration the importing seed does not run. A seed whose only
+  `main locus` is imported has no entry and checks as a seed with no
+  `main` does: the library's placement seeds nothing, and the world
+  is not closed.
+- **A `main locus` inside a `module { }`** is not the entry either, as
+  a `fn main` inside one is not the entry point (§ "Declarations
+  inside `module { }`"). A seed whose only `main locus` is
+  module-nested has no entry; a seed with both keeps the top-level
+  one. Rule 1 still counts a module-nested one (GH #825).
+
+With more than one candidate (rule 1's error) the checker reads the
+last.
+
+The build does not read the entry yet (F.40 phase 3, L4). It deploys
+the first `main locus` of the seed's own, in declaration order, a
+module-nested one included, and spawns that one's placement. The
+placement-safety rules guard what the build deploys, so they read that
+root, not the entry: the pool map behind the cross-pool method call
+error (`spec/types.md` § "Single-threaded-method invariant (F.31)")
+and the pinned-in-a-loop rule (placement rule 17). A seed whose only `main locus` is module-nested therefore has no
+entry, so its world is not closed and `--env` refuses it, and its
+placement is still checked as the top-level one's is, because the
+build still runs it.
+
 Bundle-wide rules:
 
 1. At most one `main` locus per bundle, counting the entry program's
@@ -3256,8 +3288,12 @@ main locus App {
    Note rule 7 (the dead-receiver *error*) stays **direct-call-only**
    — it is not widened onto indirect paths, so the higher-stakes
    diagnostic keeps its precision.
-9. **Orphan bus topic (warning).** In a closed-world program (a
-   `main` locus present), a bus subject — a declared `topic` or a
+9. **Orphan bus topic (warning).** In a closed-world program (one
+   with an entry: the seed's own top-level `main locus`; an imported
+   or a module-nested one is not the entry: "The entry locus", §
+   "Phase 2: hierarchy, subjects, bindings, closed-world
+   optimization"),
+   a bus subject — a declared `topic` or a
    literal string — wired to only one end is flagged: *published with
    no subscriber* (the cells go nowhere) or *subscribed with no
    publisher* (the handler can't fire), and a declared topic touched
@@ -3388,7 +3424,12 @@ main locus App {
     a per-iteration thread is a category error rather than a
     reclaim policy to pick. `placement { }` is main-only (rule 1),
     so the shape this rejects is the deployment root booted once per
-    iteration. The fix is to instantiate it once outside the loop;
+    iteration, and the placement it reads is the deployment root's
+    (an imported `main locus` is not deployed and pins nothing; a
+    module-nested one is not the entry but is deployed until the
+    build reads the entry, so it pins: "The entry locus", § "Phase
+    2: hierarchy, subjects, bindings, closed-world optimization").
+    The fix is to instantiate it once outside the loop;
     a loop that *calls a fn* holding the literal is unaffected and
     correct (each call joins its own thread at that fn's exit), and
     the rule is positional on that literal, so it is not a rule
@@ -4649,6 +4690,16 @@ name lookup:
   brace deeper check clean and then fail to build (codegen's
   spanless `program has no fn main()`). The two layers say the same
   thing now (2026-09-20, GH #911).
+
+  A `main locus` written inside a module is not the entry either
+  (F.40 phase 3, E0): it is not refused, and rule 1 counts it, but
+  the checker's entry is the seed's top-level `main locus`, so a
+  module-nested one does not close the world and is not a deployment
+  target for `--env` ("The entry locus", § "Phase 2: hierarchy,
+  subjects, bindings, closed-world optimization"). Codegen still
+  deploys one as its root, by name, until its comparisons read the
+  same row (F.40 phase 3, L4), so its placement is checked and runs
+  as a top-level one's does.
 - **Scoping of locals.** Ordinary lexical scope is unchanged; a
   module is not a scope.
 

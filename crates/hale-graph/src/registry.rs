@@ -225,6 +225,7 @@ const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
+const ENTRY: &str = "crates/hale-types/src/entry.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -260,6 +261,7 @@ const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
 const V_CHECK: &str = "crates/hale-cli/src/verbs/check/run_impl.rs";
 const V_MATRIX: &str = "crates/hale-cli/src/verbs/check/matrix.rs";
 const V_BUILD: &str = "crates/hale-cli/src/verbs/build.rs";
+const CLI_DNA: &str = "crates/hale-cli/src/dna.rs";
 const V_RUN: &str = "crates/hale-cli/src/verbs/run.rs";
 const V_TEST: &str = "crates/hale-cli/src/verbs/test.rs";
 const V_REPLAY: &str = "crates/hale-cli/src/verbs/replay.rs";
@@ -557,29 +559,73 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "Which locus is the program's `main`, whether the world is closed, and which declarations are imported.",
-        inputs: &["locus declarations (is_main, imported, the __lib_ prefix)"],
-        producer: None,
+        inputs: &["locus declarations (is_main, imported, the __lib_ prefix, module nesting)", "the minted sites"],
+        producer: Some(site(ENTRY, "entry_row")),
         legacy: &[
-            legacy(CHECK, "check_main_and_bindings", "defines `imported main` via `l.imported`", "one definition of the entry, as a row"),
-            legacy(CHECK, "check_pinned_locus_in_loop", "finds main by a `__lib_` name filter", "same"),
-            legacy(CHECK, "compute_pool_of_locus_type", "finds main with no filter; the last one wins", "same"),
-            legacy(CHECK, "check_bus_graph", "closed world = a top-level main only; a module-nested main disables rule 9", "same"),
-            legacy(V_MATRIX, "seed_entry_kind", "parse-only main detection for the check matrix", "same"),
-            legacy(SNAPSHOT, "let has_main", "has_main for an environment's entrypoint, in the snapshot's load (`check --env`, and the build paths' `--env`)", "same"),
-            legacy(CG, "collect_main_placement", "`is_main && !__lib_` over flat declarations", "same"),
+            legacy(ENTRY, "lowering_root", "the row's provisional column: the `main locus` lowering deploys today, `collect_main_placement`'s choice copied exactly (the first `is_main && !__lib_` over the flat declarations, module-nested ones included), so the placement-safety rules (the F.31 pool map, the pinned-in-a-loop rule) guard the threads lowering spawns while a seed whose only `main` is module-nested has no entry", "L4: lowering reads `entry`, and the column goes"),
+            legacy(CG, "collect_main_placement", "`is_main && !__lib_` over flat declarations", "one definition of the entry, as a row"),
             legacy(CG_INST, "let is_main_locus", "`is_main_locus` compares type names at instantiation (and twice more in dissolve.rs)", "same"),
             legacy(CG_DISSOLVE, "let is_main_locus", "the same comparison in the cascade", "same"),
             legacy(CG, "is_main_entry", "the deferred entry teardown compares the entry's locus name with `main_locus_name` to decide whether it joins the pools (#1208)", "same"),
             legacy(CG, "emit_bindings_prelude", "the connect-transport loss handler is looked up in the locus named by `main_locus_name`", "same"),
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it", "same"),
+            legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read from the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
+            legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
+            legacy(CG, "let has_socket_binding", "whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen", "same"),
+            // The checker's own readers of `main` that E0 did not switch.
+            legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
+            legacy(CHECK, "check_cooperative_pool_blocking", "the blocking check reads the placement and params of EVERY `is_main` declaration, module-nested and imported ones included, with no mark or name filter", "reads `lowering_root`, since the starvation it reports is on the threads lowering spawns; reads the entry with L4"),
+            legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
+            legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
+            legacy(CHECK, "let api_bound", "`check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5)", "reads the entry, whose binding is the one that binds (L4)"),
+            // The `--api` and `--env` injections, and the api surface.
+            legacy(DESUGAR_SEQ, "let at = programs", "the `--api` injection target in `desugar_before_check`: the first program holding a top-level `is_main`, an imported one included", "reads the entry: the binding goes on the entry, and a seed with none is refused (L4)"),
+            legacy(API_GEN, "inject_api_entry", "the injected `api:` entry goes on that program's first `is_main` at any depth, module-nested and imported ones included", "same"),
+            legacy(API_GEN, "api_surface", "the api surface is built around the first `is_main && !imported` carrying an `api:` entry, at any depth (a module-nested `main` included)", "same"),
+            legacy(API_GEN, "declared_roles", "`owner` joins the declared roles when any `is_main && !imported` declaration at any depth carries an `api:` entry", "same"),
+            legacy(SNAPSHOT, "inject_adopt", "an environment's constitution is adopted into EVERY top-level `is_main` of the program (an imported one included, a module-nested one not), and a program with none refuses it", "reads the entry: an environment binds law to the entry (L4)"),
+            legacy(CLAIMS, "has_main = true", "world-tier claims are gathered from every `is_main` at any depth, and `has_main` refuses a top-level `claims` block in a seed that closes", "same"),
+            // The model, the graphs' closed worlds, effects, the editor, the DNA.
+            legacy(MODEL_BUILDER, "let main_decl", "the model's arrangement root is the first `is_main` among the model's loci, with no filter", "reads the entry (L4)"),
+            legacy(MODEL_BUILDER, "let entrypoint = ast", "the model's `entrypoint` name is the first `is_main` among its loci, else `main`", "same"),
+            legacy(BUS_GRAPH, "let has_entry_point", "the bus graph's closed world is any top-level `is_main` or top-level `fn main`, an imported `main` included; deliberately broader than rule 9's", "reads the entry, beside the `fn main` entry point (L4)"),
+            legacy(OWNERSHIP_GRAPH, "let has_entry_point", "the ownership DAG's closed world, the bus graph's test made again", "same"),
+            legacy(TY_MANGLE, "seed_declares_main", "whether an imported seed declares a `main locus` (GH #774): any top-level `is_main` over the seed's files", "reads the imported seed's own entry row (L4)"),
+            legacy(EFFECTS, "placement_implied_diags", "the async_io pool's locus types come from every top-level `is_main` declaration's placement, an imported one included and a module-nested one not", "reads `lowering_root`, since the pool is one lowering spawns; reads the entry with L4"),
+            legacy(LSP, "placement_of", "the editor's placement view shows every top-level `is_main` declaration's placement", "same"),
+            legacy(CLI_DNA, "main_of", "`hale dna init` takes the LAST top-level `is_main` over the seed's files, parse-only (no import is resolved, so no mark exists)", "reads the entry row over the seed's own files, as `seed_entry_kind` does (L4)"),
+            // Readers of a declaration's own `main` keyword: they derive
+            // no entry fact, and are listed so the inventory is whole.
+            legacy(CHECK, "if parent.is_main", "`check_nested_long_running_child` exempts a `main locus`, as a parent and as a child, from the long-running-child rule: a property of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it reads the row's witness (`mains`) instead of the keyword (L4)"),
+            legacy(OWNERSHIP_GRAPH, "entry.singleton |= l.is_main", "every `main locus` declaration is a singleton in the ownership graph: a property of each declaration, which derives no entry fact", "same"),
+            legacy(ALLOC, "let mut eager_only_loci", "every top-level `main locus` declaration is excluded from eager reclamation, conservatively: a property of each declaration, which derives no entry fact", "same"),
         ],
-        consumers: &[consumer("check"), consumer("build"), consumer("dna"), consumer("codegen")],
-        invariants: &["the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one"],
+        consumers: &[
+            consumer_at("check (rule 1's count reads the witness: the seed's own mains, module-nested ones included)", CHECK, "check_main_and_bindings"),
+            consumer_at("check (the pinned-in-a-loop rule reads the lowering root)", CHECK, "check_pinned_locus_in_loop"),
+            consumer_at("check (the F.31 pool map is seeded from the lowering root; sync inference builds its own row over its single-program bundle)", CHECK, "compute_pool_of_locus_type"),
+            consumer_at("check (rule 9's closed world is a program with an entry)", CHECK, "check_bus_graph"),
+            consumer_at("check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import)", V_MATRIX, "seed_entry_kind"),
+            consumer_at("--env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal)", SNAPSHOT, "demand_entry"),
+            consumer("build"),
+            consumer("dna"),
+            consumer("codegen"),
+        ],
+        invariants: &[
+            "the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, sync inference, which runs per file before the sequence, builds one over its single-program bundle, and the check matrix builds one over each seed's own files (no import holds the entry, and a seed whose import does not resolve is still an entrypoint)",
+            "one row per snapshot (`Snapshot::demand_entry`, the `entrypoint` count): the entry by its minted site, and every `main locus` the bundle declares as the witness, each with whether it is imported and whether it is module-nested; it reads declarations only, so no diagnostic blocks it, and a seed with a hole (no identities) blocks it with its scope",
+            "an imported `main` is not the entry (decision 1, E0): a library's `main locus` is a declaration the importing seed does not run, and the entry is the importing seed's own; a seed whose only `main` is imported has no entry (`NoEntry::OnlyImported`). Imported is one definition, the rename pass's mark (`imported`, GH #1104 piece 5); the `__lib_` name the same pass gives is spelling, not a second test of the entry (the provisional lowering root copies lowering's name test, until L4)",
+            "a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry",
+            "the decisions bind what reads the entry (rule 9's closed world, `--env`, `--matrix`), not the placement-safety rules: until lowering reads the entry (L4) it deploys a module-nested `main` as its root and spawns its pinned threads, so the F.31 pool map and the pinned-in-a-loop rule read the row's provisional `lowering_root`, and a seed whose only `main` is module-nested has no entry and its cross-pool call is still refused (the outside review of #1293, finding 1)",
+            "with more than one candidate (rule 1's error) the entry is the last, as the checker's pool map took it before the row; the lowering root is the first non-`__lib_` `main`, nested or not, as lowering takes it",
+            "the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one",
+            "every non-test reader of `LocusDecl::is_main` is the producer or a legacy row here; the parser's main-only member rules are syntax and are not rows, and `sync_inference`'s test helper is test code",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
+        tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[],
+        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (V_MATRIX, 1)] }],
     },
     Family {
         name: "ownership",
@@ -1070,7 +1116,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &["F.38: placement is semantics-free, so a backend may Approximate it", "placement is a choice point: v1's declared placement is the single candidate"],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/shadow_placement.rs (the shadow of compute_pool_of_locus_type against collect_subscriber_placements over the corpus; 20 classified divergences, all known old bugs)"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/shadow_placement.rs (the shadow of compute_pool_of_locus_type against collect_subscriber_placements over the corpus; 21 classified divergences: 20 known old bugs, and the correction that the checker's map follows lowering's root, which deploys no `__lib_` main)"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
@@ -1303,10 +1349,10 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["seed_loading", "desugar_sequence", "snapshot_identity", "the config (target, api, api roles, environment, the check's rules)", "editor overlays (LSP)", "a consumer's request"],
         producer: Some(site(SNAPSHOT, "Snapshot")),
         legacy: &[],
-        owned: &[site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
+        owned: &[site(SNAPSHOT, "demand_entry"), site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
-            consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion", SNAPSHOT, "CheckInputs"),
+            consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`; the entry row: rule 1, rule 9, and the pool map and pinned-in-a-loop through its lowering root), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion", SNAPSHOT, "CheckInputs"),
             consumer_at("topology (`--dump-topology`, `--check-topology`, `--check-topology-shape`: one artifact of the snapshot's model)", V_CHECK, "dump_topology_over"),
             consumer_at("the api description (`--dump-api`: the surface the snapshot's sequence generated the binding for)", V_CHECK, "api_surface"),
             consumer_at("the model dump (`--dump-model`: the check's own model when it judged a law)", V_CHECK, "demand_model"),
@@ -1334,7 +1380,7 @@ pub const FAMILIES: &[Family] = &[
             "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: sync inference builds a single-program top scope per file before the sequence, and the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `apply_sync_inference` (sync_inference, desugar_sequence), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)",
             "a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads",
             "the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it",
-            "the checker's inputs are families (2.3): the typing demands the handler rows before the checker runs and hands them in (`CheckInputs`), so a check with a law builds them once for the checker and the model together; their producer reads declarations, not types, so it is total over a program that does not typecheck",
+            "the checker's inputs are families (2.3): the typing demands the handler rows and the entry row before the checker runs and hands them in (`CheckInputs`), so a check with a law builds the handler rows once for the checker and the model together; both producers read declarations, not types, so they are total over a program that does not typecheck",
             "a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a member that did not parse or would not read has no scope (the editor's requests read `demand_editor_scope`, the scope over the members that parsed with the hole named, and never a scope of their own), a program that does not typecheck has no model, a program whose check reported an error has no lowering view; a ready result may still hold typed holes",
             "the lowering view (`LoweringView`, the `lowering_view` count) is a family: `demand_lowering` demands the check, then runs `resolve_program` once over the snapshot's program, source map, renames and api config; `build_resolved` reads it by reference; every build path (build, run, test, replay, bench) demands it from a `Snapshot::load`, and the test harness from `Snapshot::from_program`, whose config (`Config::harness`) does not gate lowering on the check",
             "a changed entry, load mode, target, config, overlay or source text is a distinct snapshot (`SnapshotKey`, computed after the load from what it read; a bare program is its own load); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)",

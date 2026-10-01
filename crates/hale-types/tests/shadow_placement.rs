@@ -181,7 +181,8 @@ fn shadow_one(report: &mut Report, origin: &str, src: &str) {
         len: src.len() as u32,
     }];
     let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-    let old: Vec<(String, String)> = compute_pool_of_locus_type(&bundle, &top)
+    let entry = hale_types::entry::entry_row(&bundle);
+    let old: Vec<(String, String)> = compute_pool_of_locus_type(&bundle, &top, &entry)
         .iter()
         .map(|(k, v)| (k.clone(), pool_key(v)))
         .collect();

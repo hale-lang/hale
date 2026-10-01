@@ -339,7 +339,9 @@ placement and the locus's shape are known at compile time:
   "handlers plus a `sleep` loop" is the event-driven shape both of
   these diagnostics point you at.
 - **An orphan bus topic is a warning.** In a complete program (one
-  with a `main` locus), a topic or subject wired to only one end —
+  with an entry: a `main` locus of its own, at the top level — a
+  library's `main locus` reached through an `import` is not this
+  program's entry), a topic or subject wired to only one end —
   published with nobody subscribed, or subscribed with nobody
   publishing — is flagged, as is a declared topic used by neither.
   It's suppressed when the other end is plausibly external: a

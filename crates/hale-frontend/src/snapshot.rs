@@ -6,6 +6,8 @@
 //! sequence already run and the identities minted after it. Everything
 //! else is a family, demanded by name:
 //!
+//! - [`Snapshot::demand_entry`]: the entry row, which `main locus` is
+//!   the program's entry, by identity.
 //! - [`Snapshot::demand_scope`]: the top scope, with its topic rows.
 //!   [`Snapshot::demand_editor_scope`] is the editor's reading of it:
 //!   over a seed with a hole, the scope of the members that parsed,
@@ -54,6 +56,7 @@ use hale_syntax::Diag;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
+use hale_types::entry::EntryRow;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
@@ -76,10 +79,11 @@ use crate::source::SourceProvider;
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs.
-pub const FAMILIES: [&str; 12] = [
+pub const FAMILIES: [&str; 13] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
+    "entrypoint",
     "top_scope",
     "expression_typing",
     "bus_graph",
@@ -370,6 +374,7 @@ pub struct Snapshot {
     /// does not parse or read): the members are kept, unlinked, and the
     /// scope blocks.
     unlinked: Option<CheckableFailure>,
+    entry: OnceCell<Result<EntryRow, Blocked>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -539,6 +544,7 @@ impl Snapshot {
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
             unlinked: loaded.unlinked,
+            entry: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             typing: OnceCell::new(),
@@ -563,23 +569,10 @@ impl Snapshot {
             }
         }
         if let Some(env) = &snap.config.environment {
-            // An environment binds law to an ENTRYPOINT, so the target
-            // must be one — whether or not the environment contributes
-            // a constitution. Checking this only while injecting meant
-            // an environment with nothing to inject checked nothing,
-            // and a matrix counted a library path as a covered pair.
-            let has_main = snap.programs.values().any(|p| {
-                p.items.iter().any(|i| matches!(i, TopDecl::Locus(l) if l.is_main))
-            });
-            if !has_main {
-                return Err(LoadError::Refused(format!(
-                    "{}: `--env` names a deployment target, and a \
-                     deployment target is an ENTRYPOINT — this seed \
-                     declares no `main locus`",
-                    entry.display()
-                )));
-            }
-            // The main locus exists, so every constitution lands.
+            // The constitutions land in the main locus. Whether there is
+            // an entry to deploy is the entry row's, read once the load
+            // is minted (below): a seed without one is refused, so what
+            // landed here is never checked.
             for c in &env.adopt {
                 for prog in snap.programs.values_mut() {
                     inject_adopt(prog, c);
@@ -588,7 +581,9 @@ impl Snapshot {
         }
         // The editor's seed with a member that did not parse or read, or
         // whose imports did not link, is not a program: nothing is
-        // shaped or minted, and the scope blocks.
+        // shaped or minted, and the scope blocks. (No editor config
+        // carries an environment, and the other loads fail on a hole,
+        // so no environment reaches here.)
         if snap.has_hole() {
             return Ok(snap);
         }
@@ -599,13 +594,13 @@ impl Snapshot {
             // (downstream handoff, 2026-08-11).
             let _ = hale_types::apply_sync_inference(prog);
         }
-        {
+        let sequenced = {
             // F.40 phase 2.1b: the desugar sequence, the one every
             // entry point runs before its check: JSON Tier 2's parsers,
             // the api binding (GH #1106, bundle-wide), then the passes
             // that shape a declaration.
             let mut refs: Vec<&mut Program> = snap.programs.values_mut().collect();
-            snap.api_surface = hale_types::desugar_sequence::desugar_before_check(
+            hale_types::desugar_sequence::desugar_before_check(
                 &mut refs,
                 &hale_types::desugar_sequence::Sequence {
                     import_renames: &snap.import_renames,
@@ -613,9 +608,15 @@ impl Snapshot {
                     api_roles: snap.config.api_roles.as_deref(),
                 },
             )
-            .map_err(LoadError::Refused)?;
-        }
-        snap.count("desugar_sequence");
+        };
+        let refused = match sequenced {
+            Ok(surface) => {
+                snap.api_surface = surface;
+                snap.count("desugar_sequence");
+                None
+            }
+            Err(msg) => Some(msg),
+        };
         // GH #408 Phase 0: the source map, then the identities minted
         // with it (F.40 phase 1.1b-iii), so each site's seed is the
         // file its span falls in.
@@ -629,7 +630,29 @@ impl Snapshot {
             &snap.source_map,
         );
         snap.count("snapshot_identity");
-        Ok(snap)
+        if snap.config.environment.is_some() {
+            // An environment binds law to an ENTRYPOINT, so the target
+            // must be one — whether or not the environment contributes
+            // a constitution. Checking this only while injecting meant
+            // an environment with nothing to inject checked nothing,
+            // and a matrix counted a library path as a covered pair.
+            // The entry row answers (an imported or a module-nested
+            // `main locus` is not the entry), before the sequence's own
+            // refusal: an `--api` entry with no main locus to go on is
+            // the same missing entry, and the environment names it.
+            if !matches!(snap.demand_entry(), Ok(row) if row.entry().is_some()) {
+                return Err(LoadError::Refused(format!(
+                    "{}: `--env` names a deployment target, and a \
+                     deployment target is an ENTRYPOINT — this seed \
+                     declares no `main locus`",
+                    entry.display()
+                )));
+            }
+        }
+        match refused {
+            Some(msg) => Err(LoadError::Refused(msg)),
+            None => Ok(snap),
+        }
     }
 
     pub fn key(&self) -> &SnapshotKey {
@@ -825,6 +848,23 @@ impl Snapshot {
         self.builds[i].set(self.builds[i].get() + 1);
     }
 
+    /// The entry row: which `main locus` is the program's entry, by the
+    /// identity the load minted, with every `main locus` declared as its
+    /// witness ([`hale_types::entry`]). It reads declarations only, so
+    /// no diagnostic blocks it; a seed with a hole is not a program and
+    /// has no identities, so its entry is blocked with its scope.
+    pub fn demand_entry(&self) -> Result<&EntryRow, &Blocked> {
+        self.entry
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "entrypoint", ..self.hole_blocked() });
+                }
+                self.count("entrypoint");
+                Ok(hale_types::entry::entry_row(&self.bundle()))
+            })
+            .as_ref()
+    }
+
     /// The `top_scope` family's producer over the programs held, counted.
     fn build_scope(&self) -> (TopScope, Vec<Diag>) {
         self.count("top_scope");
@@ -900,6 +940,7 @@ impl Snapshot {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: &effects,
+                    entry: self.demand_entry().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1619,6 +1660,76 @@ mod tests {
         assert!(!blocked.because.is_empty() && blocked.because.iter().all(|d| d.is_error()));
         assert!(blocked.refused.is_none());
         assert_eq!(s.builds()["lowering_view"], 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The entry row (F.40 phase 3, E0): the seed's own top-level `main
+    /// locus`, by the site the load minted; the three ways to have none
+    /// (no `main`, only an imported one, only a module-nested one), and
+    /// a seed with an imported, a module-nested and a top-level one
+    /// keeping the top-level one. Demanded twice, built once. Beside
+    /// each, the provisional lowering root: the first `main locus` that
+    /// is not a library's, nested or not, which is not always the entry.
+    #[test]
+    fn the_entry_row_is_the_seeds_own_top_level_main_locus() {
+        use hale_types::entry::NoEntry;
+        let d = scratch("entry");
+        let lib = d.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("main.hl"), "main locus LibHead { params { n: Int = 0; } }\n").unwrap();
+        let row_of = |name: &str, text: &str| {
+            let seed = d.join(name);
+            std::fs::create_dir_all(&seed).unwrap();
+            std::fs::write(seed.join("main.hl"), text).unwrap();
+            // The editor's load links a seed's imports as `hale check
+            // <dir>` does.
+            let s = load(&seed, &Disk, Config::check(true, false));
+            let row = s.demand_entry().expect("an entry row").clone();
+            assert!(std::ptr::eq(s.demand_entry().unwrap(), s.demand_entry().unwrap()));
+            assert_eq!(s.builds()["entrypoint"], 1, "{name}: built once");
+            for m in &row.mains {
+                let decl = m.decl(&s.bundle()).expect("the row names a declaration");
+                assert_eq!(decl.name.name, m.name);
+                assert_eq!(m.site, s.identities().site_id(decl.id), "{name}: by the minted site");
+                assert!(m.site.is_some(), "{name}: the load minted it");
+            }
+            row
+        };
+
+        let none = row_of("none", "fn main() { }\n");
+        assert_eq!(none.no_entry(), Some(NoEntry::NoMain));
+        assert!(none.mains.is_empty());
+        assert!(none.lowering_root.is_none());
+        let root = |row: &hale_types::entry::EntryRow| row.lowering_root.as_ref().map(|m| m.name.clone());
+
+        let imported = row_of("imported", "import \"../lib\" as lib;\nfn main() { }\n");
+        assert_eq!(imported.no_entry(), Some(NoEntry::OnlyImported), "decision 1: {imported:?}");
+        assert_eq!(imported.mains.len(), 1);
+        assert!(imported.mains[0].imported && !imported.mains[0].module_nested);
+        assert!(imported.mains[0].name.starts_with("__lib_"), "the rename pass marked what it renamed");
+        assert_eq!(root(&imported), None, "lowering deploys no library's main");
+
+        let nested = row_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { }\n");
+        assert_eq!(nested.no_entry(), Some(NoEntry::OnlyModuleNested), "decision 2: {nested:?}");
+        assert!(nested.mains[0].module_nested && !nested.mains[0].imported);
+        assert_eq!(root(&nested).as_deref(), Some("App"), "no entry, and still lowering's root (until L4)");
+
+        let all = row_of(
+            "all",
+            "import \"../lib\" as lib;\n\
+             module inner {\n    main locus Other { params { n: Int = 0; } }\n}\n\
+             main locus App { params { n: Int = 0; } }\n\
+             fn main() { App { }; }\n",
+        );
+        let entry = all.entry().expect("the top-level one is the entry");
+        assert_eq!(entry.name, "App");
+        assert!(!entry.imported && !entry.module_nested);
+        assert_eq!(all.mains.len(), 3, "the witness keeps every declaration: {all:?}");
+        assert_eq!(all.candidates().count(), 1);
+        assert_eq!(all.own().count(), 2, "rule 1 counts the module-nested one");
+        // Lowering takes the first in declaration order (rule 1 refuses
+        // the program before it builds).
+        assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

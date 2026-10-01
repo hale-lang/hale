@@ -155,7 +155,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // one only when the checker consumed the snapshot's family. The test
     // entry (`check_bundle_opts_scoped`) builds its own, which no
     // snapshot counts.
-    for family in ["handler_routing"] {
+    for family in ["handler_routing", "entrypoint"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_at_most_once(&s, "lsp");
@@ -285,6 +285,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
         ];
         for (consumer, s, lowers) in &consumers {
             for _ in 0..2 {
+                s.demand_entry().expect("the entry row");
                 s.demand_scope().expect("scoped");
                 s.demand_check().expect("checked");
                 if *lowers {
@@ -298,6 +299,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "seed_loading",
                 "desugar_sequence",
                 "snapshot_identity",
+                "entrypoint",
                 "top_scope",
                 "expression_typing",
                 "bus_graph",

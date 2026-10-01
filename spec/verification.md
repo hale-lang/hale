@@ -963,7 +963,12 @@ environment and nothing about the base being shared.
 `--env` requires its target to be an entrypoint, whether or not the
 environment contributes any constitution: an environment binds law to
 a deployment target, and a `source_only` environment with no base
-would otherwise check a library and report success.
+would otherwise check a library and report success. An entrypoint is
+a seed with an entry, its own top-level `main locus`
+(`spec/semantics.md`, "The entry locus"): a seed whose only `main
+locus` is an imported library's, or sits inside a `module { }`, is
+refused as a library is, and `--matrix` does not count it among the
+entrypoints it requires an environment for.
 
 **Roles (GH #1109).** `[environments.<name>.roles]` is the params half
 of authorization: `role = ["uid:1000", "gid:20", "user:riley",
