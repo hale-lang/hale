@@ -1,6 +1,6 @@
 # F.40 phase 3, P1 — the placement correspondence
 
-**What this is.** The correspondence P1 requires before its producer is built (hale-lang/hale#1212; the phase-3 plan's § 3 Line P, step P1, and § 6). It does four things. It fixes the schema of the one placement table. It reads each of the eight legacy producers the registry lists under `placement`, and states which answers the table keeps. It classifies every known divergence and gives its spec witness and the test that will pin it. Last, it orders the consumer switches. The decisions it applies are the wave-2 decisions § P1: instance identity includes field path and replica; budgets count the resource; and a runtime test checks the receiving thread of the nested off-thread subscriber.
+**What this is.** The correspondence P1 requires before its producer is built (hale-lang/hale#1212; the phase-3 plan's § 3 Line P, step P1, and § 6). It does five things. It fixes the schema of the one placement table and the stage that produces it. It reads each of the eight legacy producers the registry lists under `placement`, and states which answers the table keeps. It classifies every known divergence and gives its spec witness and the test that will pin it. It orders the consumer switches. Last, it proposes answers to the open decisions (§ 7) and records what the implementation has to get right (§ 8). The decisions it applies are the wave-2 decisions § P1: instance identity includes field path and replica (and here, after the outside review of #1296, the construction the instance comes from); budgets count the resource; and a runtime test checks the receiving thread of the nested off-thread subscriber.
 
 The step is read-only on code. It was measured at `main` 13e5f352 (origin/main after #1293), and line numbers refer to that tree. One thing was run: the existing shadow, `cargo test --release -p hale-types --test shadow_placement`, which passes (21 classified rows, none unexplained, none stale). Everything else is **by reading**, and is marked so wherever a claim is about execution rather than code. Running a probe program through `hale` was not available in this session. § 4's test is what settles the execution claims.
 
@@ -10,8 +10,8 @@ The step is read-only on code. It was measured at `main` 13e5f352 (origin/main a
 
 - **known old bug.** The legacy answer contradicts the spec, and the table answers what the spec says. Every known old bug listed here is an **approved correction** under the wave-2 decisions, either directly (the shadow fixture's rows, the budget's accounting) or as the same principle reaching another consumer. Each lands as its own J commit with wording-pinned tests.
 - **intentional correction.** The legacy answer was a deliberate stance that a decision now changes. It also lands as a J commit.
-- **unresolved disagreement.** The right answer is not decided. It is listed in § 7 with a recommendation, and its consumer does not switch until the driver decides.
-- **regression.** The table answers differently from a legacy producer, and no row here explains it. That is a producer bug. It stops the step and is never classified away.
+- **unresolved disagreement.** The right answer is not decided. It is listed in § 7 with a proposed answer, pending the owner, and its consumer does not switch until the owner decides.
+- **regression.** The table answers differently from a legacy producer, no row here explains it, and the investigation of its witness (§ 8) finds the producer wrong. That is a producer bug. It stops the step and is never classified away.
 
 Where a row says **agreement**, the table and the legacy producer give the same answer over everything the shadow sees, and the switch is an S commit.
 
@@ -68,7 +68,7 @@ pub struct Construction {
 pub struct InstanceRow {
     pub realizes: DeclRef,                 // the declaration actually built (an override literal's, not the field's declared type)
     pub literal: Option<SiteId>,           // the literal that builds it (default or override); None = a hole
-    pub owner: Option<InstanceKey>,        // None only for a root row
+    pub owner: Option<InstanceKey>,        // None only at an origin's top ([] path)
     pub domain: DomainId,
     pub decided_by: Decision,
     pub owner_relative: OwnerRelative,     // SameAsOwner | OffOwner
@@ -96,8 +96,8 @@ pub enum DomainKind {
 
 pub struct DynamicSite {                   // a locus literal in a method body, `accept`ed child, let-bound locus
     pub literal: SiteId,
-    pub enclosing: DeclRef,
-    pub domains: BTreeSet<DomainId>,       // the domains of the enclosing declaration's static instances; empty = unknown
+    pub enclosing: Enclosing,              // Locus(DeclRef) | Fn(SiteId): a free function or `fn main` can enclose a literal (§ 8)
+    pub domains: BTreeSet<DomainId>,       // the domains the enclosing scope runs in; empty = unknown, never defaulted to main
     pub bound: Bound,                      // Once | AtMost(n) | Unbounded(reason)
 }
 ```
@@ -127,7 +127,7 @@ Until the producer resolves a qualified field through the analysis copy, a stdli
 2. **Nested rows inherit.** A row's domain is its owner's domain unless the row is decided by an `Entry`, which only a root field can be (rule 1, sem:3216), or by a `Binding`.
 3. **Pinned domains are per instance.** Two rows share a pinned domain only if one is nested under the other, so each replica is its own domain. Pool domains are per name: every row on pool `X` shares one domain, and that domain carries at most one affinity (rule 16, sem:3400).
 4. **The root is `lowering_root`, never `entry`.** The table describes what lowering deploys. Until L4 has lowering read the entry, that root can be a module-nested `main` that is not the entry (`ent:96-113`, `ent:185`). `RootRow::is_entry` records the difference, so a consumer bound to the entry (rule 9's closed world, `--env`, `--matrix`) can tell. An imported `main` is never the root: a seed whose only `main` is imported has an empty table.
-5. **Every root entry decides exactly one field row in each construction template** (rule 18, sem:3438). An entry that decides none is a hole with a stated policy. It is never dropped silently.
+5. **Every root entry decides exactly one field family in each construction template** (rule 18, sem:3438): the field's one row, or, under `replicas = K`, its K replica rows, all decided by the one entry. An entry that decides none is a hole with a stated policy. It is never dropped silently.
 6. **Unknown is a hole, not a default** (registry, `placement` § Missing data). A field whose realized declaration cannot be resolved still gets its domain from its owner or its entry. Only `realizes` holds the hole.
 7. **F.38** (dec:3219). No column of the table changes who receives a message. Domains decide threads and routes, never delivery sets.
 
@@ -368,7 +368,7 @@ The cases:
 
 **A negative control proves the oracle can fail.** One fixture runs a handler on a known wrong thread: a bound adapter's subscription, which runs on the adapter's own `run()` thread (GH #1032's shape), checked against an expectation of main. The ordinary assertion must report the mismatch, and the test asserts that it does. Under the TSan arm, the same control adds an unsynchronized read of the handler's field from main, and the test asserts a TSan warning. So a clean TSan run is evidence, not silence.
 
-The test lands in the J commit that switches the bus graph (PR 5 below). It is red on the parent commit, and the PR body quotes that red run. If A or B stays red after the label correction, the registration route is the remaining cause. The fix is in lowering: a nested subscriber registers with its tower's route, the owner's mailbox when the domain is pinned and the pool when it is a pool. The table gives lowering that domain per instance. Whether that fix belongs to the same PR is U-6.
+The test lands in the J commit that switches the bus graph (PR 5 below). It is red on the parent commit, and the PR body quotes that red run. If A or B stays red after the label correction, the registration route is the remaining cause. The fix is in lowering: a nested subscriber registers with its tower's route, the owner's mailbox when the domain is pinned and the pool when it is a pool. The table gives lowering that domain per instance. Whether that fix belongs to the same PR is U-6, and what it has to order is in § 8.
 
 ## 5. Consumer switch order
 
@@ -397,15 +397,48 @@ PR 2 precedes the J PRs for two reasons. It is the only one whose oracle is "not
 
 ## 7. Decisions for the driver before the pane starts
 
-- **U-1 (O-3).** Not `Open`. An `Open` edge gets no bubble plan (`og:258-275`), and a site with no plan is lowered as a transient instantiation (`cg:3408-3451`, "everything else … stays transient"). For a child whose owner has been resolved, that changes its lifetime, not just its route: the owner no longer accepts it, holds it, counts it among its children, releases it, or tears it down. A known accepting ancestor does not stop owning a child because another instance of the enclosing type runs in a different domain. Recommended, in order of preference:
+Each answer below is **proposed, pending the owner**. Until the owner confirms one, its rows stay `unresolved disagreement` and their consumer does not switch. Once confirmed, an answer's rows become intentional corrections under it, each a J commit naming the decision.
+
+- **U-1 (O-3). Proposed, pending the owner: reject the transient fallback.** Not `Open`. An `Open` edge gets no bubble plan (`og:258-275`), and a site with no plan is lowered as a transient instantiation (`cg:3408-3451`, "everything else … stays transient"). For a child whose owner has been resolved, that changes its lifetime, not just its route: the owner no longer accepts it, holds it, counts it among its children, releases it, or tears it down. A known accepting ancestor does not stop owning a child because another instance of the enclosing type runs in a different domain. Recommended, in order of preference:
   1. **Keep the owner and the mechanism apart.** The resolved owner (`OwnerResolution::Ancestor`) is a fact of the site and is kept whatever the domains say. The delivery mechanism (same-tower allocation, or a cross-pool post) is chosen per enclosing instance.
   2. **Carry the decision per instance.** The enclosing instance carries its owner's domain relative to its own, as the non-singleton plan already carries the owner pointer in `__owner_for_<I>` (`cg:3424-3441`). The birth seam reads that field and takes the same-tower or the cross-pool path at runtime, through a handoff whose two arms are each verified by the tests below. Alternatively, lowering specializes the enclosing method per domain where the instances' domains are static, which the table gives it.
   3. **Otherwise refuse.** Where neither can be emitted (a value use of `I { }` at a site one of whose instances is cross-pool, which sem:308-317 makes fire-and-forget), the program is refused with a located diagnostic at the `I { }` literal naming both enclosing instances and their domains.
 
   A transient fallback for a resolved owner would be a language decision of its own, with observable-behaviour tests, not a placement correction. Tests, in `crates/hale-codegen/tests/ownership_bubble_mixed.rs`, each in both devirtualization arms, under ASan, and with `LOTUS_NO_OWNERSHIP_BUBBLE=1` as the differential control: a root that accepts `I`, and two `Worker` instances whose method constructs `I`, one under `main` and one under a pinned field. For **both** instances it asserts that the root accepts the child, that the root's child count rises by exactly one per construction, that the child is retained while its constructor has returned, that a `release` frees it once, and that teardown runs exactly once per child at the root's end. The pinned arm also records `pthread_self()` at the child's birth and asserts it is the root's thread (sem:308-317).
-- **U-2 (R-7).** Recommended: `cooperative_pools` counts worker pools only, and `main` is rendered on its own line.
-- **U-3 (R-6).** Recommended: adapter bindings count as threads. Binding readers and transport serve threads are rendered as "not counted" until P2.
-- **U-4 (M-2).** Recommended: `PlacedIn` projects user declarations only in P1, as explicit partial coverage. Each omitted stdlib row is a model hole, and the full table, not the arrangement, is authoritative for every safety rule. The projection does not make instance ids stable; M-1, M-3 and M-5 move them anyway (§ 2.4, contract 3). Adding stdlib instances is a separate decision, because it changes the shape half (contract 1).
-- **U-5 (M-4).** Recommended: project `affined_to` in PR 4, since it changes no shape.
-- **U-6 (§ 4).** Recommended: the registration route lands in PR 5 as its own J commit, before the bus-graph commit. Otherwise the runtime test cannot be green in the PR that adds it.
+- **U-2 (R-7). Proposed, pending the owner: count worker pools on their own, and show main explicitly.** `cooperative_pools` counts the named worker pools, one worker per named pool however many instances it holds (R-2). `main` is never a worker pool. The budget renders it on a line of its own, whether or not a program spells `pool = main`. This is an explicit accounting change, not a correction of a miscount: the PR and its fragment say so, and a declared ceiling can only loosen under it.
+- **U-3 (R-6). Proposed, pending the owner: count each actual adapter anchor once.** An adapter literal in `bindings { }` is one pinned thread, counted once in § 2.8's partition and never under a root's bound. Threads outside placement stay visible rather than dropped: binding reader threads and the GH #233 transport serve threads are rendered on a "not counted" line, until P2's binding rows count them. The budget never describes its thread total as a bound on all of the process's threads. It is the placement threads plus the adapter anchors, and its rendering says that.
+- **U-4 (M-2). Proposed, pending the owner: a temporary user-only projection.** `PlacedIn` projects user declarations only in P1, as explicit partial coverage. Each omitted stdlib row is a model hole, and the full table, not the arrangement, is authoritative for every safety rule. The projection does not make instance ids stable; M-1, M-3 and M-5 move them anyway (§ 2.4, contract 3). Adding stdlib instances is a separate decision, because it changes the shape half (contract 1).
+- **U-5 (M-4). Proposed, pending the owner: yes, project `affined_to` in PR 4.** It is projected from each domain's resolved affinity (the pool's, or the pinned anchor's per replica), not from the written entries, so two entries naming one pool give one row (invariant 3). A CPU set is a column of a domain, never a thread: a pool's affinity is the set its one worker may run on, and a pinned replica's is its own thread's, matching R-3. It changes no shape (contract 1). The `--dump-model` change is pinned in `model.rs`, and the PR body states it.
+- **U-6 (§ 4). Proposed, pending the owner: yes, in the graph-switch PR (PR 5), as its own J commit before the bus-graph commit.** Otherwise the runtime test cannot be green in the PR that adds it. The commit establishes the parent's route before any nested subscription uses it (§ 8, the anchor and its descendants), and keeps the anchor's mailbox and pool alive until every child has unregistered and the work outstanding against them is done. It is tested in both devirtualization arms, by § 4's test and by a teardown case: a pinned anchor whose nested subscriber is dissolved while cells for it are queued, run under ASan with `LOTUS_NO_CHUNK_POOL=1`.
 - **K-6, G-2, G-3, M-5 (by reading).** Each is a known old bug **only once § 3's case confirms the shape reaches the producer**. A case that the checker refuses first is reported as a checker gap and reclassified before its PR. It is never left unclassified.
+
+## 8. Implementation notes
+
+**A pinned anchor and its descendants.** A pinned domain has one anchor, the row its `Entry` (or its binding) decides. Its descendants inherit the domain (invariant 2) and spawn no thread. Lowering's per-type sets are derived from the actions each instance requires, not from the written field types:
+
+- **A thread** is spawned per anchor row, one per replica, and never for a descendant.
+- **A mailbox** is required by an anchor whose subtree subscribes anywhere. Today `pinned_locus_types` gives a struct its mailbox field only when the pinned type itself subscribes (`decl.rs:448-462`), so an anchor whose only subscribers are nested has no mailbox for them to share.
+- **The anchor's address.** The shared-mailbox correction (U-6) routes a descendant's registration to its anchor's mailbox. The descendant therefore needs, at runtime, a pointer to its anchor or that mailbox, threaded at birth as the non-singleton bubble plan threads `__owner_for_<I>` (`cg:3424-3441`).
+- **The order.** Nested field subscriptions register while the enclosing instance's params are initialized: each child's instantiation registers its own subscriptions (`inst:3808-3816`) during the parent's params init (`inst:2136-2831`), and the pinned parent's mailbox is created only afterwards (`inst:3925-3940`). So either the route is allocated, or published, before params init begins, or the child's binding is deferred until it exists, under a stated readiness and lifetime protocol. Either way it meets the wave-2 construction-readiness decisions, and the protocol is stated in U-6's commit, not left to lowering's order.
+
+**Replica indices stay on their own row.** The key carries the replica index of the replicated root field on every row nested under it (invariant 1), because identity needs it: `f[0].k` and `f[1].k` are two instances. The model's own `replica` column is narrower. The model's `validate` requires `None` on every path whose last component is not a replica (`hale-model/src/application.rs:1469-1489`): `App.workers[0].leaf` is a `leaf`, not replica 0 of anything. So the projection writes the index into the path of every descendant and into `LocusInstance.replica` only on the replica row itself. One placement entry decides a field family that fans out into K rows (invariant 5); a consumer that counts entries reads the family, and one that counts threads reads the rows.
+
+**Unresolved coverage is not a migration regression.** The shadow of PR 1 reads more than today's (`tests/hale`, `dna/`, imports, the merged stdlib), so it will list divergences § 2 does not. A newly listed divergence is neither auto-classified nor auto-blamed on the producer. It is investigated with its witness, the program and the answers of both sides, before fault is assigned. If the legacy side is wrong, it joins § 2 with an id. If the producer is wrong, it is a regression and stops the step. Either classification needs a reviewed explanation, in the fixture row and the PR body, and a regression test that pins the answer.
+
+**Dynamic sites need a policy for what the static tree does not reach.**
+
+- **Enclosing scopes.** `DynamicSite.enclosing` names a locus declaration today, which cannot express the sites that matter here. It becomes `Locus(DeclRef) | Fn(SiteId)`, so a free function can enclose a literal.
+- **A bare `fn main`.** With no `main locus`, `root` is `None` and there are no static rows. Every locus literal is a dynamic site. A literal directly in `fn main` runs on main, so its domain set is `{Main}`.
+- **Free factories.** A factory's literals take the union of its callers' domains where the call graph resolves every caller, and are unknown otherwise.
+- **Domains absent from the static root tree.** A site whose enclosing scope has no static instance (a locus only ever built dynamically) has an unknown domain set.
+
+Unknown is never defaulted to main. It disables the proofs and optimizations that need a domain, and each consumer states what it does with the hole:
+
+- **The direct-call gate.** Unknown is not `{Main}`, so the subject stays on the deferred path.
+- **The intra-locus rewrite.** An unknown field is treated as off its owner's thread, so no publish becomes a direct call.
+- **Sync inference.** An accessor with an unknown domain is a domain of its own, so two accessors infer a synchronized discipline.
+- **The ownership graph.** No same-tower proof. The site takes U-1's per-instance handoff, or U-1's located refusal for a value use.
+- **The F.31 rule.** It compares known domains only. A receiver whose domain is unknown is a hole on that receiver, not a pass, and C7's placed-`Unknown` judgment decides whether it is refused.
+- **The resource budget.** The unknown site makes its count an uncertainty, with the hole's reason.
+- **The model.** A hole.
+- **Lowering.** Tolerates it unchanged: entries are root-only, so no dynamic site has a placement decision, and a dynamic locus is born in its enclosing thread's domain at runtime.
