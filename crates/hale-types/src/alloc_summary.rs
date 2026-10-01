@@ -3311,25 +3311,53 @@ impl Escaping<'_> {
 /// directly as a use of the name — the common `let x = <alloc>; …
 /// return x;` indirection — each the declaration the use names
 /// (`Snapshot::binding_of`), so an inner shadow of a returned name is
-/// its own binding. Walks the body at statement level: a nested block,
-/// `if`, loop and a block-bodied match arm are entered; an
+/// its own binding. Closed over `let x = y;` aliases, as borrow
+/// lifetime's `returned_decls` is: when x escapes, the declaration y
+/// names escapes the same way, so `let p = fresh(); let p = p; return
+/// p;` tags the allocating `let`. Walks the body at statement level: a
+/// nested block, `if`, loop and a block-bodied match arm are entered; an
 /// expression-bodied match arm and an expression block are not.
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
 ) -> BTreeMap<SiteId, Escape> {
     let mut out = BTreeMap::new();
-    collect_escaping_in_block(body, &mut |i: &hale_syntax::ast::Ident, esc| {
-        if let Some(d) = ids.declaration_of(i.id) {
-            out.entry(d).or_insert(esc);
+    // `let x = y;`: x's statement and the declaration y names.
+    let mut aliases: Vec<(SiteId, SiteId)> = Vec::new();
+    collect_escaping_in_block(body, &mut |flow| match flow {
+        Flow::Escapes(i, esc) => {
+            if let Some(d) = ids.declaration_of(i.id) {
+                out.entry(d).or_insert(esc);
+            }
+        }
+        Flow::Alias { let_id, from } => {
+            if let (Some(at), Some(d)) = (ids.site_id(let_id), ids.declaration_of(from.id)) {
+                aliases.push((at, d));
+            }
         }
     });
+    loop {
+        let before = out.len();
+        for (alias, source) in &aliases {
+            if let Some(esc) = out.get(alias).copied() {
+                out.entry(*source).or_insert(esc);
+            }
+        }
+        if out.len() == before {
+            break;
+        }
+    }
     out
 }
 
-/// Where an escaping use is reported: the identifier and how its value
-/// escapes, in body order.
-type EscapeSink<'s> = dyn FnMut(&hale_syntax::ast::Ident, Escape) + 's;
+/// What the pre-pass walk reports, in body order: a use whose value
+/// escapes, and how; or a `let` whose value is a use of another name.
+enum Flow<'e> {
+    Escapes(&'e hale_syntax::ast::Ident, Escape),
+    Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+}
+
+type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
 
 fn collect_escaping_in_block(b: &Block, out: &mut EscapeSink<'_>) {
     for s in &b.stmts {
@@ -3342,6 +3370,7 @@ fn collect_escaping_in_block(b: &Block, out: &mut EscapeSink<'_>) {
 
 fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
     match s {
+        Stmt::Let { value: Expr::Ident(from), id, .. } => out(Flow::Alias { let_id: *id, from }),
         Stmt::Return(Some(e), _) => note_escape(e, Escape::Returned, out),
         Stmt::Fail { value, .. } => note_escape(value, Escape::Returned, out),
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
@@ -3376,7 +3405,7 @@ fn collect_escaping_in_if(if_stmt: &IfStmt, out: &mut EscapeSink<'_>) {
 
 fn note_escape(e: &Expr, esc: Escape, out: &mut EscapeSink<'_>) {
     if let Expr::Ident(id) = e {
-        out(id, esc);
+        out(Flow::Escapes(id, esc));
     }
 }
 
@@ -3457,6 +3486,38 @@ mod tests {
             .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
             .expect("the call in the `if`");
         assert_eq!(call.escape, Escape::Local, "the inner shadow's value");
+    }
+
+    /// F.40 phase 2 review F3: escape follows `let x = y;` aliases back
+    /// to the allocating declaration, whether the alias rebinds the same
+    /// name or spells another; a pattern binding of the returned name in
+    /// an arm stays its own.
+    #[test]
+    fn the_escape_tag_follows_a_rebind_to_the_allocating_let() {
+        let src = r#"
+            type P { x: Int; }
+            fn fresh_p(n: Int) -> P { return P { x: n }; }
+            fn rebind() -> P { let p = fresh_p(1); let p = p; return p; }
+            fn alias() -> P { let p = fresh_p(2); let q = p; let r = q; return r; }
+            fn kept(t: Bool) -> P {
+                let p = fresh_p(3);
+                if t { let q = p; println(q.x); }
+                return P { x: 4 };
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let call_escape = |f: &str| {
+            fns(&s, &FnKey::free_fn(f))
+                .calls
+                .iter()
+                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .expect("the fresh_p call")
+                .escape
+        };
+        assert_eq!(call_escape("rebind"), Escape::Returned, "`let p = p` hands the first binding's value back");
+        assert_eq!(call_escape("alias"), Escape::Returned, "a chain of aliases closes");
+        assert_eq!(call_escape("kept"), Escape::Local, "an alias that does not escape escapes nothing");
     }
 
     #[test]
