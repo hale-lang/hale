@@ -1608,7 +1608,14 @@ assume the others in a build:
     warnings: every true positive preserved, every residual false positive
     in a documented accepted class — see
     notes/unbounded-alloc-audit-2026-07-02.md). Flags every site
-    regardless of `@bounded` (a `@unbounded` fn is still suppressed);
+    regardless of `@bounded` (a `@unbounded` fn is still suppressed, and
+    so is a site with **no author position**: one whose span lies in
+    source a desugar generated — at or beyond the api binding's
+    `API_SYNTH_BASE`, or in a declaration the snapshot's origin rows
+    mark synthesized whose offset no source file owns, a `json_gen`
+    parser or api codec owning none — and no other site, whoever's
+    code calls it; the check's warnings and the editor's
+    `hale/allocSummary` decide with the same rule);
     run-to-exit programs (a `main` with no `run` loop and no bus handler)
     warn nothing — a script owes the proof nothing. Warnings print but
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;

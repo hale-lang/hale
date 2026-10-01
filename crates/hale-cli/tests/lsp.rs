@@ -1312,6 +1312,65 @@ fn main() { App { }; }\n";
     }
 }
 
+/// The generated-source fixture's positive (F.40 phase 2 review F1): a
+/// bound-solver finding is dropped only when its site has no author
+/// position, so a leak the author wrote in the handler the api binding
+/// calls — a whole-value replace of a stored struct, per message — is
+/// reported at the author's line by all three channels, and
+/// `hale/allocSummary` lists that site and none in the binding's own
+/// generated code.
+#[test]
+fn lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls() {
+    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+type Seen { ids: [Int; 2]; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    params { seen: Seen = Seen { ids: [0, 0] }; }\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        self.seen = Seen { ids: [o.id, o.qty] };\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-author-leak.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        println(\"up\");\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n";
+
+    let check = agree_three_ways("author-leak", &[("main.hl", APP)], &[]);
+    assert!(
+        check.iter().all(|(file, ..)| file == "main.hl"),
+        "a finding positioned outside the author's file: {check:?}"
+    );
+    assert!(
+        check.iter().any(|(_, line, _, m)| *line == 9 && m.contains("unbounded allocation")),
+        "the author's per-message replace at main.hl:9 is not reported: {check:?}"
+    );
+
+    let root = scratch_root("author-leak-summary");
+    let main = root.canonicalize().expect("canonical dir").join("main.hl");
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, APP));
+    let _ = lsp.published();
+    let summary = lsp.request("hale/allocSummary", serde_json::json!({ "textDocument": { "uri": uri(&main) } }));
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+    let sites = summary["leakSites"].as_array().expect("leakSites");
+    assert!(
+        sites.iter().any(|s| s["fn"] == "Desk::on_order" && s["location"]["range"]["start"]["line"] == 8),
+        "hale/allocSummary does not list the author's site: {summary}"
+    );
+    assert!(
+        sites.iter().all(|s| s["location"]["uri"] == uri(&main)),
+        "hale/allocSummary lists a site with no author position: {summary}"
+    );
+}
+
 /// A seed member that will not read (a dangling symlink here; any
 /// unreadable `.hl` member is the same case): `hale check` refuses the
 /// load, and the editor says so instead of publishing a clean seed —

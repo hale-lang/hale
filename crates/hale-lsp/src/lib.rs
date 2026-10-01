@@ -2436,25 +2436,29 @@ fn alloc_summary(
 
 /// `hale/allocSummary` over one snapshot: the survey over the programs
 /// the snapshot scoped, the bundle the diagnostics pass's
-/// unbounded-allocation warnings read. A seed with a hole has none.
+/// unbounded-allocation warnings read. A seed with a hole has none. A
+/// site is listed exactly when the diagnostics would place it: the same
+/// `AuthorPositions` rule decides both.
 fn alloc_summary_of(snap: &Snapshot) -> Value {
     if snap.demand_scope().is_err() {
         return json!({ "leakSites": [], "parseErrors": true });
     }
     let progs: Vec<&Program> = snap.programs().values().collect();
     let summary = hale_types::alloc_summary::summarize_programs(&progs, snap.identities());
+    let positions =
+        hale_types::alloc_summary::AuthorPositions::of(&progs, snap.identities(), snap.source_map());
     let sites: Vec<Value> = summary
         .leak_sites()
         .iter()
-        .filter_map(|site| {
-            let loc = merged_span_to_location(snap, site.span)?;
-            Some(json!({
+        .filter(|site| positions.has(site))
+        .map(|site| {
+            json!({
                 "fn": site.owner.display(),
                 "kind": format!("{:?}", site.kind),
                 "escape": format!("{:?}", site.escape),
                 "reason": format!("{:?}", site.reason),
-                "location": loc,
-            }))
+                "location": merged_span_to_location(snap, site.span),
+            })
         })
         .collect();
     json!({

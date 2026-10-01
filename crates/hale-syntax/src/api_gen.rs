@@ -1685,11 +1685,14 @@ fn binding_src(surface: &ApiSurface, bound: i64, table: Option<&str>) -> String 
         if len(i.bearer) > 0 {
             let who = self.principals.principal(i.bearer);
             let caller = std::api::Principal { mode: "bearer", name: who.name, uid: who.uid, gid: who.gid, pid: who.pid, groups: who.groups, via: "http" };
+            // The refusal names the refused caller on the reply itself,
+            // not through `cur_caller`: a whole `Principal` stored into
+            // the binding per message would bump-allocate in its arena
+            // until it dissolves (spec/verification.md, memory-bound
+            // proofs), and the payload's arena reclaims per dispatch.
             if len(who.name) == 0 {
-                self.cur_caller = caller;
-                self.cur_role = "";
                 let why = self.principals.refused();
-                self.reply(i.peer, 0, i.client_id, false, __api_refusal("unauthenticated", "the bearer token is refused" + (if len(why) > 0 { ": " + why } else { "" })));
+                __ApiReplyT <- __ApiReply { peer: i.peer, request_id: 0, client_id: i.client_id, ok: false, counted: false, body: __api_refusal("unauthenticated", "the bearer token is refused" + (if len(why) > 0 { ": " + why } else { "" })), as_of: "", caller: caller, role: "" };
                 return;
             }
             __ApiIngressT <- __ApiIngress { peer: i.peer, client_id: i.client_id, verb: i.verb, subject: i.subject, body: i.body, caller: caller };
