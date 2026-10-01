@@ -87,8 +87,10 @@ pub struct LoweringView {
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
     /// Which children are flows, over `merged`: every `release(c: T)`
-    /// clause with the locus `T` denotes as lowering names it.
-    pub flows: Vec<crate::flows::Flow>,
+    /// clause with the locus `T` denotes as lowering names it, and a
+    /// generic owner's clause as its template, which lowering
+    /// specializes with its own substitution.
+    pub flows: crate::flows::FlowRows,
     /// Whether the program can ever have a bus cell in flight, so
     /// lowering can elide every drain (`crate::bus_inert`).
     pub bus_inert: bool,

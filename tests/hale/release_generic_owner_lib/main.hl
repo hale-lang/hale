@@ -1,0 +1,7 @@
+// The library half of release_generic_owner_test.hl: a child type the
+// test names through its import alias.
+locus Worker {
+    params { ran: Int = 0; }
+    contract { expose ran: Int; }
+    run() { self.ran = 1; }
+}

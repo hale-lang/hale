@@ -1,0 +1,36 @@
+// A generic owner's `release(c: T)` makes its specialization's argument
+// a flow, however the argument is spelled (outside review of #1295,
+// finding 1). Lowering creates `Manager<w::Worker>` in its generic
+// instantiation queue, after the flow rows were surveyed over the
+// template, and the row answers for it through the template's clause
+// with lowering's own substitution. A flow child is released when its
+// run() completes: the hook has run, exactly once, before the owner's
+// next statement. Here the argument is an imported locus, named through
+// a local alias of its qualified path (a qualified path written as the
+// generic argument itself is refused by lowering's mangler: "a named
+// type as a generic argument"). No concrete owner releases the child
+// here: one would make it a flow type-wide, with or without the
+// specialization (the concrete control is `release_generic_owner.rs`'s,
+// each case its own program).
+import "./release_generic_owner_lib" as w;
+
+type Job = w::Worker;
+
+locus Manager<T> {
+    params { released: Int = 0; ran: Int = 0; }
+    accept(c: T) { }
+    release(c: T) {
+        self.released = self.released + 1;
+        self.ran = c.ran;
+    }
+    run() {
+        w::Worker { };
+        std::test::assert_eq_int(self.released, 1, "released at the child's run() end, before the next statement");
+        std::test::assert_eq_int(self.ran, 1, "released after the child's run()");
+    }
+}
+
+fn main() {
+    let a: Manager<Job> = Manager { };
+    std::test::assert_eq_int(a.released, 1, "an alias of a qualified argument: released exactly once");
+}

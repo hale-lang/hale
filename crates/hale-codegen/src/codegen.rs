@@ -1392,6 +1392,7 @@ pub fn build_resolved(
         program: merged,
         topics: &resolved.top.topics,
         flows: &resolved.flows,
+        specialized_flows: Vec::new(),
         intra_locus: &resolved.intra_locus,
         current_fn: None,
         current_user_fn_ret: None,
@@ -3180,7 +3181,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// The flow rows over `program` (the lowering view's): a locus is a
     /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
     /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
-    pub(crate) flows: &'p [hale_types::flows::Flow],
+    pub(crate) flows: &'p hale_types::flows::FlowRows,
+    /// The loci the specializations lowering created make flows: each
+    /// generic owner's template clause, specialized by the row with the
+    /// instantiation queue's own substitution (`(owner, child)`, the
+    /// owner by its mangled name). Filled before any body is lowered.
+    pub(crate) specialized_flows: Vec<(String, String)>,
     /// Every send the intra-locus rewrite replaced with a direct handler
     /// call (the lowering view's relation): the call keeps the send's
     /// id, so lowering finds a rewritten publish by the call's id.
@@ -9028,6 +9034,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Self::synthesize_generic_locus_instantiation(
                         template, &args, &mangled,
                     )?;
+                // The flow row answers for this specialization: the
+                // template's release clauses with the substitution the
+                // synthesis just applied.
+                let subst = Self::generic_locus_subst(template, &args);
+                for child in self
+                    .flows
+                    .specialize(template, |t| Self::substitute_type_expr(t, &subst))
+                {
+                    self.specialized_flows.push((mangled.clone(), child));
+                }
                 // Walk synthesized locus's substituted member
                 // type positions for nested generic uses.
                 for member in &synthesized.members {
@@ -12001,17 +12017,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
+    /// Whether `locus` is a flow (spec/semantics.md, "Flow and resident
+    /// children"): a concrete clause of the flow row names it, or a
+    /// generic owner's clause does once specialized for a specialization
+    /// lowering created.
+    pub(crate) fn is_flow(&self, locus: &str) -> bool {
+        hale_types::flows::is_flow(self.flows, locus)
+            || self.specialized_flows.iter().any(|(_, child)| child == locus)
+    }
+
     /// The wire subject of the topic declared as `name`, read from the
     /// topic rows (the dot-joined chain of own-subject segments
     /// root-to-leaf; #399's one rule). A name no topic declares is its
     /// own subject: a subscription or binding that already names a wire
     /// subject, or a topic typecheck reported missing.
-    /// Whether `locus` is a flow (spec/semantics.md, "Flow and resident
-    /// children"): the flow row names it.
-    pub(crate) fn is_flow(&self, locus: &str) -> bool {
-        hale_types::flows::is_flow(self.flows, locus)
-    }
-
     fn topic_wire(&self, name: &str) -> String {
         self.topics
             .named(name)
@@ -12635,6 +12654,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// surfaces would need m63b. The body walk for lifecycle /
     /// fn methods only substitutes let / let-tuple ascriptions
     /// (matching the m62 fn-body shallow substitution).
+    /// A generic locus's type parameters by the specialization's
+    /// arguments, by position: what its synthesis substitutes, and what
+    /// the flow row specializes the template's release clauses with.
+    fn generic_locus_subst(
+        template: &LocusDecl,
+        type_args: &[TypeExpr],
+    ) -> BTreeMap<String, TypeExpr> {
+        template
+            .generics
+            .iter()
+            .zip(type_args.iter())
+            .map(|(gp, arg)| (gp.name.name.clone(), arg.clone()))
+            .collect()
+    }
+
     fn synthesize_generic_locus_instantiation(
         template: &LocusDecl,
         type_args: &[TypeExpr],
@@ -12654,10 +12688,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &template.generics,
             type_args,
         )?;
-        let mut subst: BTreeMap<String, TypeExpr> = BTreeMap::new();
-        for (gp, arg) in template.generics.iter().zip(type_args.iter()) {
-            subst.insert(gp.name.name.clone(), arg.clone());
-        }
+        let subst = Self::generic_locus_subst(template, type_args);
         let new_members: Vec<LocusMember> = template
             .members
             .iter()

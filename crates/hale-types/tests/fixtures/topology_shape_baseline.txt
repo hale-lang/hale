@@ -1072,6 +1072,8 @@ crates/hale-codegen/tests/recv_stamped.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/recv_timeout_sentinel.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/recv_timeout_sentinel.rs#1 90900b8058a0b246
 crates/hale-codegen/tests/recv_zero_alloc.rs#0 f21a527aa7a90794
+crates/hale-codegen/tests/release_generic_owner.rs#0 226577cb9a1eb534
+crates/hale-codegen/tests/release_generic_owner.rs#1 ce2b5a0ea1c2b788
 crates/hale-codegen/tests/release_two_parents.rs#0 ef45ee6209ff2c6e
 crates/hale-codegen/tests/replay_asyncio.rs#0 54fdacb60d7cfd77
 crates/hale-codegen/tests/replay_asyncio.rs#1 0576d42781aa84e9
