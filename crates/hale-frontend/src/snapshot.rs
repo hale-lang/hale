@@ -53,6 +53,7 @@ use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
+use hale_types::effects::EffectCertificates;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
@@ -365,7 +366,9 @@ pub struct Snapshot {
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
     partial_scope: OnceCell<Result<Scope, Blocked>>,
-    typing: OnceCell<Result<Vec<Diag>, Blocked>>,
+    /// The typing's diagnostics, and the effects certificate report its
+    /// check produced ([`Snapshot::demand_effect_certificates`]).
+    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates), Blocked>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
@@ -823,6 +826,10 @@ impl Snapshot {
     /// does not typecheck (it reads declarations, not types), so a
     /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
+        self.typed().map(|(diags, _)| diags.as_slice())
+    }
+
+    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates), &Blocked> {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
@@ -832,17 +839,26 @@ impl Snapshot {
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
-                diags.extend(hale_types::check::check_bundle_scoped(
+                let (checked, certificates) = hale_types::check::check_bundle_reporting(
                     &self.bundle(),
                     &inputs,
                     self.config.allow_unowned_subscriber,
                     self.config.whole_program,
                     self.config.whole_program,
-                ));
-                Ok(diags)
+                );
+                diags.extend(checked);
+                Ok((diags, certificates))
             })
             .as_ref()
-            .map(Vec::as_slice)
+    }
+
+    /// The effects certificate report the typing's check produced: each
+    /// `@effects` and `@phase_effects` certificate with its diagnostics.
+    /// The certificate evidence a law is judged against reads it (the
+    /// check's laws, and the artifact's), so the engine runs once per
+    /// snapshot. Blocked with the typing; no family of its own.
+    pub fn demand_effect_certificates(&self) -> Result<&EffectCertificates, &Blocked> {
+        self.typed().map(|(_, certificates)| certificates)
     }
 
     /// The bus graph over the checked programs, with the scope's topic
@@ -960,7 +976,8 @@ impl Snapshot {
                 {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");
-                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model));
+                        let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
+                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model, effects));
                     }
                 }
                 hale_types::finish_check_diags(&mut diags);

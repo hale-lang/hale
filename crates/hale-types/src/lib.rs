@@ -272,13 +272,14 @@ pub fn check_bundle_opts_scoped(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
-    diags.extend(check::check_bundle_scoped(
+    let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs { top: &top, handlers: &handlers },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,
-    ));
+    );
+    diags.extend(checked);
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a
@@ -293,10 +294,11 @@ pub fn check_bundle_opts_scoped(
     // So the model half runs only once the resolver and the checker
     // agree the program denotes something ([`denotes_a_model`]).
     // The claim surface gate is `judgment::claim_law_diags`'s; the
-    // model is derived over the scope and the rows the check read.
+    // model is derived over the scope and the rows the check read, and
+    // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
         let model = model_over_scope(bundle, &top, &handlers);
-        diags.extend(judgment::claim_law_diags_over(bundle, &model));
+        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
     }
     finish_check_diags(&mut diags);
     diags

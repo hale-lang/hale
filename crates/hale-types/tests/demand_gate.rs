@@ -193,6 +193,20 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         let again = s.demand_effects().expect("still there") as *const _;
         assert_eq!(first, again, "the second demand reads the first result");
         assert_eq!(s.builds()["effects"], 1, "the effects fixpoint runs once per snapshot");
+        // The effects certificate report the law's evidence read is the
+        // typing's: `--dump-topology` after the check reads the same
+        // report and runs no second check.
+        let report = s.demand_effect_certificates().expect("the check's report") as *const _;
+        let artifact = s.with_env(|| {
+            hale_types::topology::dump_topology_over(
+                &s.bundle(),
+                s.demand_model().expect("the check's model"),
+                s.demand_effect_certificates().expect("the same report"),
+            )
+        });
+        assert!(artifact.contains("\"claims\""), "the artifact carries the law");
+        assert_eq!(report, s.demand_effect_certificates().expect("still there") as *const _);
+        assert_eq!(s.builds()["expression_typing"], 1, "the report is the one typing's");
         assert_at_most_once(&s, "check");
     }
     let _ = std::fs::remove_dir_all(&d);

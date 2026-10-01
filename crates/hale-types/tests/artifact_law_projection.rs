@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use hale_types::claim_lowering::lower_claims;
+use hale_types::effects::effect_certificates;
 use hale_types::evidence::derive_certificate_evidence;
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
@@ -49,7 +50,7 @@ fn diff_one(
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let (claims, lowered, _law, _issues) = project_law_rows(
         &bundle,
         &model,
@@ -1145,7 +1146,7 @@ fn main() { App { }; }
         let model = derive_application_model(&bundle);
         let table = lower_claims(&bundle, &model);
         let evidence =
-            derive_certificate_evidence(&bundle, &table, &model);
+            derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
         let mut found = None;
         for row in &evidence.rows {
             for cert in &row.certs {

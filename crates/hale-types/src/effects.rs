@@ -243,6 +243,7 @@ pub(crate) fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u
 /// every annotation is REPORTED as the claim form it is pointwise
 /// sugar for, so the topology artifact carries all law (bundle
 /// claims and fn certificates) in one schema of record.
+#[derive(Clone)]
 pub struct LoweredCertificate {
     /// The annotated fn / locus, post-mangle (demangled at
     /// serialization like every artifact name).
@@ -743,6 +744,24 @@ fn effect_report_inner(
     (d, certs.into_iter().map(|(row, _)| row).collect())
 }
 
+/// The effects certificate engine's report: every fn-grained effect
+/// certificate (incl. the phase contracts) with its own diagnostics,
+/// each flagged whether it was reported at a stdlib origin. The
+/// check produces it ([`crate::check::check_bundle_reporting`]) and
+/// the certificate evidence reads it
+/// ([`crate::evidence::derive_certificate_evidence`]): the engine runs
+/// once per snapshot.
+pub type EffectCertificates = Vec<(LoweredCertificate, Vec<(Diag, bool)>)>;
+
+/// The certificate report of a bundle no snapshot holds and no check
+/// ran over (the tests', `claim_law_diags`, the artifact's bundle
+/// entry): the engine's one run for that caller. A snapshot's comes
+/// from its check (`Snapshot::demand_effect_certificates`).
+pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertificates {
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    effect_report_grouped(&programs, &bundle.snapshot, &bundle.import_renames).1
+}
+
 /// GH #476 Change 5e: the same report with each certificate's own
 /// diagnostics attached — the evidence rows the model builder
 /// stores, produced by the ONE pass that also feeds `hale check`
@@ -752,7 +771,7 @@ pub(crate) fn effect_report_grouped(
     programs: &[&Program],
     ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<(LoweredCertificate, Vec<(Diag, bool)>)>) {
+) -> (Vec<Diag>, EffectCertificates) {
     let (pre, p1, tail, groups) =
         effect_report_three_way(programs, ids, import_renames);
     let mut flat = pre;

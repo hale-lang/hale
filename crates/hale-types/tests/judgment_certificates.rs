@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
+use hale_types::effects::effect_certificates;
 use hale_types::evidence::derive_certificate_evidence;
 use hale_types::judgment::judge_certificates;
 use hale_types::model_builder::derive_application_model;
@@ -72,7 +73,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
-    let evidence = derive_certificate_evidence(&bundle, &table, &model);
+    let evidence = derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let fam_ordinals: BTreeSet<u32> = table
         .rows
         .iter()
@@ -328,7 +329,7 @@ fn derive_all(
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
-    let evidence = derive_certificate_evidence(&bundle, &table, &model);
+    let evidence = derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     (model, table, evidence, judged)
 }
@@ -352,7 +353,7 @@ fn dropping_evidence_changes_the_verdict() {
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     assert!(!judged.is_empty());
     assert_eq!(judged[0].verdict, Verdict::Holds);
@@ -390,7 +391,7 @@ fn stale_evidence_is_refused() {
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     evidence.model_shape ^= 1;
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     assert!(!judged.is_empty());
@@ -599,7 +600,7 @@ fn main() { App { }; }
         let model = derive_application_model(&bundle);
         let table = lower_claims(&bundle, &model);
         let evidence =
-            derive_certificate_evidence(&bundle, &table, &model);
+            derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
         let mut out = Vec::new();
         for row in &evidence.rows {
             for cert in &row.certs {
@@ -674,7 +675,7 @@ fn main() { App { }; }
     let ba = bundle_of(src_a, &pa);
     let ma = derive_application_model(&ba);
     let ta = lower_claims(&ba, &ma);
-    let ea = derive_certificate_evidence(&ba, &ta, &ma);
+    let ea = derive_certificate_evidence(&ba, &ta, &ma, &effect_certificates(&ba));
     let pb = hale_syntax::parse_source(src_b).expect("parse b");
     let bb = bundle_of(src_b, &pb);
     let mb = derive_application_model(&bb);
@@ -716,7 +717,7 @@ fn malformed_evidence_is_refused() {
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let forbid_ordinal = table
         .rows
         .iter()
@@ -838,7 +839,7 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let one_cert_rows: Vec<usize> = evidence
         .rows
         .iter()
@@ -908,7 +909,7 @@ fn main() { App { }; }
     let b1 = bundle_of(v1, &p1);
     let m1 = derive_application_model(&b1);
     let t1 = lower_claims(&b1, &m1);
-    let e1 = derive_certificate_evidence(&b1, &t1, &m1);
+    let e1 = derive_certificate_evidence(&b1, &t1, &m1, &effect_certificates(&b1));
     let p2 = hale_syntax::parse_source(v2).expect("parse v2");
     let mut b2 = bundle_of(v2, &p2);
     b2.sources[0].digest = "1".to_string();
@@ -946,7 +947,7 @@ fn different_toolchain_evidence_is_refused() {
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let mut evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     evidence.inputs_digest ^= 1;
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     assert!(!judged.is_empty());
@@ -982,7 +983,7 @@ fn main() { App { }; }
     let b1 = bundle_of(v1, &p1);
     let m1 = derive_application_model(&b1);
     let t1 = lower_claims(&b1, &m1);
-    let e1 = derive_certificate_evidence(&b1, &t1, &m1);
+    let e1 = derive_certificate_evidence(&b1, &t1, &m1, &effect_certificates(&b1));
     let p2 = hale_syntax::parse_source(v2).expect("parse v2");
     let mut b2 = bundle_of(v2, &p2);
     b2.sources[0].digest = "1".to_string();
@@ -1136,7 +1137,7 @@ fn coverage_change_invalidates_evidence_identity() {
     let mut model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
     assert_eq!(judged[0].verdict, Verdict::Holds);
     // Flip one coverage bit: same shape, different coverage.
@@ -1174,7 +1175,7 @@ fn certs_for_unanalyzed_subjects_are_refused() {
     let mut model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     assert!(evidence
         .rows
         .iter()
@@ -1277,7 +1278,7 @@ fn function_coverage_upgrade_cannot_manufacture_holds() {
     // fresh (subject now "eligible" by the analyzed bit alone),
     // digests recomputed by construction.
     let evidence =
-        derive_certificate_evidence(&bundle, &table, &model);
+        derive_certificate_evidence(&bundle, &table, &model, &effect_certificates(&bundle));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1366,7 +1367,7 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
     // upgraded bit steers it), digests recomputed by
     // construction.
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model);
+        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1429,7 +1430,7 @@ fn deleted_membership_is_refused_everywhere() {
     // cannot certify — EvidenceTable::validate runs the SAME
     // shared ownership/coverage validator.
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model);
+        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1505,7 +1506,7 @@ fn coordinated_ownership_laundering_is_refused() {
         ),
     }
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model);
+        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged
@@ -1572,7 +1573,7 @@ fn moved_membership_is_refused_everywhere() {
         "the destination's coverage law contradicts the move"
     );
     let evidence =
-        derive_certificate_evidence(&bundle2, &table, &model);
+        derive_certificate_evidence(&bundle2, &table, &model, &effect_certificates(&bundle2));
     let judged =
         judge_certificates(&table, &model, &evidence, &[0]);
     let row = judged

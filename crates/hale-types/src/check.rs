@@ -552,8 +552,24 @@ pub fn check_bundle_scoped(
     strict_callees: bool,
     strict_idents: bool,
 ) -> Vec<Diag> {
+    check_bundle_reporting(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents).0
+}
+
+/// [`check_bundle_scoped`], with the effects certificate engine's
+/// report beside the diagnostics: the check runs the engine once, for
+/// its `@effects`, `@phase_effects` and placement diagnostics, and the
+/// certificate evidence a law is judged against reads the same run
+/// instead of repeating it.
+pub fn check_bundle_reporting(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+) -> (Vec<Diag>, crate::effects::EffectCertificates) {
     let top = inputs.top;
     let mut diags = Vec::new();
+    let certificates;
     let known = collect_known_names(top, &bundle.import_renames);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
@@ -736,12 +752,17 @@ pub fn check_bundle_scoped(
         // `check_bundle_opts`.
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
-        // @budget, over the shared callgraph witness engine.
-        diags.extend(crate::effects::effect_diags_with_renames(
+        // @budget, over the shared callgraph witness engine. The flat
+        // stream is `effect_diags_with_renames`'s; the grouped report
+        // is kept for the certificate evidence.
+        let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
             &bundle.snapshot,
             &bundle.import_renames,
-        ));
+        );
+        crate::stdlib_bodies::demangle_imports(&mut flat, &bundle.import_renames);
+        diags.extend(flat);
+        certificates = groups;
         // GH #265 frontier: supervision coverage and secret taint
         // (cross-actor causality is judged over the model).
         // GH #476 Change 5f/5g: `causes:` and its backward dual
@@ -815,7 +836,7 @@ pub fn check_bundle_scoped(
     // within the statement, and a `@secret` parameter held to the same.
     diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames, &bundle.sources));
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    diags
+    (diags, certificates)
 }
 
 /// True if the locus declares at least one `bus { subscribe ... }`.

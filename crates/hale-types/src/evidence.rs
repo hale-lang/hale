@@ -822,18 +822,20 @@ pub fn model_fanout<'a>(
     }
 }
 
+/// The evidence for `table`'s certificates over `model`. The effects
+/// certificates are the report the caller holds (`effects`: the
+/// check's run on a snapshot, [`crate::effects::effect_certificates`]
+/// for a bundle no check ran over), never a second run of the engine;
+/// the counting engines (`@budget`) measure here.
 pub fn derive_certificate_evidence(
     bundle: &Bundle<'_>,
     table: &ClaimIrTable,
     model: &ApplicationModel,
+    effects: &crate::effects::EffectCertificates,
 ) -> EvidenceTable {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let (_flat, mut groups) = crate::effects::effect_report_grouped(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
+    let mut groups = effects.clone();
     // Change 5h: `@budget` joins the same evidence pipeline. The
     // counting engines stay the authority on WHAT they measured —
     // that is an analysis, not a law — and hand over their

@@ -215,7 +215,11 @@ pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
 /// derived here ([`crate::derive_application_model`]). `hale check`
 /// renders its snapshot's model instead ([`dump_topology_over`]).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_over(bundle, &crate::derive_application_model(bundle))
+    dump_topology_over(
+        bundle,
+        &crate::derive_application_model(bundle),
+        &crate::effects::effect_certificates(bundle),
+    )
 }
 
 /// [`dump_topology`], under its Change-6 name (the projection tests').
@@ -230,8 +234,14 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
 /// one model, not two). One authority: every emitted section is a
 /// PROJECTION of `ApplicationModel` (GH #476 Change 6 inverted the
 /// direction; Change 9 deleted the legacy gathering that had stayed
-/// behind as the corpus differential's comparison arm).
-pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::ApplicationModel) -> String {
+/// behind as the corpus differential's comparison arm). `effects` is
+/// the effects certificate report of the same check, which the law
+/// evidence reads.
+pub fn dump_topology_over(
+    bundle: &Bundle<'_>,
+    app_model: &hale_model::ApplicationModel,
+    effects: &crate::effects::EffectCertificates,
+) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // User code only — an app's artifact describes the app, the
@@ -401,7 +411,7 @@ pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::Applicati
     let vmodel = app_model;
     let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
     let law_evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &law_table, vmodel,
+        bundle, &law_table, vmodel, effects,
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
