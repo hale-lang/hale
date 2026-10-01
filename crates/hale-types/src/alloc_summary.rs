@@ -3321,13 +3321,13 @@ fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
 ) -> BTreeMap<SiteId, Escape> {
-    let mut out = BTreeMap::new();
+    let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
     // `let x = y;`: x's statement and the declaration y names.
     let mut aliases: Vec<(SiteId, SiteId)> = Vec::new();
     collect_escaping_in_block(body, &mut |flow| match flow {
         Flow::Escapes(i, esc) => {
             if let Some(d) = ids.declaration_of(i.id) {
-                out.entry(d).or_insert(esc);
+                note_obligation(&mut out, d, esc);
             }
         }
         Flow::Alias { let_id, from } => {
@@ -3336,18 +3336,48 @@ fn collect_escaping_decls(
             }
         }
     });
+    // Close over the aliases, one direction: when `x` is returned or
+    // stored, the declaration it aliases carries the same obligation,
+    // because the value that leaves is the source's allocation. A SEND
+    // is not propagated: `Out <- x` publishes a payload copy and
+    // reclaims that copy per dispatch, while the source's own storage
+    // stays where it was allocated (outside review of #1291, finding
+    // 1: propagating `Sent` marked the source as reclaimed per dispatch
+    // and silenced its retained allocation).
     loop {
-        let before = out.len();
+        let mut changed = false;
         for (alias, source) in &aliases {
-            if let Some(esc) = out.get(alias).copied() {
-                out.entry(*source).or_insert(esc);
+            match out.get(alias).copied() {
+                Some(esc @ (Escape::Returned | Escape::StoredToSelf)) => {
+                    let before = out.get(source).copied();
+                    note_obligation(&mut out, *source, esc);
+                    changed |= out.get(source).copied() != before;
+                }
+                _ => {}
             }
         }
-        if out.len() == before {
+        if !changed {
             break;
         }
     }
     out
+}
+
+/// Record an obligation on a declaration. A declaration keeps its
+/// first obligation, except that a longer-lived one replaces a send:
+/// a value both sent and returned (or stored) is retained until the
+/// return, and the per-dispatch reclaim of the published copy must not
+/// erase that.
+fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
+    match (out.get(&d).copied(), esc) {
+        (None, e) => {
+            out.insert(d, e);
+        }
+        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf)) => {
+            out.insert(d, e);
+        }
+        _ => {}
+    }
 }
 
 /// What the pre-pass walk reports, in body order: a use whose value
@@ -3518,6 +3548,35 @@ mod tests {
         assert_eq!(call_escape("rebind"), Escape::Returned, "`let p = p` hands the first binding's value back");
         assert_eq!(call_escape("alias"), Escape::Returned, "a chain of aliases closes");
         assert_eq!(call_escape("kept"), Escape::Local, "an alias that does not escape escapes nothing");
+    }
+
+    /// Outside review of #1291, finding 1: sending an alias publishes a
+    /// payload copy and must not mark the source allocation as reclaimed
+    /// per dispatch; a value both sent and returned is retained until the
+    /// return, whichever is written first.
+    #[test]
+    fn a_sent_alias_leaves_the_source_allocation_where_it_is() {
+        let src = r#"
+            type P { x: Int; }
+            topic Out { payload: P; subject: "out"; }
+            fn fresh_p(n: Int) -> P { return P { x: n }; }
+            fn sent_alias() { let p = fresh_p(1); let q = p; Out <- q; }
+            fn sent_then_returned() -> P { let p = fresh_p(2); let q = p; Out <- q; return p; }
+            fn sent_direct_then_aliased_return() -> P { let p = fresh_p(3); Out <- p; let q = p; return q; }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let call_escape = |f: &str| {
+            fns(&s, &FnKey::free_fn(f))
+                .calls
+                .iter()
+                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .expect("the fresh_p call")
+                .escape
+        };
+        assert_eq!(call_escape("sent_alias"), Escape::Local, "the published copy is the alias's; the source stays local");
+        assert_eq!(call_escape("sent_then_returned"), Escape::Returned, "a send cannot erase the return");
+        assert_eq!(call_escape("sent_direct_then_aliased_return"), Escape::Returned, "a direct send first, then a returned alias: the return wins");
     }
 
     #[test]
