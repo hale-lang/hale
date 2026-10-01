@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 9 canonical, 31 migrating (with 135 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 10 canonical, 30 migrating (with 132 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
 
 ## Families
 
@@ -44,7 +44,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `target_capability` | Layer 5 | Migrating | capability | — | 7 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 10 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
-| `bus_inert` | Layer 6 | Migrating | derivation | — | 3 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
+| `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
 | `law_backstops` | Layer 8 | Migrating | law | — | 1 | The checker rules lowering re-judges because `build_executable` never runs the checker: self-containment, cross-pool bare statements, placement entries, pinned loci in loops. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
@@ -1139,31 +1139,32 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/semantics.md § lifecycle
 
-### `bus_inert` — Migrating · derivation
+### `bus_inert` — Canonical · derivation
 
 **Answers.** Whether the program can ever have a bus cell in flight, so drains can be elided.
 
-**Inputs.** bus_graph; stdlib_surface (which namespaces publish)
+**Inputs.** the user program's declarations (topics, perspectives, bus and bindings blocks, accepts); the names the user program spells (`hale_syntax::names`); the stdlib's bus-taint column (which `std::` namespaces reach bus surface)
 
-**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+**Producer.** `crates/hale-types/src/bus_inert.rs` · `bus_inert`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/bus_inert.rs` · `bus_tainted_namespaces`; `crates/hale-syntax/src/names.rs` · `for_each_spelled`
 
-- `crates/hale-codegen/src/codegen.rs` · `let dbg = format!("{:?}", program.items);` — decided by searching the program's Debug string for `__Std`, `name: "std"` and tainted namespaces. *Removed when:* a query over the message graph.
-- `crates/hale-codegen/src/codegen.rs` · `stdlib_bus_tainted_namespaces` — the stdlib taint fixpoint, also over Debug strings, cached per process. *Removed when:* a column of the stdlib_surface rows.
-- `crates/hale-types/src/resolved.rs` · `user` — the resolved program carries the desugared user program a second time so lowering's tier-1 bus-inert scan reads the same Debug text it always did. *Removed when:* phase 3, when the bus-inert verdict is a row of the resolved program, computed structurally and shadowed against the scan: lowering still decides it from the Debug text (`bus_inert` in `build_resolved`), and no structural verdict exists to shadow it against (at the phase-2 close).
-
-**Consumers.** codegen (`crates/hale-codegen/src/bus/runtime.rs` · `emit_bus_drain`)
+**Consumers.** the resolved program (a row of the lowering view, over the user program before the stdlib merge) (`crates/hale-types/src/resolved.rs` · `bus_inert::bus_inert(`); codegen (drain elision: the row, read) (`crates/hale-codegen/src/codegen.rs` · `resolved.bus_inert`); codegen (`crates/hale-codegen/src/bus/runtime.rs` · `emit_bus_drain`)
 
 **Invariants.**
 
-- a drain elision is a conclusion of the message graph, never of a string
+- a drain elision is a conclusion of structural rows, never of a rendering: the declarations the user program carries, and the names it spells (`hale_syntax::names`, an exhaustive walk) against the stdlib's bus-taint column (`bus_tainted_namespaces`, a fixpoint over the stdlib's declarations by the same walk); lowering reads the verdict (`LoweringView::bus_inert`) and derives none
+- the test is by name and over-approximates (a local spelled like a tainted namespace keeps the drains); a query over the message graph that follows which stdlib subscribers a program actually reaches would elide more, and is a separate change with its own shadow
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/drain_elision.rs; crates/hale-codegen/tests/log_routing.rs
+**Focused tests.** crates/hale-codegen/tests/drain_elision.rs; crates/hale-codegen/tests/log_routing.rs; crates/hale-types/src/bus_inert.rs (the_verdict_reads_declarations_and_names)
 
 **Spec.** spec/runtime.md § drain
+
+**Guarded seams.**
+
+- `bus_inert(` may be referenced from: `crates/hale-types/src/bus_inert.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ## Layer 8 — lowering
 
@@ -1414,9 +1415,7 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-cli/src/build_env.rs` | `format!(";lto={l:?}")` | 1 | decides (`digests`) |
 | `crates/hale-cli/src/verbs/misc.rs` | `println!("{:#?}", prog)` | 1 | renders |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", f.body)` | 1 | decides (`alloc_summary`) |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", it)` | 1 | decides (`bus_inert`) |
 | `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", other)` | 1 | renders |
-| `crates/hale-codegen/src/codegen.rs` | `format!("{:?}", program.items)` | 1 | decides (`bus_inert`) |
 | `crates/hale-lsp/src/lib.rs` | `format!("pinned({:?})", affinity)` | 1 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", ExitCode::SUCCESS)` | 2 | renders |
 | `crates/hale-lsp/src/lib.rs` | `format!("{:?}", affinity)` | 1 | decides (`placement`) |

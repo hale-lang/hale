@@ -1147,12 +1147,9 @@ pub fn build_resolved(
     // `program_has_offthread` below for why it matters.
     let has_offthread_placement =
         hale_types::bus_graph::has_offthread_placement(&resolved.bundle());
-    // The view the frontend produced (`hale_types::resolved`): `user`
-    // is the desugared program before the stdlib merge, which only the
-    // tier-1 bus-inert scan below reads; `merged` is what lowering
-    // walks.
+    // The view the frontend produced (`hale_types::resolved`): `merged`
+    // is what lowering walks.
     let LoweringView {
-        user,
         merged,
         owner_table,
         fresh_locus_factories,
@@ -1163,7 +1160,6 @@ pub fn build_resolved(
         import_renames,
         ..
     } = resolved;
-    let program = user;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
@@ -1371,78 +1367,14 @@ pub fn build_resolved(
     module.set_data_layout(&target_data.get_data_layout());
     module.set_triple(&triple);
 
-    // Static drain elision (2026-08-03, bench attribution): a bundle
-    // that can never enqueue a bus cell makes every emitted
+    // Static drain elision (2026-08-03, bench attribution): a program
+    // that can never have a bus cell in flight makes every emitted
     // `lotus_bus_queue_drain` a provable no-op — and codegen emits one
     // at every statement boundary, scope exit, `yield` and sleep
-    // slice, so a compute-only program pays the call thousands of
-    // times for nothing (two per locus instantiation on the
-    // birth+dissolve microbench). Cells are produced only by
-    // subscriber dispatch, wire ingest into a registered subscriber,
-    // the cross-pool accept handoff, and transport-loss dispatch.
-    //
-    // Three tiers, each conservative:
-    //  1. The USER program (all user seeds — imports are merged
-    //     before codegen) must declare no topics, no bus blocks, no
-    //     bindings, no accepts and no perspectives. Runtime bus
-    //     config (LOTUS_BUS_CONFIG) cannot defeat this: with no
-    //     declared topics there is nothing to bind, and with no
-    //     subscribers an ingested message registers no cell.
-    //  2. The STDLIB also carries bus surface (`std::log` sinks,
-    //     `std::http`, `std::io::tcp`, `std::bus`) — merged below,
-    //     so tier 1 alone was unsound (the log_routing CI failure:
-    //     a bus-free user program whose `std::log` sink never got
-    //     its events drained). A user program that references no
-    //     stdlib path at all (`name: "std"` absent from its AST,
-    //     and no direct `__Std` mention) cannot instantiate a
-    //     stdlib subscriber, so it stays inert.
-    //  3. A program that DOES reference `std::` paths is inert only
-    //     if none of the referenced namespaces can transitively
-    //     reach a bus-surfaced stdlib decl
-    //     (`stdlib_bus_tainted_namespaces`, a decl-level taint
-    //     fixpoint over the parsed stdlib).
-    //
-    // The reference checks run on the Debug rendering of the user
-    // AST. Deliberate: a hand-rolled expression walker would
-    // silently MISS newly-added Expr variants — an unsound elision —
-    // while substring containment can only over-match, which merely
-    // keeps the drains. A user identifier that happens to be named
-    // like a tainted namespace ("log", "http") costs the
-    // optimization, never correctness.
-    let bus_inert = {
-        // GH #884: `flat_decls`, not `items.iter()` — a topic, a
-        // perspective or a locus with a `bus` block inside a
-        // `module { }` fell through the catch-all as clean, which
-        // would elide the drains for a program that does have bus
-        // surface. Tier 1 is the conservative gate; it has to see
-        // every declaration the resolver sees.
-        let user_clean = hale_syntax::ast::flat_decls(&program.items)
-            .all(|it| match it {
-                TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
-                TopDecl::Locus(l) => l.members.iter().all(|m| match m {
-                    LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
-                    LocusMember::Lifecycle(ld) => {
-                        ld.kind != LifecycleKind::Accept
-                    }
-                    _ => true,
-                }),
-                _ => true,
-            });
-        if !user_clean {
-            false
-        } else {
-            let dbg = format!("{:?}", program.items);
-            if dbg.contains("__Std") {
-                false
-            } else if !dbg.contains("name: \"std\"") {
-                true
-            } else {
-                !stdlib_bus_tainted_namespaces().iter().any(|ns| {
-                    dbg.contains(&format!("name: \"{}\"", ns))
-                })
-            }
-        }
-    };
+    // slice, so a compute-only program would pay the call thousands of
+    // times for nothing. The verdict is the resolved program's row
+    // (`hale_types::bus_inert`), read here and derived nowhere else.
+    let bus_inert = resolved.bus_inert;
 
     let mut cx = Cx {
         context: &context,
@@ -3161,94 +3093,6 @@ fn locate_ts_shim_staticlib(options: &BuildOptions) -> Option<PathBuf> {
     }
     None
 }
-
-
-
-/// Look up the mangled name for a bundled-stdlib path (`std::*`).
-/// Returns `None` when the path isn't recognized; callers then
-/// surface the path-as-typed in their error message.
-/// Which `std::` namespaces (second path segment) can transitively
-/// reach a bus-surfaced stdlib decl? Drives tier 3 of the static
-/// drain elision above. Decl-level taint fixpoint over the parsed
-/// stdlib: seeds are loci with a bus / bindings block or an accept
-/// lifecycle (and perspectives); taint propagates to any decl whose
-/// AST mentions a tainted decl's name (checked as the exact
-/// `name: "<ident>"` Debug rendering, so short names can't
-/// over-cascade), covering stdlib free fns that instantiate a
-/// subscriber internally (`std::http::serve` → `Server`). Tainted
-/// decls map to user-reachable namespaces through PATH_RENAMES —
-/// the complete user-visible stdlib surface (stdlib_mangled_for_path
-/// is table-driven from it); tainted decls with no table entry are
-/// reachable only via a literal `__Std` mention, which tier 2
-/// rejects wholesale. Computed once per process: AP_SOURCE is a
-/// compile-time constant, so the first call parses it for itself
-/// (the resolved program carries the stdlib only merged into the
-/// user's) and every later call reads the cached answer.
-fn stdlib_bus_tainted_namespaces() -> &'static [String] {
-    use std::sync::OnceLock;
-    static TAINT: OnceLock<Vec<String>> = OnceLock::new();
-    TAINT.get_or_init(|| {
-        // `resolve_program` parsed the same text before any build
-        // reaches here, and refuses the build when it does not parse.
-        let stdlib = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
-            .expect("the bundled stdlib parses (resolve_program parsed it first)");
-        let mut decls: Vec<(String, bool, String)> = Vec::new();
-        for it in &stdlib.items {
-            let (name, surface) = match it {
-                TopDecl::Locus(l) => (
-                    l.name.name.clone(),
-                    l.members.iter().any(|m| match m {
-                        LocusMember::Bus(_)
-                        | LocusMember::Bindings(_) => true,
-                        LocusMember::Lifecycle(ld) => {
-                            ld.kind == LifecycleKind::Accept
-                        }
-                        _ => false,
-                    }),
-                ),
-                TopDecl::Perspective(p) => (p.name.name.clone(), true),
-                TopDecl::Fn(f) => (f.name.name.clone(), false),
-                TopDecl::Type(t) => (t.name.name.clone(), false),
-                TopDecl::Topic(t) => (t.name.name.clone(), false),
-                TopDecl::Const(c) => (c.name.name.clone(), false),
-                _ => continue,
-            };
-            decls.push((name, surface, format!("{:?}", it)));
-        }
-        let mut tainted: std::collections::BTreeSet<String> = decls
-            .iter()
-            .filter(|(_, s, _)| *s)
-            .map(|(n, _, _)| n.clone())
-            .collect();
-        loop {
-            let mut changed = false;
-            for (n, _, dbg) in &decls {
-                if tainted.contains(n) {
-                    continue;
-                }
-                if tainted
-                    .iter()
-                    .any(|t| dbg.contains(&format!("name: \"{}\"", t)))
-                {
-                    tainted.insert(n.clone());
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let mut ns: Vec<String> = hale_stdlib::PATH_RENAMES
-            .iter()
-            .filter(|(_, m)| tainted.contains(*m))
-            .filter_map(|(p, _)| p.get(1).map(|s| s.to_string()))
-            .collect();
-        ns.sort();
-        ns.dedup();
-        ns
-    })
-}
-
 
 /// GH #767: most stack bytes one fn's array literals may take.
 ///
