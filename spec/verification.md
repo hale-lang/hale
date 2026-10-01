@@ -1938,7 +1938,13 @@ assume the others in a build:
   `hale replay`'s safety admission); an inline-module fn the
   callgraph summarizer cannot yet resolve renders `does={unclassified}`
   — fail-closed, and scoped to modules so non-module manifests are
-  unchanged.
+  unchanged. The inferred sets are the snapshot's effect rows, the
+  walk `hale replay`'s live-effects gate reads too: a call into an
+  imported seed resolves through the import renames (the names codegen
+  resolves), so a fn's `does={…}` includes what it does through the
+  seeds it imports. Before F.40 phase 3 the manifest's walk stopped at
+  the seed boundary and under-reported those effects; an imported
+  fn's own rows stay out of an app's manifest.
 - **Corpus-wide conformance** (GH #265 step 7). Beyond the per-test
   runtime oracle, a sweep over the whole in-tree `.hl` corpus asserts
   three properties everywhere real code lives: no reachable stdlib

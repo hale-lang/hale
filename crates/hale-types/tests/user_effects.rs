@@ -283,9 +283,15 @@ fn a_declared_class_is_not_flagged_undeclared() {
 /// a subscriber declaring `is: {money}` contributed nothing.
 #[test]
 fn a_fns_own_carries_is_in_its_inferred_set() {
-    let mut program = hale_syntax::parse_source(MONEY).expect("parse");
-    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
-    let rows = hale_types::effects::effect_manifest_with_inference(&[&program], &ids);
+    use hale_frontend::snapshot::{Config, Snapshot};
+    let program = hale_syntax::parse_source(MONEY).expect("parse");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::check(false, false)) else {
+        panic!("a bare program's snapshot is not refused");
+    };
+    let Ok(effects) = snap.demand_effects() else { panic!("a parsed program has effect rows") };
+    let bundle = snap.bundle();
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    let rows = hale_types::effects::effect_manifest_with_inference(&programs, effects);
     let charge = rows
         .iter()
         .find(|r| r.func == "charge")

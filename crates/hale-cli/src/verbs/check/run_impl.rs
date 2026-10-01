@@ -145,14 +145,20 @@ pub(crate) fn run_check_impl_labelled(
     // review, or DIFF it against a committed copy so an effect
     // regression (a handler that quietly gained a syscall) fails CI
     // the way an API break does.
+    // The manifest reads the snapshot's effect rows; a whole seed's load
+    // always has a scope, so they are never blocked here.
+    let manifest = || match snap.demand_effects() {
+        Ok(effects) => hale_types::dump_effects_manifest(&bundle, effects),
+        Err(_) => String::new(),
+    };
     if std::env::args().any(|a| a == "--dump-effects-manifest") {
-        print!("{}", hale_types::dump_effects_manifest(&bundle));
+        print!("{}", manifest());
     }
     if let Some(path) = std::env::args()
         .position(|a| a == "--check-effects-manifest")
         .and_then(|i| std::env::args().nth(i + 1))
     {
-        let current = hale_types::dump_effects_manifest(&bundle);
+        let current = manifest();
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
                 if expected != current {

@@ -1904,11 +1904,10 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
 /// fingerprint; `effect_manifest` alone reports declarations only.
 pub fn effect_manifest_with_inference(
     programs: &[&Program],
-    ids: &Snapshot,
+    effects: &crate::effect_rows::EffectRows,
 ) -> Vec<EffectManifestRow> {
-    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs, ids);
-    let ffi = ffi_names(programs);
-    let names = effect_names_of(programs);
+    let summary = &effects.summary;
+    let names = &effects.class_names;
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()
         .map(|r| (r.func.clone(), r))
@@ -1926,8 +1925,8 @@ pub fn effect_manifest_with_inference(
             vec!["unclassified".to_string()]
         } else {
             crate::frontier::render_effects_named(
-                crate::frontier::infer_effects(&summary, &key, &ffi),
-                &names,
+                effects.row(&key).map_or(crate::stdlib_surface::EffectSet::PURE, |r| r.effects),
+                names,
             )
         };
         let mut row = declared.get(&name).cloned().unwrap_or(

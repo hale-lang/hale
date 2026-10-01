@@ -326,8 +326,18 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     if !allow_live_effects {
         let programs: Vec<&Program> =
             bundle.programs.values().copied().collect();
-        let rows =
-            hale_types::effects::effect_manifest_with_inference(&programs, &bundle.snapshot);
+        // The rows over a checked program are never blocked; if they
+        // were, the gate would have nothing to read, and it refuses.
+        let rows = match snap.demand_effects() {
+            Ok(effects) => hale_types::effects::effect_manifest_with_inference(&programs, effects),
+            Err(b) => {
+                eprintln!(
+                    "hale replay: the effect rows are blocked ({}), so live effects cannot be ruled out; pass --allow-live-effects to re-execute anyway",
+                    b.family
+                );
+                return ExitCode::from(1);
+            }
+        };
         let mut residue = std::collections::BTreeSet::new();
         for row in &rows {
             for class in &row.inferred {

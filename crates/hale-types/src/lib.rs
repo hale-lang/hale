@@ -3388,10 +3388,10 @@ mod unowned_subscriber_tests {
 /// declared contracts plus inferred effect sets, sorted for stable
 /// diffs. The CLI writes this next to `.hale.topo`; a diff in review
 /// is an effect regression.
-pub fn dump_effects_manifest(bundle: &Bundle<'_>) -> String {
+pub fn dump_effects_manifest(bundle: &Bundle<'_>, effects: &effect_rows::EffectRows) -> String {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let mut rows = crate::effects::effect_manifest_with_inference(&programs, &bundle.snapshot);
+    let mut rows = crate::effects::effect_manifest_with_inference(&programs, effects);
     // An app's manifest describes the APP, not the libraries it
     // imports.
     //

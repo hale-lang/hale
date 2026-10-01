@@ -393,7 +393,9 @@ hale check app.hl --dump-effects-manifest > .hale.effects
 
 Each line carries the declared contract plus a `does={…}` column — what
 the compiler sees the function actually do, transitively, annotated or
-not, for free functions, locus methods and lifecycle hooks alike:
+not, for free functions, locus methods and lifecycle hooks alike. The
+walk follows calls into the seeds a program imports, so what a function
+does through a library lands on its own line:
 
 ```
 # .hale.effects v1 — declared effect contracts
