@@ -79,7 +79,7 @@ use crate::source::SourceProvider;
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs.
-pub const FAMILIES: [&str; 12] = [
+pub const FAMILIES: [&str; 13] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
