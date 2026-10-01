@@ -35,13 +35,18 @@ pub struct PlacementTable {
     pub holes: Vec<Hole>,                  // what the producer could not decide, with its policy
 }
 
-/// Static instance identity: a construction template of the deployed root,
-/// the field path from it, the replica. A key names a template, never a
-/// runtime occurrence (see "Templates, occurrences, incarnations" below).
+/// Static instance identity: the scope that constructs the tree, the field
+/// path from its top, the replica. A key names a template, never a runtime
+/// occurrence (see "Templates, occurrences, incarnations" below).
 pub struct InstanceKey {
-    pub construction: SiteId,              // the root literal (`App { … }`) the tree is built from: one template per literal site
-    pub path: Vec<Step>,                   // the fields from the root; [] is the root itself
+    pub origin: Origin,
+    pub path: Vec<Step>,                   // the fields from the origin's top; [] is the top itself
     pub replica: Option<u32>,              // Some(i) on a `replicas = K > 1` field and on every row nested under it
+}
+
+pub enum Origin {
+    Construction(SiteId),                  // a root literal (`App { … }`): one template per literal site, the root at []
+    Binding(SiteId),                       // an adapter literal in the root's `bindings { }` entry: built once, in the bindings prelude (cg:9813)
 }
 
 pub struct Step {
@@ -56,7 +61,7 @@ pub struct RootRow {
 }
 
 pub struct Construction {
-    pub literal: SiteId,                   // the root literal; the `construction` of every key under it
+    pub literal: SiteId,                   // the root literal; `Origin::Construction` of every key under it
     pub bound: Bound,                      // how many occurrences of this template can be live at once
 }
 
@@ -86,7 +91,7 @@ pub enum Decision {
 pub enum DomainKind {
     Main,                                  // the program's main thread; adds no thread
     Pool { name: String, async_io: bool, affinity: Option<CoreSet> }, // one worker per name
-    Pinned { anchor: InstanceKey, affinity: Option<CoreSet>, numa_node: Option<i64> }, // one thread per anchor (per replica)
+    Pinned { anchor: InstanceKey, affinity: Option<CoreSet>, numa_node: Option<i64> }, // one thread per anchor (per replica); the anchor's origin is its creating scope
 }
 
 pub struct DynamicSite {                   // a locus literal in a method body, `accept`ed child, let-bound locus
@@ -118,7 +123,7 @@ Until the producer resolves a qualified field through the analysis copy, a stdli
 
 ### Invariants
 
-1. **One row per static instance of each construction template.** A construction template is one literal of the root declaration. Its static tower is the root's params fields as that literal builds them (its overrides, else the declaration's defaults) and, recursively, their params fields, each with the literal that built it. Two literals of the root are two templates even when their trees agree, so a key's `construction` decides every row under it: `App { gw: Gateway { router: RouterV2 { } } }` and `App { gw: Gateway { router: RouterV3 { } } }` give `gw.router` two keys, each with one `realizes`, one `literal` and one set of generic arguments. A field whose initializer chooses among literals (an `if` or `match` whose arms are literals) gives one step per literal, each with its `alternative`, and every row on or under it is `guarded`. An initializer whose literals cannot be enumerated (a call) is a hole on that field. Keys are unique. Replica rows are exactly `0..K` for a `replicas = K > 1` entry, and every row nested under replica `i` carries `Some(i)`.
+1. **One row per static instance of each construction template.** A construction template is one literal of the root declaration. Its static tower is the root's params fields as that literal builds them (its overrides, else the declaration's defaults) and, recursively, their params fields, each with the literal that built it. Two literals of the root are two templates even when their trees agree, so a key's origin decides every row under it: `App { gw: Gateway { router: RouterV2 { } } }` and `App { gw: Gateway { router: RouterV3 { } } }` give `gw.router` two keys, each with one `realizes`, one `literal` and one set of generic arguments. A field whose initializer chooses among literals (an `if` or `match` whose arms are literals) gives one step per literal, each with its `alternative`, and every row on or under it is `guarded`. An initializer whose literals cannot be enumerated (a call) is a hole on that field. An adapter literal in the root's `bindings { }` is an origin of its own (`Origin::Binding`), not a row of any construction template, because the bindings prelude builds it once however often the root is constructed. Keys are unique. Replica rows are exactly `0..K` for a `replicas = K > 1` entry, and every row nested under replica `i` carries `Some(i)`.
 2. **Nested rows inherit.** A row's domain is its owner's domain unless the row is decided by an `Entry`, which only a root field can be (rule 1, sem:3216), or by a `Binding`.
 3. **Pinned domains are per instance.** Two rows share a pinned domain only if one is nested under the other, so each replica is its own domain. Pool domains are per name: every row on pool `X` shares one domain, and that domain carries at most one affinity (rule 16, sem:3400).
 4. **The root is `lowering_root`, never `entry`.** The table describes what lowering deploys. Until L4 has lowering read the entry, that root can be a module-nested `main` that is not the entry (`ent:96-113`, `ent:185`). `RootRow::is_entry` records the difference, so a consumer bound to the entry (rule 9's closed world, `--env`, `--matrix`) can tell. An imported `main` is never the root: a seed whose only `main` is imported has an empty table.
@@ -130,7 +135,7 @@ Until the producer resolves a qualified field through the analysis copy, a stdli
 
 Three identities are easy to run together, and the table holds only the first.
 
-- **A template** is static: a construction literal of the root, a path of steps from it, a replica index. It is what `InstanceKey` names, and what every safety rule and lowering decision is stated over.
+- **A template** is static: an origin (a construction literal of the root, or an adapter's binding entry), a path of steps from it, a replica index. It is what `InstanceKey` names, and what every safety rule and lowering decision is stated over.
 - **An occurrence** is one execution of a template's literal: `fn main() { App { }; }` has one, a factory called in a loop has as many as the loop runs. The table does not key occurrences. It counts them, through `Construction::bound` and `DynamicSite::bound`, and every occurrence of a template has the same domains, decisions and realized declarations, because they are all decided statically.
 - **An incarnation** is a runtime identity: which live object an observation came from. It belongs to the runtime and the observation stream (P2 and the model's arrangement read it), never to the table. A consumer that needs one joins it to a template; the table never mints one.
 
@@ -142,6 +147,8 @@ A count over the table (threads, pinned anchors, arenas) is a sum over the templ
 - **Within one template, multiply by its bound.** A template counts once per occurrence that can be live: `Once` is 1, `AtMost(n)` is `n`, `Unbounded` makes the whole count an uncertainty with the template's reason.
 - **Across the alternatives of one step, take the maximum.** One occurrence takes exactly one alternative, so its guarded subtrees are exclusive. The maximum is over each alternative's own subtree count.
 - **Replicas are already rows.** `replicas = K` is K rows in the template, so it is counted by the sum over rows and never multiplied again.
+- **A binding origin is `Once`.** The bindings prelude runs once per process, in `lower_program` (`cg:9813`), so an adapter's subtree is counted once and never multiplied by any root construction's bound.
+- **Count domains, not rows.** A count of threads is over distinct `DomainId`s, each counted in the one scope that creates it (§ 2.8), so a domain is never counted twice by two terms.
 
 ### What each legacy question becomes
 
@@ -155,7 +162,7 @@ A count over the table (threads, pinned anchors, arenas) is a sum over the templ
 | model `PlacedIn` | per instance, with replicas (`mb:2997`) | the rows, projected onto `LocusInstance` / `PlacedIn` / `Owns` with the model's domain names |
 | desugar | is `(owner, field)` off the owner's thread (`ds:1163`) | `owner_relative == OffOwner` |
 | `collect_main_placement`, `DeploymentPlan` | main's per-field schedule class, pools, affinity, async_io, replicas, pinned types (`cg:10295`, `dep:33`) | the lowering view of the root rows and domains; the type sets from `realizes.lowered` |
-| resource budget | threads and pools (`rb:152`) | threads = pinned domains × root bound + adapter bindings; pools = non-main pool domains |
+| resource budget | threads and pools (`rb:152`) | threads = the distinct pinned domains, partitioned by the origin of their anchor: root-created anchors under their construction's bound, adapter anchors once (§ 2.8); pools = non-main pool domains |
 
 ## 2. The legacy producers, one by one
 
@@ -264,7 +271,7 @@ A count over the table (threads, pinned anchors, arenas) is a sum over the templ
 | G-1 | the root | first `is_main && !__lib_` | `lowering_root` | agreement (by definition) | `ent:96-113` | `entry_point_placement.rs` (existing) |
 | G-2 | a generic root field placed `pinned` or on a pool | no type-set entry: by reading, a pinned monomorph subscriber gets no mailbox field, and a pooled one gets no `__coop_pool_run` wrapper (the defensive synchronous path `cg:10305-10318` warns about) | `realizes.lowered` = the monomorph | known old bug, **by reading**; § 3 case 6 confirms that the shape reaches lowering (rule 3 admits an unresolved name, `chk:9822-9833`) | ty:743-747 | case 6 |
 | G-3 | an aliased (`type Held = Holder`) or module-qualified (`m::K`) root field | the alias name, or `None` from `mangled_for_path` for a seed-local module path: no type-set entry | the declaration | known old bug, **by reading**; § 3 cases 5 and 7 | ty:137 | cases 5, 7 |
-| G-4 | adapter loci in `bindings { }` | pinned-equivalent with no placement entry | a row with `Decision::Binding` and a pinned domain | agreement. The row exists for C7's inline-adapter judgment and for R-6 | registry `law_backstops` | `placement_table.rs` · `an_inline_adapter_is_a_pinned_binding_row` |
+| G-4 | adapter loci in `bindings { }` | pinned-equivalent with no placement entry | a row keyed under `Origin::Binding`, with `Decision::Binding` and a pinned domain anchored at itself | agreement. The row exists for C7's inline-adapter judgment and for R-6 | registry `law_backstops` | `placement_table.rs` · `an_inline_adapter_is_a_pinned_binding_row` |
 
 ### 2.7 Codegen: `DeploymentPlan`
 
@@ -285,8 +292,16 @@ A count over the table (threads, pinned anchors, arenas) is a sum over the templ
 | R-3 | `cooperative(pool = io, cores = 2..4)`, and two entries naming one pool, one with an affinity | 0 threads, 1 pool | the same: affinity is a column of the pool domain, never a thread | agreement, pinned by the decision ("affinity entries are not threads") | sem:3400-3410 | `resource_budget.rs` · `pool_affinity_adds_no_thread` |
 | R-4 | an imported `__lib_` root, or a module-nested non-root `main`, with pinned entries | counted | not counted: only the deployed root's rows count | known old bug → approved correction | `ent:1-31`; sem:3411-3437 | `resource_budget.rs` · `an_imported_roots_entries_cost_nothing` |
 | R-5 | the root built at several sites or in a loop (a factory called in a loop is legal, sem:3432-3436) | counted once | each construction template's threads × its `bound`, summed over the templates (§ 1, how live bounds combine); `Unbounded` renders as an uncertainty, and a ceiling against an uncertain count fails with that reason | known old bug → approved correction ("dynamic instantiation needs a bound or an uncertainty") | sem:3411-3437 | `resource_budget.rs` · `a_root_built_in_a_called_loop_is_uncertain` |
-| R-6 | adapter loci in `bindings { }` (pinned-equivalent threads, `cg:10494-10508`) | 0 | 1 thread each | **unresolved disagreement** → U-3. The decision covers placement, not bindings; recommendation: count them, since they are threads | — | `resource_budget.rs` · `an_inline_adapter_is_a_thread` |
+| R-6 | adapter loci in `bindings { }` (pinned-equivalent threads, `cg:10494-10508`) | 0 | 1 thread per adapter anchor, counted once whatever the root's bound | **unresolved disagreement** → U-3. The decision covers placement, not bindings; recommendation: count them, since they are threads | — | `resource_budget.rs` · `one_adapter_and_one_pinned_child_are_two_threads`, `an_adapter_counts_once_under_several_root_constructions` |
 | R-7 | `cooperative` or `pool = main` spelled | `main` is counted as a pool, and only when spelled | `main` adds no worker | **unresolved disagreement** → U-2. Recommendation: pools are worker pools; `main` is rendered on its own line. A declared ceiling can only loosen | rt:354-362 | `resource_budget.rs` · `the_main_pool_is_not_a_worker` |
+
+**The thread count is a partition by construction scope.** Each pinned domain is counted once, in the scope that creates its anchor, and the domain table holds each domain once, so no domain is in two terms:
+
+- **Root-created anchors.** A pinned domain whose anchor has `Origin::Construction(c)`: a root field placed `pinned`, one per replica. Counted under construction `c`'s bound, and summed over the constructions (§ 1, how live bounds combine).
+- **Adapter anchors.** A pinned domain whose anchor has `Origin::Binding(e)`: one per adapter literal in the root's `bindings { }`. The bindings prelude builds it once, so it is counted once, and its bound is never the root's.
+- **Nested rows add nothing.** A row under either kind of anchor inherits its domain (invariant 2) and spawns no thread.
+
+So `threads = Σ_c bound(c) × |pinned anchors under c| + |adapter anchors|`, every term over distinct `DomainId`s. Two tests pin the partition. `one_adapter_and_one_pinned_child_are_two_threads`: one adapter in `bindings { }` and one root field placed `pinned` give 2, not 3 (the old formula counted the adapter's pinned domain among the pinned domains and again as an adapter binding). `an_adapter_counts_once_under_several_root_constructions`: two construction templates, one `AtMost(3)` and one `Once`, each with one pinned field, and one prelude adapter give `3 + 1 + 1 = 5`, not `(3 + 1) × 2`.
 
 Threads the runtime spawns outside placement are not placement facts. Examples are binding reader threads (one domain per binding, `mb:3199-3202`) and the serve threads of the GH #233 stdlib transports (`cg:10494-10498`). The budget renders them as an explicit "not counted" line until P2's binding rows can count them.
 
@@ -316,9 +331,9 @@ Threads the runtime spawns outside placement are not placement facts. Examples a
 6. **Generic specialization.** `c: Cache<Int, String> = Cache { cap: 2 }` placed `pinned` with a subscription, and `d: Cache<Int, Int>` on pool `io`. Two rows, one template site, two substitutions, two `lowered` names. Confirms G-2 by building both (a compile-only check that `pinned_locus_types` holds `Cache_Int_String` after the switch).
 7. **Module-nested and module-qualified.** A root field `k: m::K = m::K { }`, and a seed whose only `main` is inside `module app { … }`. `RootRow::is_entry == false`, rows present, because lowering deploys it (`ent:96-113`; the nested-main transition test `nested_main_transition.rs`).
 8. **Imported roots.** A seed importing a library whose `main locus` has pinned entries, with and without the seed's own `main`. The import gives no rows (K-2, B-4, M-1, R-4). With the seed's main, the rows are the seed's. Run from `tests/hale` through the snapshot, since a parse-only shadow cannot see it.
-9. **Adapter bindings.** An inline adapter in `bindings { }`: a `Decision::Binding` row with a pinned domain (G-4, R-6).
+9. **Adapter bindings.** An inline adapter in `bindings { }`: a row under `Origin::Binding` with `Decision::Binding` and a pinned domain anchored at itself, beside a root field placed `pinned`: two pinned domains, disjoint. The same program with the root built at two sites keeps one adapter row and gains a second root field row (G-4, R-6, § 2.8's partition).
 10. **Dynamic sites.** A locus literal in a root method in a loop, an `accept`ed child, and the root built by a factory called in a loop. These produce `DynamicSite` rows with the enclosing domains and the bound, and the factory's literal is one construction template with an `Unbounded` bound (R-5).
-11. **Two constructions of one root with different nested overrides.** `App { gw: Gateway { router: RouterV2 { } } }` in one function and `App { gw: Gateway { router: RouterV3 { } } }` in another, with `gw` placed `pinned` and `RouterV3` generic. Two `Construction` rows, and two keys for each of `gw` and `gw.router`, which differ only in `construction`: each `gw.router` row has its own `realizes`, `literal` and `args`, and each `gw` its own pinned domain. A third construction `App { gw: if c { Gateway { router: RouterV2 { } } } else { Gateway { } } }` gives two `alternative` steps at `gw`, every row under them `guarded`, and its budget contribution is the larger of the two subtrees, not their sum. The case first pins whether rule 3 and the checker admit a literal-armed `if` as a param initializer; if they refuse it, the third construction is dropped from the case and `alternative` stays for `match` arms only if those are admitted, else it is removed from the schema.
+11. **Two constructions of one root with different nested overrides.** `App { gw: Gateway { router: RouterV2 { } } }` in one function and `App { gw: Gateway { router: RouterV3 { } } }` in another, with `gw` placed `pinned` and `RouterV3` generic. Two `Construction` rows, and two keys for each of `gw` and `gw.router`, which differ only in their origin: each `gw.router` row has its own `realizes`, `literal` and `args`, and each `gw` its own pinned domain. A third construction `App { gw: if c { Gateway { router: RouterV2 { } } } else { Gateway { } } }` gives two `alternative` steps at `gw`, every row under them `guarded`, and its budget contribution is the larger of the two subtrees, not their sum. The case first pins whether rule 3 and the checker admit a literal-armed `if` as a param initializer; if they refuse it, the third construction is dropped from the case and `alternative` stays for `match` arms only if those are admitted, else it is removed from the schema.
 
 ## 4. The runtime test the correction needs
 
