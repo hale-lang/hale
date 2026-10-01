@@ -27,9 +27,20 @@ impl Lsp {
     }
 
     fn send(&mut self, v: serde_json::Value) {
-        let body = v.to_string();
-        write!(self.stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body)
-            .expect("write");
+        self.send_all(vec![v]);
+    }
+
+    /// Several messages in ONE write, so the server finds them queued
+    /// together. Only for small messages: this harness reads nothing
+    /// while it writes, so a burst past the pipe's buffer could block
+    /// on a server blocked on its own publishes.
+    fn send_all(&mut self, msgs: Vec<serde_json::Value>) {
+        let mut bytes = Vec::new();
+        for v in msgs {
+            let body = v.to_string();
+            write!(bytes, "Content-Length: {}\r\n\r\n{}", body.len(), body).expect("frame");
+        }
+        self.stdin.write_all(&bytes).expect("write");
         self.stdin.flush().expect("flush");
     }
 
@@ -1258,6 +1269,49 @@ fn lsp_and_check_agree_over_a_seed_that_imports() {
     );
 }
 
+/// The overlay parity fixture over a seed with generated source (F.40
+/// phase 2.4): a `json:`-tagged type, whose parser the sequence
+/// synthesizes, and an api binding, whose envelope types, topics and
+/// socket loci it synthesizes. Both channels run the same sequence, so
+/// the author's errors beside the generated declarations (a mismatch
+/// in the handler the binding calls, a bare fallible `from_json`) land
+/// at the same author positions, and nothing is reported at a position
+/// inside generated code.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_generated_source() {
+    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        let bad: String = o.id;\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-generated.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        let o = Order::from_json(\"{}\");\n\
+        println(o.id);\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n";
+
+    let check = agree_three_ways("generated", &[("main.hl", APP)], &[]);
+    assert!(
+        check.iter().all(|(file, ..)| file == "main.hl"),
+        "a finding positioned outside the author's file (inside generated source?): {check:?}"
+    );
+    for line in [7u64, 15u64] {
+        assert!(
+            check.iter().any(|(_, l, ..)| *l == line),
+            "no finding at main.hl:{line}: {check:?}"
+        );
+    }
+}
+
 /// A seed member that will not read (a dangling symlink here; any
 /// unreadable `.hl` member is the same case): `hale check` refuses the
 /// load, and the editor says so instead of publishing a clean seed —
@@ -1417,6 +1471,50 @@ fn lsp_rechecks_an_open_dependent_when_a_library_buffer_closes() {
         vec![(uri(&lib), vec![]), (uri(&main), vec![])],
         "the library's seed from disk, then the app against the disk copy"
     );
+}
+
+/// A burst of document events costs one check, not one per event
+/// (F.40 phase 2.4): five changes in one write are published by at most
+/// two passes — the first change may already be in its check when the
+/// rest arrive — and the last publish describes the LAST text. The
+/// fence behind the burst is answered after that publish.
+#[test]
+fn lsp_a_burst_of_changes_is_checked_once() {
+    let root = scratch_root("burst");
+    let main = root.canonicalize().expect("canonical dir").join("main.hl");
+    // Text `v` declares `v` lets; the fifth is a type error, so only
+    // the last text of the burst can raise it.
+    let text = |v: usize| {
+        let mut t = String::from("fn main() {\n");
+        for i in 1..=v {
+            let value = if i == 5 { "\"five\"".to_string() } else { i.to_string() };
+            t.push_str(&format!("    let x{i}: Int = {value};\n"));
+        }
+        t.push_str("}\n");
+        t
+    };
+
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, &text(0)));
+    assert_eq!(lsp.publications(), vec![(uri(&main), vec![])], "the clean open");
+    lsp.lsp.send_all((1..=5).map(|v| change(&main, 1 + v as u64, &text(v))).collect());
+    let burst = lsp.publications();
+    lsp.lsp.send(change(&main, 7, &text(4)));
+    let fixed = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(burst.iter().all(|(u, _)| *u == uri(&main)), "only the seed's file is published: {burst:?}");
+    assert!(
+        (1..=2).contains(&burst.len()),
+        "five changes cost at most two passes, not five: {burst:?}"
+    );
+    let (_, last) = burst.last().expect("a publish");
+    assert!(
+        last.len() == 1 && last[0].contains("expected `Int`"),
+        "the last publish carries the last text's error: {burst:?}"
+    );
+    assert_eq!(fixed, vec![(uri(&main), vec![])], "the change that fixes it clears it");
 }
 
 /// A scratch root of this test's own, empty.

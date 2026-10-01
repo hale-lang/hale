@@ -10,7 +10,9 @@
 //! publishes diagnostics for every file in the seed (an empty list
 //! clears a file's stale squiggles; one bookkeeping map, the files each
 //! seed's last publication covered, clears a file that has left the
-//! seed's import graph — `check_and_publish`).
+//! seed's import graph — `check_and_publish`). A run of document events
+//! already queued when the server gets to them is applied in order and
+//! checked ONCE, never past a request (`next_steps`).
 //!
 //! Protocol surface v1:
 //!   - initialize / initialized / shutdown / exit
@@ -21,11 +23,11 @@
 //!
 //! Panic containment: a parser or checker panic on a half-typed
 //! file must not take the server down with the editor's session. Every
-//! message is dispatched under `catch_unwind` (see `contained`); a
-//! document event whose handler panics publishes one diagnostic on that
-//! file ("the compiler hit an internal error on this file: ..."), a
-//! request answers with a JSON-RPC internal error, and the loop goes on
-//! to the next message.
+//! message and every publish pass runs under `catch_unwind` (see
+//! `contained`); a pass that panics publishes one diagnostic on the file
+//! whose event started it ("the compiler hit an internal error on this
+//! file: ..."), a request answers with a JSON-RPC internal error, and
+//! the loop goes on to the next message.
 //!
 //! Diagnostics carried: the full `hale check` set — parse errors,
 //! type errors, and the advisory warnings (unbounded-alloc survey,
@@ -34,7 +36,7 @@
 //! column positions per the LSP default encoding.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -47,9 +49,8 @@ use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
 
 pub fn run_lsp() -> ExitCode {
-    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    serve(&mut stdin.lock(), &mut stdout.lock())
+    serve(std::io::BufReader::new(std::io::stdin()), &mut stdout.lock())
 }
 
 /// The editor's live state: uri-decoded path → buffer text (wins over
@@ -67,17 +68,142 @@ struct State {
 }
 
 /// The message loop, over any pair of streams so a test can drive it.
-fn serve(reader: &mut impl BufRead, writer: &mut impl Write) -> ExitCode {
+///
+/// A reader thread frames stdin into a channel, so the loop can see
+/// what else has arrived while it was busy: a check of a large seed
+/// takes seconds, and a burst of keystrokes must cost one check, not
+/// one per event (F.40 phase 2.4). Each turn takes everything queued and
+/// works through it by `next_steps`.
+fn serve(reader: impl BufRead + Send + 'static, writer: &mut impl Write) -> ExitCode {
     install_panic_capture();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = reader;
+        while let Some(msg) = read_message(&mut reader) {
+            if tx.send(msg).is_err() {
+                break;
+            }
+        }
+    });
     let mut state = State::default();
-    while let Some(msg) = read_message(reader) {
-        match contained(|| dispatch(&msg, &mut state, writer)) {
-            Ok(Some(code)) => return code,
-            Ok(None) => {}
-            Err(why) => report_internal_error(writer, &msg, &why),
+    let mut queue = VecDeque::new();
+    loop {
+        if queue.is_empty() {
+            match rx.recv() {
+                Ok(msg) => queue.push_back(msg),
+                Err(_) => return ExitCode::SUCCESS, // EOF — client went away
+            }
+        }
+        queue.extend(rx.try_iter());
+        for step in next_steps(&mut queue) {
+            if let Some(code) = run_step(step, &mut state, writer) {
+                return code;
+            }
         }
     }
-    ExitCode::SUCCESS // EOF — client went away
+}
+
+/// What a document event does to its buffer.
+#[derive(Debug, PartialEq)]
+enum Buffer {
+    /// The buffer's text is now this (open, change, a save with text).
+    Set(String),
+    /// Untouched (a save without text: the disk copy is what changed).
+    Keep,
+    /// Gone (close): the file reads from the disk again.
+    Remove,
+}
+
+/// One unit of the loop's work.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// A document event's buffer update, without its check.
+    Apply(PathBuf, Buffer),
+    /// One publish pass after a run of updates: the seeds of these files
+    /// (the run's distinct files, the latest first), then every other
+    /// open seed — `check_open_seeds`.
+    Publish(Vec<PathBuf>),
+    /// Any other message, dispatched as it arrived.
+    Handle(Value),
+}
+
+/// The steps for the front of `queue`. A document event there starts a
+/// run: it and every document event queued right behind it are applied
+/// in order, then ONE publish pass checks what the run changed. The run
+/// stops at the first message that is not a document event — a request,
+/// above all — which is left at the front for the next call.
+///
+/// The invariant: a request is answered after every publish of the
+/// check the notifications before it caused, and messages are never
+/// reordered. The run cannot reach past a request, because the request
+/// must see the buffers as they stood when it was sent (a hover on text
+/// typed after it would answer the wrong question) and its answer is
+/// the client's fence for those publishes. Nor past any other
+/// notification — `exit` ends the session, and whatever else there is
+/// runs where it was sent. Everything a run collapses is a check whose
+/// publishes the next pass of the same run would overwrite.
+fn next_steps(queue: &mut VecDeque<Value>) -> Vec<Step> {
+    let Some(first) = queue.pop_front() else { return Vec::new() };
+    let Some(event) = document_event(&first) else { return vec![Step::Handle(first)] };
+    let mut steps = vec![Step::Apply(event.0, event.1)];
+    while let Some(event) = queue.front().and_then(document_event) {
+        queue.pop_front();
+        steps.push(Step::Apply(event.0, event.1));
+    }
+    let mut files: Vec<PathBuf> = Vec::new();
+    for step in steps.iter().rev() {
+        if let Step::Apply(path, _) = step {
+            if !files.contains(path) {
+                files.push(path.clone());
+            }
+        }
+    }
+    steps.push(Step::Publish(files));
+    steps
+}
+
+/// A document event's file and what it does to the buffer; `None` for
+/// any other message (and for an event missing what its arm reads).
+fn document_event(msg: &Value) -> Option<(PathBuf, Buffer)> {
+    match msg.get("method").and_then(Value::as_str)? {
+        "textDocument/didOpen" => did_open_params(msg).map(|(p, t)| (p, Buffer::Set(t))),
+        "textDocument/didChange" => did_change_params(msg).map(|(p, t)| (p, Buffer::Set(t))),
+        // includeText is requested; use it when present (guards against
+        // a stale disk read racing the editor's write).
+        "textDocument/didSave" => {
+            let path = text_document_path(msg)?;
+            let text = msg.pointer("/params/text").and_then(Value::as_str);
+            Some((path, text.map_or(Buffer::Keep, |t| Buffer::Set(t.to_string()))))
+        }
+        // The pass re-checks from disk, so the remaining files' diagnostics
+        // reflect the on-disk truth again — in this seed and in every open
+        // seed that imported the buffer.
+        "textDocument/didClose" => text_document_path(msg).map(|p| (p, Buffer::Remove)),
+        _ => None,
+    }
+}
+
+/// Carry out one step. `Some` ends the session with that exit code.
+fn run_step(step: Step, state: &mut State, writer: &mut impl Write) -> Option<ExitCode> {
+    match step {
+        Step::Apply(path, Buffer::Set(text)) => {
+            state.overlays.insert(path, text);
+        }
+        Step::Apply(_, Buffer::Keep) => {}
+        Step::Apply(path, Buffer::Remove) => {
+            state.overlays.remove(&path);
+        }
+        Step::Publish(files) => {
+            if let Err(why) = contained(|| check_open_seeds(writer, &files, state)) {
+                publish_internal_error(writer, &files[0], &why);
+            }
+        }
+        Step::Handle(msg) => match contained(|| dispatch(&msg, state, writer)) {
+            Ok(code) => return code,
+            Err(why) => report_internal_error(writer, &msg, &why),
+        },
+    }
+    None
 }
 
 // ---- panic containment ------------------------------------------------
@@ -147,44 +273,36 @@ fn internal_error_message(why: &str) -> String {
     )
 }
 
-/// Tell the client about a contained panic without ending the session.
-/// A document event (open, change, save, close) publishes one
-/// diagnostic on that file, the place the editor was already looking; a
+/// Tell the client about a contained panic in a publish pass without
+/// ending the session: one diagnostic on the file whose event started
+/// the pass, the place the editor was already looking. The publish
+/// replaces the file's diagnostics, the right trade for the check that
+/// just failed.
+fn publish_internal_error(writer: &mut impl Write, path: &Path, why: &str) {
+    notify(
+        writer,
+        "textDocument/publishDiagnostics",
+        json!({
+            "uri": path_to_uri(path),
+            "diagnostics": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "severity": 1,
+                "source": "hale",
+                "message": internal_error_message(why)
+            }]
+        }),
+    );
+}
+
+/// Tell the client about a contained panic in a message's handler: a
 /// request answers with a JSON-RPC internal error, so the client is not
-/// left waiting. A publish would replace the file's diagnostics, which
-/// is the right trade for the check that just failed and the wrong one
-/// for a hover.
+/// left waiting (a publish would be the wrong trade for a hover); a
+/// notification has no one to answer.
 fn report_internal_error(writer: &mut impl Write, msg: &Value, why: &str) {
     let message = internal_error_message(why);
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
-    let document_event = matches!(
-        method,
-        "textDocument/didOpen"
-            | "textDocument/didChange"
-            | "textDocument/didSave"
-            | "textDocument/didClose"
-    );
-    if document_event {
-        if let Some(path) = text_document_path(msg) {
-            notify(
-                writer,
-                "textDocument/publishDiagnostics",
-                json!({
-                    "uri": path_to_uri(&path),
-                    "diagnostics": [{
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": 0, "character": 1 }
-                        },
-                        "severity": 1,
-                        "source": "hale",
-                        "message": message
-                    }]
-                }),
-            );
-        }
-        return;
-    }
     if let Some(id) = msg.get("id").cloned() {
         send(
             writer,
@@ -252,45 +370,8 @@ fn dispatch(
                     ExitCode::from(1)
                 });
             }
-            "textDocument/didOpen" => {
-                if let Some((path, text)) = did_open_params(&msg) {
-                    overlays.insert(path.clone(), text);
-                    check_open_seeds(&mut writer, &path, state);
-                }
-            }
-            "textDocument/didChange" => {
-                if let Some((path, text)) = did_change_params(&msg) {
-                    #[cfg(test)]
-                    if text.contains("hale-lsp-test-panic") {
-                        panic!("injected checker panic");
-                    }
-                    overlays.insert(path.clone(), text);
-                    check_open_seeds(&mut writer, &path, state);
-                }
-            }
-            "textDocument/didSave" => {
-                if let Some(path) = text_document_path(&msg) {
-                    // includeText is requested; use it when present
-                    // (guards against a stale disk read racing the
-                    // editor's write).
-                    if let Some(text) = msg
-                        .pointer("/params/text")
-                        .and_then(Value::as_str)
-                    {
-                        overlays.insert(path.clone(), text.to_string());
-                    }
-                    check_open_seeds(&mut writer, &path, state);
-                }
-            }
-            "textDocument/didClose" => {
-                if let Some(path) = text_document_path(&msg) {
-                    overlays.remove(&path);
-                    // Re-check from disk so remaining files' diags
-                    // reflect the on-disk truth again — in this seed and
-                    // in every open seed that imported the buffer.
-                    check_open_seeds(&mut writer, &path, state);
-                }
-            }
+            // The document events never reach here: `next_steps` applies
+            // them and runs their publish pass.
             "textDocument/completion" => {
                 let result = completion(&msg, &overlays)
                     .unwrap_or_else(|| json!({
@@ -500,23 +581,28 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
             .starts_with("stdlib-")
 }
 
-/// A document event for `changed`: check its seed, then every OTHER
-/// seed an open buffer sits in, each through `check_and_publish`. The
-/// snapshot reads an imported file from its buffer, so editing a
-/// library's buffer changes the program of every open seed that imports
-/// it, and closing that buffer changes it again (the importer then
-/// reads the disk copy). Every open seed is rechecked, not only the
-/// ones that import `changed`: at ~10 ms a load, a reverse-dependency
-/// index would buy nothing yet.
-fn check_open_seeds(writer: &mut impl Write, changed: &Path, state: &mut State) {
-    // (seed key, the file it is checked through): `changed`'s first,
-    // then each other seed through one of its open buffers, so a
+/// The publish pass of a run of document events that touched `changed`
+/// (`next_steps`; the latest first): check each of their seeds, then
+/// every OTHER seed an open buffer sits in, each through
+/// `check_and_publish`. The snapshot reads an imported file from its
+/// buffer, so editing a library's buffer changes the program of every
+/// open seed that imports it, and closing that buffer changes it again
+/// (the importer then reads the disk copy). Every open seed is
+/// rechecked, not only the ones that import `changed`: a
+/// reverse-dependency index is phase 3's incremental load to build. A
+/// closed buffer's seed is checked through the closed file, since it may
+/// have no open buffer left to be found by.
+fn check_open_seeds(writer: &mut impl Write, changed: &[PathBuf], state: &mut State) {
+    // Test-only: a check that panics, for the containment test.
+    #[cfg(test)]
+    if changed.iter().any(|p| state.overlays.get(p).is_some_and(|t| t.contains("hale-lsp-test-panic"))) {
+        panic!("injected checker panic");
+    }
+    // (seed key, the file it is checked through): the changed files'
+    // first, then each other seed through one of its open buffers, so a
     // file-level diagnostic lands on a file the editor has open.
-    let mut seeds = vec![(seed_key(changed), changed.to_path_buf())];
-    for path in state.overlays.keys() {
-        if is_stdlib_cache_path(path) {
-            continue;
-        }
+    let mut seeds: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in changed.iter().chain(state.overlays.keys().filter(|p| !is_stdlib_cache_path(p))) {
         let key = seed_key(path);
         if !seeds.iter().any(|(k, _)| *k == key) {
             seeds.push((key, path.clone()));
@@ -2672,6 +2758,41 @@ fn main() { App { }; }\n";
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- a run of document events -------------------------------------
+
+    /// F.40 phase 2.4: the document events queued at the front are
+    /// applied in order and cost ONE publish pass, over the files they
+    /// touched (the latest first); the request behind them is handled
+    /// after that pass and before anything queued after it, which starts
+    /// a run of its own.
+    #[test]
+    fn a_run_of_document_events_costs_one_pass_and_stops_at_a_request() {
+        let (a, b) = (PathBuf::from("/seed/a.hl"), PathBuf::from("/seed/b.hl"));
+        let change = |path: &Path, text: &str| json!({
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": path_to_uri(path) },
+                "contentChanges": [{ "text": text }]
+            }
+        });
+        let hover = request(7, "textDocument/hover");
+        let mut queue = VecDeque::from([
+            change(&a, "1"),
+            change(&a, "2"),
+            change(&b, "1"),
+            hover.clone(),
+            change(&a, "3"),
+        ]);
+        let set = |p: &PathBuf, t: &str| Step::Apply(p.clone(), Buffer::Set(t.to_string()));
+        assert_eq!(
+            next_steps(&mut queue),
+            vec![set(&a, "1"), set(&a, "2"), set(&b, "1"), Step::Publish(vec![b.clone(), a.clone()])]
+        );
+        assert_eq!(next_steps(&mut queue), vec![Step::Handle(hover)]);
+        assert_eq!(next_steps(&mut queue), vec![set(&a, "3"), Step::Publish(vec![a.clone()])]);
+        assert_eq!(next_steps(&mut queue), vec![]);
+    }
+
     // ---- panic containment --------------------------------------------
 
     fn frame(v: Value) -> Vec<u8> {
@@ -2683,9 +2804,8 @@ fn main() { App { }; }\n";
     /// it ended.
     fn run_session(messages: Vec<Value>) -> (Vec<Value>, String) {
         let input: Vec<u8> = messages.into_iter().flat_map(frame).collect();
-        let mut reader = std::io::Cursor::new(input);
         let mut out: Vec<u8> = Vec::new();
-        let code = serve(&mut reader, &mut out);
+        let code = serve(std::io::Cursor::new(input), &mut out);
         let text = String::from_utf8(out).expect("utf-8 output");
         let mut replies = Vec::new();
         let mut rest = text.as_str();
@@ -2739,7 +2859,8 @@ fn main() { App { }; }\n";
     }
 
     /// A document event whose check panics publishes ONE diagnostic on
-    /// that file, and the next event is checked normally.
+    /// that file, and the next event is checked normally. A request sits
+    /// between the two changes, so a run cannot take both into one pass.
     #[test]
     fn a_check_that_panics_publishes_one_diagnostic_and_the_server_lives() {
         let dir = std::env::temp_dir().join(format!("hale_lsp_panic_{}", std::process::id()));
@@ -2752,6 +2873,7 @@ fn main() { App { }; }\n";
         });
         let (replies, code) = run_session(vec![
             change("fn main() { // hale-lsp-test-panic\n"),
+            request(8, "hale/testFence"),
             change("fn main() {\n    let x = 1;\n}\n"),
             request(9, "shutdown"),
             json!({ "jsonrpc": "2.0", "method": "exit" }),
