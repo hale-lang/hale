@@ -1495,6 +1495,74 @@ zero_copy binding produces.
   enclosing `fallible` frame triggers `lotus_root_panic` —
   the runtime's only value-error escape valve. See
   `spec/semantics.md` § "Process exit".
+- **Decision L0-1 (F.40 phase 3, 2026-10-01): handlers run only
+  on the queue owner's thread.** A child's failure is delivered
+  to its owner's `on_failure` on the owner's execution domain,
+  never on the failing child's thread. The owner's execution
+  domain is the thread that drains the owner's queue: `main` for
+  a locus on the main pool, the pool's worker for a locus placed
+  on a cooperative pool, and the locus's own thread for a pinned
+  one (§ "Owner-executed handlers").
+  - When the child fails on that same thread, the handler is
+    called in place (§ Scheduler, "Failure-traversal": a stack
+    walk).
+  - When the child fails on another thread, the failure travels
+    to the owner's queue as a typed cell (§ Scheduler: "the
+    failure is delivered as a typed bus message to the parent's
+    scheduler, which dispatches to `on_failure`"). This is the
+    path a cross-thread publish takes, and the cross-pool accept
+    handoff takes it too.
+  - The failing child and its copied violation stay alive until
+    the handler has returned. The child waits for the handler's
+    decision before it restarts, carries on or is reclaimed,
+    exactly as a held failure is waited for today
+    (`lotus_failure_await`).
+  - A failure held while the owner's params are open is still
+    delivered when they settle (`spec/semantics.md` §
+    "on_failure(c, err)").
+  - Transport loss already follows this rule. Its dispatcher runs
+    from the top of `lotus_bus_queue_drain`, "owner thread, the
+    only place failure handlers may run" (§ "Bus message
+    router").
+
+  **What the runtime does today, where it differs.**
+  `emit_on_failure_call` (`crates/hale-codegen/src/channels/mod.rs`)
+  asks `lotus_failure_hold` first. The runtime holds a failure only
+  while the parent's params are open; once they have settled, the
+  handler is called in place, on whatever thread raised the
+  failure. A failure raised off the owner's thread therefore runs
+  the owner's handler beside the owner's own code, on a second
+  thread inside one locus. Today that happens:
+  - on a pinned child's thread, for a `violate` in its `run()` or
+    a closure after `run()` returns. The second failure in
+    `tests/hale/pinned_restart_test.hl` is this case: `App`'s
+    handler writes `self.fired` on the pump's thread while
+    `App.run()` reads it on `main`;
+  - on a pool worker, for a `violate` in a pool-placed child's
+    `run()`;
+  - on a subscriber's queue owner, for a closure that fires after
+    one of the subscriber's handlers;
+  - on the reclaiming worker, for a dissolve-epoch closure under a
+    flow child's run-completion reclaim.
+
+  `notes/f40-lifecycle-inventory.md` lists these sites as rows
+  C36–C40. No test asserts the thread a handler runs on.
+
+  **Regression (added with the implementation, F.40 phase 3
+  L5).** `lifecycle_flow
+  failure_delivery_domain::a_childs_failure_runs_on_its_owners_thread`
+  (`crates/hale-codegen/tests/failure_delivery_domain.rs`).
+  The owner records `pthread_self` in its own `run()` and again in
+  its handler; the test asserts the two are equal for:
+  - a pinned child's `violate` after the owner settled;
+  - a pool-placed child's `violate` in `run()`;
+  - a pool subscriber's tick-epoch closure after a handler;
+  - a pinned child failing during the owner's params loop. This
+    case is held and delivered at settle, and is the control.
+
+  Each case also asserts that the restart the handler asks for
+  still takes effect, and the test runs under ASan with
+  heap-backed child fields.
 
 ### Native observation emission (iris P4, 2026-07-27)
 
