@@ -221,6 +221,7 @@ const OWNERSHIP_GRAPH: &str = "crates/hale-types/src/ownership_graph.rs";
 const TY_OWN: &str = "crates/hale-types/src/ownership.rs";
 const TY_MANGLE: &str = "crates/hale-types/src/mangle.rs";
 const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
+const QUALIFIED_SUBJECTS: &str = "crates/hale-types/src/qualified_subjects.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
@@ -317,22 +318,22 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["import aliases", "the seed cache", "hale_stdlib::PATH_RENAMES", "declaration names"],
         producer: Some(site(IMPORTS, "resolve_imports")),
         legacy: &[
-            legacy(TY_RESOLVED, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in the resolved-program step's clone", "one resolution, shared"),
-            legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
             legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("lsp (hover, definition, references)")],
         invariants: &[
             "a name resolves once per snapshot; the checker and lowering see the same target",
             "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name; the checker follows no alias of its own, so a fragment checked without the sequence is not resolved a second way",
+            "a qualified bus subject (`subscribe` / `publish alias::Topic`, `alias::Topic <- v`, a `bindings` entry) is resolved once, in the desugar sequence before the check (`resolve_qualified_bus_subjects`), to the single-segment topic the imported declaration ends up at: the checker (`resolve_bus_subject` keeps the leaf and an `Unknown` payload only for a path no rename names), the model and lowering read the rewritten program, and the resolved-program step does not resolve it again",
             "a library is named once per load (`AliasScopes::name_library`), by its canonical path, and no two libraries of a load share a name: the symbols an imported library is mangled under are its own",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-cli/tests/import_library_names.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs"],
+        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-cli/tests/import_library_names.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs", "crates/hale-types/tests/qualified_subjects.rs", "crates/hale-cli/tests/import_qualified_topic.rs"],
         spec: &["spec/semantics.md § Cross-seed namespace resolution", "spec/projects.md"],
-        owned: &[site(TY_MANGLE, "resolve_construction_aliases"), site(IMPORTS, "name_library")],
+        owned: &[site(TY_MANGLE, "resolve_construction_aliases"), site(IMPORTS, "name_library"), site(QUALIFIED_SUBJECTS, "resolve_qualified_bus_subjects")],
         seams: &[
             Seam { symbol: "resolve_construction_aliases(", allowed: &[(TY_MANGLE, 1), (DESUGAR_SEQ, 1)] },
+            Seam { symbol: "resolve_qualified_bus_subjects(", allowed: &[(QUALIFIED_SUBJECTS, 1), (DESUGAR_SEQ, 1)] },
             Seam { symbol: "name_library(", allowed: &[(IMPORTS, 2)] },
         ],
     },
@@ -341,7 +342,7 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Desugar,
-        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
+        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, qualified bus subjects, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
         inputs: &["the merged program", "--api / --env (roles)", "the cross-seed rename table"],
         producer: Some(site(DESUGAR_SEQ, "desugar_before_check")),
         legacy: &[
@@ -352,7 +353,7 @@ pub const FAMILIES: &[Family] = &[
             "one order, run once per snapshot, before the first law is judged",
             "the sequence is called from the snapshot's load (`Snapshot::load`, `Snapshot::from_program`) and from `check_program` (the test entry), and from nowhere else: every entry point runs it before it mints its snapshot; the bundled stdlib goes through the same passes (`bundled_stdlib`)",
             "codegen never re-desugars",
-            "the topic-reference and intra-locus rewrites are lowering's, after the check, in `resolve_program` (with the qualified bus subjects they read), and each is recorded as a relation: `TopicRewrite` rows (`topic_rewrites`, and `written_topics` on the bus graph's subjects) and `IntraLocusRewrite` rows (`intra_locus`, and `direct_sends`); `resolve_program` otherwise appends the stdlib, mints and derives the tables",
+            "the topic-reference and intra-locus rewrites are lowering's, after the check, in `resolve_program`, and each is recorded as a relation: `TopicRewrite` rows (`topic_rewrites`, and `written_topics` on the bus graph's subjects) and `IntraLocusRewrite` rows (`intra_locus`, and `direct_sends`); `resolve_program` otherwise appends the stdlib, mints and derives the tables",
             "a desugar that copies a subtree clears the copy's identities (`hale_syntax::sites::clear_ids_in_*`): a verb mints after the sequence and the resolved program mints again after its rewrites, and two sites with one id is a panic; every corpus program is minted first and resolved second by a test",
             "the omitted `run` is synthesized in the sequence, before the check, and marked `LifecycleDecl::synthesized`: a rule about the run's body reads the empty body and answers both spellings alike (spec semantics.md § run()); what lists the hooks the author wrote (the application model, whose function and phase tables are the artifact's identity, the allocation summary, the effect contracts, the mint's `OmittedRun` origin) reads the marker, never the absence of author text, and a synthesized `run` moves no artifact and no diagnostic",
         ],

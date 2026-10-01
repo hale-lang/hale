@@ -23,6 +23,11 @@
 //!    declaration the alias chain ends at
 //!    ([`crate::mangle::resolve_construction_aliases`]), over the
 //!    whole bundle at once.
+//!    4b. qualified bus subjects: `subscribe alias::Topic`,
+//!    `publish alias::Topic`, `alias::Topic <- v` and a `bindings`
+//!    entry name the single-segment topic the imported declaration
+//!    ends up at ([`crate::qualified_subjects`]), so the checker and
+//!    lowering read one resolution of the path.
 //! 5. the omitted `run`: a locus that declares no `run` gets an empty
 //!    one (GH #735, spec `semantics.md` § `run()`: the two spellings
 //!    are the same program), carrying its locus's span, so the checker
@@ -100,6 +105,9 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         normalize_unit_return_annotations(&mut p.items);
     }
     crate::mangle::resolve_construction_aliases(programs, context, seq.import_renames);
+    for p in programs.iter_mut() {
+        crate::qualified_subjects::resolve_qualified_bus_subjects(p, seq.import_renames);
+    }
     for p in programs.iter_mut() {
         hale_syntax::desugar::desugar_omitted_run(p);
     }

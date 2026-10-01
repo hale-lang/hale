@@ -77,7 +77,7 @@ hale-ts-shim  staticlib; no dependents; linked by path
    `--api` / `--env` binding), then the one desugar sequence every
    entry point runs before it mints and checks,
    `hale_types::desugar_sequence::desugar_before_check`: JSON parsers,
-   the api surface, unit returns, construction aliases, the omitted
+   the api surface, unit returns, construction aliases, qualified bus subjects, the omitted
    `run` (marked `LifecycleDecl::synthesized`), repr accessors.
 4. **Resolve + check**: `hale_types::check_bundle_opts_scoped`
    (`hale-types/src/lib.rs`): `resolve::build_top_scope`, then
@@ -100,8 +100,7 @@ hale-ts-shim  staticlib; no dependents; linked by path
 8. **Runtime**: `crates/hale-codegen/runtime/*.c`, compiled once per
    (source, flags) key into a cache, linked by clang.
 
-Inside `resolve_program` (hale-types), in order:
-`resolve_qualified_bus_subjects`; the two lowering rewrites in
+Inside `resolve_program` (hale-types), in order: the two lowering rewrites in
 `hale-syntax/src/desugar.rs`, `desugar_intra_locus_topics` and
 `desugar_topics`, **which run after check, so the checker sees topic
 references as written**: they are not desugars (each erases a

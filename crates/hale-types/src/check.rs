@@ -13178,16 +13178,17 @@ impl<'a> Checker<'a> {
         let subject_str = match subject {
             Expr::Literal(Literal::String(s), _) => Some(s.clone()),
             Expr::Ident(id) => self.top.topics.named(&id.name).map(|_| id.name.clone()),
-            // A7 (G16): cross-seed `alias::Topic <- payload;`. The
-            // typechecker can't resolve cross-seed names directly
-            // (mangling happens at the codegen-side pre-pass), so
-            // we use the leaf segment as the subject — mirroring
-            // resolve_bus_subject's handling of QualifiedTopic in
-            // subscribe/publish declarations, which also stores the
-            // leaf name. The locus's bus_publishes entry for this
-            // topic has payload=Unknown, so the assignability check
-            // below is permissive; the codegen-side mangle resolves
-            // the full path and binds the wire subject.
+            // A7 (G16): cross-seed `alias::Topic <- payload;`. A path
+            // the build's renames name was resolved to the topic's
+            // own name by the desugar sequence and is the `Ident` arm
+            // above; one that reaches here names nothing this bundle
+            // knows (an unresolved import), so we use the leaf
+            // segment as the subject — mirroring resolve_bus_subject's
+            // handling of QualifiedTopic in subscribe/publish
+            // declarations, which also stores the leaf name. The
+            // locus's bus_publishes entry for this topic has
+            // payload=Unknown, so the assignability check below is
+            // permissive.
             Expr::Path(qn) if qn.segments.len() > 1 => {
                 qn.segments.last().map(|s| s.name.clone())
             }
