@@ -19,7 +19,7 @@ type Job = w::Worker;
 locus Manager<T> {
     params { released: Int = 0; ran: Int = 0; }
     accept(c: T) { }
-    release(c: T) {
+    release (c: T) {
         self.released = self.released + 1;
         self.ran = c.ran;
     }
