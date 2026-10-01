@@ -1,0 +1,302 @@
+# F.40 phase 3, L0 — the lifecycle inventory
+
+**What this is.** Step L0 of F.40 phase 3 (hale-lang/hale#1212; the plan's § 3 Line L). It lists, in one table, every lifecycle action that the compiler emits or the runtime performs. Each row gives:
+
+- who owns the action
+- which thread runs it today
+- what must have completed first
+- what must stay alive across it
+- when it is complete
+- what `spec/runtime.md` (or `spec/semantics.md`, where the runtime spec is silent) says about it
+- whether the two agree
+
+The step is read-only on code and was measured at `main` b0cf6103. Line numbers refer to that tree. L1's obligation schema is fixed against this table. L5 adds the regressions named here.
+
+**Domains.** A row's domain is the thread that executes the action, read from the code:
+
+- **IT**: the instantiating thread, the one running the code that contains the literal. For a field default this is the thread instantiating the parent; for a literal in `fn main` it is `main`.
+- **main**: the process's main thread, which owns the cooperative bus queue (`lotus_bus_queue_create` records it, lotus_arena.c:6639).
+- **pool worker**: the worker thread of a cooperative pool (`cooperative(pool = X)`, X ≠ main).
+- **pinned thread**: the thread a `pinned` locus's instantiation starts (`__pinned_main_<L>`).
+- **queue owner**: whichever of main, a pool worker or a pinned thread drains the queue a locus's cells land on. This is the **owner's execution domain** in the decision below.
+- **teardown thread**: whichever thread runs the frame or cascade that tears the locus down.
+
+**Abbreviations.** Paths are under `crates/hale-codegen/`:
+
+- `inst` is `src/locus/instantiation.rs`
+- `cg` is `src/codegen.rs`
+- `dis` is `src/locus/dissolve.rs`
+- `rst` is `src/locus/restart.rs`
+- `ch` is `src/channels/mod.rs`
+- `A` is `runtime/lotus_arena.c`
+- `O` is `runtime/lotus_obs.c`
+
+Row ids `C*` are codegen sites and `R*` are runtime entry points. § Counts lists them against the registry.
+
+## The inventory
+
+| # | action | owner | domain today | prerequisites | stays alive across it | complete when | `spec` says | agree? |
+|---|---|---|---|---|---|---|---|---|
+| C1 | init: struct, arena, slots, synthetic fields | `inst` `lower_locus_instantiation_inner`: struct 736–964, arena 1110–1350, slots 1501–2126, synthetic fields 2150–2191 | IT | owner resolved (`inst` 164–420); for an accepted, bubbled or field-owned child, the owner's arena exists | owner's arena: the struct lives in it for accepted, bubbled and field-owned children | `__arena` stored; slots built; `__locus_ref_owned_mask` = 0 | semantics.md § Locus instantiation, step 2: accept "runs first; if it rejects, instantiation fails (no region allocated)"; step 3: "Region allocated as a sub-region of the **owner's** region" | no: the region exists before accept runs (C7) |
+| C2 | accept, cross-pool (bubble handoff) | `inst` 480–511 → `emit_crosspool_bubble_spawn` `inst`:5233 | IT evaluates the params and posts a create cell; birth, accept and run happen on the owner's queue (its mailbox or main's bus queue) | the owner's singleton exists | the payload copy in the cell | statement returns null (fire-and-forget); done when the owner drains the cell | runtime.md § Lifecycle, Interest-based ownership: "the child is born on the owner's thread and reclaimed by the owner's same-thread cascade" | yes |
+| C3 | params bracket decision | `inst`:2347 `settles_failures` | compile time | the parent's handler table (`LocusInfo::failure_handlers`) | — | open (R1) and settle (R5) are emitted only when there is a handler AND (a non-value field OR an `Expr` default) | semantics.md § on_failure: "The bracket costs a locus nothing unless it declares `on_failure` and holds a locus-typed field or computes a default" | yes |
+| C4 | entry identity at birth | `inst`:2201 `let is_main_locus`; read at 2371 (`lotus.main.self`), 2461 and 2534 (field placement, replicas), 4586 (replay ingress), 4856 (eager join) | compile time (type-name comparison) | `deployment.main_locus_name` | — | gates the main-only steps of C5, C12, C13 | silent (registry `entrypoint`: four definitions of main) | silent (E0 settles it) |
+| C5 | params: children born inline | `inst` 2455–3118 | IT. Each child is born recursively on IT. A pinned field's thread starts here (2534, 4268). A pool field's `run()` is posted here | R1, when bracketed; earlier fields stored | the parent struct and arena (defaults read earlier siblings) | every field stored; owned bits and `__owned_child_reclaim_<f>` recorded (3031–3111) | semantics.md § Birth order is load-bearing: "A parent births its `params` fields **in declaration order**, one at a time" | yes |
+| C6 | failure route bound at birth | `inst` 3460–3485 (`__parent_self` / `__parent_on_failure` from C34) | IT | params settled | — | the route is stored in the struct | semantics.md § on_failure, Which locus is the parent: "A locus built elsewhere and passed in by name … keeps the route of the place it was built" | yes |
+| C7 | accept (same thread) | `inst` 3591–3726: `__owner_self`/`__owner_release`, `owner.accept(owner, child)` 3654, then R6 | IT (the same pool as the owner, by the accept rule) | struct, arena and params settled; the owner's `accept_param` is L | owner and child | accept returned; child pushed. The call's result is not read, so accept cannot reject | semantics.md § accept(c): "Runs **before** child c's region is allocated (per F.7)" and "Panic / return error (reject) — child instantiation fails." | no: runs after the region and params; there is no reject |
+| C8 | subscribe | `inst` 3737–3825 (non-pinned; pinned register with their mailbox in C9) | IT registers; delivery is on the pool tag the registration records | params settled; accept returned | — | entries in the router | semantics.md § Locus instantiation, step 4: "`birth(args)` runs synchronously." Step 5: "Bus subscriptions wire up." | no: registration precedes `birth()` (C10) |
+| C9 | run start, pinned (and the pinned locus's whole life) | `inst` 3870–4384. On IT: mailbox create, `pthread_create` 4268, frame push 4367. On the pinned thread, `__pinned_main_<L>` 3998–4245: birth 4080, run loop 4103, tick/duration wrappers 4120, await phase 0 4141, restart loop, mailbox loop 4169, `drain()` and `dissolve()` 4224 | IT, then the pinned thread | this child's own params loop and settle, on IT, before the thread starts | the owner's arena holds the pinned struct until the flush joins it (C18) | thread function returns after `dissolve()`; C18 joins it and destroys the arena | runtime.md § Lifecycle, `drain()` cascades depth-first: "a child's own `LocusRef` fields drain before the child does". semantics.md step 7: pinned "means handed to that thread … and the instantiation returns immediately" | no: the pinned locus's own field children are never drained (no field drains here; C18 skips them for a pinned entry). Birth runs after the instantiation has returned (step 4 says synchronously) |
+| C10 | birth | `inst` 4394–4475: `birth()` 4394, `__birth_closures` 4405, `birth_check` 4439 | IT, for pool-placed loci too | params settled; accept returned; subscriptions registered | — | `birth()` returned; birth-epoch failures raised (C37, C38) and held if the parent is open | semantics.md § birth(): "Failure during birth: region freed, parent's `on_failure(self, StructuralFailure { ... })` invoked". runtime.md § Placement, Phase 4 v1 limit: "Lifecycle methods (`birth` / `run` / `dissolve` / `accept`) still run on the main thread for cooperative-pool loci" | no: no `StructuralFailure` exists in the compiler. A birth failure is a `ClosureViolation`, and the region is kept for the handler and for a restart |
+| C11 | await before run (phase 1) | `inst` 4484–4521 (R4 with `__resume_<L>`, phase 1) | IT | birth, birth closures and `birth_check` done | the child | R4 returns: 0 = decide now; 1 = waited; 2 = `run()` skipped, and R5 resumes the child at settle | semantics.md § on_failure: "a child whose birth failed does not start `run()` until its handler has returned" | yes |
+| C12 | run start, cooperative | `inst` 4526–4791. Pool chosen by R17 (a placed field) or R18 (owned beyond scope), else null. Non-null: R19 posts `__coop_pool_run_<L>` (4687). Null: the wrapper is called inline (4720). Tick and duration closures 4747–4785 | `run()`: the pool worker on the post path, IT inline. **Tick and duration closures: IT, right after the post or the inline call** | C11 decided; not quarantined (4547) | the child, until run end (C26) | inline: the wrapper returned. Post: the cell is enqueued, so the statement completes before `run()` starts | semantics.md step 7: "For a locus placed `pinned` or on a cooperative pool other than `main`, 'scheduled' means handed to that thread or worker". runtime.md § Placement, Phase 4 v1 limit: "`run` … still run[s] on the main thread for cooperative-pool loci" | no: `run()` is on the worker (step 7 agrees, Phase 4 v1 limit does not). The post-run tick closures run on IT concurrently with `run()` on the worker, and on the inline path after C26 may already have reclaimed a flow child |
+| C13 | **teardown spine 1**: eager (statement-position literal) | `inst` 4837–4983: main only (4856) R35 (not wasm), R20, R34; own pinned children via C18 (4885–4905); `emit_reclaimed_child_skip`; C30; `drain()`; `__dissolve_closures`; `dissolve()`; C28; C31; C33 | IT | `run()` returned inline (or was posted); not deferred (4827–4836) | own pinned children until joined; children's arenas until the cascade passes them | C33 nulls `__arena` | runtime.md § Lifecycle, Teardown delivery contract: "A dissolving parent joins its own **pinned** children … BEFORE cascading its field children's drain/dissolve"; rule (b): "the **main locus joins all pool workers before dissolving its `params` fields** — whether it dissolves eagerly or …" | yes (spine differences in § The five teardown spines) |
+| C14 | deferred registration | `inst` 5006–5051: `defer_dissolve_slot` or a reused slot (GH #815); own pinned entries moved after the locus's own entry | IT | `defer` (has subscriptions, let-bound, returned, accepted, field-owned, bubbled) | the slot until the flush | the frame entry pushed | semantics.md § Dissolve timing rules: let-bound "birth + run + drain fire at the construction site. Dissolve is **deferred**". runtime.md § Teardown delivery contract: "A deferred parent's own pinned entries are now re-ordered after its own frame entry" | no: drain is deferred with dissolve to the flush (C18), not fired at construction. Pinned re-order: yes |
+| C15 | loop-slot reuse teardown | `cg`:6865 `emit_deferred_slot_reuse_teardown` → C18 with no tid (called at `inst` 991–1006) | IT, at the next iteration's instantiation | the previous occupant was instantiated (non-NULL slot) | — | the previous occupant torn down before the new one is built | semantics.md § Dissolve timing rules (GH #815, a let-bound locus in a loop dissolves every iteration) | yes |
+| C16 | frame flush order | `cg`:6992 `flush_dissolve_frame_kind` → `cg`:7045 `emit_frame_teardown`: pre-drain 7067; wait-abort 7074 (C17); subscription-less pinned entries first, in reverse (7094–7105); the rest in reverse push order | the thread exiting the fn or method body (`main` for `fn main`) | the body fell through or returned | every entry until its own turn | every entry's C18 has run | runtime.md § Teardown delivery contract: "the fn-exit flush likewise joins subscription-less pinned entries before any cooperative entry's teardown" | yes |
+| C17 | wait-abort gate | `cg`:7074, the `in_main` flag (registry `entrypoint` · `in_main`) | main | in `fn main`'s flush | — | R34 emitted before the flush's pinned joins | runtime.md has no sentence. The R34 doc comment: "Called at MAIN teardown … BEFORE pinned children are joined" | silent |
+| C18 | **per-entry teardown** (the deferred spine) | `cg`:7126 `emit_deferred_entry_teardown`: NULL-slot and NULL-arena skips; C19; pinned: R26, `pthread_join`, R27 (7260–7339); cooperative: C30, `drain()`, `__dissolve_closures`, `dissolve()` (7340–7390); then C28, C31, C33, then a drain (7424) | the teardown thread (the flush's) | instantiation reached on this path (non-NULL slot) | pinned: its struct in the owner's arena until after the join | `__arena` NULL; post-entry drain dispatched | runtime.md § Lifecycle, `drain()` cascades depth-first: "per child `closures → dissolve → arena_destroy`, then outer's arena_destroy" | no: for a pinned entry its field children are dissolved here, on the teardown thread, but never drained (C9) |
+| C19 | **teardown spine 2**: the deferred main-locus entry | `cg`:7240 `is_main_entry` (registry `entrypoint`): R35, R20, R34, all `!is_wasm`, inside C18 | the teardown thread of the fn that built the main locus | the main locus's entry reached in the reverse flush | pool workers' field arenas until R20 returns | pools joined before the main locus's cascade | runtime.md § Classic-pool blocking-accept shutdown, (b): "… at the exit of the fn that instantiated it, `main` or another (`fn main() { start() }` …; GH #1148)" | yes |
+| C20 | process start | `cg` `lower_program` prelude: R15 (9671), R16 (9765), R43 (10020), R28 (10083) | main | `main()` entered | — | pools started; signal watcher installed | runtime.md § Process control, Signal handling: "SIGINT / SIGTERM begin the whole-process drain" | yes |
+| C21 | **teardown spine 3**: `fn main` fall-through | `cg` 10097–10133: R35 and R20 (`!is_wasm`); `flush_dissolve_frame` (C16, wait-abort through C17); C24; `ret 0` | main | body fell through (`BlockEnd::Open`) | every frame entry until its turn | process returns 0 | runtime.md § Bus message router, GH #893: "after the main-exit ingress quiesce and cooperative-pool join the exit path sequences ahead of the flush, and before the global arena destroy and `lotus_bus_queue_destroy`" | yes |
+| C22 | **teardown spine 4**: `fn main` test-failure exit | `cg` 10155–10169 (block from `cg`:6710): R35 and R20 (`!is_wasm`); `emit_frame_teardown(main_dissolve_frame)`; C24; `ret 1` | main | a recorded `std::test::assert*` failed | as C21 | process returns 1 | silent in runtime.md; GH #717's test runner contract ("a failed assertion runs the test's own locus teardown before the process exits") | silent |
+| C23 | **teardown spine 5**: `return` from `fn main` | `cg`:22739 `lower_return_inner`, 22744–22842: the return expression is evaluated first; R35 and R20 (`!is_wasm`); `emit_frame_teardown(clone of the frame)`; C24; `ret code` | main | return expression lowered and evaluated | as C21 | process returns `code` | silent in runtime.md (GH #789 and Crumb batch-3 in code comments) | silent |
+| C24 | process exit tail | `cg`:12231 `emit_arena_destroy` (the global arena); `bus/runtime.rs`:179 `emit_bus_queue_destroy` → R30, R31, R21 | main | the frame flush done | — | runtime structures freed | runtime.md § Bus message router, GH #893 (quoted at C21) | yes |
+| C25 | reclaim spine | `cg`:7474 `synthesize_reclaim_fns`: `__reclaim_<L>`: `__arena` latch 7539; held check → R3 (7569–7638); C30; `drain()`; the owner's release (7682); `__dissolve_closures` (route from C34 **with the child itself as `current_self`**, 7642/7746); `dissolve()`; C28; C31; C33 | the caller's: C26 (worker or IT), C27 (the subscriber's queue owner), R5 (the settling thread), the cascades (the teardown thread), C29 (the assigning thread) | not already reclaimed; no held failure outstanding (else R3 defers it) | the child until its handler has returned (R3); children before the parent's arena | `__arena` NULL | runtime.md § Lifecycle, Per-child reclamation: "drain → (for a flow) the parent's `release(owner, self)` → dissolve → arena/recpool release" | no: the dissolve-epoch closure's route resolves with the child as parent (`failure_handler_for(L, L)`), so it is normally null. A dissolve-epoch violation under this spine takes the bare dprintf+exit, not the parent's handler. The struct's `__parent_on_failure` (C6) holds the right route |
+| C26 | run end; per-child reclamation; await phase 0 | `cg`:8447 `synthesize_coop_pool_run_wrappers`: `__coop_pool_run_<L>` runs `run()`, then R4 phase 0 (8526), restart loop (8546); `__run_end_<L>` (8574–8695): kept-child check (GH #1069), then C25 and R7 | the pool worker on the post path; IT when inline or resumed (C43) | `run()` returned | the child until the decision; the owner's tracker | flow or `terminate`d and not kept: reclaimed and removed from the owner; else returns | runtime.md § Per-child reclamation: "The reclaim runs on the child's own pool worker while its arena is valid" | yes on the post path. Inline, it runs on IT (spec silent) |
+| C27 | terminate from a handler | `cg`:7953 `synthesize_handler_reclaim_wrappers`: `__hwrap_<L>_<h>` calls the handler, then C25 and R7 if `__drain_requested` | the subscriber's queue owner | the handler returned with the latch set | — | reclaimed | semantics.md § terminate: "When the method's `run()` coro completes with the latch set, the runtime runs the locus's normal `drain → dissolve → arena reclaim`" | silent for handlers (the sentence names `run()`; the wrapper extends it) |
+| C28 | accepted-children cascade | `cg`:8304 `emit_accepted_children_reclaim`: C25 for each tracked child | the teardown thread | the parent's own `dissolve()` returned | the tracker buffer until R8 | every tracked child reclaimed (latched) | runtime.md § Lifecycle, Per-child reclamation: a resident "lives to parent dissolve" | yes |
+| C29 | field reassignment (break-before-make) | `cg`:33359 `lower_locus_field_reassign`: C25 on the old value, then a new instantiation | the assigning thread | — | self | the old instance reclaimed; new one stored | semantics.md § Reassigning a locus-typed field: "The instance currently in the field is reclaimed — its full teardown spine runs (drain → dissolve → arena freed)" | yes |
+| C30 | drain cascade | `dis`:894 `emit_locus_field_drains` (main's pinned fields skipped, `is_main_locus` `dis`:903) | the teardown thread | — | — | every owned field drained depth-first before the outer `drain()` | runtime.md § Lifecycle: "calls each child's drain BEFORE the outer locus's own drain" | yes (pinned exception at C9 and C18) |
+| C31 | dissolve cascade | `dis`:353 `emit_locus_field_dissolves`: ownership-mask gate; contract fields → C32; per field, `emit_reclaimed_child_skip`, `__dissolve_closures`, `dissolve()`, recursion, C33. Main's pinned fields skipped (`is_main_locus` `dis`:366, registry `entrypoint`) | the teardown thread | the outer `dissolve()` returned | each child's arena until its own children are gone | every owned field torn down once | runtime.md § Lifecycle: "**The walk is recursive, to the leaves** … Every level's gate is that level's own ownership mask" | yes |
+| C32 | contract-typed child reclaim | `dis`:662 `emit_owned_contract_child_reclaim`: the recorded `__reclaim_<Impl>` | the teardown thread | owned bit set | — | that child's C25 ran | runtime.md § Lifecycle: "the cascade runs that whole spine (drain → dissolve → arena reclaim) through it, under the same ownership-mask gate" | yes |
+| C33 | arena destroy (the chokepoint) | `dis`:1260 `emit_locus_arena_destroy`: R47; elidable → R10; C28 (latched second pass); R33; R8; slot destroys; recpool destroy; latch; R44; R13 or R14; R10 | the teardown thread | the cascade above it done | — | `__arena` NULL (latch); struct recycled | runtime.md § Per-child reclamation: "`emit_locus_arena_destroy` is idempotent (NULLs `__arena`)" | yes |
+| C34 | failure route resolution | `ch`:65 `resolve_failure_route` (registry `handler_routing`): supervising parent, else `current_self`, else `params_init_self` | compile time; the instance pointer is the lowering context's | — | — | `(parent_self, handler)` or `(null, null)` | semantics.md § on_failure, Which locus is the parent (quoted at C6) | no, at C25 (reclaim spine): `current_self` is the child itself. Elsewhere yes |
+| C35 | handler lookup | `ch`:44 `failure_handler_for` (registry `handler_routing`): the routing row's ordinal in the parent's handler table | compile time | handler rows | — | the handler fn or none | semantics.md § on_failure, Which handler runs: "the failing child's own locus type is what selects one" | yes |
+| C36 | **failure delivery** | `ch`:113 `emit_on_failure_call`: R2 when `hold`, else, or when not held, **an indirect call to the handler in place** | **the failing child's thread** (whatever runs the raising code: C37–C40). Held failures: the settling thread (R5) | the route non-null (else bare dprintf+exit) | the child and the violation (copied by R2 when held) | the handler returned (in place), or the failure was held | runtime.md § Scheduler: "If different schedulers, the failure is delivered as a typed bus message to the parent's scheduler, which dispatches to `on_failure`." runtime.md § Bus message router: "`lotus_bus_queue_drain` — owner thread, the only place failure handlers may run" | **no**: a cross-thread failure runs the owner's handler on the failing child's thread (decision L0-1). The doc comment's "a birth-epoch closure's [failure cannot wait]" is stale: `closure.rs`:362 holds birth-epoch failures, as the spec says |
+| C37 | failure raised by a closure | `src/locus/closure.rs`:353 (birth, tick, duration, inline and dissolve epochs) → C36; hold is false only for dissolve | where the epoch fires: birth (IT), after `run()` (IT, C12, or the pinned thread), after a handler (the queue owner, C40), dissolve (the teardown thread) | the epoch's evaluation | — | delivered or held; birth-epoch restart check after it | semantics.md § Closure-failure cascade: "At dissolve, parent's `on_failure(self, ClosureViolation { ... })` invoked." runtime.md § Closure-test infrastructure: "At dissolve, if exploded, the parent's `on_failure(…)` is invoked" | no: delivered at the failing epoch, not at dissolve (semantics.md § on_failure describes the epoch delivery) |
+| C38 | failure raised by `birth_check` | `dis`:1041 `emit_birth_check`, route from the struct, → C36 with hold (`dis`:1195) | IT | `birth()` returned | — | delivered or held | semantics.md § on_failure: "A birth-epoch failure is held like any other" | yes |
+| C39 | failure raised by `violate` | `cg`:18867 `Stmt::Violate`: latch `LATCH_FAILED`, route from the struct, → C36 with hold (`cg`:19004) | the thread running the body: the pool worker for a posted `run()`, the pinned thread, IT inline | — | — | delivered or held | runtime.md § Scheduler (quoted at C36) | **no**: off-thread raise → the handler runs off the owner's thread |
+| C40 | tick and duration after a handler | `src/locus/method.rs`:586, the `__tick_closures_wrapper` / `__duration_closures_wrapper` bodies (route from the struct), called by the drain loops after each handler and by C9 and C43 | the queue owner of the subscriber (main, the pool worker, the pinned thread) | a handler returned | — | closures evaluated; failures → C36 | runtime.md § Placement table: "Handler bodies are atomic." § Scheduler (quoted at C36) | **no**, for a subscriber not on its parent's thread: the parent's handler runs on the subscriber's thread |
+| C41 | restart-point eligibility | `rst`:51 `locus_declares_failures` (registry `restart`) | compile time | — | — | `__restart_<L>` / `__resume_<L>` declared for loci with a closure or `birth_check` | silent | silent |
+| C42 | restart | `rst`:473 `define_restart_fns` → `rst`:492 `__restart_<L>`: restore params when in place, lower the latch, `birth()`, birth closures (route from the struct) | the deciding thread: the pool worker (C26), the pinned thread (C9), IT (C10 restart check), the settling thread (C43) | handler bumped the count; within the bound; not quarantined; not draining | the instance (same arena) | `birth()` re-ran; the caller re-runs `run()` | semantics.md § on_failure: "Call `restart(c)`: run the child again — `birth()`, then `run()` — on the same instance" | yes for the order. The domain differs from the first birth (IT) for pool children (silent) |
+| C43 | resume after a held handler | `rst`:589 `__resume_<L>`: restart, or (phase 1) start `run()`, or (phase 0) `__run_end_<L>`. `run()` goes through the `__coop_pool_run_<L>` wrapper **called inline** (660); then the tick and duration wrappers | the settling thread (R5) | its held handler returned | the child | the child's next step done | semantics.md § on_failure: "on the parent's thread for a cooperative child (the one settling the parent, which the child was running on)" | no, for a pool-placed child: its `run()` runs on the settling thread instead of being posted to its pool |
+| C44 | restart-in-place snapshot | `rst`:366 `emit_snapshot_built_params`, emitted at `inst`:3121 | IT | params loop done | `__built_params` in the instance's arena | snapshot stored | semantics.md § on_failure: "`restart_in_place(c)`: re-init in place (preserve arena)" | yes |
+| C45 | restart bound | `cg`:18710 `RecoveryModifier::For` (registry `restart`) | the handler's thread | — | — | `__restart_bound` stored | semantics.md § Recovery primitives (`restart (c) for N`) | yes |
+| C46 | transport-loss supervision | `cg`:10690 `emit_bindings_prelude` (registry `entrypoint`) and the loss dispatcher `cg` ~11300–11400 (registry `handler_routing` · `__StdBusUnixConnectTransport`): R37 with a fn calling `main.on_failure`, then R38, else R39 | registered on main; runs on the queue owner (R36) | main declares the matching `on_failure` | the transport entry | reconnected or structural exit | runtime.md § Bus message router, Connection-loss supervision: "The top of `lotus_bus_queue_drain` — owner thread, the only place failure handlers may run — drains the list" | yes, the one failure delivery that already follows L0-1 |
+| R1 | params open | `A`:1940 `lotus_params_open`, emitted at `inst`:2359 (C3) | IT; records `pthread_self()` as the opener | C3 true | — | (parent, opener) in the open list | semantics.md § on_failure: "When it runs: never before the parent's params are settled." | yes |
+| R2 | hold | `A`:1957 `lotus_failure_hold`, from C36 | the failing child's thread | the parent is open (else returns 0, deliver now) | the copied violation; the child (until R5's handler returns) | a node is queued HELD; returns 1 | semantics.md § on_failure: "The failure is **held** and delivered once the parent's last param is stored" | yes. The not-held path is C36's disagreement |
+| R3 | defer reclaim | `A`:2011 `lotus_failure_defer_reclaim`, from C25 behind `lotus_held_failure_count` | the reclaiming thread | a failure of the child is outstanding | the child until its handler returns | the reclaim is attached to the node, or returns 0 | semantics.md § on_failure: "is reclaimed only after its handler has run, so the handler's `c` is always a live child" | yes |
+| R4 | await | `A`:2032 `lotus_failure_await`, from C11 (phase 1), C26 and C9 (phase 0) | the failing child's thread; blocks on `g_held_delivered` (2054) when the opener is another thread; returns 2 when it is this thread | — | the node until the last waiter frees it | 0, 1 or 2 | semantics.md § on_failure: "on the child's own thread for a pinned one — that thread waits for the handler's decision rather than deciding by timing" | yes |
+| R5 | settle | `A`:2061 `lotus_params_settle`, emitted at `inst`:3127 | IT (**the settling thread runs every held handler**, 2086) | the parent's last param stored | each child and violation until its handler returns | no HELD node left for the parent; each resume (C43) or deferred reclaim (C25) has run | semantics.md § on_failure: "several are delivered in the order they arrived, on the thread settling the parent" | yes as written. See Decisions line 1 (a pool-placed owner settles on IT, not its queue owner) |
+| R6 | accept tracking push | `A`:2132 `lotus_children_push`, from C7 | IT (the parent's pool, A:2122) | accept returned | the buffer | appended (silently dropped on OOM) | semantics.md § accept(c): "After accept returns normally, child registers in `self.children`" | yes |
+| R7 | accept tracking remove | `A`:2167 `lotus_children_remove`, from `cg`:8189 `emit_remove_self_from_owner` (C26, C27) | the self-reclaiming child's thread | C25 done | — | swap-removed | runtime.md § Per-child reclamation (implicit) | silent |
+| R8 | accept tracking free | `A`:2148 `lotus_children_free`, from C33 | the teardown thread | C28 done | — | buffer freed | silent | silent |
+| R9 | child struct allocation | `A`:2193 `lotus_child_struct_alloc`, from C1 (`inst`:860) | IT | the owner's arena | — | struct from the owner's free list or arena | silent (F.3 O(peak-alive)) | silent |
+| R10 | child struct release | `A`:2233 `lotus_child_struct_release`, from C33 | the teardown thread; takes the owner's `subregion_lock` when multithreaded | the arena released | — | struct on the owner's free list | silent | silent |
+| R11 | arena create | `A`:1758 / 1810 / 1774 `lotus_arena_create_labeled` / `_sized` / `_on_node`, from C1 | IT | — | — | arena returned | semantics.md step 3 (quoted at C1) | yes (Fresh strategy) |
+| R12 | subregion create | `A`:2258 `lotus_arena_create_subregion`, from C1 and per-delivery contexts | IT; the parent's `subregion_lock` when multithreaded | the parent arena live | the parent arena | subregion returned | semantics.md step 3 | yes |
+| R13 | arena destroy | `A`:2524 `lotus_arena_destroy`, from C33 and C24 | the teardown thread. Clears only that thread's TLS caller arena (2541); chunks go to that thread's chunk pool | children gone (C28, C31); pool workers joined (R20) for main's fields | — | chunks released | runtime.md § Lifecycle: "no locus arena, at any depth and behind any field type, survives its owner" | yes |
+| R14 | recpool acquire / release / create / destroy | `A`:2750–2849 `lotus_recpool_fixed_*`, `lotus_recpool_slab_*`, from C1 and C33 | IT / the teardown thread; `fixed_release` is a plain bitmap write (2788) | — | the parent pool | cell acquired or released | silent (projection-class recognition) | silent |
+| R15 | pool register | `A`:8336 `lotus_coop_pool_register`, from C20 | main | — | — | pool in the registry (no lock) | runtime.md § Placement | yes |
+| R16 | pool start | `A`:10075 `lotus_coop_pool_start_all`, from C20 | main starts one worker per pool | R15 | — | workers running | runtime.md § Placement | yes |
+| R17 | pool lookup | `A`:8303 `lotus_coop_pool_lookup`, from C12 | IT | R15 | — | pool or NULL | runtime.md § Placement | yes |
+| R18 | current pool | `A`:8679 `lotus_coop_pool_current`, from C12 | IT (TLS: NULL on main) | — | — | pool or NULL | runtime.md § Runtime pool inheritance: "the pool whose worker is currently on-CPU" | yes |
+| R19 | post run | `A`:8466 `lotus_coop_pool_post`, from C12 | IT enqueues; the pool worker runs | — | the child until run end | cell enqueued (blocks on `not_full` unless self-publish or shutdown) | semantics.md step 7 | yes |
+| R20 | **pool join** | `A`:10149 `lotus_coop_pool_shutdown_all`, from C13, C19, C21, C22, C23 | main (the caller): sets shutdown, broadcasts, wakes async pools, then `pthread_join` per worker (10176), unbounded; async workers abandon parked coros (A:9548–9571) | R35 | field arenas until it returns | every worker joined | runtime.md § Classic-pool blocking-accept shutdown, (b) (quoted at C13) | yes. See Decisions line 7 (a worker parked in `or wait` is not woken) |
+| R21 | pool destroy | `A`:10186 `lotus_coop_pool_destroy_all`, from C24 | main | R20; R31 | — | rings, payloads and parked coros freed | silent | silent |
+| R22 | mailbox create | `A`:7677 `lotus_mailbox_create`, from C9 | IT | — | — | mailbox stored | runtime.md § Placement (pinned mailbox) | yes |
+| R23 | mailbox set current | `A`:7982 `lotus_mailbox_set_current`, from C9 (`inst`:4062) | the pinned thread (TLS) | thread started | — | TLS set | silent | silent |
+| R24 | mailbox drain loop | `A`:7860 `lotus_mailbox_drain_one`, from C9 | the pinned thread; parks on `not_empty` | `run()` returned | — | returns 0 on shutdown and empty | runtime.md § Owner-executed handlers: "a pinned subscriber whose `run()` **returns** proceeds into the blocking `lotus_mailbox_drain_one`" | yes |
+| R25 | mailbox drain at yield | `A`:7999 `lotus_mailbox_drain_pending`, from `cg`:26353 (sleep / yield) | the pinned thread (by convention, not checked) | — | — | drained to empty | runtime.md § Owner-executed handlers: "for the TLS-cached `lotus_mailbox_drain_pending` to service the mailbox" | yes |
+| R26 | mailbox shutdown | `A`:7924 `lotus_mailbox_shutdown`, from C18 | the teardown thread | — | — | flag set; condvars broadcast | runtime.md § Teardown delivery contract: "mailbox shutdown, `pthread_join`, then a bus drain" | yes |
+| R27 | mailbox destroy | `A`:7933 `lotus_mailbox_destroy`, from C18 | the teardown thread (no check) | `pthread_join` returned | — | freed | same sentence | yes |
+| R28 | mark pinned | `A`:6615 `lotus_bus_mark_pinned`, from C20 | main | — | — | the bus is in multithreaded mode | silent | silent |
+| R29 | bus queue drain | `A`:7283 `lotus_bus_queue_drain` | **owner only**: `if (!pthread_equal(pthread_self(), q->owner)) return;` (7311); runs R36 first | — | each handler's locus | queue empty at pop time | runtime.md § Owner-executed handlers, rule 1: "The global cooperative queue is drained only by its owner thread" | yes |
+| R30 | bus queue destroy | `A`:7458 `lotus_bus_queue_destroy`, from C24 | main (no check, no lock) | every drain done | — | freed | runtime.md § Bus message router, GH #893 | yes |
+| R31 | router destroy | `A`:11891 `lotus_bus_router_destroy`, from C24; calls R32 | main | R30 | — | router freed | same | yes |
+| R32 | remote transports destroy | `A`:22656 `lotus_bus_remote_destroy_all`: R42, then per entry a reader join (22723, 22757) | main; unbounded joins | R31 | — | transports freed | runtime.md § Bus message router, GH #893: "finds the entry already reclaimed — transport NULL, serve thread joined — and frees only the husk" | yes |
+| R33 | deregister on dissolve | `A`:11877 `lotus_bus_quarantine_self`, from C33 and C26 (`emit_stop_kept_child`) | the teardown thread; writes `g_bus_entries` without a lock | — | — | entries NULLed; self in the dead set | runtime.md § Teardown delivery contract: "discarded via the deregister-on-dissolve invariant (never dispatched to freed memory)" | yes |
+| R34 | wait-abort | `A`:19079 `lotus_bus_wait_abort_all` (a flag; the waiters poll at 1 ms: 19107, 19129), from C13, C19, C17 | main | after R20 in every spine | — | `or wait` waiters return −1 within a slice | runtime.md: no sentence (GH #255 is in its doc comment and grammar.ebnf:1337) | silent |
+| R35 | ingress quiesce | `A`:22589 `lotus_bus_ingress_quiesce`, from C13, C19, C21, C22, C23 | main; waits for readers' `serve_done` in 1 ms ticks, bounded by `LOTUS_BUS_QUIESCE_MS` (500) | registry intact; nothing dissolved | the registry and the subscribers | readers done or the bound hit (loud); then a queue drain | runtime.md, env table: "At every main-exit point, before pools join and loci dissolve, LISTEN binding fds half-close and their readers drain kernel-accepted data to true EOF" | yes |
+| R36 | loss dispatch | `A`:18448 `lotus_bus_drain_lost_transports`, from R29 only | the queue owner (behind R29's check) | — | — | each lost handle dispatched (C46) or fallen back (R39) | runtime.md § Bus message router (quoted at C46) | yes |
+| R37 | loss handler registration | `A`:18368 `lotus_bus_set_loss_handler`, from C46 | main | — | — | dispatcher installed | runtime.md § Bus message router: "emitted only when main declares the matching `on_failure`" | yes |
+| R38 | transport restart | `A`:18424 `lotus_bus_transport_reconnect`, from C46's dispatcher | the queue owner | the handler bumped `__restart_count` | — | reconnected (clears `lost`) or not | runtime.md § Bus message router: "calls `lotus_bus_transport_reconnect` (re-runs connect-with-retry …)" | yes |
+| R39 | transport structural exit | `A`:18396 `lotus_bus_transport_lost_fallback` | the queue owner; `exit(1)` | no handler | — | process exits | runtime.md § Bus message router: "or straight to the structural exit" | yes |
+| R40 | transport reclaim | `A`:18470 `lotus_bus_transport_reclaim`, from the stdlib transport's dissolve (`cg`:26638) | the teardown thread ("main only" is a comment, A:17414, not a check) | — | — | reader joined (unbounded); transport destroyed | runtime.md § Bus message router, GH #893 | yes |
+| R41 | replay ingress start | `A`:17913 `lotus_replay_start_ingress`, from C12 (`inst`:4589, main only, not wasm) | main | bindings realized | — | injectors started | runtime.md § Lossless recording mode | yes |
+| R42 | replay injector join | `A`:17989 `lotus_replay_injector_join`, from R32 | main; unbounded | — | — | injectors joined | silent | silent |
+| R43 | drain signal install | `A`:10001 `lotus_drain_signals_install` (stub at 10028), from C20 | main installs the handler; a detached watcher thread raises `lotus_process_draining_flag` | — | — | handler installed (only when something reads `draining`) | runtime.md § Process control, Signal handling (quoted at C20). runtime.md § Lifecycle, `drain()` cascades depth-first: "SIGINT triggers `drain()` on the runtime root, cascading through the whole process tree" | no for the § Lifecycle sentence: no `drain()` is invoked by the signal. The flag protocol matches § Process control and semantics.md § Drain cascade (whole-process) |
+| R44 | drain observer count | `A`:9902 `lotus_drain_observer_add`, from `inst`:3244 (+1) and C33 (−1) | IT / the teardown thread (atomic) | — | — | count adjusted | semantics.md § Drain cascade (whole-process) (GH #1077) | yes |
+| R45 | value-error root exit | `A`:24128 `lotus_root_panic` | any thread; `exit(1)` runs the atexit hooks on that thread while others run | — | — | process exits 1 | semantics.md § Process exit: "today dprintf to stderr … + `exit(1)`" | yes |
+| R46 | birth probe | `O`:3183 `lotus_obs_locus_birth`, from `inst`:2424 | IT | `lotus_obs_live` | — | event emitted | runtime.md § Native observation emission | yes |
+| R47 | dissolve probe | `O`:3228 `lotus_obs_locus_dissolve`, from C33 | the teardown thread; **before** C33's latch, so a second teardown of the same locus emits again | `lotus_obs_live` | — | event emitted | runtime.md § Native observation emission | silent on repeats |
+| R48 | restart probe | `O`:3246 `lotus_obs_restart` (weak), from R38's path | the queue owner | — | — | event emitted | silent | silent |
+| R49 | observation teardown | `O`:1722 `lotus_obs_teardown` (atexit, `O`:1983) | the thread that calls `exit` | — | — | recorder joined; file finalized | silent | silent |
+
+## The five teardown spines
+
+The registry's five copies of the join-before-free order are C13, C19, C21, C22 and C23. Side by side:
+
+| step | C13 eager main locus | C19 deferred main entry | C21 fall-through | C22 test failure | C23 `return` |
+|---|---|---|---|---|---|
+| what it tears down | this locus's own pinned children, then this locus | this entry | main's frame | `main_dissolve_frame` (every entry noted through `flush_dissolve_frame_kind`) | a clone of the frame at the `return` |
+| ingress quiesce (R35) | `!is_wasm` | `!is_wasm` | `!is_wasm` | `!is_wasm` | `!is_wasm` |
+| pool join (R20) | **always, wasm included** | `!is_wasm` | `!is_wasm` | `!is_wasm` | `!is_wasm` |
+| wait-abort (R34) | always, after R20 | `!is_wasm`, after R20 | through C17, after R20 and the pre-drain | same as C21 | same as C21 |
+| pre-drain before any entry | none | none (an earlier entry's post-drain) | yes (`cg`:7067) | yes | yes |
+| own pinned joins | **every** pinned child pushed since the mark, subscribers included, **in push order** | — (an entry) | subscription-less pinned first, **in reverse**; pinned subscribers keep their slot | same as C21 | same as C21 |
+| global arena and queue destroy (C24) | no | no | yes | yes | yes |
+| exit code | — | — | 0 | 1 | the return value, evaluated before any teardown |
+
+Where they disagree:
+
+1. **Wasm gating.** C13 emits R20 and R34 on wasm, where the other four emit neither (C19) or no R20 (C21–C23). The registry already records it (`target_capability` · `lotus_replay_start_ingress`). It is harmless only because `main_cooperative_pools` is empty on wasm.
+2. **Pinned join set and order.** C13 joins all its own pinned children, mailbox subscribers included, in declaration order, before its cooperative fields. C16 (behind C21–C23) joins subscription-less pinned entries first in reverse order, and joins pinned subscribers in reverse push order among the rest. Both shapes are what runtime.md § Teardown delivery contract says for its two cases. What disagrees is that a pinned subscriber's slot depends on which spine the parent takes: under C13, a cooperative sibling's `dissolve()` publish to a pinned subscriber is dropped; under C16 it is delivered.
+3. **Pre-drain.** C16 drains the bus before its first entry. C13 dispatches only through the per-pinned-entry drains of C18, so cells queued before an eager main locus's teardown wait until the first pinned join's post-drain, if there is one.
+4. **C19 is not first in its flush.** In a fn other than `main` (GH #1148's `start()`), entries pushed after the main locus are torn down before R20 runs. That is outside rule (b), which speaks of main's own fields.
+
+The dissolve-closure route also differs across the teardown spines and the reclaim spine (C34 at C13 and C18 versus C25), which is Decisions line 4.
+
+## The regressions, by the action they pin
+
+Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs under `hale_native_suite hale_native_suite_passes`. **No test asserts which thread an `on_failure` handler runs on.** The one `pthread_self` comparison in the tree is for a bus handler: `bus_core bus_adapter_inbound::adapter_subscription_runs_on_the_adapters_own_thread`.
+
+- **params, birth (C5, C10, R1, R5):** `ownership_reclaim birth_order_trap::{cooperative_child_handler_fires_during_its_own_run, main_locus_handler_fires_during_its_own_run, later_params_are_not_born_until_a_child_run_returns, pinning_the_blocker_lets_later_params_be_born_first}`; `lifecycle_locus params_default_scalar_self_ref::*` (7); `lifecycle_locus sibling_field_forward_ref::*` (2); `lifecycle_flow nested_long_lived_child::*` (3); `bus_topics binding_birth_fail::*` (5, GH #227).
+- **hold / settle / defer / await (R1–R5, C11, C26 phase 0, C9 phase 0):** `tests/hale/on_failure_after_params_test.hl` (GH #1035); `ownership_reclaim held_failure_outlives_reclaim::a_held_failures_child_is_reclaimed_after_its_handler` (GH #1065); `ownership_reclaim failed_child_kept_by_owner::{a_failed_child_stays_readable_until_its_owner_dissolves, an_accepted_child_that_fails_is_still_reclaimed_at_once}` (GH #1069); `lifecycle_flow on_failure_dispatch_by_child_type::held_failures_reach_their_own_handlers`.
+- **failure delivery and routing (C34–C39):** `lifecycle_flow on_failure_dispatch_by_child_type::{each_child_type_reaches_its_own_handler, handlers_sharing_a_span_each_lower_into_their_own_fn, dispatch_does_not_follow_declaration_order}`; `tests/hale/{on_failure_per_child_type, passed_child_supervision, default_child_supervision}_test.hl` (GH #1035, #1074). None pins the domain.
+- **restart, resume (C41–C45):** `lifecycle_locus restart_in_place_params::restart_in_place_restores_the_params_as_built_on_both_paths`; `lifecycle_locus restart_bound::*` (8); `tests/hale/restart_resumes_run_test.hl`, `tests/hale/pinned_restart_test.hl` (GH #1066). The second failure in `pinned_restart_test.hl` is the cross-thread delivery of decision L0-1: `App.on_failure` writes `self.fired` on the pump's pinned thread while `App.run()` polls it on `main`.
+- **transport loss (C46, R36–R39):** `bus_topics binding_loss_supervision::{connection_loss_without_handler_is_structural_exit, on_failure_restart_reconnects_and_resumes}` (GH #233).
+- **drain (C30, R24, R25, R43, R44):** `lifecycle_locus locus_field_cascade::drain_cascades_depth_first_before_outer_drain`; `async_io coop_to_pinned_mid_program::{pinned_run_loop_drains_mailbox_via_sleep, pinned_returning_run_drains_mailbox}`; `lifecycle_flow drain_grace_names_the_wait::*` (3); `tests/hale/sigterm_drains_pinned_test.hl` (GH #1039), `tests/hale/sigterm_no_live_drain_reader_test.hl` (GH #1077); `bus_topics sleep_drains_bus::sleep_drains_bus_queue_mid_loop`; `bus_core bus_cross_thread_drain::pinned_flood_of_main_pool_subscriber_survives_and_delivers`; `ownership_reclaim drain_elision::*` (3).
+- **wait-abort (C17, R34):** `lifecycle_flow or_wait_loss_window::{or_wait_parks_through_loss_window_no_drops, or_wait_parked_past_teardown_raises_not_hangs}` (GH #255). Both use a pinned waiter. No test covers a pool-placed one.
+- **quiesce (R35):** `bus_topics binding_ingest_468::{boot_window_publishes_are_buffered_and_delivered_mid_run, exit_quiesce_delivers_the_kernel_queued_tail, quiesce_does_not_stall_exit_on_a_silent_peer}` (GH #468).
+- **pool join (R20, C13, C19, C21–C23):** `main_locus_deferred_pool_join a_main_locus_built_outside_main_joins_its_pools_before_teardown` (GH #1148; the fix is PR #1208); `http http_server_classic_pool_shutdown::http_server_on_classic_pool_shuts_down_cleanly`; `async_io async_io_shutdown_parked::program_with_coro_parked_at_shutdown_exits_cleanly`; `tcp_io accept_shutdown_silent::{a_deliberate_server_shutdown_is_silent, an_accept_failure_nobody_asked_for_is_still_reported}` (GH #1081).
+- **pinned join, frame order (C16, C18, R26, R27):** `ownership_reclaim teardown_pinned_join_order::{eager_main_delivers_in_flight_results, deferred_main_with_subscription_delivers_in_flight_results}` (GH #253); `lifecycle_locus main_return_dissolve_frame::*` (7, GH #789); `lifecycle_locus main_return_call_teardown::main_return_call_runs_before_teardown`; `bus_topics bindings_transport_dissolve::*` (2, GH #893); `lifecycle_locus locus_let_lifecycle::*` (4).
+- **reclaim, dissolve cascade (C25–C33):** `ownership_reclaim reclamation_spine::{cascade_reclaims_residents_at_shutdown, handler_body_terminate_reclaims, flow_reclaim_then_cascade_no_double}`; `ownership_reclaim terminate_reclaims_child::terminate_reclaims_each_accepted_child`; `ownership_reclaim release_reclaims_flow::*`; `ownership_reclaim release_two_parents::*`; `ownership_reclaim deferred_slot_per_iteration::*` (10, C15); `ownership_reclaim method_return_dissolve::*` (2); `lifecycle_locus locus_field_cascade::{cascade_fires_inner_dissolve_on_outer_scope_exit, cascade_skips_externally_provided_locus_field, many_iterations_dont_blow_memory, bytesbuilder_as_locus_param_default_runs_method}`; `ownership_owners owned_child_arena_reclaim::*` (8, C32); `ownership_owners factory_locus_reclaim::*` (5); `ownership_owners factory_returned_binding::*` (7); `tests/hale/{terminate_with_queued_message, accepted_child_reassign, as_parent_for_accepted_child, omitted_run_is_empty_run, temp_locus_receiver, intra_locus_publish_reclaim}_test.hl`; `tooling_build hale_test_runner::failed_assertion_dissolves_the_fixtures_loci_before_exit` (GH #717, C22).
+- **arena destroy (C33, R13):** `ownership_reclaim arena_oom_is_loud::*` (2; found during #1208).
+- **process exit (C24, R45):** `os_process panic_atexit::view_stale_panic_runs_atexit_cleanup`; `stdlib_os std_process_exit::*` (5).
+- **Unpinned:** init (C1), accept (C7, C2) and subscription order (C8) have no regression of their own. Neither do:
+  - the post-run tick on IT (C12)
+  - the reclaim spine's dissolve-closure route (C25)
+  - a pinned locus's undrained fields (C9, C18)
+  - resume's inline `run()` (C43)
+
+  These become L3 matrix cells.
+
+## Counts
+
+**Codegen sites: 46 (C1–C46).** Each sits under the registry row it belongs to.
+
+- `lifecycle_order` · `lower_locus_instantiation_inner`: C1, C2, C5–C14
+- `handler_routing` · `settles_failures`: C3
+- `entrypoint` · `let is_main_locus` (inst): C4
+- `lifecycle_order` · `emit_frame_teardown`: C16
+- `entrypoint` · `in_main`: C17
+- `lifecycle_order` · `emit_deferred_entry_teardown`: C18, and C15, which reaches it
+- `entrypoint` · `is_main_entry`: C19
+- `lifecycle_order` · `lower_program`: C20, C21
+- `lifecycle_order` · `main_test_fail_bb`: C22
+- `lifecycle_order` · `lower_return_inner`: C23, with C24 as the tail all three main exits share
+- `lifecycle_order` · `__reclaim_`: C25, and C26–C29, which call it
+- `lifecycle_order` · `emit_locus_arena_destroy`: C33, and its cascade C30–C32. `entrypoint` · `let is_main_locus` (dis) is C31.
+- `handler_routing` · `resolve_failure_route`: C34
+- `handler_routing` · `failure_handler_for`: C35
+- the failure-delivery sites those two rows feed: C36–C40
+- `restart` · `locus_declares_failures`: C41
+- `lifecycle_order` · `define_restart_fns`: C42, C43, and C44, which it reads
+- `restart` · `RecoveryModifier::For`: C45
+- `entrypoint` · `emit_bindings_prelude` and `handler_routing` · `__StdBusUnixConnectTransport`: C46
+
+**Registry sites that are not rows,** because they are not lifecycle emission:
+
+- seven `entrypoint` rows: the checker's four, `seed_entry_kind`, the snapshot's `has_main`, and `collect_main_placement`, which feeds C4's placement map. E0 owns them.
+- two `handler_routing` rows: `fn_rows` and `SupervisedRef::External`, both in the model.
+
+**Runtime entry points: 49 (R1–R49).** Every exported `lotus_*` function that a lifecycle row calls, or that performs a lifecycle action, appears once. Variants of one operation share a row: R11's three arena constructors and R14's eight recpool functions. `lotus_failure_hold` is the registry's `lifecycle_order` runtime row, and R1–R5 are its protocol.
+
+**Not rows:**
+
+- globals read by rows (`lotus_held_failure_count`, `lotus_process_draining_flag`)
+- placement (`lotus_set_core_affinity`, `_set`)
+- delivery (`lotus_mailbox_post`, the publish family)
+- binding realization (`lotus_bus_transport_bind_self`, `lotus_bus_transport_spawn_server`)
+- program-lifetime and capacity-slot allocation (`lotus_bus_payload_arena_alloc`, the slot inits; F.22 has its own lifecycle)
+- static runtime functions (pool worker loops, `lotus_wake_post`, the drain watcher, the atexit dumps), which are described in the rows that reach them
+
+**Rows: 46 + 49 = 95.**
+
+## Decisions for Riley
+
+Decision L0-1 (handlers run only on the queue owner's thread) is written in spec/runtime.md § Failure handling. Each line below is a further disagreement the inventory found. Each gives the spec's sentence, what the runtime does, and two options.
+
+1. **Construction-time delivery for an owner placed on a pool.**
+   - **Spec:** semantics.md § on_failure: "delivered in the order they arrived, on the thread settling the parent."
+   - **Runtime:** R5 runs on IT. For a main-locus field placed on `cooperative(pool = X)`, IT is main, not X's worker, which runs that locus's handlers.
+   - **Options:** (a) name construction-time delivery as L0-1's one exception: before settle, no cell of the owner has run, so no second thread is inside it. (b) At settle, post the held failures to the owner's queue, and have the children wait as R4 already does.
+2. **Post-run tick closures on a posted `run()` (C12).**
+   - **Spec:** the m42 rule in runtime.md § Closure-test infrastructure ("At each epoch boundary …") and the placement table's "Handler bodies are atomic."
+   - **Runtime:** the tick and duration closures run on IT right after the post, concurrently with `run()` on the worker. On the inline path, they run after `__run_end_<L>` may have reclaimed a flow child.
+   - **Options:** (a) move them into `__coop_pool_run_<L>`, after `run()` returns and before `__run_end_<L>`, as C9 does on the pinned thread. (b) Drop the post-run tick for a posted `run()` and say so.
+3. **Where lifecycle methods run on a pool (runtime.md § Placement, Phase 4 v1 limit).**
+   - **Spec:** "Lifecycle methods (`birth` / `run` / `dissolve` / `accept`) still run on the main thread for cooperative-pool loci."
+   - **Runtime:** `run()` is posted to the worker (C12), as § Runtime pool inheritance in the same spec says. `birth` and `accept` run on IT; `dissolve` runs on the teardown thread.
+   - **Options:** (a) amend the sentence to the shipped domains. (b) Finish Phase 4b: birth and dissolve go to the worker as `run_init` / `drain_exit` cells.
+4. **The dissolve-closure route in the reclaim spine (C25, C34).**
+   - **Spec:** semantics.md § on_failure, "keeps the route of the place it was built."
+   - **Runtime:** `__reclaim_<L>` resolves the route with the child itself as the parent. A flow, terminated or accepted child's dissolve-epoch violation takes the bare exit, not its parent's handler.
+   - **Options:** (a) every spine reads the route bound at birth (`__parent_self` / `__parent_on_failure`, C6): one route per instance. (b) Keep per-spine resolution, with the owner instance as the context.
+5. **Accept's position and reject (C7).**
+   - **Spec:** semantics.md § accept(c): "Runs **before** child c's region is allocated" and may "reject — child instantiation fails"; § Locus instantiation, step 2.
+   - **Runtime:** accept runs after the region and params, before birth, and its result is not read.
+   - **Options:** (a) amend the spec to the shipped order, with no reject. (b) Move accept before allocation, with a reject result.
+6. **Subscriptions before birth (C8).**
+   - **Spec:** semantics.md step 4 ("`birth(args)` runs synchronously"), then step 5 ("Bus subscriptions wire up").
+   - **Runtime:** registration precedes `birth()`.
+   - **Options:** (a) amend the step order, since birth may publish to, or rely on, its own subscriptions. (b) Register after `birth()`.
+7. **A pool worker parked in `or wait` at teardown (R20, R34).**
+   - **Spec:** R34's contract (its doc comment, GH #255; runtime.md has no sentence) wakes waiters "BEFORE pinned children are joined."
+   - **Runtime:** every spine raises R34 after R20. A pool-placed publisher parked in `or wait` on a wait that only teardown ends (`lotus_bus_subject_wait_space`, `lotus_bus_binding_wait_ready`; neither checks the pool's shutdown flag) blocks R20's `pthread_join` indefinitely.
+   - **Options:** (a) raise R34 before R20 in every spine. (b) Make the two wait loops also return on their pool's shutdown flag. Either way, runtime.md gains the sentence.
+8. **Birth failure's shape (C10).**
+   - **Spec:** semantics.md § birth(): "region freed, parent's `on_failure(self, StructuralFailure { ... })` invoked"; § run(): "If run() panics, parent's `on_failure(self, StructuralFailure { ... })`."
+   - **Runtime:** no `StructuralFailure` and no panic exist. Birth and run failures are `ClosureViolation`s (`birth_check`, closures, `violate`), and the region is kept for the handler and for a restart.
+   - **Options:** (a) amend both sentences to `ClosureViolation`, with the region kept. (b) Introduce `StructuralFailure`.
+9. **When a closure violation reaches the parent (C37).**
+   - **Spec:** semantics.md § Closure-failure cascade, step 4: "At dissolve, parent's `on_failure` … invoked"; runtime.md § Closure-test infrastructure: "At dissolve, if exploded, the parent's `on_failure` … is invoked."
+   - **Runtime:** delivery happens at the failing epoch (held during params). semantics.md § on_failure already describes it that way.
+   - **Options:** (a) amend the two cascade passages to the failing epoch. (b) Defer delivery to dissolve, which would remove restart-from-run.
+10. **`dissolve()` before or after its closures.**
+    - **Spec:** semantics.md § dissolve(): "Executes user-supplied cleanup code if any. Then: Closure tests at `dissolve` epoch fire". runtime.md § Lifecycle says the reverse: "`closures → dissolve`".
+    - **Runtime:** `__dissolve_closures` runs before `dissolve()` in every spine.
+    - **Options:** (a) amend semantics.md to runtime.md's order. (b) Swap the emission order.
+11. **A let-bound literal's drain (C14).**
+    - **Spec:** semantics.md § Dissolve timing rules: "birth + run + drain fire at the construction site. Dissolve is deferred."
+    - **Runtime:** drain is deferred with dissolve to the flush (C18).
+    - **Options:** (a) amend the sentence. (b) Emit `drain()` at construction.
+12. **A pinned locus's field children are never drained (C9, C18).**
+    - **Spec:** runtime.md § Lifecycle: "a child's own `LocusRef` fields drain before the child does."
+    - **Runtime:** `__pinned_main_<L>` runs `drain()` with no field drains, and C18 skips them for a pinned entry. Those children are dissolved on the teardown thread after the join.
+    - **Options:** (a) emit the field drains on the pinned thread before its `drain()`. (b) The spec names a pinned locus's fields as dissolved without a drain.
+13. **Resume runs a pool-placed child's `run()` inline (C43).**
+    - **Spec:** semantics.md § on_failure: "on the parent's thread for a cooperative child (the one settling the parent, which the child was running on)."
+    - **Runtime:** a pool-placed child whose birth failure was held at settle has its `run()` called inline on the settling thread, not posted to its pool.
+    - **Options:** (a) resume posts `run()` to the child's pool (R17, R18), as C12 does. (b) The spec says resume runs `run()` on the settling thread.
+14. **State machine enforcement (runtime.md § Lifecycle).**
+    - **Spec:** "The runtime tracks state; transitions are rejected if they violate ordering."
+    - **Runtime:** there is no state machine. Order is emission order, guarded by latches (`__arena` NULL, `__drain_requested`, `__quarantined`, the held-failure node state).
+    - **Options:** (a) amend the sentence to "order by construction, with latches". (b) L1's obligations become the state, checked in the L2 trace build.
+15. **SIGINT and `drain()` (R43).**
+    - **Spec:** runtime.md § Lifecycle: "SIGINT triggers `drain()` on the runtime root, cascading through the whole process tree."
+    - **Runtime:** the signal raises `lotus_process_draining_flag`. `run()`s that read `self.draining` return, and the ordinary teardown follows, as runtime.md § Process control and semantics.md § Drain cascade (whole-process) say. No `drain()` is invoked.
+    - **Options:** (a) amend the § Lifecycle sentence to point at the flag protocol. (b) Invoke the drain cascade from the watcher.
+16. **The eager spine's wasm gating (§ The five teardown spines, 1).**
+    - **Spec:** silent.
+    - **Runtime:** C13 emits R20 and R34 on wasm; the others do not.
+    - **Options:** (a) gate C13 as the other four are gated. (b) One plan-level rule: no pool or wait actions on a target without threads (L4's plan carries it).
+17. **The pinned join set and order (§ The five teardown spines, 2).**
+    - **Spec:** each case agrees with runtime.md § Teardown delivery contract.
+    - **Runtime:** C13 and C16 differ on pinned subscribers and on order.
+    - **Options:** (a) one rule everywhere: all own pinned children first, in reverse order. (b) C16's rule everywhere: subscription-less first, subscribers in their slot.
+18. **The pre-drain (§ The five teardown spines, 3).**
+    - **Spec:** silent.
+    - **Runtime:** C16 drains the bus before its first entry; C13 does not.
+    - **Options:** (a) pre-drain in every spine. (b) Drain only after each entry, as C18 does.
