@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use super::frontend::EffectTable;
+use hale_syntax::ast::EffectClasses;
 use super::diag::IoDiag;
 use std::path::Path;
 use std::path::PathBuf;
@@ -478,12 +478,12 @@ pub fn resolve_imports(
     // ("qualified type `g::Rect` not in stdlib path-renames
     // table" / "unknown type name in signature").
     seed_cache: &mut BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
-    // #345: the MERGED user effect-class table. Each seed interns its
-    // own `effect NAME;` declarations from zero, so the same index
-    // means different classes in different seeds. Names are unioned
-    // here and each seed's items are remapped into this table before
-    // they are merged.
-    effects: &mut EffectTable,
+    // #345: the load's one user effect-class table. Every seed's items
+    // are parsed through it, so a class is one index in every seed and
+    // nothing is renumbered when the items are merged. A seed interns
+    // after the seeds it imports, as the classes have always been
+    // numbered.
+    effects: &mut EffectClasses,
     // GH #746: the seed whose imports these are — the canonical path
     // of the entry target, or of the lib whose files are being
     // followed. Every alias in `imports` is recorded against it.
@@ -639,6 +639,12 @@ pub fn resolve_imports(
             canon: PathBuf,
             stem: String,
             source: String,
+            base: u32,
+            /// The file's tokens, parsed again through the load's
+            /// effect-class table once its imports are resolved.
+            tokens: Vec<hale_syntax::Token>,
+            /// The first parse, through a table of its own: its
+            /// diagnostics, its imports and its declarations' names.
             program: hale_syntax::ast::Program,
         }
         let mut parsed_files: Vec<ParsedLibFile> = Vec::new();
@@ -679,7 +685,15 @@ pub fn resolve_imports(
                 .map(|(b, _, l)| b + l + 1)
                 .unwrap_or(0);
             file_bases.push((base, canon.clone(), source.len() as u32));
-            let program = match hale_syntax::parse_source_at(&source, base) {
+            let parsed = hale_syntax::lex_at(&source, base).and_then(|tokens| {
+                let program = hale_syntax::parser::parse_in(
+                    tokens.clone(),
+                    &source,
+                    &mut EffectClasses::default(),
+                )?;
+                Ok((tokens, program))
+            });
+            let (tokens, program) = match parsed {
                 Ok(p) => p,
                 Err(diags) => {
                     for d in diags {
@@ -715,6 +729,8 @@ pub fn resolve_imports(
                 canon,
                 stem,
                 source,
+                base,
+                tokens,
                 program,
             });
         }
@@ -782,24 +798,6 @@ pub fn resolve_imports(
         if trace {
             eprintln!("[import]     build_seed_renames done (n={})", seed_renames.len());
         }
-        // Mangle each file's program with the shared map.
-        for pf in parsed_files.iter_mut() {
-            if trace {
-                eprintln!("[import]     mangle start: {}", pf.path.display());
-            }
-            hale_types::mangle::mangle_with_renames_in_seed(
-                &mut pf.program,
-                &seed_renames,
-                &seed_heads,
-                // GH #774: the seed identity a claim group reference
-                // this seed never declares is bound to, so an
-                // importer's same-named group cannot capture it.
-                seed_binding,
-            );
-            if trace {
-                eprintln!("[import]     mangle done : {}", pf.path.display());
-            }
-        }
         // Populate the per-build path-rename table.
         for (name, mangled) in &seed_renames {
             renames.push((vec![alias.clone(), name.clone()], mangled.clone()));
@@ -858,17 +856,44 @@ pub fn resolve_imports(
                 src,
             )?;
         }
-        // Move mangled items into the merged program; stash sources.
+        // Parse each file again, through the load's effect-class table —
+        // after the seeds it imports, so its classes are numbered after
+        // theirs — mangle it with the shared map, and move its items
+        // into the merged program; stash sources. The second parse of
+        // tokens that already parsed cannot fail.
         for mut pf in parsed_files {
-            // Remap BEFORE merging: `User(i)` indices are seed-local,
-            // so concatenating two seeds' items without this aliases
-            // seed A's class 0 onto seed B's class 0.
-            if !pf.program.effect_names.is_empty() {
-                let map = effects.absorb(&pf.program);
-                hale_syntax::ast::remap_user_effects(
-                    &mut pf.program.items,
-                    &map,
-                );
+            // The one thing the load's table adds is its size: a class
+            // past the effect mask's capacity is refused here, where the
+            // seed's own table did not reach it.
+            pf.program = match hale_syntax::parser::parse_in(pf.tokens, &pf.source, effects) {
+                Ok(p) => p,
+                Err(diags) => {
+                    for d in diags {
+                        errors.push(ImportDiag::Located {
+                            file: pf.path.clone(),
+                            base: pf.base,
+                            diag: d,
+                            source: pf.source.clone(),
+                        });
+                    }
+                    sources.insert(pf.canon, pf.source);
+                    continue;
+                }
+            };
+            if trace {
+                eprintln!("[import]     mangle start: {}", pf.path.display());
+            }
+            hale_types::mangle::mangle_with_renames_in_seed(
+                &mut pf.program,
+                &seed_renames,
+                &seed_heads,
+                // GH #774: the seed identity a claim group reference
+                // this seed never declares is bound to, so an
+                // importer's same-named group cannot capture it.
+                seed_binding,
+            );
+            if trace {
+                eprintln!("[import]     mangle done : {}", pf.path.display());
             }
             merged_items.extend(pf.program.items);
             sources.insert(pf.canon, pf.source);

@@ -386,22 +386,37 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "effect_class_table",
         layer: Layer::Parse,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index.",
-        inputs: &["effect_names / defs per program"],
-        producer: Some(site(FRONTEND, "EffectTable")),
-        legacy: &[
-            legacy(FRONTEND, "merge_programs", "the merge remaps class indices by name", "the table is a declaration-layer row keyed by identity"),
-            legacy(EFFECTS, "effect_names_of", "takes the first non-empty program's table; expansion of a class is copied five times across hale-types", "one expansion"),
+        answers: "The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class.",
+        inputs: &["`effect` declarations and class references per seed", "the load's parse order (a seed after the seeds it imports)"],
+        producer: Some(site("crates/hale-syntax/src/ast.rs", "EffectClasses")),
+        legacy: &[],
+        owned: &[site("crates/hale-syntax/src/lib.rs", "parse_source_at_in"), site("crates/hale-types/src/effect_classes.rs", "EffectClassTable")],
+        consumers: &[
+            consumer_at("the load (own files, the editor's members, every imported seed after its imports)", FRONTEND, "parse_source_at_in"),
+            consumer_at("effects (contracts, phase contracts, the manifest)", EFFECTS, "EffectClassTable::of("),
+            consumer_at("effects (causes)", FRONTIER, "EffectClassTable::of("),
+            consumer_at("alloc_summary (what `@effects(is: …)` carries)", ALLOC, "EffectClassTable::of("),
+            consumer_at("quantitative (user-class budgets)", "crates/hale-types/src/quantitative.rs", "EffectClassTable::of("),
+            consumer_at("model (the effect-class rows and their atoms)", MODEL_BUILDER, "EffectClassTable::of("),
+            consumer_at("claims (lowering: class references, undeclared classes)", "crates/hale-types/src/claim_lowering.rs", "EffectClassTable::of("),
+            consumer_at("topology (derived effect sets)", TOPOLOGY, "EffectClassTable::of("),
         ],
-        consumers: &[consumer("check"), consumer("effects"), consumer("claims")],
-        invariants: &["one class, one index, per snapshot"],
+        invariants: &[
+            "one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in",
+            "one expansion: a composed class's mask, its atoms and whether its definition is cyclic are `EffectClassTable`'s; no analysis walks a definition itself or reads a program's table directly",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/cross_seed_effects.rs"],
+        tests: &["crates/hale-cli/tests/cross_seed_effects.rs", "crates/hale-cli/tests/xseed_user_effects.rs", "crates/hale-types/src/effect_classes.rs (one_table_one_expansion)", "crates/hale-frontend/src/snapshot.rs (a_seed_is_numbered_after_the_seeds_it_imports)"],
         spec: &["spec/verification.md § Default-on & opt-in analyses"],
-        owned: &[],
-        seams: &[],
+        seams: &[
+            Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 1), (EFFECTS, 4), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
+            // a program's class definitions are read by the parser that
+            // writes them, the load that carries them, and the table
+            // (`resolved.rs` only builds an empty stdlib program)
+            Seam { symbol: "effect_defs", allowed: &[("crates/hale-syntax/src/ast.rs", 1), (PARSER, 9), (FRONTEND, 3), ("crates/hale-types/src/effect_classes.rs", 2), (TY_RESOLVED, 1)] },
+        ],
     },
     // ---------------------------------------------------- Declarations
     Family {

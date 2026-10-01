@@ -363,14 +363,9 @@ fn causes_inner(
     ids: &crate::snapshot::Snapshot,
     graph: &BusGraph,
 ) -> Vec<CausesReport> {
-    // The seed's user effect-class table, so an excess class renders
+    // The bundle's user effect-class table, so an excess class renders
     // as `money` rather than as nothing at all.
-    let names: Vec<String> = programs
-        .iter()
-        .map(|p| &p.effect_names)
-        .find(|n| !n.is_empty())
-        .cloned()
-        .unwrap_or_default();
+    let classes = crate::effect_classes::EffectClassTable::of(programs);
     // (fn, declared classes, span, per-fn assertion ordinal). A fn
     // may carry several `causes:` clauses; the ordinal is what makes
     // each one identifiable, since they share a span.
@@ -425,18 +420,12 @@ fn causes_inner(
             _ => None,
         })
         .collect();
-    let defs: Vec<Option<Vec<EffectClass>>> = programs
-        .iter()
-        .map(|p| &p.effect_defs)
-        .find(|d| !d.is_empty())
-        .cloned()
-        .unwrap_or_default();
     let mut reports: Vec<CausesReport> = Vec::new();
     for (key, declared, span, ordinal) in &roots {
         let (actual, via) = causal_effects(&summary, graph, key, &ffi);
         let mut allowed = EffectSet::PURE;
         for c in declared {
-            allowed = allowed.union(class_mask_with(*c, &defs));
+            allowed = allowed.union(classes.mask(*c));
         }
         // Only report classes reached THROUGH the bus (the causal
         // surface); direct effects are the `none:` form's job.
@@ -453,7 +442,7 @@ fn causes_inner(
                      class to the declaration, or route the publish to a \
                      subject whose subscribers don't perform it.",
                     key.display(),
-                    render_effects_named(excess, &names).join(", "),
+                    render_effects_named(excess, classes.names()).join(", "),
                     if via.is_empty() {
                         String::new()
                     } else {
@@ -474,7 +463,9 @@ fn causes_inner(
 }
 
 
-fn class_mask(c: EffectClass) -> EffectSet {
+/// An atomic class's own bit (a composed class's mask is
+/// `EffectClassTable::mask`).
+pub(crate) fn class_mask(c: EffectClass) -> EffectSet {
     match c {
         EffectClass::Syscall => EffectSet::SYSCALL,
         EffectClass::Block => EffectSet::BLOCK,
@@ -502,46 +493,6 @@ fn class_mask(c: EffectClass) -> EffectSet {
             }
         }
     }
-}
-
-/// #354: a class's mask, following `effect io = { a, b };` definitions.
-///
-/// A COMPOSED class has no bit of its own — its mask is the union of
-/// its members'. That single fact gives both useful directions with no
-/// new analysis: forbidding `io` tests against `syscall|block` and so
-/// catches either, and a fn that reaches a syscall has that bit set and
-/// therefore satisfies "carries `io`".
-///
-/// `defs` is index-parallel to the program's `effect_names`. Recursion
-/// is depth-bounded by `seen`, which also rejects a definition cycle by
-/// resolving it to PURE rather than looping — the cycle itself is
-/// diagnosed separately, at declaration.
-pub fn class_mask_with(
-    c: EffectClass,
-    defs: &[Option<Vec<EffectClass>>],
-) -> EffectSet {
-    fn go(
-        c: EffectClass,
-        defs: &[Option<Vec<EffectClass>>],
-        seen: &mut Vec<u16>,
-    ) -> EffectSet {
-        if let EffectClass::User(i) = c {
-            if let Some(Some(members)) = defs.get(i as usize) {
-                if seen.contains(&i) {
-                    return EffectSet::PURE; // cycle; diagnosed at decl
-                }
-                seen.push(i);
-                let mut acc = EffectSet::PURE;
-                for m in members {
-                    acc = acc.union(go(*m, defs, seen));
-                }
-                seen.pop();
-                return acc;
-            }
-        }
-        class_mask(c)
-    }
-    go(c, defs, &mut Vec::new())
 }
 
 // ===================== @supervised ==============================

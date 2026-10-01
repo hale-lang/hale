@@ -39,8 +39,10 @@ pub struct EffectRows {
     pub summary: AllocSummary,
     /// The program's FFI fn names: a resolved call to one is a syscall.
     pub ffi: BTreeSet<String>,
-    /// The user effect classes, by `User(i)` index, as declared.
-    pub class_names: Vec<String>,
+    /// The load's one user effect-class table, the one every analysis
+    /// reads: a class's name by `User(i)` index, and a composed class's
+    /// expansion.
+    pub classes: crate::effect_classes::EffectClassTable,
 }
 
 /// One fn's effects.
@@ -153,7 +155,7 @@ pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
         &bundle.import_renames,
     );
     let ffi = crate::effects::ffi_names(&programs);
-    let class_names = crate::effects::effect_names_of(&programs);
+    let classes = crate::effect_classes::EffectClassTable::of(&programs);
     let mut rows: BTreeMap<FnKey, EffectRow> = BTreeMap::new();
     for (key, fs) in &summary.fns {
         let mut targets: Vec<FnKey> = Vec::new();
@@ -204,5 +206,5 @@ pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
             })
             .purity = Some(purity);
     }
-    EffectRows { rows, summary, ffi, class_names }
+    EffectRows { rows, summary, ffi, classes }
 }

@@ -1061,10 +1061,10 @@ impl Snapshot {
 
 /// `hale check`'s load: the target and every seed its imports reach.
 fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
-    let (files, own, programs, sources, file_bases) = parse_checkable(entry, src)?;
+    let (files, own, programs, sources, file_bases, effects) = parse_checkable(entry, src)?;
     let members = programs.clone();
     let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        link_checkable(entry, &files, own, programs, sources, file_bases, src)?;
+        link_checkable(entry, &files, own, programs, sources, file_bases, effects, src)?;
     Ok(Loaded {
         files: own_files.iter().cloned().collect(),
         own_files,
@@ -1095,6 +1095,8 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut unparsed = BTreeMap::new();
     let mut unreadable = BTreeMap::new();
+    // #345: the load's one effect-class table, as `parse_files` keeps it.
+    let mut effects = hale_syntax::ast::EffectClasses::default();
     for f in &files {
         let source = match src.read(f) {
             Ok(s) => s,
@@ -1105,7 +1107,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
+        match hale_syntax::parse_source_at_in(&source, base, &mut effects) {
             Ok(p) => {
                 programs.insert(f.clone(), p);
             }
@@ -1145,7 +1147,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
     }
     let seed = if src.is_dir(entry) { entry } else { seed_dir_of(entry) };
     let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        link_checkable(seed, &files, own_files, programs, sources, file_bases, src)?;
+        link_checkable(seed, &files, own_files, programs, sources, file_bases, effects, src)?;
     Ok(Loaded {
         files,
         own_files,
@@ -1314,6 +1316,58 @@ mod tests {
         let s = load(&d.join("app.hl"), &Disk, Config::editor());
         assert!(s.member(&d.join("broken.hl")).is_none());
         assert_eq!(names(s.member(&d.join("extra.hl")).expect("parsed")), vec!["helper"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #345: a load parses every seed through one effect-class table,
+    /// and numbers an imported seed after the seeds it imports: `a`
+    /// refers to `money` before `b` (which it imports) declares it, and
+    /// still `b`'s classes come first, as the merge's renumbering used
+    /// to leave them. Every use names one index.
+    #[test]
+    fn a_seed_is_numbered_after_the_seeds_it_imports() {
+        let d = scratch("effect-order");
+        std::fs::create_dir_all(d.join("a")).unwrap();
+        std::fs::create_dir_all(d.join("b")).unwrap();
+        std::fs::write(
+            d.join("app.hl"),
+            "import \"a\" as a;\nfn main() { println(a::f(1)); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("a/a.hl"),
+            "import \"../b\" as b;\neffect audit;\n\
+             @effects(is: { money })\nfn f(n: Int) -> Int { return b::g(n); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("b/b.hl"),
+            "effect pii;\neffect money;\n@effects(is: { pii })\nfn g(n: Int) -> Int { return n; }\n",
+        )
+        .unwrap();
+        let s = load_as(&d.join("app.hl"), LoadMode::WholeSeed, &Disk, Config::check(true, false));
+        let p = s.program().expect("one merged program");
+        assert_eq!(p.effect_names, ["pii", "money", "audit"]);
+        assert_eq!(p.declared_effects, [0, 1, 2]);
+        // each fn's `is:` class, by the fn's last name segment
+        let carried: BTreeMap<String, u16> = p
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                TopDecl::Fn(f) => f.effects.iter().find_map(|a| match a {
+                    hale_syntax::ast::EffectAssert::Carries(cs) => match cs.as_slice() {
+                        [hale_syntax::ast::EffectClass::User(c)] => {
+                            Some((f.name.name.rsplit('_').next().unwrap_or("").to_string(), *c))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        let want: BTreeMap<String, u16> = [("f".to_string(), 1), ("g".to_string(), 0)].into_iter().collect();
+        assert_eq!(carried, want, "a's `money` and b's `pii`");
         let _ = std::fs::remove_dir_all(&d);
     }
 

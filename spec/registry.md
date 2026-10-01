@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 8 canonical, 32 migrating (with 137 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 9 canonical, 31 migrating (with 135 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -12,7 +12,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 2 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `infer_sync_for_bundle` | 3 | Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from. |
-| `effect_class_table` | Layer 1 | Migrating | derivation | `EffectTable` | 2 | The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index. |
+| `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 3 | Which monomorph a generic call instantiates and how its bindings unify. |
@@ -184,30 +184,33 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `apply_sync_inference(` may be referenced from: `crates/hale-types/src/lib.rs` ×4, `crates/hale-frontend/src/snapshot.rs` ×1
 
-### `effect_class_table` — Migrating · derivation
+### `effect_class_table` — Canonical · derivation
 
-**Answers.** The union of user effect classes across seeds, with `User(i)` indices remapped so one class has one index.
+**Answers.** The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class.
 
-**Inputs.** effect_names / defs per program
+**Inputs.** `effect` declarations and class references per seed; the load's parse order (a seed after the seeds it imports)
 
-**Producer (today's authority, migrating).** `crates/hale-frontend/src/frontend.rs` · `EffectTable`
+**Producer.** `crates/hale-syntax/src/ast.rs` · `EffectClasses`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-syntax/src/lib.rs` · `parse_source_at_in`; `crates/hale-types/src/effect_classes.rs` · `EffectClassTable`
 
-- `crates/hale-frontend/src/frontend.rs` · `merge_programs` — the merge remaps class indices by name. *Removed when:* the table is a declaration-layer row keyed by identity.
-- `crates/hale-types/src/effects.rs` · `effect_names_of` — takes the first non-empty program's table; expansion of a class is copied five times across hale-types. *Removed when:* one expansion.
-
-**Consumers.** check; effects; claims
+**Consumers.** the load (own files, the editor's members, every imported seed after its imports) (`crates/hale-frontend/src/frontend.rs` · `parse_source_at_in`); effects (contracts, phase contracts, the manifest) (`crates/hale-types/src/effects.rs` · `EffectClassTable::of(`); effects (causes) (`crates/hale-types/src/frontier.rs` · `EffectClassTable::of(`); alloc_summary (what `@effects(is: …)` carries) (`crates/hale-types/src/alloc_summary.rs` · `EffectClassTable::of(`); quantitative (user-class budgets) (`crates/hale-types/src/quantitative.rs` · `EffectClassTable::of(`); model (the effect-class rows and their atoms) (`crates/hale-types/src/model_builder.rs` · `EffectClassTable::of(`); claims (lowering: class references, undeclared classes) (`crates/hale-types/src/claim_lowering.rs` · `EffectClassTable::of(`); topology (derived effect sets) (`crates/hale-types/src/topology.rs` · `EffectClassTable::of(`)
 
 **Invariants.**
 
-- one class, one index, per snapshot
+- one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in
+- one expansion: a composed class's mask, its atoms and whether its definition is cyclic are `EffectClassTable`'s; no analysis walks a definition itself or reads a program's table directly
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/cross_seed_effects.rs
+**Focused tests.** crates/hale-cli/tests/cross_seed_effects.rs; crates/hale-cli/tests/xseed_user_effects.rs; crates/hale-types/src/effect_classes.rs (one_table_one_expansion); crates/hale-frontend/src/snapshot.rs (a_seed_is_numbered_after_the_seeds_it_imports)
 
 **Spec.** spec/verification.md § Default-on & opt-in analyses
+
+**Guarded seams.**
+
+- `EffectClassTable::of(` may be referenced from: `crates/hale-types/src/effect_classes.rs` ×1, `crates/hale-types/src/effects.rs` ×4, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1
+- `effect_defs` may be referenced from: `crates/hale-syntax/src/ast.rs` ×1, `crates/hale-syntax/src/parser.rs` ×9, `crates/hale-frontend/src/frontend.rs` ×3, `crates/hale-types/src/effect_classes.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ## Layer 2 — declaration graphs
 

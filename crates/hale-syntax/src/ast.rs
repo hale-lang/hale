@@ -14,6 +14,11 @@ pub struct Program {
     /// encountered; `declared_effects` records which were actually
     /// declared, so an undeclared name is an error rather than a
     /// silently-inert class.
+    ///
+    /// A load parses every seed through one [`EffectClasses`], so these
+    /// three fields are that table as the program's parse left it: a
+    /// class has one index in every seed of the load, and merging two
+    /// seeds' items renumbers nothing.
     pub effect_names: Vec<String>,
     pub declared_effects: Vec<u16>,
     /// #354: `effect io = { syscall, block };` — a class DEFINED as a
@@ -29,6 +34,23 @@ pub struct Program {
     pub imports: Vec<Import>,
     pub items: Vec<TopDecl>,
     pub span: Span,
+}
+
+/// #345, F.40 phase 3: the user effect-class table of one load, the
+/// declaration layer's. Every seed the load parses interns its class
+/// names here (`parse_source_at_in`), so a class is one index — one
+/// `EffectClass::User(i)` — in every seed, keyed by the class's name,
+/// which is its identity in the program's one class namespace. Nothing
+/// downstream renumbers a class.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EffectClasses {
+    /// Every class name met, in the order the load met it.
+    pub names: Vec<String>,
+    /// The indices an `effect NAME;` declaration introduced, in any seed.
+    pub declared: Vec<u16>,
+    /// #354: index-parallel to `names`; `Some(members)` for a class
+    /// defined as a union of others.
+    pub defs: Vec<Option<Vec<EffectClass>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3208,131 +3230,6 @@ impl Ident {
     /// pass synthesizes. The mint numbers the ones that are sites.
     pub fn new(name: impl Into<String>, span: Span) -> Self {
         Ident { name: name.into(), span, id: NodeId::NONE }
-    }
-}
-
-/// #345: rewrite this seed's user effect-class indices into a merged
-/// program's table.
-///
-/// `EffectClass::User(i)` is an index into the *declaring seed's*
-/// intern table, so two seeds that each declare one class both use
-/// `User(0)` for different names. Concatenating their items — which is
-/// what import merging does — silently aliases those classes: seed A's
-/// `money` and seed B's `pii` become the same bit, and a `none:` on
-/// one is checked against the other.
-///
-/// Rejecting cross-seed names avoided the aliasing but made a class
-/// unusable across the import boundary it most wants to cross: the
-/// point of `money` is that it holds everywhere the money goes,
-/// including through a library. So instead, remap: `map[i]` is the
-/// merged index for this seed's class `i`, and every carrier of an
-/// `EffectClass` in the seed's items is rewritten before the items
-/// are merged.
-///
-/// Deliberately exhaustive over the AST rather than a visitor over
-/// "the interesting nodes" — a missed carrier here does not fail
-/// loudly, it silently keeps a stale index that now means a DIFFERENT
-/// class in the merged table. That is the aliasing bug this exists to
-/// prevent, reintroduced quietly.
-pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
-    fn class(c: &mut EffectClass, map: &[u16]) {
-        if let EffectClass::User(i) = c {
-            // Out of range means the seed declared fewer classes than
-            // it referenced, which the parser already rejected; leave
-            // it alone rather than inventing an index.
-            if let Some(&to) = map.get(*i as usize) {
-                *i = to;
-            }
-        }
-    }
-    fn classes(cs: &mut [EffectClass], map: &[u16]) {
-        for c in cs {
-            class(c, map);
-        }
-    }
-    fn fn_decl(fd: &mut FnDecl, map: &[u16]) {
-        for a in &mut fd.effects {
-            match a {
-                EffectAssert::Forbid(cs)
-                | EffectAssert::Causes(cs)
-                | EffectAssert::Carries(cs)
-                | EffectAssert::Only(cs) => classes(cs, map),
-                // Subjects, not classes.
-                EffectAssert::PublishSet(_) => {}
-                EffectAssert::NoPanic => {}
-            }
-        }
-        // #382 phase 3: `@budget(<user class> = N)` carries an
-        // interned index too.
-        for (d, _) in &mut fd.quantities {
-            if let QuantDim::UserClass(i) = d {
-                if let Some(&to) = map.get(*i as usize) {
-                    *i = to;
-                }
-            }
-        }
-    }
-    fn claim_set(s: &mut ClaimSet, map: &[u16]) {
-        if let ClaimSet::Effects { class: c, .. } = s {
-            class(c, map);
-        }
-    }
-    for item in items {
-        match item {
-            TopDecl::Fn(fd) => fn_decl(fd, map),
-            TopDecl::Locus(l) => {
-                if let Some(pe) = &mut l.phase_effects {
-                    for (_, cs) in &mut pe.phases {
-                        classes(cs, map);
-                    }
-                }
-                for m in &mut l.members {
-                    match m {
-                        LocusMember::Fn(fd) => fn_decl(fd, map),
-                        // GH #382: `effects(<class>)` in claim
-                        // position carries a User index too — a
-                        // stale one silently means a DIFFERENT
-                        // class in the merged table, the exact
-                        // aliasing bug this pass exists to prevent.
-                        LocusMember::Claims(cb) => {
-                            claims_block(cb, map);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            TopDecl::Perspective(p) => {
-                for m in &mut p.members {
-                    if let PerspectiveMember::Fn(fd) = m {
-                        fn_decl(fd, map);
-                    }
-                }
-            }
-            // #392 thread 2: library-tier blocks carry the same
-            // class-index positions as main's.
-            TopDecl::Claims(cb) => claims_block(cb, map),
-            // Modules nest arbitrarily deep.
-            TopDecl::Module(m) => remap_user_effects(&mut m.items, map),
-            _ => {}
-        }
-    }
-
-    fn claims_block(cb: &mut ClaimsBlock, map: &[u16]) {
-        for e in &mut cb.entries {
-            match &mut e.form {
-                ClaimForm::ForbidReaches { src, dst, .. } => {
-                    claim_set(src, map);
-                    claim_set(dst, map);
-                }
-                ClaimForm::Bound { class: c, .. } => class(c, map),
-                ClaimForm::OnlyEdges { .. }
-                | ClaimForm::Require { .. }
-                | ClaimForm::RequireSealed { .. }
-                | ClaimForm::RequireAttributed { .. }
-                | ClaimForm::Cover { .. }
-                | ClaimForm::Count { .. } => {}
-            }
-        }
     }
 }
 
