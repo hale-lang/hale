@@ -117,38 +117,6 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
             .all(|(x, y)| x.name == y.name && x.ty == y.ty)
 }
 
-/// GH #831 — the declaration a CONSTRUCTION path names.
-///
-/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`, not a
-/// nominal type of its own (GH #759, spec `types.md` § "Type
-/// aliases"), so a struct / locus literal (`Row2 { id: 1 }`) and an
-/// enum-variant path (`Row2::V`) spelled with the alias name build
-/// the target's declaration. `build_top_scope` has already expanded
-/// every chain, so this is one hop.
-///
-/// `None` — and the caller keeps the name as written, with whatever
-/// diagnostic it already produced — when the name is not an alias,
-/// or when its target is not a NAME: nothing is constructible from
-/// `type Thing = Int;` or `type TwoRows = [Row; 2];` with `{ }` or
-/// `::`. `resolve_construction_aliases` draws the same line over the
-/// same declarations, which is what keeps `check` and `build` from
-/// disagreeing about a literal.
-///
-/// Every entry point runs that pass in its desugar sequence before
-/// the check (F.40 phase 2.1b), so for a program a verb checks this
-/// hop finds no alias left to follow. It answers for a caller that
-/// checks a bundle without the sequence (`check_bundle` over a
-/// fragment).
-fn construction_target(top: &TopScope, name: &str) -> Option<String> {
-    match top.lookup(name) {
-        Some(TopSymbol::Type(TypeInfo {
-            kind: TypeKind::Alias(Ty::Named(target)),
-            ..
-        })) => Some(target.clone()),
-        _ => None,
-    }
-}
-
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -224,18 +192,10 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
                         _ => continue,
                     };
                     {
-                        // GH #831: the arm may spell the enum with
-                        // an alias of it (`type C2 = Color; C2::Red
-                        // -> ...`). An alias is a second spelling,
-                        // so the arm covers the same variant —
-                        // without this, a match whose arms all use
-                        // the alias read as covering nothing, and
-                        // one with a `_` arm checked clean and then
-                        // failed to BUILD ("constructor pattern:
-                        // unknown enum").
-                        let resolved = construction_target(top, enum_seg);
-                        let enum_seg: &str =
-                            resolved.as_deref().unwrap_or(enum_seg);
+                        // GH #831: an arm spelled with an alias of the
+                        // enum (`type C2 = Color; C2::Red -> ...`) was
+                        // rewritten to the enum's own name by the
+                        // desugar sequence, before the check.
                         let matches_template_or_monomorph =
                             enum_seg == *name
                                 || enum_seg.starts_with(&mangle_prefix);
@@ -14740,12 +14700,10 @@ impl<'a> Checker<'a> {
                 // Color = Color::Red;` fail with `expected Color,
                 // got ?`).
                 if qn.segments.len() == 2 {
-                    // GH #831: the head may be an alias of the enum
-                    // (`type C2 = Color; C2::Red`) — a second
-                    // spelling, so it constructs the same variant.
-                    let spelled = &qn.segments[0].name;
-                    let resolved = construction_target(self.top, spelled);
-                    let enum_name = resolved.as_ref().unwrap_or(spelled);
+                    // GH #831: a head that is an alias of the enum
+                    // (`type C2 = Color; C2::Red`) was rewritten to
+                    // the enum's own name by the desugar sequence.
+                    let enum_name = &qn.segments[0].name;
                     let variant_name = &qn.segments[1].name;
                     if let Some(TopSymbol::Type(TypeInfo {
                         kind: TypeKind::Enum(variants),
@@ -15383,9 +15341,7 @@ impl<'a> Checker<'a> {
                     if qn.segments.len() == 2 {
                         // GH #831: through an alias of the enum too,
                         // exactly as the payload-less form above.
-                        let spelled = &qn.segments[0].name;
-                        let resolved = construction_target(self.top, spelled);
-                        let enum_name = resolved.as_ref().unwrap_or(spelled);
+                        let enum_name = &qn.segments[0].name;
                         let variant_name = &qn.segments[1].name;
                         if let Some(TopSymbol::Type(TypeInfo {
                             kind: TypeKind::Enum(variants),
@@ -17284,17 +17240,14 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let spelled: &String =
+        // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;` reached
+        // here as `Row { id: 1 }`: the desugar sequence resolved the
+        // alias before the check, so everything below — the monomorph
+        // path, the struct / locus / perspective dispatch, the field
+        // validation — runs against the declaration the chain ends at
+        // exactly as if the author had written its name.
+        let name: &String =
             qualified_resolved.as_ref().unwrap_or(&path.segments[0].name);
-        // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;`. The
-        // alias is transparent in every type position already; a
-        // literal spelled with it builds the declaration the chain
-        // ends at. Everything below — the monomorph path, the
-        // struct / locus / perspective dispatch, the field
-        // validation — then runs against that declaration exactly as
-        // if the author had written its name.
-        let resolved_alias = construction_target(self.top, spelled);
-        let name: &String = resolved_alias.as_ref().unwrap_or(spelled);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

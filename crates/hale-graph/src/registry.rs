@@ -317,7 +317,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["import aliases", "the seed cache", "hale_stdlib::PATH_RENAMES", "declaration names"],
         producer: Some(site(IMPORTS, "resolve_imports")),
         legacy: &[
-            legacy(CHECK, "construction_target", "one alias hop in the top scope; a no-op for every program an entry point checks, whose construction sites the desugar sequence already resolved, and the answer for a caller that checks a fragment without the sequence (`check_bundle`)", "every checker entry runs the desugar sequence"),
             legacy(TY_RESOLVED, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in the resolved-program step's clone", "one resolution, shared"),
             legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
             legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),
@@ -325,7 +324,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[consumer("check"), consumer("build"), consumer("lsp (hover, definition, references)")],
         invariants: &[
             "a name resolves once per snapshot; the checker and lowering see the same target",
-            "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name",
+            "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name; the checker follows no alias of its own, so a fragment checked without the sequence is not resolved a second way",
             "a library is named once per load (`AliasScopes::name_library`), by its canonical path, and no two libraries of a load share a name: the symbols an imported library is mangled under are its own",
         ],
         missing: Missing::Error,

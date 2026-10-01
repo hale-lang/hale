@@ -12,7 +12,15 @@ use hale_syntax::parse_source;
 use hale_types::symbol::Bundle;
 
 fn diags(src: &str) -> Vec<String> {
-    let program = parse_source(src).expect("parse");
+    let mut program = parse_source(src).expect("parse");
+    // The desugar sequence is what resolves a construction spelled with
+    // an alias; every entry point runs it before the check, and the
+    // checker no longer follows the alias itself.
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
+    )
+    .expect("no --api, nothing to refuse");
     let mut programs: std::collections::BTreeMap<
         String,
         &hale_syntax::ast::Program,
@@ -252,11 +260,11 @@ fn alias_of_a_generic_instantiation_is_its_monomorph() {
 
 /// F.40 phase 2.1b: the desugar sequence every entry point runs before
 /// its check resolves the alias at every construction position, across
-/// the files of a bundle, so the checker's own hop
-/// (`construction_target`) has nothing left to do for a program a verb
-/// checks: no struct literal, variant path or constructor pattern
-/// still names the alias. The hop stays for a caller that checks a
-/// bundle without the sequence (a fragment, as `diags` above does).
+/// the files of a bundle: no struct literal, variant path or
+/// constructor pattern still names the alias. (F.40 phase 3, C2: the
+/// checker's own one-hop follow, `construction_target`, is gone, so
+/// this is the only place the alias is resolved; `diags` above runs
+/// the sequence for the fragments it checks.)
 ///
 /// Last in the file: the corpus harvests this file's programs by
 /// ordinal, and the pinned baselines key them by it.
@@ -319,4 +327,40 @@ fn the_scope_carries_the_checkers_name_table() {
     assert_eq!(names.alias_target("Thing"), Some(&hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Int)));
     assert_eq!(names.import_target("lib::Row"), Some("Row"));
     assert!(names.keys().any(|k| k.starts_with("__Std")), "the bundled stdlib's types");
+}
+
+/// One resolution (F.40 phase 3, C2): a construction spelled with an
+/// alias is resolved by the desugar sequence and by nothing in the
+/// checker. Through `check_program`, which runs the sequence, the
+/// literal, the variant path and the match arm check clean; the same
+/// program handed to the checker unresolved is not quietly followed
+/// through the alias a second time.
+#[test]
+fn the_sequence_is_the_one_resolution_of_a_construction_alias() {
+    // plain literal, so the corpus does not harvest it
+    let src = "type Row { id: Int; }\n\
+               type Row2 = Row;\n\
+               type Color = enum { Red, Green };\n\
+               type C2 = Color;\n\
+               fn main() {\n\
+                   let r = Row2 { id: 1 };\n\
+                   let c = C2::Red;\n\
+                   match c {\n\
+                       C2::Red -> { println(r.id); },\n\
+                       C2::Green -> { println(0); },\n\
+                   }\n\
+               }\n";
+    let program = parse_source(src).expect("parse");
+    let through_sequence = hale_types::check_program(&program);
+    assert!(through_sequence.is_empty(), "{through_sequence:?}");
+
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let bundle = Bundle::new(programs);
+    let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
+    let unresolved = hale_types::check::check_bundle(&bundle, &scope, true);
+    assert!(
+        !unresolved.is_empty(),
+        "the checker followed an alias the sequence had not resolved"
+    );
 }
