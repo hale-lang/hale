@@ -23,7 +23,7 @@ Not phase 3, by the Final direction: `@evented` (F.41), the unit dialect, a `Bac
 
 Four lines run in their own worktrees, after the prerequisites. Each step names its job shape (§6), the model that does it, its oracle, and the registry rows it closes (the manifest in §10 is the authority).
 
-### Prerequisites (week one, before P1 and L1)
+### Prerequisites (wave 1, before P1 and L1)
 
 | step | work | shape · model | oracle | closes |
 |---|---|---|---|---|
@@ -42,7 +42,7 @@ The layer that does not exist. Today the birth sequence is the order of emit cal
 | L4 | **Emission reads the plan**, one spine per commit: the birth order, the deferred entry teardown, the frame flush, the three `fn main` exits, the reclaim spine, the dissolve cascade, restart and resume; codegen's six `main` comparisons read the entry row. Each commit is shadowed by the corpus binaries through their obligations, not by raw log equality: the trace under L2 before and after is compared by instance correspondence, guarded event coverage, per-domain order and the required completion edges, with the order the contract declares irrelevant (independent actions on different pools) normalized away, so the gate is not sensitive to scheduling; and by the matrix sample. | S · Opus pane (34,900-line `codegen.rs`; a reader pane watches each commit) | the obligation comparison holds; matrix sample green; corpus binaries' outputs identical | `lifecycle_order` × 9, `entrypoint` × 6, `restart` × 2 |
 | L5 | **The failure-delivery protocol and #1208's second crash.** Against the plan: construction-time delivery before the owner's mailbox is active, retention of the child and payload until the handler completes, progress during drain and join (a parent waiting for a child must not deadlock with a child waiting for its parent). Heap-backed payload tests, exactly-once teardown, deadlines, execution-domain assertions, ASan. The GenMC model (`verification/cascade_model.c`) states its proof boundary as the verification guide requires: the production functions and synchronization it mirrors (`lotus_failure_hold`, settle, defer, await; the mailbox), the bounded configurations, and the safety assertions it checks; condition-variable liveness is excluded there, so missed-wakeup and join-progress claims are carried by the deadline and matrix evidence, not the model. | J · driver writes the decision text; Opus pane implements; Astra reviews before merge | the matrix cells for cross-pool failure flip from `KNOWN_OPEN` to green; the GenMC model passes within its stated boundary | the regressions named in L0's table |
 
-Size: L0 one pane-day; L1 two; L2 two; L3 two; L4 four to five; L5 two to three.
+Size, at the pace phases 0–2 set (a phase in about a day of pane time): L0 and L1 a few hours each; L2, L3 and L5 half a day each; L4 a day, one spine per commit.
 
 ### Line E — effects as families (layer 4)
 
@@ -54,7 +54,7 @@ Size: L0 one pane-day; L1 two; L2 two; L3 two; L4 four to five; L5 two to three.
 | E3b | **The reclaim model corrected.** The `ReclaimScope` row names a known defect: a scratch-local free fn reclaims its non-escaping allocations at return, and the checker's model says `EnclosingLocus` for every non-sent allocation. The correction: one model, consistent with the scratch-local classification E3a moved, with the expected dump change pinned per site (which sites move from `reclaim@locus-dissolve` to reclaim at the fn's return) and any advisory wording change pinned; `spec/verification.md` § memory-bound proofs says the rule. | J · driver writes the decision; Opus pane implements; Astra reviews | the pinned dump diff and nothing else; binaries identical (the model is diagnostic) | `alloc_summary` × 1 (`ReclaimScope`) |
 | E4 | **The resolved program carries the checker's types.** A typed-body table lowering reads instead of re-inferring: accumulator element types, generic argument inference and param unification, the monomorph table keyed by identity per snapshot, the form's sync mode, interface conformance for storage routing, the fallible-call law once stdlib calls are typed. | S · Opus pane (the table's shape is the driver's) | corpus binaries identical; `generic_monomorph_agreement` and the matrix green | `expression_typing` × 1, `generics` × 3, `forms` × 1, `surfaces` × 2, `bare_fallible` × 1 |
 
-Size: E1 two pane-days; E2 one; E3a three; E3b one; E4 three.
+Size: E1 and E3a half a day each; E2, E3b and E4 a few hours each.
 
 ### Line P — placement, bindings, targets (layer 5)
 
@@ -64,7 +64,7 @@ Size: E1 two pane-days; E2 one; E3a three; E3b one; E4 three.
 | P2 | **Binding rows.** The binding-role rule once (`binding_role_for`), the bound-topic set once, the transport capability table a row of the matrix (P3), codegen reads the binding rows for transport, adapter, codec and producer-versus-attach; the transport-loss handler named by the bindings family. | S · Sonnet pane after P1 | binding diagnostics identical; `binding_ingest` and replay tests green | `bindings` × 5, `handler_routing` × 1 |
 | P3 | **One capability matrix, compared under the same effective target.** `CapabilityMatrix` (target × capability → lower or reject, with the witness) consulted by the driver before lowering on every entry point: the wasm-unavailable stdlib table, the `wasm_target` source flag, `link_wasm`'s refusals and export list, the per-site codegen skips, the `is_wasm` sites, FFI type portability, `TargetSpec`. The oracle: old and new agree under the same effective target (source-declared, then the CLI's `--target`, with precedence tests); `hale check` and `hale build` agree on target admission under equivalent source and configuration; paired cases, one program allowed natively and rejected under wasm, with pinned witnesses; a portable subset of the corpus whose results agree across targets; the wasm capability statement in `docs/src/systems/webassembly.md` generated from the matrix, with a test that the doc equals the rendering. Bringing the refusals `hale build` makes today into `hale check` is an intentional diagnostic change: a decision line, a fragment, a J commit reviewed. | D then M, with one J commit · driver fixes the matrix's shape; Sonnet pane consolidates the sites; Opus for the J commit | the paired cases and precedence tests; the portable subset identical across targets; the doc test | `target_capability` × 7, `dispatch` × 1 (`bus_payload_is_flat` as a gate column) |
 
-Size: P1 three pane-days (one for the correspondence); P2 one; P3 two.
+Size: P1 half a day (the correspondence first); P2 and P3 a few hours each.
 
 ### Line C — carry-overs and small closes
 
@@ -89,9 +89,9 @@ Phase 2 made the editor answer `hale check` exactly and pay its price (1.9 s on 
 
 ## 4. Order, parallelism and file ownership
 
-1. **Week one:** E0 and L0 (the entry row and the lifecycle inventory, both decision-bearing, the driver's first), E1 and C6 in their worktrees; P1's correspondence written by the driver while E0 lands; P1 starts when E0 has merged.
-2. **Week two:** L1–L3 (the plan, the oracle, the matrix) while E3a, P2 and P3 run; C1–C3.
-3. **Week three:** L4 (the spines, one a day) and L5; E2, E3b and E4; C4, C5 and C7 after their decisions and their producers; X1.
+1. **Wave 1 (hours, in parallel):** E0 and L0 (the entry row and the lifecycle inventory, both decision-bearing, the driver's first), E1 and C6 in their worktrees; P1's correspondence written by the driver while E0 lands; P1 starts when E0 has merged.
+2. **Wave 2 (about a day):** L1–L3 (the plan, the oracle, the matrix) while E3a, P2 and P3 run; C1–C3.
+3. **Wave 3 (about a day; the lifecycle runtime work is the uncertain part, new design rather than a move):** L4 (the spines, one a day) and L5; E2, E3b and E4; C4, C5 and C7 after their decisions and their producers; X1.
 4. **Close:** exercises re-measured (#1208 must move: the lifecycle fact in a row, the scratch-local fact in a row), the bench against v0.22.0, the timing and latency tables, the registry's state against §10, the exit comment, a prerelease tag on Riley's ask.
 
 Shared files, and which PR establishes each surface (the registry is not the only one):
