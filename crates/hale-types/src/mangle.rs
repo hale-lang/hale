@@ -677,10 +677,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
             {
                 let span = qn.segments[0].span;
-                *subject = BusSubject::Topic(Ident {
-                    name: mangled.clone(),
-                    span,
-                });
+                *subject = BusSubject::Topic(Ident::new(mangled.clone(), span));
                 return;
             }
         }
@@ -728,10 +725,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                         && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
                     {
                         let span = qn.segments[0].span;
-                        *subject = Expr::Ident(Ident {
-                            name: mangled.clone(),
-                            span,
-                        });
+                        *subject = Expr::Ident(Ident::new(mangled.clone(), span));
                         return;
                     }
                 }
@@ -952,10 +946,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                             && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
                         {
                             let span = m.segments[0].span;
-                            m.segments = vec![Ident {
-                                name: mangled.clone(),
-                                span,
-                            }];
+                            m.segments = vec![Ident::new(mangled.clone(), span)];
                             break;
                         }
                     }
@@ -1126,10 +1117,7 @@ fn rewrite_claim_topic_refs(
                 && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
             {
                 let span = t.segments[0].span;
-                t.segments = vec![Ident {
-                    name: mangled.clone(),
-                    span,
-                }];
+                t.segments = vec![Ident::new(mangled.clone(), span)];
                 return;
             }
         }
@@ -1297,7 +1285,7 @@ impl<'a> Mangler<'a> {
         };
         let span = q.segments[0].span;
         q.segments.drain(1..keep);
-        q.segments[0] = Ident { name: target.clone(), span };
+        q.segments[0] = Ident::new(target.clone(), span);
         true
     }
 

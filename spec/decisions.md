@@ -3424,7 +3424,10 @@ rather than against the expression.
   a returned expression, so `let t = <carrier>; return t;` is the same
   program as `return <carrier>;` — which is what
   `spec/semantics.md` § *Dissolve timing rules* already says. Once,
-  and only when the name is bound exactly once and never re-assigned.
+  and only when the binding the return names is never re-assigned. The
+  name is the declaration the snapshot resolves it to (F.40 phase 2,
+  use-site identity: `binding_of`), so an inner `let` spelling it is
+  another binding (GH #1140) and the fn is a factory of the outer one.
 * **A `placement { }` entry is not a slot.** It travels as `(entry,
   class)` scoped to the field's initialiser and is claimed by the
   instantiation whose owner is `Placement(entry)`. As a one-shot slot

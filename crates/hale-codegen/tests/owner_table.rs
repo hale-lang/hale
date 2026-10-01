@@ -114,8 +114,8 @@ fn table_of(src: &str) -> OwnerTable {
     // because `fresh_factories` happened to agree.
     let seed: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     // The pass keys rows by the snapshot's ids and numbers nothing.
-    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
-    resolve_owners(&p, &seed, &[]).expect("every node is minted")
+    let ids = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    resolve_owners(&p, &ids, &seed, &[]).expect("every node is minted")
 }
 
 /// The one row written in `decl` at `position` naming `name`.
@@ -574,7 +574,7 @@ fn the_table_keys_every_locus_producing_node_it_decides_by_its_minted_id() {
     ))
     .expect("parse");
     let snap = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
-    let t = resolve_owners(&p, &BTreeMap::new(), &[]).expect("every node is minted");
+    let t = resolve_owners(&p, &snap, &BTreeMap::new(), &[]).expect("every node is minted");
     assert!(!t.is_empty());
     for (id, _) in t.rows() {
         assert_ne!(
@@ -818,9 +818,9 @@ locus Holder {
 fn main() { Holder { }; }
 "#;
     let mut p = hale_syntax::parse_source(src).expect("parse");
-    hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
+    let ids = hale_types::snapshot::mint([("app.hl", &mut p)], &[]);
     assert!(
-        hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]).is_ok(),
+        hale_codegen::ownership::resolve_owners(&p, &ids, &BTreeMap::new(), &[]).is_ok(),
         "a fully minted program resolves"
     );
     // A late-arriving unnumbered literal, built after the mint.
@@ -828,7 +828,7 @@ fn main() { Holder { }; }
     let mut late = hale_syntax::parse_source(late_src).expect("parse");
     let literal_at = late_src.find("Item {").expect("the literal") as u32;
     p.items.extend(late.items.drain(..));
-    match hale_codegen::ownership::resolve_owners(&p, &BTreeMap::new(), &[]) {
+    match hale_codegen::ownership::resolve_owners(&p, &ids, &BTreeMap::new(), &[]) {
         Err(hale_codegen::ownership::OwnershipError::Unminted { span, .. }) => {
             assert_eq!(span.start.0, literal_at, "the error names the late literal's span");
         }

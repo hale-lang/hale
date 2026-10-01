@@ -427,9 +427,10 @@ fn count_dim(
 /// the bus graph); callers without a graph pass a `|_| 1`.
 pub fn quantitative_diags(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<Diag> {
-    quantitative_report(programs, &[], fanout_of).0
+    quantitative_report(programs, ids, &[], fanout_of).0
 }
 
 /// #392 §8: every quantitative `@budget(<dim> = N)` contract as a
@@ -437,13 +438,15 @@ pub fn quantitative_diags(
 /// diagnostics, so the two cannot disagree.
 pub fn certificate_rows(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<crate::effects::LoweredCertificate> {
-    quantitative_report(programs, &[], fanout_of).1
+    quantitative_report(programs, ids, &[], fanout_of).1
 }
 
 fn quantitative_report(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     import_renames: &[(Vec<String>, String)],
     fanout_of: &FanoutOf<'_>,
 ) -> (
@@ -487,6 +490,7 @@ fn quantitative_report(
     // costs vanish behind the seed boundary.
     let summary = alloc_summary::summarize_programs_with_renames(
         programs,
+        ids,
         import_renames,
     );
     let frames = frame_map(programs);
@@ -644,11 +648,12 @@ fn quantitative_report(
 /// imported publisher. Every dimension had the defect.
 pub fn certificate_groups(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     import_renames: &[(Vec<String>, String)],
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
     let (diags, rows, ranges) =
-        quantitative_report(programs, import_renames, fanout_of);
+        quantitative_report(programs, ids, import_renames, fanout_of);
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {

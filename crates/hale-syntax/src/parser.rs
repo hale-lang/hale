@@ -418,7 +418,7 @@ impl Parser {
             let span = self.peek_token().span;
             self.reserved_word_as_name(kw, span, what);
             self.bump();
-            return Ok(Ident { name: kw.to_string(), span });
+            return Ok(Ident::new(kw, span));
         }
         self.expect_ident(what)
     }
@@ -428,7 +428,7 @@ impl Parser {
             TokenKind::Ident(name) => {
                 let span = self.peek_token().span;
                 self.bump();
-                Ok(Ident { name, span })
+                Ok(Ident::new(name, span))
             }
             other => {
                 let span = self.peek_token().span;
@@ -468,20 +468,20 @@ impl Parser {
         if let Some(name) = try_member_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
-            return Ok(Ident { name: name.to_string(), span });
+            return Ok(Ident::new(name, span));
         }
         match self.peek().clone() {
             TokenKind::Ident(name) => {
                 let span = self.peek_token().span;
                 self.bump();
-                Ok(Ident { name, span })
+                Ok(Ident::new(name, span))
             }
             other => {
                 let span = self.peek_token().span;
                 if let Some(kw) = other.keyword_lexeme() {
                     self.reserved_word_as_name(kw, span, what);
                     self.bump();
-                    return Ok(Ident { name: kw.to_string(), span });
+                    return Ok(Ident::new(kw, span));
                 }
                 Err(Diag::parse(
                     span,
@@ -499,7 +499,7 @@ impl Parser {
         if let Some(name) = try_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
-            return Ok(Ident { name: name.to_string(), span });
+            return Ok(Ident::new(name, span));
         }
         self.expect_ident(what)
     }
@@ -518,10 +518,7 @@ impl Parser {
         while matches!(self.peek(), TokenKind::ColonColon) {
             self.bump();
             let seg = self.expect_ident(what)?;
-            name = Ident {
-                name: format!("{}::{}", name.name, seg.name),
-                span: name.span.merge(seg.span),
-            };
+            name = Ident::new(format!("{}::{}", name.name, seg.name), name.span.merge(seg.span));
         }
         Ok(name)
     }
@@ -1692,7 +1689,7 @@ impl Parser {
                         }
                     };
                     self.bump();
-                    during = Some(Ident { name, span: t.span });
+                    during = Some(Ident::new(name, t.span));
                 }
                 TokenKind::Ident(s) if s == "avoiding" => {
                     self.bump();
@@ -1904,7 +1901,7 @@ impl Parser {
             let class_name = match &tok.kind {
                 TokenKind::Publish => {
                     self.bump();
-                    Ident { name: "publish".to_string(), span: tok.span }
+                    Ident::new("publish", tok.span)
                 }
                 _ => self.expect_ident("effect class name")?,
             };
@@ -2460,7 +2457,7 @@ impl Parser {
         if let Some(name) = try_member_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
-            return Ok(Ident { name: name.to_string(), span });
+            return Ok(Ident::new(name, span));
         }
         self.expect_ident(what)
     }
@@ -4039,10 +4036,7 @@ impl Parser {
         while matches!(self.peek(), TokenKind::ColonColon) {
             self.bump();
             let seg = self.expect_ident(ctx)?;
-            id = Ident {
-                name: format!("{}::{}", id.name, seg.name),
-                span: id.span.merge(seg.span),
-            };
+            id = Ident::new(format!("{}::{}", id.name, seg.name), id.span.merge(seg.span));
         }
         Ok(id)
     }
@@ -4759,10 +4753,7 @@ impl Parser {
             let close = self.expect(TokenKind::RBrace, "}")?;
             let _ = lb;
             return Ok(TransportSpec::Adapter {
-                locus: Ident {
-                    name: head_name,
-                    span: head_span,
-                },
+                locus: Ident::new(head_name, head_span),
                 inits,
                 span: head_span.merge(close.span),
             });
@@ -5825,10 +5816,7 @@ impl Parser {
             _ => return self.expect_ident("recovery event name"),
         };
         self.bump();
-        Ok(Ident {
-            name: name.to_string(),
-            span: tok.span,
-        })
+        Ok(Ident::new(name, tok.span))
     }
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {
@@ -7430,7 +7418,7 @@ impl Parser {
                     let name = if let TokenKind::IntLit(n) = self.peek().clone() {
                         let span = self.peek_token().span;
                         self.bump();
-                        Ident { name: n.to_string(), span }
+                        Ident::new(n.to_string(), span)
                     } else {
                         self.expect_member_name("field or method name")?
                     };
@@ -7724,10 +7712,7 @@ impl Parser {
                 if let Some(kw) = other.keyword_lexeme() {
                     if self.reserved_as_name.contains(&kw) {
                         self.bump();
-                        return Ok(Expr::Ident(Ident {
-                            name: kw.to_string(),
-                            span,
-                        }));
+                        return Ok(Expr::Ident(Ident::new(kw, span)));
                     }
                 }
                 Err(Diag::parse(
@@ -7964,10 +7949,7 @@ impl Parser {
                     let call = match &spec_text {
                         Some(sp) => Expr::Call {
                             id: crate::ast::NodeId::NONE,
-                            callee: Box::new(Expr::Ident(Ident {
-                                name: FMT_BUILTIN.to_string(),
-                                span: isp,
-                            })),
+                            callee: Box::new(Expr::Ident(Ident::new(FMT_BUILTIN, isp))),
                             args: vec![
                                 expr,
                                 Expr::Literal(
@@ -7979,10 +7961,7 @@ impl Parser {
                         },
                         None => Expr::Call {
                             id: crate::ast::NodeId::NONE,
-                            callee: Box::new(Expr::Ident(Ident {
-                                name: "to_string".to_string(),
-                                span: isp,
-                            })),
+                            callee: Box::new(Expr::Ident(Ident::new("to_string", isp))),
                             args: vec![expr],
                             span: isp,
                         },
@@ -8073,10 +8052,7 @@ fn expr_to_lvalue(expr: Expr, op_span: Span) -> Result<LValue, Diag> {
             // self-headed LValue.
             let mut lv = match *receiver {
                 Expr::KwSelf(s) => LValue {
-                    head: Ident {
-                        name: "self".to_string(),
-                        span: s,
-                    },
+                    head: Ident::new("self", s),
                     tail: Vec::new(),
                     span: s,
                 },
@@ -8090,10 +8066,7 @@ fn expr_to_lvalue(expr: Expr, op_span: Span) -> Result<LValue, Diag> {
         Expr::Index { receiver, index, span } => {
             let mut lv = match *receiver {
                 Expr::KwSelf(s) => LValue {
-                    head: Ident {
-                        name: "self".to_string(),
-                        span: s,
-                    },
+                    head: Ident::new("self", s),
                     tail: Vec::new(),
                     span: s,
                 },

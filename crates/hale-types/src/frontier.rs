@@ -378,18 +378,20 @@ pub struct CausesReport {
 /// joins one law to one law by.
 pub fn causes_reports(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     graph: &BusGraph,
 ) -> Vec<CausesReport> {
-    causes_inner(programs, graph)
+    causes_inner(programs, ids, graph)
 }
 
 /// `@effects(causes: {…})` — check the declared causal set against
 /// what the fn can actually cause through bus edges.
 pub fn causes_diags(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     graph: &BusGraph,
 ) -> Vec<Diag> {
-    causes_inner(programs, graph)
+    causes_inner(programs, ids, graph)
         .into_iter()
         .filter_map(|r| r.diag)
         .collect()
@@ -397,6 +399,7 @@ pub fn causes_diags(
 
 fn causes_inner(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     graph: &BusGraph,
 ) -> Vec<CausesReport> {
     // The seed's user effect-class table, so an excess class renders
@@ -452,7 +455,7 @@ fn causes_inner(
     if roots.is_empty() {
         return Vec::new();
     }
-    let summary = alloc_summary::summarize_programs(programs);
+    let summary = alloc_summary::summarize_programs(programs, ids);
     let ffi: BTreeSet<String> = programs
         .iter()
         .flat_map(|p| p.items.iter())

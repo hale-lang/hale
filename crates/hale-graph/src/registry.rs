@@ -251,6 +251,8 @@ const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
+const TY_SNAPSHOT: &str = "crates/hale-types/src/snapshot.rs";
+const SITES: &str = "crates/hale-syntax/src/sites.rs";
 const OPTIONS: &str = "crates/hale-cli/src/shared/options.rs";
 const BUILD_ENV: &str = "crates/hale-cli/src/build_env.rs";
 const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
@@ -578,16 +580,14 @@ pub const FAMILIES: &[Family] = &[
             legacy("crates/hale-types/src/borrow_lifetime.rs", "accepts", "the borrow-lifetime law rebuilds the accept sets from the AST for itself", "reads `accepts_ancestor`"),
             legacy(CHECK, "check_unowned_subscriber_locus", "the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others", "phase 3, as a judgment migration with spec text: measured on the 2.3 checker branch, reading ownership from the graph changes three shapes (an aliased accept type stops erroring, a false positive today; a module-path accept type and a generic accept type start), and two loci of one name flip with declaration order, since this index keeps the last declaration and the scope the first"),
             legacy(CG_INST, "parent_accepts_us", "a monomorphised parent reads its own accept param: graph rows are per template", "the graph keys rows by the template's identity and lowering asks by it (phase 2)"),
-            legacy("crates/hale-types/src/borrow_lifetime.rs", "returned_decls", "the borrow-lifetime law resolves a returned binding for itself, by span under its own rules", "use-site identity: one resolution keyed by the use's SiteId (phase 2)"),
-            legacy(ALLOC, "collect_escaping_names", "the allocation summary's escape tag resolves a returned binding for itself, by NAME at statement level (an expression-bodied match arm and an expression block are not entered), so an inner shadow of the returned name is tagged `escaping=return` (the #1140 shape)", "use-site identity: one resolution keyed by the use's SiteId (phase 2)"),
         ],
         consumers: &[consumer_at("codegen", CG_INST, "site_owner"), consumer_at("borrow_lifetime", "crates/hale-types/src/borrow_lifetime.rs", "borrow_lifetime_diags"), consumer_at("model (dynamic births: the snapshot's graph)", SNAPSHOT, "demand_ownership_graph"), consumer("alloc_summary (eager-only accept sets)")],
         invariants: &[
             "a locus instantiation with no row is a CodegenError (F.39)",
             "ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files",
             "the ownership matrix stays green with an empty KNOWN_OPEN",
-            "`fresh_factories` is read by lowering and the checker with the bundle's import renames, and classifies a factory's returned binding by NAME: a returned name bound twice is no factory. The binding-keyed answer (`returned_bindings`) is folded in for lowering only (`extend_fresh_factories`), so the checker's self-containment rule still refuses to count as a factory a fn whose returned name is shadowed (the #1140 shape)",
-            "which declaration a `return r` names is resolved per body, four ways, because a use carries no identity: `returned_bindings` (by span, falling back to the name), `fresh_factories` (by name), borrow_lifetime's `returned_decls` (by span, under its own rules) and alloc_summary's `collect_escaping_names` (by name)",
+            "`fresh_factories` is read by lowering and the checker with the bundle's import renames; a factory's returned name is the declaration the snapshot resolves it to, so a fn whose returned name an inner `let` shadows is a factory of the outer binding (the #1140 shape; its escape walk still reads every binding spelling the name as the returned one, the conservative side). The carrier-arm extension (`extend_fresh_factories`) is folded in for lowering only",
+            "which declaration a returned or escaping name denotes is read from the snapshot (`Snapshot::declaration_of` over `binding_of`, resolved once by the mint), never resolved again: `returned_bindings` (the binding facts and the pre-pass), `fresh_factories`, borrow_lifetime's `returned_decls` and alloc_summary's escape tags each key a binding by its declaration's SiteId; a `let` or a use the snapshot did not mint answers by name in `returned_bindings` (the conservative side) and resolves to nothing elsewhere, and every entry point mints",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-codegen/tests/owner_table.rs", "crates/hale-codegen/tests/ownership_matrix.rs", "crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/ownership_bubble.rs"],
@@ -944,13 +944,17 @@ pub const FAMILIES: &[Family] = &[
             legacy(ALLOC, "ReclaimScope", "the checker's reclaim model, stale for scratch-local fns since #1208", "one model"),
         ],
         consumers: &[consumer("check (unbounded allocation, hot path)"), consumer("lsp (hale/allocSummary)"), consumer("claims (@budget)"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer("resource_budget")],
-        invariants: &["the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment"],
+        invariants: &[
+            "the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment",
+            "a body's escape tags key a binding by the declaration its escaping uses name (`Snapshot::declaration_of`), so an inner shadow of a returned name is its own, local binding (the #1140 shape); programs minted by different snapshots are summarized each with its own identities (`summarize_identified`: a bundle's programs beside the bundled stdlib's analysis copy)",
+        ],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/hot_path_alloc.rs", "crates/hale-codegen/tests/scratch_local_free_fn.rs", "crates/hale-codegen/tests/fn_nonalloc_add.rs", "crates/hale-codegen/tests/method_scratch_elision.rs"],
         spec: &["spec/memory.md § Allocation routing", "spec/styleguide.md"],
-        owned: &[],
+        owned: &[site(ALLOC, "summarize_identified")],
         seams: &[
-            Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (STDLIB_BODIES, 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (TOPOLOGY, 1)] },
+            Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 2), (STDLIB_BODIES, 1)] },
             Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (LSP, 1)] },
         ],
     },
@@ -1246,11 +1250,10 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Identity,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (over the user program before the intra-locus rewrite, so the sends it records are minted on every path, and over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance.",
+        answers: "The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (numbered over the user program before the intra-locus rewrite, so the sends it records are numbered on every path, and minted over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance; and which declaration each use names (`binding_of`), resolved once by the mint.",
         inputs: &["seed_loading", "desugar_sequence"],
         producer: Some(site("crates/hale-types/src/snapshot.rs", "mint")),
         legacy: &[
-            legacy(TY_OWN, "BindingKey", "use sites inside the returned-bindings walk are resolved by span (identifiers are not minted sites); the row is keyed by the `let`'s snapshot identity", "use-site identity (phase 1.1 follow-up)"),
             legacy(M_IDS, "FunctionId", "model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings)", "same"),
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
@@ -1260,13 +1263,15 @@ pub const FAMILIES: &[Family] = &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
             "canonical ids need real equality and hashing; the AST's structural NodeId equality stays separate",
-            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step, over the user program before the intra-locus rewrite (the rewrite moves a send's id onto its call and records it) and over the merged program, each numbering only what an earlier mint did not see (phase 1.1b); every entry point calls it after its last desugar with its source map and the bundle carries the result (every verb and the LSP through the snapshot's load, the test harness through `Snapshot::from_program`, with no source map); the lowering view mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error",
+            "the identity's types are hale_graph::ids (SeedId, SiteId; phase 1.1a); hale_types::snapshot::mint numbers every site the AST walk hale_syntax::sites reaches with one counter: after the entry point's last desugar, and again, idempotently, in the resolved-program step over the merged program, numbering only what an earlier mint did not see (phase 1.1b); before the intra-locus rewrite that step only numbers the user program (`snapshot::number`: the rewrite moves a send's id onto its call and records it), which makes no snapshot of it; every entry point calls it after its last desugar with its source map and the bundle carries the result (every verb and the LSP through the snapshot's load, the test harness through `Snapshot::from_program`, with no source map); the lowering view mints with the bundle's seeds, the stdlib's sites under the named seed snapshot::STDLIB_SEED (its spans overlap the first file's); a generated site records the desugar that made it (Snapshot::origins); codegen's generic instantiation keeps the template's id, and the F.39 pre-pass numbers nothing: an unminted Struct or Call is an error",
+            "every identifier expression is a `Use` site and every name a declaration with no site of its own binds (a fn's or a hook's parameter, a match pattern's binding, a tuple `let`'s name, a `shm_write` binding) a `Binder` site, their ids on their `Ident`s (use-site identity, phase 2)",
+            "`binding_of` is one resolution per use, keyed by identity, never by name or span: the mint resolves each `Use` site, and each `Assign` site's head, to the `Let`, `For` or `Binder` site it names under the checker's scoping (`check::ScopeStack`), once per snapshot (the load's, the lowering view's, the bundled stdlib's analysis copy's once per process: `demand_gate` pins it); a use that names no local binding has no row; every reader asks `Snapshot::declaration_of` and resolves nothing itself, and every entry point mints (`check_program` too)",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs"],
+        tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs", "crates/hale-types/tests/snapshot.rs (each_use_resolves_to_the_declaration_in_scope)", "crates/hale-types/tests/demand_gate.rs (each_snapshot_resolves_its_uses_once)", "crates/hale-syntax/tests/sites.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
-        owned: &[],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 2), (SNAPSHOT, 1)] }],
+        owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1), (STDLIB_BODIES, 1), (ALLOC, 1), ("crates/hale-types/src/resource_budget.rs", 1)] }],
     },
     Family {
         name: "demand",

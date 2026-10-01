@@ -38,8 +38,9 @@ const SRC: &str = r#"
 
 #[test]
 fn witness_path_carries_the_call_chain() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
-    let summary = alloc_summary::summarize_programs(&[&program]);
+    let mut program = hale_syntax::parse_source(SRC).expect("parse");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let summary = alloc_summary::summarize_programs(&[&program], &ids);
 
     let root = FnKey::free_fn("root");
     let path = callgraph::witness_path(
@@ -63,8 +64,9 @@ fn witness_path_carries_the_call_chain() {
 
 #[test]
 fn witness_path_negative_when_nothing_matches() {
-    let program = hale_syntax::parse_source(SRC).expect("parse");
-    let summary = alloc_summary::summarize_programs(&[&program]);
+    let mut program = hale_syntax::parse_source(SRC).expect("parse");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let summary = alloc_summary::summarize_programs(&[&program], &ids);
     let root = FnKey::free_fn("clean");
     let path = callgraph::witness_path(
         &summary,

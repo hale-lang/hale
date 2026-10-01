@@ -34,17 +34,20 @@ use hale_syntax::parse_source;
 use hale_types::symbol::Bundle;
 
 fn diags_of(sources: &[(&str, &str)]) -> Vec<String> {
-    let parsed: Vec<(String, Program)> = sources
+    let mut parsed: Vec<(String, Program)> = sources
         .iter()
         .map(|(name, src)| {
             (name.to_string(), parse_source(src).expect("parse"))
         })
         .collect();
+    // Minted as a bundle is, so a returned name names its declaration.
+    let ids = hale_types::snapshot::mint(parsed.iter_mut().map(|(n, p)| (n.as_str(), p)), &[]);
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     for (name, p) in &parsed {
         programs.insert(name.clone(), p);
     }
-    let bundle = Bundle::new(programs);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
     let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
     ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
     ds.into_iter().map(|d| d.message).collect()
@@ -256,6 +259,33 @@ fn a_factory_that_returns_a_binding_is_reported() {
             }
         }
         fn make() -> Node { let fresh = Node { }; return fresh; }
+        fn main() { let node = Node { n: 1 }; println("n=", node.n); }
+    "#;
+    let ds = diags(src);
+    assert_eq!(containment(&ds).len(), 1, "one report: {:?}", ds);
+}
+
+/// GH #1140, the checker's half (F.40 phase 2, use-site identity): a
+/// factory whose returned name is shadowed inside its body is still a
+/// factory. The returned `fresh` is the outer binding, whatever the
+/// inner one spells; resolving by name saw `fresh` bound twice and
+/// refused to count `make` as a factory at all, so this recursion
+/// checked clean. The use now names its declaration (`binding_of`), and
+/// the rule sees the `Node` the outer binding builds.
+#[test]
+fn a_factory_whose_returned_name_is_shadowed_is_reported() {
+    let src = r#"
+        locus Node {
+            params {
+                n: Int = 0;
+                next: Node = make();
+            }
+        }
+        fn make() -> Node {
+            let fresh = Node { };
+            if true { let fresh = Node { n: 2 }; }
+            return fresh;
+        }
         fn main() { let node = Node { n: 1 }; println("n=", node.n); }
     "#;
     let ds = diags(src);

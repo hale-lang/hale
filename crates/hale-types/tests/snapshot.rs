@@ -387,4 +387,150 @@ fn main() { L { }; }
     let lets = of(SiteKind::Let);
     assert!(lets.contains(&Some(Origin::ChainDesugar)), "{lets:?}");
     assert!(lets.contains(&None), "the written `let c`: {lets:?}");
+    let uses = of(SiteKind::Use);
+    assert!(uses.contains(&Some(Origin::ChainDesugar)), "a use the rewrite spells: {uses:?}");
+    assert!(uses.contains(&None), "the written `return c`: {uses:?}");
+}
+
+/// Each use, in walk order, with the text of the declaration
+/// `binding_of` resolves it to, if any.
+fn resolved_uses(src: &str) -> Vec<(String, Option<String>)> {
+    let mut p = parse(src);
+    let snap = mint([("app.hl", &mut p)], &[]);
+    let mut out = Vec::new();
+    hale_syntax::sites::for_each_named_site(&p, &mut |kind, _, name, id| {
+        if matches!(kind, SiteKind::Use | SiteKind::Assign) {
+            let decl = snap
+                .declaration_of(id)
+                .and_then(|d| snap.site(d))
+                .map(|s| src[s.span.start.0 as usize..s.span.end.0 as usize].to_string());
+            out.push((name.unwrap_or_default().to_string(), decl));
+        }
+    });
+    out
+}
+
+/// F.40 phase 2, use-site identity: `binding_of` resolves each use to
+/// its declaration by the checker's scoping (`check::ScopeStack`), and
+/// leaves out a use that names no local binding.
+#[test]
+fn each_use_resolves_to_the_declaration_in_scope() {
+    let src = r#"
+type E { kind: String; }
+const K: Int = 3;
+fn helper() -> Int { return K; }
+fn fal(ok: Bool) -> Int fallible(E) {
+    if !ok { fail E { kind: "no" }; }
+    return 1;
+}
+fn f(a: Int, t: Bool) -> Int {
+    let r = a;
+    let r = r + 1;
+    if t {
+        let r = 7;
+        helper();
+        return r;
+    }
+    let mut n = 0;
+    for i in 0..3 {
+        n = n + i;
+    }
+    let (u, v) = (r, n);
+    let err = 5;
+    let w = fal(t) or err;
+    let mut q = E { kind: "a" };
+    q.kind = "b";
+    match u {
+        r -> { return r + v + w; }
+    }
+}
+locus L {
+    params { n: Int = 0; }
+    fn g(n: Int) -> Int { return n; }
+    birth { let z = 1; self.n = z; }
+}
+fn main() { f(1, true); }
+"#;
+    let got = resolved_uses(src);
+    let row = |name: &str, decl: Option<&str>| (name.to_string(), decl.map(str::to_string));
+    assert_eq!(
+        got,
+        vec![
+            row("K", None),                            // a const: no local
+            row("ok", Some("ok")),                     // a fn parameter
+            row("a", Some("a")),
+            row("r", Some("let r = a;")),              // the value is read before the name binds
+            row("t", Some("t")),
+            row("helper", None),                       // a top-level fn
+            row("r", Some("let r = 7;")),              // the inner shadow
+            row("n", Some("let mut n = 0;")),          // a bare `=` names its head's binding
+            row("n", Some("let mut n = 0;")),
+            row("i", Some("for i in 0..3 {\n        n = n + i;\n    }")),
+            row("r", Some("let r = r + 1;")),          // the block that shadowed it has ended
+            row("n", Some("let mut n = 0;")),
+            row("fal", None),
+            row("t", Some("t")),
+            row("err", None),                          // the `or` substitute's implicit `err`
+            row("q", Some("let mut q = E { kind: \"a\" };")), // a field write names its head's binding
+            row("u", Some("u")),                       // a tuple `let`'s name
+            row("r", Some("r")),                       // the match arm's binding
+            row("v", Some("v")),
+            row("w", Some("let w = fal(t) or err;")),
+            row("n", Some("n")),                       // the parameter, not the field
+            row("self", None),                         // `self.n = z` writes state, no binding
+            row("z", Some("let z = 1;")),
+            row("f", None),
+        ]
+    );
+}
+
+/// F.40 phase 2, use-site identity: every identifier expression is a
+/// `Use` site, numbered in walk order with the rest, its id on its
+/// `Ident`; an identifier that is not an expression (a declaration's
+/// name, a field, a path segment) is none. A clone keeps its uses' ids,
+/// and one a pass synthesizes after the mint is numbered by the next.
+#[test]
+fn every_identifier_expression_is_a_use_site() {
+    let mut p = parse(
+        r#"
+type P { x: Int; }
+fn f(a: Int) -> Int {
+    let b = a + 1;
+    let p = P { x: b };
+    return p.x;
+}
+fn main() { f(2); }
+"#,
+    );
+    let snap = mint([("app.hl", &mut p)], &[]);
+    // `a`, `b`, `p` (receiver of `.x`), `f` (the callee): four uses.
+    let uses = snap.sites.iter().filter(|s| s.kind == SiteKind::Use).count();
+    assert_eq!(uses, 4, "{:?}", snap.sites);
+    let mut named = Vec::new();
+    hale_syntax::sites::for_each_named_site(&p, &mut |kind, _, name, id| {
+        if kind == SiteKind::Use {
+            assert!(!id.is_none(), "every use is numbered");
+            named.push(name.unwrap_or_default().to_string());
+        }
+    });
+    assert_eq!(named, vec!["a", "b", "p", "f"]);
+    let all = ids(&p);
+    let mut sorted = all.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), all.len(), "ids are unique");
+
+    // A clone keeps the uses' ids.
+    assert_eq!(ids(&p.clone()), all);
+
+    // A use synthesized after the mint carries none; the next mint
+    // numbers it past the rest and keeps every other id.
+    let hale_syntax::ast::TopDecl::Fn(main) = p.items.last_mut().unwrap() else { panic!() };
+    main.body.stmts.push(hale_syntax::ast::Stmt::Expr(hale_syntax::ast::Expr::Ident(
+        hale_syntax::ast::Ident::new("f", main.span),
+    )));
+    let again = mint([("app.hl", &mut p)], &[]);
+    assert_eq!(again.len(), snap.len() + 1);
+    let max = all.iter().max().copied().unwrap();
+    assert!(ids(&p).iter().any(|i| *i == max + 1), "the new use is numbered past the rest");
 }

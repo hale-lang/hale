@@ -739,6 +739,7 @@ pub fn check_bundle_scoped(
         // @budget, over the shared callgraph witness engine.
         diags.extend(crate::effects::effect_diags_with_renames(
             &programs_vec,
+            &bundle.snapshot,
             &bundle.import_renames,
         ));
         // GH #265 frontier: supervision coverage and secret taint
@@ -3358,7 +3359,7 @@ fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     // renames, for the loci this bundle declares.
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let factories: BTreeMap<String, Vec<ContainmentState>> =
-        crate::ownership::fresh_factories(&programs, &bundle.import_renames)
+        crate::ownership::fresh_factories(&programs, &bundle.snapshot, &bundle.import_renames)
             .into_iter()
             .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
             .map(|(name, row)| (name, row.products))

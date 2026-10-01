@@ -7,7 +7,9 @@
 //! numbers every site it reaches, the program's Debug rendering — a
 //! route through the AST that shares no code with the walk — holds no
 //! `NodeId::NONE`, and the number of sites equals the number of
-//! identity fields that rendering showed before the walk.
+//! identity fields that rendering showed before the walk. An `Ident`
+//! renders an id wherever it stands, and only an identifier expression
+//! is a site, so the identifiers that are names are counted apart.
 
 use std::collections::BTreeSet;
 
@@ -72,6 +74,7 @@ fn one_of_each_kind_in_pre_order() {
         Fn, // util::helper
         Perspective,
         Fn, // Router::route
+        Binder, // code
         Locus,
         Param,
         Subscribe,
@@ -81,14 +84,25 @@ fn one_of_each_kind_in_pre_order() {
         Let, // let x
         Mode,
         Failure,
+        Binder, // c
+        Binder, // err
         Fn, // on_tick
+        Binder, // v
         LetTuple,
+        Binder, // a
+        Binder, // b
+        Use, // v
         Assign,
         Call, // helper()
+        Use,  // helper
         For,
         Let, // let p
         StructLiteral,
+        Use, // a
+        Use, // b
         Send,
+        Use, // Tick
+        Use, // p
         Locus, // App
         Param,
         StructLiteral, // Worker { }
@@ -103,7 +117,7 @@ fn one_of_each_kind_in_pre_order() {
         Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Mode, Failure,
         Perspective, Const, Group, Module, Param, PlacementEntry,
         BindingEntry, Publish, Subscribe, Let, LetTuple, Assign, For, Send,
-        StructLiteral, Call,
+        StructLiteral, Call, Use, Binder,
     ]
     .into_iter()
     .collect();
@@ -115,10 +129,42 @@ fn one_of_each_kind_in_pre_order() {
     });
 }
 
+/// Every `Ident` renders its `id`, and only an identifier EXPRESSION is
+/// a site (a `Use`). The expressions are the `Ident(Ident {` renderings
+/// but for a ring layout's identifier attribute value, the one other
+/// `Ident(Ident)` variant, counted off the AST (the walk has nothing to
+/// do with ring layouts). Returns (every ident, the expression idents).
+fn idents(p: &Program) -> (usize, usize) {
+    fn ring_values(items: &[hale_syntax::ast::TopDecl]) -> usize {
+        use hale_syntax::ast::TopDecl;
+        items
+            .iter()
+            .map(|i| match i {
+                TopDecl::RingLayout(r) => format!("{r:?}").matches("Ident(Ident { name: ").count(),
+                TopDecl::Module(m) => ring_values(&m.items),
+                _ => 0,
+            })
+            .sum()
+    }
+    let text = format!("{p:?}");
+    let all = text
+        .match_indices("Ident { name: ")
+        .filter(|(at, _)| {
+            !text[..*at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+        .count();
+    let exprs = text.matches("Ident(Ident { name: ").count() - ring_values(&p.items);
+    (all, exprs)
+}
+
 /// Number every site with the mutable walk, read the numbers back
 /// with the read-only one, and check the Debug rendering for a site
 /// neither walk reached. Returns the site count.
 fn number_and_check(origin: &str, p: &mut Program) -> usize {
+    // Every `Ident` renders an id; an expression's and a binder's are
+    // sites, any other identifier's (a declaration's name, a field, a
+    // path segment) is not, and keeps NONE.
+    let (idents, uses) = idents(p);
     let before = format!("{p:?}").matches(NONE_RENDERED).count();
 
     let mut mut_kinds = Vec::new();
@@ -138,9 +184,14 @@ fn number_and_check(origin: &str, p: &mut Program) -> usize {
     });
     assert_eq!(mut_kinds, read_kinds, "{origin}: the two walks disagree on kinds");
 
-    let after = format!("{p:?}").matches(NONE_RENDERED).count();
+    let on_idents =
+        mut_kinds.iter().filter(|k| matches!(k, SiteKind::Use | SiteKind::Binder)).count();
+    let names = idents - on_idents;
+    let after = format!("{p:?}").matches(NONE_RENDERED).count() - names;
     assert_eq!(after, 0, "{origin}: {after} identity field(s) the walk never reached");
-    assert_eq!(next as usize, before, "{origin}: walk count vs identity fields");
+    let numbered_uses = mut_kinds.iter().filter(|k| **k == SiteKind::Use).count();
+    assert_eq!(numbered_uses, uses, "{origin}: uses numbered vs identifier expressions");
+    assert_eq!(next as usize, before - names, "{origin}: walk count vs identity fields");
     next as usize
 }
 
@@ -160,7 +211,7 @@ fn corpus_walk_reaches_every_identity_field() {
     }
     eprintln!("{} programs, {} sites: {:?}", programs.len(), total, by_kind);
     // Vacuity: every kind turns up somewhere in the corpus.
-    assert_eq!(by_kind.len(), 25, "kinds seen: {:?}", by_kind.keys());
+    assert_eq!(by_kind.len(), 27, "kinds seen: {:?}", by_kind.keys());
 }
 
 /// The same over the syntax crate's own desugars, which synthesize

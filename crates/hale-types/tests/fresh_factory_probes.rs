@@ -64,9 +64,10 @@ fn the_correction_on_probes() {
              fn keep(x: Node) -> Int {{ return 0; }}\n\
              fn make() -> Node {{ {body} }}\n"
         );
-        let program = hale_syntax::parse_source(&src)
+        let mut program = hale_syntax::parse_source(&src)
             .unwrap_or_else(|d| panic!("probe `{what}` does not parse: {d:?}"));
-        let rows = fresh_factories(&[&program], &[]);
+        let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+        let rows = fresh_factories(&[&program], &ids, &[]);
         let Some(row) = rows.get("make") else {
             wrong.push(format!("{what}: no row"));
             continue;
@@ -94,8 +95,9 @@ fn a_call_to_an_escaping_factory_is_not_fresh() {
                fn leaky() -> Node { let n = Node { n: 1 }; keep(n); return n; }\n\
                fn wrap() -> Node { return leaky(); }\n\
                fn bound() -> Node { let m = leaky(); return m; }\n";
-    let program = hale_syntax::parse_source(src).expect("parses");
-    let rows = fresh_factories(&[&program], &[]);
+    let mut program = hale_syntax::parse_source(src).expect("parses");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let rows = fresh_factories(&[&program], &ids, &[]);
     for f in ["leaky", "wrap", "bound"] {
         let row = rows.get(f).unwrap_or_else(|| panic!("`{f}` has a row"));
         assert_eq!(row.products, [("Node".to_string(), vec!["n".to_string()])], "{f}");

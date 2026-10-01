@@ -831,6 +831,7 @@ pub fn derive_certificate_evidence(
         bundle.programs.values().copied().collect();
     let (_flat, mut groups) = crate::effects::effect_report_grouped(
         &programs,
+        &bundle.snapshot,
         &bundle.import_renames,
     );
     // Change 5h: `@budget` joins the same evidence pipeline. The
@@ -846,6 +847,7 @@ pub fn derive_certificate_evidence(
     groups.extend(
         crate::budget_check::certificate_groups(
             &programs,
+            &bundle.snapshot,
             &bundle.import_renames,
         )
         .into_iter()
@@ -857,6 +859,7 @@ pub fn derive_certificate_evidence(
     groups.extend(
         crate::quantitative::certificate_groups(
             &programs,
+            &bundle.snapshot,
             &bundle.import_renames,
             &fanout_of,
         )

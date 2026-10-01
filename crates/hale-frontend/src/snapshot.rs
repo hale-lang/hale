@@ -632,6 +632,12 @@ impl Snapshot {
         &self.programs
     }
 
+    /// The identities the load minted over [`Snapshot::programs`]: every
+    /// site, and which declaration each use names.
+    pub fn identities(&self) -> &hale_types::snapshot::Snapshot {
+        &self.identities
+    }
+
     pub fn sources(&self) -> &BTreeMap<PathBuf, String> {
         &self.sources
     }
@@ -1098,7 +1104,7 @@ pub fn inject_adopt(prog: &mut Program, name: &str) -> bool {
             continue;
         }
         found = true;
-        let id = Ident { name: name.to_string(), span: l.name.span };
+        let id = Ident::new(name, l.name.span);
         if let Some(LocusMember::Claims(cb)) = l
             .members
             .iter_mut()

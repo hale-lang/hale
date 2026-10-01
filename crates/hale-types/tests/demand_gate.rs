@@ -254,6 +254,33 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// F.40 phase 2, use-site identity: which declaration each use names is
+/// resolved once per snapshot, by its mint — the load's, and the
+/// lowering view's over the merged program — and nothing the check, the
+/// build rules, the model or lowering reads resolves it again. The
+/// count is this thread's, so the tests of this binary do not share it.
+/// The bundled stdlib's analysis copy has identities of its own, minted
+/// once per process (`stdlib_bodies::identities`); it is warmed first,
+/// outside the count.
+#[test]
+fn each_snapshot_resolves_its_uses_once() {
+    let _ = hale_types::stdlib_bodies::identities();
+    let d = seed("uses-once", WITH_CLAIM);
+    let resolved = hale_types::snapshot::resolutions_on_this_thread;
+    let before = resolved();
+    let s = build(&d.join("app.hl"));
+    assert_eq!(resolved() - before, 1, "the load's mint resolves the bundle's uses");
+    assert!(!s.bundle().snapshot.binding_of.is_empty(), "`o.id` names the handler's parameter");
+    assert_clean(&s);
+    s.demand_model().expect("the model");
+    assert!(s.demand_lowering().is_ok(), "a clean program is lowered");
+    assert_eq!(resolved() - before, 2, "and the lowering view's mint, the merged program's");
+    assert_clean(&s);
+    assert!(s.demand_lowering().is_ok());
+    assert_eq!(resolved() - before, 2, "a second demand resolves nothing");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// The harness's snapshot: a bare program, shaped by the one load and
 /// lowered without a check (`Config::harness`).
 #[test]

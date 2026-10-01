@@ -54,21 +54,29 @@ use hale_syntax::ast::{
     LocusMember, MatchArmBody, Program, Stmt, TopDecl,
     TypeExpr,
 };
+use hale_graph::ids::SiteId;
 use hale_syntax::error::Diag;
 use hale_syntax::Span;
 
-/// The lifetime rule and the key notice over `programs`.
-pub fn borrow_lifetime_diags(programs: &[&Program]) -> Vec<Diag> {
-    borrow_lifetime_diags_with_renames(programs, &[])
+use crate::snapshot::Snapshot;
+
+/// The lifetime rule and the key notice over `programs`, minted with
+/// `ids` (which declaration a returned name is).
+pub fn borrow_lifetime_diags(programs: &[&Program], ids: &Snapshot) -> Vec<Diag> {
+    borrow_lifetime_diags_with_renames(programs, ids, &[])
 }
 
 /// The same, resolving an imported seed's `alias::Name` to the merged
 /// program's mangled locus (GH #1048: a keeping method in a library).
-pub fn borrow_lifetime_diags_with_renames(programs: &[&Program], renames: &[(Vec<String>, String)]) -> Vec<Diag> {
+pub fn borrow_lifetime_diags_with_renames(
+    programs: &[&Program],
+    ids: &Snapshot,
+    renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
     let world = World::gather(programs, renames);
     let mut diags = Vec::new();
     for p in programs {
-        let mut w = Walk { world: &world, diags: &mut diags, ctx: None, calls: &world.calls };
+        let mut w = Walk { world: &world, ids, diags: &mut diags, ctx: None, calls: &world.calls };
         w.items(&p.items);
     }
     diags.extend(keyed_in_birth(programs));
@@ -222,13 +230,6 @@ fn type_name(t: &TypeExpr) -> Option<String> {
 
 /// The mutators through which a `@form` container stores its argument.
 const STORING_MUTATORS: &[&str] = &["push", "push_back", "push_front", "set", "insert", "put", "append"];
-
-/// A binding's identity: its declaring identifier's span.
-type DeclKey = (u32, u32);
-
-fn decl_key(i: &hale_syntax::ast::Ident) -> Option<DeclKey> {
-    (i.span.end.0 > i.span.start.0).then_some((i.span.start.0, i.span.end.0))
-}
 
 #[derive(Default)]
 struct Kept {
@@ -530,20 +531,21 @@ impl Kept {
 // make a later `let r = Router { }` the caller's. A `let x = y;` alias
 // joins its source's fate, either way round.
 
-struct ReturnScan {
-    frames: Vec<Vec<(String, Option<DeclKey>)>>,
-    returned: BTreeSet<DeclKey>,
-    aliases: Vec<(DeclKey, DeclKey)>,
-}
-
-/// The declarations a body hands back, closed over `let` aliases.
-fn returned_decls(b: &Block) -> BTreeSet<DeclKey> {
-    let mut s = ReturnScan { frames: Vec::new(), returned: BTreeSet::new(), aliases: Vec::new() };
+/// The `let`s a body hands back, closed over `let` aliases: each
+/// returned name is the declaration the snapshot resolves it to
+/// (`Snapshot::binding_of`), and only a `let` (or a tuple `let`'s name)
+/// is one — a parameter is the caller's already, and a `for` variable or
+/// a pattern binding is no `let`.
+fn returned_decls(b: &Block, ids: &Snapshot) -> BTreeSet<SiteId> {
+    let mut s = ReturnScan { ids, lets: BTreeSet::new(), handed: Vec::new(), aliases: Vec::new() };
     s.block(b, true);
-    let mut out = s.returned;
+    let ReturnScan { lets, handed, aliases, .. } = s;
+    let mut out: BTreeSet<SiteId> = handed.into_iter().filter(|d| lets.contains(d)).collect();
+    let aliases: Vec<(SiteId, SiteId)> =
+        aliases.into_iter().filter(|(_, from)| lets.contains(from)).collect();
     loop {
         let before = out.len();
-        for (a, b) in &s.aliases {
+        for (a, b) in &aliases {
             if out.contains(a) || out.contains(b) {
                 out.insert(*a);
                 out.insert(*b);
@@ -556,24 +558,24 @@ fn returned_decls(b: &Block) -> BTreeSet<DeclKey> {
     out
 }
 
-impl ReturnScan {
-    fn lookup(&self, name: &str) -> Option<DeclKey> {
-        for f in self.frames.iter().rev() {
-            for (n, k) in f.iter().rev() {
-                if n == name {
-                    return *k;
-                }
-            }
-        }
-        None
-    }
+struct ReturnScan<'s> {
+    ids: &'s Snapshot,
+    /// The body's `let`s and tuple `let`s' names.
+    lets: BTreeSet<SiteId>,
+    /// The declarations the values handed back name.
+    handed: Vec<SiteId>,
+    /// `let x = y;`: x's statement and the declaration y names.
+    aliases: Vec<(SiteId, SiteId)>,
+}
+
+impl ReturnScan<'_> {
     /// A value handed back: a name, or the names a record, tuple or
     /// array literal carries out (`return Pair { r: r, … };`).
     fn hand_back(&mut self, e: &Expr) {
         match e {
             Expr::Ident(i) => {
-                if let Some(k) = self.lookup(&i.name) {
-                    self.returned.insert(k);
+                if let Some(d) = self.ids.declaration_of(i.id) {
+                    self.handed.push(d);
                 }
             }
             Expr::Struct { inits, .. } => {
@@ -590,7 +592,6 @@ impl ReturnScan {
         }
     }
     fn block(&mut self, b: &Block, counted: bool) {
-        self.frames.push(Vec::new());
         for s in &b.stmts {
             self.stmt(s);
         }
@@ -599,13 +600,6 @@ impl ReturnScan {
             if counted {
                 self.hand_back(t);
             }
-        }
-        self.frames.pop();
-    }
-    fn declare(&mut self, name: &hale_syntax::ast::Ident) {
-        let k = decl_key(name);
-        if let Some(f) = self.frames.last_mut() {
-            f.push((name.name.clone(), k));
         }
     }
     fn if_chain(&mut self, i: &hale_syntax::ast::IfStmt, counted: bool) {
@@ -619,19 +613,23 @@ impl ReturnScan {
     }
     fn stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { value, id, .. } => {
                 self.expr(value);
-                if let (Expr::Ident(src), Some(k)) = (value, decl_key(name)) {
-                    if let Some(from) = self.lookup(&src.name) {
-                        self.aliases.push((k, from));
+                if let Some(at) = self.ids.site_id(*id) {
+                    self.lets.insert(at);
+                    if let Expr::Ident(src) = value {
+                        if let Some(from) = self.ids.declaration_of(src.id) {
+                            self.aliases.push((at, from));
+                        }
                     }
                 }
-                self.declare(name);
             }
             Stmt::LetTuple { names, value, .. } => {
                 self.expr(value);
                 for n in names {
-                    self.declare(n);
+                    if let Some(at) = self.ids.site_id(n.id) {
+                        self.lets.insert(at);
+                    }
                 }
             }
             Stmt::Return(Some(e), _) => {
@@ -642,19 +640,15 @@ impl ReturnScan {
             Stmt::Match(m) => {
                 self.expr(&m.scrutinee);
                 for a in &m.arms {
-                    self.frames.push(Vec::new());
                     match &a.body {
                         MatchArmBody::Block(b) => self.block(b, true),
                         MatchArmBody::Expr(e) => self.expr(e),
                     }
-                    self.frames.pop();
                 }
             }
-            Stmt::For { name, iter, body, .. } => {
+            Stmt::For { iter, body, .. } => {
                 self.expr(iter);
-                self.frames.push(vec![(name.name.clone(), None)]);
                 self.block(body, true);
-                self.frames.pop();
             }
             Stmt::While { cond, body, .. } => {
                 self.expr(cond);
@@ -756,7 +750,7 @@ struct Ctx {
     /// keeping check needs of it
     binds: Vec<Bind>,
     /// the declarations this body hands back (by binding, over aliases)
-    returned: BTreeSet<DeclKey>,
+    returned: BTreeSet<SiteId>,
     /// how many loop bodies enclose the walk
     loop_depth: usize,
 }
@@ -768,7 +762,7 @@ struct Bind {
     /// the locus it holds, when position says
     ty: Option<String>,
     /// its declaration, for a `let`
-    key: Option<DeclKey>,
+    key: Option<SiteId>,
     param: bool,
     /// the loop bodies enclosing its declaration
     loop_depth: usize,
@@ -846,6 +840,8 @@ fn strip_alias(s: &Source) -> Source {
 
 struct Walk<'a> {
     world: &'a World,
+    /// the identities the walked programs were minted with
+    ids: &'a Snapshot,
     diags: &'a mut Vec<Diag>,
     ctx: Option<Ctx>,
     calls: &'a [CallSite],
@@ -926,7 +922,7 @@ impl<'a> Walk<'a> {
                 loop_depth: 0,
             });
         }
-        c.returned = returned_decls(body);
+        c.returned = returned_decls(body, self.ids);
     }
 
     fn bind(&self, name: &str) -> Option<&Bind> {
@@ -1086,7 +1082,7 @@ impl<'a> Walk<'a> {
 
     fn stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, value, id, .. } => {
                 self.expr(value, Position::Let);
                 let src = match value {
                     Expr::Struct { .. } | Expr::Call { .. } | Expr::Or { .. } => {
@@ -1104,10 +1100,11 @@ impl<'a> Walk<'a> {
                     Expr::Ident(id) => self.bind(&id.name).and_then(|b| b.ty.clone()),
                     other => self.world.kept.value_locus(other),
                 };
+                let key = self.ids.site_id(*id);
                 if let Some(c) = self.ctx.as_mut() {
                     c.locals.push((name.name.clone(), src));
                     let loop_depth = c.loop_depth;
-                    c.binds.push(Bind { name: name.name.clone(), ty, key: decl_key(name), param: false, loop_depth });
+                    c.binds.push(Bind { name: name.name.clone(), ty, key, param: false, loop_depth });
                 }
             }
             Stmt::LetTuple { names, value, .. } => {

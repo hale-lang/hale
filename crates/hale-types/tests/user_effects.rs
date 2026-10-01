@@ -283,8 +283,9 @@ fn a_declared_class_is_not_flagged_undeclared() {
 /// a subscriber declaring `is: {money}` contributed nothing.
 #[test]
 fn a_fns_own_carries_is_in_its_inferred_set() {
-    let program = hale_syntax::parse_source(MONEY).expect("parse");
-    let rows = hale_types::effects::effect_manifest_with_inference(&[&program]);
+    let mut program = hale_syntax::parse_source(MONEY).expect("parse");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let rows = hale_types::effects::effect_manifest_with_inference(&[&program], &ids);
     let charge = rows
         .iter()
         .find(|r| r.func == "charge")

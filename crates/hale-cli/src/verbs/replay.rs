@@ -327,7 +327,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         let programs: Vec<&Program> =
             bundle.programs.values().copied().collect();
         let rows =
-            hale_types::effects::effect_manifest_with_inference(&programs);
+            hale_types::effects::effect_manifest_with_inference(&programs, &bundle.snapshot);
         let mut residue = std::collections::BTreeSet::new();
         for row in &rows {
             for class in &row.inferred {

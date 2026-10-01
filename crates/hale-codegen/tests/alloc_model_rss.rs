@@ -28,8 +28,9 @@ mod harness;
 mod build_opts;
 
 fn model_has_unbounded_site(src: &str) -> bool {
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let summary = summarize_programs(&[&program]);
+    let mut program = hale_syntax::parse_source(src).expect("parse");
+    let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+    let summary = summarize_programs(&[&program], &ids);
     summary
         .fns
         .values()

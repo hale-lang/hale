@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::snapshot::Snapshot;
 use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, FnKey};
 use crate::callgraph::{self, Probe};
@@ -693,17 +694,18 @@ fn placement_implied_diags(
     out
 }
 
-pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
-    effect_diags_with_renames(programs, &[])
+pub fn effect_diags(programs: &[&Program], ids: &Snapshot) -> Vec<Diag> {
+    effect_diags_with_renames(programs, ids, &[])
 }
 
 /// Same, with the bundle's cross-seed import renames so the
 /// callgraph can walk into an imported seed.
 pub fn effect_diags_with_renames(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    let mut out = effect_diags_inner(programs, import_renames);
+    let mut out = effect_diags_inner(programs, ids, import_renames);
     // A witness path through an imported seed would otherwise name
     // the merged symbol (`__lib_foo_bar_baz`), which appears nowhere
     // in the user's source.
@@ -713,9 +715,10 @@ pub fn effect_diags_with_renames(
 
 fn effect_diags_inner(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    effect_report_inner(programs, import_renames).0
+    effect_report_inner(programs, ids, import_renames).0
 }
 
 /// #392 §8: every fn-grained effect certificate (incl. the phase
@@ -725,16 +728,18 @@ fn effect_diags_inner(
 /// the bundle claims: one schema of record for all law.
 pub fn certificate_rows(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<LoweredCertificate> {
-    effect_report_inner(programs, import_renames).1
+    effect_report_inner(programs, ids, import_renames).1
 }
 
 fn effect_report_inner(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<LoweredCertificate>) {
-    let (d, certs) = effect_report_grouped(programs, import_renames);
+    let (d, certs) = effect_report_grouped(programs, ids, import_renames);
     (d, certs.into_iter().map(|(row, _)| row).collect())
 }
 
@@ -745,10 +750,11 @@ fn effect_report_inner(
 /// this, so the two can never disagree).
 pub(crate) fn effect_report_grouped(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<(LoweredCertificate, Vec<(Diag, bool)>)>) {
     let (pre, p1, tail, groups) =
-        effect_report_three_way(programs, import_renames);
+        effect_report_three_way(programs, ids, import_renames);
     let mut flat = pre;
     flat.extend(p1);
     flat.extend(tail);
@@ -764,6 +770,7 @@ pub(crate) fn effect_report_grouped(
 #[doc(hidden)]
 pub fn effect_report_three_way(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> (
     Vec<Diag>,
@@ -805,7 +812,7 @@ pub fn effect_report_three_way(
         }
     }
     let summary =
-        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, import_renames);
+        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, ids, import_renames);
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut sink = DiagSink::new();
@@ -1897,8 +1904,9 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
 /// fingerprint; `effect_manifest` alone reports declarations only.
 pub fn effect_manifest_with_inference(
     programs: &[&Program],
+    ids: &Snapshot,
 ) -> Vec<EffectManifestRow> {
-    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs);
+    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs, ids);
     let ffi = ffi_names(programs);
     let names = effect_names_of(programs);
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)

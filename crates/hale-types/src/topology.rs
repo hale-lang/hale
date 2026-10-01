@@ -239,6 +239,7 @@ pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::Applicati
     // comes from checking that library).
     let summary = alloc_summary::summarize_programs_with_renames(
         &programs,
+        &bundle.snapshot,
         &bundle.import_renames,
     );
 
@@ -326,6 +327,7 @@ pub fn dump_topology_over(bundle: &Bundle<'_>, app_model: &hale_model::Applicati
     // ANY contraction path crosses a loop-nested or unbounded edge.
     let merged = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
         &programs,
+        &bundle.snapshot,
         &bundle.import_renames,
     );
     // ---- the normalized model (#392): phases, seeds, decl spans ----

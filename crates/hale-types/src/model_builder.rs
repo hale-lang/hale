@@ -210,10 +210,12 @@ pub fn derive_application_model_over(
     let graph = inputs.bus_graph;
     let summary = alloc_summary::summarize_programs_with_renames(
         &programs,
+        &bundle.snapshot,
         &bundle.import_renames,
     );
     let merged = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
         &programs,
+        &bundle.snapshot,
         &bundle.import_renames,
     );
     let vmodel =
