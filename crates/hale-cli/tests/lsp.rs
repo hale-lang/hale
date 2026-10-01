@@ -1533,11 +1533,15 @@ fn lsp_rechecks_an_open_dependent_when_a_library_buffer_closes() {
 }
 
 /// A burst of document events costs one check, not one per event
-/// (F.40 phase 2.4): five changes in one write are published by fewer
-/// passes than changes — the first may already be in its check when the
-/// rest arrive, and on a loaded machine the reader may frame the rest
-/// across more than one check — and the last publish describes the LAST
-/// text. The fence behind the burst is answered after that publish.
+/// (F.40 phase 2.4): five changes in one write, and the last publish
+/// describes the LAST text, every publish is for the seed's file, and
+/// the fence behind the burst is answered after that publish. The
+/// NUMBER of passes is not asserted here: the reader thread frames the
+/// five messages one at a time, and a scheduler may let the main loop
+/// check between any two of them, so five passes are a permitted
+/// interleaving (outside review of #1291, finding 2); the collapse rule
+/// itself is pinned by the deterministic unit test
+/// `a_run_of_document_events_costs_one_pass_and_stops_at_a_request`.
 #[test]
 fn lsp_a_burst_of_changes_is_checked_once() {
     let root = scratch_root("burst");
@@ -1569,7 +1573,6 @@ fn lsp_a_burst_of_changes_is_checked_once() {
     // thread has framed it when the loop wakes; fewer than five is what
     // collapsing guarantees. The exact collapse is the unit test's
     // (`a_run_of_document_events_costs_one_pass_and_stops_at_a_request`).
-    assert!(burst.len() < 5, "five changes are not checked one by one: {burst:?}");
     let (_, last) = burst.last().expect("a publish");
     assert!(
         last.len() == 1 && last[0].contains("expected `Int`"),
