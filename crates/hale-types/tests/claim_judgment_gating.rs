@@ -366,7 +366,7 @@ locus Sink { params { n: Int = 0; } fn take() { self.n = self.n + 1; } }
             .unwrap_or_else(|| panic!("{}: the law did not lower", label));
 
         let evidence = hale_types::evidence::derive_certificate_evidence(
-            &bundle, &table, &model,
+            &bundle, &table, &model, &hale_types::effects::effect_certificates(&bundle),
         );
         let bases: Vec<u32> =
             bundle.sources.iter().map(|f| f.base).collect();

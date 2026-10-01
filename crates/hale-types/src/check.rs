@@ -514,18 +514,28 @@ fn substitute_generic_ty(
 pub struct CheckInputs<'a> {
     pub top: &'a TopScope,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// The effect rows, demanded only when a rule reads them: a codec
+    /// binding's purity assertion reads the purity column. A check
+    /// whose program binds no codec never asks, so the editor's
+    /// no-claims path runs no effects fixpoint. `None` only if the rows
+    /// are blocked, which they never are once the scope the check reads
+    /// exists.
+    pub effects: &'a dyn Fn() -> Option<&'a crate::effect_rows::EffectRows>,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
-/// once each ([`crate::bundle_handler_rows`]).
+/// once each ([`crate::bundle_handler_rows`]; the effect rows when a
+/// rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let inputs = CheckInputs { top, handlers: &handlers };
+    let rows = std::cell::OnceCell::new();
+    let effects = || Some(rows.get_or_init(|| crate::effect_rows::derive_effect_rows(bundle, top)));
+    let inputs = CheckInputs { top, handlers: &handlers, effects: &effects };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
 
@@ -552,8 +562,24 @@ pub fn check_bundle_scoped(
     strict_callees: bool,
     strict_idents: bool,
 ) -> Vec<Diag> {
+    check_bundle_reporting(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents).0
+}
+
+/// [`check_bundle_scoped`], with the effects certificate engine's
+/// report beside the diagnostics: the check runs the engine once, for
+/// its `@effects`, `@phase_effects` and placement diagnostics, and the
+/// certificate evidence a law is judged against reads the same run
+/// instead of repeating it.
+pub fn check_bundle_reporting(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+) -> (Vec<Diag>, crate::effects::EffectCertificates) {
     let top = inputs.top;
     let mut diags = Vec::new();
+    let certificates;
     let known = collect_known_names(top, &bundle.import_renames);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
@@ -646,7 +672,7 @@ pub fn check_bundle_scoped(
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
-    check_main_and_bindings(bundle, top, &mut diags);
+    check_main_and_bindings(bundle, top, inputs.effects, &mut diags);
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -736,12 +762,17 @@ pub fn check_bundle_scoped(
         // `check_bundle_opts`.
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
-        // @budget, over the shared callgraph witness engine.
-        diags.extend(crate::effects::effect_diags_with_renames(
+        // @budget, over the shared callgraph witness engine. The flat
+        // stream is `effect_diags_with_renames`'s; the grouped report
+        // is kept for the certificate evidence.
+        let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
             &bundle.snapshot,
             &bundle.import_renames,
-        ));
+        );
+        crate::stdlib_bodies::demangle_imports(&mut flat, &bundle.import_renames);
+        diags.extend(flat);
+        certificates = groups;
         // GH #265 frontier: supervision coverage and secret taint
         // (cross-actor causality is judged over the model).
         // GH #476 Change 5f/5g: `causes:` and its backward dual
@@ -815,7 +846,7 @@ pub fn check_bundle_scoped(
     // within the statement, and a `@secret` parameter held to the same.
     diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames, &bundle.sources));
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    diags
+    (diags, certificates)
 }
 
 /// True if the locus declares at least one `bus { subscribe ... }`.
@@ -5114,10 +5145,10 @@ fn check_satisfies_bus_adapter(
 ///      bus reader thread / publisher's pool / consumer pools
 ///      concurrently, and have no coordination in scope to
 ///      serialize mutations to `self`.
-fn check_binding_codec(
+fn check_binding_codec<'e>(
     entry: &BindingEntry,
     top: &TopScope,
-    purity_map: &crate::purity::PurityMap,
+    effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
     diags: &mut Vec<Diag>,
 ) {
     let codec = match &entry.codec {
@@ -5287,7 +5318,7 @@ fn check_binding_codec(
             codec.locus.name.clone(),
             (*method_name).to_string(),
         );
-        match purity_map.get(&key) {
+        match effects().and_then(|rows| rows.purity(&key)) {
             Some(crate::purity::Purity::Pure) => {}
             Some(crate::purity::Purity::Impure(reason)) => {
                 let (line, hint) = render_impurity(reason);
@@ -5862,9 +5893,10 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-fn check_main_and_bindings(
+fn check_main_and_bindings<'e>(
     bundle: &Bundle<'_>,
     top: &TopScope,
+    effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
     diags: &mut Vec<Diag>,
 ) {
     let mut mains: Vec<(String, Span)> = Vec::new();
@@ -5878,14 +5910,12 @@ fn check_main_and_bindings(
         top.topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
     };
 
-    // F.36 Slice 2 (2026-05-28): compute the bundle-wide purity
-    // map so binding-site codec checks can assert the codec's
-    // encode/decode methods are pure. Done once here; threaded
-    // into `check_binding_codec`. v0.1 always computes; future
-    // polish could gate on "any binding has codec" to skip the
-    // walk for the common case.
+    // F.36 Slice 2 (2026-05-28): binding-site codec checks assert the
+    // codec's encode/decode methods are pure, reading the purity
+    // column of the effect rows (`effects`, demanded by the first
+    // codec that reaches the assertion; a program that binds no codec
+    // never builds them).
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
-    let purity_map = crate::purity::infer_purity_for_bundle(&programs_vec, top);
 
     // GH #825: a `main locus` and a `bindings { }` block inside a
     // `module { … }` are ordinary bundle members. The at-most-one-main
@@ -6164,7 +6194,7 @@ fn check_main_and_bindings(
                             // signatures (against the topic's
                             // payload type) AND that both methods
                             // are pure per Slice 1's inference.
-                            check_binding_codec(entry, top, &purity_map, diags);
+                            check_binding_codec(entry, top, effects, diags);
 
                             // Form K6b (2026-05-20): shm_ring
                             // Hale-side subscribers are wired

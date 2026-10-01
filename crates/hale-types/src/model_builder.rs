@@ -182,16 +182,20 @@ pub use crate::derive_application_model;
 
 /// What the model reads from the families it does not own, each built
 /// once over the CHECKED programs (F.40 phase 2.3): the top scope with
-/// its topic rows, the bus graph, the ownership graph and the handler
-/// rows. The frontend's snapshot demands each as a family of its own
-/// (`Snapshot::demand_scope`, `demand_bus_graph`,
-/// `demand_ownership_graph`, `demand_handlers`) and hands them here;
-/// the model builds none of them.
+/// its topic rows, the bus graph, the ownership graph, the handler
+/// rows and the effect rows. The frontend's snapshot demands each as a
+/// family of its own (`Snapshot::demand_scope`, `demand_bus_graph`,
+/// `demand_ownership_graph`, `demand_handlers`, `demand_effects`) and
+/// hands them here; the model builds none of them.
 pub struct ModelInputs<'a> {
     pub top: &'a crate::resolve::TopScope,
     pub bus_graph: &'a crate::bus_graph::BusGraph,
     pub ownership: &'a crate::ownership_graph::OwnershipGraph,
     pub handlers: &'a crate::handler_routing::HandlerRouting,
+    /// The effect rows (F.40 phase 3, E1): each fn's effect set and its
+    /// lower bound, and the stdlib-merged summary their walk read, which
+    /// the model's attribution and absorbed-path walks read too.
+    pub effects: &'a crate::effect_rows::EffectRows,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -213,15 +217,13 @@ pub fn derive_application_model_over(
         &bundle.snapshot,
         &bundle.import_renames,
     );
-    let merged = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
+    // The summary the effect rows' walk read: the checked programs with
+    // the stdlib's analysis copy beside them, cross-seed calls resolved.
+    let merged = &inputs.effects.summary;
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);
-    let effect_names = crate::effects::effect_names_of(&programs);
-    let ffi = crate::effects::ffi_names(&programs);
+    let effect_names = &inputs.effects.class_names;
+    let ffi = &inputs.effects.ffi;
 
     // ---- author-spelling map (same recipe as dump_topology) ----
     let demangle: BTreeMap<&str, String> = bundle
@@ -2072,11 +2074,11 @@ pub fn derive_application_model_over(
             provenance: pid,
         });
     }
-    // Effects per fn (the derived classes the artifact exports),
-    // and the DIRECT sets the reachability judgment's `effects(C)`
-    // destination test reads (GH #476 Change 5a) — computed by the
-    // evaluator's own `claims::direct_effects`, called rather than
-    // approximated.
+    // Effects per fn (the derived classes the artifact exports), read
+    // from the effect rows, and the DIRECT sets the reachability
+    // judgment's `effects(C)` destination test reads (GH #476 Change
+    // 5a) — each fn's `direct` column of the same rows, over the
+    // stdlib-merged summary the rows' walk read.
     let mut derived_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
     let mut direct_effects: BTreeMap<String, Vec<String>> =
@@ -2088,21 +2090,20 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let eff = crate::frontier::infer_effects(&merged, k, &ffi);
+        let row = &inputs.effects.rows[k];
         let classes =
-            crate::frontier::render_effects_named(eff, &effect_names);
+            crate::frontier::render_effects_named(row.effects, effect_names);
         if !classes.is_empty() {
             derived_effects.insert(fn_name(k), classes);
         }
         // …and the LOWER BOUND, kept apart from the rendering.
         // `UNCLASSIFIED` is saturation, not a bit, so the known
-        // classes cannot be masked back out of `eff` — they need a
-        // walk that flags an unnameable edge instead of swallowing
+        // classes cannot be masked back out of `row.effects` — the
+        // row's walk flags an unnameable edge instead of swallowing
         // the set (GH #476 Change 5f review).
-        let (known, unknown) =
-            crate::frontier::infer_effects_lower_bound(&merged, k, &ffi);
+        let (known, unknown) = (row.known, row.unknown);
         let known_classes =
-            crate::frontier::render_effects_named(known, &effect_names);
+            crate::frontier::render_effects_named(known, effect_names);
         if !known_classes.is_empty() {
             effect_lower_bounds.insert(fn_name(k), known_classes);
         }
@@ -2153,7 +2154,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let d = crate::claims::direct_effects(&summary, k, &ffi);
+        let d = inputs.effects.direct(k);
         if !d.is_unclassified() && d != crate::stdlib_surface::EffectSet::PURE {
             let mut classes = crate::frontier::render_effects_named(
                 d,
@@ -2784,9 +2785,7 @@ pub fn derive_application_model_over(
                 let mut events: Vec<hale_model::AbsorbedEvent> =
                     Vec::new();
                 let node_direct = {
-                    let d = crate::claims::direct_effects(
-                        &merged, &n, &ffi,
-                    );
+                    let d = inputs.effects.direct(&n);
                     if d.is_unclassified() {
                         Vec::new()
                     } else {

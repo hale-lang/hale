@@ -32,10 +32,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
-use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
+use crate::alloc_summary::{AllocSummary, Callee, FnKey};
 use hale_model::GroupSelection;
 use crate::effects::close;
-use crate::stdlib_surface::{self, EffectSet};
 
 
 
@@ -1209,56 +1208,3 @@ pub(crate) fn has_opaque_unresolved(
         Callee::Resolved(_) => false,
     })
 }
-
-
-
-
-
-// ===================== shared helpers =============================
-
-
-/// A fn's DIRECT effect contribution — its own body only, no
-/// recursion (the BFS supplies transitivity). Mirrors the per-node
-/// arm of `frontier::infer_effects`.
-pub(crate) fn direct_effects(
-    summary: &AllocSummary,
-    key: &FnKey,
-    ffi: &BTreeSet<String>,
-) -> EffectSet {
-    let mut acc = EffectSet::PURE;
-    if let Some(c) = summary.carries.get(key) {
-        acc = acc.union(*c);
-    }
-    let Some(fs) = summary.fns.get(key) else { return acc };
-    if !fs.sites.is_empty() {
-        acc = acc.union(EffectSet::ALLOC);
-    }
-    for site in &fs.effect_sites {
-        acc = acc.union(match site.kind {
-            EffectSiteKind::Publish(_) => EffectSet::PUBLISH,
-            EffectSiteKind::Spawn(_) => EffectSet::ALLOC,
-        });
-    }
-    for edge in &fs.calls {
-        match &edge.callee {
-            Callee::Resolved(k) => {
-                // The callee's own contribution is tested when the
-                // BFS visits it; a leaf's declared `is:` is on the
-                // callee's `carries` entry.
-                if k.locus.is_none() && ffi.contains(&k.fn_name) {
-                    acc = acc.union(EffectSet::SYSCALL);
-                }
-            }
-            Callee::Unresolved(name) => {
-                let segs: Vec<&str> = name.split("::").collect();
-                if let Some(e) = stdlib_surface::effects_for(&segs) {
-                    if !e.is_unclassified() {
-                        acc = acc.union(e);
-                    }
-                }
-            }
-        }
-    }
-    acc
-}
-

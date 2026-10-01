@@ -145,6 +145,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
+    assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
     for family in ["bus_graph", "ownership"] {
         assert_eq!(builds[family], 0, "the model's input `{family}` is demanded with it");
     }
@@ -158,6 +159,63 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_at_most_once(&s, "lsp");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+const WITH_CODEC: &str = r#"
+type Tick { sym: String = ""; price: Int = 0; }
+type EncErr { kind: String = ""; }
+type DecErr { kind: String = ""; }
+
+topic TickTopic { payload: Tick; subject: "ticks"; }
+
+locus TickJsonCodec {
+    PARAMS
+    fn encode(v: Tick) -> Bytes fallible(EncErr) {
+        MUTATION
+        return std::bytes::from_string(v.sym);
+    }
+    fn decode(b: Bytes) -> Tick fallible(DecErr) {
+        return Tick { sym: "x", price: 0 };
+    }
+}
+
+main locus App {
+    bus { publish TickTopic; }
+    bindings {
+        TickTopic: unix("/ticks.sock") codec(TickJsonCodec { });
+    }
+}
+fn main() { App { }; }
+"#;
+
+/// The checker reads the effect rows' purity column on request: a
+/// codec binding's purity assertion demands them on the editor's path
+/// (the program has no claims), once, and an impure codec is refused
+/// through the snapshot as through the bundle entry.
+#[test]
+fn a_codec_binding_demands_the_effect_rows_once() {
+    let pure = WITH_CODEC.replace("PARAMS", "").replace("MUTATION", "");
+    let d = seed("codec-pure", &pure);
+    let s = editor(&d.join("app.hl"), &pure);
+    assert_clean(&s);
+    assert_eq!(s.builds()["model"], 0, "no claims, no model");
+    assert_eq!(s.builds()["effects"], 1, "the codec's purity assertion read the rows");
+    assert_at_most_once(&s, "lsp");
+    let _ = std::fs::remove_dir_all(&d);
+
+    let impure = WITH_CODEC
+        .replace("PARAMS", "params { calls: Int = 0; }")
+        .replace("MUTATION", "self.calls = self.calls + 1;");
+    let d = seed("codec-impure", &impure);
+    let s = check(&d);
+    let checked = s.demand_check().expect("the check runs");
+    assert!(
+        checked.diags.iter().any(|x| x.message.contains("is not safe to dispatch from arbitrary threads")),
+        "an impure codec is refused: {:?}",
+        checked.diags.iter().map(|x| &x.message).collect::<Vec<_>>()
+    );
+    assert_eq!(s.builds()["effects"], 1);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -178,6 +236,7 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         for family in ["top_scope", "bus_graph", "ownership", "handler_routing"] {
             assert_eq!(s.builds()[family], 1, "the check and the model demand `{family}`");
         }
+        assert_eq!(s.builds()["effects"], 1, "the model reads the effect rows: one fixpoint for the check with a law");
         s.demand_bus_graph().expect("the graph the model read");
         s.demand_ownership_graph().expect("the graph the model read");
         s.demand_handlers().expect("the rows the model read");
@@ -186,6 +245,25 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         s.demand_check().expect("still checked");
         s.demand_scope().expect("still scoped");
         assert_eq!(s.builds()["model"], 1, "the dump reuses the check's model");
+        // The effect rows: one fixpoint, however often demanded.
+        let first = s.demand_effects().expect("a clean program has effect rows") as *const _;
+        let again = s.demand_effects().expect("still there") as *const _;
+        assert_eq!(first, again, "the second demand reads the first result");
+        assert_eq!(s.builds()["effects"], 1, "the effects fixpoint runs once per snapshot");
+        // The effects certificate report the law's evidence read is the
+        // typing's: `--dump-topology` after the check reads the same
+        // report and runs no second check.
+        let report = s.demand_effect_certificates().expect("the check's report") as *const _;
+        let artifact = s.with_env(|| {
+            hale_types::topology::dump_topology_over(
+                &s.bundle(),
+                s.demand_model().expect("the check's model"),
+                s.demand_effect_certificates().expect("the same report"),
+            )
+        });
+        assert!(artifact.contains("\"claims\""), "the artifact carries the law");
+        assert_eq!(report, s.demand_effect_certificates().expect("still there") as *const _);
+        assert_eq!(s.builds()["expression_typing"], 1, "the report is the one typing's");
         assert_at_most_once(&s, "check");
     }
     let _ = std::fs::remove_dir_all(&d);
@@ -225,6 +303,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                "effects",
                 "model",
             ] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
@@ -248,8 +327,10 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["expression_typing"], 1, "the check ran before lowering");
     assert_eq!(builds["lowering_view"], 1);
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
+    assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
+    assert_eq!(s.builds()["effects"], 1);
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -295,7 +376,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
     for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "lowering_view"] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "model", "claims"] {
+    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");

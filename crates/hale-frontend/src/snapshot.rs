@@ -15,6 +15,8 @@
 //!   graph and the handler rows over the checked programs, what the
 //!   model reads beside the scope. The checker reads the handler rows
 //!   too, demanded before it runs.
+//! - [`Snapshot::demand_effects`]: the effect rows, one fixpoint over
+//!   the checked programs and the stdlib's analysis copy.
 //! - [`Snapshot::demand_model`]: the application model, over the scope
 //!   and those three.
 //! - [`Snapshot::demand_check`]: what the checker reports — the scope's
@@ -50,6 +52,8 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::bus_graph::BusGraph;
+use hale_types::effect_rows::EffectRows;
+use hale_types::effects::EffectCertificates;
 use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::resolve::TopScope;
@@ -72,7 +76,7 @@ use crate::source::SourceProvider;
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs.
-pub const FAMILIES: [&str; 11] = [
+pub const FAMILIES: [&str; 12] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -81,6 +85,7 @@ pub const FAMILIES: [&str; 11] = [
     "bus_graph",
     "ownership",
     "handler_routing",
+    "effects",
     "model",
     "claims",
     "lowering_view",
@@ -361,10 +366,13 @@ pub struct Snapshot {
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
     partial_scope: OnceCell<Result<Scope, Blocked>>,
-    typing: OnceCell<Result<Vec<Diag>, Blocked>>,
+    /// The typing's diagnostics, and the effects certificate report its
+    /// check produced ([`Snapshot::demand_effect_certificates`]).
+    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates), Blocked>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
+    effects: OnceCell<Result<EffectRows, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
@@ -521,6 +529,7 @@ impl Snapshot {
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
+            effects: OnceCell::new(),
             model: OnceCell::new(),
             check: OnceCell::new(),
             lowering: OnceCell::new(),
@@ -817,26 +826,43 @@ impl Snapshot {
     /// does not typecheck (it reads declarations, not types), so a
     /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
+        self.typed().map(|(diags, _)| diags.as_slice())
+    }
+
+    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates), &Blocked> {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                // The effect rows on request: a codec binding's purity
+                // assertion demands them, nothing else in the check does.
+                let effects = || self.demand_effects().ok();
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    effects: &effects,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
-                diags.extend(hale_types::check::check_bundle_scoped(
+                let (checked, certificates) = hale_types::check::check_bundle_reporting(
                     &self.bundle(),
                     &inputs,
                     self.config.allow_unowned_subscriber,
                     self.config.whole_program,
                     self.config.whole_program,
-                ));
-                Ok(diags)
+                );
+                diags.extend(checked);
+                Ok((diags, certificates))
             })
             .as_ref()
-            .map(Vec::as_slice)
+    }
+
+    /// The effects certificate report the typing's check produced: each
+    /// `@effects` and `@phase_effects` certificate with its diagnostics.
+    /// The certificate evidence a law is judged against reads it (the
+    /// check's laws, and the artifact's), so the engine runs once per
+    /// snapshot. Blocked with the typing; no family of its own.
+    pub fn demand_effect_certificates(&self) -> Result<&EffectCertificates, &Blocked> {
+        self.typed().map(|(_, certificates)| certificates)
     }
 
     /// The bus graph over the checked programs, with the scope's topic
@@ -885,6 +911,24 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The effect rows over the checked programs: one fixpoint, with
+    /// the stdlib's analysis copy beside them and cross-seed calls
+    /// resolved through the import renames. Per fn: the resolved call
+    /// targets, the effect set and its lower bound, what the walk could
+    /// not see, the fn's own contribution, its purity. Blocked with the
+    /// scope; like the handler rows, its producer reads declarations
+    /// and bodies, not types, so it is total over a program that does
+    /// not typecheck.
+    pub fn demand_effects(&self) -> Result<&EffectRows, &Blocked> {
+        self.effects
+            .get_or_init(|| {
+                let scope = self.scope().map_err(Clone::clone)?;
+                self.count("effects");
+                Ok(hale_types::effect_rows::derive_effect_rows(&self.bundle(), &scope.top))
+            })
+            .as_ref()
+    }
+
     /// The application model, over the scope, the bus graph, the
     /// ownership graph and the handler rows, each demanded. A model
     /// describes a CHECKED program (GH #476 Change 9): it is blocked
@@ -910,6 +954,7 @@ impl Snapshot {
                     bus_graph: self.demand_bus_graph().map_err(Clone::clone)?,
                     ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    effects: self.demand_effects().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -935,7 +980,8 @@ impl Snapshot {
                 {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");
-                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model));
+                        let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
+                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model, effects));
                     }
                 }
                 hale_types::finish_check_diags(&mut diags);

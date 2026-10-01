@@ -27,6 +27,7 @@ pub mod bare_fallible;
 pub mod budget_check;
 pub mod bus_graph;
 pub mod callgraph;
+pub mod effect_rows;
 pub mod effects;
 pub mod evidence;
 pub mod frontier;
@@ -271,13 +272,16 @@ pub fn check_bundle_opts_scoped(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
-    diags.extend(check::check_bundle_scoped(
+    let rows = std::cell::OnceCell::new();
+    let effects = || Some(rows.get_or_init(|| effect_rows::derive_effect_rows(bundle, &top)));
+    let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
-        &check::CheckInputs { top: &top, handlers: &handlers },
+        &check::CheckInputs { top: &top, handlers: &handlers, effects: &effects },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,
-    ));
+    );
+    diags.extend(checked);
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a
@@ -292,10 +296,11 @@ pub fn check_bundle_opts_scoped(
     // So the model half runs only once the resolver and the checker
     // agree the program denotes something ([`denotes_a_model`]).
     // The claim surface gate is `judgment::claim_law_diags`'s; the
-    // model is derived over the scope and the rows the check read.
+    // model is derived over the scope and the rows the check read, and
+    // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
         let model = model_over_scope(bundle, &top, &handlers);
-        diags.extend(judgment::claim_law_diags_over(bundle, &model));
+        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
     }
     finish_check_diags(&mut diags);
     diags
@@ -316,7 +321,7 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 /// artifact's bundle entry `topology::dump_topology`). It builds the
 /// families the frontend's snapshot demands for the model — the scope,
 /// the bus graph and the ownership graph over the checked programs, the
-/// handler rows — once each, and derives over them
+/// handler rows, the effect rows — once each, and derives over them
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
@@ -334,9 +339,10 @@ fn model_over_scope(
 ) -> hale_model::ApplicationModel {
     let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
+    let effects = effect_rows::derive_effect_rows(bundle, top);
     model_builder::derive_application_model_over(
         bundle,
-        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers },
+        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers, effects: &effects },
     )
 }
 
@@ -3386,10 +3392,10 @@ mod unowned_subscriber_tests {
 /// declared contracts plus inferred effect sets, sorted for stable
 /// diffs. The CLI writes this next to `.hale.topo`; a diff in review
 /// is an effect regression.
-pub fn dump_effects_manifest(bundle: &Bundle<'_>) -> String {
+pub fn dump_effects_manifest(bundle: &Bundle<'_>, effects: &effect_rows::EffectRows) -> String {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let mut rows = crate::effects::effect_manifest_with_inference(&programs, &bundle.snapshot);
+    let mut rows = crate::effects::effect_manifest_with_inference(&programs, effects);
     // An app's manifest describes the APP, not the libraries it
     // imports.
     //

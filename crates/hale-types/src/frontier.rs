@@ -35,8 +35,9 @@ use crate::stdlib_surface::{self, EffectSet};
 
 // ===================== inferred effect sets =====================
 
-/// The KNOWN part of a function's derived effect set, and whether
-/// the walk also reached something it could not name.
+/// A function's derived effect set two ways: everything it may do,
+/// and the KNOWN part, with whether the walk also reached something
+/// it could not name.
 ///
 /// [`infer_effects`] saturates: `UNCLASSIFIED` is `u64::MAX`, so one
 /// indirect call turns the whole set into "may do anything" and the
@@ -47,13 +48,29 @@ use crate::stdlib_surface::{self, EffectSet};
 /// violates a law the syscall exceeds, whatever the indirect call
 /// turns out to do (GH #476 Change 5f review).
 ///
-/// Same walk, same union rules; the difference is that an
-/// unnameable edge sets the flag instead of saturating the set.
-pub fn infer_effects_lower_bound(
+/// One walk answers both: the saturating set ([`infer_effects`]) and
+/// the lower bound, folded side by side over the same traversal (the
+/// same `seen` set, the same step bound), so they cannot disagree
+/// about what the walk visited. An unnameable edge saturates the one
+/// and sets the flag beside the other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectBounds {
+    /// What the fn may do: `UNCLASSIFIED` once the walk reaches what
+    /// it cannot name.
+    pub effects: EffectSet,
+    /// What the fn definitely does, whatever else the walk reached.
+    pub known: EffectSet,
+    /// Whether the walk reached an edge it cannot name: `known` is
+    /// then a lower bound, not the whole set.
+    pub unknown: bool,
+}
+
+pub fn infer_effect_bounds(
     summary: &AllocSummary,
     key: &FnKey,
     ffi: &BTreeSet<String>,
-) -> (EffectSet, bool) {
+) -> EffectBounds {
+    /// The two folds of one node: (may, known).
     fn walk(
         summary: &AllocSummary,
         key: &FnKey,
@@ -61,113 +78,20 @@ pub fn infer_effects_lower_bound(
         seen: &mut BTreeSet<FnKey>,
         steps: &mut u32,
         unknown: &mut bool,
-    ) -> EffectSet {
+    ) -> (EffectSet, EffectSet) {
         if !seen.insert(key.clone()) {
-            return EffectSet::PURE;
+            return (EffectSet::PURE, EffectSet::PURE);
         }
         *steps += 1;
         if *steps > callgraph::MAX_STEPS {
             *unknown = true;
-            return EffectSet::PURE;
+            return (EffectSet::UNCLASSIFIED, EffectSet::PURE);
         }
         let Some(fs) = summary.fns.get(key) else {
-            return EffectSet::PURE;
+            return (EffectSet::PURE, EffectSet::PURE);
         };
-        let mut acc = EffectSet::PURE;
-        if let Some(c) = summary.carries.get(key) {
-            if c.is_unclassified() {
-                *unknown = true;
-            } else {
-                acc = acc.union(*c);
-            }
-        }
-        if !fs.sites.is_empty() {
-            acc = acc.union(EffectSet::ALLOC);
-        }
-        for site in &fs.effect_sites {
-            acc = acc.union(match site.kind {
-                alloc_summary::EffectSiteKind::Publish(_) => {
-                    EffectSet::PUBLISH
-                }
-                alloc_summary::EffectSiteKind::Spawn(_) => {
-                    EffectSet::ALLOC
-                }
-            });
-        }
-        for edge in &fs.calls {
-            match &edge.callee {
-                Callee::Resolved(k) => {
-                    if let Some(c) = summary.carries.get(k) {
-                        if c.is_unclassified() {
-                            *unknown = true;
-                        } else {
-                            acc = acc.union(*c);
-                        }
-                    }
-                    if k.locus.is_none() && ffi.contains(&k.fn_name) {
-                        acc = acc.union(EffectSet::SYSCALL);
-                    }
-                    acc = acc.union(walk(
-                        summary, k, ffi, seen, steps, unknown,
-                    ));
-                }
-                Callee::Unresolved(name) => {
-                    // The two shapes that make a set unknowable —
-                    // an indirect call and an untypeable receiver —
-                    // set the flag and contribute nothing, rather
-                    // than swallowing what is already known.
-                    if fs.fn_params.iter().any(|p| p == name)
-                        || edge.opaque_method_call()
-                    {
-                        *unknown = true;
-                        continue;
-                    }
-                    let segs: Vec<&str> = name.split("::").collect();
-                    match stdlib_surface::effects_for(&segs) {
-                        Some(e) if !e.is_unclassified() => {
-                            acc = acc.union(e)
-                        }
-                        Some(_) => *unknown = true,
-                        None => {}
-                    }
-                }
-            }
-        }
-        acc
-    }
-    let mut seen = BTreeSet::new();
-    let mut steps = 0u32;
-    let mut unknown = false;
-    let set = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
-    (set, unknown)
-}
-
-/// The effect set a fn actually performs, transitively — inferred,
-/// never declared. Used by the manifest (a report) and by the
-/// causality check (which needs each subscriber's set).
-pub fn infer_effects(
-    summary: &AllocSummary,
-    key: &FnKey,
-    ffi: &BTreeSet<String>,
-) -> EffectSet {
-    fn walk(
-        summary: &AllocSummary,
-        key: &FnKey,
-        ffi: &BTreeSet<String>,
-        seen: &mut BTreeSet<FnKey>,
-        steps: &mut u32,
-    ) -> EffectSet {
-        if !seen.insert(key.clone()) {
-            return EffectSet::PURE;
-        }
-        *steps += 1;
-        if *steps > callgraph::MAX_STEPS {
-            return EffectSet::UNCLASSIFIED;
-        }
-        let Some(fs) = summary.fns.get(key) else {
-            return EffectSet::PURE;
-        };
-        let mut acc = EffectSet::PURE;
+        let mut may = EffectSet::PURE;
+        let mut known = EffectSet::PURE;
         // #345: what THIS fn declares it carries. The callee arm below
         // unions a leaf's `carries` when something calls it, but a fn's
         // own classification was invisible to its own inferred set — so
@@ -176,13 +100,22 @@ pub fn infer_effects(
         // from here. A user class silently did not travel over the bus,
         // while every built-in did.
         if let Some(c) = summary.carries.get(key) {
-            acc = acc.union(*c);
+            may = may.union(*c);
+            if c.is_unclassified() {
+                *unknown = true;
+            } else {
+                known = known.union(*c);
+            }
         }
+        let mut both = |s: EffectSet| {
+            may = may.union(s);
+            known = known.union(s);
+        };
         if !fs.sites.is_empty() {
-            acc = acc.union(EffectSet::ALLOC);
+            both(EffectSet::ALLOC);
         }
         for site in &fs.effect_sites {
-            acc = acc.union(match site.kind {
+            both(match site.kind {
                 alloc_summary::EffectSiteKind::Publish(_) => {
                     EffectSet::PUBLISH
                 }
@@ -194,12 +127,20 @@ pub fn infer_effects(
                 Callee::Resolved(k) => {
                     // #345: what this leaf DECLARES it carries.
                     if let Some(c) = summary.carries.get(k) {
-                        acc = acc.union(*c);
+                        may = may.union(*c);
+                        if c.is_unclassified() {
+                            *unknown = true;
+                        } else {
+                            known = known.union(*c);
+                        }
                     }
                     if k.locus.is_none() && ffi.contains(&k.fn_name) {
-                        acc = acc.union(EffectSet::SYSCALL);
+                        may = may.union(EffectSet::SYSCALL);
+                        known = known.union(EffectSet::SYSCALL);
                     }
-                    acc = acc.union(walk(summary, k, ffi, seen, steps));
+                    let (m, kn) = walk(summary, k, ffi, seen, steps, unknown);
+                    may = may.union(m);
+                    known = known.union(kn);
                 }
                 Callee::Unresolved(name) => {
                     // #353: a call through a FUNCTION-TYPED PARAMETER.
@@ -217,10 +158,7 @@ pub fn infer_effects(
                     // stdlib leaf gets. Resolving it exactly needs the
                     // binding from the call site (see the tier-1 note in
                     // the issue); until then, closed beats open.
-                    if fs.fn_params.iter().any(|p| p == name) {
-                        acc = acc.union(EffectSet::UNCLASSIFIED);
-                        continue;
-                    }
+                    //
                     // #382 receiver-typing: a method call on a
                     // receiver the summarizer STILL cannot type (an
                     // index result, a match value, a foreign
@@ -231,24 +169,47 @@ pub fn infer_effects(
                     // anything. (#392 interface dispatch never lands
                     // here: fanned out when conformers exist, dead
                     // code when none do.)
-                    if edge.opaque_method_call() {
-                        acc = acc.union(EffectSet::UNCLASSIFIED);
+                    //
+                    // Both shapes set the flag and contribute nothing
+                    // to the lower bound, rather than swallowing what
+                    // is already known.
+                    if fs.fn_params.iter().any(|p| p == name)
+                        || edge.opaque_method_call()
+                    {
+                        may = may.union(EffectSet::UNCLASSIFIED);
+                        *unknown = true;
                         continue;
                     }
                     let segs: Vec<&str> = name.split("::").collect();
-                    if let Some(e) = stdlib_surface::effects_for(&segs) {
-                        if !e.is_unclassified() {
-                            acc = acc.union(e);
+                    match stdlib_surface::effects_for(&segs) {
+                        Some(e) if !e.is_unclassified() => {
+                            may = may.union(e);
+                            known = known.union(e);
                         }
+                        Some(_) => *unknown = true,
+                        None => {}
                     }
                 }
             }
         }
-        acc
+        (may, known)
     }
     let mut seen = BTreeSet::new();
     let mut steps = 0u32;
-    walk(summary, key, ffi, &mut seen, &mut steps)
+    let mut unknown = false;
+    let (effects, known) = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
+    EffectBounds { effects, known, unknown }
+}
+
+/// The effect set a fn actually performs, transitively — inferred,
+/// never declared. Used by the manifest (a report) and by the
+/// causality check (which needs each subscriber's set).
+pub fn infer_effects(
+    summary: &AllocSummary,
+    key: &FnKey,
+    ffi: &BTreeSet<String>,
+) -> EffectSet {
+    infer_effect_bounds(summary, key, ffi).effects
 }
 
 /// Render an effect set as sorted class names — the manifest's
