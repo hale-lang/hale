@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 152 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
+44 families: 10 canonical, 30 migrating (with 147 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
 
 ## Families
 
@@ -35,7 +35,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
 | `effects` | Layer 4 | Canonical | derivation | `derive_effect_rows` | 0 | Which effect classes each fn and locus reaches (the callgraph fixpoint), the declared classes and their `causes:`/`depends:` DAG, and the certificate relating the two. |
 | `blocking` | Layer 4 | Migrating | derivation | `blocking_path_match` | 4 | Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread. |
-| `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 15 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
+| `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 10 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
@@ -910,25 +910,21 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/lib.rs` · `unbounded_alloc_warnings` — the diagnostics entry (check and the LSP's diagnostics), a different entry from the LSP's hale/allocSummary. *Removed when:* one entry.
 - `crates/hale-types/src/check.rs` · `check_hot_path_alloc` — hot-path allocation lint over a hand-kept receiver list, keyed by name and `__lib_` suffix. *Removed when:* a law over the rows.
 - `crates/hale-codegen/src/codegen.rs` · `compute_nonalloc_free_fns` — FORM-3 non-allocating free fns, a greatest fixpoint keyed by name. *Removed when:* codegen reads the rows (phase: effects lane).
-- `crates/hale-codegen/src/codegen.rs` · `compute_scratch_local_free_fns` — which free fns may allocate in their own scratch arena; the checker's ReclaimScope model was left stale by it (#1208). *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `SCRATCH_LOCAL_BUILTINS` — the bare builtins a scratch-local fn may call: a hand-kept subset of the checker's `BARE_BUILTIN_CALLEES`, with no agreement test. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `SCRATCH_LOCAL_STD_NAMESPACES` — the `std::` namespaces whose runtime primitives the scratch-local classification takes to keep no argument, a per-namespace claim no stdlib_surface row states. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `ScratchPaths` — the scratch-local classification's own qualified-path lookup (`call_ok`: import renames first, then `PATH_RENAMES`); `resolved::lookup_qualified_path` checks them in the other order. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `current_user_fn_scratch_local` — the per-fn flag lowering sets from the scratch-local set while it emits a fn's body. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `compute_elidable_methods` — methods whose scratch arena can be elided; recomputed on the fly per method by `method_scratch_elidable`. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `method_scratch_elidable` — the on-the-fly copy; lifecycle hooks are decided only here. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `locus_arena_elidable` — arena elision per locus, with an empty interprocedural context on purpose. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `let dbg = format!("{:?}", f.body);` — the caller-arena TLS publish gate decides from the body's Debug string. *Removed when:* same.
 - `crates/hale-types/src/alloc_summary.rs` · `ReclaimScope` — the checker's reclaim model, stale for scratch-local fns since #1208. *Removed when:* one model.
 
-**Also owned.** `crates/hale-types/src/alloc_summary.rs` · `summarize_identified`
+**Also owned.** `crates/hale-types/src/alloc_summary.rs` · `summarize_identified`; `crates/hale-types/src/alloc_routing.rs` · `derive_alloc_routing`
 
-**Consumers.** the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in) (`crates/hale-types/src/check.rs` · `CheckInputs`); effects (the rows walk the snapshot's summary and hold it, shared) (`crates/hale-frontend/src/snapshot.rs` · `demand_effects`); check (unbounded allocation, hot path); lsp (hale/allocSummary); claims (@budget); codegen (arena routing at an allocation) (`crates/hale-codegen/src/codegen.rs` · `current_arena_ptr`); resource_budget
+**Consumers.** the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in) (`crates/hale-types/src/check.rs` · `CheckInputs`); effects (the rows walk the snapshot's summary and hold it, shared) (`crates/hale-frontend/src/snapshot.rs` · `demand_effects`); check (unbounded allocation, hot path); lsp (hale/allocSummary); claims (@budget); codegen (arena routing at an allocation) (`crates/hale-codegen/src/codegen.rs` · `current_arena_ptr`); codegen (a free fn's own subregion: the view's scratch-local rows) (`crates/hale-codegen/src/codegen.rs` · `alloc_routing`); resource_budget
 
 **Invariants.**
 
 - one summary per snapshot: `Snapshot::demand_alloc_summary` runs `derive_alloc_summary` once over the checked programs with the stdlib's analysis copy beside them (cross-seed calls resolved through the import renames), counted as `alloc_summary`, blocked with the scope; the check's effects certificate engine reads it (`CheckInputs::alloc_summary`) and the effect rows walk it, so neither builds its own
 - the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment
+- lowering routes from the view's rows (`LoweringView::alloc_routing`, `derive_alloc_routing` over `merged` with the view's renames) and derives none: a free fn's body allocates into its own subregion when the rows call it scratch-local (#1148); the rows are #1208's classification moved as it was, so its builtin list is still a hand-kept subset of the checker's `BARE_BUILTIN_CALLEES` with no agreement test, its `std::` namespaces a per-namespace claim no stdlib_surface row states, and its qualified-path lookup checks the import renames before `PATH_RENAMES` where `resolved::lookup_qualified_path` checks them in the other order
 - a body's escape tags key a binding by the declaration its escaping uses name (`Snapshot::declaration_of`), so an inner shadow of a returned name is its own, local binding (the #1140 shape), and close over `let x = y;` aliases to the declaration y names, as borrow_lifetime's `returned_decls` does; programs minted by different snapshots are summarized each with its own identities (`summarize_identified`: a bundle's programs beside the bundled stdlib's analysis copy)
 - a leak site is left out of the advisory only when it has no author position (`AuthorPositions::has`: its span at or beyond `API_SYNTH_BASE`, or in a declaration the origin rows mark synthesized whose offset no source file owns), never by its owner's name; the check's warnings and the editor's hale/allocSummary decide with that one function
 
@@ -943,6 +939,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×5, `crates/hale-types/src/lib.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2, `crates/hale-types/src/topology.rs` ×1
 - `summarize_identified(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1
 - `derive_alloc_summary(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1
+- `derive_alloc_routing(` may be referenced from: `crates/hale-types/src/alloc_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `unbounded_alloc_warnings(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `borrow_lifetime` — Canonical · law

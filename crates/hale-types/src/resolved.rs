@@ -125,6 +125,9 @@ pub struct LoweringView {
     /// The top-level scope over `merged`, the one the ownership and bus
     /// graphs were built with.
     pub top: TopScope,
+    /// Where lowering routes an allocation, over `merged`: which free
+    /// fns are scratch-local (`crate::alloc_routing`).
+    pub alloc_routing: crate::alloc_routing::AllocRouting,
 }
 
 /// The name the merged program goes by in its bundle view. Nothing is
@@ -388,6 +391,9 @@ pub fn resolve_program(
     // The flow rows over the same merged program, each clause's child
     // resolved to the locus lowering names: lowering reads flow-ness here.
     let flows = crate::flows::survey(&[&merged], import_renames);
+    // The allocation-routing rows over the same merged program, cross-seed
+    // calls resolved through the same renames: lowering reads them.
+    let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);
 
     Ok(LoweringView {
         merged,
@@ -408,6 +414,7 @@ pub fn resolve_program(
         api: api.map(str::to_string),
         api_roles: api_roles.map(str::to_string),
         top,
+        alloc_routing,
     })
 }
 

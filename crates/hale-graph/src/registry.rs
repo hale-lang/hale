@@ -229,6 +229,7 @@ const ENTRY: &str = "crates/hale-types/src/entry.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
+const ALLOC_ROUTING: &str = "crates/hale-types/src/alloc_routing.rs";
 const PURITY: &str = "crates/hale-types/src/purity.rs";
 const TOPOLOGY: &str = "crates/hale-types/src/topology.rs";
 const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
@@ -995,32 +996,29 @@ pub const FAMILIES: &[Family] = &[
             legacy(TLIB, "unbounded_alloc_warnings", "the diagnostics entry (check and the LSP's diagnostics), a different entry from the LSP's hale/allocSummary", "one entry"),
             legacy(CHECK, "check_hot_path_alloc", "hot-path allocation lint over a hand-kept receiver list, keyed by name and `__lib_` suffix", "a law over the rows"),
             legacy(CG, "compute_nonalloc_free_fns", "FORM-3 non-allocating free fns, a greatest fixpoint keyed by name", "codegen reads the rows (phase: effects lane)"),
-            legacy(CG, "compute_scratch_local_free_fns", "which free fns may allocate in their own scratch arena; the checker's ReclaimScope model was left stale by it (#1208)", "same"),
-            legacy(CG, "SCRATCH_LOCAL_BUILTINS", "the bare builtins a scratch-local fn may call: a hand-kept subset of the checker's `BARE_BUILTIN_CALLEES`, with no agreement test", "same"),
-            legacy(CG, "SCRATCH_LOCAL_STD_NAMESPACES", "the `std::` namespaces whose runtime primitives the scratch-local classification takes to keep no argument, a per-namespace claim no stdlib_surface row states", "same"),
-            legacy(CG, "ScratchPaths", "the scratch-local classification's own qualified-path lookup (`call_ok`: import renames first, then `PATH_RENAMES`); `resolved::lookup_qualified_path` checks them in the other order", "same"),
-            legacy(CG, "current_user_fn_scratch_local", "the per-fn flag lowering sets from the scratch-local set while it emits a fn's body", "same"),
             legacy(CG, "compute_elidable_methods", "methods whose scratch arena can be elided; recomputed on the fly per method by `method_scratch_elidable`", "same"),
             legacy(CG, "method_scratch_elidable", "the on-the-fly copy; lifecycle hooks are decided only here", "same"),
             legacy(CG, "locus_arena_elidable", "arena elision per locus, with an empty interprocedural context on purpose", "same"),
             legacy(CG, "let dbg = format!(\"{:?}\", f.body);", "the caller-arena TLS publish gate decides from the body's Debug string", "same"),
             legacy(ALLOC, "ReclaimScope", "the checker's reclaim model, stale for scratch-local fns since #1208", "one model"),
         ],
-        consumers: &[consumer_at("the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in)", CHECK, "CheckInputs"), consumer_at("effects (the rows walk the snapshot's summary and hold it, shared)", SNAPSHOT, "demand_effects"), consumer("check (unbounded allocation, hot path)"), consumer("lsp (hale/allocSummary)"), consumer("claims (@budget)"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer("resource_budget")],
+        consumers: &[consumer_at("the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in)", CHECK, "CheckInputs"), consumer_at("effects (the rows walk the snapshot's summary and hold it, shared)", SNAPSHOT, "demand_effects"), consumer("check (unbounded allocation, hot path)"), consumer("lsp (hale/allocSummary)"), consumer("claims (@budget)"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer_at("codegen (a free fn's own subregion: the view's scratch-local rows)", CG, "alloc_routing"), consumer("resource_budget")],
         invariants: &[
             "one summary per snapshot: `Snapshot::demand_alloc_summary` runs `derive_alloc_summary` once over the checked programs with the stdlib's analysis copy beside them (cross-seed calls resolved through the import renames), counted as `alloc_summary`, blocked with the scope; the check's effects certificate engine reads it (`CheckInputs::alloc_summary`) and the effect rows walk it, so neither builds its own",
             "the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment",
+            "lowering routes from the view's rows (`LoweringView::alloc_routing`, `derive_alloc_routing` over `merged` with the view's renames) and derives none: a free fn's body allocates into its own subregion when the rows call it scratch-local (#1148); the rows are #1208's classification moved as it was, so its builtin list is still a hand-kept subset of the checker's `BARE_BUILTIN_CALLEES` with no agreement test, its `std::` namespaces a per-namespace claim no stdlib_surface row states, and its qualified-path lookup checks the import renames before `PATH_RENAMES` where `resolved::lookup_qualified_path` checks them in the other order",
             "a body's escape tags key a binding by the declaration its escaping uses name (`Snapshot::declaration_of`), so an inner shadow of a returned name is its own, local binding (the #1140 shape), and close over `let x = y;` aliases to the declaration y names, as borrow_lifetime's `returned_decls` does; programs minted by different snapshots are summarized each with its own identities (`summarize_identified`: a bundle's programs beside the bundled stdlib's analysis copy)",
             "a leak site is left out of the advisory only when it has no author position (`AuthorPositions::has`: its span at or beyond `API_SYNTH_BASE`, or in a declaration the origin rows mark synthesized whose offset no source file owns), never by its owner's name; the check's warnings and the editor's hale/allocSummary decide with that one function",
         ],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/hot_path_alloc.rs", "crates/hale-codegen/tests/scratch_local_free_fn.rs", "crates/hale-codegen/tests/fn_nonalloc_add.rs", "crates/hale-codegen/tests/method_scratch_elision.rs"],
         spec: &["spec/memory.md § Allocation routing", "spec/styleguide.md"],
-        owned: &[site(ALLOC, "summarize_identified")],
+        owned: &[site(ALLOC, "summarize_identified"), site(ALLOC_ROUTING, "derive_alloc_routing")],
         seams: &[
             Seam { symbol: "summarize_programs", allowed: &[(ALLOC, 5), (TLIB, 1), (LSP, 1), ("crates/hale-types/src/budget_check.rs", 1), (FRONTIER, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/quantitative.rs", 1), ("crates/hale-types/src/resource_budget.rs", 2), (TOPOLOGY, 1)] },
             Seam { symbol: "summarize_identified(", allowed: &[(ALLOC, 2), (STDLIB_BODIES, 1)] },
             Seam { symbol: "derive_alloc_summary(", allowed: &[(ALLOC, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1)] },
+            Seam { symbol: "derive_alloc_routing(", allowed: &[(ALLOC_ROUTING, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (LSP, 1)] },
         ],
     },

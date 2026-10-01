@@ -1561,8 +1561,9 @@ it returns except its return value:
   `e`-forms), or runtime primitives under `std::str`, `std::math`,
   `std::json`, `std::crypto` and `std::env`.
 
-The class is a greatest fixpoint over the call graph
-(`compute_scratch_local_free_fns`). Its body allocates into the
+The class is a greatest fixpoint over the call graph, computed
+once over the program lowering walks as a row of the lowering
+view (`hale_types::alloc_routing`). Its body allocates into the
 per-call subregion; the epilogue deep-copies the return value
 into `__caller_arena` and destroys the subregion, so everything
 else the call made is reclaimed at return. Every other free fn
