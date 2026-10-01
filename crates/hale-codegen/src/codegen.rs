@@ -871,6 +871,20 @@ impl LtoMode {
 /// lld is the single biggest dev-loop latency lever. Linux-only
 /// (macOS's system ld64 is fine and ld64.lld is not a drop-in).
 /// `BuildOptions::no_lld` forces the default linker for debugging.
+/// A topic payload's struct name when it is written as one bare,
+/// non-generic segment: the only payload shape the shm-ring and
+/// routing-key lowering handle today.
+fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
+    match payload {
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 && generic_args.is_empty() =>
+        {
+            Some(path.segments[0].name.clone())
+        }
+        _ => None,
+    }
+}
+
 fn lld_on_path() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -1444,6 +1458,7 @@ pub fn build_resolved(
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
         program: merged,
+        topics: &resolved.top.topics,
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
@@ -3311,6 +3326,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// returns and self-field stores keep their zero-copy skips.
     pub(crate) cell_owned_clone: bool,
     pub(crate) program: &'p Program,
+    /// The topic rows over `program` (the lowering view's scope): what
+    /// each topic is on the wire and the policies its sends and
+    /// subscriptions are held to. Lowering reads a topic's wire
+    /// subject, payload, routing key and bound here and derives none.
+    pub(crate) topics: &'p hale_types::topic_identity::TopicRows,
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
     pub(crate) current_fn: Option<FunctionValue<'ctx>>,
@@ -9802,19 +9822,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rows key by the joined dot-path, so a parented topic's
             // shape registered under its bare subject was never found
             // and its manifest row hashed the empty shape.
-            let wire = hale_types::topic_identity::topic_wire_subjects(
-                &self.program.items,
-            );
             let shapes: Vec<(String, String)> = self
                 .program
                 .items
                 .iter()
                 .filter_map(|it| match it {
                     TopDecl::Topic(t) => {
-                        let subj = wire
-                            .get(&t.name.name)
-                            .cloned()
-                            .unwrap_or_else(|| t.name.name.clone());
+                        let subj = self.topic_wire(&t.name.name);
                         let shape = hale_types::topic_identity::
                             canonical_topic_shape(
                                 &self.program.items,
@@ -10221,31 +10235,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// path (which fails at codegen time for publisher-only
     /// programs).
     fn collect_shm_ring_subjects(&mut self) {
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
         let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
         let Some(l) = main_locus else { return };
-        // Walk topic decls to get each topic's payload-type
-        // name (we need this for the size_of lookup at
-        // codegen). For now require single-segment TypeExpr;
-        // post-v1 can widen.
-        let mut topic_payload: BTreeMap<String, String> = BTreeMap::new();
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
-            if let TopDecl::Topic(t) = item {
-                if let TypeExpr::Named { path, generic_args, .. } = &t.payload {
-                    if path.segments.len() == 1 && generic_args.is_empty() {
-                        topic_payload.insert(
-                            t.name.name.clone(),
-                            path.segments[0].name.clone(),
-                        );
-                    }
-                }
-            }
-        }
         for m in &l.members {
             if let LocusMember::Bindings(b) = m {
                 for entry in &b.entries {
@@ -10253,13 +10248,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name, slot_count, overflow, layout, ..
                     } = &entry.transport
                     {
-                        let subj = wire_subjects
-                            .get(&entry.topic.name)
-                            .cloned()
-                            .unwrap_or_else(|| entry.topic.name.clone());
-                        let payload_name = topic_payload
-                            .get(&entry.topic.name)
-                            .cloned()
+                        let subj = self.topic_wire(&entry.topic.name);
+                        // The topic's payload-type name, from its row
+                        // (the size_of lookup at codegen). For now a
+                        // single-segment TypeExpr only; post-v1 can
+                        // widen.
+                        let payload_name = self
+                            .topics
+                            .named(&entry.topic.name)
+                            .and_then(|row| single_segment_type_name(&row.payload))
                             .unwrap_or_default();
                         // Proposal B: resolve `layout: Name` to its
                         // decl (validated upstream in hale-types) so
@@ -10323,53 +10320,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// to the legacy `lotus_bus_dispatch` path when a publish's
     /// subject isn't in this map.
     fn collect_routing_key_subjects(&mut self) {
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
-        for item in hale_syntax::ast::flat_decls(&self.program.items) {
-            if let TopDecl::Topic(t) = item {
-                // GH #255 phase 2: record on_full-fail capacities.
-                if let (Some((cap, _)), Some(_)) =
-                    (t.bounded, t.on_full_fail)
-                {
-                    let wire = wire_subjects
-                        .get(&t.name.name)
-                        .cloned()
-                        .unwrap_or_else(|| t.name.name.clone());
-                    self.full_fail_subjects.insert(wire, cap);
-                }
-                let keyed_field = match &t.keyed_by {
-                    Some(f) => f.name.clone(),
-                    None => continue,
-                };
-                let payload_name = match &t.payload {
-                    TypeExpr::Named { path, generic_args, .. }
-                        if path.segments.len() == 1 && generic_args.is_empty() =>
-                    {
-                        path.segments[0].name.clone()
-                    }
-                    _ => continue,
-                };
-                let wire = wire_subjects
-                    .get(&t.name.name)
-                    .cloned()
-                    .unwrap_or_else(|| t.name.name.clone());
-                self.routing_key_subjects.insert(
-                    wire,
-                    RoutingKeySubjectInfo {
-                        payload_type_name: payload_name,
-                        keyed_by_field: keyed_field,
-                        policy: t.on_unmatched,
-                    },
-                );
+        for row in self.topics.iter() {
+            // GH #255 phase 2: record on_full-fail capacities.
+            if let (Some(cap), true) = (row.bounded, row.on_full_fail) {
+                self.full_fail_subjects.insert(row.wire.clone(), cap);
             }
+            let Some(keyed_field) = row.keyed_by.clone() else { continue };
+            let Some(payload_name) = single_segment_type_name(&row.payload) else { continue };
+            self.routing_key_subjects.insert(
+                row.wire.clone(),
+                RoutingKeySubjectInfo {
+                    payload_type_name: payload_name,
+                    keyed_by_field: keyed_field,
+                    policy: row.on_unmatched,
+                },
+            );
         }
         // GH #255 phase 2: subscriber shed bounds, keyed by
         // (locus, wire subject).
-        let mut wire_subjects2: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(
-            &self.program.items,
-            &mut wire_subjects2,
-        );
         for item in hale_syntax::ast::flat_decls(&self.program.items) {
             let TopDecl::Locus(l) = item else { continue };
             for member in &l.members {
@@ -10383,11 +10351,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     else {
                         continue;
                     };
-                    let canon = subject.canonical().to_string();
-                    let wire = wire_subjects2
-                        .get(&canon)
-                        .cloned()
-                        .unwrap_or(canon);
+                    let wire = self.topic_wire(subject.canonical());
                     let policy = match b.policy {
                         hale_syntax::ast::ShedPolicy::DropNew => 1u8,
                         hale_syntax::ast::ShedPolicy::DropOld => 2u8,
@@ -10688,12 +10652,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
-        // Build a name → wire_subject map for declared topics so
-        // each binding entry can resolve its topic ref. Topic-graph
-        // cycle / unknown-parent diagnostics already fired during
-        // typecheck; we just consume the resolved chain here.
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
+        // Each binding entry resolves its topic ref through the topic
+        // rows. Topic-graph cycle / unknown-parent diagnostics already
+        // fired during typecheck; we just consume the resolved chain.
 
         // Locate the (single) main locus, if any. Multiple-mains
         // would have errored in typecheck; we defensively pick the
@@ -10721,14 +10682,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         for block in bindings {
             for entry in block.entries {
-                // Resolve subject. Fall back to the topic name if
-                // the wire-subject map is missing it (defensive —
-                // typecheck would have flagged the missing topic
-                // already).
-                let subject = wire_subjects
-                    .get(&entry.topic.name)
-                    .cloned()
-                    .unwrap_or_else(|| entry.topic.name.clone());
+                // Resolve subject. Fall back to the topic name if no
+                // row declares it (defensive — typecheck would have
+                // flagged the missing topic already).
+                let subject = self.topic_wire(&entry.topic.name);
 
                 // Emit per transport spec: unix entries become
                 // __StdBusUnix{Listen,Connect}Transport locus
@@ -11832,11 +11789,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
         let Some(l) = main_locus else { return Ok(()) };
 
-        let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
-        Self::collect_topic_wire_subjects(
-            &self.program.items, &mut wire_subjects,
-        );
-
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let saved_block = self.builder.get_insert_block();
 
@@ -11849,10 +11801,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for entry in &bb.entries {
                     let Some(codec) = &entry.codec else { continue };
                     let topic_name = entry.topic.name.clone();
-                    let subject = wire_subjects
-                        .get(&topic_name)
-                        .cloned()
-                        .unwrap_or_else(|| topic_name.clone());
+                    let subject = self.topic_wire(&topic_name);
                     let payload_type = self
                         .lookup_topic_payload_type_name(&topic_name)?;
                     to_synth.push((
@@ -12210,22 +12159,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    /// Walk every `topic Foo : Parent { subject: "..."; }` decl
-    /// and produce a (name → wire_subject) table. Wire subject is
-    /// the dot-joined chain of own-subject segments root-to-leaf;
-    /// own segment defaults to the topic name when no `subject:`
-    /// is declared.
-    fn collect_topic_wire_subjects(
-        items: &[TopDecl],
-        out: &mut BTreeMap<String, String>,
-    ) {
-        // #399: the rule moved to `hale_types::topic_identity` so
-        // bus routing, observer shape registration, and the
-        // topology artifact's exported identity all read ONE
-        // implementation.
-        out.extend(hale_types::topic_identity::topic_wire_subjects(
-            items,
-        ));
+    /// The wire subject of the topic declared as `name`, read from the
+    /// topic rows (the dot-joined chain of own-subject segments
+    /// root-to-leaf; #399's one rule). A name no topic declares is its
+    /// own subject: a subscription or binding that already names a wire
+    /// subject, or a topic typecheck reported missing.
+    fn topic_wire(&self, name: &str) -> String {
+        self.topics
+            .named(name)
+            .map(|row| row.wire.clone())
+            .unwrap_or_else(|| name.to_string())
     }
 
     fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {

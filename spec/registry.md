@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 6 canonical, 34 migrating (with 142 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 7 canonical, 33 migrating (with 139 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -22,7 +22,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `entrypoint` | Layer 3 | Migrating | derivation | — | 12 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 6 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
-| `topics` | Layer 3 | Migrating | derivation | `topic_wire_subjects` | 3 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
+| `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
@@ -493,28 +493,23 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `collect_bus_walk(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×2, `crates/hale-types/src/check.rs` ×1
 - `dispatch_gates(` may be referenced from: `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 
-### `topics` — Migrating · derivation
+### `topics` — Canonical · derivation
 
 **Answers.** What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names.
 
 **Inputs.** topic declarations; send subjects; subscribe bounds; bindings (shm_ring)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/topic_identity.rs` · `topic_wire_subjects`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-codegen/src/codegen.rs` · `collect_topic_wire_subjects` — codegen recomputes wire subjects five times per build, plus its shm-ring, routing-key and bound tables. *Removed when:* codegen reads the topic rows.
-- `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring table. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects` — the routing-key table. *Removed when:* same.
+**Producer.** `crates/hale-types/src/topic_identity.rs` · `topic_wire_subjects`
 
 **Also owned.** `crates/hale-types/src/topic_identity.rs` · `TopicRows::of`; `crates/hale-types/src/topic_identity.rs` · `by_wire`
 
-**Consumers.** check (the topic rows, built once per bundle on the TopScope) (`crates/hale-types/src/resolve.rs` · `build_top_scope`); model (the scope's topic rows: each topic's wire, and the gate merge per wire) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); codegen (dispatch, bindings, runtime registration); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
+**Consumers.** check (the topic rows, built once per bundle on the TopScope) (`crates/hale-types/src/resolve.rs` · `build_top_scope`); model (the scope's topic rows: each topic's wire, and the gate merge per wire) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); codegen (the lowering view's rows: dispatch, bindings, codecs, runtime shape registration) (`crates/hale-codegen/src/codegen.rs` · `topics: &resolved.top.topics`); codegen (the shm-ring bindings: each bound topic's wire and payload, from its row) (`crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects`); codegen (the routing-key, on_full-fail and subscriber-bound tables, from the rows) (`crates/hale-codegen/src/codegen.rs` · `collect_routing_key_subjects`); topology (topic shapes); resolved program (the intra-locus relation's wire subjects) (`crates/hale-types/src/resolved.rs` · `topic_wire_subjects`)
 
 **Invariants.**
 
 - delivery joins on the subject's identity, never on the written topic name (spec/model.md rule 8)
 - a literal subject at a delivery site (a literal subscription, a literal send) names only the topic that OWNS that wire subject, `TopicRows::by_wire`, never one whose declared segment or name it happens to spell; a topic reference names its declaration; a wire subject two topics carry names neither and is an error
+- lowering reads the topic rows of the lowering view's scope (`Cx::topics`, over the program it lowers): a topic's wire subject, payload, routing key, bound and on_full policy come from its row, and codegen computes no wire subject of its own
 
 **Missing data.** an unknown is a hole with a stated policy
 
@@ -524,7 +519,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-codegen/src/codegen.rs` ×2
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `TopicRows::of(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×1, `crates/hale-types/src/resolve.rs` ×1
 - `by_wire(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
 
