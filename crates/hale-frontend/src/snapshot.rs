@@ -365,6 +365,11 @@ pub struct Snapshot {
     /// The seed members that would not read, with the OS error. A load
     /// that leaves any blocks the scope.
     unreadable: BTreeMap<PathBuf, String>,
+    /// What the import graph refused for the editor's seed whose every
+    /// member parsed (an import that does not resolve, a library that
+    /// does not parse or read): the members are kept, unlinked, and the
+    /// scope blocks.
+    unlinked: Option<CheckableFailure>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -402,6 +407,7 @@ struct Loaded {
     entry_imports: Vec<Import>,
     unparsed: BTreeMap<PathBuf, Vec<Diag>>,
     unreadable: BTreeMap<PathBuf, String>,
+    unlinked: Option<CheckableFailure>,
 }
 
 impl Snapshot {
@@ -415,9 +421,11 @@ impl Snapshot {
     /// read; [`LoadMode::Editor`] keeps the members that did and
     /// records the rest ([`Snapshot::unparsed`],
     /// [`Snapshot::unreadable`]), blocking the scope instead, so the
-    /// editor reports each against the file that holds it. Both fail
-    /// on what the import graph refuses (an import that does not
-    /// resolve, a library that does not parse or read).
+    /// editor reports each against the file that holds it. On what the
+    /// import graph refuses (an import that does not resolve, a library
+    /// that does not parse or read) the whole seed's load fails, and the
+    /// editor's keeps its members as they parsed and records the refusal
+    /// ([`Snapshot::linked`]), the scope blocked.
     pub fn load(
         entry: &Path,
         mode: LoadMode,
@@ -483,6 +491,7 @@ impl Snapshot {
             entry_imports: Vec::new(),
             unparsed: BTreeMap::new(),
             unreadable: BTreeMap::new(),
+            unlinked: None,
         };
         Snapshot::shape(&entry, None, key, config, loaded)
     }
@@ -529,6 +538,7 @@ impl Snapshot {
             api_surface: None,
             unparsed: loaded.unparsed,
             unreadable: loaded.unreadable,
+            unlinked: loaded.unlinked,
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             typing: OnceCell::new(),
@@ -576,9 +586,9 @@ impl Snapshot {
                 }
             }
         }
-        // The editor's seed with a member that did not parse or read is
-        // not a program: nothing is shaped or minted, and the scope
-        // blocks.
+        // The editor's seed with a member that did not parse or read, or
+        // whose imports did not link, is not a program: nothing is
+        // shaped or minted, and the scope blocks.
         if snap.has_hole() {
             return Ok(snap);
         }
@@ -722,24 +732,52 @@ impl Snapshot {
         &self.unreadable
     }
 
-    /// A member did not parse or read, or none was loaded: the seed is
-    /// not a program, and its scope is blocked.
+    /// What the import graph refused for the editor's seed, if it
+    /// refused it: the snapshot then holds its members as they parsed
+    /// ([`Snapshot::member`], with their sources and bases) and nothing
+    /// linked, and every family is blocked.
+    pub fn unlinked(&self) -> Option<&CheckableFailure> {
+        self.unlinked.as_ref()
+    }
+
+    /// The snapshot, unless the import graph refused its seed: a reader
+    /// that needs the seed linked (every editor request but the outline)
+    /// gets the refusal as the whole seed's load reports it.
+    pub fn linked(mut self) -> Result<Snapshot, CheckableFailure> {
+        match self.unlinked.take() {
+            Some(failure) => Err(failure),
+            None => Ok(self),
+        }
+    }
+
+    /// A member did not parse or read, the imports did not link, or no
+    /// member was loaded: the seed is not a program, and its scope is
+    /// blocked.
     fn has_hole(&self) -> bool {
-        !self.unparsed.is_empty() || !self.unreadable.is_empty() || self.programs.is_empty()
+        !self.unparsed.is_empty()
+            || !self.unreadable.is_empty()
+            || self.unlinked.is_some()
+            || self.programs.is_empty()
     }
 
     /// Why a seed with a hole has no scope.
     fn hole_blocked(&self) -> Blocked {
+        let refused: Vec<String> = self
+            .unreadable
+            .iter()
+            .map(|(p, e)| unreadable_message(p, e))
+            .chain(self.unlinked.iter().flat_map(|f| f.io.iter().map(|io| io.text.clone())))
+            .collect();
         Blocked {
             family: "top_scope",
-            because: self.unparsed.values().flatten().cloned().collect(),
-            refused: (!self.unreadable.is_empty()).then(|| {
-                self.unreadable
-                    .iter()
-                    .map(|(p, e)| unreadable_message(p, e))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }),
+            because: self
+                .unparsed
+                .values()
+                .flatten()
+                .chain(self.unlinked.iter().flat_map(|f| &f.diags))
+                .cloned()
+                .collect(),
+            refused: (!refused.is_empty()).then(|| refused.join("\n")),
         }
     }
 
@@ -819,8 +857,8 @@ impl Snapshot {
     /// a seed with a hole never builds the whole scope, so the count
     /// stays one. Nothing else reads it — the check, the graphs and the
     /// model stay blocked, so no check runs over a partial program.
-    /// Blocked when no member parsed, and for any other load with a
-    /// hole.
+    /// Blocked when no member parsed or the imports did not link, and for
+    /// any other load with a hole.
     pub fn demand_editor_scope(&self) -> Result<EditorScope<'_>, &Blocked> {
         if !self.has_hole() {
             return self.demand_scope().map(|top| EditorScope { top, hole: Vec::new() });
@@ -1076,6 +1114,7 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
         entry_imports,
         unparsed: BTreeMap::new(),
         unreadable: BTreeMap::new(),
+        unlinked: None,
     })
 }
 
@@ -1085,7 +1124,10 @@ fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Che
 /// followed). A member that will not read is recorded with its OS
 /// error, one that does not parse is kept as text with its diagnostics;
 /// either leaves the members that parsed unlinked, one program each,
-/// and blocks the scope.
+/// and blocks the scope. A link the import graph refuses keeps the
+/// members as they parsed and no program, with the refusal recorded
+/// (`Snapshot::unlinked`): the scope blocks, and the outline still
+/// reads each member.
 fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
     // A directory that will not list leaves the file alone.
     let files = collect_ap_files(entry, LoadMode::Editor, src)
@@ -1143,23 +1185,46 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
             entry_imports: Vec::new(),
             unparsed,
             unreadable,
+            unlinked: None,
         });
     }
     let seed = if src.is_dir(entry) { entry } else { seed_dir_of(entry) };
-    let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        link_checkable(seed, &files, own_files, programs, sources, file_bases, effects, src)?;
-    Ok(Loaded {
-        files,
-        own_files,
-        members,
-        programs,
-        sources,
-        file_bases,
-        import_renames,
-        entry_imports,
-        unparsed,
-        unreadable,
-    })
+    // What the members read, kept for a link the import graph refuses.
+    let read = (own_files.clone(), sources.clone(), file_bases.clone());
+    match link_checkable(seed, &files, own_files, programs, sources, file_bases, effects, src) {
+        Ok((programs, sources, file_bases, import_renames, own_files, entry_imports)) => Ok(Loaded {
+            files,
+            own_files,
+            members,
+            programs,
+            sources,
+            file_bases,
+            import_renames,
+            entry_imports,
+            unparsed,
+            unreadable,
+            unlinked: None,
+        }),
+        // An import that does not resolve, a library that does not parse
+        // or read: the members stay as they parsed, with their sources
+        // and bases, and nothing is linked.
+        Err(failure) => {
+            let (own_files, sources, file_bases) = read;
+            Ok(Loaded {
+                files,
+                own_files,
+                members,
+                programs: BTreeMap::new(),
+                sources,
+                file_bases,
+                import_renames: Vec::new(),
+                entry_imports: Vec::new(),
+                unparsed,
+                unreadable,
+                unlinked: Some(failure),
+            })
+        }
+    }
 }
 
 /// GH #409: adopt constitution `name` into `prog`'s main locus, as if
@@ -1316,6 +1381,31 @@ mod tests {
         let s = load(&d.join("app.hl"), &Disk, Config::editor());
         assert!(s.member(&d.join("broken.hl")).is_none());
         assert_eq!(names(s.member(&d.join("extra.hl")).expect("parsed")), vec!["helper"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// An import that does not resolve: the whole seed's load fails, and
+    /// the editor's keeps each member as it parsed, at its base, with the
+    /// refusal recorded; nothing is linked, every family is blocked, and
+    /// a reader that needs the seed linked gets the refusal (outside
+    /// review of #1295, finding 2).
+    #[test]
+    fn an_unlinked_editor_seed_keeps_its_members_and_blocks_its_families() {
+        let d = scratch("unlinked");
+        std::fs::write(d.join("app.hl"), "import \"missing\" as m;\nfn helper() -> Int { return 1; }\nfn main() { }\n")
+            .unwrap();
+        assert!(load_whole_seed(&d.join("app.hl"), &Disk).is_err(), "the whole seed's load fails");
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        assert!(s.unlinked().is_some_and(|f| !f.diags.is_empty() || !f.io.is_empty()), "the refusal is recorded");
+        let app = s.member(&d.join("app.hl")).expect("the member is kept");
+        assert!(matches!(&app.items[..], [TopDecl::Fn(h), TopDecl::Fn(m)] if h.name.name == "helper" && m.name.name == "main"));
+        assert!(s.sources().contains_key(&d.join("app.hl")) && !s.file_bases().is_empty(), "with its source and base");
+        assert!(s.programs().is_empty(), "nothing is linked");
+        assert!(s.demand_scope().is_err() && s.demand_editor_scope().is_err());
+        assert!(s.demand_check().is_err() && s.demand_bus_graph().is_err() && s.demand_model().is_err());
+        assert!(s.demand_lowering().is_err());
+        assert_eq!(s.builds()["top_scope"], 0, "no scope is built");
+        assert!(s.linked().is_err(), "a reader that needs it linked is refused");
         let _ = std::fs::remove_dir_all(&d);
     }
 

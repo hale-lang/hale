@@ -789,8 +789,21 @@ fn seed_diagnostics(
 /// of `changed` as `hale check <dir>` loads it, through the buffers over
 /// the disk (`LoadMode::Editor`), under the editor's config. One load
 /// per event or request — the ~10 ms frontend makes a cache pointless,
-/// and the snapshot's key is what would say whether one is sound.
+/// and the snapshot's key is what would say whether one is sound. A seed
+/// whose imports did not link is refused as `hale check` refuses it
+/// ([`Snapshot::linked`]); only the outline reads its members
+/// ([`editor_load`]).
 fn editor_snapshot(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<Snapshot, LoadError> {
+    editor_load(changed, overlays)?.linked().map_err(LoadError::Load)
+}
+
+/// The editor's load as it read, a seed whose imports did not link
+/// included: its members as they parsed, with their sources and bases,
+/// and every family blocked.
+fn editor_load(
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<Snapshot, LoadError> {
@@ -1177,14 +1190,15 @@ fn sym_range(src: &str, span: hale_syntax::Span) -> Value {
 /// Per-document outline: hierarchical DocumentSymbols from the
 /// snapshot's member program for the open file (what the file itself
 /// declares, before the merge and the sequence), answered while another
-/// member of the seed does not parse.
+/// member of the seed does not parse and while an import does not
+/// resolve: the outline needs no linked scope.
 fn document_symbols(
     msg: &Value,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
     let path = text_document_path(msg)?;
-    let snap = editor_snapshot(&path, overlays).ok()?;
+    let snap = editor_load(&path, overlays).ok()?;
     let program = snap.member(&path)?;
     let src = source_of(&snap, &path)?;
     let base = base_of(&snap, &path)?;
