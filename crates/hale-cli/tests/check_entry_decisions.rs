@@ -20,7 +20,8 @@
 //!    9's world is not closed, but lowering still deploys that `main`
 //!    as its root and spawns its pinned threads, so its cross-pool call
 //!    is refused as the top-level one is (GH #825; the outside review
-//!    of #1293, finding 1).
+//!    of #1293, finding 1). The end-to-end half, that lowering does
+//!    deploy it, is `nested_main_transition.rs`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

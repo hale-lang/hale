@@ -411,7 +411,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus); crates/hale-cli/tests/check_entry_decisions.rs; crates/hale-cli/tests/entry_point_placement.rs; crates/hale-types/tests/bus_graph.rs
+**Focused tests.** crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus); crates/hale-cli/tests/check_entry_decisions.rs; crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main); crates/hale-cli/tests/entry_point_placement.rs; crates/hale-types/tests/bus_graph.rs
 
 **Spec.** spec/semantics.md § Bundle-wide rules
 
