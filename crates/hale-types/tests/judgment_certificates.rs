@@ -87,7 +87,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     // the per-certificate stream), demangled like `hale check`.
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
     let (_pre, mut p1, _tail, groups) =
-        hale_types::effects::effect_report_three_way(&programs_v, &[]);
+        hale_types::effects::effect_report_three_way(&programs_v, &bundle.snapshot, &[]);
     hale_types::stdlib_bodies::demangle_imports(&mut p1, &[]);
     let mut group_diags: Vec<hale_syntax::Diag> = groups
         .into_iter()
@@ -100,6 +100,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let mut budget_diags =
         hale_types::budget_check::budget_diags_with_renames(
             &programs_b,
+            &bundle.snapshot,
             &[],
         );
         // Change 5h: fan-out is a publish-SITE question, answered by
@@ -108,6 +109,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let fanout = hale_types::evidence::model_fanout(&model);
     budget_diags.extend(hale_types::quantitative::quantitative_diags(
         &programs_b,
+        &bundle.snapshot,
         &fanout,
     ));
     let old: Vec<(String, hale_syntax::Span)> = p1

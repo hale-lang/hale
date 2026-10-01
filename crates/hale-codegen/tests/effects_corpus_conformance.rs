@@ -80,11 +80,12 @@ fn corpus_effect_inference_is_total_and_deterministic() {
 
     for f in &files {
         let Ok(src) = std::fs::read_to_string(f) else { continue };
-        let Ok(program) = hale_syntax::parse_source(&src) else {
+        let Ok(mut program) = hale_syntax::parse_source(&src) else {
             // Parse failures are other suites' business.
             continue;
         };
-        let summary = alloc_summary::summarize_programs(&[&program]);
+        let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
+        let summary = alloc_summary::summarize_programs(&[&program], &ids);
         let ffi: BTreeSet<String> = BTreeSet::new();
         for key in fn_keys(&program) {
             let a = frontier::infer_effects(&summary, &key, &ffi);

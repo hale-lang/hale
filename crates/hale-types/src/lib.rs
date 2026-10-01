@@ -111,8 +111,10 @@ pub use crate::ty::Ty;
 ///
 /// The program is checked as every entry point checks one: after the
 /// desugar sequence ([`desugar_sequence::desugar_before_check`]), run
-/// here on a copy. The sequence is idempotent, so a program that has
-/// already been through it is checked unchanged.
+/// here on a copy, and minted after it, so the bundle carries the
+/// identities its analyses read. The sequence and the mint are
+/// idempotent, so a program that has already been through them is
+/// checked unchanged.
 pub fn check_program(program: &Program) -> Vec<Diag> {
     let mut program = program.clone();
     desugar_sequence::desugar_before_check(
@@ -120,9 +122,12 @@ pub fn check_program(program: &Program) -> Vec<Diag> {
         &desugar_sequence::Sequence { import_renames: &[], api: None, api_roles: None },
     )
     .expect("the sequence refuses only an `--api` injection, and none is asked for");
+    let ids = snapshot::mint([("", &mut program)], &[]);
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), &program);
-    check_bundle_opts_whole_program(&Bundle::new(programs), false)
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
+    check_bundle_opts_whole_program(&bundle, false)
 }
 
 /// Check a bundle of programs (one logical compilation unit
@@ -140,7 +145,7 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 /// (GH #18 item 1). Drives `--dump-alloc-summary`.
 pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    alloc_summary::summarize_programs(&progs).render()
+    alloc_summary::summarize_programs(&progs, &bundle.snapshot).render()
 }
 
 /// Render the per-program resource budget — pinned threads, cooperative
@@ -148,7 +153,7 @@ pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
 /// `--dump-resource-budget`.
 pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::budget_for_programs(&progs).render()
+    resource_budget::budget_for_programs(&progs, &bundle.snapshot).render()
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
@@ -158,7 +163,7 @@ pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
 /// sites are suppressed in both modes.
 pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>, include_all: bool) -> Vec<Diag> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    alloc_summary::unbounded_alloc_diags(&progs, include_all)
+    alloc_summary::unbounded_alloc_diags(&progs, &bundle.snapshot, include_all)
 }
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored
@@ -166,7 +171,7 @@ pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>, include_all: bool) -> Vec<D
 /// via `--warn-resource-leak`.
 pub fn resource_leak_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::resource_leak_diags(&progs)
+    resource_budget::resource_leak_diags(&progs, &bundle.snapshot)
 }
 
 /// Check a bundle's resource counts against declared ceilings (GH #18 item
@@ -177,7 +182,7 @@ pub fn check_resource_ceiling(
     ceiling: &resource_budget::ResourceCeiling,
 ) -> Vec<String> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let budget = resource_budget::budget_for_programs(&progs);
+    let budget = resource_budget::budget_for_programs(&progs, &bundle.snapshot);
     resource_budget::check_ceiling(&budget, ceiling)
 }
 
@@ -238,7 +243,11 @@ pub fn check_bundle_for_build(
 /// check appends them for a build's config (`Config::build_rules`).
 pub fn build_rule_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(&programs, &bundle.import_renames);
+    let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(
+        &programs,
+        &bundle.snapshot,
+        &bundle.import_renames,
+    );
     stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags.extend(bare_fallible::bare_fallible_calls(&programs));
     diags
@@ -3379,7 +3388,7 @@ mod unowned_subscriber_tests {
 pub fn dump_effects_manifest(bundle: &Bundle<'_>) -> String {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let mut rows = crate::effects::effect_manifest_with_inference(&programs);
+    let mut rows = crate::effects::effect_manifest_with_inference(&programs, &bundle.snapshot);
     // An app's manifest describes the APP, not the libraries it
     // imports.
     //

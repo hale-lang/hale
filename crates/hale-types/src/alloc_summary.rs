@@ -31,6 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use hale_graph::ids::SiteId;
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
@@ -1095,8 +1096,10 @@ fn carried_by(
     acc
 }
 
-pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
-    summarize_programs_with_renames(programs, &[])
+/// The summary of `programs`, all minted with `ids` (the identities a
+/// body's escape tags read which declaration a use names from).
+pub fn summarize_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> AllocSummary {
+    summarize_programs_with_renames(programs, ids, &[])
 }
 
 /// Same, with the bundle's cross-seed import renames.
@@ -1110,14 +1113,30 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
 /// did not.
 pub fn summarize_programs_with_renames(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> AllocSummary {
+    let identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
+        programs.iter().map(|p| (*p, ids)).collect();
+    summarize_identified(&identified, import_renames)
+}
+
+/// The summary of programs minted by different snapshots — a bundle's
+/// programs beside the stdlib's (`stdlib_bodies`), each with its own
+/// identities.
+pub fn summarize_identified(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+) -> AllocSummary {
+    let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
+    let programs = programs.as_slice();
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
-    // from its params (D2).
-    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>);
+    // from its params (D2); the last element is the identities of the
+    // program the body is in.
+    type BodyEntry<'i> = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1320,7 +1339,8 @@ pub fn summarize_programs_with_renames(
         }
     }
 
-    for program in programs {
+    for (program, ids) in identified {
+        let ids: &crate::snapshot::Snapshot = ids;
         for item in &program.items {
             match item {
                 TopDecl::Fn(decl) => {
@@ -1339,7 +1359,7 @@ pub fn summarize_programs_with_renames(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params)));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1413,6 +1433,7 @@ pub fn summarize_programs_with_renames(
                                     param_var_types(&md.params),
                                     fn_typed_params(&md.params),
                                     param_var_elem_types(&md.params),
+                                    ids,
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1438,6 +1459,7 @@ pub fn summarize_programs_with_renames(
                                     param_var_types(&decl.params),
                                     fn_typed_params(&decl.params),
                                     param_var_elem_types(&decl.params),
+                                    ids,
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -1459,6 +1481,7 @@ pub fn summarize_programs_with_renames(
                                     param_var_types(&lc.params),
                                     fn_typed_params(&lc.params),
                                     param_var_elem_types(&lc.params),
+                                    ids,
                                 ));
                             }
                             _ => {}
@@ -1647,8 +1670,8 @@ pub fn summarize_programs_with_renames(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
-    for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems) in &bodies {
-        let escaping = collect_escaping_names(body);
+    for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids) in &bodies {
+        let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
             .as_ref()
             .and_then(|l| locus_field_types.get(l))
@@ -2014,8 +2037,12 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
 ///   survey.
 ///
 /// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`.
-pub fn unbounded_alloc_diags(programs: &[&Program], include_all: bool) -> Vec<Diag> {
-    let summary = summarize_programs(programs);
+pub fn unbounded_alloc_diags(
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    include_all: bool,
+) -> Vec<Diag> {
+    let summary = summarize_programs(programs, ids);
     summary
         .leak_sites()
         .iter()
@@ -2128,7 +2155,7 @@ struct Walker<'a> {
     fn_params: Vec<String>,
     calls: Vec<CallEdge>,
     loops: Vec<LoopInfo>,
-    escaping: &'a BTreeMap<String, Escape>,
+    escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
     /// `alias::name` -> mangled symbol (cross-seed imports).
@@ -2463,7 +2490,7 @@ impl<'a> Walker<'a> {
 
     fn walk_stmt(&mut self, stmt: &Stmt, depth: u32) {
         match stmt {
-            Stmt::Let { name, ty, value, .. } => {
+            Stmt::Let { name, ty, value, id, .. } => {
                 // D2: a typed `let v: T = …` extends the var→type map so a
                 // later `v.push(x)` can resolve `v`'s form.
                 if let Some(et) = ty.as_ref().and_then(|t| match t {
@@ -2503,15 +2530,15 @@ impl<'a> Walker<'a> {
                     // effect assertion and claim is blind to it.
                     self.var_types.insert(name.name.clone(), ty);
                 }
-                let esc = self.escaping.get(&name.name).copied().unwrap_or(Escape::Local);
+                let esc = self.escaping.of_let(*id);
                 self.walk_expr(value, depth, esc);
             }
             Stmt::LetTuple { value, .. } => self.walk_expr(value, depth, Escape::Local),
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, value, id, .. } => {
                 let mut esc = if target.head.name == "self" {
                     Escape::StoredToSelf
                 } else {
-                    self.escaping.get(&target.head.name).copied().unwrap_or(Escape::Local)
+                    self.escaping.of_assign(*id)
                 };
                 // D1: record the `self.<field>` being assigned for the RHS
                 // walk — but only for a whole-field replace (`self.f = …`),
@@ -3176,16 +3203,58 @@ fn is_pos_increment(v: &str, op: &AssignOp, value: &Expr) -> bool {
     }
 }
 
-/// Pre-pass: local names whose value flows to an escape position directly
-/// as `Ident(name)` — covering the common `let x = <alloc>; … return x;`
-/// indirection. Walks the whole body (nested blocks/ifs/loops/matches).
-fn collect_escaping_names(body: &Block) -> BTreeMap<String, Escape> {
+/// Which bindings of a body escape, and how: what a `let`'s value and an
+/// `=`'s value are walked as. Keyed by the declarations the escaping
+/// uses name (`Snapshot::binding_of`).
+struct Escaping<'a> {
+    ids: &'a crate::snapshot::Snapshot,
+    map: BTreeMap<SiteId, Escape>,
+}
+
+impl Escaping<'_> {
+    /// How the value of the `let` whose statement is `let_id` escapes.
+    fn of_let(&self, let_id: hale_syntax::ast::NodeId) -> Escape {
+        self.ids
+            .site_id(let_id)
+            .and_then(|s| self.map.get(&s).copied())
+            .unwrap_or(Escape::Local)
+    }
+
+    /// How the value of the `=` whose statement is `assign_id` escapes:
+    /// as the binding its head names does.
+    fn of_assign(&self, assign_id: hale_syntax::ast::NodeId) -> Escape {
+        self.ids
+            .declaration_of(assign_id)
+            .and_then(|d| self.map.get(&d).copied())
+            .unwrap_or(Escape::Local)
+    }
+}
+
+/// Pre-pass: the bindings whose value flows to an escape position
+/// directly as a use of the name — the common `let x = <alloc>; …
+/// return x;` indirection — each the declaration the use names
+/// (`Snapshot::binding_of`), so an inner shadow of a returned name is
+/// its own binding. Walks the body at statement level: a nested block,
+/// `if`, loop and a block-bodied match arm are entered; an
+/// expression-bodied match arm and an expression block are not.
+fn collect_escaping_decls(
+    body: &Block,
+    ids: &crate::snapshot::Snapshot,
+) -> BTreeMap<SiteId, Escape> {
     let mut out = BTreeMap::new();
-    collect_escaping_in_block(body, &mut out);
+    collect_escaping_in_block(body, &mut |i: &hale_syntax::ast::Ident, esc| {
+        if let Some(d) = ids.declaration_of(i.id) {
+            out.entry(d).or_insert(esc);
+        }
+    });
     out
 }
 
-fn collect_escaping_in_block(b: &Block, out: &mut BTreeMap<String, Escape>) {
+/// Where an escaping use is reported: the identifier and how its value
+/// escapes, in body order.
+type EscapeSink<'s> = dyn FnMut(&hale_syntax::ast::Ident, Escape) + 's;
+
+fn collect_escaping_in_block(b: &Block, out: &mut EscapeSink<'_>) {
     for s in &b.stmts {
         collect_escaping_in_stmt(s, out);
     }
@@ -3194,7 +3263,7 @@ fn collect_escaping_in_block(b: &Block, out: &mut BTreeMap<String, Escape>) {
     }
 }
 
-fn collect_escaping_in_stmt(s: &Stmt, out: &mut BTreeMap<String, Escape>) {
+fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
     match s {
         Stmt::Return(Some(e), _) => note_escape(e, Escape::Returned, out),
         Stmt::Fail { value, .. } => note_escape(value, Escape::Returned, out),
@@ -3218,7 +3287,7 @@ fn collect_escaping_in_stmt(s: &Stmt, out: &mut BTreeMap<String, Escape>) {
     }
 }
 
-fn collect_escaping_in_if(if_stmt: &IfStmt, out: &mut BTreeMap<String, Escape>) {
+fn collect_escaping_in_if(if_stmt: &IfStmt, out: &mut EscapeSink<'_>) {
     collect_escaping_in_block(&if_stmt.then_block, out);
     if let Some(else_br) = &if_stmt.else_block {
         match else_br.as_ref() {
@@ -3228,9 +3297,9 @@ fn collect_escaping_in_if(if_stmt: &IfStmt, out: &mut BTreeMap<String, Escape>) 
     }
 }
 
-fn note_escape(e: &Expr, esc: Escape, out: &mut BTreeMap<String, Escape>) {
+fn note_escape(e: &Expr, esc: Escape, out: &mut EscapeSink<'_>) {
     if let Expr::Ident(id) = e {
-        out.entry(id.name.clone()).or_insert(esc);
+        out(id, esc);
     }
 }
 
@@ -3239,9 +3308,16 @@ mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
+    /// A parsed program and the identities minted over it.
+    fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
+        let mut program = parse_source(src).expect("parse");
+        let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
+        (program, ids)
+    }
+
     fn summarize(src: &str) -> AllocSummary {
-        let program = parse_source(src).expect("parse");
-        summarize_programs(&[&program])
+        let (program, ids) = minted(src);
+        summarize_programs(&[&program], &ids)
     }
 
     fn fns(s: &AllocSummary, key: &FnKey) -> FnSummary {
@@ -3275,6 +3351,35 @@ mod tests {
         let s = summarize(src);
         let f = fns(&s, &FnKey::free_fn("make"));
         assert_eq!(f.sites[0].escape, Escape::Returned, "let-bound + returned should escape");
+    }
+
+    /// GH #1140, the escape tag's half (F.40 phase 2, use-site
+    /// identity): an inner `let` spelling the returned name is its own
+    /// binding, so its value is local; only the binding the return names
+    /// escapes. Tagged by name, both were `escaping=return`.
+    #[test]
+    fn an_inner_shadow_of_the_returned_name_is_local() {
+        let src = r#"
+            type P { x: Int; }
+            fn fresh_p(n: Int) -> P { return P { x: n }; }
+            fn make(t: Bool) -> P {
+                let p = P { x: 1 };
+                if t { let p = fresh_p(2); }
+                while t { let p = P { x: 3 }; }
+                return p;
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let f = fns(&s, &FnKey::free_fn("make"));
+        let escapes: Vec<Escape> = f.sites.iter().map(|s| s.escape).collect();
+        assert_eq!(escapes, vec![Escape::Returned, Escape::Local], "the outer literal, the loop's: {:?}", f.sites);
+        let call = f
+            .calls
+            .iter()
+            .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+            .expect("the call in the `if`");
+        assert_eq!(call.escape, Escape::Local, "the inner shadow's value");
     }
 
     #[test]
@@ -3722,10 +3827,10 @@ mod tests {
             locus C { run { while true { let q = Q { a: 1 }; } } }
             fn main() { }
         "#;
-        let program = hale_syntax::parse_source(src).expect("parse");
+        let (program, ids) = minted(src);
         // Survey mode (`--warn-unbounded-alloc`) reports the leak even
         // though locus `C` carries no `@bounded` opt-in.
-        let diags = unbounded_alloc_diags(&[&program], true);
+        let diags = unbounded_alloc_diags(&[&program], &ids, true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
     }
@@ -3739,8 +3844,8 @@ mod tests {
             @bounded locus C { run { while true { let q = Q { a: 1 }; } } }
             fn main() { }
         "#;
-        let program = hale_syntax::parse_source(src).expect("parse");
-        let scoped = unbounded_alloc_diags(&[&program], false);
+        let (program, ids) = minted(src);
+        let scoped = unbounded_alloc_diags(&[&program], &ids, false);
         assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
         assert!(scoped[0].message.contains("unbounded allocation"));
     }
@@ -3756,13 +3861,13 @@ mod tests {
             }
             fn main() { }
         "#;
-        let program = hale_syntax::parse_source(src).expect("parse");
+        let (program, ids) = minted(src);
         assert!(
-            unbounded_alloc_diags(&[&program], true).is_empty(),
+            unbounded_alloc_diags(&[&program], &ids, true).is_empty(),
             "@unbounded suppresses the site under the survey flag"
         );
         assert!(
-            unbounded_alloc_diags(&[&program], false).is_empty(),
+            unbounded_alloc_diags(&[&program], &ids, false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
     }
@@ -3770,8 +3875,8 @@ mod tests {
     // === Gap D (2026-07-17): anchor-retirement verdict flip ===========
 
     fn leak_msgs(src: &str) -> Vec<String> {
-        let program = hale_syntax::parse_source(src).expect("parse");
-        unbounded_alloc_diags(&[&program], true)
+        let (program, ids) = minted(src);
+        unbounded_alloc_diags(&[&program], &ids, true)
             .into_iter()
             .map(|d| d.message)
             .collect()

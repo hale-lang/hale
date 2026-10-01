@@ -2356,7 +2356,7 @@ fn alloc_summary_of(snap: &Snapshot) -> Value {
         return json!({ "leakSites": [], "parseErrors": true });
     }
     let progs: Vec<&Program> = snap.programs().values().collect();
-    let summary = hale_types::alloc_summary::summarize_programs(&progs);
+    let summary = hale_types::alloc_summary::summarize_programs(&progs, snap.identities());
     let sites: Vec<Value> = summary
         .leak_sites()
         .iter()

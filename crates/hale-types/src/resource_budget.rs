@@ -54,8 +54,8 @@ const FD_ACQUIRING_PATHS: &[&str] = &[
 /// call-result escape tagging + unbounded-context dataflow (the gap that
 /// item 1's site-only escape tagging left open). Opt-in via
 /// `hale check --warn-resource-leak`.
-pub fn resource_leak_diags(programs: &[&Program]) -> Vec<Diag> {
-    let summary = alloc_summary::summarize_programs(programs);
+pub fn resource_leak_diags(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> Vec<Diag> {
+    let summary = alloc_summary::summarize_programs(programs, ids);
     let unbounded = summary.unbounded_invoked();
     let mut out = Vec::new();
     for f in summary.fns.values() {
@@ -149,7 +149,7 @@ pub fn check_ceiling(b: &ResourceBudget, c: &ResourceCeiling) -> Vec<String> {
 }
 
 /// Walk the bundle and tally the structural resources.
-pub fn budget_for_programs(programs: &[&Program]) -> ResourceBudget {
+pub fn budget_for_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> ResourceBudget {
     let mut b = ResourceBudget::default();
     for program in programs {
         for item in &program.items {
@@ -178,7 +178,7 @@ pub fn budget_for_programs(programs: &[&Program]) -> ResourceBudget {
     // unambiguous (qualified paths → zero FP): fd-opening *calls*
     // (open/connect/accept) and direct held-fd *locus instantiations*
     // (`tcp::Listener { }`).
-    let summary = alloc_summary::summarize_programs(programs);
+    let summary = alloc_summary::summarize_programs(programs, ids);
     let calls = summary
         .fns
         .values()
@@ -258,9 +258,16 @@ mod tests {
     use super::*;
     use hale_syntax::parse_source;
 
+    /// A parsed program and the identities minted over it.
+    fn minted(src: &str) -> (Program, crate::snapshot::Snapshot) {
+        let mut program = parse_source(src).expect("parse");
+        let ids = crate::snapshot::mint([("app.hl", &mut program)], &[]);
+        (program, ids)
+    }
+
     fn budget(src: &str) -> ResourceBudget {
-        let program = parse_source(src).expect("parse");
-        budget_for_programs(&[&program])
+        let (program, ids) = minted(src);
+        budget_for_programs(&[&program], &ids)
     }
 
     #[test]
@@ -312,8 +319,7 @@ mod tests {
             }
             fn main() { }
         "#;
-        let program = parse_source(src).expect("parse");
-        let b = budget_for_programs(&[&program]);
+        let b = budget(src);
         assert_eq!(b.fd_open_sites, 2, "expected 2 fd-open sites (open + connect)");
     }
 
@@ -328,8 +334,7 @@ mod tests {
             }
             fn main() { }
         "#;
-        let program = parse_source(src).expect("parse");
-        let b = budget_for_programs(&[&program]);
+        let b = budget(src);
         assert_eq!(b.fd_open_sites, 2, "Listener + Stream instantiations");
     }
 
@@ -341,8 +346,7 @@ mod tests {
             fn make() -> Listener { return Listener { id: 1 }; }
             fn main() { }
         "#;
-        let program = parse_source(src).expect("parse");
-        assert_eq!(budget_for_programs(&[&program]).fd_open_sites, 0);
+        assert_eq!(budget(src).fd_open_sites, 0);
     }
 
     #[test]
@@ -360,8 +364,7 @@ mod tests {
             }
             fn main() { }
         "#;
-        let program = parse_source(src).expect("parse");
-        let b = budget_for_programs(&[&program]);
+        let b = budget(src);
         assert_eq!(b.bus_subjects.len(), 3);
         // Ceiling 2 → over budget.
         let over = check_ceiling(
@@ -389,8 +392,8 @@ mod tests {
     // ---- leak detection (result-escape tagging) ----
 
     fn leaks(src: &str) -> Vec<String> {
-        let program = parse_source(src).expect("parse");
-        resource_leak_diags(&[&program]).iter().map(|d| d.message.clone()).collect()
+        let (program, ids) = minted(src);
+        resource_leak_diags(&[&program], &ids).iter().map(|d| d.message.clone()).collect()
     }
 
     #[test]

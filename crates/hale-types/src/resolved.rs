@@ -293,12 +293,13 @@ pub fn resolve_program(
     // reads the fresh half, the locus and the returned binding of each
     // row the escape walk passed.
     let mut fresh_locus_factories: BTreeMap<String, (String, Option<String>)> =
-        crate::ownership::fresh_factories(&[&merged], import_renames)
+        crate::ownership::fresh_factories(&[&merged], &snapshot, import_renames)
             .into_iter()
             .filter_map(|(f, row)| Some((f, (row.locus, row.fresh?.returned_binding))))
             .collect();
     let mut owner_table = crate::ownership::resolve_owners(
         &merged,
+        &snapshot,
         &fresh_locus_factories,
         import_renames,
     )

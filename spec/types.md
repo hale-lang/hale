@@ -904,7 +904,9 @@ to compile and then overflow its own stack at run time instead —
 every `Node` `make` builds leaves ITS `next` to the same default,
 which calls `make` again. A fn counts when every value it hands
 back is freshly built: a literal of its declared locus, a call to
-another such fn, or a local binding of either. A call the compiler
+another such fn, or a local binding of either — the binding the
+returned name resolves to, so an inner `let` that reuses the name
+does not hide it (GH #1140). A call the compiler
 cannot see as fresh is **not** an edge and stays accepted — an
 accessor handing back a locus somebody else owns
 (`next: Node = registry.head()`), a method, a `std::` or cross-seed

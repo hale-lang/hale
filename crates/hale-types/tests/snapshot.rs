@@ -438,6 +438,8 @@ fn f(a: Int, t: Bool) -> Int {
     let (u, v) = (r, n);
     let err = 5;
     let w = fal(t) or err;
+    let mut q = E { kind: "a" };
+    q.kind = "b";
     match u {
         r -> { return r + v + w; }
     }
@@ -469,6 +471,7 @@ fn main() { f(1, true); }
             row("fal", None),
             row("t", Some("t")),
             row("err", None),                          // the `or` substitute's implicit `err`
+            row("q", Some("let mut q = E { kind: \"a\" };")), // a field write names its head's binding
             row("u", Some("u")),                       // a tuple `let`'s name
             row("r", Some("r")),                       // the match arm's binding
             row("v", Some("v")),

@@ -72,10 +72,12 @@ fn diff_one(
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
     let mut old_lowered = hale_types::effects::certificate_rows(
         &programs_v,
+        &bundle.snapshot,
         &[],
     );
     old_lowered.extend(hale_types::budget_check::certificate_rows(
         &programs_v,
+        &bundle.snapshot,
         &[],
     ));
         // Change 5h: fan-out is a publish-SITE question, answered by
@@ -84,6 +86,7 @@ fn diff_one(
     let fanout = hale_types::evidence::model_fanout(&model);
     old_lowered.extend(hale_types::quantitative::certificate_rows(
         &programs_v,
+        &bundle.snapshot,
         &fanout,
     ));
     let mut n = 0usize;

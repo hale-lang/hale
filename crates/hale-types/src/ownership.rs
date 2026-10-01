@@ -584,122 +584,86 @@ struct SavedFrame {
 // Bindings, not names (GH #1140)
 // ===================================================================
 
-/// A binding's identity: its declaring identifier's span, in the
-/// process-wide coordinates multi-file builds shift spans into. Two
-/// `let`s that spell one name are two bindings — an inner shadow is an
-/// ordinary fresh value its frame reclaims, whatever the fn returns.
-pub(crate) type BindingKey = (u32, u32);
-
-fn binding_key(i: &Ident) -> Option<BindingKey> {
-    (i.span.end.0 > i.span.start.0).then_some((i.span.start.0, i.span.end.0))
-}
-
-/// What a name spelled at one point of a body resolves to.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Resolved {
-    /// A `let` (or tuple `let`) of the body, by its key.
-    Let(BindingKey),
-    /// A binding that is no keyed `let`: a `for` variable, a match
-    /// pattern, a `shm_write` binding, a declaration with no span.
-    Other,
-    /// Nothing in the body's scopes: a param, a const, a global.
-    Outside,
-}
-
-/// Which bindings a body hands back, each resolved to its declaration
-/// (see [`body_bindings`]). Owned, so a walk that mutates the body can
+/// Which bindings a body hands back, each the declaration the snapshot
+/// resolved it to (`Snapshot::binding_of`, F.40 phase 2): see
+/// [`returned_bindings`]. Owned, so a walk that mutates the body can
 /// hold it.
 ///
 /// Every uncertainty answers "handed back", which suppresses a reclaim
-/// (the old leak) and never adds one: a binding the walk could not key,
-/// a use it could not resolve, a key two declarations share all answer
-/// by name against every name a return spelled — the old rule, whole.
+/// (the old leak) and never adds one: a `let` or a `=` the snapshot did
+/// not mint answers by name against every name a return spelled.
 #[derive(Default, Debug, Clone)]
 pub struct ReturnedBindings {
-    /// The keyed `let`s handed back, directly or through the value of
-    /// another handed-back binding.
-    decls: BTreeSet<BindingKey>,
+    /// The `let`s handed back, directly or through the value of another
+    /// handed-back binding.
+    decls: BTreeSet<SiteId>,
     /// Every name a return (or a counted block tail) spells as a value
-    /// arm, however it resolved: the by-name answer, for what the walk
-    /// cannot resolve.
+    /// arm: the by-name answer, for what the snapshot did not mint.
     all_names: BTreeSet<String>,
-    /// The names among those that resolve to no keyed `let` — a `for`
-    /// variable, a pattern, a param. A keyed `let` spelled the same is
-    /// counted too: such a binding can hold the `let`'s value (an
-    /// element of an array the `let` went into), which no name says.
+    /// The names among those that name no `let` of the body — a `for`
+    /// variable, a pattern, a param. A `let` spelled the same is counted
+    /// too: such a binding can hold the `let`'s value (an element of an
+    /// array the `let` went into), which no resolution says.
     nonlet_names: BTreeSet<String>,
-    /// `let`s declared under a key of their own.
-    keyed: BTreeSet<BindingKey>,
-    /// What each use (every identifier the walk met) names, by the
-    /// use's own span.
-    uses: BTreeMap<BindingKey, Resolved>,
+    /// The body's `let`s and tuple `let`s' names, by identity.
+    lets: BTreeSet<SiteId>,
 }
 
 impl ReturnedBindings {
-    fn key_is_returned(&self, k: BindingKey, name: &str) -> bool {
-        self.decls.contains(&k) || self.nonlet_names.contains(name)
+    fn decl_is_returned(&self, d: SiteId, name: &str) -> bool {
+        self.decls.contains(&d) || self.nonlet_names.contains(name)
     }
 
-    /// Whether the `let` declaring `name` is one the body hands back.
-    pub fn let_is_returned(&self, name: &Ident) -> bool {
-        match binding_key(name) {
-            Some(k) if self.keyed.contains(&k) => {
-                self.key_is_returned(k, &name.name)
-            }
-            _ => self.all_names.contains(&name.name),
+    /// Whether the `let` whose statement is `site`, declaring `name`,
+    /// is one the body hands back.
+    pub fn let_is_returned(&self, site: Option<SiteId>, name: &str) -> bool {
+        match site {
+            Some(s) if self.lets.contains(&s) => self.decl_is_returned(s, name),
+            _ => self.all_names.contains(name),
         }
     }
 
-    /// Whether a bare `=` writing `head` writes a binding the body
-    /// hands back.
-    pub fn assign_is_returned(&self, head: &Ident) -> bool {
-        match binding_key(head).and_then(|u| self.uses.get(&u)) {
-            Some(Resolved::Let(k)) if self.keyed.contains(k) => {
-                self.key_is_returned(*k, &head.name)
-            }
-            _ => self.all_names.contains(&head.name),
+    /// Whether a bare `=` writing `head` writes a binding the body hands
+    /// back: `decl` is the declaration the statement's head names.
+    pub fn assign_is_returned(&self, decl: Option<SiteId>, head: &str) -> bool {
+        match decl {
+            Some(d) if self.lets.contains(&d) => self.decl_is_returned(d, head),
+            _ => self.all_names.contains(head),
         }
     }
 }
 
 /// A body's bindings as the fresh-factory walk reads them.
-#[derive(Default)]
-struct BodyBindings<'e> {
+struct BodyBindings<'e, 's> {
+    ids: &'s crate::snapshot::Snapshot,
     returned: ReturnedBindings,
-    /// Each keyed `let`'s right-hand side.
-    lets: BTreeMap<BindingKey, &'e Expr>,
+    /// Each `let`'s right-hand side.
+    rhs: BTreeMap<SiteId, &'e Expr>,
     /// Every value the body hands back: each `return <e>;`, wherever it
     /// stands, and each counted block tail.
     returns: Vec<&'e Expr>,
-    /// Keyed `let`s some `=` writes, and each such write's value.
-    assigned: BTreeSet<BindingKey>,
-    writes: Vec<(BindingKey, &'e Expr)>,
-    /// Names written by an `=` that resolves to no keyed `let`.
+    /// `let`s some `=` writes, and each such write's value.
+    assigned: BTreeSet<SiteId>,
+    writes: Vec<(SiteId, &'e Expr)>,
+    /// Names written by an `=` that names no `let` of the body.
     assigned_names: BTreeSet<String>,
-    /// How often each key was declared; a key declared twice keys
-    /// nothing.
-    declared: BTreeMap<BindingKey, u32>,
 }
 
-impl<'e> BodyBindings<'e> {
-    /// The keyed `let` a name spelled at `use_site` resolves to.
-    fn let_at(&self, use_site: &Ident) -> Option<BindingKey> {
-        match binding_key(use_site).and_then(|u| self.returned.uses.get(&u)) {
-            Some(Resolved::Let(k)) if self.returned.keyed.contains(k) => {
-                Some(*k)
-            }
-            _ => None,
-        }
+impl<'e> BodyBindings<'e, '_> {
+    /// The `let` of the body a name spelled at `use_site` names.
+    fn let_at(&self, use_site: &Ident) -> Option<SiteId> {
+        self.ids
+            .declaration_of(use_site.id)
+            .filter(|d| self.returned.lets.contains(d))
     }
 
     /// Whether some bare `=` may write the binding `use_site` names.
-    fn is_assigned(&self, use_site: &Ident, k: BindingKey) -> bool {
-        self.assigned.contains(&k)
-            || self.assigned_names.contains(&use_site.name)
+    fn is_assigned(&self, use_site: &Ident, d: SiteId) -> bool {
+        self.assigned.contains(&d) || self.assigned_names.contains(&use_site.name)
     }
 
     /// Count `e`'s value arms as handed back: a name among them is the
-    /// binding it resolves to.
+    /// binding it names.
     fn hand_back(&mut self, e: &'e Expr) {
         let mut arms = Vec::new();
         return_arms(e, &mut arms);
@@ -707,8 +671,8 @@ impl<'e> BodyBindings<'e> {
             if let Expr::Ident(i) = a {
                 self.returned.all_names.insert(i.name.clone());
                 match self.let_at(i) {
-                    Some(k) => {
-                        self.returned.decls.insert(k);
+                    Some(d) => {
+                        self.returned.decls.insert(d);
                     }
                     None => {
                         self.returned.nonlet_names.insert(i.name.clone());
@@ -719,30 +683,45 @@ impl<'e> BodyBindings<'e> {
     }
 }
 
-/// The GH #1140 walk: every statement and expression of a body, blocks
-/// as scopes, in order, so a name resolves to the declaration in scope
-/// where it is spelled. The matches are exhaustive on purpose: a new
-/// statement or expression form must say how it binds and what it
-/// hands back before this compiles.
-struct ScopeWalk<'e> {
-    frames: Vec<Vec<(&'e str, Resolved)>>,
-    out: BodyBindings<'e>,
+/// The GH #1140 walk, reading the snapshot's resolution: every
+/// statement and expression of a body, for its `let`s, its writes and
+/// what it hands back. A statement-level block's tail counts as handed
+/// back (`counted`); an expression block's is its expression's value.
+/// The matches are exhaustive on purpose: a new statement or expression
+/// form must say what it declares and hands back before this compiles.
+struct BodyWalk<'e, 's> {
+    out: BodyBindings<'e, 's>,
+    /// Each bare `=`: the declaration its head names, the head, the
+    /// value, and whether it writes the binding whole.
+    assigns: Vec<(Option<SiteId>, &'e str, &'e Expr, bool)>,
 }
 
-/// Resolve a body's bindings.
-fn body_bindings(b: &Block) -> BodyBindings<'_> {
-    let mut w = ScopeWalk { frames: Vec::new(), out: BodyBindings::default() };
+/// Collect a body's bindings.
+fn body_bindings<'e, 's>(b: &'e Block, ids: &'s crate::snapshot::Snapshot) -> BodyBindings<'e, 's> {
+    let out = BodyBindings {
+        ids,
+        returned: ReturnedBindings::default(),
+        rhs: BTreeMap::new(),
+        returns: Vec::new(),
+        assigned: BTreeSet::new(),
+        writes: Vec::new(),
+        assigned_names: BTreeSet::new(),
+    };
+    let mut w = BodyWalk { out, assigns: Vec::new() };
     w.block(b, true);
-    let mut out = w.out;
-    let twice: Vec<BindingKey> = out
-        .declared
-        .iter()
-        .filter(|(_, n)| **n > 1)
-        .map(|(k, _)| *k)
-        .collect();
-    for k in twice {
-        out.returned.keyed.remove(&k);
-        out.lets.remove(&k);
+    let BodyWalk { mut out, assigns } = w;
+    for (decl, head, value, whole) in assigns {
+        match decl.filter(|d| out.returned.lets.contains(d)) {
+            Some(d) => {
+                out.assigned.insert(d);
+                if whole {
+                    out.writes.push((d, value));
+                }
+            }
+            None => {
+                out.assigned_names.insert(head.to_string());
+            }
+        }
     }
     // What the body hands back...
     let returns = out.returns.clone();
@@ -755,14 +734,14 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
     loop {
         let before = out.returned.decls.len() + out.returned.nonlet_names.len();
         let flows: Vec<&Expr> = out
-            .lets
+            .rhs
             .iter()
-            .filter(|(k, _)| out.returned.decls.contains(k))
+            .filter(|(d, _)| out.returned.decls.contains(d))
             .map(|(_, e)| *e)
             .chain(
                 out.writes
                     .iter()
-                    .filter(|(k, _)| out.returned.decls.contains(k))
+                    .filter(|(d, _)| out.returned.decls.contains(d))
                     .map(|(_, e)| *e),
             )
             .collect();
@@ -776,7 +755,9 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
     out
 }
 
-/// The bindings a body hands back (see [`ReturnedBindings`]).
+/// The bindings a body hands back (see [`ReturnedBindings`]), each the
+/// declaration `ids` (the snapshot the body was minted in) resolves the
+/// returned name to.
 ///
 /// GH #383: distinct from `fresh_factories` and needed
 /// separately: a fn that does NOT qualify as a clean factory can still
@@ -786,8 +767,186 @@ fn body_bindings(b: &Block) -> BodyBindings<'_> {
 /// binding it hands back and the caller read zeros. Conservative by
 /// construction: a `true` merely suppresses a dissolve, which is the
 /// old leak — never a double-free.
-pub fn returned_bindings(b: &Block) -> ReturnedBindings {
-    body_bindings(b).returned
+pub fn returned_bindings(b: &Block, ids: &crate::snapshot::Snapshot) -> ReturnedBindings {
+    body_bindings(b, ids).returned
+}
+
+impl<'e> BodyWalk<'e, '_> {
+    fn declare(&mut self, id: NodeId, rhs: Option<&'e Expr>) {
+        if let Some(s) = self.out.ids.site_id(id) {
+            self.out.returned.lets.insert(s);
+            if let Some(e) = rhs {
+                self.out.rhs.insert(s, e);
+            }
+        }
+    }
+
+    fn block(&mut self, b: &'e Block, counted: bool) {
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = b.tail.as_deref() {
+            self.expr(t);
+            if counted {
+                self.out.returns.push(t);
+            }
+        }
+    }
+
+    fn if_chain(&mut self, i: &'e IfStmt, counted: bool) {
+        self.expr(&i.cond);
+        self.block(&i.then_block, counted);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b, counted),
+            Some(ElseBranch::ElseIf(n)) => self.if_chain(n, counted),
+            None => {}
+        }
+    }
+
+    fn match_arms(&mut self, m: &'e MatchStmt, counted: bool) {
+        self.expr(&m.scrutinee);
+        for a in &m.arms {
+            if let Some(g) = &a.guard {
+                self.expr(g);
+            }
+            match &a.body {
+                MatchArmBody::Block(b) => self.block(b, counted),
+                MatchArmBody::Expr(x) => self.expr(x),
+            }
+        }
+    }
+
+    fn or_disposition(&mut self, d: &'e OrDisposition) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => self.expr(e),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+        }
+    }
+
+    fn stmt(&mut self, s: &'e Stmt) {
+        match s {
+            Stmt::Let { value, id, .. } => {
+                self.expr(value);
+                self.declare(*id, Some(value));
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                self.expr(value);
+                for n in names {
+                    self.declare(n.id, None);
+                }
+            }
+            Stmt::Assign { target, value, id, .. } => {
+                for seg in &target.tail {
+                    match seg {
+                        LValueSeg::Index(ix) => self.expr(ix),
+                        LValueSeg::Field(_) => {}
+                    }
+                }
+                self.expr(value);
+                let decl = self.out.ids.declaration_of(*id);
+                self.assigns.push((decl, &target.head.name, value, target.tail.is_empty()));
+            }
+            Stmt::Return(value, _) => {
+                if let Some(e) = value {
+                    self.expr(e);
+                    self.out.returns.push(e);
+                }
+            }
+            Stmt::If(i) => self.if_chain(i, true),
+            Stmt::Match(m) => self.match_arms(m, true),
+            Stmt::For { iter, body, .. } => {
+                self.expr(iter);
+                self.block(body, true);
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.expr(max);
+                self.block(body, true);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body, true);
+            }
+            Stmt::Block(body) => self.block(body, true),
+            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Recovery { args, modifier, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+                match modifier {
+                    Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) => self.expr(e),
+                    None => {}
+                }
+            }
+            Stmt::Violate { payload, .. } => {
+                if let Some(p) = payload {
+                    self.expr(p);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(d) = or_disposition {
+                    self.or_disposition(d);
+                }
+            }
+            Stmt::Expr(e) => self.expr(e),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => {}
+        }
+    }
+
+    fn expr(&mut self, e: &'e Expr) {
+        match e {
+            Expr::Ident(_) | Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
+            Expr::Index { receiver, index, .. } => {
+                self.expr(receiver);
+                self.expr(index);
+            }
+            Expr::Tuple(v, _) | Expr::Array(v, _) => {
+                for x in v {
+                    self.expr(x);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Block(b) => self.block(b, false),
+            Expr::If(i) => self.if_chain(i, false),
+            Expr::Match(m) => self.match_arms(m, false),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+            }
+            Expr::ArrayRepeat { val, .. } => self.expr(val),
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                self.or_disposition(disposition);
+            }
+        }
+    }
 }
 
 // ===================================================================
@@ -1203,7 +1362,7 @@ pub fn resolve_binding_facts(
     table: &mut OwnerTable,
 ) {
     for (walks, params, body) in binding_bodies(program) {
-        let returned = walks.returned.then(|| returned_bindings(body));
+        let returned = walks.returned.then(|| returned_bindings(body, snapshot));
         let moved = if walks.assign_moved {
             assign_moved_names(body)
         } else {
@@ -1225,7 +1384,7 @@ pub fn resolve_binding_facts(
                     BindingFacts {
                         returned: returned
                             .as_ref()
-                            .map(|rb| rb.let_is_returned(name))
+                            .map(|rb| rb.let_is_returned(Some(site), &name.name))
                             .unwrap_or(false),
                         assign_moved: moved.contains(&name.name),
                         stack_array: stack.contains(&name.name),
@@ -1409,268 +1568,10 @@ fn body_lets<'e>(b: &'e Block, out: &mut Vec<(&'e Ident, NodeId)>) {
     }
 }
 
-impl<'e> ScopeWalk<'e> {
-    fn lookup(&self, name: &str) -> Resolved {
-        for frame in self.frames.iter().rev() {
-            for (n, r) in frame.iter().rev() {
-                if *n == name {
-                    return *r;
-                }
-            }
-        }
-        Resolved::Outside
-    }
-
-    fn declare(&mut self, name: &'e Ident, r: Resolved) {
-        if let Some(frame) = self.frames.last_mut() {
-            frame.push((name.name.as_str(), r));
-        }
-    }
-
-    fn declare_let(&mut self, name: &'e Ident, rhs: Option<&'e Expr>) {
-        match binding_key(name) {
-            Some(k) => {
-                *self.out.declared.entry(k).or_insert(0) += 1;
-                self.out.returned.keyed.insert(k);
-                if let Some(e) = rhs {
-                    self.out.lets.insert(k, e);
-                }
-                self.declare(name, Resolved::Let(k));
-            }
-            None => self.declare(name, Resolved::Other),
-        }
-    }
-
-    fn note_use(&mut self, i: &Ident) -> Resolved {
-        let r = self.lookup(&i.name);
-        if let Some(u) = binding_key(i) {
-            // two uses one span spells (a desugaring's copy) that resolve
-            // apart resolve to neither: the answer falls back by name
-            let slot = self.out.returned.uses.entry(u).or_insert(r);
-            if *slot != r {
-                *slot = Resolved::Other;
-            }
-        }
-        r
-    }
-
-    /// A block as a scope. A statement-level block's tail counts as
-    /// handed back (`counted`), the shape the name walk always read; an
-    /// expression block's tail is its expression's value.
-    fn block(&mut self, b: &'e Block, counted: bool) {
-        self.frames.push(Vec::new());
-        for s in &b.stmts {
-            self.stmt(s);
-        }
-        if let Some(t) = b.tail.as_deref() {
-            self.expr(t);
-            if counted {
-                self.out.returns.push(t);
-            }
-        }
-        self.frames.pop();
-    }
-
-    fn if_chain(&mut self, i: &'e IfStmt, counted: bool) {
-        self.expr(&i.cond);
-        self.block(&i.then_block, counted);
-        match i.else_block.as_deref() {
-            Some(ElseBranch::Else(b)) => self.block(b, counted),
-            Some(ElseBranch::ElseIf(n)) => self.if_chain(n, counted),
-            None => {}
-        }
-    }
-
-    fn match_arms(&mut self, m: &'e MatchStmt, counted: bool) {
-        self.expr(&m.scrutinee);
-        for a in &m.arms {
-            self.frames.push(Vec::new());
-            self.pattern(&a.pattern);
-            if let Some(g) = &a.guard {
-                self.expr(g);
-            }
-            match &a.body {
-                MatchArmBody::Block(b) => self.block(b, counted),
-                MatchArmBody::Expr(x) => self.expr(x),
-            }
-            self.frames.pop();
-        }
-    }
-
-    fn pattern(&mut self, p: &'e Pattern) {
-        match p {
-            Pattern::Binding(i) => self.declare(i, Resolved::Other),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
-                for a in args {
-                    self.pattern(a);
-                }
-            }
-            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
-        }
-    }
-
-    fn or_disposition(&mut self, d: &'e OrDisposition) {
-        match d {
-            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                self.expr(e)
-            }
-            OrDisposition::Raise(_)
-            | OrDisposition::Discard(_)
-            | OrDisposition::Wait(_) => {}
-        }
-    }
-
-    fn stmt(&mut self, s: &'e Stmt) {
-        match s {
-            Stmt::Let { name, value, .. } => {
-                self.expr(value);
-                self.declare_let(name, Some(value));
-            }
-            Stmt::LetTuple { names, value, .. } => {
-                self.expr(value);
-                for n in names {
-                    self.declare_let(n, None);
-                }
-            }
-            Stmt::Assign { target, value, .. } => {
-                for seg in &target.tail {
-                    match seg {
-                        LValueSeg::Index(ix) => self.expr(ix),
-                        LValueSeg::Field(_) => {}
-                    }
-                }
-                self.expr(value);
-                match self.note_use(&target.head) {
-                    Resolved::Let(k) => {
-                        self.out.assigned.insert(k);
-                        if target.tail.is_empty() {
-                            self.out.writes.push((k, value));
-                        }
-                    }
-                    _ => {
-                        self.out
-                            .assigned_names
-                            .insert(target.head.name.clone());
-                    }
-                }
-            }
-            Stmt::Return(value, _) => {
-                if let Some(e) = value {
-                    self.expr(e);
-                    self.out.returns.push(e);
-                }
-            }
-            Stmt::If(i) => self.if_chain(i, true),
-            Stmt::Match(m) => self.match_arms(m, true),
-            Stmt::For { name, iter, body, .. } => {
-                self.expr(iter);
-                self.frames.push(Vec::new());
-                self.declare(name, Resolved::Other);
-                self.block(body, true);
-                self.frames.pop();
-            }
-            Stmt::ShmWrite { max, binding, body, .. } => {
-                self.expr(max);
-                self.frames.push(Vec::new());
-                self.declare(binding, Resolved::Other);
-                self.block(body, true);
-                self.frames.pop();
-            }
-            Stmt::While { cond, body, .. } => {
-                self.expr(cond);
-                self.block(body, true);
-            }
-            Stmt::Block(body) => self.block(body, true),
-            Stmt::Fail { value, .. } => self.expr(value),
-            Stmt::Recovery { args, modifier, .. } => {
-                for a in args {
-                    self.expr(a);
-                }
-                match modifier {
-                    Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) => {
-                        self.expr(e)
-                    }
-                    None => {}
-                }
-            }
-            Stmt::Violate { payload, .. } => {
-                if let Some(p) = payload {
-                    self.expr(p);
-                }
-            }
-            Stmt::Send { subject, value, or_disposition, .. } => {
-                self.expr(subject);
-                self.expr(value);
-                if let Some(d) = or_disposition {
-                    self.or_disposition(d);
-                }
-            }
-            Stmt::Expr(e) => self.expr(e),
-            Stmt::Break(_)
-            | Stmt::Continue(_)
-            | Stmt::Yield(_)
-            | Stmt::Terminate(_)
-            | Stmt::Reperspective { .. } => {}
-        }
-    }
-
-    fn expr(&mut self, e: &'e Expr) {
-        match e {
-            Expr::Ident(i) => {
-                self.note_use(i);
-            }
-            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
-            Expr::Binary { left, right, .. } => {
-                self.expr(left);
-                self.expr(right);
-            }
-            Expr::Unary { operand, .. } => self.expr(operand),
-            Expr::Call { callee, args, .. } => {
-                self.expr(callee);
-                for a in args {
-                    self.expr(a);
-                }
-            }
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-                self.expr(receiver)
-            }
-            Expr::Index { receiver, index, .. } => {
-                self.expr(receiver);
-                self.expr(index);
-            }
-            Expr::Tuple(v, _) | Expr::Array(v, _) => {
-                for x in v {
-                    self.expr(x);
-                }
-            }
-            Expr::Struct { inits, .. } => {
-                for i in inits {
-                    self.expr(&i.value);
-                }
-            }
-            Expr::Block(b) => self.block(b, false),
-            Expr::If(i) => self.if_chain(i, false),
-            Expr::Match(m) => self.match_arms(m, false),
-            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
-            Expr::Approx { left, right, tolerance, .. } => {
-                self.expr(left);
-                self.expr(right);
-                self.expr(tolerance);
-            }
-            Expr::Range { lo, hi, .. } => {
-                self.expr(lo);
-                self.expr(hi);
-            }
-            Expr::ArrayRepeat { val, .. } => self.expr(val),
-            Expr::Or { inner, disposition, .. } => {
-                self.expr(inner);
-                self.or_disposition(disposition);
-            }
-        }
-    }
-}
-
-struct Resolver {
+struct Resolver<'s> {
+    /// The identities the program was minted with: which declaration
+    /// each use names.
+    ids: &'s crate::snapshot::Snapshot,
     /// Cross-seed import renames, for resolving a path-qualified
     /// literal or callee to the merged program's mangled name.
     renames: Vec<(Vec<String>, String)>,
@@ -1734,7 +1635,8 @@ impl std::fmt::Display for OwnershipError {
 impl std::error::Error for OwnershipError {}
 
 /// Build the owner table for `program`, keyed by the identity the
-/// snapshot minted for every locus-producing expression node.
+/// snapshot `ids` minted for every locus-producing expression node, and
+/// reading from it which declaration each returned name is.
 ///
 /// `fresh_factories` is codegen's own `fresh_locus_factories` map (fn
 /// name -> (locus, returned binding)); the table seeds its EXTENDED
@@ -1745,6 +1647,7 @@ impl std::error::Error for OwnershipError {}
 /// span.
 pub fn resolve_owners(
     program: &Program,
+    ids: &crate::snapshot::Snapshot,
     fresh_factories: &BTreeMap<String, (String, Option<String>)>,
     import_renames: &[(Vec<String>, String)],
 ) -> Result<OwnerTable, OwnershipError> {
@@ -1784,12 +1687,14 @@ pub fn resolve_owners(
 
     let fresh = extend_fresh_factories(
         program,
+        ids,
         fresh_factories,
         &loci,
         import_renames,
     );
 
     let mut r = Resolver {
+        ids,
         renames: import_renames.to_vec(),
         loci,
         locus_fields,
@@ -2167,10 +2072,18 @@ pub type FreshFactories = BTreeMap<String, FactoryRow>;
 ///   - no statement form this walk does not explicitly recognize
 ///     appears.
 ///
+/// A returned name is the declaration the snapshot `ids` resolve it to
+/// (`Snapshot::binding_of`, F.40 phase 2): an inner `let` spelling it
+/// is another binding (GH #1140), and a name that resolves to no `let`
+/// the walk collected — a parameter, a pattern, a `let` inside a match
+/// arm — gives the fn no row.
+///
 /// The escape walk matches every expression form and answers by
 /// identifier: a field, method or struct-init name that happens to
 /// spell the binding is not a use of it (F.40 phase 1.2c; it used to
-/// search the node's Debug rendering for the name).
+/// search the node's Debug rendering for the name). It reads every
+/// binding that spells the name as the returned one — a shadow's uses
+/// count as escapes, the conservative side.
 ///
 /// Every "don't know" answers NOT fresh, preserving the old
 /// program-lifetime behavior rather than risking a double dissolve.
@@ -2197,6 +2110,7 @@ pub type FreshFactories = BTreeMap<String, FactoryRow>;
 /// resolved program is one; the checker passes the bundle's files).
 pub fn fresh_factories(
     programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> FreshFactories {
 
@@ -2444,14 +2358,14 @@ pub fn fresh_factories(
     fn collect(
         b: &Block,
         rets: &mut Vec<Expr>,
-        lets: &mut Vec<(String, Freshness)>,
+        lets: &mut Vec<(String, NodeId, Freshness)>,
         l: &str,
         renames: &[(Vec<String>, String)],
     ) {
         for s in &b.stmts {
             match s {
                 Stmt::Return(Some(e), _) => rets.push(e.clone()),
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, value, id, .. } => {
                     let fr = match value {
                         Expr::Struct { path, inits, .. }
                             if resolve(&qname(path), renames).as_deref()
@@ -2467,7 +2381,7 @@ pub fn fresh_factories(
                         }
                         _ => Freshness::Other,
                     };
-                    lets.push((name.name.clone(), fr));
+                    lets.push((name.name.clone(), *id, fr));
                 }
                 Stmt::While { body, .. } | Stmt::For { body, .. } => {
                     collect(body, rets, lets, l, renames)
@@ -2527,6 +2441,9 @@ pub fn fresh_factories(
                     .filter(|row| row.locus == l)
             };
             let mut fresh_name: Option<String> = None;
+            // The declaration every returned name names; `None` inside
+            // when one names no declaration the snapshot minted.
+            let mut fresh_decl: Option<Option<hale_graph::ids::SiteId>> = None;
             let mut products: Vec<(String, Vec<String>)> = Vec::new();
             // Whether every factory handed back is itself fresh. Each
             // row it reads was inserted, `fresh` and all, before this
@@ -2557,11 +2474,20 @@ pub fn fresh_factories(
                             callees_fresh &= row.fresh.is_some();
                         }
                     }
-                    Expr::Ident(i) => match &fresh_name {
-                        None => fresh_name = Some(i.name.clone()),
-                        Some(n) if *n == i.name => {}
-                        Some(_) => { ok = false; break; }
-                    },
+                    // Every returned name has to be the one binding, the
+                    // declaration the snapshot resolves it to (GH #1140:
+                    // an inner `let` spelling it is another binding).
+                    Expr::Ident(i) => {
+                        let d = ids.declaration_of(i.id);
+                        match fresh_decl {
+                            None => {
+                                fresh_decl = Some(d);
+                                fresh_name = Some(i.name.clone());
+                            }
+                            Some(prev) if prev.is_some() && prev == d => {}
+                            Some(_) => { ok = false; break; }
+                        }
+                    }
                     _ => { ok = false; break; }
                 }
             }
@@ -2573,12 +2499,14 @@ pub fn fresh_factories(
             // answers the fresh half alone.
             let mut escapes = false;
             if let Some(x) = &fresh_name {
-                let bindings: Vec<&(String, Freshness)> =
-                    lets.iter().filter(|(n, _)| n == x).collect();
-                if bindings.len() != 1 {
+                // The returned binding: the `let` it names (a name that
+                // names a parameter, a pattern or nothing is no factory).
+                let Some(Some(d)) = fresh_decl else { continue };
+                let Some(binding) = lets.iter().find(|(_, id, _)| ids.site_id(*id) == Some(d))
+                else {
                     continue;
-                }
-                let bound = match &bindings[0].1 {
+                };
+                let bound = match &binding.2 {
                     Freshness::Literal(p) => Some(vec![p.clone()]),
                     Freshness::CallTo(c) => {
                         out.get(c).filter(|row| row.locus == l).map(|row| {
@@ -2619,10 +2547,12 @@ pub fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// Seed from [`fresh_factories`]'s map and add the fns whose every return arm is
-/// fresh once carriers are flattened.
+/// Seed from [`fresh_factories`]'s map and add the fns whose every
+/// return arm is fresh once carriers are flattened. `ids` are the
+/// identities `program` was minted with.
 fn extend_fresh_factories(
     program: &Program,
+    ids: &crate::snapshot::Snapshot,
     base: &BTreeMap<String, (String, Option<String>)>,
     loci: &BTreeSet<String>,
     renames: &[(Vec<String>, String)],
@@ -2652,8 +2582,8 @@ fn extend_fresh_factories(
             };
             // Every value the fn hands back, wherever the `return`
             // stands — inside an expression block too (GH #1140) — and
-            // each binding resolved where the return spells it.
-            let bindings = body_bindings(&f.body);
+            // each name the declaration the snapshot resolves it to.
+            let bindings = body_bindings(&f.body, ids);
             if bindings.returns.is_empty() {
                 continue;
             }
@@ -2668,12 +2598,11 @@ fn extend_fresh_factories(
             // same program as `return <carrier>;` and has to be the
             // same answer (spec/semantics.md "Dissolve timing rules"
             // — the `let`-named and inline spellings are one
-            // program). The name is resolved to the binding in scope
-            // where the return spells it (GH #1140: an inner `let`
-            // shadowing the name is another binding), and only when
-            // that binding is never re-assigned; anything else leaves
-            // the fn out of the set, which is the old leak and never a
-            // double free.
+            // program). The name is the binding it names (GH #1140: an
+            // inner `let` shadowing the name is another binding), and
+            // only when that binding is never re-assigned; anything else
+            // leaves the fn out of the set, which is the old leak and
+            // never a double free.
             let all_fresh = arms
                 .iter()
                 .all(|a| arm_is_fresh(a, &l, &out, renames, &bindings, 0));
@@ -2692,16 +2621,16 @@ fn extend_fresh_factories(
 /// Is this return arm a value the fn freshly built?
 ///
 /// A literal of the declared locus, a call to a fn already proven to
-/// build one, or a name whose binding — the `let` in scope where it is
-/// spelled, never re-assigned — holds either, including through a
-/// carrier, which is the `let t = if c { make(1) } else { make2(1) };
-/// return t;` spelling of the same program.
+/// build one, or a name whose binding — the `let` it names, never
+/// re-assigned — holds either, including through a carrier, which is
+/// the `let t = if c { make(1) } else { make2(1) }; return t;` spelling
+/// of the same program.
 fn arm_is_fresh(
     a: &Expr,
     l: &str,
     known: &BTreeMap<String, String>,
     renames: &[(Vec<String>, String)],
-    bindings: &BodyBindings<'_>,
+    bindings: &BodyBindings<'_, '_>,
     depth: u32,
 ) -> bool {
     if depth > 4 {
@@ -2722,13 +2651,13 @@ fn arm_is_fresh(
             .map(|cl| cl == l)
             .unwrap_or(false),
         Expr::Ident(i) => {
-            let Some(k) = bindings.let_at(i) else {
+            let Some(d) = bindings.let_at(i) else {
                 return false;
             };
-            if bindings.is_assigned(i, k) {
+            if bindings.is_assigned(i, d) {
                 return false;
             }
-            let Some(rhs) = bindings.lets.get(&k) else {
+            let Some(rhs) = bindings.rhs.get(&d) else {
                 return false;
             };
             let mut inner = Vec::new();
@@ -2816,7 +2745,7 @@ pub(crate) fn callee_fn_name(
 // The walk
 // -------------------------------------------------------------------
 
-impl Resolver {
+impl Resolver<'_> {
     fn scope(&self) -> ScopeId {
         *self.scopes.last().expect("a scope is open")
     }
@@ -3247,8 +3176,8 @@ impl Resolver {
 
     fn walk_stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let { name, value, .. } => {
-                let d = if self.returned.let_is_returned(name) {
+            Stmt::Let { name, value, id, .. } => {
+                let d = if self.returned.let_is_returned(self.ids.site_id(*id), &name.name) {
                     Decision::Caller
                 } else {
                     Decision::Binding(self.slot_for(&name.name))
@@ -3266,11 +3195,13 @@ impl Resolver {
                     "`let` tuple RHS",
                 );
             }
-            Stmt::Assign { target, value, .. } => {
+            Stmt::Assign { target, value, id, .. } => {
                 let bare = target.tail.is_empty();
                 let head = target.head.name.clone();
-                let head_is_returned =
-                    bare && self.returned.assign_is_returned(&target.head);
+                let head_is_returned = bare
+                    && self
+                        .returned
+                        .assign_is_returned(self.ids.declaration_of(*id), &target.head.name);
                 for seg in target.tail.iter() {
                     if let LValueSeg::Index(ix) = seg {
                         self.assign(
@@ -3428,7 +3359,7 @@ impl Resolver {
     /// `return x;` are resolved first, so a `let` can see them.
     fn open_body_frame(&mut self, decl: &str, body: &Block) -> SavedFrame {
         let saved = self.open_frame(decl);
-        self.returned = returned_bindings(body);
+        self.returned = returned_bindings(body, self.ids);
         saved
     }
 

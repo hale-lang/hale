@@ -103,7 +103,8 @@ pub struct Snapshot {
     pub origins: Vec<(SiteId, Origin)>,
     /// Which declaration each use names (F.40 phase 2, use-site
     /// identity): a `Use` site, or an `Assign` site for the binding its
-    /// bare head writes, to the `Let`, `For` or `Binder` site it
+    /// head writes (whole, or through a field or an index), to the
+    /// `Let`, `For` or `Binder` site it
     /// resolves to under lexical scoping (see [`resolve_uses`]). A use
     /// that names no local binding (a field, a top-level fn or const, a
     /// locus, a topic, nothing) has no row. Resolved once, by the mint.
@@ -136,7 +137,7 @@ impl Snapshot {
     }
 
     /// The declaration the use at `node` names — an identifier
-    /// expression, or a bare assignment by its statement's id — if it
+    /// expression, or an assignment's head by its statement's id — if it
     /// names a local binding this snapshot minted.
     pub fn declaration_of(&self, node: NodeId) -> Option<SiteId> {
         self.binding_of.get(&self.site_id(node)?).copied()
@@ -571,9 +572,7 @@ impl<'p> UseScopes<'p, '_> {
                         self.expr(ix);
                     }
                 }
-                if target.tail.is_empty() {
-                    self.resolve(&target.head.name, *id);
-                }
+                self.resolve(&target.head.name, *id);
             }
             Stmt::If(i) => self.if_chain(i),
             Stmt::Match(m) => self.match_arms(m),

@@ -671,6 +671,7 @@ pub(crate) fn run_check_impl_labelled(
             bundle.programs.values().copied().collect();
         diags.extend(hale_types::borrow_lifetime::borrow_lifetime_diags_with_renames(
             &progs,
+            &bundle.snapshot,
             &bundle.import_renames,
         ));
     }

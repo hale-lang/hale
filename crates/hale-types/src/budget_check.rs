@@ -38,6 +38,7 @@
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::snapshot::Snapshot;
 use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocKind, AllocSite, AllocSummary,
     CallEdge, FnKey};
@@ -303,26 +304,28 @@ impl FactVisitor for BudgetVisitor {
 /// `programs` against its declared per-call allocation ceiling. Returns
 /// hard-error diagnostics (opt-in: you asked for the contract, so a
 /// violation fails the build) — empty when every contract holds.
-pub fn budget_diags(programs: &[&Program]) -> Vec<Diag> {
-    budget_diags_with_renames(programs, &[])
+pub fn budget_diags(programs: &[&Program], ids: &Snapshot) -> Vec<Diag> {
+    budget_diags_with_renames(programs, ids, &[])
 }
 
 /// Same, resolving cross-seed `alias::name` calls so an allocation
 /// one seed away still counts against the ceiling.
 pub fn budget_diags_with_renames(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    let mut out = budget_diags_inner(programs, import_renames);
+    let mut out = budget_diags_inner(programs, ids, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
     out
 }
 
 fn budget_diags_inner(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    budget_report_inner(programs, import_renames).0
+    budget_report_inner(programs, ids, import_renames).0
 }
 
 /// #392 §8: every `@budget(alloc_per_call)` contract as a lowered
@@ -330,13 +333,15 @@ fn budget_diags_inner(
 /// the diagnostics, so the two cannot disagree.
 pub fn certificate_rows(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<crate::effects::LoweredCertificate> {
-    budget_report_inner(programs, import_renames).1
+    budget_report_inner(programs, ids, import_renames).1
 }
 
 fn budget_report_inner(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> (
     Vec<Diag>,
@@ -344,7 +349,7 @@ fn budget_report_inner(
     Vec<usize>,
 ) {
     let summary =
-        alloc_summary::summarize_programs_with_renames(programs, import_renames);
+        alloc_summary::summarize_programs_with_renames(programs, ids, import_renames);
     let mut diags = Vec::new();
     let mut rows = Vec::new();
     // Where each row's own diagnostics begin — how the grouped
@@ -418,10 +423,11 @@ fn budget_report_inner(
 /// the judgment's, which is the duplicate authority #476 removes.
 pub fn certificate_groups(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
     let (mut diags, rows, starts) =
-        budget_report_inner(programs, import_renames);
+        budget_report_inner(programs, ids, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
     // One row per annotated fn and its diagnostics emitted
     // contiguously, so a row's group runs to the next row's start.

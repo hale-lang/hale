@@ -19,12 +19,34 @@
 //! user programs alone; the stdlib only ever appears as callee
 //! bodies reached from a user root.
 
+use std::sync::OnceLock;
+
 use hale_syntax::ast::Program;
 
+use crate::snapshot::Snapshot;
+
+/// The stdlib the analyses read, and its own identities: a copy of
+/// [`crate::desugar_sequence::bundled_stdlib`] minted under
+/// [`crate::snapshot::STDLIB_SEED`], once per process. A copy, because
+/// the resolved program appends the bundled one to a user program and
+/// mints the two together, which an id of the stdlib's own counter
+/// would collide with; the analyses read the stdlib beside a bundle and
+/// never merge it, so each side reads its own identities.
+fn analysis() -> Option<&'static (Program, Snapshot)> {
+    static MINTED: OnceLock<Option<(Program, Snapshot)>> = OnceLock::new();
+    MINTED
+        .get_or_init(|| {
+            let mut stdlib = crate::desugar_sequence::bundled_stdlib().ok()?.clone();
+            let ids = crate::snapshot::mint([(crate::snapshot::STDLIB_SEED, &mut stdlib)], &[]);
+            Some((stdlib, ids))
+        })
+        .as_ref()
+}
+
 /// The parsed Hale-source stdlib, after the desugar sequence user
-/// programs go through before their check — the same program the
-/// resolved program appends ([`crate::desugar_sequence::bundled_stdlib`])
-/// — or `None` if it fails to parse.
+/// programs go through before their check — the program the resolved
+/// program appends ([`crate::desugar_sequence::bundled_stdlib`]),
+/// minted ([`identities`]) — or `None` if it fails to parse.
 ///
 /// A parse failure here is a compiler bug, but it must not take the
 /// user's build down: the analyzer degrades to the pre-existing
@@ -32,29 +54,38 @@ use hale_syntax::ast::Program;
 /// check the program. `stdlib_bodies_parse` in the test suite is
 /// what turns that silent degradation into a red build.
 pub fn program() -> Option<&'static Program> {
-    crate::desugar_sequence::bundled_stdlib().ok()
+    analysis().map(|(p, _)| p)
+}
+
+/// The identities of [`program`]: which declaration each of its uses
+/// names, for a walk over a stdlib body.
+pub fn identities() -> Option<&'static Snapshot> {
+    analysis().map(|(_, ids)| ids)
 }
 
 /// Summarize the user programs **plus** the Hale-source stdlib, so
 /// the callgraph can walk into stdlib locus methods. Every effect
 /// query should build its summary through here; using
-/// `summarize_programs` directly reintroduces the blind spot.
+/// `summarize_programs` directly reintroduces the blind spot. `ids`
+/// are the identities the user programs were minted with.
 pub fn summarize_with_stdlib(
     programs: &[&Program],
+    ids: &Snapshot,
 ) -> crate::alloc_summary::AllocSummary {
-    summarize_with_stdlib_and_renames(programs, &[])
+    summarize_with_stdlib_and_renames(programs, ids, &[])
 }
 
 /// Same, additionally resolving cross-seed `alias::name` calls.
 pub fn summarize_with_stdlib_and_renames(
     programs: &[&Program],
+    ids: &Snapshot,
     import_renames: &[(Vec<String>, String)],
 ) -> crate::alloc_summary::AllocSummary {
-    let mut all: Vec<&Program> = programs.to_vec();
-    if let Some(std_prog) = program() {
-        all.push(std_prog);
+    let mut all: Vec<(&Program, &Snapshot)> = programs.iter().map(|p| (*p, ids)).collect();
+    if let Some((std_prog, std_ids)) = analysis() {
+        all.push((std_prog, std_ids));
     }
-    crate::alloc_summary::summarize_programs_with_renames(&all, import_renames)
+    crate::alloc_summary::summarize_identified(&all, import_renames)
 }
 
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled

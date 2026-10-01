@@ -632,6 +632,12 @@ impl Snapshot {
         &self.programs
     }
 
+    /// The identities the load minted over [`Snapshot::programs`]: every
+    /// site, and which declaration each use names.
+    pub fn identities(&self) -> &hale_types::snapshot::Snapshot {
+        &self.identities
+    }
+
     pub fn sources(&self) -> &BTreeMap<PathBuf, String> {
         &self.sources
     }

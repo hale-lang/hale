@@ -259,8 +259,12 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
 /// lowering view's over the merged program — and nothing the check, the
 /// build rules, the model or lowering reads resolves it again. The
 /// count is this thread's, so the tests of this binary do not share it.
+/// The bundled stdlib's analysis copy has identities of its own, minted
+/// once per process (`stdlib_bodies::identities`); it is warmed first,
+/// outside the count.
 #[test]
 fn each_snapshot_resolves_its_uses_once() {
+    let _ = hale_types::stdlib_bodies::identities();
     let d = seed("uses-once", WITH_CLAIM);
     let resolved = hale_types::snapshot::resolutions_on_this_thread;
     let before = resolved();
