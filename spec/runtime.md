@@ -1495,6 +1495,172 @@ zero_copy binding produces.
   enclosing `fallible` frame triggers `lotus_root_panic` —
   the runtime's only value-error escape valve. See
   `spec/semantics.md` § "Process exit".
+- **Decision L0-1 (F.40 phase 3, 2026-10-01): handlers run only
+  on the queue owner's thread.** A child's failure is delivered
+  to its owner's `on_failure` on the owner's execution domain,
+  never on a thread outside the owner's domain. When owner and
+  child share a thread, the child's thread is the owner's domain,
+  and the handler is called inline. The owner's execution
+  domain is the thread that drains the owner's queue: `main` for
+  a locus on the main pool, the pool's worker for a locus placed
+  on a cooperative pool, and the locus's own thread for a pinned
+  one (§ "Owner-executed handlers").
+  - When the child fails on that same thread, the handler is
+    called in place (§ Scheduler, "Failure-traversal": a stack
+    walk).
+  - When the child fails on another thread, the failure travels
+    to the owner's queue as a typed cell (§ Scheduler: "the
+    failure is delivered as a typed bus message to the parent's
+    scheduler, which dispatches to `on_failure`"). This is the
+    path a cross-thread publish takes, and the cross-pool accept
+    handoff takes it too.
+  - The failing child and its copied violation stay alive until
+    the handler has returned. The child waits for the handler's
+    decision before it restarts, carries on or is reclaimed,
+    exactly as a held failure is waited for today
+    (`lotus_failure_await`).
+  - **Delivery makes progress while the owner joins its
+    children.** The owner must remain able to complete
+    outstanding failure decisions until its dependent children
+    have quiesced, and shutdown must never silently discard a
+    failure cell whose child is awaiting it. A child's failure
+    may come after the owner's last drain: from a pinned child
+    the owner is joining, or from a pool child while the pool
+    workers are joined. The owner then has to be able to run that
+    cell even though it is inside the join. Otherwise the owner
+    waits for the child's thread while the child waits for the
+    owner's decision. This decision adopts the requirement; F.40
+    phase 3's L1 (the obligation) and L5 (the implementation)
+    supply the mechanism.
+  - **Restart during drain is converted to cancellation.** A
+    restart the handler asks for after the owner has entered
+    teardown, or while the process drains, is not performed. The
+    child ends as if the handler had returned without asking: it
+    reaches its ordinary run end, where it is reclaimed if it is
+    a flow or terminated child and otherwise kept for its owner's
+    cascade. For the process drain this is shipped
+    (`emit_restart_requested`,
+    `crates/hale-codegen/src/locus/restart.rs`, refuses a restart
+    while `lotus_process_draining_flag` is up). For an owner's
+    teardown nothing checks it yet.
+  - A failure held while the owner's params are open is still
+    delivered when they settle (`spec/semantics.md` §
+    "on_failure(c, err)"). One subcase is open: an owner placed
+    on a cooperative pool. This decision names the pool's worker
+    as that owner's domain. `spec/semantics.md` names "the thread
+    settling the parent", which today is the instantiating
+    thread. The subcase awaits the construction-time decision
+    (inventory Decisions line 1), and this bullet and
+    `spec/semantics.md` are brought into agreement when it lands.
+  - Transport loss already follows this rule. Its dispatcher runs
+    from the top of `lotus_bus_queue_drain`, "owner thread, the
+    only place failure handlers may run" (§ "Bus message
+    router").
+
+  **What the runtime does today, where it differs.**
+  `emit_on_failure_call` (`crates/hale-codegen/src/channels/mod.rs`)
+  asks `lotus_failure_hold` first. The runtime holds a failure only
+  while the parent's params are open; once they have settled, the
+  handler is called in place, on whatever thread raised the
+  failure. A failure raised off the owner's thread therefore runs
+  the owner's handler beside the owner's own code, on a second
+  thread inside one locus. Today that happens:
+  - on a pinned child's thread, for a `violate` in its `run()` or
+    a closure after `run()` returns. The second failure in
+    `tests/hale/pinned_restart_test.hl` is this case: `App`'s
+    handler writes `self.fired` on the pump's thread while
+    `App.run()` reads it on `main`;
+  - on a pool worker, for a `violate` in a pool-placed child's
+    `run()`;
+  - on a subscriber's queue owner, for a closure that fires after
+    one of the subscriber's handlers.
+
+  `notes/f40-lifecycle-inventory.md` lists these sites as rows
+  C36–C40. No test asserts the thread a handler runs on.
+
+  A fourth site is misrouted, not misplaced. It is a
+  dissolve-epoch closure that fails under a flow child's
+  run-completion reclaim. The reclaim spine
+  (`synthesize_reclaim_fns`, `crates/hale-codegen/src/codegen.rs`)
+  lowers the closure with the reclaimed child as `current_self`.
+  `resolve_failure_route` therefore asks the child's own type for
+  a handler of its own type and normally finds none. The owner's
+  handler is not selected at all, and the violation takes the
+  bare report-and-exit. The defect is "owner handler not
+  selected", not "owner handler called on a foreign thread". It
+  becomes the second kind only if the route is fixed without this
+  decision: the reclaim then calls the owner's handler in place on
+  the reclaiming thread. Inventory row C25 records the site;
+  inventory Decisions line 4 chooses the route.
+
+  Teardown pumps no owner queue while it joins. A dissolving
+  parent joins a pinned child with a blocking `pthread_join`
+  (`emit_deferred_entry_teardown`,
+  `crates/hale-codegen/src/codegen.rs`) and drains the bus only
+  after the join returns. `lotus_coop_pool_shutdown_all` joins
+  each pool worker with no drain in between. Neither join is a
+  hazard while the handler is called in place. With delivery
+  through the owner's queue, both are the wait cycle that the
+  progress requirement above rules out (inventory rows C18 and
+  R20).
+
+  **Regression (added with the implementation, F.40 phase 3
+  L5).** `lifecycle_flow
+  failure_delivery_domain::a_childs_failure_runs_on_its_owners_thread`
+  (`crates/hale-codegen/tests/failure_delivery_domain.rs`).
+  The owner records `pthread_self` in its own `run()` and again in
+  its handler; the test asserts the two are equal for:
+  - a pinned child's `violate` after the owner settled;
+  - a pool-placed child's `violate` in `run()`;
+  - a pool subscriber's tick-epoch closure after a handler;
+  - a pinned child failing during the owner's params loop. This
+    case is held and delivered at settle, and is the control;
+  - a pinned child failing during the params loop of an owner
+    placed on a cooperative pool. The construction-time decision
+    (inventory Decisions line 1) fixes which thread the case
+    expects, and the case lands with that decision.
+
+  In each of these cases the owner is running, not in teardown,
+  and the case asserts that the restart the handler asks for
+  takes effect.
+
+  A flow child whose dissolve-epoch closure fails under its
+  run-completion reclaim has a case of its own. The case asserts:
+  - the correct owner receives the violation exactly once;
+  - the handler runs on the owner's domain;
+  - the child and the closure's captured payload are live until
+    the handler returns.
+
+  The case asserts no restart. A dissolve-epoch failure has no
+  restart unless a separate decision introduces one.
+
+  Two further cases run under a deadline: a hang fails the test
+  rather than stalling the suite.
+  - a pinned child raises a failure after the owner has entered
+    teardown;
+  - a pool child raises a failure after the owner has entered
+    teardown.
+
+  A handshake forces the order, never a sleep: the child raises
+  only after it observes the owner's teardown. The pinned child
+  sees its mailbox shut down. The pool child sees its pool's
+  shutdown flag, which a classic-pool accept already returns on.
+  Each of the two cases asserts:
+  - the handler ran on the owner's domain;
+  - the handler completed exactly once;
+  - the owner's teardown completed exactly once;
+  - the child and the violation's payload were live until the
+    handler returned.
+
+  **Restart during drain** has a case of its own. It uses the same
+  handshake: a pinned child fails after the owner has entered
+  teardown, and the handler asks for a restart. The case asserts
+  the conversion to cancellation described above:
+  - `birth()` ran once;
+  - the child reached its ordinary end;
+  - the child was torn down exactly once.
+
+  The test runs under ASan with heap-backed child fields.
 
 ### Native observation emission (iris P4, 2026-07-27)
 
