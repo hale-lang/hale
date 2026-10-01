@@ -580,7 +580,7 @@ pub fn check_bundle_reporting(
     let top = inputs.top;
     let mut diags = Vec::new();
     let certificates;
-    let known = collect_known_names(top, &bundle.import_renames);
+    let known = &top.names;
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
     let wasm_target = bundle.programs.values().any(|p| {
@@ -640,7 +640,7 @@ pub fn check_bundle_reporting(
         collect_generic_loci(&program.items, &mut generic_loci);
         let mut cx = Checker {
             top,
-            known: &known,
+            known,
             diags: &mut diags,
             locals: ScopeStack::new(),
             current_locus: None,
@@ -839,7 +839,7 @@ pub fn check_bundle_reporting(
     // CARRY. The rule above relates two sites to each other; this one
     // relates one site to the runtime, which takes a user type, a
     // has-payload enum or `BytesView` and nothing else.
-    check_bus_payload_carriable(bundle, top, &known, &mut diags);
+    check_bus_payload_carriable(bundle, top, known, &mut diags);
     // A revealed secret is consumed in its statement (spec/semantics.md
     // § "@sealed"): `Credential.reveal()` only in a locus method, its
     // value reaching a wire write, a comparison or a `@secret` parameter
@@ -8009,38 +8009,6 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     for program in bundle.programs.values() {
         walk(&program.items, diags);
     }
-}
-
-fn collect_known_names(
-    top: &TopScope,
-    import_renames: &[(Vec<String>, String)],
-) -> KnownNames {
-    let mut m = KnownNames::default();
-    // GH #833: the checker resolves type expressions against THIS
-    // table, rebuilt from the top scope — so without the bundle's
-    // rename rows a qualified cross-seed annotation would come back
-    // `Unknown` here even though `build_top_scope` had just typed the
-    // same annotation in a signature.
-    m.set_imports(import_renames);
-    for (name, sym) in &top.symbols {
-        if matches!(
-            sym,
-            TopSymbol::Locus(_) | TopSymbol::Type(_) | TopSymbol::Perspective(_)
-        ) {
-            m.insert(name.clone(), sym.span());
-        }
-        // GH #759: carry the alias targets across, already
-        // expanded by `build_top_scope` — the checker resolves
-        // type expressions against THIS table, so without them a
-        // `type Thing = Int;` use would come back `Ty::Named`
-        // again and stop unifying with `Int`.
-        if let TopSymbol::Type(info) = sym {
-            if let TypeKind::Alias(t) = &info.kind {
-                m.set_alias(name.clone(), t.clone());
-            }
-        }
-    }
-    m
 }
 
 /// Stage-1 FFI (2026-05-22): predicate returning the rejection

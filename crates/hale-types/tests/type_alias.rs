@@ -293,3 +293,30 @@ fn after_the_sequence_no_construction_site_names_an_alias() {
     }
     assert!(rendered.contains("\"Row\"") && rendered.contains("\"Color\""), "{rendered}");
 }
+
+/// One name table (F.40 phase 3, C6): the checker resolves type
+/// expressions against the scope's own (`TopScope::names`), built with
+/// the symbols — each alias with its expanded target, the declared
+/// loci and types, the bundled stdlib's, the bundle's renames, and no
+/// interface (an interface-typed slot stays `Unknown` in the checker).
+#[test]
+fn the_scope_carries_the_checkers_name_table() {
+    // a plain literal, so the corpus does not harvest it
+    let src = "type Thing = Int;\n\
+               type Row { a: Int; }\n\
+               interface Greeter {\n    fn hi() -> Int;\n}\n\
+               locus W { params { n: Int = 0; } }\n\
+               fn main() { }\n";
+    let program = parse_source(src).expect("parse");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![(vec!["lib".to_string(), "Row".to_string()], "Row".to_string())];
+    let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
+    let names = &scope.names;
+    assert!(names.contains_key("W") && names.contains_key("Row") && names.contains_key("Thing"));
+    assert!(!names.contains_key("Greeter"), "an interface is not in the checker's table");
+    assert_eq!(names.alias_target("Thing"), Some(&hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Int)));
+    assert_eq!(names.import_target("lib::Row"), Some("Row"));
+    assert!(names.keys().any(|k| k.starts_with("__Std")), "the bundled stdlib's types");
+}

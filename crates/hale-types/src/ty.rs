@@ -95,7 +95,8 @@ impl Ty {
     /// typed slot accept a satisfying locus inside composite
     /// shapes — `let arr: [Greeter; 2] = [Hi {}, Hey {}];`
     /// works because Greeter resolves to Unknown
-    /// (`collect_known_names` omits Interface decls today), and
+    /// (the scope's name table, `TopScope::names`, omits Interface
+    /// decls today), and
     /// the per-element Unknown ≈ Hi check now passes. Codegen
     /// emits the per-element fat-pointer coercion at the
     /// destination's known type. G20 (2026-05-23).
