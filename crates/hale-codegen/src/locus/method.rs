@@ -38,7 +38,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             .get(&l.name.name)
             .cloned()
             .expect("locus declared in pass A");
-        for member in &l.members {
+        for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Lifecycle(lc) = member {
                 let kind: &'static str = match lc.kind {
                     LifecycleKind::Birth => "birth",
@@ -88,12 +88,8 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // (most do real work). accept/release reads of the child
                 // ref classify non-allocating; method calls on it stay
                 // conservative, so a hook that calls into the child keeps
-                // its scratch.
-                let elide_scratch = self.method_scratch_elidable(
-                    &lc.body,
-                    &lc.params,
-                    lc.ret.as_ref(),
-                );
+                // its scratch. The verdict is the hook's elision row.
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
@@ -667,7 +663,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
         // lifecycle methods, but with their declared param list
         // (after self_ptr) bound as locals + their declared
         // return type tracked.
-        for member in &l.members {
+        for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Fn(fd) = member {
                 // Open-question #24 MVP: fallible locus methods
                 // take a separate body-lowering path that wires
@@ -710,11 +706,8 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 // return is a by-value scalar (no return deep-copy). Leaving
                 // `current_method_scratch` None routes the (absent)
                 // allocations to `self.__arena` and no-ops destroy/close.
-                let elide_scratch = self.method_scratch_elidable(
-                    &fd.body,
-                    &fd.params,
-                    fd.ret.as_ref(),
-                );
+                // The verdict is the method's elision row.
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }
@@ -999,7 +992,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
 
         // Mode bodies — same lowering as Fn members, with the
         // synthetic method name (bulk / harmonic / resolution).
-        for member in &l.members {
+        for (member_idx, member) in l.members.iter().enumerate() {
             if let LocusMember::Mode(md) = member {
                 let mode_name = match md.kind {
                     ModeKind::Bulk => "bulk",
@@ -1032,12 +1025,9 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                 self.loops.clear();
                 self.push_dissolve_frame();
                 // Stage-1 scratch elision (mode body) — same gate as fn
-                // members: non-allocating body + by-value scalar/Unit ret.
-                let elide_scratch = self.method_scratch_elidable(
-                    &md.body,
-                    &md.params,
-                    md.ret.as_ref(),
-                );
+                // members: non-allocating body + by-value scalar/Unit ret,
+                // the mode's elision row.
+                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx);
                 if !elide_scratch {
                     self.open_method_scratch()?;
                 }

@@ -17,7 +17,7 @@ use inkwell::AddressSpace;
 
 use crate::codegen::{
     collect_sum_calls, count_self_field_accesses_in_locus,
-    infer_accumulator_inner_type, locus_arena_elidable,
+    infer_accumulator_inner_type,
     param_value, AccumulatorKind,
     AccumulatorSlot, CapacitySlotLayout, CodegenError, CodegenTy,
     Cx, DefaultInit, LocusInfo, ParamValue, SlotForm, SyncMode,
@@ -46,6 +46,7 @@ fn apply_noalias_self_if_provable<'ctx>(
     params: &[hale_syntax::ast::Param],
 ) {
     let elidable = cx
+        .alloc_routing
         .elidable_methods
         .get(locus_name)
         .map(|(e, _)| e.contains(method_name))
@@ -1287,7 +1288,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 projection_class,
                 schedule_class,
                 capacity_slots,
-                arena_elidable: locus_arena_elidable(l),
+                arena_elidable: self.locus_elision(&l.name.name).arena,
                 empty_lifecycle: std::collections::BTreeSet::new(),
             },
         );
