@@ -261,6 +261,7 @@ const STALE: &str = "crates/hale-cli/src/shared/stale.rs";
 const V_CHECK: &str = "crates/hale-cli/src/verbs/check/run_impl.rs";
 const V_MATRIX: &str = "crates/hale-cli/src/verbs/check/matrix.rs";
 const V_BUILD: &str = "crates/hale-cli/src/verbs/build.rs";
+const CLI_DNA: &str = "crates/hale-cli/src/dna.rs";
 const V_RUN: &str = "crates/hale-cli/src/verbs/run.rs";
 const V_TEST: &str = "crates/hale-cli/src/verbs/test.rs";
 const V_REPLAY: &str = "crates/hale-cli/src/verbs/replay.rs";
@@ -568,6 +569,36 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "is_main_entry", "the deferred entry teardown compares the entry's locus name with `main_locus_name` to decide whether it joins the pools (#1208)", "same"),
             legacy(CG, "emit_bindings_prelude", "the connect-transport loss handler is looked up in the locus named by `main_locus_name`", "same"),
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it", "same"),
+            legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read from the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
+            legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
+            legacy(CG, "let has_socket_binding", "whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen", "same"),
+            // The checker's own readers of `main` that E0 did not switch.
+            legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
+            legacy(CHECK, "check_cooperative_pool_blocking", "the blocking check reads the placement and params of EVERY `is_main` declaration, module-nested and imported ones included, with no mark or name filter", "reads `lowering_root`, since the starvation it reports is on the threads lowering spawns; reads the entry with L4"),
+            legacy(CHECK, "check_instance_aliasing", "instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included)", "same"),
+            legacy(CHECK, "check_pool_affinity", "validates EVERY `is_main` declaration's own placement block (an affinity with no named pool, two affinities for one pool), deployed or not: validation of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it walks the row's witness (`mains`) instead of the declarations (L4)"),
+            legacy(CHECK, "let api_bound", "`check_bus_graph`'s orphan lint is lifted when ANY `is_main` declaration carries an `api:` binding: a module-nested one, or an imported one whose api entry is inert (GH #1104 piece 5)", "reads the entry, whose binding is the one that binds (L4)"),
+            // The `--api` and `--env` injections, and the api surface.
+            legacy(DESUGAR_SEQ, "let at = programs", "the `--api` injection target in `desugar_before_check`: the first program holding a top-level `is_main`, an imported one included", "reads the entry: the binding goes on the entry, and a seed with none is refused (L4)"),
+            legacy(API_GEN, "inject_api_entry", "the injected `api:` entry goes on that program's first `is_main` at any depth, module-nested and imported ones included", "same"),
+            legacy(API_GEN, "api_surface", "the api surface is built around the first `is_main && !imported` carrying an `api:` entry, at any depth (a module-nested `main` included)", "same"),
+            legacy(API_GEN, "declared_roles", "`owner` joins the declared roles when any `is_main && !imported` declaration at any depth carries an `api:` entry", "same"),
+            legacy(SNAPSHOT, "inject_adopt", "an environment's constitution is adopted into EVERY top-level `is_main` of the program (an imported one included, a module-nested one not), and a program with none refuses it", "reads the entry: an environment binds law to the entry (L4)"),
+            legacy(CLAIMS, "has_main = true", "world-tier claims are gathered from every `is_main` at any depth, and `has_main` refuses a top-level `claims` block in a seed that closes", "same"),
+            // The model, the graphs' closed worlds, effects, the editor, the DNA.
+            legacy(MODEL_BUILDER, "let main_decl", "the model's arrangement root is the first `is_main` among the model's loci, with no filter", "reads the entry (L4)"),
+            legacy(MODEL_BUILDER, "let entrypoint = ast", "the model's `entrypoint` name is the first `is_main` among its loci, else `main`", "same"),
+            legacy(BUS_GRAPH, "let has_entry_point", "the bus graph's closed world is any top-level `is_main` or top-level `fn main`, an imported `main` included; deliberately broader than rule 9's", "reads the entry, beside the `fn main` entry point (L4)"),
+            legacy(OWNERSHIP_GRAPH, "let has_entry_point", "the ownership DAG's closed world, the bus graph's test made again", "same"),
+            legacy(TY_MANGLE, "seed_declares_main", "whether an imported seed declares a `main locus` (GH #774): any top-level `is_main` over the seed's files", "reads the imported seed's own entry row (L4)"),
+            legacy(EFFECTS, "placement_implied_diags", "the async_io pool's locus types come from every top-level `is_main` declaration's placement, an imported one included and a module-nested one not", "reads `lowering_root`, since the pool is one lowering spawns; reads the entry with L4"),
+            legacy(LSP, "placement_of", "the editor's placement view shows every top-level `is_main` declaration's placement", "same"),
+            legacy(CLI_DNA, "main_of", "`hale dna init` takes the LAST top-level `is_main` over the seed's files, parse-only (no import is resolved, so no mark exists)", "reads the entry row over the seed's own files, as `seed_entry_kind` does (L4)"),
+            // Readers of a declaration's own `main` keyword: they derive
+            // no entry fact, and are listed so the inventory is whole.
+            legacy(CHECK, "if parent.is_main", "`check_nested_long_running_child` exempts a `main locus`, as a parent and as a child, from the long-running-child rule: a property of each declaration, which derives no entry fact", "none for the entry: it leaves this inventory when it reads the row's witness (`mains`) instead of the keyword (L4)"),
+            legacy(OWNERSHIP_GRAPH, "entry.singleton |= l.is_main", "every `main locus` declaration is a singleton in the ownership graph: a property of each declaration, which derives no entry fact", "same"),
+            legacy(ALLOC, "let mut eager_only_loci", "every top-level `main locus` declaration is excluded from eager reclamation, conservatively: a property of each declaration, which derives no entry fact", "same"),
         ],
         consumers: &[
             consumer_at("check (rule 1's count reads the witness: the seed's own mains, module-nested ones included)", CHECK, "check_main_and_bindings"),
@@ -588,6 +619,7 @@ pub const FAMILIES: &[Family] = &[
             "the decisions bind what reads the entry (rule 9's closed world, `--env`, `--matrix`), not the placement-safety rules: until lowering reads the entry (L4) it deploys a module-nested `main` as its root and spawns its pinned threads, so the F.31 pool map and the pinned-in-a-loop rule read the row's provisional `lowering_root`, and a seed whose only `main` is module-nested has no entry and its cross-pool call is still refused (the outside review of #1293, finding 1)",
             "with more than one candidate (rule 1's error) the entry is the last, as the checker's pool map took it before the row; the lowering root is the first non-`__lib_` `main`, nested or not, as lowering takes it",
             "the legacy sites use three definitions of the main locus today, and lowering's `in_main` a fourth, of fn main; the row has one",
+            "every non-test reader of `LocusDecl::is_main` is the producer or a legacy row here; the parser's main-only member rules are syntax and are not rows, and `sync_inference`'s test helper is test code",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
