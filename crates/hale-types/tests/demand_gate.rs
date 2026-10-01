@@ -155,7 +155,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     // one only when the checker consumed the snapshot's family. The test
     // entry (`check_bundle_opts_scoped`) builds its own, which no
     // snapshot counts.
-    for family in ["handler_routing"] {
+    for family in ["handler_routing", "entrypoint"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_at_most_once(&s, "lsp");

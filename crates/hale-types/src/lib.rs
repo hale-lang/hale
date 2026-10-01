@@ -277,9 +277,10 @@ pub fn check_bundle_opts_scoped(
     let handlers = bundle_handler_rows(bundle);
     let rows = std::cell::OnceCell::new();
     let effects = || Some(rows.get_or_init(|| effect_rows::derive_effect_rows(bundle, &top)));
+    let entry = entry::entry_row(bundle);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
-        &check::CheckInputs { top: &top, handlers: &handlers, effects: &effects },
+        &check::CheckInputs { top: &top, handlers: &handlers, effects: &effects, entry: &entry },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,
@@ -445,7 +446,10 @@ pub fn apply_sync_inference(
             // case (the program won't compile anyway).
             return diags;
         }
-        let pool_map = check::compute_pool_of_locus_type(&bundle, &top);
+        // The single-program bundle's own entry row: sync inference
+        // runs before the snapshot's sequence, outside its families.
+        let entry = entry::entry_row(&bundle);
+        let pool_map = check::compute_pool_of_locus_type(&bundle, &top, &entry);
         sync_inference::infer_sync_for_bundle(&bundle, &top, &pool_map)
     };
 

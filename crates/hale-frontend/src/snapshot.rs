@@ -923,6 +923,7 @@ impl Snapshot {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: &effects,
+                    entry: self.demand_entry().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();

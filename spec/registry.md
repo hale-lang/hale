@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 131 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
+44 families: 10 canonical, 30 migrating (with 127 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
 
 ## Families
 
@@ -19,7 +19,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 8 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 12 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 8 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 5 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
@@ -389,11 +389,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `check_main_and_bindings` — defines `imported main` via `l.imported`. *Removed when:* one definition of the entry, as a row.
-- `crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop` — finds main by a `__lib_` name filter. *Removed when:* same.
-- `crates/hale-types/src/check.rs` · `compute_pool_of_locus_type` — finds main with no filter; the last one wins. *Removed when:* same.
-- `crates/hale-types/src/check.rs` · `check_bus_graph` — closed world = a top-level main only; a module-nested main disables rule 9. *Removed when:* same.
-- `crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind` — parse-only main detection for the check matrix. *Removed when:* same.
+- `crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind` — parse-only main detection for the check matrix. *Removed when:* one definition of the entry, as a row.
 - `crates/hale-frontend/src/snapshot.rs` · `let has_main` — has_main for an environment's entrypoint, in the snapshot's load (`check --env`, and the build paths' `--env`). *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — `is_main && !__lib_` over flat declarations. *Removed when:* same.
 - `crates/hale-codegen/src/locus/instantiation.rs` · `let is_main_locus` — `is_main_locus` compares type names at instantiation (and twice more in dissolve.rs). *Removed when:* same.
@@ -402,10 +398,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/codegen.rs` · `emit_bindings_prelude` — the connect-transport loss handler is looked up in the locus named by `main_locus_name`. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `in_main` — whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it. *Removed when:* same.
 
-**Consumers.** check; build; dna; codegen
+**Consumers.** check (rule 1's count reads the witness: the seed's own mains, module-nested ones included) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (the pinned-in-a-loop rule reads the candidates) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (the F.31 pool map is seeded from the entry; sync inference builds its own row over its single-program bundle) (`crates/hale-types/src/check.rs` · `compute_pool_of_locus_type`); check (rule 9's closed world is a program with an entry) (`crates/hale-types/src/check.rs` · `check_bus_graph`); build; dna; codegen
 
 **Invariants.**
 
+- the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, and sync inference, which runs per file before the sequence, builds one over its single-program bundle
 - one row per snapshot (`Snapshot::demand_entry`, the `entrypoint` count): the entry by its minted site, and every `main locus` the bundle declares as the witness, each with whether it is imported and whether it is module-nested; it reads declarations only, so no diagnostic blocks it, and a seed with a hole (no identities) blocks it with its scope
 - an imported `main` is not the entry (decision 1, E0): a library's `main locus` is a declaration the importing seed does not run, and the entry is the importing seed's own; a seed whose only `main` is imported has no entry (`NoEntry::OnlyImported`). Imported is one definition, the rename pass's mark (`imported`, GH #1104 piece 5); the `__lib_` name the same pass gives is spelling, not a second test
 - a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry
@@ -420,7 +417,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
+- `entry_row(` may be referenced from: `crates/hale-types/src/entry.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2
 
 ### `ownership` — Migrating · derivation
 
@@ -1337,7 +1334,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: sync inference builds a single-program top scope per file before the sequence, and the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `apply_sync_inference` (sync_inference, desugar_sequence), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)
 - a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads
 - the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it
-- the checker's inputs are families (2.3): the typing demands the handler rows before the checker runs and hands them in (`CheckInputs`), so a check with a law builds them once for the checker and the model together; their producer reads declarations, not types, so it is total over a program that does not typecheck
+- the checker's inputs are families (2.3): the typing demands the handler rows and the entry row before the checker runs and hands them in (`CheckInputs`), so a check with a law builds the handler rows once for the checker and the model together; both producers read declarations, not types, so they are total over a program that does not typecheck
 - a family whose prerequisite reported errors is `Blocked { family, because }`, not computed: an editor seed with a member that did not parse or would not read has no scope (the editor's requests read `demand_editor_scope`, the scope over the members that parsed with the hole named, and never a scope of their own), a program that does not typecheck has no model, a program whose check reported an error has no lowering view; a ready result may still hold typed holes
 - the lowering view (`LoweringView`, the `lowering_view` count) is a family: `demand_lowering` demands the check, then runs `resolve_program` once over the snapshot's program, source map, renames and api config; `build_resolved` reads it by reference; every build path (build, run, test, replay, bench) demands it from a `Snapshot::load`, and the test harness from `Snapshot::from_program`, whose config (`Config::harness`) does not gate lowering on the check
 - a changed entry, load mode, target, config, overlay or source text is a distinct snapshot (`SnapshotKey`, computed after the load from what it read; a bare program is its own load); two snapshots share no result, and a snapshot is dropped on any change (incremental reuse is a later future)

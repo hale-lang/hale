@@ -11,6 +11,8 @@ mod bounded_annotation;
 mod check_arg_parsing;
 #[path = "check_borrow_lifetime.rs"]
 mod check_borrow_lifetime;
+#[path = "check_entry_decisions.rs"]
+mod check_entry_decisions;
 #[path = "check_flows.rs"]
 mod check_flows;
 #[path = "check_secret_reveal.rs"]

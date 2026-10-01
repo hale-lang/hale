@@ -185,7 +185,11 @@ quietly doing nothing with them:
 - The program's **entry point**. `fn main` has to be at the top
   level, and a `fn main` inside a module is an error: *the entry
   point must be top-level* — move it out, or rename it if it was
-  meant to be an ordinary function.
+  meant to be an ordinary function. A `main locus` inside a module
+  is not the entry either: it still counts toward the one-`main`
+  rule, but its `placement { }` places nothing and it does not make
+  the program complete — keep the entry's `main locus` at the top
+  level too.
 - A **`target wasm { }`** block, which is a build directive for the
   whole program rather than a declaration: *`target` is a
   program-level declaration; move it to the top level.*
