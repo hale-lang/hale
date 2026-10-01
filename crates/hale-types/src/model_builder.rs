@@ -2077,8 +2077,8 @@ pub fn derive_application_model_over(
     // Effects per fn (the derived classes the artifact exports), read
     // from the effect rows, and the DIRECT sets the reachability
     // judgment's `effects(C)` destination test reads (GH #476 Change
-    // 5a) — computed by the evaluator's own `claims::direct_effects`,
-    // called rather than approximated.
+    // 5a) — each fn's `direct` column of the same rows, over the
+    // stdlib-merged summary the rows' walk read.
     let mut derived_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
     let mut direct_effects: BTreeMap<String, Vec<String>> =
@@ -2154,7 +2154,7 @@ pub fn derive_application_model_over(
         if !user_key(k) {
             continue;
         }
-        let d = crate::claims::direct_effects(&summary, k, &ffi);
+        let d = inputs.effects.direct(k);
         if !d.is_unclassified() && d != crate::stdlib_surface::EffectSet::PURE {
             let mut classes = crate::frontier::render_effects_named(
                 d,
@@ -2785,9 +2785,7 @@ pub fn derive_application_model_over(
                 let mut events: Vec<hale_model::AbsorbedEvent> =
                     Vec::new();
                 let node_direct = {
-                    let d = crate::claims::direct_effects(
-                        &merged, &n, &ffi,
-                    );
+                    let d = inputs.effects.direct(&n);
                     if d.is_unclassified() {
                         Vec::new()
                     } else {

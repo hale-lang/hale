@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::Program;
 
-use crate::alloc_summary::{AllocSummary, Callee, FnKey};
+use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::purity::Purity;
 use crate::resolve::TopScope;
 use crate::stdlib_surface::EffectSet;
@@ -88,6 +88,59 @@ impl EffectRows {
     pub fn purity(&self, key: &FnKey) -> Option<&Purity> {
         self.rows.get(key).and_then(|r| r.purity.as_ref())
     }
+
+    /// The fn's own contribution, for any key: its row's `direct` when
+    /// the summary holds its body, else only what it declares it
+    /// carries (a fn with no body has no sites and no calls). The
+    /// reachability judgment's `effects(C)` destination test and the
+    /// model's absorbed paths read it.
+    pub fn direct(&self, key: &FnKey) -> EffectSet {
+        match self.rows.get(key) {
+            Some(r) if r.summarized => r.direct,
+            _ => self.summary.carries.get(key).copied().unwrap_or(EffectSet::PURE),
+        }
+    }
+}
+
+/// A fn's DIRECT effect contribution — its own body only, no
+/// recursion (a walk over the rows supplies transitivity). Mirrors
+/// the per-node fold of [`crate::frontier::infer_effect_bounds`].
+fn direct_effects(summary: &AllocSummary, key: &FnKey, ffi: &BTreeSet<String>) -> EffectSet {
+    let mut acc = EffectSet::PURE;
+    if let Some(c) = summary.carries.get(key) {
+        acc = acc.union(*c);
+    }
+    let Some(fs) = summary.fns.get(key) else { return acc };
+    if !fs.sites.is_empty() {
+        acc = acc.union(EffectSet::ALLOC);
+    }
+    for site in &fs.effect_sites {
+        acc = acc.union(match site.kind {
+            EffectSiteKind::Publish(_) => EffectSet::PUBLISH,
+            EffectSiteKind::Spawn(_) => EffectSet::ALLOC,
+        });
+    }
+    for edge in &fs.calls {
+        match &edge.callee {
+            Callee::Resolved(k) => {
+                // The callee's own contribution is its own row's; a
+                // leaf's declared `is:` is on the callee's `carries`
+                // entry.
+                if k.locus.is_none() && ffi.contains(&k.fn_name) {
+                    acc = acc.union(EffectSet::SYSCALL);
+                }
+            }
+            Callee::Unresolved(name) => {
+                let segs: Vec<&str> = name.split("::").collect();
+                if let Some(e) = crate::stdlib_surface::effects_for(&segs) {
+                    if !e.is_unclassified() {
+                        acc = acc.union(e);
+                    }
+                }
+            }
+        }
+    }
+    acc
 }
 
 /// The `effects` family's producer: one walk per fn of the summary,
@@ -131,7 +184,7 @@ pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
                 effects: bounds.effects,
                 known: bounds.known,
                 unknown: bounds.unknown,
-                direct: crate::claims::direct_effects(&summary, key, &ffi),
+                direct: direct_effects(&summary, key, &ffi),
                 purity: None,
             },
         );
