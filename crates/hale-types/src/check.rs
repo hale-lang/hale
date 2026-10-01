@@ -504,12 +504,29 @@ fn substitute_generic_ty(
     }
 }
 
+/// What the checker reads from the families it does not own, each
+/// built once over the programs it checks (F.40 phase 2.3): the top
+/// scope with its topic rows, and the handler rows. The frontend's
+/// snapshot demands each as a family of its own
+/// (`Snapshot::demand_scope`, `demand_handlers`) and hands them here, as
+/// it hands the model its [`crate::model_builder::ModelInputs`]; the
+/// checker builds none of them.
+pub struct CheckInputs<'a> {
+    pub top: &'a TopScope,
+    pub handlers: &'a crate::handler_routing::HandlerRouting,
+}
+
+/// The check of a bundle no snapshot holds, over `top` (the tests'
+/// entry): the families the check reads beside the scope are built here,
+/// once each ([`crate::bundle_handler_rows`]).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
-    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false, false)
+    let handlers = crate::bundle_handler_rows(bundle);
+    let inputs = CheckInputs { top, handlers: &handlers };
+    check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
 
 /// Two whole-program strictnesses, both off for a partial program.
@@ -530,11 +547,12 @@ pub fn check_bundle(
 /// is closed and tested.)
 pub fn check_bundle_scoped(
     bundle: &Bundle<'_>,
-    top: &TopScope,
+    inputs: &CheckInputs<'_>,
     allow_unowned_subscriber: bool,
     strict_callees: bool,
     strict_idents: bool,
 ) -> Vec<Diag> {
+    let top = inputs.top;
     let mut diags = Vec::new();
     let known = collect_known_names(top, &bundle.import_renames);
     // WASM plan: the bundle targets wasm if any program declares
@@ -583,14 +601,9 @@ pub fn check_bundle_scoped(
     }
     // F.40 phase 1.4: the handler rows, over the whole bundle, so a
     // child locus declared in a sibling file resolves as lowering and
-    // the model resolve it.
-    let bundle_programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let handlers =
-        crate::handler_routing::handler_rows(
-            &bundle_programs,
-            &bundle.import_renames,
-            &bundle.snapshot,
-        );
+    // the model resolve it. Handed in (phase 2.3): the model reads the
+    // same rows.
+    let handlers = inputs.handlers;
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -620,7 +633,7 @@ pub fn check_bundle_scoped(
             generic_fns,
             generic_types,
             generic_loci,
-            handlers: &handlers,
+            handlers,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
@@ -756,11 +769,7 @@ pub fn check_bundle_scoped(
         // denotes a valid model — see the note there. Selection
         // stays here: it reads the claim surface directly and is
         // meaningful even for a program that does not typecheck.
-        diags.extend(crate::frontier::supervised_diags(
-            &programs_vec,
-            &bundle.import_renames,
-            &bundle.snapshot,
-        ));
+        diags.extend(crate::frontier::supervised_diags(&programs_vec, handlers));
         diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
         for d in &mut diags[law_start..] {
             if d.kind == hale_syntax::error::DiagKind::Type {

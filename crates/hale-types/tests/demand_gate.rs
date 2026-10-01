@@ -145,10 +145,18 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
-    for family in ["bus_graph", "ownership", "handler_routing"] {
+    for family in ["bus_graph", "ownership"] {
         assert_eq!(builds[family], 0, "the model's input `{family}` is demanded with it");
     }
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
+    // The checker's rules read the snapshot's rows: with no model built,
+    // the check is the only demand that builds them, so this count is
+    // one only when the checker consumed the snapshot's family. The test
+    // entry (`check_bundle_opts_scoped`) builds its own, which no
+    // snapshot counts.
+    for family in ["handler_routing"] {
+        assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
+    }
     assert_at_most_once(&s, "lsp");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -164,9 +172,11 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         assert_clean(&s);
         assert_eq!(s.builds()["model"], 1, "a claim is judged over the model");
         assert_eq!(s.builds()["claims"], 1);
-        // The model reads the snapshot's graphs: built once, for it.
+        // The checker and the model read the snapshot's graphs: built
+        // once, for both. No rule of the check builds its own rows
+        // beside the family, so the count is the number of builds.
         for family in ["top_scope", "bus_graph", "ownership", "handler_routing"] {
-            assert_eq!(s.builds()[family], 1, "the model demands `{family}`");
+            assert_eq!(s.builds()[family], 1, "the check and the model demand `{family}`");
         }
         s.demand_bus_graph().expect("the graph the model read");
         s.demand_ownership_graph().expect("the graph the model read");

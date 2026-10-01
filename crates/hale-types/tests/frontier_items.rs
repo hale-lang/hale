@@ -151,14 +151,15 @@ fn supervised_takes_no_policy_from_a_same_named_locus_elsewhere() {
         10_000,
     )
     .expect("parse");
-    let ds: Vec<String> = hale_types::frontier::supervised_diags(
+    let rows = hale_types::handler_routing::handler_rows(
         &[&other, &app],
         &[],
         &hale_types::snapshot::Snapshot::default(),
-    )
-    .into_iter()
-    .map(|d| d.message)
-    .collect();
+    );
+    let ds: Vec<String> = hale_types::frontier::supervised_diags(&[&other, &app], &rows)
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
     assert!(
         ds.iter().any(|m| m.contains("@supervised` violated") && m.contains("App, Mid")),
         "the other file's `App` handler does not cover this `App`: {:?}",

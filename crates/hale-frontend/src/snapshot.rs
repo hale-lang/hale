@@ -13,7 +13,8 @@
 //! - [`Snapshot::demand_bus_graph`], [`Snapshot::demand_ownership_graph`]
 //!   and [`Snapshot::demand_handlers`]: the bus graph, the ownership
 //!   graph and the handler rows over the checked programs, what the
-//!   model reads beside the scope.
+//!   model reads beside the scope. The checker reads the handler rows
+//!   too, demanded before it runs.
 //! - [`Snapshot::demand_model`]: the application model, over the scope
 //!   and those three.
 //! - [`Snapshot::demand_check`]: what the checker reports — the scope's
@@ -803,16 +804,25 @@ impl Snapshot {
         Ok(EditorScope { top: &partial.top, hole })
     }
 
-    /// What the resolver and the checker report, before the laws.
+    /// What the resolver and the checker report, before the laws. The
+    /// checker reads the snapshot's families beside the scope
+    /// ([`hale_types::check::CheckInputs`]), each demanded before it
+    /// runs: the handler rows' producer is total over a program that
+    /// does not typecheck (it reads declarations, not types), so a
+    /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let inputs = hale_types::check::CheckInputs {
+                    top: &scope.top,
+                    handlers: self.demand_handlers().map_err(Clone::clone)?,
+                };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
                 diags.extend(hale_types::check::check_bundle_scoped(
                     &self.bundle(),
-                    &scope.top,
+                    &inputs,
                     self.config.allow_unowned_subscriber,
                     self.config.whole_program,
                     self.config.whole_program,
@@ -847,7 +857,8 @@ impl Snapshot {
             .as_ref()
     }
 
-    /// The handler rows of the checked programs: the model's
+    /// The handler rows of the checked programs: the checker's
+    /// duplicate-handler rule and `@supervised` law, and the model's
     /// supervision. Blocked with the scope, which a file that did not
     /// parse blocks.
     pub fn demand_handlers(&self) -> Result<&HandlerRouting, &Blocked> {

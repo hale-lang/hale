@@ -256,10 +256,14 @@ pub fn check_bundle_opts_scoped(
     strict_callees: bool,
     strict_idents: bool,
 ) -> Vec<Diag> {
+    // A bundle no snapshot holds: the scope and the families the check
+    // reads are built here, once each, and the model below reads the
+    // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
+    let handlers = bundle_handler_rows(bundle);
     diags.extend(check::check_bundle_scoped(
         bundle,
-        &top,
+        &check::CheckInputs { top: &top, handlers: &handlers },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,
@@ -277,11 +281,24 @@ pub fn check_bundle_opts_scoped(
     //
     // So the model half runs only once the resolver and the checker
     // agree the program denotes something ([`denotes_a_model`]).
-    if denotes_a_model(&diags) {
-        diags.extend(judgment::claim_law_diags(bundle));
+    // The claim surface gate is `judgment::claim_law_diags`'s; the
+    // model is derived over the scope and the rows the check read.
+    if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
+        let model = model_over_scope(bundle, &top, &handlers);
+        diags.extend(judgment::claim_law_diags_over(bundle, &model));
     }
     finish_check_diags(&mut diags);
     diags
+}
+
+/// The handler rows of a bundle no snapshot holds, in the bundle's
+/// order (a row's position is its authored ordinal): what the test
+/// entries' check and model read ([`check_bundle_opts_scoped`],
+/// [`check::check_bundle`], [`derive_application_model`]). Every verb
+/// reads its snapshot's (`Snapshot::demand_handlers`).
+pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::HandlerRouting {
+    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
+    handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
 }
 
 /// The application model of a bundle no snapshot holds: the test
@@ -294,18 +311,22 @@ pub fn check_bundle_opts_scoped(
 /// its snapshot's model instead (`Snapshot::demand_model`).
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, _diags) = resolve::build_top_scope(bundle);
-    let bus_graph = bus_graph::build_bus_graph(bundle, &top);
-    let ownership = ownership_graph::build_ownership_graph(bundle, &top);
-    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let handlers = handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot);
+    let handlers = bundle_handler_rows(bundle);
+    model_over_scope(bundle, &top, &handlers)
+}
+
+/// [`derive_application_model`] over the scope and the rows its caller
+/// already built: the graphs the model reads beside them are built here.
+fn model_over_scope(
+    bundle: &Bundle<'_>,
+    top: &resolve::TopScope,
+    handlers: &handler_routing::HandlerRouting,
+) -> hale_model::ApplicationModel {
+    let bus_graph = bus_graph::build_bus_graph(bundle, top);
+    let ownership = ownership_graph::build_ownership_graph(bundle, top);
     model_builder::derive_application_model_over(
         bundle,
-        &model_builder::ModelInputs {
-            top: &top,
-            bus_graph: &bus_graph,
-            ownership: &ownership,
-            handlers: &handlers,
-        },
+        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers },
     )
 }
 
