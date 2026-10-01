@@ -224,6 +224,7 @@ const TY_RESOLVED: &str = "crates/hale-types/src/resolved.rs";
 const DESUGAR_SEQ: &str = "crates/hale-types/src/desugar_sequence.rs";
 const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
+const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const FRONTIER: &str = "crates/hale-types/src/frontier.rs";
 const EVIDENCE: &str = "crates/hale-types/src/evidence.rs";
 const ALLOC: &str = "crates/hale-types/src/alloc_summary.rs";
@@ -876,7 +877,7 @@ pub const FAMILIES: &[Family] = &[
         kind: Kind::Derivation,
         answers: "Which effect classes each fn and locus reaches (the callgraph fixpoint), the declared classes and their `causes:`/`depends:` DAG, and the certificate relating the two.",
         inputs: &["effect annotations", "the callgraph", "stdlib_surface (leaf effects)", "effect_class_table", "ffi names"],
-        producer: Some(site(FRONTIER, "infer_effects")),
+        producer: Some(site(EFFECT_ROWS, "derive_effect_rows")),
         legacy: &[
             legacy(MODEL_BUILDER, "infer_effects", "re-run for the model (merged program, with renames)", "phase: effects lane; one fixpoint per snapshot"),
             legacy(EFFECTS, "effect_manifest_with_inference", "re-run for the manifest and replay's live-effects gate (merged, no renames)", "same"),
@@ -886,15 +887,15 @@ pub const FAMILIES: &[Family] = &[
             legacy(CLAIMS, "direct_effects", "the claims' own direct-effect predicates", "read the rows"),
         ],
         consumers: &[consumer_at("check", CHECK, "check_decorator_stacks"), consumer("claims (certificate, causes, depends, budget)"), consumer("model (effect labels)"), consumer("replay (effect manifest)"), consumer("doc")],
-        invariants: &["derived ⊆ declared is the certificate; budgets are judged through evidence (spec/verification.md)", "effects run once per snapshot, not once per consumer"],
+        invariants: &["derived ⊆ declared is the certificate; budgets are judged through evidence (spec/verification.md)", "effects run once per snapshot, not once per consumer: `Snapshot::demand_effects` runs `derive_effect_rows` once over the checked programs and the stdlib's analysis copy (cross-seed calls resolved through the import renames), counted as `effects`, blocked with the scope", "an unresolved edge is coverage, never a violation: a row's `effects` saturates to `UNCLASSIFIED` when the walk reaches what it cannot name, its `known` set is the lower bound an unresolved edge never erases, and `unknown` says the walk reached such an edge", "a row is keyed by the fn's name (`FnKey`) until the `snapshot_identity` family's declaration rows carry it"],
         missing: Missing::Hole,
         tests: &["crates/hale-types/tests/effect_assertions.rs", "crates/hale-cli/tests/effects_baseline_gate.rs", "crates/hale-cli/tests/effects_manifest.rs"],
         spec: &["spec/verification.md § Default-on & opt-in analyses", "spec/verification.md § Claims"],
-        owned: &[],
+        owned: &[site(FRONTIER, "infer_effects"), site(EFFECT_ROWS, "EffectRows")],
         seams: &[
-            Seam { symbol: "infer_effects(", allowed: &[(FRONTIER, 4), (EFFECTS, 1), (CLAIMS, 1), (MODEL_BUILDER, 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "infer_effects(", allowed: &[(FRONTIER, 4), (EFFECTS, 1), (CLAIMS, 1), (MODEL_BUILDER, 1), (TOPOLOGY, 1), (EFFECT_ROWS, 1)] },
             Seam { symbol: "effect_manifest_with_inference(", allowed: &[(EFFECTS, 1), (TLIB, 1), (V_REPLAY, 1)] },
-            Seam { symbol: "infer_purity_for_bundle(", allowed: &[(PURITY, 2), (CHECK, 1)] },
+            Seam { symbol: "infer_purity_for_bundle(", allowed: &[(PURITY, 2), (CHECK, 1), (EFFECT_ROWS, 1)] },
         ],
     },
     Family {
@@ -1279,13 +1280,13 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Identity,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
+        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
         inputs: &["seed_loading", "desugar_sequence", "snapshot_identity", "the config (target, api, api roles, environment, the check's rules)", "editor overlays (LSP)", "a consumer's request"],
         producer: Some(site(SNAPSHOT, "Snapshot")),
         legacy: &[
             legacy(LSP, "document_symbols", "textDocument/documentSymbol parses its one buffer itself (`parse_source`, file-local spans): a syntactic outline of the open file, answered while another member of the seed does not parse; every other request reads the snapshot", "the snapshot keeps each member's own program beside the merged one"),
         ],
-        owned: &[site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
+        owned: &[site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
             consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`), demanded before the check runs", SNAPSHOT, "CheckInputs"),

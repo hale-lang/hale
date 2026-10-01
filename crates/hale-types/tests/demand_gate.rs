@@ -145,6 +145,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
          annotation must not derive an ApplicationModel on the LSP's path"
     );
     assert_eq!(builds["claims"], 0);
+    assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
     for family in ["bus_graph", "ownership"] {
         assert_eq!(builds[family], 0, "the model's input `{family}` is demanded with it");
     }
@@ -186,6 +187,11 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         s.demand_check().expect("still checked");
         s.demand_scope().expect("still scoped");
         assert_eq!(s.builds()["model"], 1, "the dump reuses the check's model");
+        // The effect rows: one fixpoint, however often demanded.
+        let first = s.demand_effects().expect("a clean program has effect rows") as *const _;
+        let again = s.demand_effects().expect("still there") as *const _;
+        assert_eq!(first, again, "the second demand reads the first result");
+        assert_eq!(s.builds()["effects"], 1, "the effects fixpoint runs once per snapshot");
         assert_at_most_once(&s, "check");
     }
     let _ = std::fs::remove_dir_all(&d);
