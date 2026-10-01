@@ -1312,6 +1312,65 @@ fn main() { App { }; }\n";
     }
 }
 
+/// The generated-source fixture's positive (F.40 phase 2 review F1): a
+/// bound-solver finding is dropped only when its site has no author
+/// position, so a leak the author wrote in the handler the api binding
+/// calls — a whole-value replace of a stored struct, per message — is
+/// reported at the author's line by all three channels, and
+/// `hale/allocSummary` lists that site and none in the binding's own
+/// generated code.
+#[test]
+fn lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls() {
+    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+type Seen { ids: [Int; 2]; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    params { seen: Seen = Seen { ids: [0, 0] }; }\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        self.seen = Seen { ids: [o.id, o.qty] };\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-author-leak.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        println(\"up\");\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n";
+
+    let check = agree_three_ways("author-leak", &[("main.hl", APP)], &[]);
+    assert!(
+        check.iter().all(|(file, ..)| file == "main.hl"),
+        "a finding positioned outside the author's file: {check:?}"
+    );
+    assert!(
+        check.iter().any(|(_, line, _, m)| *line == 9 && m.contains("unbounded allocation")),
+        "the author's per-message replace at main.hl:9 is not reported: {check:?}"
+    );
+
+    let root = scratch_root("author-leak-summary");
+    let main = root.canonicalize().expect("canonical dir").join("main.hl");
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&main, APP));
+    let _ = lsp.published();
+    let summary = lsp.request("hale/allocSummary", serde_json::json!({ "textDocument": { "uri": uri(&main) } }));
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+    let sites = summary["leakSites"].as_array().expect("leakSites");
+    assert!(
+        sites.iter().any(|s| s["fn"] == "Desk::on_order" && s["location"]["range"]["start"]["line"] == 8),
+        "hale/allocSummary does not list the author's site: {summary}"
+    );
+    assert!(
+        sites.iter().all(|s| s["location"]["uri"] == uri(&main)),
+        "hale/allocSummary lists a site with no author position: {summary}"
+    );
+}
+
 /// A seed member that will not read (a dangling symlink here; any
 /// unreadable `.hl` member is the same case): `hale check` refuses the
 /// load, and the editor says so instead of publishing a clean seed —
@@ -1474,10 +1533,15 @@ fn lsp_rechecks_an_open_dependent_when_a_library_buffer_closes() {
 }
 
 /// A burst of document events costs one check, not one per event
-/// (F.40 phase 2.4): five changes in one write are published by at most
-/// two passes — the first change may already be in its check when the
-/// rest arrive — and the last publish describes the LAST text. The
-/// fence behind the burst is answered after that publish.
+/// (F.40 phase 2.4): five changes in one write, and the last publish
+/// describes the LAST text, every publish is for the seed's file, and
+/// the fence behind the burst is answered after that publish. The
+/// NUMBER of passes is not asserted here: the reader thread frames the
+/// five messages one at a time, and a scheduler may let the main loop
+/// check between any two of them, so five passes are a permitted
+/// interleaving (outside review of #1291, finding 2); the collapse rule
+/// itself is pinned by the deterministic unit test
+/// `a_run_of_document_events_costs_one_pass_and_stops_at_a_request`.
 #[test]
 fn lsp_a_burst_of_changes_is_checked_once() {
     let root = scratch_root("burst");
@@ -1505,16 +1569,35 @@ fn lsp_a_burst_of_changes_is_checked_once() {
     let _ = std::fs::remove_dir_all(&root);
 
     assert!(burst.iter().all(|(u, _)| *u == uri(&main)), "only the seed's file is published: {burst:?}");
-    assert!(
-        (1..=2).contains(&burst.len()),
-        "five changes cost at most two passes, not five: {burst:?}"
-    );
+    // How many passes the burst costs depends on how far the reader
+    // thread has framed it when the loop wakes; fewer than five is what
+    // collapsing guarantees. The exact collapse is the unit test's
+    // (`a_run_of_document_events_costs_one_pass_and_stops_at_a_request`).
     let (_, last) = burst.last().expect("a publish");
     assert!(
         last.len() == 1 && last[0].contains("expected `Int`"),
         "the last publish carries the last text's error: {burst:?}"
     );
     assert_eq!(fixed, vec![(uri(&main), vec![])], "the change that fixes it clears it");
+}
+
+/// F.40 phase 2 review F4: a frame whose `Content-Length` no buffer
+/// should hold is refused, not allocated, and the session ends with a
+/// non-zero status, the message before it answered. The reader thread
+/// used to panic on the allocation, and the server exited 0 as if the
+/// client had gone away.
+#[test]
+fn lsp_refuses_an_absurd_content_length_and_exits_non_zero() {
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    assert!(lsp.recv()["result"]["capabilities"].is_object(), "the message before it is answered");
+    lsp.stdin.write_all(b"Content-Length: 18446744073709551615\r\n\r\n").expect("write");
+    lsp.stdin.flush().expect("flush");
+    let status = lsp.child.wait().expect("wait");
+    assert!(!status.success(), "a refused frame ends the session non-zero: {status:?}");
 }
 
 /// A scratch root of this test's own, empty.

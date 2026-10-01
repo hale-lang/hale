@@ -160,36 +160,11 @@ pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
 /// (GH #18 item 1). `include_all = false` reports only sites inside a
 /// `@bounded` locus (the always-on in-source opt-in); `true` is the
 /// whole-program survey behind `--warn-unbounded-alloc`. `@unbounded`-fn
-/// sites are suppressed in both modes.
+/// sites are suppressed in both modes, and so is a site with no author
+/// position (`alloc_summary::AuthorPositions`).
 pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>, include_all: bool) -> Vec<Diag> {
-    use hale_syntax::ast::TopDecl;
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    // The declarations a desugar synthesized, by the snapshot's origin
-    // rows: their sites are the compiler's, not the author's, so the
-    // survey leaves them out (a harness bundle has no rows and skips
-    // nothing).
-    let synthesized = |id: hale_syntax::ast::NodeId| {
-        bundle.snapshot.site_id(id).and_then(|s| bundle.snapshot.origin(s)).is_some()
-    };
-    let mut loci = std::collections::BTreeSet::new();
-    let mut fns = std::collections::BTreeSet::new();
-    for prog in &progs {
-        for item in &prog.items {
-            match item {
-                TopDecl::Locus(l) if synthesized(l.id) => {
-                    loci.insert(l.name.name.clone());
-                }
-                TopDecl::Fn(f) if synthesized(f.id) => {
-                    fns.insert(f.name.name.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-    alloc_summary::unbounded_alloc_diags_except(&progs, &bundle.snapshot, include_all, &|owner| match &owner.locus {
-        Some(l) => loci.contains(l),
-        None => fns.contains(&owner.fn_name),
-    })
+    alloc_summary::unbounded_alloc_diags(&progs, &bundle.snapshot, &bundle.sources, include_all)
 }
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored

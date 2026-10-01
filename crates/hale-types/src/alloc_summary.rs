@@ -2036,32 +2036,21 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
 /// - `true` (`--warn-unbounded-alloc`): every site, the whole-program
 ///   survey.
 ///
-/// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`.
+/// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`,
+/// and a site with no author position is dropped here
+/// ([`AuthorPositions`]); `sources` is the bundle's file table.
 pub fn unbounded_alloc_diags(
     programs: &[&Program],
     ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
     include_all: bool,
-) -> Vec<Diag> {
-    unbounded_alloc_diags_except(programs, ids, include_all, &|_| false)
-}
-
-/// [`unbounded_alloc_diags`] with the sites owned by a synthesized
-/// declaration left out: a desugar's own code (the api binding's socket
-/// loci, a generated parser) is not the author's to bound or acknowledge,
-/// and a finding in it has no author position to land at (F.40 phase
-/// 2.4: the generated-source parity fixture). `synthesized` answers for
-/// the owning fn's key.
-pub fn unbounded_alloc_diags_except(
-    programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
-    include_all: bool,
-    synthesized: &dyn Fn(&FnKey) -> bool,
 ) -> Vec<Diag> {
     let summary = summarize_programs(programs, ids);
+    let positions = AuthorPositions::of(programs, ids, sources);
     summary
         .leak_sites()
         .iter()
-        .filter(|ls| !synthesized(&ls.owner))
+        .filter(|ls| positions.has(ls))
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
@@ -2092,6 +2081,78 @@ pub fn unbounded_alloc_diags_except(
             )
         })
         .collect()
+}
+
+/// Which leak sites have an author position: a place in the author's
+/// source where the finding can be shown and acted on. A site has none
+/// when its span lies in source a desugar generated — at or beyond
+/// `API_SYNTH_BASE`, where the api binding parses what it generates, or
+/// in a declaration the snapshot's origin rows mark synthesized whose
+/// offset no source file owns. `json_gen` parses its parsers and the api
+/// codecs at offset 0, where their offsets coincide with the first
+/// file's without being its text, so a declaration of those origins
+/// owns no file offset at all. Every other site has one, whoever wrote
+/// the code that calls it. The check's warnings and the editor's
+/// `hale/allocSummary` both decide with [`AuthorPositions::has`], and
+/// drop nothing else (F.40 phase 2 review F1).
+pub struct AuthorPositions {
+    /// The fns and hooks whose declaration, or whose locus, carries an
+    /// origin row.
+    synthesized: BTreeMap<FnKey, crate::snapshot::Origin>,
+    /// Each source file's window of the bundle-global offsets.
+    files: Vec<(u32, u32)>,
+}
+
+impl AuthorPositions {
+    pub fn of(
+        programs: &[&Program],
+        ids: &crate::snapshot::Snapshot,
+        sources: &[crate::symbol::SourceFile],
+    ) -> Self {
+        let origin = |id: hale_syntax::ast::NodeId| ids.site_id(id).and_then(|s| ids.origin(s));
+        let mut synthesized = BTreeMap::new();
+        for p in programs {
+            for item in &p.items {
+                match item {
+                    TopDecl::Fn(f) => {
+                        if let Some(o) = origin(f.id) {
+                            synthesized.insert(FnKey::free_fn(f.name.name.clone()), o);
+                        }
+                    }
+                    TopDecl::Locus(l) => {
+                        let of_locus = origin(l.id);
+                        for m in &l.members {
+                            let (name, id) = match m {
+                                LocusMember::Fn(f) => (f.name.name.clone(), f.id),
+                                LocusMember::Lifecycle(lc) => (lifecycle_key(lc.kind).0, lc.id),
+                                _ => continue,
+                            };
+                            if let Some(o) = origin(id).or(of_locus) {
+                                synthesized.insert(FnKey::method(l.name.name.clone(), name), o);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let files = sources.iter().map(|f| (f.base, f.len)).collect();
+        Self { synthesized, files }
+    }
+
+    /// Whether `site` lands at an author position.
+    pub fn has(&self, site: &LeakSite) -> bool {
+        use crate::snapshot::Origin;
+        let at = site.span.start.0;
+        if at >= hale_syntax::api_gen::API_SYNTH_BASE {
+            return false;
+        }
+        match self.synthesized.get(&site.owner) {
+            None => true,
+            Some(Origin::JsonParsers | Origin::ApiSurface) => false,
+            Some(_) => self.files.iter().any(|&(base, len)| hale_syntax::file_owns_offset(base, len, at)),
+        }
+    }
 }
 
 fn lifecycle_key(kind: LifecycleKind) -> (String, EntryKind) {
@@ -3250,25 +3311,83 @@ impl Escaping<'_> {
 /// directly as a use of the name — the common `let x = <alloc>; …
 /// return x;` indirection — each the declaration the use names
 /// (`Snapshot::binding_of`), so an inner shadow of a returned name is
-/// its own binding. Walks the body at statement level: a nested block,
-/// `if`, loop and a block-bodied match arm are entered; an
+/// its own binding. Closed over `let x = y;` aliases, as borrow
+/// lifetime's `returned_decls` is: when x escapes, the declaration y
+/// names escapes the same way, so `let p = fresh(); let p = p; return
+/// p;` tags the allocating `let`. Walks the body at statement level: a
+/// nested block, `if`, loop and a block-bodied match arm are entered; an
 /// expression-bodied match arm and an expression block are not.
 fn collect_escaping_decls(
     body: &Block,
     ids: &crate::snapshot::Snapshot,
 ) -> BTreeMap<SiteId, Escape> {
-    let mut out = BTreeMap::new();
-    collect_escaping_in_block(body, &mut |i: &hale_syntax::ast::Ident, esc| {
-        if let Some(d) = ids.declaration_of(i.id) {
-            out.entry(d).or_insert(esc);
+    let mut out: BTreeMap<SiteId, Escape> = BTreeMap::new();
+    // `let x = y;`: x's statement and the declaration y names.
+    let mut aliases: Vec<(SiteId, SiteId)> = Vec::new();
+    collect_escaping_in_block(body, &mut |flow| match flow {
+        Flow::Escapes(i, esc) => {
+            if let Some(d) = ids.declaration_of(i.id) {
+                note_obligation(&mut out, d, esc);
+            }
+        }
+        Flow::Alias { let_id, from } => {
+            if let (Some(at), Some(d)) = (ids.site_id(let_id), ids.declaration_of(from.id)) {
+                aliases.push((at, d));
+            }
         }
     });
+    // Close over the aliases, one direction: when `x` is returned or
+    // stored, the declaration it aliases carries the same obligation,
+    // because the value that leaves is the source's allocation. A SEND
+    // is not propagated: `Out <- x` publishes a payload copy and
+    // reclaims that copy per dispatch, while the source's own storage
+    // stays where it was allocated (outside review of #1291, finding
+    // 1: propagating `Sent` marked the source as reclaimed per dispatch
+    // and silenced its retained allocation).
+    loop {
+        let mut changed = false;
+        for (alias, source) in &aliases {
+            match out.get(alias).copied() {
+                Some(esc @ (Escape::Returned | Escape::StoredToSelf)) => {
+                    let before = out.get(source).copied();
+                    note_obligation(&mut out, *source, esc);
+                    changed |= out.get(source).copied() != before;
+                }
+                _ => {}
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     out
 }
 
-/// Where an escaping use is reported: the identifier and how its value
-/// escapes, in body order.
-type EscapeSink<'s> = dyn FnMut(&hale_syntax::ast::Ident, Escape) + 's;
+/// Record an obligation on a declaration. A declaration keeps its
+/// first obligation, except that a longer-lived one replaces a send:
+/// a value both sent and returned (or stored) is retained until the
+/// return, and the per-dispatch reclaim of the published copy must not
+/// erase that.
+fn note_obligation(out: &mut BTreeMap<SiteId, Escape>, d: SiteId, esc: Escape) {
+    match (out.get(&d).copied(), esc) {
+        (None, e) => {
+            out.insert(d, e);
+        }
+        (Some(Escape::Sent), e @ (Escape::Returned | Escape::StoredToSelf)) => {
+            out.insert(d, e);
+        }
+        _ => {}
+    }
+}
+
+/// What the pre-pass walk reports, in body order: a use whose value
+/// escapes, and how; or a `let` whose value is a use of another name.
+enum Flow<'e> {
+    Escapes(&'e hale_syntax::ast::Ident, Escape),
+    Alias { let_id: hale_syntax::ast::NodeId, from: &'e hale_syntax::ast::Ident },
+}
+
+type EscapeSink<'s> = dyn FnMut(Flow<'_>) + 's;
 
 fn collect_escaping_in_block(b: &Block, out: &mut EscapeSink<'_>) {
     for s in &b.stmts {
@@ -3281,6 +3400,7 @@ fn collect_escaping_in_block(b: &Block, out: &mut EscapeSink<'_>) {
 
 fn collect_escaping_in_stmt(s: &Stmt, out: &mut EscapeSink<'_>) {
     match s {
+        Stmt::Let { value: Expr::Ident(from), id, .. } => out(Flow::Alias { let_id: *id, from }),
         Stmt::Return(Some(e), _) => note_escape(e, Escape::Returned, out),
         Stmt::Fail { value, .. } => note_escape(value, Escape::Returned, out),
         Stmt::Send { value, .. } => note_escape(value, Escape::Sent, out),
@@ -3315,7 +3435,7 @@ fn collect_escaping_in_if(if_stmt: &IfStmt, out: &mut EscapeSink<'_>) {
 
 fn note_escape(e: &Expr, esc: Escape, out: &mut EscapeSink<'_>) {
     if let Expr::Ident(id) = e {
-        out(id, esc);
+        out(Flow::Escapes(id, esc));
     }
 }
 
@@ -3396,6 +3516,67 @@ mod tests {
             .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
             .expect("the call in the `if`");
         assert_eq!(call.escape, Escape::Local, "the inner shadow's value");
+    }
+
+    /// F.40 phase 2 review F3: escape follows `let x = y;` aliases back
+    /// to the allocating declaration, whether the alias rebinds the same
+    /// name or spells another; a pattern binding of the returned name in
+    /// an arm stays its own.
+    #[test]
+    fn the_escape_tag_follows_a_rebind_to_the_allocating_let() {
+        let src = r#"
+            type P { x: Int; }
+            fn fresh_p(n: Int) -> P { return P { x: n }; }
+            fn rebind() -> P { let p = fresh_p(1); let p = p; return p; }
+            fn alias() -> P { let p = fresh_p(2); let q = p; let r = q; return r; }
+            fn kept(t: Bool) -> P {
+                let p = fresh_p(3);
+                if t { let q = p; println(q.x); }
+                return P { x: 4 };
+            }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let call_escape = |f: &str| {
+            fns(&s, &FnKey::free_fn(f))
+                .calls
+                .iter()
+                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .expect("the fresh_p call")
+                .escape
+        };
+        assert_eq!(call_escape("rebind"), Escape::Returned, "`let p = p` hands the first binding's value back");
+        assert_eq!(call_escape("alias"), Escape::Returned, "a chain of aliases closes");
+        assert_eq!(call_escape("kept"), Escape::Local, "an alias that does not escape escapes nothing");
+    }
+
+    /// Outside review of #1291, finding 1: sending an alias publishes a
+    /// payload copy and must not mark the source allocation as reclaimed
+    /// per dispatch; a value both sent and returned is retained until the
+    /// return, whichever is written first.
+    #[test]
+    fn a_sent_alias_leaves_the_source_allocation_where_it_is() {
+        let src = r#"
+            type P { x: Int; }
+            topic Out { payload: P; subject: "out"; }
+            fn fresh_p(n: Int) -> P { return P { x: n }; }
+            fn sent_alias() { let p = fresh_p(1); let q = p; Out <- q; }
+            fn sent_then_returned() -> P { let p = fresh_p(2); let q = p; Out <- q; return p; }
+            fn sent_direct_then_aliased_return() -> P { let p = fresh_p(3); Out <- p; let q = p; return q; }
+            fn main() { }
+        "#;
+        let s = summarize(src);
+        let call_escape = |f: &str| {
+            fns(&s, &FnKey::free_fn(f))
+                .calls
+                .iter()
+                .find(|c| c.callee == Callee::Resolved(FnKey::free_fn("fresh_p")))
+                .expect("the fresh_p call")
+                .escape
+        };
+        assert_eq!(call_escape("sent_alias"), Escape::Local, "the published copy is the alias's; the source stays local");
+        assert_eq!(call_escape("sent_then_returned"), Escape::Returned, "a send cannot erase the return");
+        assert_eq!(call_escape("sent_direct_then_aliased_return"), Escape::Returned, "a direct send first, then a returned alias: the return wins");
     }
 
     #[test]
@@ -3846,7 +4027,7 @@ mod tests {
         let (program, ids) = minted(src);
         // Survey mode (`--warn-unbounded-alloc`) reports the leak even
         // though locus `C` carries no `@bounded` opt-in.
-        let diags = unbounded_alloc_diags(&[&program], &ids, true);
+        let diags = unbounded_alloc_diags(&[&program], &ids, &[], true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
     }
@@ -3861,7 +4042,7 @@ mod tests {
             fn main() { }
         "#;
         let (program, ids) = minted(src);
-        let scoped = unbounded_alloc_diags(&[&program], &ids, false);
+        let scoped = unbounded_alloc_diags(&[&program], &ids, &[], false);
         assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
         assert!(scoped[0].message.contains("unbounded allocation"));
     }
@@ -3879,12 +4060,57 @@ mod tests {
         "#;
         let (program, ids) = minted(src);
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, true).is_empty(),
+            unbounded_alloc_diags(&[&program], &ids, &[], true).is_empty(),
             "@unbounded suppresses the site under the survey flag"
         );
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, false).is_empty(),
+            unbounded_alloc_diags(&[&program], &ids, &[], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
+        );
+    }
+
+    /// F.40 phase 2 review F1: a finding is dropped per site, when the
+    /// site has no author position, and for no other reason. A generated
+    /// parser's offsets coincide with the author's file (json_gen parses
+    /// at 0) yet are not its text; source the api binding generates sits
+    /// at `API_SYNTH_BASE`; the author's own fn beside them still reports.
+    #[test]
+    fn a_site_with_no_author_position_is_dropped_and_nothing_else() {
+        let src = r#"
+            type Q { a: Int; }
+            fn __json_parse_Q() { while true { let q = Q { a: 1 }; } }
+            fn author_fn() { while true { let q = Q { a: 2 }; } }
+            locus C { run { __json_parse_Q(); author_fn(); } }
+            fn main() { }
+        "#;
+        let (program, ids) = minted(src);
+        let file = crate::symbol::SourceFile {
+            id: 0,
+            path: "app.hl".into(),
+            digest: String::new(),
+            base: 0,
+            len: src.len() as u32,
+        };
+        let all = summarize(src).leak_sites();
+        assert_eq!(all.len(), 2, "both loops leak before the rule: {all:?}");
+        let diags = unbounded_alloc_diags(&[&program], &ids, &[file], true);
+        assert_eq!(diags.len(), 1, "only the author's site reports: {diags:?}");
+        assert!(diags[0].message.contains("`author_fn`"), "{}", diags[0].message);
+
+        // The same locus parsed at 0 and at the api binding's base, beside
+        // the author's program, in a harness bundle (no origin rows): the
+        // span alone decides.
+        let synth = "locus S { run { while true { let q = Q { a: 3 }; } } }\n";
+        let harness = crate::snapshot::Snapshot::default();
+        let reported = |base: u32| {
+            let generated = hale_syntax::parse_source_at(synth, base).expect("parse");
+            unbounded_alloc_diags(&[&program, &generated], &harness, &[], true).len()
+        };
+        assert_eq!(reported(1 << 20), 3, "at an author offset, S's site reports");
+        assert_eq!(
+            reported(hale_syntax::api_gen::API_SYNTH_BASE),
+            2,
+            "at API_SYNTH_BASE, S's site has no position"
         );
     }
 
@@ -3892,7 +4118,7 @@ mod tests {
 
     fn leak_msgs(src: &str) -> Vec<String> {
         let (program, ids) = minted(src);
-        unbounded_alloc_diags(&[&program], &ids, true)
+        unbounded_alloc_diags(&[&program], &ids, &[], true)
             .into_iter()
             .map(|d| d.message)
             .collect()

@@ -74,16 +74,22 @@ struct State {
 /// takes seconds, and a burst of keystrokes must cost one check, not
 /// one per event (F.40 phase 2.4). Each turn takes everything queued and
 /// works through it by `next_steps`.
+///
+/// The reader ends at EOF, at a frame it refuses, or by panicking; the
+/// loop finds out when the channel disconnects (after everything sent
+/// before it has been handled) and joins it. Only EOF is a clean end:
+/// a refused frame or a panic exits non-zero and says so on stderr.
 fn serve(reader: impl BufRead + Send + 'static, writer: &mut impl Write) -> ExitCode {
     install_panic_capture();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let reading = std::thread::spawn(move || -> Result<(), String> {
         let mut reader = reader;
-        while let Some(msg) = read_message(&mut reader) {
+        while let Some(msg) = read_message(&mut reader)? {
             if tx.send(msg).is_err() {
                 break;
             }
         }
+        Ok(())
     });
     let mut state = State::default();
     let mut queue = VecDeque::new();
@@ -91,7 +97,19 @@ fn serve(reader: impl BufRead + Send + 'static, writer: &mut impl Write) -> Exit
         if queue.is_empty() {
             match rx.recv() {
                 Ok(msg) => queue.push_back(msg),
-                Err(_) => return ExitCode::SUCCESS, // EOF — client went away
+                Err(_) => {
+                    return match reading.join() {
+                        Ok(Ok(())) => ExitCode::SUCCESS, // EOF — client went away
+                        Ok(Err(why)) => {
+                            eprintln!("hale-lsp: {why}; ending the session");
+                            ExitCode::from(1)
+                        }
+                        Err(_) => {
+                            eprintln!("hale-lsp: the thread reading the client's messages panicked; ending the session");
+                            ExitCode::from(1)
+                        }
+                    };
+                }
             }
         }
         queue.extend(rx.try_iter());
@@ -450,27 +468,49 @@ fn dispatch(
 
 // ---- transport -------------------------------------------------------
 
-/// Read one Content-Length-framed JSON-RPC message. None on EOF.
-fn read_message(reader: &mut impl BufRead) -> Option<Value> {
+/// The largest frame body the server reads, in bytes. A document is
+/// sent whole on every change, so a frame is one source file plus its
+/// envelope; 64 MiB is far past any seed file, and a `Content-Length`
+/// above it is a corrupt or hostile stream, refused rather than
+/// allocated.
+const MAX_FRAME_BYTES: usize = 64 << 20;
+
+/// Read one Content-Length-framed JSON-RPC message. `Ok(None)` on EOF;
+/// `Err` for a `Content-Length` that does not parse or exceeds
+/// [`MAX_FRAME_BYTES`], whose body is never read (there is no way to
+/// skip it and find the next frame).
+fn read_message(reader: &mut impl BufRead) -> Result<Option<Value>, String> {
     let mut content_length: Option<usize> = None;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return Ok(None),
+            Ok(_) => {}
         }
         let line = line.trim_end();
         if line.is_empty() {
             break; // header/body separator
         }
         if let Some(v) = line.strip_prefix("Content-Length:") {
-            content_length = v.trim().parse().ok();
+            let n: usize = v
+                .trim()
+                .parse()
+                .map_err(|_| format!("a frame's Content-Length `{}` is not a byte count", v.trim()))?;
+            if n > MAX_FRAME_BYTES {
+                return Err(format!(
+                    "a frame's Content-Length {n} exceeds the {MAX_FRAME_BYTES}-byte bound; it is refused, not read"
+                ));
+            }
+            content_length = Some(n);
         }
         // Content-Type header (rare) is ignored.
     }
-    let n = content_length?;
+    let Some(n) = content_length else { return Ok(None) };
     let mut buf = vec![0u8; n];
-    reader.read_exact(&mut buf).ok()?;
-    serde_json::from_slice(&buf).ok()
+    if reader.read_exact(&mut buf).is_err() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_slice(&buf).ok())
 }
 
 fn send(writer: &mut impl Write, v: &Value) {
@@ -2436,25 +2476,29 @@ fn alloc_summary(
 
 /// `hale/allocSummary` over one snapshot: the survey over the programs
 /// the snapshot scoped, the bundle the diagnostics pass's
-/// unbounded-allocation warnings read. A seed with a hole has none.
+/// unbounded-allocation warnings read. A seed with a hole has none. A
+/// site is listed exactly when the diagnostics would place it: the same
+/// `AuthorPositions` rule decides both.
 fn alloc_summary_of(snap: &Snapshot) -> Value {
     if snap.demand_scope().is_err() {
         return json!({ "leakSites": [], "parseErrors": true });
     }
     let progs: Vec<&Program> = snap.programs().values().collect();
     let summary = hale_types::alloc_summary::summarize_programs(&progs, snap.identities());
+    let positions =
+        hale_types::alloc_summary::AuthorPositions::of(&progs, snap.identities(), snap.source_map());
     let sites: Vec<Value> = summary
         .leak_sites()
         .iter()
-        .filter_map(|site| {
-            let loc = merged_span_to_location(snap, site.span)?;
-            Some(json!({
+        .filter(|site| positions.has(site))
+        .map(|site| {
+            json!({
                 "fn": site.owner.display(),
                 "kind": format!("{:?}", site.kind),
                 "escape": format!("{:?}", site.escape),
                 "reason": format!("{:?}", site.reason),
-                "location": loc,
-            }))
+                "location": merged_span_to_location(snap, site.span),
+            })
         })
         .collect();
     json!({
@@ -2821,6 +2865,41 @@ fn main() { App { }; }\n";
 
     fn request(id: u64, method: &str) -> Value {
         json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": {} })
+    }
+
+    /// F.40 phase 2 review F4: a `Content-Length` past the bound, or one
+    /// that is no number, is refused before anything is allocated, and
+    /// the session exits non-zero once what came before it is handled.
+    #[test]
+    fn an_oversized_or_unparseable_frame_is_refused_and_the_session_fails() {
+        for header in [
+            format!("Content-Length: {}\r\n\r\n", MAX_FRAME_BYTES + 1),
+            "Content-Length: 18446744073709551615\r\n\r\n".to_string(),
+            "Content-Length: 99999999999999999999999\r\n\r\n".to_string(),
+        ] {
+            let mut input = frame(request(1, "initialize"));
+            input.extend_from_slice(header.as_bytes());
+            let mut out: Vec<u8> = Vec::new();
+            let code = serve(std::io::Cursor::new(input), &mut out);
+            let text = String::from_utf8(out).expect("utf-8 output");
+            assert!(text.contains("\"capabilities\""), "the request before it is answered: {text}");
+            assert!(code == ExitCode::from(1), "the session ends non-zero after {header}");
+        }
+    }
+
+    /// A reader thread that panics ends the session non-zero, not as
+    /// the clean EOF a client hanging up is.
+    #[test]
+    fn a_reader_thread_that_panics_fails_the_session() {
+        struct Panics;
+        impl std::io::Read for Panics {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("injected reader panic")
+            }
+        }
+        let mut out: Vec<u8> = Vec::new();
+        let code = serve(std::io::BufReader::new(Panics), &mut out);
+        assert!(code == ExitCode::from(1), "the session ends non-zero");
     }
 
     fn reply_to(replies: &[Value], id: u64) -> &Value {

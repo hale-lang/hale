@@ -132,7 +132,10 @@ dissolves** — with loop-ranking that *proves* a `while v < N`
 counter bounded. Run-to-exit programs (a `main` with no `run` loop
 and no bus handler) warn nothing — a script owes no bound proof.
 `@unbounded fn` is the in-source carve-out for an acknowledged
-site; `--no-warn-unbounded-alloc` opts a run out. It is advisory:
+site; `--no-warn-unbounded-alloc` opts a run out. A site in code
+the compiler generated (the api binding, a `json:` parser) has no
+place in your source to report it, so it is left out; a site in
+your own code is reported wherever it is called from. It is advisory:
 the warnings print and never fail the build. A separate
 advisory also flags two **loop-scoped hot-path allocations** — a locus
 or `BytesBuilder` instantiated per iteration, and an allocating `recv`
