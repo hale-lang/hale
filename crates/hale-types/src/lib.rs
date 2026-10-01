@@ -317,7 +317,7 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 /// artifact's bundle entry `topology::dump_topology`). It builds the
 /// families the frontend's snapshot demands for the model — the scope,
 /// the bus graph and the ownership graph over the checked programs, the
-/// handler rows — once each, and derives over them
+/// handler rows, the effect rows — once each, and derives over them
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
@@ -335,9 +335,10 @@ fn model_over_scope(
 ) -> hale_model::ApplicationModel {
     let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
+    let effects = effect_rows::derive_effect_rows(bundle, top);
     model_builder::derive_application_model_over(
         bundle,
-        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers },
+        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers, effects: &effects },
     )
 }
 

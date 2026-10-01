@@ -934,6 +934,7 @@ impl Snapshot {
                     bus_graph: self.demand_bus_graph().map_err(Clone::clone)?,
                     ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    effects: self.demand_effects().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(

@@ -179,6 +179,7 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         for family in ["top_scope", "bus_graph", "ownership", "handler_routing"] {
             assert_eq!(s.builds()[family], 1, "the check and the model demand `{family}`");
         }
+        assert_eq!(s.builds()["effects"], 1, "the model reads the effect rows: one fixpoint for the check with a law");
         s.demand_bus_graph().expect("the graph the model read");
         s.demand_ownership_graph().expect("the graph the model read");
         s.demand_handlers().expect("the rows the model read");
@@ -231,6 +232,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                "effects",
                 "model",
             ] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
@@ -254,8 +256,10 @@ fn a_build_lowers_after_its_check_and_builds_no_model_it_was_not_asked_for() {
     assert_eq!(builds["expression_typing"], 1, "the check ran before lowering");
     assert_eq!(builds["lowering_view"], 1);
     assert_eq!(builds["model"], 0, "nothing asked for the model yet");
+    assert_eq!(builds["effects"], 0, "nor for the effect rows it reads");
     s.demand_model().expect("the build's identity reads the model");
     assert_eq!(s.builds()["model"], 1);
+    assert_eq!(s.builds()["effects"], 1);
     assert_at_most_once(&s, "build");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -301,7 +305,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
     for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "lowering_view"] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "model", "claims"] {
+    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");
