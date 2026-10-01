@@ -1565,12 +1565,25 @@ zero_copy binding produces.
   - on a pool worker, for a `violate` in a pool-placed child's
     `run()`;
   - on a subscriber's queue owner, for a closure that fires after
-    one of the subscriber's handlers;
-  - on the reclaiming worker, for a dissolve-epoch closure under a
-    flow child's run-completion reclaim.
+    one of the subscriber's handlers.
 
   `notes/f40-lifecycle-inventory.md` lists these sites as rows
   C36–C40. No test asserts the thread a handler runs on.
+
+  A fourth site is misrouted, not misplaced. It is a
+  dissolve-epoch closure that fails under a flow child's
+  run-completion reclaim. The reclaim spine
+  (`synthesize_reclaim_fns`, `crates/hale-codegen/src/codegen.rs`)
+  lowers the closure with the reclaimed child as `current_self`.
+  `resolve_failure_route` therefore asks the child's own type for
+  a handler of its own type and normally finds none. The owner's
+  handler is not selected at all, and the violation takes the
+  bare report-and-exit. The defect is "owner handler not
+  selected", not "owner handler called on a foreign thread". It
+  becomes the second kind only if the route is fixed without this
+  decision: the reclaim then calls the owner's handler in place on
+  the reclaiming thread. Inventory row C25 records the site;
+  inventory Decisions line 4 chooses the route.
 
   Teardown pumps no owner queue while it joins. A dissolving
   parent joins a pinned child with a blocking `pthread_join`
@@ -1598,6 +1611,16 @@ zero_copy binding produces.
   In each of these cases the owner is running, not in teardown,
   and the case asserts that the restart the handler asks for
   takes effect.
+
+  A flow child whose dissolve-epoch closure fails under its
+  run-completion reclaim has a case of its own. The case asserts:
+  - the correct owner receives the violation exactly once;
+  - the handler runs on the owner's domain;
+  - the child and the closure's captured payload are live until
+    the handler returns.
+
+  The case asserts no restart. A dissolve-epoch failure has no
+  restart unless a separate decision introduces one.
 
   Two further cases run under a deadline: a hang fails the test
   rather than stalling the suite.
