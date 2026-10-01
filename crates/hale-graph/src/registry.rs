@@ -317,7 +317,6 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["import aliases", "the seed cache", "hale_stdlib::PATH_RENAMES", "declaration names"],
         producer: Some(site(IMPORTS, "resolve_imports")),
         legacy: &[
-            legacy(IMPORTS, "lib_canonical_id", "library identity by path, falling back to the file name outside a workspace (can collide)", "phase 3, when the snapshot's seed names the library: the frontend has owned loading since 2.2b, but `resolve_imports` still mangles an imported library's symbols off this path identity, and the snapshot carries no library seed name to key them by (at the phase-2 close)"),
             legacy(CHECK, "construction_target", "one alias hop in the top scope; a no-op for every program an entry point checks, whose construction sites the desugar sequence already resolved, and the answer for a caller that checks a fragment without the sequence (`check_bundle`)", "every checker entry runs the desugar sequence"),
             legacy(TY_RESOLVED, "resolve_qualified_bus_subjects", "rewrites qualified bus subjects in the resolved-program step's clone", "one resolution, shared"),
             legacy(RESOLVE, "resolve_bus_subject", "the checker's resolution of the same subjects", "one resolution, shared"),
@@ -327,12 +326,16 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "a name resolves once per snapshot; the checker and lowering see the same target",
             "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name",
+            "a library is named once per load (`AliasScopes::name_library`), by its canonical path, and no two libraries of a load share a name: the symbols an imported library is mangled under are its own",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs"],
+        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-cli/tests/import_library_names.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md § Cross-seed namespace resolution", "spec/projects.md"],
-        owned: &[site(TY_MANGLE, "resolve_construction_aliases")],
-        seams: &[Seam { symbol: "resolve_construction_aliases(", allowed: &[(TY_MANGLE, 1), (DESUGAR_SEQ, 1)] }],
+        owned: &[site(TY_MANGLE, "resolve_construction_aliases"), site(IMPORTS, "name_library")],
+        seams: &[
+            Seam { symbol: "resolve_construction_aliases(", allowed: &[(TY_MANGLE, 1), (DESUGAR_SEQ, 1)] },
+            Seam { symbol: "name_library(", allowed: &[(IMPORTS, 2)] },
+        ],
     },
     Family {
         name: "desugar_sequence",

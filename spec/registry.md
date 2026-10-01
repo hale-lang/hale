@@ -2,14 +2,14 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 134 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 10 canonical, 30 migrating (with 133 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
 | family | layer | state | kind | producer | legacy | answers |
 |---|---|---|---|---|---|---|
 | `seed_loading` | Layer 1 | Canonical | desugar | `collect_checkable` | 0 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
-| `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
+| `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 4 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 1 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
 | `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 1 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
@@ -87,13 +87,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-frontend/src/imports.rs` · `lib_canonical_id` — library identity by path, falling back to the file name outside a workspace (can collide). *Removed when:* phase 3, when the snapshot's seed names the library: the frontend has owned loading since 2.2b, but `resolve_imports` still mangles an imported library's symbols off this path identity, and the snapshot carries no library seed name to key them by (at the phase-2 close).
 - `crates/hale-types/src/check.rs` · `construction_target` — one alias hop in the top scope; a no-op for every program an entry point checks, whose construction sites the desugar sequence already resolved, and the answer for a caller that checks a fragment without the sequence (`check_bundle`). *Removed when:* every checker entry runs the desugar sequence.
 - `crates/hale-types/src/resolved.rs` · `resolve_qualified_bus_subjects` — rewrites qualified bus subjects in the resolved-program step's clone. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/resolve.rs` · `resolve_bus_subject` — the checker's resolution of the same subjects. *Removed when:* one resolution, shared.
 - `crates/hale-types/src/check.rs` · `imported_fn` — an imported fn's signature by path-string vector. *Removed when:* one resolution, shared.
 
-**Also owned.** `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases`
+**Also owned.** `crates/hale-types/src/mangle.rs` · `resolve_construction_aliases`; `crates/hale-frontend/src/imports.rs` · `name_library`
 
 **Consumers.** check; build; lsp (hover, definition, references)
 
@@ -101,16 +100,18 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - a name resolves once per snapshot; the checker and lowering see the same target
 - a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name
+- a library is named once per load (`AliasScopes::name_library`), by its canonical path, and no two libraries of a load share a name: the symbols an imported library is mangled under are its own
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-cli/tests/import_library_key.rs; crates/hale-codegen/tests/cross_seed_imports.rs; crates/hale-types/tests/type_alias.rs
+**Focused tests.** crates/hale-cli/tests/import_library_key.rs; crates/hale-cli/tests/import_library_names.rs; crates/hale-codegen/tests/cross_seed_imports.rs; crates/hale-types/tests/type_alias.rs
 
 **Spec.** spec/semantics.md § Cross-seed namespace resolution; spec/projects.md
 
 **Guarded seams.**
 
 - `resolve_construction_aliases(` may be referenced from: `crates/hale-types/src/mangle.rs` ×1, `crates/hale-types/src/desugar_sequence.rs` ×1
+- `name_library(` may be referenced from: `crates/hale-frontend/src/imports.rs` ×2
 
 ### `desugar_sequence` — Migrating · desugar
 

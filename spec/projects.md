@@ -301,7 +301,10 @@ lib's canonical identity.
 
 Collision avoidance: two different libs live at different paths,
 get different `<lib_id>`s, never collide regardless of what
-aliases their importers picked.
+aliases their importers picked. A lib outside any workspace is named
+by its file name; when a second lib of the same build would take a
+name another holds (two `util.hl` in different directories), its
+`<lib_id>` carries a digest of its canonical path as well.
 
 `<lib_id>` fallback when no workspace root is in scope (e.g., a
 one-off `hale build foo.hl` outside any toml-rooted repo):

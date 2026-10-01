@@ -17,7 +17,7 @@ use super::source::SourceProvider;
 /// wins. The result is the directory containing the anchor.
 ///
 /// 2026-05-22: anchor used as the basis for path-based mangling
-/// (`lib_canonical_id`). Two consumers in the same workspace
+/// (`AliasScopes::name_library`). Two consumers in the same workspace
 /// importing the same lib produce identical mangled names
 /// because they compute the lib's path relative to the same
 /// root.
@@ -61,8 +61,8 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
 /// downstream derives an identity from the target.
 ///
 /// Without the collapse the two spellings produced two library
-/// identities — two `lib_key`s in `resolve_imports`, two `lib_id`s
-/// in `lib_canonical_id`, two sets of mangled symbols. The `visited`
+/// identities — two `lib_key`s in `resolve_imports`, two library names
+/// in `name_library`, two sets of mangled symbols. The `visited`
 /// set is global across the build, so whichever spelling resolved
 /// second found every file already parsed, registered no rename rows
 /// under its own key, and its `alias::Name` references died at
