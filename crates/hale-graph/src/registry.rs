@@ -395,11 +395,11 @@ pub const FAMILIES: &[Family] = &[
         owned: &[site("crates/hale-syntax/src/lib.rs", "parse_source_at_in"), site("crates/hale-types/src/effect_classes.rs", "EffectClassTable")],
         consumers: &[
             consumer_at("the load (own files, the editor's members, every imported seed after its imports)", FRONTEND, "parse_source_at_in"),
-            consumer_at("effects (contracts, phase contracts, the manifest)", EFFECTS, "EffectClassTable::of("),
+            consumer_at("effects (contracts, phase contracts, the declared manifest)", EFFECTS, "EffectClassTable::of("),
+            consumer_at("the effect rows (one table per snapshot, carried on the rows: the model's effect-class rows and atoms, and the inferred manifest's class names, read it there)", EFFECT_ROWS, "EffectClassTable::of("),
             consumer_at("effects (causes)", FRONTIER, "EffectClassTable::of("),
             consumer_at("alloc_summary (what `@effects(is: …)` carries)", ALLOC, "EffectClassTable::of("),
             consumer_at("quantitative (user-class budgets)", "crates/hale-types/src/quantitative.rs", "EffectClassTable::of("),
-            consumer_at("model (the effect-class rows and their atoms)", MODEL_BUILDER, "EffectClassTable::of("),
             consumer_at("claims (lowering: class references, undeclared classes)", "crates/hale-types/src/claim_lowering.rs", "EffectClassTable::of("),
             consumer_at("topology (derived effect sets)", TOPOLOGY, "EffectClassTable::of("),
         ],
@@ -411,7 +411,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-cli/tests/cross_seed_effects.rs", "crates/hale-cli/tests/xseed_user_effects.rs", "crates/hale-types/src/effect_classes.rs (one_table_one_expansion)", "crates/hale-frontend/src/snapshot.rs (a_seed_is_numbered_after_the_seeds_it_imports)"],
         spec: &["spec/verification.md § Default-on & opt-in analyses"],
         seams: &[
-            Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 1), (EFFECTS, 4), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
+            Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 1), (EFFECTS, 3), (EFFECT_ROWS, 1), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1),("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
             // a program's class definitions are read by the parser that
             // writes them, the load that carries them, and the table
             // (`resolved.rs` only builds an empty stdlib program)
