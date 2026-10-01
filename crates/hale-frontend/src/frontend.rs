@@ -351,6 +351,28 @@ pub fn collect_checkable(
     ),
     CheckableFailure,
 > {
+    let (files, own, programs, sources, file_bases) = parse_checkable(target, src)?;
+    link_checkable(target, &files, own, programs, sources, file_bases, src)
+}
+
+/// The first half of a whole seed's load: the target's own files,
+/// each parsed at its own base, before any `import` is followed.
+/// [`collect_checkable`] links them after; the snapshot's whole-seed
+/// load keeps them too, as its members.
+#[allow(clippy::type_complexity)]
+pub fn parse_checkable(
+    target: &Path,
+    src: &dyn SourceProvider,
+) -> Result<
+    (
+        Vec<PathBuf>,
+        std::collections::BTreeSet<PathBuf>,
+        BTreeMap<PathBuf, Program>,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+    ),
+    CheckableFailure,
+> {
     let files = match collect_ap_files(target, LoadMode::WholeSeed, src) {
         Ok(f) => f,
         Err(e) => {
@@ -383,7 +405,7 @@ pub fn collect_checkable(
     // from here arrived through an `import`.
     let own: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
-    link_checkable(target, &files, own, programs, sources, file_bases, src)
+    Ok((files, own, programs, sources, file_bases))
 }
 
 /// The second half of a whole seed's load, over its own files already

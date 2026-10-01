@@ -62,7 +62,7 @@ use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
 use crate::frontend::{
-    collect_ap_files, collect_checkable, link_checkable, merge_programs, seed_dir_of, source_map,
+    collect_ap_files, link_checkable, merge_programs, parse_checkable, seed_dir_of, source_map,
     CheckableFailure, LoadMode,
 };
 use crate::imports::ImportRenames;
@@ -346,6 +346,9 @@ pub struct Snapshot {
     config: Config,
     files: Vec<PathBuf>,
     own_files: BTreeSet<PathBuf>,
+    /// Each of the seed's own files as it parsed (at its base), before
+    /// the merge and the sequence: what the file itself declares.
+    members: BTreeMap<PathBuf, Program>,
     programs: BTreeMap<PathBuf, Program>,
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
@@ -391,6 +394,7 @@ static BARE_HANDOFFS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 struct Loaded {
     files: Vec<PathBuf>,
     own_files: BTreeSet<PathBuf>,
+    members: BTreeMap<PathBuf, Program>,
     programs: BTreeMap<PathBuf, Program>,
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
@@ -471,6 +475,7 @@ impl Snapshot {
         let loaded = Loaded {
             files: Vec::new(),
             own_files: BTreeSet::new(),
+            members: BTreeMap::new(),
             programs: std::iter::once((entry.clone(), program)).collect(),
             sources: BTreeMap::new(),
             file_bases: Vec::new(),
@@ -513,6 +518,7 @@ impl Snapshot {
             config,
             files: loaded.files,
             own_files: loaded.own_files,
+            members: loaded.members,
             programs: loaded.programs,
             sources: loaded.sources,
             file_bases: loaded.file_bases,
@@ -639,6 +645,22 @@ impl Snapshot {
 
     pub fn programs(&self) -> &BTreeMap<PathBuf, Program> {
         &self.programs
+    }
+
+    /// One of the seed's own files as it parsed, at its base: before the
+    /// merge, the imports and the sequence, so it holds what the file
+    /// itself declares and nothing else. Kept beside the merged program
+    /// for a reader that asks about one file (the editor's outline);
+    /// `None` for a file that did not parse, is not the seed's, or a
+    /// bare program. Any spelling of the path that names the file.
+    pub fn member(&self, path: &Path) -> Option<&Program> {
+        self.members.get(path).or_else(|| {
+            let canon = path.canonicalize().ok()?;
+            self.members
+                .iter()
+                .find(|(p, _)| p.canonicalize().ok().as_ref() == Some(&canon))
+                .map(|(_, prog)| prog)
+        })
     }
 
     /// The identities the load minted over [`Snapshot::programs`]: every
@@ -1039,11 +1061,14 @@ impl Snapshot {
 
 /// `hale check`'s load: the target and every seed its imports reach.
 fn load_whole_seed(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, CheckableFailure> {
+    let (files, own, programs, sources, file_bases) = parse_checkable(entry, src)?;
+    let members = programs.clone();
     let (programs, sources, file_bases, import_renames, own_files, entry_imports) =
-        collect_checkable(entry, src)?;
+        link_checkable(entry, &files, own, programs, sources, file_bases, src)?;
     Ok(Loaded {
         files: own_files.iter().cloned().collect(),
         own_files,
+        members,
         programs,
         sources,
         file_bases,
@@ -1090,6 +1115,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         }
         sources.insert(f.clone(), source);
     }
+    let members = programs.clone();
     // The seed's own members, canonical; a member that exists only as a
     // buffer (or a link to nothing) by its canonical directory.
     let own_files: BTreeSet<PathBuf> = files
@@ -1107,6 +1133,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         return Ok(Loaded {
             files,
             own_files,
+            members,
             programs,
             sources,
             file_bases,
@@ -1122,6 +1149,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
     Ok(Loaded {
         files,
         own_files,
+        members,
         programs,
         sources,
         file_bases,
@@ -1236,14 +1264,57 @@ mod tests {
     }
 
     fn load(entry: &Path, src: &dyn SourceProvider, config: Config) -> Snapshot {
-        match Snapshot::load(entry, LoadMode::Editor, src, config) {
+        load_as(entry, LoadMode::Editor, src, config)
+    }
+
+    fn load_as(entry: &Path, mode: LoadMode, src: &dyn SourceProvider, config: Config) -> Snapshot {
+        match Snapshot::load(entry, mode, src, config) {
             Ok(s) => s,
-            Err(_) => panic!("the editor's load does not fail"),
+            Err(_) => panic!("the {mode:?} load does not fail"),
         }
     }
 
     fn errors(s: &Snapshot) -> usize {
         s.demand_check().expect("checked").diags.iter().filter(|d| d.is_error()).count()
+    }
+
+    /// Each member's own program is kept beside the merged one: what the
+    /// file itself declares, at its base, before the merge and the
+    /// sequence; kept whole beside a member that did not parse.
+    #[test]
+    fn each_member_keeps_its_own_program_beside_the_merged_one() {
+        let d = scratch("members");
+        std::fs::write(d.join("app.hl"), CLEAN).unwrap();
+        std::fs::write(d.join("extra.hl"), "fn helper() -> Int { return 1; }\n").unwrap();
+        let names = |p: &Program| -> Vec<String> {
+            p.items
+                .iter()
+                .filter_map(|i| match i {
+                    TopDecl::Fn(f) => Some(f.name.name.clone()),
+                    TopDecl::Locus(l) => Some(l.name.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        // the editor's load of a file is its directory's seed; `hale
+        // check`'s is the directory itself
+        for (entry, mode) in [(d.join("app.hl"), LoadMode::Editor), (d.clone(), LoadMode::WholeSeed)] {
+            let s = load_as(&entry, mode, &Disk, Config::editor());
+            assert_eq!(s.programs().len(), 1, "{mode:?}: one merged program");
+            let merged = names(s.program().unwrap());
+            assert!(merged.contains(&"helper".to_string()) && merged.contains(&"App".to_string()), "{mode:?}: {merged:?}");
+            let app = s.member(&d.join("app.hl")).expect("app.hl is a member");
+            assert_eq!(names(app), vec!["W", "App", "main"], "{mode:?}");
+            let extra = s.member(&d.join("extra.hl")).expect("extra.hl is a member");
+            assert_eq!(names(extra), vec!["helper"], "{mode:?}");
+            let base = s.file_bases().iter().find(|(_, p, _)| p.ends_with("extra.hl")).unwrap().0;
+            assert_eq!(extra.items[0].span().start.0, base, "{mode:?}: at the member's base");
+        }
+        std::fs::write(d.join("broken.hl"), "fn broken( {\n").unwrap();
+        let s = load(&d.join("app.hl"), &Disk, Config::editor());
+        assert!(s.member(&d.join("broken.hl")).is_none());
+        assert_eq!(names(s.member(&d.join("extra.hl")).expect("parsed")), vec!["helper"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Contract 4: a changed entry, target, config or overlay is a

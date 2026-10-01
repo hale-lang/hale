@@ -1275,14 +1275,12 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "demand",
         layer: Layer::Identity,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
+        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
         inputs: &["seed_loading", "desugar_sequence", "snapshot_identity", "the config (target, api, api roles, environment, the check's rules)", "editor overlays (LSP)", "a consumer's request"],
         producer: Some(site(SNAPSHOT, "Snapshot")),
-        legacy: &[
-            legacy(LSP, "document_symbols", "textDocument/documentSymbol parses its one buffer itself (`parse_source`, file-local spans): a syntactic outline of the open file, answered while another member of the seed does not parse; every other request reads the snapshot", "the snapshot keeps each member's own program beside the merged one"),
-        ],
+        legacy: &[],
         owned: &[site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
@@ -1307,8 +1305,10 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("replay (the live-effects gate)", V_REPLAY, "demand_effects"),
             consumer_at("the check's laws (their certificate evidence reads the typing's effects certificate report)", SNAPSHOT, "demand_effect_certificates"),
             consumer_at("topology (the artifact's law evidence reads the same report)", V_CHECK, "demand_effect_certificates"),
+            consumer_at("lsp (documentSymbol: the open file's member program, its own declarations as written)", LSP, "snap.member("),
         ],
         invariants: &[
+            "every editor request reads the snapshot: the outline reads the open file's member program (`Snapshot::member`, the file as it parsed, before the merge and the sequence), so it answers while another member does not parse and lists only what the file itself declares; a file the load refused has no outline",
             "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: sync inference builds a single-program top scope per file before the sequence, and the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `apply_sync_inference` (sync_inference, desugar_sequence), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)",
             "a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads",
             "the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it",

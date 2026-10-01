@@ -1174,16 +1174,20 @@ fn sym_range(src: &str, span: hale_syntax::Span) -> Value {
     })
 }
 
-/// Per-document outline: hierarchical DocumentSymbols from a
-/// single-file parse (file-local spans, no seed analysis needed).
+/// Per-document outline: hierarchical DocumentSymbols from the
+/// snapshot's member program for the open file (what the file itself
+/// declares, before the merge and the sequence), answered while another
+/// member of the seed does not parse.
 fn document_symbols(
     msg: &Value,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     use hale_syntax::ast::{LocusMember, TopDecl, TypeDeclBody};
     let path = text_document_path(msg)?;
-    let src = Overlay::new(overlays).read(&path).ok()?;
-    let program = hale_syntax::parse_source(&src).ok()?;
+    let snap = editor_snapshot(&path, overlays).ok()?;
+    let program = snap.member(&path)?;
+    let src = source_of(&snap, &path)?;
+    let base = base_of(&snap, &path)?;
 
     let mk = |name: &str,
               kind: u64,
@@ -1193,8 +1197,8 @@ fn document_symbols(
         let mut v = json!({
             "name": name,
             "kind": kind,
-            "range": sym_range(&src, full),
-            "selectionRange": sym_range(&src, sel),
+            "range": sym_range(src, full.shifted(base.wrapping_neg())),
+            "selectionRange": sym_range(src, sel.shifted(base.wrapping_neg())),
         });
         if !children.is_empty() {
             v["children"] = json!(children);
