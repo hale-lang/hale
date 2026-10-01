@@ -31,9 +31,13 @@ The step is read-only on code and was measured at `main` b0cf6103. Line numbers 
 - `A` is `runtime/lotus_arena.c`
 - `O` is `runtime/lotus_obs.c`
 
-Row ids `C*` are codegen sites and `R*` are runtime entry points. § Counts lists them against the registry.
+Row ids `C*` are codegen sites and `R*` are runtime operations. A runtime operation may group several exported symbols. § Counts lists the rows against the registry and the symbols behind them.
+
+**Three kinds of statement.** A row's code columns, from owner through complete when, say what the code at b0cf6103 does: they are measured. A requirement that is decided but not built is marked **Adopted** in its row and stated in § Adopted requirements. A question still open is a line in § Decisions for Riley, and a row that depends on one points to it.
 
 ## The inventory
+
+A prerequisite names a completion edge unless it says **entered**. When one row runs inside another, its caller has been entered but has not completed. This holds for R32 inside R31 (R32's prerequisite says so), R36 inside R29, R42 inside R32 and C43 inside R5. L1 must not translate call relationships literally into completion edges. A row marked ↳ is a subrow: it splits out one action of the row above it and keeps that row's number.
 
 | # | action | owner | domain today | prerequisites | stays alive across it | complete when | `spec` says | agree? |
 |---|---|---|---|---|---|---|---|---|
@@ -102,7 +106,8 @@ Row ids `C*` are codegen sites and `R*` are runtime entry points. § Counts list
 | R17 | pool lookup | `A`:8303 `lotus_coop_pool_lookup`, from C12 | IT | R15 | — | pool or NULL | runtime.md § Placement | yes |
 | R18 | current pool | `A`:8679 `lotus_coop_pool_current`, from C12 | IT (TLS: NULL on main) | — | — | pool or NULL | runtime.md § Runtime pool inheritance: "the pool whose worker is currently on-CPU" | yes |
 | R19 | post run | `A`:8466 `lotus_coop_pool_post`, from C12 | IT enqueues; the pool worker runs | — | the child until run end, on an accepted post only | the call returns, with one of three outcomes. **No admission feedback:** the ABI is `void`, so the caller learns none of them. **Attempted:** the call returned, which is all the caller knows. **Accepted:** the cell is enqueued on the ring (a cross-thread caller blocks on `not_full` while the ring is full) or on the worker's overflow list (a self-post). The worker runs every cell it finds before its last empty-and-shutdown check (8647, 9548), shutdown or not. A cell enqueued after that check is freed unrun by R21 (10190–10204). **Dropped:** not enqueued. A full ring once shutdown is set discards the cell (8514–8517); a run post carries no heap payload to free. A heap payload that cannot be allocated returns at 8478; C12 cannot reach this, because it posts a zero-size payload. **Retention:** a child whose run was dropped or freed unrun keeps its slot. The spine that holds the slot tears it down: C18 for a deferred entry, C31 for a field, C28 for an accepted child. That spine runs `drain()` and `dissolve()` on a child whose `run()` never started, and its run end (C26) never runs. Nothing records that the run was not admitted | semantics.md step 7 | no: step 7's "handed to that thread or worker" assumes acceptance, and a dropped run is silent. See Decisions line 19 |
-| R20 | **pool join** | `A`:10149 `lotus_coop_pool_shutdown_all`, from C13, C19, C21, C22, C23 | main (the caller): sets shutdown, broadcasts, wakes async pools, then `pthread_join` per worker (10176), unbounded; async workers abandon parked coros (A:9548–9571) | R35. **Adopted, P1:** a pool child's outstanding failure decisions can still complete while the joins wait. Today the joins run back to back with no drain of any queue | field arenas until it returns | every worker joined | runtime.md § Classic-pool blocking-accept shutdown, (b) (quoted at C13) | yes. See Decisions line 7 (a worker parked in `or wait` is not woken) |
+| R20 | **pool join** | `A`:10149 `lotus_coop_pool_shutdown_all`, from C13, C19, C21, C22, C23 | main (the caller): sets shutdown, broadcasts, wakes async pools, then `pthread_join` per worker (10176), unbounded; async workers abandon parked coros (R20a) | R35. **Adopted, P1:** a pool child's outstanding failure decisions can still complete while the joins wait. Today the joins run back to back with no drain of any queue | field arenas until it returns | every worker joined. A join shows that the worker has quiesced. It does not show that every run on that worker executed its end spine (R20a) | runtime.md § Classic-pool blocking-accept shutdown, (b) (quoted at C13) | yes. See Decisions line 7 (a worker parked in `or wait` is not woken) |
+| R20a | ↳ subrow of R20: **abandon parked coroutines** (async pool cancellation) | `A`:9527 `lotus_coop_pool_drain_one_async` (static; reached from the worker loop), shutdown branch 9548–9571 | the pool worker | R20 set shutdown and woke the worker; no cell pending | — (the coroutines' loci and arenas stay with their owners' cascades) | every parked coroutine is unregistered from epoll and its stack freed. `parked_head` is NULL, and the worker returns 0 and exits. **Witness to quiescence:** R20's `pthread_join` returns for that worker, and the worker runs nothing after that. **Not a witness to completion:** an abandoned `run()` never resumes, so its run end (C26) never runs. Neither do await phase 0, the restart loop, the per-child reclaim (C25) or R7. Its child is torn down later by the spine that holds its slot | runtime.md § Lifecycle, Per-child reclamation: "The parked coros are then *abandoned* — their stacks freed without resuming them" | yes, but the cancellation has no named terminal outcome (P2) |
 | R21 | pool destroy | `A`:10186 `lotus_coop_pool_destroy_all`, from C24 | main | R20; R31 | — | rings, payloads and parked coros freed | silent | silent |
 | R22 | mailbox create | `A`:7677 `lotus_mailbox_create`, from C9 | IT | — | — | mailbox stored | runtime.md § Placement (pinned mailbox) | yes |
 | R23 | mailbox set current | `A`:7982 `lotus_mailbox_set_current`, from C9 (`inst`:4062) | the pinned thread (TLS) | thread started | — | TLS set | silent | silent |
@@ -111,10 +116,10 @@ Row ids `C*` are codegen sites and `R*` are runtime entry points. § Counts list
 | R26 | mailbox shutdown | `A`:7924 `lotus_mailbox_shutdown`, from C18 | the teardown thread | — | — | flag set; condvars broadcast | runtime.md § Teardown delivery contract: "mailbox shutdown, `pthread_join`, then a bus drain" | yes |
 | R27 | mailbox destroy | `A`:7933 `lotus_mailbox_destroy`, from C18 | the teardown thread (no check) | `pthread_join` returned | — | freed | same sentence | yes |
 | R28 | mark pinned | `A`:6615 `lotus_bus_mark_pinned`, from C20 | main | — | — | the bus is in multithreaded mode | silent | silent |
-| R29 | bus queue drain | `A`:7283 `lotus_bus_queue_drain` | **owner only**: `if (!pthread_equal(pthread_self(), q->owner)) return;` (7311); runs R36 first | — | each handler's locus | queue empty at pop time | runtime.md § Owner-executed handlers, rule 1: "The global cooperative queue is drained only by its owner thread" | yes |
+| R29 | bus queue drain | `A`:7283 `lotus_bus_queue_drain` | **owner only**: `if (!pthread_equal(pthread_self(), q->owner)) return;` (7311); runs R36 first | — | each handler's locus | queue empty at pop time, for a call on the owner thread outside another drain. A call from a foreign thread (7311), or from inside a drain already running (`g_bus_drain_active`, 7312), returns at once and flushes nothing. Such a return is not a completed queue flush. The same holds for every "then a drain" a row lists (C16's pre-drain, C18's post-entry drain), when the teardown thread is not the queue's owner | runtime.md § Owner-executed handlers, rule 1: "The global cooperative queue is drained only by its owner thread" | yes |
 | R30 | bus queue destroy | `A`:7458 `lotus_bus_queue_destroy`, from C24 | main (no check, no lock) | every drain done | — | freed | runtime.md § Bus message router, GH #893 | yes |
-| R31 | router destroy | `A`:11891 `lotus_bus_router_destroy`, from C24; calls R32 | main | R30 | — | router freed | same | yes |
-| R32 | remote transports destroy | `A`:22656 `lotus_bus_remote_destroy_all`: R42, then per entry a reader join (22723, 22757) | main; unbounded joins | R31 | — | transports freed | runtime.md § Bus message router, GH #893: "finds the entry already reclaimed — transport NULL, serve thread joined — and frees only the husk" | yes |
+| R31 | router destroy | `A`:11891 `lotus_bus_router_destroy`, from C24; calls R32 (11916) | main | R30 completed | — | router freed, after R32 has returned inside it | same | yes |
+| R32 | remote transports destroy | `A`:22656 `lotus_bus_remote_destroy_all`: R42, then per entry a reader join (22723, 22757) | main; unbounded joins | R31 **entered**, not completed: R31 calls R32 at 11916, after freeing the router's entries and before its own end | — | transports freed | runtime.md § Bus message router, GH #893: "finds the entry already reclaimed — transport NULL, serve thread joined — and frees only the husk" | yes |
 | R33 | deregister on dissolve | `A`:11877 `lotus_bus_quarantine_self`, from C33 and C26 (`emit_stop_kept_child`) | the teardown thread; writes `g_bus_entries` without a lock | — | — | entries NULLed; self in the dead set | runtime.md § Teardown delivery contract: "discarded via the deregister-on-dissolve invariant (never dispatched to freed memory)" | yes |
 | R34 | wait-abort | `A`:19079 `lotus_bus_wait_abort_all` (a flag; the waiters poll at 1 ms: 19107, 19129), from C13, C19, C17 | main | after R20 in every spine | — | `or wait` waiters return −1 within a slice | runtime.md: no sentence (GH #255 is in its doc comment and grammar.ebnf:1337) | silent |
 | R35 | ingress quiesce | `A`:22589 `lotus_bus_ingress_quiesce`, from C13, C19, C21, C22, C23 | main; waits for readers' `serve_done` in 1 ms ticks, bounded by `LOTUS_BUS_QUIESCE_MS` (500) | registry intact; nothing dissolved | the registry and the subscribers | readers done or the bound hit (loud); then a queue drain | runtime.md, env table: "At every main-exit point, before pools join and loci dissolve, LISTEN binding fds half-close and their readers drain kernel-accepted data to true EOF" | yes |
@@ -168,8 +173,8 @@ These requirements are decided but not built. P1 comes with L0-1, and P2 with th
   - Today's joins pump no queue: C18's blocking `pthread_join` and R20's per-worker joins. A failure raised after the owner's last drain is therefore a wait cycle: the owner waits for the child's thread, and the child waits for the owner's decision.
   - The mechanism belongs to L1 and L5. This entry records the dependency.
   - Restart asked for during that window is converted to cancellation. runtime.md § Failure handling, decision L0-1, names the policy and its regression case.
-- **P2: run completion is owed only on admitted paths (C12, C26, R19).** The obligation that a run reaches its run end (C26) applies to a run that was accepted and executed.
-  - A run whose post was dropped, or whose cell was freed unrun, owes a named terminal outcome instead.
+- **P2: run completion is owed only on admitted paths (C12, C26, R19, R20a).** The obligation that a run reaches its run end (C26) applies to a run that was accepted and executed.
+  - A run whose post was dropped, whose cell was freed unrun, or whose parked coroutine was abandoned at shutdown (R20a) owes a named terminal outcome instead. R20's join is not evidence that every run reached C26.
   - Today no such outcome exists (R19). Whether the shutdown drop is an approved cancellation is Decisions line 19.
   - For L1: write the completion obligation conditional on admission, and the terminal-outcome obligation for the other paths.
   - For L2: the trace build records which of the two each child took.
@@ -228,7 +233,17 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 - seven `entrypoint` rows: the checker's four, `seed_entry_kind`, the snapshot's `has_main`, and `collect_main_placement`, which feeds C4's placement map. E0 owns them.
 - two `handler_routing` rows: `fn_rows` and `SupervisedRef::External`, both in the model.
 
-**Runtime entry points: 49 (R1–R49).** Every exported `lotus_*` function that a lifecycle row calls, or that performs a lifecycle action, appears once. Variants of one operation share a row: R11's three arena constructors and R14's eight recpool functions. `lotus_failure_hold` is the registry's `lifecycle_order` runtime row, and R1–R5 are its protocol.
+**Runtime operation rows: 49 (R1–R49), plus one subrow (R20a).** The 49 are operations, not entry points. Variants of one operation share a row: R11 groups three arena constructors and R14 groups eight recpool functions. The rows therefore cover 58 exported symbols. The count establishes row coverage, not symbol coverage. The checklist below is the symbol coverage: every exported `lotus_*` function that a lifecycle row calls, or that performs a lifecycle action, appears once. R20a is a branch of a static function (`lotus_coop_pool_drain_one_async`), not an export. `lotus_failure_hold` is the registry's `lifecycle_order` runtime row, and R1–R5 are its protocol.
+
+- R1–R10: `lotus_params_open`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, `lotus_params_settle`, `lotus_children_push`, `lotus_children_remove`, `lotus_children_free`, `lotus_child_struct_alloc`, `lotus_child_struct_release`
+- R11 (3): `lotus_arena_create_labeled`, `lotus_arena_create_sized`, `lotus_arena_create_on_node`
+- R12, R13: `lotus_arena_create_subregion`, `lotus_arena_destroy`
+- R14 (8): `lotus_recpool_fixed_create`, `_fixed_acquire`, `_fixed_release`, `_fixed_destroy`, `lotus_recpool_slab_create`, `_slab_acquire`, `_slab_release`, `_slab_destroy`
+- R15–R21: `lotus_coop_pool_register`, `_start_all`, `_lookup`, `_current`, `_post`, `_shutdown_all`, `_destroy_all`
+- R22–R27: `lotus_mailbox_create`, `_set_current`, `_drain_one`, `_drain_pending`, `_shutdown`, `_destroy`
+- R28–R40: `lotus_bus_mark_pinned`, `lotus_bus_queue_drain`, `lotus_bus_queue_destroy`, `lotus_bus_router_destroy`, `lotus_bus_remote_destroy_all`, `lotus_bus_quarantine_self`, `lotus_bus_wait_abort_all`, `lotus_bus_ingress_quiesce`, `lotus_bus_drain_lost_transports`, `lotus_bus_set_loss_handler`, `lotus_bus_transport_reconnect`, `lotus_bus_transport_lost_fallback`, `lotus_bus_transport_reclaim`
+- R41–R45: `lotus_replay_start_ingress`, `lotus_replay_injector_join`, `lotus_drain_signals_install`, `lotus_drain_observer_add`, `lotus_root_panic`
+- R46–R49: `lotus_obs_locus_birth`, `lotus_obs_locus_dissolve`, `lotus_obs_restart`, `lotus_obs_teardown`
 
 **Not rows:**
 
@@ -239,7 +254,7 @@ Rust names are `<area binary> <file>::<fn>`. Every `tests/hale/*.hl` file runs u
 - program-lifetime and capacity-slot allocation (`lotus_bus_payload_arena_alloc`, the slot inits; F.22 has its own lifecycle)
 - static runtime functions (pool worker loops, `lotus_wake_post`, the drain watcher, the atexit dumps), which are described in the rows that reach them
 
-**Rows: 46 + 49 = 95.**
+**Rows: 46 + 49 = 95 numbered rows, plus one subrow (R20a): 96 lines in the table.**
 
 ## Decisions for Riley
 
@@ -249,6 +264,7 @@ Decision L0-1 (handlers run only on the queue owner's thread) is written in spec
    - **Spec:** semantics.md § on_failure: "delivered in the order they arrived, on the thread settling the parent."
    - **Runtime:** R5 runs on IT. For a main-locus field placed on `cooperative(pool = X)`, IT is main, not X's worker, which runs that locus's handlers.
    - **Options:** (a) name construction-time delivery as L0-1's one exception: before settle, no cell of the owner has run, so no second thread is inside it. (b) At settle, post the held failures to the owner's queue, and have the children wait as R4 already does.
+   - **Pending in the spec:** L0-1's settle bullet in runtime.md marks this subcase as awaiting this line, because L0-1 names the pool worker and semantics.md names the settling thread. Its regression contract carries a pool-placed owner case whose expected thread this line fixes. Whichever option lands, the bullet, semantics.md and that case change with it.
 2. **Post-run tick closures on a posted `run()` (C12).**
    - **Spec:** the m42 rule in runtime.md § Closure-test infrastructure ("At each epoch boundary …") and the placement table's "Handler bodies are atomic."
    - **Runtime:** the tick and duration closures run on IT right after the post, concurrently with `run()` on the worker. On the inline path, they run after `__run_end_<L>` may have reclaimed a flow child.

@@ -1498,7 +1498,9 @@ zero_copy binding produces.
 - **Decision L0-1 (F.40 phase 3, 2026-10-01): handlers run only
   on the queue owner's thread.** A child's failure is delivered
   to its owner's `on_failure` on the owner's execution domain,
-  never on the failing child's thread. The owner's execution
+  never on a thread outside the owner's domain. When owner and
+  child share a thread, the child's thread is the owner's domain,
+  and the handler is called inline. The owner's execution
   domain is the thread that drains the owner's queue: `main` for
   a locus on the main pool, the pool's worker for a locus placed
   on a cooperative pool, and the locus's own thread for a pinned
@@ -1543,7 +1545,13 @@ zero_copy binding produces.
     teardown nothing checks it yet.
   - A failure held while the owner's params are open is still
     delivered when they settle (`spec/semantics.md` §
-    "on_failure(c, err)").
+    "on_failure(c, err)"). One subcase is open: an owner placed
+    on a cooperative pool. This decision names the pool's worker
+    as that owner's domain. `spec/semantics.md` names "the thread
+    settling the parent", which today is the instantiating
+    thread. The subcase awaits the construction-time decision
+    (inventory Decisions line 1), and this bullet and
+    `spec/semantics.md` are brought into agreement when it lands.
   - Transport loss already follows this rule. Its dispatcher runs
     from the top of `lotus_bus_queue_drain`, "owner thread, the
     only place failure handlers may run" (§ "Bus message
@@ -1606,7 +1614,11 @@ zero_copy binding produces.
   - a pool-placed child's `violate` in `run()`;
   - a pool subscriber's tick-epoch closure after a handler;
   - a pinned child failing during the owner's params loop. This
-    case is held and delivered at settle, and is the control.
+    case is held and delivered at settle, and is the control;
+  - a pinned child failing during the params loop of an owner
+    placed on a cooperative pool. The construction-time decision
+    (inventory Decisions line 1) fixes which thread the case
+    expects, and the case lands with that decision.
 
   In each of these cases the owner is running, not in teardown,
   and the case asserts that the restart the handler asks for
