@@ -272,9 +272,11 @@ pub fn check_bundle_opts_scoped(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
+    let rows = std::cell::OnceCell::new();
+    let effects = || Some(rows.get_or_init(|| effect_rows::derive_effect_rows(bundle, &top)));
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
-        &check::CheckInputs { top: &top, handlers: &handlers },
+        &check::CheckInputs { top: &top, handlers: &handlers, effects: &effects },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,

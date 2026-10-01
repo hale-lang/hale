@@ -162,6 +162,63 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+const WITH_CODEC: &str = r#"
+type Tick { sym: String = ""; price: Int = 0; }
+type EncErr { kind: String = ""; }
+type DecErr { kind: String = ""; }
+
+topic TickTopic { payload: Tick; subject: "ticks"; }
+
+locus TickJsonCodec {
+    PARAMS
+    fn encode(v: Tick) -> Bytes fallible(EncErr) {
+        MUTATION
+        return std::bytes::from_string(v.sym);
+    }
+    fn decode(b: Bytes) -> Tick fallible(DecErr) {
+        return Tick { sym: "x", price: 0 };
+    }
+}
+
+main locus App {
+    bus { publish TickTopic; }
+    bindings {
+        TickTopic: unix("/ticks.sock") codec(TickJsonCodec { });
+    }
+}
+fn main() { App { }; }
+"#;
+
+/// The checker reads the effect rows' purity column on request: a
+/// codec binding's purity assertion demands them on the editor's path
+/// (the program has no claims), once, and an impure codec is refused
+/// through the snapshot as through the bundle entry.
+#[test]
+fn a_codec_binding_demands_the_effect_rows_once() {
+    let pure = WITH_CODEC.replace("PARAMS", "").replace("MUTATION", "");
+    let d = seed("codec-pure", &pure);
+    let s = editor(&d.join("app.hl"), &pure);
+    assert_clean(&s);
+    assert_eq!(s.builds()["model"], 0, "no claims, no model");
+    assert_eq!(s.builds()["effects"], 1, "the codec's purity assertion read the rows");
+    assert_at_most_once(&s, "lsp");
+    let _ = std::fs::remove_dir_all(&d);
+
+    let impure = WITH_CODEC
+        .replace("PARAMS", "params { calls: Int = 0; }")
+        .replace("MUTATION", "self.calls = self.calls + 1;");
+    let d = seed("codec-impure", &impure);
+    let s = check(&d);
+    let checked = s.demand_check().expect("the check runs");
+    assert!(
+        checked.diags.iter().any(|x| x.message.contains("is not safe to dispatch from arbitrary threads")),
+        "an impure codec is refused: {:?}",
+        checked.diags.iter().map(|x| &x.message).collect::<Vec<_>>()
+    );
+    assert_eq!(s.builds()["effects"], 1);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// The other half: the gate must open. `hale check` of a program that
 /// declares a law builds the model once, judges over it, and a
 /// `--dump-model` after the check reuses it.

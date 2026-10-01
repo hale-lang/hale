@@ -833,9 +833,13 @@ impl Snapshot {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                // The effect rows on request: a codec binding's purity
+                // assertion demands them, nothing else in the check does.
+                let effects = || self.demand_effects().ok();
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    effects: &effects,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();

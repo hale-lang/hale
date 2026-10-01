@@ -119,7 +119,8 @@ pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
                 }
             }
         }
-        let (known, unknown) = crate::frontier::infer_effects_lower_bound(&summary, key, &ffi);
+        // One walk, two results: the saturating set and the lower bound.
+        let bounds = crate::frontier::infer_effect_bounds(&summary, key, &ffi);
         rows.insert(
             key.clone(),
             EffectRow {
@@ -127,9 +128,9 @@ pub fn derive_effect_rows(bundle: &Bundle<'_>, top: &TopScope) -> EffectRows {
                 summarized: true,
                 targets,
                 unresolved,
-                effects: crate::frontier::infer_effects(&summary, key, &ffi),
-                known,
-                unknown,
+                effects: bounds.effects,
+                known: bounds.known,
+                unknown: bounds.unknown,
                 direct: crate::claims::direct_effects(&summary, key, &ffi),
                 purity: None,
             },
