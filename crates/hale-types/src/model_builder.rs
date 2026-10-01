@@ -219,7 +219,7 @@ pub fn derive_application_model_over(
     );
     // The summary the effect rows' walk read: the checked programs with
     // the stdlib's analysis copy beside them, cross-seed calls resolved.
-    let merged = &inputs.effects.summary;
+    let merged: &alloc_summary::AllocSummary = &inputs.effects.summary;
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);
     let effect_classes = &inputs.effects.classes;

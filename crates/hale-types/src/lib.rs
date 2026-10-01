@@ -275,12 +275,23 @@ pub fn check_bundle_opts_scoped(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
+    let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
-    let effects = || Some(rows.get_or_init(|| effect_rows::derive_effect_rows(bundle, &top)));
+    let effects = || {
+        Some(rows.get_or_init(|| {
+            effect_rows::derive_effect_rows(bundle, &top, alloc_summary.clone())
+        }))
+    };
     let entry = entry::entry_row(bundle);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
-        &check::CheckInputs { top: &top, handlers: &handlers, effects: &effects, entry: &entry },
+        &check::CheckInputs {
+            top: &top,
+            handlers: &handlers,
+            effects: &effects,
+            entry: &entry,
+            alloc_summary: &alloc_summary,
+        },
         allow_unowned_subscriber,
         strict_callees,
         strict_idents,
@@ -303,7 +314,7 @@ pub fn check_bundle_opts_scoped(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model = model_over_scope(bundle, &top, &handlers);
+        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone());
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
     }
     finish_check_diags(&mut diags);
@@ -331,19 +342,22 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, _diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
-    model_over_scope(bundle, &top, &handlers)
+    let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
+    model_over_scope(bundle, &top, &handlers, summary)
 }
 
-/// [`derive_application_model`] over the scope and the rows its caller
-/// already built: the graphs the model reads beside them are built here.
+/// [`derive_application_model`] over the scope, the rows and the
+/// allocation summary its caller already built: the graphs the model
+/// reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     handlers: &handler_routing::HandlerRouting,
+    alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
 ) -> hale_model::ApplicationModel {
     let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
-    let effects = effect_rows::derive_effect_rows(bundle, top);
+    let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers, effects: &effects },

@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 151 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
+44 families: 10 canonical, 30 migrating (with 152 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 32 frozen Debug-string sites, of which 12 decide a fact.
 
 ## Families
 
@@ -35,7 +35,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `transitions` | Layer 3 | Reserved | derivation | — | 0 | For an evented locus: the transition each handler is, input event to output set (F.41, after phase 2). |
 | `effects` | Layer 4 | Canonical | derivation | `derive_effect_rows` | 0 | Which effect classes each fn and locus reaches (the callgraph fixpoint), the declared classes and their `causes:`/`depends:` DAG, and the certificate relating the two. |
 | `blocking` | Layer 4 | Migrating | derivation | `blocking_path_match` | 4 | Which fns block (a cooperative worker would be held), and whether the program places anything off the main thread. |
-| `alloc_summary` | Layer 4 | Migrating | derivation | `summarize_programs` | 14 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
+| `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 15 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
@@ -363,7 +363,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/check.rs` · `ty_is_printable` — the checker's copy of the printable set. *Removed when:* one predicate.
 - `crates/hale-codegen/src/codegen.rs` · `declare_builtin_closure_violation_type` — a hand-maintained mirror of the checker's injected builtin types. *Removed when:* one declaration.
 - `crates/hale-types/src/stdlib_bodies.rs` · `summarize_with_stdlib` — the stdlib merge for analysis, parsed again per consumer (the effect rows, which the model reads, the LSP and codegen each merge). *Removed when:* the stdlib is part of the snapshot, merged once.
-- `crates/hale-types/src/stdlib_bodies.rs` · `summarize_with_stdlib_and_renames` — the rename-aware variant of the same merge. *Removed when:* same.
+- `crates/hale-types/src/stdlib_bodies.rs` · `summarize_with_stdlib_and_renames` — the rename-aware variant of the same merge: the `alloc_summary` producer's merge, and topology's contraction's own. *Removed when:* same.
 
 **Consumers.** effects (`crates/hale-types/src/effects.rs` · `effects_for`); frontier (`crates/hale-types/src/frontier.rs` · `effects_for`); codegen; lsp (hover, completion); doc
 
@@ -845,7 +845,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Invariants.**
 
 - derived ⊆ declared is the certificate; budgets are judged through evidence (spec/verification.md)
-- effects run once per snapshot, not once per consumer: `Snapshot::demand_effects` runs `derive_effect_rows` once over the checked programs and the stdlib's analysis copy (cross-seed calls resolved through the import renames), counted as `effects`, blocked with the scope
+- effects run once per snapshot, not once per consumer: `Snapshot::demand_effects` runs `derive_effect_rows` once over the snapshot's allocation summary (`demand_alloc_summary`: the checked programs and the stdlib's analysis copy, cross-seed calls resolved through the import renames), counted as `effects`, blocked with the scope
 - an unresolved edge is coverage, never a violation: a row's `effects` saturates to `UNCLASSIFIED` when the walk reaches what it cannot name, its `known` set is the lower bound an unresolved edge never erases, and `unknown` says the walk reached such an edge
 - a row is keyed by the fn's name (`FnKey`) until the `snapshot_identity` family's declaration rows carry it
 - a fn's direct contribution is a column (`direct`; `EffectRows::direct` answers any key, a bodyless one by what it carries): the model's function rows and absorbed paths, which the reachability judgment's `effects(C)` destination test reads, take it from the rows, and nothing outside the producer folds a body for it
@@ -901,11 +901,12 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Inputs.** bodies; signatures (non_allocating, fallible, ffi); the callgraph; ownership (accept sets)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/alloc_summary.rs` · `summarize_programs`
+**Producer (today's authority, migrating).** `crates/hale-types/src/alloc_summary.rs` · `derive_alloc_summary`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/alloc_summary.rs` · `summarize_programs_with_renames` — the rename-aware variant; the summary is built about twelve times per check with four input variants. *Removed when:* one summary per snapshot.
+- `crates/hale-types/src/alloc_summary.rs` · `summarize_programs` — the plain summary (no stdlib, no renames) the dump, the advisory, the LSP's hale/allocSummary, `frontier` and `resource_budget` build for themselves: it misses what is reached across seeds and through the stdlib, facts the snapshot's summary holds. *Removed when:* every reader reads the snapshot's summary.
+- `crates/hale-types/src/alloc_summary.rs` · `summarize_programs_with_renames` — the rename-aware variant (no stdlib) `model_builder`, `budget_check`, `quantitative` and topology's user rows build for themselves: it misses what is reached through the stdlib. *Removed when:* same.
 - `crates/hale-types/src/lib.rs` · `unbounded_alloc_warnings` — the diagnostics entry (check and the LSP's diagnostics), a different entry from the LSP's hale/allocSummary. *Removed when:* one entry.
 - `crates/hale-types/src/check.rs` · `check_hot_path_alloc` — hot-path allocation lint over a hand-kept receiver list, keyed by name and `__lib_` suffix. *Removed when:* a law over the rows.
 - `crates/hale-codegen/src/codegen.rs` · `compute_nonalloc_free_fns` — FORM-3 non-allocating free fns, a greatest fixpoint keyed by name. *Removed when:* codegen reads the rows (phase: effects lane).
@@ -922,10 +923,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/alloc_summary.rs` · `summarize_identified`
 
-**Consumers.** check (unbounded allocation, hot path); lsp (hale/allocSummary); claims (@budget); codegen (arena routing at an allocation) (`crates/hale-codegen/src/codegen.rs` · `current_arena_ptr`); resource_budget
+**Consumers.** the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in) (`crates/hale-types/src/check.rs` · `CheckInputs`); effects (the rows walk the snapshot's summary and hold it, shared) (`crates/hale-frontend/src/snapshot.rs` · `demand_effects`); check (unbounded allocation, hot path); lsp (hale/allocSummary); claims (@budget); codegen (arena routing at an allocation) (`crates/hale-codegen/src/codegen.rs` · `current_arena_ptr`); resource_budget
 
 **Invariants.**
 
+- one summary per snapshot: `Snapshot::demand_alloc_summary` runs `derive_alloc_summary` once over the checked programs with the stdlib's analysis copy beside them (cross-seed calls resolved through the import renames), counted as `alloc_summary`, blocked with the scope; the check's effects certificate engine reads it (`CheckInputs::alloc_summary`) and the effect rows walk it, so neither builds its own
 - the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment
 - a body's escape tags key a binding by the declaration its escaping uses name (`Snapshot::declaration_of`), so an inner shadow of a returned name is its own, local binding (the #1140 shape), and close over `let x = y;` aliases to the declaration y names, as borrow_lifetime's `returned_decls` does; programs minted by different snapshots are summarized each with its own identities (`summarize_identified`: a bundle's programs beside the bundled stdlib's analysis copy)
 - a leak site is left out of the advisory only when it has no author position (`AuthorPositions::has`: its span at or beyond `API_SYNTH_BASE`, or in a declaration the origin rows mark synthesized whose offset no source file owns), never by its owner's name; the check's warnings and the editor's hale/allocSummary decide with that one function
@@ -940,6 +942,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 - `summarize_programs` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×5, `crates/hale-types/src/lib.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1, `crates/hale-types/src/budget_check.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×2, `crates/hale-types/src/topology.rs` ×1
 - `summarize_identified(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1
+- `derive_alloc_summary(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1
 - `unbounded_alloc_warnings(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1, `crates/hale-lsp/src/lib.rs` ×1
 
 ### `borrow_lifetime` — Canonical · law

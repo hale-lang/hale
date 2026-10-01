@@ -158,6 +158,7 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     for family in ["handler_routing", "entrypoint"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
+    assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");
     assert_at_most_once(&s, "lsp");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -250,6 +251,12 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
         let again = s.demand_effects().expect("still there") as *const _;
         assert_eq!(first, again, "the second demand reads the first result");
         assert_eq!(s.builds()["effects"], 1, "the effects fixpoint runs once per snapshot");
+        // The allocation summary: one per snapshot, the one the check's
+        // certificate engine read and the effect rows walked.
+        let summary = s.demand_alloc_summary().expect("a clean program has a summary");
+        let rows = s.demand_effects().expect("the rows");
+        assert!(std::ptr::eq(summary, &*rows.summary), "the effect rows walk the snapshot's summary");
+        assert_eq!(s.builds()["alloc_summary"], 1, "the summary is built once per snapshot");
         // The effects certificate report the law's evidence read is the
         // typing's: `--dump-topology` after the check reads the same
         // report and runs no second check.
@@ -305,6 +312,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "bus_graph",
                 "ownership",
                 "handler_routing",
+                "alloc_summary",
                 "effects",
                 "model",
             ] {
