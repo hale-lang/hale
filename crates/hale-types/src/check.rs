@@ -2608,13 +2608,28 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             _ => false,
         })
     }
+    // The law reads the flow rows: the release clauses a locus declares
+    // are the rows' clauses that sit inside it.
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let flows = crate::flows::survey(&programs, &bundle.import_renames);
     // GH #825: a daemon-shaped locus inside a `module { … }` leaks
     // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
             let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
-            let mut releases: BTreeSet<String> = BTreeSet::new();
+            // the child types this locus releases, by last segment
+            let releases: BTreeSet<&str> = flows
+                .iter()
+                .filter(|f| {
+                    f.clauses.iter().any(|c| {
+                        c.owner == l.name.name
+                            && l.span.start <= c.span.start
+                            && c.span.end <= l.span.end
+                    })
+                })
+                .map(|f| f.child.rsplit("::").next().unwrap_or(&f.child))
+                .collect();
             let mut run_daemon = false;
             for m in &l.members {
                 let LocusMember::Lifecycle(ld) = m else { continue };
@@ -2625,15 +2640,6 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                                 if let Some(seg) = qn.segments.last() {
                                     accepts
                                         .push((ld, seg.name.clone()));
-                                }
-                            }
-                        }
-                    }
-                    LifecycleKind::Release => {
-                        if let Some(p) = ld.params.first() {
-                            if let TypeExpr::Named { path: qn, .. } = &p.ty {
-                                if let Some(seg) = qn.segments.last() {
-                                    releases.insert(seg.name.clone());
                                 }
                             }
                         }
@@ -2650,7 +2656,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 return;
             }
             for (ld, child_ty) in accepts {
-                if releases.contains(&child_ty) {
+                if releases.contains(child_ty.as_str()) {
                     continue;
                 }
                 diags.push(Diag::warn(

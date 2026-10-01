@@ -92,6 +92,9 @@ pub struct LoweringView {
     /// Which `on_failure` handler a failing child reaches, one row per
     /// handler of `merged` (F.40 phase 1.4).
     pub handlers: HandlerRouting,
+    /// Which children are flows, over `merged`: every `release(c: T)`
+    /// clause with the locus `T` denotes as lowering names it.
+    pub flows: Vec<crate::flows::Flow>,
     /// The message graph over `merged`, keyed by wire subject (the
     /// topic rewrite has run), with its devirtualization gates (F.40
     /// phase 1.5), and on each subject the sends `intra_locus` rewrote
@@ -381,6 +384,9 @@ pub fn resolve_program(
     // F.40 phase 1.4: the handler rows, over the same merged program,
     // with the child type resolved the way lowering resolves it.
     let handlers = crate::handler_routing::handler_rows(&[&merged], import_renames, &snapshot);
+    // The flow rows over the same merged program, each clause's child
+    // resolved to the locus lowering names: lowering reads flow-ness here.
+    let flows = crate::flows::survey(&[&merged], import_renames);
 
     Ok(LoweringView {
         user,
@@ -391,6 +397,7 @@ pub fn resolve_program(
         ownership,
         bubble,
         handlers,
+        flows,
         bus,
         plan,
         intra_locus,

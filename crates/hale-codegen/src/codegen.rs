@@ -1459,6 +1459,7 @@ pub fn build_resolved(
         cell_owned_clone: false,
         program: merged,
         topics: &resolved.top.topics,
+        flows: &resolved.flows,
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
@@ -3331,6 +3332,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// subscriptions are held to. Lowering reads a topic's wire
     /// subject, payload, routing key and bound here and derives none.
     pub(crate) topics: &'p hale_types::topic_identity::TopicRows,
+    /// The flow rows over `program` (the lowering view's): a locus is a
+    /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
+    /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
+    pub(crate) flows: &'p [hale_types::flows::Flow],
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
     pub(crate) current_fn: Option<FunctionValue<'ctx>>,
@@ -7665,16 +7670,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self_ptr: self_arg,
                 fields: info.fields.clone(),
             });
-            // A locus is a flow iff some declared locus has a
-            // `release(c: T)` whose child type T is this locus.
-            let release_fn = self.user_loci.values().find_map(|p| {
-                match &p.release_param {
-                    Some((_, child)) if child == locus_name => {
-                        p.methods.get("release").copied()
-                    }
-                    _ => None,
-                }
-            });
+            // A locus is a flow iff the flow row names it: some declared
+            // locus has a `release(c: T)` whose T denotes this locus.
+            let is_flow = self.is_flow(locus_name);
             // drain (children first, then self).
             self.emit_locus_field_drains(&info, self_arg, locus_name)?;
             if let Some(drain_fn) = info.methods.get("drain") {
@@ -7693,13 +7691,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             //
             // GH #526 F.6: the fn CALLED is the one the accept'ing
             // parent stored in `__owner_release` at accept dispatch,
-            // not `release_fn` (which is only "some parent releases
-            // this type" — the flow-ness decision). Two parents may
-            // accept one child type; each owner's own body must run
-            // over its own self. A null pointer (this owner declares no
-            // release for the type, or the child was never accept'd)
-            // skips the call.
-            if let Some(rfn) = release_fn {
+            // not one picked by type (flow-ness is only "some parent
+            // releases this type"). Two parents may accept one child
+            // type; each owner's own body must run over its own self. A
+            // null pointer (this owner declares no release for the type,
+            // or the child was never accept'd) skips the call.
+            if is_flow {
+                // every release bookend is `fn(parent, child)` (decl.rs)
+                let release_ty = self
+                    .context
+                    .void_type()
+                    .fn_type(&[ptr_t.into(), ptr_t.into()], false);
                 let owner_ptr = self
                     .builder
                     .build_struct_gep(
@@ -7750,7 +7752,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(fire_bb);
                 self.builder
                     .build_indirect_call(
-                        rfn.get_type(),
+                        release_ty,
                         rel_fn_ptr,
                         &[owner.into(), self_arg.into()],
                         &format!("{}.reclaim.release.call", locus_name),
@@ -8609,19 +8611,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // idempotent arena-destroy latch makes a later
             // parent-dissolve of the same locus a no-op.
             //
-            // A locus is a flow iff some declared locus has a
-            // `release(c: T)` whose child type T is this locus —
-            // then `release_fn` is that parent's release method.
-            let release_fn = self.user_loci.values().find_map(|p| {
-                match &p.release_param {
-                    Some((_, child)) if child == locus_name => {
-                        p.methods.get("release").copied()
-                    }
-                    _ => None,
-                }
-            });
+            // A locus is a flow iff the flow row names it: some declared
+            // locus has a `release(c: T)` whose T denotes this locus.
             let i64_t = self.context.i64_type();
-            let terminating = if release_fn.is_some() {
+            let terminating = if self.is_flow(locus_name) {
                 // Flow: run-completion always reclaims.
                 self.context.bool_type().const_int(1, false)
             } else {
@@ -12164,6 +12157,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// root-to-leaf; #399's one rule). A name no topic declares is its
     /// own subject: a subscription or binding that already names a wire
     /// subject, or a topic typecheck reported missing.
+    /// Whether `locus` is a flow (spec/semantics.md, "Flow and resident
+    /// children"): the flow row names it.
+    pub(crate) fn is_flow(&self, locus: &str) -> bool {
+        hale_types::flows::is_flow(self.flows, locus)
+    }
+
     fn topic_wire(&self, name: &str) -> String {
         self.topics
             .named(name)

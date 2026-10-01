@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 7 canonical, 33 migrating (with 139 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
+44 families: 8 canonical, 32 migrating (with 137 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 34 frozen Debug-string sites, of which 14 decide a fact.
 
 ## Families
 
@@ -26,7 +26,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
-| `flows` | Layer 3 | Migrating | derivation | `survey` | 2 | Which children are flows (released per completion) and which are resident. |
+| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
@@ -622,33 +622,33 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `handler_rows(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1
-- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
-- `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
+- `child_locus_name(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×2, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
+- `DeclaredNames::of(` may be referenced from: `crates/hale-types/src/handler_routing.rs` ×1, `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/flows.rs` ×1
 
-### `flows` — Migrating · derivation
+### `flows` — Canonical · derivation
 
 **Answers.** Which children are flows (released per completion) and which are resident.
 
-**Inputs.** release declarations; accept declarations
+**Inputs.** release declarations; accept declarations; declared loci and type aliases (handler_routing's resolver); import renames
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/flows.rs` · `survey`
+**Producer.** `crates/hale-types/src/flows.rs` · `survey`
 
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-codegen/src/locus/instantiation.rs` · `release_param` — codegen classifies a flow by `release_param == L` at three sites (run elision, run-end reclaim, the release call). *Removed when:* codegen reads the flow row.
-- `crates/hale-types/src/check.rs` · `check_accept_release` — the checker's own accept/release survey by type name. *Removed when:* a law over the rows.
-
-**Consumers.** check --flows; codegen
+**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`)
 
 **Invariants.**
 
-- flows.rs states it mirrors codegen (GH #736); the row ends the mirror
+- a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own
+- the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/release_reclaims_flow.rs; crates/hale-codegen/tests/release_two_parents.rs
+**Focused tests.** crates/hale-codegen/tests/release_reclaims_flow.rs; crates/hale-codegen/tests/release_two_parents.rs; crates/hale-types/src/flows.rs (a_clause_names_the_locus_lowering_names)
 
 **Spec.** spec/semantics.md § release(c) and flow children
+
+**Guarded seams.**
+
+- `flows::survey(` may be referenced from: `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
 ### `restart` — Migrating · derivation
 
