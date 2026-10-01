@@ -312,23 +312,22 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "qualified_names",
         layer: Layer::Parse,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Desugar,
         answers: "What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names.",
         inputs: &["import aliases", "the seed cache", "hale_stdlib::PATH_RENAMES", "declaration names"],
         producer: Some(site(IMPORTS, "resolve_imports")),
-        legacy: &[
-            legacy(CHECK, "imported_fn", "an imported fn's signature by path-string vector", "one resolution, shared"),
-        ],
+        legacy: &[],
         consumers: &[consumer("check"), consumer("build"), consumer("lsp (hover, definition, references)")],
         invariants: &[
             "a name resolves once per snapshot; the checker and lowering see the same target",
             "a construction path spelled with a type alias is resolved once, bundle-wide, in the desugar sequence before the check (`resolve_construction_aliases`), so the checker and lowering read the same target name; the checker follows no alias of its own, so a fragment checked without the sequence is not resolved a second way",
             "a qualified bus subject (`subscribe` / `publish alias::Topic`, `alias::Topic <- v`, a `bindings` entry) is resolved once, in the desugar sequence before the check (`resolve_qualified_bus_subjects`), to the single-segment topic the imported declaration ends up at: the checker (`resolve_bus_subject` keeps the leaf and an `Unknown` payload only for a path no rename names), the model and lowering read the rewritten program, and the resolved-program step does not resolve it again",
+            "a qualified path in the checker is resolved through the scope's one import table (`KnownNames::import_target`, built from the bundle's renames): a qualified type and an imported fn (`imported_fn`) name the same declaration by the same row, and the checker holds no second scan of the rename vector for either",
             "a library is named once per load (`AliasScopes::name_library`), by its canonical path, and no two libraries of a load share a name: the symbols an imported library is mangled under are its own",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-cli/tests/import_library_names.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs", "crates/hale-types/tests/qualified_subjects.rs", "crates/hale-cli/tests/import_qualified_topic.rs"],
+        tests: &["crates/hale-cli/tests/import_library_key.rs", "crates/hale-cli/tests/import_library_names.rs", "crates/hale-cli/tests/cross_seed_arity.rs", "crates/hale-codegen/tests/cross_seed_imports.rs", "crates/hale-types/tests/type_alias.rs", "crates/hale-types/tests/qualified_subjects.rs", "crates/hale-cli/tests/import_qualified_topic.rs"],
         spec: &["spec/semantics.md § Cross-seed namespace resolution", "spec/projects.md"],
         owned: &[site(TY_MANGLE, "resolve_construction_aliases"), site(IMPORTS, "name_library"), site(QUALIFIED_SUBJECTS, "resolve_qualified_bus_subjects")],
         seams: &[

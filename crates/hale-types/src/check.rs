@@ -14449,20 +14449,20 @@ impl<'a> Checker<'a> {
     /// (`check_struct_literal`). A `bindings { }` topic needs no site
     /// of its own: `check_main_and_bindings` already refuses a topic
     /// nothing declares, qualified or not.
-    /// GH #1028: the imported free fn a qualified path names, through
-    /// the same table codegen resolves it with (`import_renames`:
-    /// `["lib", "add3"]` -> the mangled symbol the library's seed
-    /// declared). With the path as the author wrote it, unscoped
-    /// (GH #746's `u$0` head reads `u`), for diagnostics.
+    /// GH #1028: the imported free fn a qualified path names. The path
+    /// is resolved to the declaration it names by the scope's one
+    /// import table (`KnownNames::import_target`, the table a
+    /// qualified TYPE resolves through: `lib::add3` -> the mangled
+    /// symbol the library's seed declared), and the signature is the
+    /// declaration's, read by that identity. The second value is the
+    /// path as the author wrote it, unscoped (GH #746's `u$0` head
+    /// reads `u`), for diagnostics.
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
         }
         let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-        let (_, mangled) = self
-            .import_renames
-            .iter()
-            .find(|(k, _)| k.iter().map(|s| s.as_str()).eq(key.iter().copied()))?;
+        let mangled = self.known.import_target(&key.join("::"))?;
         match self.top.lookup(mangled) {
             Some(TopSymbol::Fn(sig)) => {
                 let written: Vec<&str> = std::iter::once(unscoped_alias(key[0]))
