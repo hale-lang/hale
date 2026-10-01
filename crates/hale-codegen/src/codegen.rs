@@ -1392,6 +1392,7 @@ pub fn build_resolved(
         program: merged,
         topics: &resolved.top.topics,
         flows: &resolved.flows,
+        intra_locus: &resolved.intra_locus,
         current_fn: None,
         current_user_fn_ret: None,
         current_self: None,
@@ -3180,6 +3181,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
     /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
     pub(crate) flows: &'p [hale_types::flows::Flow],
+    /// Every send the intra-locus rewrite replaced with a direct handler
+    /// call (the lowering view's relation): the call keeps the send's
+    /// id, so lowering finds a rewritten publish by the call's id.
+    pub(crate) intra_locus: &'p [hale_syntax::desugar::IntraLocusRewrite],
     /// Set while lowering a function's body so that `if` / `while`
     /// can `append_basic_block` onto it.
     pub(crate) current_fn: Option<FunctionValue<'ctx>>,
@@ -16402,65 +16407,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// so a location never attaches to a foreign function's
     /// instructions (LLVM verifier: "!dbg attachment points at
     /// wrong subprogram"). No-op end to end when `di` is None.
-    /// Resolve a self-relative field chain (`self`, `self.child`,
-    /// `self.a.b`) to the locus type at its tip, without emitting IR.
-    /// `None` for any receiver that isn't such a chain of LocusRef
-    /// fields. Used only to recognize the intra-locus-publish desugar's
-    /// direct call to a subscriber handler.
-    fn receiver_locus_name(&self, e: &Expr) -> Option<String> {
-        match e {
-            Expr::KwSelf(_) => {
-                self.current_self.as_ref().map(|cs| cs.locus_name.clone())
-            }
-            Expr::Field { receiver, name, .. } => {
-                let base = self.receiver_locus_name(receiver)?;
-                let info = self.user_loci.get(&base)?;
-                match info.fields.get(&name.name) {
-                    Some((_, CodegenTy::LocusRef(l))) => Some(l.clone()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Is this statement-position call the intra-locus-publish desugar's
-    /// direct handler call (`self.<child>.<handler>(payload)`)? A bus
-    /// subscription handler is not callable from Hale source, so a call
-    /// to one can only be that desugar. The payload is the struct-literal
-    /// argument. Recognizing this lets the caller reclaim the payload the
-    /// bus queue would have — see the call site.
-    fn is_intra_locus_publish_call(
-        &self,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> bool {
-        self.intra_locus_publish_target(callee, args).is_some()
-    }
-
-    /// The matched subscription behind an intra-locus-publish direct
-    /// call: `(wire_subject, payload_type_name)`. `None` when the call
-    /// is not that desugar. The subject is the same registration-side
-    /// string every other dispatch flavor probes with, so the fused
-    /// manifest row is shared.
-    fn intra_locus_publish_target(
-        &self,
-        callee: &Expr,
-        args: &[Expr],
-    ) -> Option<(String, String)> {
-        let Expr::Field { receiver, name, .. } = callee else {
+    /// The rewritten publish behind a statement-position call, read from
+    /// the resolved program's relation by the call's id:
+    /// `(wire_subject, payload_type_name)`. `None` when no rewrite
+    /// recorded this call, or when its payload is not a struct literal
+    /// (nothing to confine). The subject is the topic's wire, the
+    /// registration-side string every other dispatch flavor probes with,
+    /// so the fused manifest row is shared.
+    fn intra_locus_rewrite(&self, id: NodeId, args: &[Expr]) -> Option<(String, String)> {
+        if id.is_none() {
             return None;
-        };
-        let recv_locus = self.receiver_locus_name(receiver)?;
-        let info = self.user_loci.get(&recv_locus)?;
-        let (subject, _, payload_ty, _) = info
-            .subscriptions
-            .iter()
-            .find(|(_, h, _, _)| h == &name.name)?;
+        }
+        let row = self.intra_locus.iter().find(|r| r.send.0 == id.0)?;
         if !args.iter().any(|a| matches!(a, Expr::Struct { .. })) {
             return None;
         }
-        Some((subject.clone(), payload_ty.clone()))
+        let payload = self
+            .topics
+            .named(&row.subject)
+            .and_then(|t| single_segment_type_name(&t.payload))
+            .unwrap_or_default();
+        Some((self.topic_wire(&row.subject), payload))
     }
 
     /// Lower an intra-locus-publish direct handler call with its payload
@@ -16471,10 +16438,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// on every field store, so nothing the handler kept still points
     /// into the freed region — the same lifetime the bus queue's cell
     /// reclaim gives a delivered payload.
+    /// `target` is the rewrite's `(wire_subject, payload_type_name)`
+    /// (`intra_locus_rewrite`).
     fn lower_reclaimed_publish_call(
         &mut self,
         callee: &Expr,
         args: &[Expr],
+        target: (String, String),
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         // P23 (iris handoff-11): this rewrite was the last probe-less
@@ -16492,9 +16462,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // attribution; the publish probe passes the publisher's.
         // The first probe call also creates the topic's manifest row.
         {
-            let (subject, payload_ty) = self
-                .intra_locus_publish_target(callee, args)
-                .expect("caller gated on is_intra_locus_publish_call");
+            let (subject, payload_ty) = target;
             let func = self
                 .builder
                 .get_insert_block()
@@ -16591,7 +16559,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_override = self.current_arena_override;
         self.current_arena_override = Some(subregion);
         let Expr::Field { receiver, name, .. } = callee else {
-            unreachable!("is_intra_locus_publish_call gated on a Field callee");
+            unreachable!("a rewritten publish's callee is a Field (gated on it)");
         };
         let call_result = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
             self.lower_self_method_call(&name.name, args, scope)
@@ -17301,7 +17269,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Expr(Expr::Call { callee, args, .. }) => {
+            Stmt::Expr(Expr::Call { callee, args, id: call_id, .. }) => {
                 match callee.as_ref() {
                     Expr::Ident(i) => {
                         let name = i.name.as_str();
@@ -17444,16 +17412,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // builds as an ordinary call argument in the
                     // method's scratch subregion and is not freed until
                     // `run()` returns, so a long-running publish loop
-                    // accrues one payload per delivery. Reclaim it: a
-                    // bus handler is not callable from Hale source, so a
-                    // statement-position call to one is unambiguously
-                    // this desugar, and the payload is dead the moment
-                    // the synchronous handler returns.
+                    // accrues one payload per delivery. Reclaim it: the
+                    // resolved program records every send the rewrite
+                    // replaced (`LoweringView::intra_locus`), and the
+                    // call keeps the send's id, so the relation names
+                    // this call; the payload is dead the moment the
+                    // synchronous handler returns.
                     Expr::Field { .. }
-                        if self.is_intra_locus_publish_call(callee, args) =>
+                        if self.intra_locus_rewrite(*call_id, args).is_some() =>
                     {
+                        let target = self
+                            .intra_locus_rewrite(*call_id, args)
+                            .expect("matched by the guard");
                         return self
-                            .lower_reclaimed_publish_call(callee, args, scope);
+                            .lower_reclaimed_publish_call(callee, args, target, scope);
                     }
                     Expr::Field { receiver, name, .. }
                         if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
