@@ -3695,18 +3695,20 @@ impl PoolId {
 /// two towers with different pools is rare in v1; we pick the
 /// first.
 ///
-/// Returns an empty map for programs without an entry (free-fn-main
-/// scripts, libraries), so callers can skip the rest of the analysis
-/// cheaply.
+/// Returns an empty map for programs lowering deploys no `main locus`
+/// in (free-fn-main scripts, libraries), so callers can skip the rest
+/// of the analysis cheaply.
 pub fn compute_pool_of_locus_type(
     bundle: &Bundle<'_>,
     top: &TopScope,
     entry: &crate::entry::EntryRow,
 ) -> BTreeMap<String, PoolId> {
-    // The entry row's main locus (F.40 phase 3, E0): the seed's own,
-    // at the top level. An imported or a module-nested `main locus`
-    // seeds nothing.
-    let Some(main) = entry.entry().and_then(|m| m.decl(bundle)) else {
+    // The entry row's lowering root (F.40 phase 3, E0), not its entry:
+    // the map says where lowering runs each locus, and until lowering
+    // reads the entry (L4) it deploys a module-nested `main locus` too
+    // (GH #825), so that one seeds the map. An imported one seeds
+    // nothing.
+    let Some(main) = entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)) else {
         return BTreeMap::new();
     };
 
@@ -3968,13 +3970,14 @@ fn check_pinned_locus_in_loop(
     entry: &crate::entry::EntryRow,
     diags: &mut Vec<Diag>,
 ) {
-    // Loci that pin at least one field: the entry's (F.40 phase 3,
-    // E0), and with rule 1's error any other candidate's. An imported
+    // Loci that pin at least one field: the deployment root's, the
+    // entry row's lowering root (F.40 phase 3, E0), module-nested or
+    // not, since its placement is what spawns the threads. An imported
     // seed's main locus is NOT the deployment root, so its placement
     // entries never reach the plan and never spawn a thread — flagging
     // it would be a false positive.
     let mut pinned_by: BTreeMap<String, (String, Span)> = BTreeMap::new();
-    for l in entry.candidates().filter_map(|m| m.decl(bundle)) {
+    for l in entry.lowering_root.iter().filter_map(|m| m.decl(bundle)) {
         for m in &l.members {
             let LocusMember::Placement(pb) = m else { continue };
             for entry in &pb.entries {

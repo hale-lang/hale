@@ -2,9 +2,11 @@
 //!
 //! The entry row (`hale_types::entry`) is the one answer to which
 //! `main locus` is the program's entry, and the checker reads it for
-//! the pool map (F.31), the pinned-in-a-loop rule, rule 1's count and
-//! rule 9's closed world. Before the row, the four disagreed on two
-//! shapes, and each test here pins what the row decided:
+//! rule 1's count and rule 9's closed world; the pool map (F.31) and
+//! the pinned-in-a-loop rule read the row's provisional lowering root,
+//! the `main locus` lowering deploys, until lowering reads the entry
+//! (L4). Before the row, the four disagreed on two shapes, and each
+//! test here pins what the row decided:
 //!
 //! 1. An imported `main` is not the entry. A seed whose only `main
 //!    locus` came in through an `import` checks as a seed with no
@@ -12,11 +14,13 @@
 //!    a cross-pool call inside the library is the library's own
 //!    finding, not the importer's (before the row, the pool map took
 //!    the imported `main` and reported it through the importer).
-//! 2. A module-nested `main` is not the entry. A seed whose only `main
-//!    locus` is inside a `module { }` checks as a seed with no `main`
-//!    does (before the row, the pool map took it, GH #825, while rule
-//!    9 did not); a seed with both keeps the top-level one, and rule 1
-//!    still counts both.
+//! 2. A module-nested `main` is not the entry: a seed with both keeps
+//!    the top-level one, and rule 1 still counts both. A seed whose
+//!    only `main locus` is inside a `module { }` has no entry, so rule
+//!    9's world is not closed, but lowering still deploys that `main`
+//!    as its root and spawns its pinned threads, so its cross-pool call
+//!    is refused as the top-level one is (GH #825; the outside review
+//!    of #1293, finding 1).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -103,16 +107,22 @@ fn decision_1_an_imported_main_is_not_the_entry() {
 }
 
 #[test]
-fn decision_2_a_module_nested_main_is_not_the_entry() {
+fn decision_2_a_module_nested_main_is_not_the_entry_and_is_still_placed() {
     let root = scratch("nested");
     // The control: the same declarations at the top level.
-    let (ok, out) = check(&seed(&root, "flat", &format!("{PLACED}\nfn main() {{ App {{ }}; }}\n")));
-    assert!(!ok && out.contains(CROSS_POOL), "the top-level control: {out}");
+    let (ok, flat) = check(&seed(&root, "flat", &format!("{PLACED}\nfn main() {{ App {{ }}; }}\n")));
+    assert!(!ok && flat.contains(CROSS_POOL), "the top-level control: {flat}");
     let body: String = PLACED.lines().map(|l| format!("    {l}\n")).collect();
     let nested = seed(&root, "nested", &format!("module inner {{\n{body}}}\n\nfn main() {{ App {{ }}; }}\n"));
     let (ok, out) = check(&nested);
-    assert!(ok, "a module-nested main locus is not the entry, so it places nothing: {out}");
-    assert_eq!(out, NO_MAIN_REPORT);
+    // Not the entry, but lowering's root: its pinned field gets a thread
+    // of its own, so the direct call is cross-pool.
+    assert!(!ok && out.contains(CROSS_POOL), "a module-nested main locus is still deployed: {out}");
+    // Not the entry: the world is not closed, so the orphan `Out` the
+    // top-level control reports is not reported here.
+    let orphan = "bus topic `Out` is published but has no subscriber";
+    assert!(flat.contains(orphan), "{flat}");
+    assert!(!out.contains(orphan), "{out}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -130,10 +140,11 @@ fn decision_2_a_seed_with_both_keeps_the_top_level_main() {
     // Rule 1 counts the module-nested one (GH #825).
     assert!(out.contains("more than one `main` locus declared (`App` is one of 2)"), "{out}");
     assert!(out.contains("more than one `main` locus declared (`Other` is one of 2)"), "{out}");
-    // The entry is the top-level `App`, whose placement is empty: the
+    // The entry is the top-level `App`, and so is lowering's root (the
+    // first `main` in declaration order), whose placement is empty: the
     // nested `Other`'s pinned field is placed by nothing, so its call is
     // not cross-pool (before the row, the pool map took the last `main`
-    // in declaration order, `Other`).
+    // in declaration order, `Other`, which lowering does not deploy).
     assert!(!out.contains(CROSS_POOL), "{out}");
     // The closed world is the entry's: `Out` is still an orphan.
     assert!(out.contains("bus topic `Out` is published but has no subscriber"), "{out}");

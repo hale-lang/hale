@@ -21,6 +21,14 @@
 //! [`MainLocus::module_nested`]): the witness of why a declaration is
 //! or is not the entry, and what the one-main rule (rule 1) counts,
 //! which a module-nested `main` still joins (GH #825).
+//!
+//! Lowering does not read the row yet (F.40 phase 3, L4): it picks its
+//! deployment root itself, nested `main`s included, and emits that
+//! root's placement. Until it reads the entry, the row carries that
+//! choice as a provisional column, [`EntryRow::lowering_root`], and
+//! the placement-safety rules read the column, so the checker guards
+//! the topology lowering emits; the decisions bind what reads the
+//! entry.
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{LocusDecl, TopDecl};
@@ -90,6 +98,19 @@ pub struct EntryRow {
     /// after the module): the witness.
     pub mains: Vec<MainLocus>,
     entry: Result<usize, NoEntry>,
+    /// PROVISIONAL: the `main locus` lowering deploys as its root today,
+    /// which is not always the entry. `collect_main_placement` takes the
+    /// first `main locus` over the flat declarations whose name does not
+    /// start with `__lib_`, module-nested ones included, and emits its
+    /// placement, so a seed whose only `main` is module-nested has no
+    /// entry and still a deployment root. The placement-safety rules
+    /// (the F.31 pool map, the pinned-in-a-loop rule) read this column,
+    /// not the entry, because they guard the threads lowering spawns.
+    /// It is lowering's choice copied exactly, its name test included
+    /// (the rename pass marks every `__lib_` name it gives `imported`,
+    /// but a program handed in already renamed carries the name alone).
+    /// The column goes when lowering reads the entry (F.40 phase 3, L4).
+    pub lowering_root: Option<MainLocus>,
 }
 
 impl EntryRow {
@@ -159,5 +180,8 @@ pub fn entry_row(bundle: &Bundle<'_>) -> EntryRow {
         None if mains.iter().any(|m| !m.imported) => Err(NoEntry::OnlyModuleNested),
         None => Err(NoEntry::OnlyImported),
     };
-    EntryRow { mains, entry }
+    // The walk's order is `flat_decls`'s: a module's contents in its
+    // place, as lowering reads the program.
+    let lowering_root = mains.iter().find(|m| !m.name.starts_with("__lib_")).cloned();
+    EntryRow { mains, entry, lowering_root }
 }

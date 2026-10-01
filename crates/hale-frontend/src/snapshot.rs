@@ -1667,7 +1667,9 @@ mod tests {
     /// locus`, by the site the load minted; the three ways to have none
     /// (no `main`, only an imported one, only a module-nested one), and
     /// a seed with an imported, a module-nested and a top-level one
-    /// keeping the top-level one. Demanded twice, built once.
+    /// keeping the top-level one. Demanded twice, built once. Beside
+    /// each, the provisional lowering root: the first `main locus` that
+    /// is not a library's, nested or not, which is not always the entry.
     #[test]
     fn the_entry_row_is_the_seeds_own_top_level_main_locus() {
         use hale_types::entry::NoEntry;
@@ -1697,16 +1699,20 @@ mod tests {
         let none = row_of("none", "fn main() { }\n");
         assert_eq!(none.no_entry(), Some(NoEntry::NoMain));
         assert!(none.mains.is_empty());
+        assert!(none.lowering_root.is_none());
+        let root = |row: &hale_types::entry::EntryRow| row.lowering_root.as_ref().map(|m| m.name.clone());
 
         let imported = row_of("imported", "import \"../lib\" as lib;\nfn main() { }\n");
         assert_eq!(imported.no_entry(), Some(NoEntry::OnlyImported), "decision 1: {imported:?}");
         assert_eq!(imported.mains.len(), 1);
         assert!(imported.mains[0].imported && !imported.mains[0].module_nested);
         assert!(imported.mains[0].name.starts_with("__lib_"), "the rename pass marked what it renamed");
+        assert_eq!(root(&imported), None, "lowering deploys no library's main");
 
         let nested = row_of("nested", "module inner {\n    main locus App { params { n: Int = 0; } }\n}\nfn main() { }\n");
         assert_eq!(nested.no_entry(), Some(NoEntry::OnlyModuleNested), "decision 2: {nested:?}");
         assert!(nested.mains[0].module_nested && !nested.mains[0].imported);
+        assert_eq!(root(&nested).as_deref(), Some("App"), "no entry, and still lowering's root (until L4)");
 
         let all = row_of(
             "all",
@@ -1721,6 +1727,9 @@ mod tests {
         assert_eq!(all.mains.len(), 3, "the witness keeps every declaration: {all:?}");
         assert_eq!(all.candidates().count(), 1);
         assert_eq!(all.own().count(), 2, "rule 1 counts the module-nested one");
+        // Lowering takes the first in declaration order (rule 1 refuses
+        // the program before it builds).
+        assert_eq!(root(&all).as_deref(), Some("Other"), "{all:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
