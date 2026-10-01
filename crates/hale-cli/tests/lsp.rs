@@ -1576,6 +1576,25 @@ fn lsp_a_burst_of_changes_is_checked_once() {
     assert_eq!(fixed, vec![(uri(&main), vec![])], "the change that fixes it clears it");
 }
 
+/// F.40 phase 2 review F4: a frame whose `Content-Length` no buffer
+/// should hold is refused, not allocated, and the session ends with a
+/// non-zero status, the message before it answered. The reader thread
+/// used to panic on the allocation, and the server exited 0 as if the
+/// client had gone away.
+#[test]
+fn lsp_refuses_an_absurd_content_length_and_exits_non_zero() {
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    assert!(lsp.recv()["result"]["capabilities"].is_object(), "the message before it is answered");
+    lsp.stdin.write_all(b"Content-Length: 18446744073709551615\r\n\r\n").expect("write");
+    lsp.stdin.flush().expect("flush");
+    let status = lsp.child.wait().expect("wait");
+    assert!(!status.success(), "a refused frame ends the session non-zero: {status:?}");
+}
+
 /// A scratch root of this test's own, empty.
 fn scratch_root(tag: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("hale_lsp_parity_{}_{tag}", std::process::id()));
