@@ -32,6 +32,12 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-syntax/src/shift.rs",
+        "first_difference",
+        "the `parsed at base: …` / `shifted:        …` windows align so a \
+         differing byte is read down one column",
+    ),
+    (
         "crates/hale-cli/src/dna.rs",
         "init",
         "the `kept    <path>` / `cut     <path>` outcome column, and \

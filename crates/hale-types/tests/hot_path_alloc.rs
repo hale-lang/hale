@@ -812,11 +812,12 @@ fn main() { }
 fn a_publish_or_a_bare_block_in_a_loop_is_seen() {
     for src in [
         r#"
-topic Evt { payload: Int; subject: "evt"; }
+type Msg { v: Int; }
+topic Evt { payload: Msg; subject: "evt"; }
 locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
 main locus App {
     bus { publish Evt; }
-    run() { let mut i = 0; while i < 3 { Evt <- Child { n: i }.get(); i = i + 1; } }
+    run() { let mut i = 0; while i < 3 { Evt <- Msg { v: Child { n: i }.get() }; i = i + 1; } }
 }
 fn main() { App { }; }
 "#,
