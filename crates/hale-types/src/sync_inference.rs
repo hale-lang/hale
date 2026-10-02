@@ -49,6 +49,7 @@ use hale_syntax::ast::{
 };
 
 use crate::check::PoolId;
+use crate::placement::{DomainId, DynamicSite, InstanceKey, PlacementTable, SiteRef};
 use crate::resolve::TopScope;
 use crate::symbol::{Bundle, TopSymbol};
 
@@ -114,15 +115,27 @@ const READ_METHODS: &[&str] =
 /// argument, `sync = none` counting as one) are present in the
 /// map.
 ///
-/// `pool_of_locus_type` is the F.31 placement-driven map
-/// (locus type name → pool the type's instances run on). Same
-/// shape `check_placement_single_thread` consumes. `forms` holds
-/// each declaration's written configuration
+/// Per instance (F.40 phase 3, P1; the correspondence's K-5): an
+/// access `self.f.m()` in a method of locus `L` is made from the
+/// domain each instance of `L` runs in, the placement table's, and it
+/// reaches that instance's own `f`. So the rule above is applied to
+/// each accessed instance's writer and reader domains, and a type
+/// gets the most synchronized discipline any of its instances needs.
+/// A union of domains per type would synchronize two maps that each
+/// have one owner on one domain. An instance two holders share (a held
+/// instance, joined through its source row) collects both holders'
+/// domains. A dynamic literal of `L` contributes every domain its
+/// enclosing scope runs in. What the table does not know is a domain
+/// apart from every other, never main: a dynamic literal of unknown
+/// domains, a held instance whose source is unlinked, and the instance
+/// below one (another scope holds it).
+///
+/// `forms` holds each declaration's written configuration
 /// ([`crate::form_rows::FormRows::configured`]).
 pub fn infer_sync_for_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
-    pool_of_locus_type: &BTreeMap<String, PoolId>,
+    placement: &PlacementTable,
     forms: &crate::form_rows::FormRows,
 ) -> BTreeMap<String, InferredSync> {
     // Find form-bearing loci the author did not configure. Those
@@ -148,22 +161,42 @@ pub fn infer_sync_for_bundle(
     if candidates.is_empty() {
         return BTreeMap::new();
     }
+    // The candidates' declarations, as the table's rows realize them.
+    let candidate_sites: BTreeMap<SiteRef, &str> = bundle
+        .programs
+        .values()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|item| match item {
+            TopDecl::Locus(l) if candidates.contains(&l.name.name) => {
+                Some((SiteRef::user(bundle.snapshot.site_id(l.id)?), l.name.name.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    let running = placement.running();
 
-    // Per-candidate accumulators. Default-initialized when
-    // first observed.
-    let mut acc: BTreeMap<String, Accumulator> = BTreeMap::new();
-    for name in &candidates {
-        acc.insert(name.clone(), Accumulator::default());
-    }
+    // Per candidate, per instance accessed: the domains it is written
+    // and read from. Every candidate gets an entry.
+    let mut acc: BTreeMap<String, BTreeMap<Accessed<'_>, Accumulator>> =
+        candidates.iter().map(|name| (name.clone(), BTreeMap::new())).collect();
 
-    // Walk every locus method body looking for calls of the
-    // mutate / read methods on a field whose type is one of
-    // the candidate loci.
+    // Walk every locus method body looking for calls of the mutate /
+    // read methods on a `self` field, then resolve each against the
+    // instances the enclosing locus runs as.
     for program in bundle.programs.values() {
         for item in &program.items {
             let TopDecl::Locus(enclosing) = item else { continue };
-            let enclosing_pool =
-                pool_of_locus_type.get(&enclosing.name.name).cloned();
+            let site = bundle.snapshot.site_id(enclosing.id).map(SiteRef::user);
+            let statics = site.map(|s| running.of_decl(s)).unwrap_or(&[]);
+            let dynamics: Vec<&DynamicSite> = placement
+                .dynamic
+                .iter()
+                .filter(|d| site.is_some() && d.realizes.as_ref().map(|r| r.site) == site)
+                .collect();
+            if statics.is_empty() && dynamics.is_empty() {
+                continue;
+            }
+            let mut accesses: Vec<Access> = Vec::new();
             for member in &enclosing.members {
                 let (body, is_handler) = match member {
                     LocusMember::Fn(fd) => {
@@ -175,64 +208,170 @@ pub fn infer_sync_for_bundle(
                 };
                 let Some(body) = body else { continue };
                 let mut walk = WalkCx {
-                    enclosing,
-                    enclosing_pool: enclosing_pool.as_ref(),
-                    top,
-                    candidates: &candidates,
                     in_loop: false,
                     in_handler: is_handler,
-                    acc: &mut acc,
+                    accesses: &mut accesses,
                 };
                 walk_block(body, &mut walk);
+            }
+            for a in &accesses {
+                // The field's declared locus, for an instance the table
+                // enumerates nothing below.
+                let declared = receiver_field_locus_type(&a.field, enclosing, top)
+                    .filter(|n| candidates.contains(n));
+                for owner in statics {
+                    let from = Accessor::Domain(running.row(owner).domain);
+                    let fields = running.field(owner, &a.field);
+                    if fields.is_empty() {
+                        // Nothing below the owner is enumerated (a held
+                        // row whose source is unlinked, an unknown
+                        // literal): the instance is held elsewhere too.
+                        if let Some(name) = &declared {
+                            let slot = Accessed::Unenumerated(owner, a.field.clone());
+                            let entry = acc.get_mut(name).expect("every candidate is seeded").entry(slot).or_default();
+                            entry.record(from, a);
+                            entry.record(Accessor::Unknown, a);
+                        }
+                        continue;
+                    }
+                    for f in fields {
+                        let realized = running.row(f).realizes.as_ref().map(|d| d.site);
+                        let Some(name) = realized.and_then(|s| candidate_sites.get(&s)) else { continue };
+                        let slot = Accessed::Static(running.instance(f));
+                        let entry = acc.get_mut(*name).expect("every candidate is seeded").entry(slot).or_default();
+                        entry.record(from, a);
+                        // A held instance whose source is unlinked (`self.reg`,
+                        // a parameter) is reached from wherever it was built.
+                        if running.is_unlinked_held(f) {
+                            entry.record(Accessor::Unknown, a);
+                        }
+                    }
+                }
+                let Some(name) = &declared else { continue };
+                for d in &dynamics {
+                    let slot = Accessed::Dynamic(d.literal, a.field.clone());
+                    let entry = acc.get_mut(name).expect("every candidate is seeded").entry(slot).or_default();
+                    if d.domains.is_empty() {
+                        entry.record(Accessor::Unknown, a);
+                    }
+                    for dom in &d.domains {
+                        entry.record(Accessor::Domain(*dom), a);
+                    }
+                }
             }
         }
     }
 
-    // Apply the inference rule per candidate.
+    // Apply the inference rule per instance; a type gets the most
+    // synchronized discipline any of its instances needs, with that
+    // instance's reasoning (the first in key order among equals).
     let mut out: BTreeMap<String, InferredSync> = BTreeMap::new();
-    for (name, a) in acc {
-        let union: BTreeSet<&PoolIdString> = a
-            .writer_pools
-            .iter()
-            .chain(a.reader_pools.iter())
-            .collect();
-        let discipline = if union.len() <= 1 {
-            SyncDiscipline::None
-        } else if a.writer_pools.len() <= 1 {
-            SyncDiscipline::Serialized
-        } else if a.hot_path {
-            SyncDiscipline::Striped
-        } else {
-            SyncDiscipline::Serialized
+    for (name, instances) in acc {
+        let mut best: Option<(SyncDiscipline, &Accumulator)> = None;
+        for a in instances.values() {
+            let d = a.discipline();
+            if best.is_none_or(|(b, _)| rank(d) > rank(b)) {
+                best = Some((d, a));
+            }
+        }
+        let shown = |set: &BTreeSet<Accessor>| -> BTreeSet<PoolIdString> {
+            set.iter()
+                .map(|a| match a {
+                    Accessor::Domain(d) => PoolId::of_domain(placement, *d).display(),
+                    Accessor::Unknown => "an unknown domain".to_string(),
+                })
+                .collect()
         };
-        out.insert(
-            name,
-            InferredSync {
+        let inferred = match best {
+            Some((discipline, a)) => InferredSync {
                 discipline,
-                writer_pools: a.writer_pools,
-                reader_pools: a.reader_pools,
+                writer_pools: shown(&a.writers),
+                reader_pools: shown(&a.readers),
                 hot_path: a.hot_path,
             },
-        );
+            None => InferredSync {
+                discipline: SyncDiscipline::None,
+                writer_pools: BTreeSet::new(),
+                reader_pools: BTreeSet::new(),
+                hot_path: false,
+            },
+        };
+        out.insert(name, inferred);
     }
     out
 }
 
+fn rank(d: SyncDiscipline) -> u8 {
+    match d {
+        SyncDiscipline::None => 0,
+        SyncDiscipline::Serialized => 1,
+        SyncDiscipline::Striped => 2,
+    }
+}
+
+/// The instance an access reaches.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Accessed<'t> {
+    /// A static instance; a held one by its source row, so its holders
+    /// share it.
+    Static(&'t InstanceKey),
+    /// The field of a static instance the table enumerates nothing
+    /// below.
+    Unenumerated(&'t InstanceKey, String),
+    /// The field of a dynamic literal's instances.
+    Dynamic(SiteRef, String),
+}
+
+/// A domain an access is made from; `Unknown` is a domain apart from
+/// every other, never main.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Accessor {
+    Domain(DomainId),
+    Unknown,
+}
+
+/// A `self.<field>.<method>()` call of a mutate or read method.
+struct Access {
+    field: String,
+    writer: bool,
+    hot: bool,
+}
+
 #[derive(Default)]
 struct Accumulator {
-    writer_pools: BTreeSet<PoolIdString>,
-    reader_pools: BTreeSet<PoolIdString>,
+    writers: BTreeSet<Accessor>,
+    readers: BTreeSet<Accessor>,
     hot_path: bool,
 }
 
+impl Accumulator {
+    fn record(&mut self, from: Accessor, a: &Access) {
+        if a.writer {
+            self.writers.insert(from);
+            self.hot_path |= a.hot;
+        } else {
+            self.readers.insert(from);
+        }
+    }
+
+    fn discipline(&self) -> SyncDiscipline {
+        let union: BTreeSet<&Accessor> = self.writers.iter().chain(&self.readers).collect();
+        if union.len() <= 1 {
+            SyncDiscipline::None
+        } else if self.writers.len() <= 1 {
+            SyncDiscipline::Serialized
+        } else if self.hot_path {
+            SyncDiscipline::Striped
+        } else {
+            SyncDiscipline::Serialized
+        }
+    }
+}
+
 struct WalkCx<'a> {
-    enclosing: &'a LocusDecl,
-    enclosing_pool: Option<&'a PoolId>,
-    top: &'a TopScope,
-    candidates: &'a BTreeSet<String>,
     in_loop: bool,
     in_handler: bool,
-    acc: &'a mut BTreeMap<String, Accumulator>,
+    accesses: &'a mut Vec<Access>,
 }
 
 fn is_form_hashmap(form: &FormAnnotation) -> bool {
@@ -240,23 +379,15 @@ fn is_form_hashmap(form: &FormAnnotation) -> bool {
 }
 
 
-/// Receivers we recognize at inference time: `self.field`
-/// where `field` is a locus-typed param on the enclosing
-/// locus. Returns the field's locus type name, or `None` for
-/// everything else (local-variable receivers, deep chains,
-/// stdlib calls, ...). Mirrors the conservative shape the
-/// F.32-0 pool walk uses; richer flow analysis is a follow-up.
+/// The declared locus type of the enclosing locus's params field
+/// `field`, by name, or `None` when it names no locus. Read where the
+/// table enumerates no instance below an owner (a dynamic literal, a
+/// held row whose source is unlinked).
 fn receiver_field_locus_type(
-    receiver: &Expr,
+    field: &str,
     enclosing: &LocusDecl,
     top: &TopScope,
 ) -> Option<String> {
-    let Expr::Field { receiver: head, name: field, .. } = receiver else {
-        return None;
-    };
-    if !matches!(head.as_ref(), Expr::KwSelf(_)) {
-        return None;
-    }
     // Look up the field on the enclosing locus type's params
     // block; resolve its declared type to a locus name if it
     // is one.
@@ -265,7 +396,7 @@ fn receiver_field_locus_type(
         _ => return None,
     };
     for p in &info.params {
-        if p.name == field.name {
+        if p.name == field {
             if let crate::ty::Ty::Named(n) = &p.ty {
                 if let Some(TopSymbol::Locus(_)) = top.lookup(n) {
                     return Some(n.clone());
@@ -371,33 +502,17 @@ fn walk_expr(e: &Expr, cx: &mut WalkCx<'_>) {
             // Recognize `self.<field>.<method>(args)` shape.
             if let Expr::Field { receiver, name: method, .. } = callee.as_ref()
             {
-                if let Some(field_locus) =
-                    receiver_field_locus_type(receiver, cx.enclosing, cx.top)
-                {
-                    if cx.candidates.contains(&field_locus) {
-                        let is_writer =
-                            MUTATE_METHODS.contains(&method.name.as_str());
-                        let is_reader =
-                            READ_METHODS.contains(&method.name.as_str());
-                        if (is_writer || is_reader) && cx.enclosing_pool.is_some()
-                        {
-                            let pool_str = cx
-                                .enclosing_pool
-                                .map(|p| p.display())
-                                .unwrap_or_default();
-                            let entry = cx
-                                .acc
-                                .get_mut(&field_locus)
-                                .expect("candidate accumulator pre-seeded");
-                            if is_writer {
-                                entry.writer_pools.insert(pool_str);
-                                if cx.in_loop || cx.in_handler {
-                                    entry.hot_path = true;
-                                }
-                            } else {
-                                entry.reader_pools.insert(pool_str);
-                            }
-                        }
+                if let Expr::Field { receiver: head, name: field, .. } = receiver.as_ref() {
+                    let is_writer =
+                        MUTATE_METHODS.contains(&method.name.as_str());
+                    let is_reader =
+                        READ_METHODS.contains(&method.name.as_str());
+                    if matches!(head.as_ref(), Expr::KwSelf(_)) && (is_writer || is_reader) {
+                        cx.accesses.push(Access {
+                            field: field.name.clone(),
+                            writer: is_writer,
+                            hot: cx.in_loop || cx.in_handler,
+                        });
                     }
                 }
             }
@@ -493,72 +608,19 @@ mod tests {
     use crate::symbol::Bundle;
     use hale_syntax::parse_source;
 
+    /// Inference over the program minted, as every entry point mints
+    /// it, and its placement table.
     fn infer(src: &str) -> BTreeMap<String, InferredSync> {
-        let prog = parse_source(src).expect("parse");
+        let mut prog = parse_source(src).expect("parse");
+        let ids = crate::snapshot::mint([("", &mut prog)], &[]);
         let mut programs = BTreeMap::new();
         programs.insert(String::new(), &prog);
-        let bundle = Bundle::new(programs);
+        let mut bundle = Bundle::new(programs);
+        bundle.snapshot = ids;
         let (top, _) = build_top_scope(&bundle);
-        // Build pool_of_locus_type the same way
-        // check_placement_single_thread does — walk
-        // main.placement and propagate transitively. For tests,
-        // a small inline helper suffices.
-        let mut pool_map: BTreeMap<String, PoolId> = BTreeMap::new();
-        for program in bundle.programs.values() {
-            for item in &program.items {
-                if let TopDecl::Locus(l) = item {
-                    if l.is_main {
-                        // Seed main's own loci based on
-                        // placement entries.
-                        for m in &l.members {
-                            if let LocusMember::Placement(pb) = m {
-                                for entry in &pb.entries {
-                                    let pool = match &entry.spec {
-                                        hale_syntax::ast::PlacementSpec::Cooperative { pool, .. } => {
-                                            let name = pool
-                                                .as_ref()
-                                                .map(|p| p.name.clone())
-                                                .unwrap_or_else(|| "main".to_string());
-                                            PoolId::Cooperative(name)
-                                        }
-                                        hale_syntax::ast::PlacementSpec::Pinned { .. } => {
-                                            PoolId::Pinned(entry.field.name.clone())
-                                        }
-                                    };
-                                    // Resolve the field to its
-                                    // locus type.
-                                    for p in &l.members {
-                                        if let LocusMember::Params(pb) = p {
-                                            for param in &pb.params {
-                                                if param.name.name
-                                                    == entry.field.name
-                                                {
-                                                    if let Some(hale_syntax::ast::TypeExpr::Named { path, .. }) = &param.ty {
-                                                        if path.segments.len() == 1 {
-                                                            pool_map.insert(
-                                                                path.segments[0].name.clone(),
-                                                                pool.clone(),
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        // Main locus itself runs on main pool.
-                        pool_map.insert(
-                            l.name.name.clone(),
-                            PoolId::Cooperative("main".to_string()),
-                        );
-                    }
-                }
-            }
-        }
+        let placement = crate::placement::derive_placement(&bundle, &top, &crate::entry::entry_row(&bundle));
         let forms = crate::form_rows::FormRows::configured(bundle.programs.values().flat_map(|p| p.items.iter()));
-        infer_sync_for_bundle(&bundle, &top, &pool_map, &forms)
+        infer_sync_for_bundle(&bundle, &top, &placement, &forms)
     }
 
     #[test]

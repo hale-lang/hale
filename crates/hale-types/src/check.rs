@@ -503,16 +503,20 @@ pub struct CheckInputs<'a> {
     /// (the snapshot's `intra_locus` family): rule 10 reads it to tell
     /// a synchronous cycle from one the queue carries.
     pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
+    /// The placement table (F.40 phase 3, P1): which domain each instance
+    /// runs in. The F.31 cross-pool check reads it per instance.
+    pub placement: &'a crate::placement::PlacementTable,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
-/// [`crate::form_rows::form_rows`], the bus graph; the effect rows when a
-/// rule asks), over the bundle [`crate::with_identities`] numbers. `top`
-/// is read beside the numbered copy: a scope names declarations, not
-/// sites, so the one built over `bundle` is the copy's.
+/// [`crate::placement::derive_placement`], [`crate::form_rows::form_rows`],
+/// the bus graph; the effect rows when a rule asks), over the bundle
+/// [`crate::with_identities`] numbers. `top` is read beside the numbered
+/// copy: a scope names declarations, not sites, so the one built over
+/// `bundle` is the copy's.
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -536,7 +540,8 @@ fn check_numbered_bundle(
         }))
     };
     let entry = crate::entry::entry_row(bundle);
-    let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
+    let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
     let bus = crate::bundle_bus_graph(bundle, top);
     let intra_locus = crate::bundle_intra_locus(bundle);
     let inputs = CheckInputs {
@@ -548,6 +553,7 @@ fn check_numbered_bundle(
         forms: &forms,
         bus: &bus,
         intra_locus: &intra_locus,
+        placement: &placement,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -703,7 +709,7 @@ pub fn check_bundle_reporting(
     // self's. Cross-pool coordination must go through the bus,
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
-    check_placement_single_thread(bundle, top, inputs.entry, inputs.forms, &mut diags);
+    check_placement_single_thread(bundle, inputs.placement, inputs.forms, &mut diags);
     // GH #826: a `pinned` placement entry gives its field an OS
     // thread whose join record is one alloca per instantiation SITE,
     // so instantiating the placing locus inside a loop orphans every
@@ -2880,7 +2886,7 @@ fn check_cooperative_pool_blocking(
                                 .unwrap_or_else(|| "main".to_string())
                         }
                         // No placement entry: fields default to pool
-                        // `main` (mirrors compute_pool_of_locus_type).
+                        // `main`.
                         None => "main".to_string(),
                     };
                     // Stdlib loci with known non-terminating run()
@@ -3625,6 +3631,27 @@ pub enum PoolId {
 }
 
 impl PoolId {
+    /// A domain of the placement table, as F.31 names it: main and a
+    /// pool by name, a pinned domain by its anchor's field (every replica
+    /// of one field displays alike; compare domains, not displays).
+    pub fn of_domain(
+        table: &crate::placement::PlacementTable,
+        id: crate::placement::DomainId,
+    ) -> PoolId {
+        use crate::placement::DomainKind;
+        match &table.domain(id).kind {
+            DomainKind::Main => PoolId::Cooperative("main".to_string()),
+            DomainKind::Pool { name, .. } => PoolId::Cooperative(name.clone()),
+            DomainKind::Pinned { anchor, .. } => PoolId::Pinned(
+                anchor
+                    .path
+                    .last()
+                    .map(|s| s.field.clone())
+                    .unwrap_or_else(|| "bindings".to_string()),
+            ),
+        }
+    }
+
     pub fn display(&self) -> String {
         match self {
             PoolId::Cooperative(name) => {
@@ -3633,92 +3660,6 @@ impl PoolId {
             PoolId::Pinned(path) => format!("pinned (at `{}`)", path),
         }
     }
-}
-
-/// F.31 Phase 5 entry. Builds the per-locus-type pool map from
-/// main's placement block, then walks every locus method body in
-/// the bundle and flags direct `recv.foo(args)` calls whose
-/// receiver resolves to a field of a locus type with a different
-/// pool than the enclosing method's locus.
-/// FUv0.8.2 #4 (2026-05-25): F.31 pool propagation extracted
-/// as a pub helper so callers outside this module (the form rows'
-/// sync inference, `crate::form_rows::form_rows`) can re-derive the
-/// map without re-running typecheck.
-///
-/// Seeds from the main locus's `placement { }` block, then
-/// propagates the pool to each nested locus-typed param field.
-/// First-wins on conflict — a single locus type appearing in
-/// two towers with different pools is rare in v1; we pick the
-/// first.
-///
-/// Returns an empty map for programs lowering deploys no `main locus`
-/// in (free-fn-main scripts, libraries), so callers can skip the rest
-/// of the analysis cheaply.
-pub fn compute_pool_of_locus_type(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-) -> BTreeMap<String, PoolId> {
-    // The entry row's lowering root (F.40 phase 3, E0), not its entry:
-    // the map says where lowering runs each locus, and until lowering
-    // reads the entry (L4) it deploys a module-nested `main locus` too
-    // (GH #825), so that one seeds the map. An imported one seeds
-    // nothing.
-    let Some(main) = entry.lowering_root.as_ref().and_then(|m| m.decl(bundle)) else {
-        return BTreeMap::new();
-    };
-
-    let placement_block = main.members.iter().find_map(|m| match m {
-        LocusMember::Placement(pb) => Some(pb),
-        _ => None,
-    });
-    let placement_map: BTreeMap<String, PoolId> = placement_block
-        .map(|pb| {
-            pb.entries
-                .iter()
-                .map(|e| {
-                    (
-                        e.field.name.clone(),
-                        placement_spec_to_pool(&e.spec, &e.field.name),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut pool_of_locus_type: BTreeMap<String, PoolId> = BTreeMap::new();
-    pool_of_locus_type.insert(
-        main.name.name.clone(),
-        PoolId::Cooperative("main".to_string()),
-    );
-    let main_params = main.members.iter().find_map(|m| match m {
-        LocusMember::Params(pb) => Some(pb),
-        _ => None,
-    });
-    if let Some(params) = main_params {
-        for p in &params.params {
-            let pool = placement_map
-                .get(&p.name.name)
-                .cloned()
-                .unwrap_or_else(|| {
-                    PoolId::Cooperative("main".to_string())
-                });
-            if let Some(ty) = &p.ty {
-                if let Some(locus_name) = type_expr_locus_name(ty, top) {
-                    pool_of_locus_type
-                        .entry(locus_name.clone())
-                        .or_insert_with(|| pool.clone());
-                    walk_nested_loci(
-                        &locus_name,
-                        &pool,
-                        top,
-                        &mut pool_of_locus_type,
-                    );
-                }
-            }
-        }
-    }
-    pool_of_locus_type
 }
 
 /// Pool affinity (2026-08-12): validity of `cooperative(pool = X,
@@ -3800,23 +3741,47 @@ fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// F.31 Phase 5: the single-threaded-method invariant. Walks every
+/// locus method body in the bundle and flags direct `self.f.m(args)`
+/// calls whose receiver, the instance in field `f`, runs in another
+/// domain than the instance whose method makes the call.
+///
+/// Per instance (F.40 phase 3, P1): the caller is each static instance
+/// of the enclosing locus the placement table holds, in the domain the
+/// table gives it, and the receiver is that instance's row at `f`, so a
+/// locus type built as two instances in two domains is judged once per
+/// instance (K-3), and a field the table resolves is a receiver however
+/// its type is written: a qualified stdlib path (K-1), an alias or a
+/// contract (K-6). An enclosing locus with no static instance (built
+/// only dynamically, or below a held row whose source is unlinked) is a
+/// hole, which disables the proof: nothing is flagged there, and its
+/// instances are never assumed to run on main or pinned.
 fn check_placement_single_thread(
     bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
+    placement: &crate::placement::PlacementTable,
     forms: &crate::form_rows::FormRows,
     diags: &mut Vec<Diag>,
 ) {
-    let pool_of_locus_type = compute_pool_of_locus_type(bundle, top, entry);
-    if pool_of_locus_type.is_empty() {
+    if placement.instances.is_empty() {
         return;
+    }
+    let running = placement.running();
+    // The user declarations by site, for the receiver's name.
+    let mut decl_names: BTreeMap<crate::placement::SiteRef, String> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                if let Some(id) = bundle.snapshot.site_id(l.id) {
+                    decl_names.insert(crate::placement::SiteRef::user(id), l.name.name.clone());
+                }
+            }
+        });
     }
 
     // 4. Walk every locus method body in the bundle and emit
     //    diagnostics for direct cross-pool calls. The check
-    //    only flags `recv.foo(args)` shapes where `recv` is a
-    //    field-access expression whose declared type names a
-    //    locus with a known pool. Local-variable receivers,
+    //    only flags `self.f.m(args)` shapes where `self.f` is a
+    //    field the table holds a row for. Local-variable receivers,
     //    deeply-chained receivers, and stdlib/free-fn calls all
     //    fall back to OK (they need richer flow analysis we
     //    defer to v1.x).
@@ -3870,16 +3835,24 @@ fn check_placement_single_thread(
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                let caller_pool = pool_of_locus_type.get(&l.name.name);
+                let instances = bundle
+                    .snapshot
+                    .site_id(l.id)
+                    .map(|id| running.of_decl(crate::placement::SiteRef::user(id)))
+                    .unwrap_or(&[]);
+                if instances.is_empty() {
+                    return;
+                }
                 for member in &l.members {
                     if let Some(body) = locus_member_body(member) {
                         let mut cx = PoolCheckCx {
                             enclosing_locus: l,
-                            caller_pool,
+                            instances,
+                            running: &running,
+                            decl_names: &decl_names,
                             cross_pool_safe_loci: &cross_pool_safe_loci,
                             form_bearing_loci: &form_bearing_loci,
                             inferred_sync: &inferred_sync,
-                            top,
                             diags,
                         };
                         walk_block_pool(body, &mut cx);
@@ -4500,59 +4473,6 @@ fn placement_spec_to_pool(
     }
 }
 
-/// Resolve a type expression to a locus name, if the type
-/// resolves to a `TopSymbol::Locus`. Returns `None` for
-/// non-locus types or unresolved names.
-fn type_expr_locus_name(ty: &TypeExpr, top: &TopScope) -> Option<String> {
-    let TypeExpr::Named { path, .. } = ty else {
-        return None;
-    };
-    if path.segments.len() != 1 {
-        return None;
-    }
-    let name = &path.segments[0].name;
-    match top.lookup(name) {
-        Some(TopSymbol::Locus(_)) => Some(name.clone()),
-        _ => None,
-    }
-}
-
-/// Walk a locus type's params block transitively, propagating
-/// the tower's pool to each nested locus-typed field. First-wins
-/// on conflict.
-fn walk_nested_loci(
-    locus_name: &str,
-    pool: &PoolId,
-    top: &TopScope,
-    map: &mut BTreeMap<String, PoolId>,
-) {
-    // We need the original LocusDecl to walk its params. The
-    // bundle isn't threaded through here; instead use the
-    // resolved LocusInfo's params from `top`. LocusInfo carries
-    // Param `Ty` already resolved, so we walk those.
-    let info = match top.lookup(locus_name) {
-        Some(TopSymbol::Locus(l)) => l,
-        _ => return,
-    };
-    for p in &info.params {
-        let nested = match &p.ty {
-            Ty::Named(n) => match top.lookup(n) {
-                Some(TopSymbol::Locus(_)) => Some(n.clone()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(child) = nested {
-            // First-wins: if already assigned, skip to avoid
-            // cycles + multi-tower conflicts.
-            if !map.contains_key(&child) {
-                map.insert(child.clone(), pool.clone());
-                walk_nested_loci(&child, pool, top, map);
-            }
-        }
-    }
-}
-
 /// Return the body block of a locus member that carries one
 /// (lifecycle, on_failure, fn, mode). Anything else (params,
 /// bus, closure decl, etc.) returns None.
@@ -4571,7 +4491,11 @@ fn locus_member_body(member: &LocusMember) -> Option<&Block> {
 /// a closure-capture allocation per node.
 struct PoolCheckCx<'a> {
     enclosing_locus: &'a LocusDecl,
-    caller_pool: Option<&'a PoolId>,
+    /// The enclosing locus's static instances; never empty.
+    instances: &'a [&'a crate::placement::InstanceKey],
+    running: &'a crate::placement::Running<'a>,
+    /// User locus declarations by site.
+    decl_names: &'a BTreeMap<crate::placement::SiteRef, String>,
     /// F.32-0 (2026-05-24): locus type names whose form row is
     /// safe for cross-domain access: a discipline of `serialized`
     /// / `striped` / `lockfree` (F.32-1α/β/γ), written or inferred.
@@ -4604,7 +4528,6 @@ struct PoolCheckCx<'a> {
         String,
         crate::sync_inference::InferredSync,
     >,
-    top: &'a TopScope,
     diags: &'a mut Vec<Diag>,
 }
 
@@ -4696,112 +4619,81 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
         // shape is checked; `Path2`-style stdlib/free-fn
         // calls are pool-neutral (per spec).
         if let Expr::Field { receiver, name: method, .. } = callee.as_ref() {
-            if let Some(field_locus) = receiver_field_locus_type(
-                receiver,
-                cx.enclosing_locus,
-                cx.top,
-            ) {
-                // F.31 (downstream handoff 2026-07-15): the receiver's
-                // pool is the pool of THIS field INSTANCE, inferred at
-                // the call site — not a type-global property. A locus
-                // type used as a plain field in two loci on two pools
-                // yields two independent instances, one co-located with
-                // each owner; `pool_of_locus_type` collapses the type to
-                // a single (first-seen) pool and would false-flag every
-                // other owner's own `self.<field>` call (two separate
-                // `@form` maps each touched by a single pool need no sync
-                // — flagging them was never sound). Compute it
-                // owner-relative: the enclosing locus's OWN placement of
-                // the field if it names one (e.g. `db: pinned` on the
-                // main locus — a genuine off-owner cross-pool access),
-                // else the field co-locates with its owner (the caller's
-                // pool → same pool → not flagged).
-                let field_name = match receiver.as_ref() {
-                    Expr::Field { name, .. } => name.name.clone(),
-                    _ => String::new(),
-                };
-                let instance_pool: Option<PoolId> =
-                    cx.caller_pool.map(|caller| {
-                        enclosing_field_placement(
-                            cx.enclosing_locus,
-                            &field_name,
-                        )
-                        .unwrap_or_else(|| caller.clone())
-                    });
-                if let (Some(callee_pool), Some(caller_pool_val)) = (
-                    instance_pool.as_ref(),
-                    cx.caller_pool,
-                ) {
-                    // F.32-0: receivers with an explicit
-                    // sync discipline (`@form(..., sync = X)`,
-                    // X != none) opt in to cross-pool calls;
-                    // their chosen discipline carries the
-                    // safety contract. Plain `@form(...)` is
-                    // single-pool by default — the diagnostic
-                    // fires with an upgrade hint.
-                    if cx.cross_pool_safe_loci.contains(&field_locus) {
-                        // skip the diagnostic
-                    } else if callee_pool != caller_pool_val {
-                        // F.32-1∞: prefer the inference-specific
-                        // hint when it yields a non-None
-                        // discipline (names the picked sync + the
-                        // observed writer/reader pools). Fall
-                        // back to the generic F.32-0 upgrade
-                        // hint when the inference returns None
-                        // (single-pool, or the offending call
-                        // shape isn't one of the recognized
-                        // `@form(hashmap)` methods so the walker
-                        // observed no signal) or when the
-                        // receiver isn't a hashmap (e.g. plain
-                        // `@form(vec)`).
-                        let inferred_hint = cx
-                            .inferred_sync
-                            .get(&field_locus)
-                            .and_then(|inf| {
-                                crate::sync_inference::render_inference_hint(
-                                    &field_locus, inf,
+            // F.31 (downstream handoff 2026-07-15): the receiver's
+            // pool is the pool of THIS field INSTANCE, inferred at the
+            // call site — not a type-global property. A locus type used
+            // as a plain field in two loci on two pools yields two
+            // independent instances, one co-located with each owner.
+            if let Some(CrossPool { field_locus, caller_pool, callee_pool }) =
+                receiver_cross_pool(receiver, cx)
+            {
+                // F.32-0: receivers with an explicit
+                // sync discipline (`@form(..., sync = X)`,
+                // X != none) opt in to cross-pool calls;
+                // their chosen discipline carries the
+                // safety contract. Plain `@form(...)` is
+                // single-pool by default — the diagnostic
+                // fires with an upgrade hint.
+                if !cx.cross_pool_safe_loci.contains(&field_locus) {
+                    // F.32-1∞: prefer the inference-specific
+                    // hint when it yields a non-None
+                    // discipline (names the picked sync + the
+                    // observed writer/reader pools). Fall
+                    // back to the generic F.32-0 upgrade
+                    // hint when the inference returns None
+                    // (single-pool, or the offending call
+                    // shape isn't one of the recognized
+                    // `@form(hashmap)` methods so the walker
+                    // observed no signal) or when the
+                    // receiver isn't a hashmap (e.g. plain
+                    // `@form(vec)`).
+                    let inferred_hint = cx
+                        .inferred_sync
+                        .get(&field_locus)
+                        .and_then(|inf| {
+                            crate::sync_inference::render_inference_hint(
+                                &field_locus, inf,
+                            )
+                        });
+                    let upgrade_hint = match inferred_hint {
+                        Some(h) => h,
+                        None => {
+                            if cx.form_bearing_loci.contains(&field_locus) {
+                                format!(
+                                    "\n  hint: receiver `{}` is `@form(...)`. \
+                                     Cross-pool access requires an explicit sync \
+                                     discipline:\n    \
+                                     `@form(hashmap, sync = serialized)` — per-map \
+                                     mutex (simplest, lowest throughput)\n    \
+                                     `@form(hashmap, sync = striped)` — parallel \
+                                     writers, cache-padded cells (F.32-1β)\n  \
+                                     See `notes/f32-cache-aware-delivery-plan.md` \
+                                     § F.32-0 / F.32-1.",
+                                    field_locus,
                                 )
-                            });
-                        let upgrade_hint = match inferred_hint {
-                            Some(h) => h,
-                            None => {
-                                if cx.form_bearing_loci.contains(&field_locus) {
-                                    format!(
-                                        "\n  hint: receiver `{}` is `@form(...)`. \
-                                         Cross-pool access requires an explicit sync \
-                                         discipline:\n    \
-                                         `@form(hashmap, sync = serialized)` — per-map \
-                                         mutex (simplest, lowest throughput)\n    \
-                                         `@form(hashmap, sync = striped)` — parallel \
-                                         writers, cache-padded cells (F.32-1β)\n  \
-                                         See `notes/f32-cache-aware-delivery-plan.md` \
-                                         § F.32-0 / F.32-1.",
-                                        field_locus,
-                                    )
-                                } else {
-                                    String::new()
-                                }
+                            } else {
+                                String::new()
                             }
-                        };
-                        cx.diags.push(Diag::ty(
-                            *span,
-                            format!(
-                                "cross-pool method call: `{}.{}` invokes a method \
-                                 on locus `{}` placed `{}`, but the enclosing \
-                                 locus `{}` is placed `{}`. Cross-pool \
-                                 coordination must go through the bus, not a \
-                                 direct call. See spec/types.md \
-                                 § \"Single-threaded-method invariant (F.31)\".{}",
-                                receiver_display(receiver),
-                                method.name,
-                                field_locus,
-                                callee_pool.display(),
-                                cx.enclosing_locus.name.name,
-                                caller_pool_val.display(),
-                                upgrade_hint,
-                            ),
-                        ));
-                    }
+                        }
+                    };
+                    cx.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "cross-pool method call: `{}.{}` invokes a method \
+                             on locus `{}` placed `{}`, but the enclosing \
+                             locus `{}` is placed `{}`. Cross-pool \
+                             coordination must go through the bus, not a \
+                             direct call. See spec/types.md \
+                             § \"Single-threaded-method invariant (F.31)\".{}",
+                            receiver_display(receiver),
+                            method.name,
+                            field_locus,
+                            callee_pool.display(),
+                            cx.enclosing_locus.name.name,
+                            caller_pool.display(),
+                            upgrade_hint,
+                        ),
+                    ));
                 }
             }
         }
@@ -4866,31 +4758,79 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
     }
 }
 
-/// If `receiver` is `self.X` where X is a field of
-/// `enclosing_locus` whose declared type names a locus, return
-/// that locus's name. Otherwise None.
-fn receiver_field_locus_type(
-    receiver: &Expr,
-    enclosing_locus: &LocusDecl,
-    top: &TopScope,
-) -> Option<String> {
+/// A receiver that runs in another domain than its caller: the locus
+/// it realizes, as the diagnostic names it, and the two pools.
+struct CrossPool {
+    field_locus: String,
+    caller_pool: PoolId,
+    callee_pool: PoolId,
+}
+
+/// If `receiver` is `self.X`, where X is a field the placement table
+/// holds a row for under some instance of the enclosing locus, and one
+/// of those rows runs in another domain than its owner: the first such
+/// instance, in key order. The caller's pool is the enclosing
+/// instance's domain; the callee's is the enclosing locus's own
+/// placement of the field, else the caller's (co-located). A field the
+/// table has no row for is no locus (or nothing below its owner is
+/// enumerated, a hole): no claim, so nothing is flagged.
+fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
     let Expr::Field { receiver: inner, name, .. } = receiver else {
         return None;
     };
     if !matches!(inner.as_ref(), Expr::KwSelf(_)) {
         return None;
     }
-    // Find the field on enclosing_locus's params block.
-    let params = enclosing_locus
+    let table = cx.running.table;
+    for owner in cx.instances {
+        let caller = PoolId::of_domain(table, cx.running.row(owner).domain);
+        for field in cx.running.field(owner, &name.name) {
+            let callee = enclosing_field_placement(cx.enclosing_locus, &name.name)
+                .unwrap_or_else(|| caller.clone());
+            if callee == caller {
+                continue;
+            }
+            return Some(CrossPool {
+                field_locus: receiver_locus_name(
+                    cx.running.row(field),
+                    cx.enclosing_locus,
+                    &name.name,
+                    cx.decl_names,
+                ),
+                caller_pool: caller,
+                callee_pool: callee,
+            });
+        }
+    }
+    None
+}
+
+/// The locus a receiver's row realizes, as F.31 names it: a user
+/// declaration by its name, anything else (a stdlib locus, a hole) by
+/// the field's type as written.
+fn receiver_locus_name(
+    row: &crate::placement::InstanceRow,
+    enclosing_locus: &LocusDecl,
+    field: &str,
+    decl_names: &BTreeMap<crate::placement::SiteRef, String>,
+) -> String {
+    if let Some(name) = row.realizes.as_ref().and_then(|d| decl_names.get(&d.site)) {
+        return name.clone();
+    }
+    enclosing_locus
         .members
         .iter()
         .find_map(|m| match m {
-            LocusMember::Params(pb) => Some(pb),
+            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field),
             _ => None,
-        })?;
-    let param = params.params.iter().find(|p| p.name.name == name.name)?;
-    let ty = param.ty.as_ref()?;
-    type_expr_locus_name(ty, top)
+        })
+        .and_then(|p| match &p.ty {
+            Some(TypeExpr::Named { path, .. }) => Some(
+                path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            ),
+            _ => None,
+        })
+        .unwrap_or_else(|| field.to_string())
 }
 
 /// The pool a field is EXPLICITLY placed on by its owning locus's

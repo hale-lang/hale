@@ -439,7 +439,9 @@ It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a
 *direct* method call across pools (`self.other.foo()` where `other`
 is placed on a different pool) is a compile error — it would run
-`other`'s method on the wrong thread.
+`other`'s method on the wrong thread. That holds however `other`'s
+type is written: a stdlib locus by its path (`std::log::Logger`), an
+alias, or an interface the field's literal implements.
 
 One escape is deliberately **not** traced: a call made through a
 *handler function pointer* rather than a direct method reference —

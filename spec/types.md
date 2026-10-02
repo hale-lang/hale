@@ -1116,8 +1116,9 @@ owns the locus's placement's pool. Cross-pool direct calls
 are typecheck errors; cross-pool coordination goes through
 the bus.
 
-The invariant is enforced via a static call-graph walk seeded
-from the `main locus`'s `placement { }` entries:
+The invariant is enforced via a static call-graph walk over the
+placement table (the `placement` family: one row per static
+instance, seeded from the `main locus`'s `placement { }` entries):
 
 1. Each main-locus `params` field has a pool — explicit
    (`placement { field: cooperative(pool = X); }` or
@@ -1127,14 +1128,22 @@ from the `main locus`'s `placement { }` entries:
    (see `spec/semantics.md` § "Nested instantiation"). Methods
    on a nested locus run on the parent's pool's thread.
 3. For a method-call expression `self.field.foo(args)`, the
-   receiver's pool is the pool of the *field instance*,
-   inferred at the call site: the enclosing locus's own
+   caller is each instance of the enclosing locus, on its own
+   pool, and the receiver's pool is the pool of that instance's
+   *field instance*: the enclosing locus's own
    `placement { }` entry for `field` if it names one (e.g. a
    `db: pinned` field on the main locus), otherwise the field
    co-locates with its owner (the caller's pool). The pool is a
    property of the **instance**, not the field's type — the
    same locus type used as a field in two loci on two pools is
    two independent instances, one per owner, each single-pool.
+   A field is a receiver however its type is written: a single
+   name, a qualified path (`std::log::Logger`), an alias, or a
+   contract the field's literal implements, named in the
+   diagnostic by the locus it realizes. An enclosing locus the
+   table holds no static instance of (one built only inside a
+   method body, or one held through a parameter) is not judged:
+   its pool is unknown, never assumed to be main.
 4. If the receiver instance's pool differs from the caller's
    pool, the call is rejected with a diagnostic naming both
    pools and pointing at the `placement { }` entries that

@@ -338,7 +338,8 @@ fn check_numbered_bundle(
         }))
     };
     let entry = entry::entry_row(bundle);
-    let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
+    let placement = placement::derive_placement(bundle, &top, &entry);
+    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bus = bundle_bus_graph(bundle, &top);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
@@ -351,6 +352,7 @@ fn check_numbered_bundle(
             forms: &forms,
             bus: &bus,
             intra_locus: &bundle_intra_locus(bundle),
+            placement: &placement,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -404,7 +406,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
+    let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
+    let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bus = bundle_bus_graph(bundle, &top);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus)
 }
