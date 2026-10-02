@@ -43,6 +43,24 @@ need them are refused or do nothing there; [What wasm32
 can do](#what-wasm32-can-do) lists each one. Reach the outside world
 through host functions instead.
 
+The check finds every way your program reaches a refused namespace,
+not just a call spelled `std::io::fs::…`: building a
+`std::io::tcp::Listener { … }`, calling `conn.recv(64)` on a
+`std::io::tcp::Stream`, or calling a library's `c::stamp()` whose body
+calls `std::process::pid()`. Each is refused where your code makes it,
+with the chain that leads to the namespace:
+
+```text
+error: `std::process` is unavailable under `target wasm`: OS process control (`std::process`) isn't available in the browser — witness: `c::stamp` → `std::process::pid`
+```
+
+A helper you write yourself is refused once, inside it, not at every
+call. A type that only names a stdlib handle (a parameter typed
+`std::io::tcp::Stream`) is fine. And a call the compiler cannot see
+through — a method on a value whose type it doesn't know, or a call
+through a function-typed parameter — is refused under wasm32 too, since
+it can't promise what that call needs.
+
 The **in-process typed bus** — `topic` / `bus { publish … }` /
 `bus { subscribe … }` across loci — runs under wasm exactly as it
 does natively: a `Subject <- payload` is delivered to every matching
@@ -194,7 +212,10 @@ function tick() {
 requestAnimationFrame(tick);
 ```
 
-A program made of `@export` declarations needs no `fn main` at all.
+A program made of `@export` declarations needs no `fn main` at all —
+as long as it's built for wasm32. Checked or built for the host, it has
+no entry point, and the check says so at its first `@export`: declare
+`target wasm { }`, or pass `--target wasm32`.
 
 ## Quick wasm from a bare `fn main`: `--wrap-main`
 

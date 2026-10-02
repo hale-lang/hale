@@ -340,6 +340,7 @@ fn check_numbered_bundle(
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
     let bus = bundle_bus_graph(bundle, &top);
     let target = capability::target_row(bundle);
+    let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -352,6 +353,7 @@ fn check_numbered_bundle(
             bus: &bus,
             intra_locus: &bundle_intra_locus(bundle),
             target: &target,
+            uses: &uses,
         },
         allow_unowned_subscriber,
         strict_callees,

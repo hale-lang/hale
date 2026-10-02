@@ -493,6 +493,10 @@ pub struct CallEdge {
     /// ([`CallSpelling::allocating_recv`]): as written.
     pub allocating_recv: Option<String>,
     pub span: Span,
+    /// The callee expression's own span (`std::process::pid` of
+    /// `std::process::pid()`): where a diagnostic about the callee, not
+    /// the call, is located (the capability admission's refusals).
+    pub callee_span: Span,
 }
 
 impl CallEdge {
@@ -3614,6 +3618,7 @@ impl<'a> Walker<'a> {
             in_loop: self.loops_as_written > 0,
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),
             span,
+            callee_span: callee.span(),
         });
     }
 }
