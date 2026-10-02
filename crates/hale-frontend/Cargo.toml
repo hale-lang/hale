@@ -9,6 +9,7 @@ description = "Hale's shared frontend: source providers and seed/import loading,
 # LLVM-free by law: never hale-codegen (inkwell) and never hale-lsp,
 # its consumer. `crates/hale-graph/tests/architecture.rs` holds it.
 [dependencies]
+hale-graph = { path = "../hale-graph" }
 hale-model = { path = "../hale-model" }
 hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }

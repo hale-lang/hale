@@ -66,6 +66,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hale_graph::ids::SiteId;
 use hale_model::ApplicationModel;
 use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
@@ -92,6 +93,7 @@ use crate::frontend::{
     collect_ap_files, link_checkable, merge_programs, parse_checkable, seed_dir_of, source_map,
     CheckableFailure, LoadMode,
 };
+use crate::dependents::{Declaration, DependencyIndex, Dependents};
 use crate::imports::ImportRenames;
 use crate::source::SourceProvider;
 
@@ -470,6 +472,10 @@ pub struct Snapshot {
     check: OnceCell<Result<Checked, Blocked>>,
     intra_locus: OnceCell<Result<IntraLocusStage, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
+    /// The top-level declarations ([`Snapshot::declarations`]), and the
+    /// families' rows joined to them ([`Snapshot::declaration_dependents`]).
+    declarations: OnceCell<Vec<Declaration>>,
+    dependency_index: OnceCell<Result<DependencyIndex, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
     stage_builds: [Cell<u32>; STAGES.len()],
 }
@@ -646,6 +652,8 @@ impl Snapshot {
             check: OnceCell::new(),
             intra_locus: OnceCell::new(),
             lowering: OnceCell::new(),
+            declarations: OnceCell::new(),
+            dependency_index: OnceCell::new(),
             builds,
             stage_builds: Default::default(),
         };
@@ -1275,6 +1283,60 @@ impl Snapshot {
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("placement");
                 Ok(hale_types::placement::derive_placement(&self.bundle(), &scope.top, entry))
+            })
+            .as_ref()
+    }
+
+    /// The top-level declarations of the programs held, in program then
+    /// item order, each with its minted site ([`crate::dependents`]).
+    /// Empty for a seed with a hole, which is not a program.
+    pub fn declarations(&self) -> &[Declaration] {
+        self.declarations.get_or_init(|| match self.has_hole() {
+            true => Vec::new(),
+            false => crate::dependents::declarations(&self.programs, &self.identities),
+        })
+    }
+
+    /// Which declarations may check differently when the declaration at
+    /// `site` changes, through the families' rows: the callgraph's
+    /// readers closed, and its neighbours in the ownership graph, the bus
+    /// graph, the placement table and the flow rows
+    /// ([`crate::dependents`]). [`Dependents::Whole`] for a declaration no
+    /// family places and for a site that names no declaration. Blocked
+    /// with the scope.
+    pub fn declaration_dependents(&self, site: SiteId) -> Result<Dependents, &Blocked> {
+        let index = self.dependency_index()?;
+        let decls = self.declarations();
+        Ok(match decls.iter().position(|d| d.site == Some(site)) {
+            Some(i) => index.dependents(decls, i),
+            None => Dependents::Whole("the site names no declaration"),
+        })
+    }
+
+    /// The declaration a site sits in: an index into
+    /// [`Snapshot::declarations`].
+    pub fn declaration_of(&self, site: SiteId) -> Option<usize> {
+        self.dependency_index().ok()?.owner(site)
+    }
+
+    fn dependency_index(&self) -> Result<&DependencyIndex, &Blocked> {
+        self.dependency_index
+            .get_or_init(|| {
+                let summary = self.alloc_summary().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
+                let bus = self.demand_bus_graph().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
+                let programs: Vec<&Program> = self.programs.values().collect();
+                let flows = hale_types::flows::survey(&programs, &self.import_renames);
+                Ok(DependencyIndex::build(&crate::dependents::Families {
+                    programs: &self.programs,
+                    decls: self.declarations(),
+                    summary,
+                    ownership,
+                    bus,
+                    placement,
+                    flows: &flows,
+                }))
             })
             .as_ref()
     }
