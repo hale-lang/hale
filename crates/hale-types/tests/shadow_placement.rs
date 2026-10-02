@@ -10,7 +10,6 @@
 //! - `bus`: `collect_subscriber_placements`, per type (no row is
 //!   `SameThread`, as the graph defines it);
 //! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
-//! - `model`: the arrangement's `PlacedIn`, per instance path;
 //! - `budget`: `budget_for_programs`' threads and pools.
 //!
 //! The seeds are the corpus (each program a bare snapshot), every
@@ -29,7 +28,13 @@
 //! off-owner-thread fields (`collect_off_owner_thread_fields`) had one
 //! too, until the rewrite read the table's `off_owner_fields` (P1's part
 //! 4): its only divergences were an imported root's entries, which
-//! lowering never deploys (fixture F-R's principle).
+//! lowering never deploys (fixture F-R's principle). The model's
+//! arrangement (`PlacedIn`, per instance path) had one until it became
+//! the table's rows, projected (the same part): its M-1, M-3, M-5 and
+//! M-9 divergences are the arrangement moves `model_arrangement.rs`
+//! pins, and what stays different (stdlib rows, U-4; `fn main`'s other
+//! literals, M-7; paths whose templates disagree, contract 3) is the
+//! projection's stated coverage, not a legacy answer.
 //!
 //! **The gate.** The comparison runs per row, in memory, and `classify`
 //! names the correspondence's rows (§ 2, § 10) that explain each
@@ -515,88 +520,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
         });
     }
 
-    // model: the arrangement's instances, by path, against the table's
-    // rows projected to the same paths (every construction and every
-    // alternative at a path, as one set). An adapter is no instance of
-    // the arrangement.
-    if let Ok(model) = s.demand_model() {
-        let e = &model.entities;
-        let mut old = Vec::new();
-        for (i, inst) in e.locus_instances.iter().enumerate() {
-            let decl = &e.loci[inst.decl.0 as usize].name;
-            let dom = model
-                .relations
-                .placed_in
-                .iter()
-                .find(|p| p.instance.0 as usize == i)
-                .map(|p| e.thread_domains[p.domain.0 as usize].name.clone())
-                .unwrap_or_else(|| "-".into());
-            old.push((inst.path.clone(), format!("{decl}@{dom}")));
-        }
-        let arranged: BTreeSet<String> = old.iter().map(|(p, _)| p.clone()).collect();
-        let mut model_global = global.clone();
-        if let Some(first) = e.locus_instances.iter().map(|i| i.path.split('.').next().unwrap_or("")).min_by_key(|p| p.len()) {
-            if first != paths.root {
-                model_global.push(format!("cause: the arrangement's root `{first}` is not the table's `{}`", paths.root));
-            }
-        }
-        let mut new: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut witness: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let seen = |pk: &InstanceKey, _: &InstanceRow| arranged.contains(&paths.path(pk));
-        let mut model_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (path, fact) in &old {
-            model_decls.entry(path.clone()).or_default().insert(fact.split('@').next().unwrap_or("").to_string());
-        }
-        for (k, r) in &t.instances {
-            if matches!(k.origin, Origin::Binding(_)) || handed_off.contains(k) {
-                continue;
-            }
-            let path = paths.path(k);
-            let dom = match &t.domain(r.domain).kind {
-                DomainKind::Main => "main".to_string(),
-                DomainKind::Pool { name, .. } => format!("pool:{name}"),
-                DomainKind::Pinned { anchor, .. } => format!("pinned:{}", paths.path(anchor)),
-            };
-            let decl = r.realizes.as_ref().map(|d| d.lowered.clone()).unwrap_or_else(|| "<hole>".into());
-            new.entry(path.clone()).or_default().insert(format!("{decl}@{dom}"));
-            model_decls.entry(path.clone()).or_default().insert(decl);
-            let w = witness.entry(path.clone()).or_default();
-            w.push(describe(k, r));
-            if let Some(c) = paths.first_unseen(k, &bundle, top, &seen) {
-                w.push(format!("cause: {c}"));
-            }
-        }
-        // K-9 / M-9: below a held row whose source the producer could not
-        // link the table asserts nothing; a path the arrangement has there
-        // is the declared type's default subtree it built under the holder.
-        let unlinked_held: Vec<String> = held
-            .iter()
-            .filter(|k| t.instances.get(**k).is_some_and(|r| r.built_by.is_none()))
-            .map(|k| paths.path(k))
-            .collect();
-        for (path, _) in &old {
-            if new.contains_key(path) {
-                continue;
-            }
-            if let Some(h) = unlinked_held.iter().find(|h| path.starts_with(&format!("{h}."))) {
-                witness
-                    .entry(path.clone())
-                    .or_insert_with(|| model_global.clone())
-                    .push(format!("cause: a path under the unlinked held row `{h}`"));
-            }
-        }
-        columns.push(Column {
-            name: "model",
-            old,
-            new: new.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
-            map_old: BTreeMap::new(),
-            witness,
-            global: model_global,
-            slice: "the model's LocusInstance / PlacedIn / Owns (--dump-model, the reachability judgment)",
-            decl: model_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
-        });
-    }
-
     // budget: threads and pools.
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let summary = s.demand_alloc_summary().ok()?;
@@ -818,51 +741,6 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          table pins it on its own thread. Runtime confirmation pending: § 4's adapter test, the correction in the \
          graph-switch PR. § 2.3, § 10.2",
     ),
-    (
-        "M-1",
-        Class::Correction,
-        "the arrangement is rooted at the first `main` in program order, the table at lowering's root (fixture F-R's \
-         principle). § 2.4",
-    ),
-    (
-        "M-2",
-        Class::SpecDisagreement,
-        "a stdlib instance (or one under it); the arrangement holds user declarations only (U-4, pending the owner). \
-         § 2.4",
-    ),
-    (
-        "M-3",
-        Class::KnownOldBug,
-        "a field typed by a qualified stdlib path whose last segment names a user locus is arranged as the user's \
-         locus; the table realizes the stdlib declaration. § 2.4",
-    ),
-    (
-        "M-5",
-        Class::KnownOldBug,
-        "a contract-typed, aliased or generic field (or one under it); the arrangement reads a field's last segment \
-         and skips what is not a user locus. § 2.4",
-    ),
-    (
-        "M-7",
-        Class::Correction,
-        "the entry is an implicit construction: a literal directly in `fn main` adds paths the arrangement (the \
-         root's tree) does not hold, and contract 3 applies to them. § 2.4, § 10.1",
-    ),
-    (
-        "M-9",
-        Class::Correction,
-        "an unlinked held source (K-9 / M-9, § 10.9): the table records the `Reuse` hole and asserts no subtree; \
-         the arrangement builds the declared type's default subtree under the holder (a known old bug: it \
-         fabricates rows an override may contradict), so a path below the held row is the arrangement's alone. A \
-         consumer switch treats the hole as unknown: it disables a proof or an optimization and never defaults to \
-         main or to pinned. § 2.4",
-    ),
-    (
-        "M-c3",
-        Class::Correction,
-        "contract 3: one arrangement path, several construction templates or alternatives that disagree; the \
-         projection makes it a model hole naming them. § 2.4",
-    ),
     ("R-1", Class::KnownOldBug, "`replicas = K` is K threads. § 2.8"),
     ("R-4", Class::KnownOldBug, "a non-root main's entries are counted. § 2.8"),
     ("R-5", Class::KnownOldBug, "the root's constructions times their bounds. § 2.8"),
@@ -901,11 +779,6 @@ fn openness(c: Class) -> u8 {
 fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
     let causes: Vec<&str> = d.witnesses.iter().filter_map(|w| w.strip_prefix("cause: ")).collect();
     let multi = d.new.as_deref().is_some_and(|n| n.contains('|'));
-    // Every cause must name a row; no cause names none.
-    let every = |f: &dyn Fn(&str) -> Option<&'static str>| -> Option<Vec<&'static str>> {
-        let ids: BTreeSet<&'static str> = causes.iter().map(|c| f(c)).collect::<Option<_>>()?;
-        (!ids.is_empty()).then(|| ids.into_iter().collect())
-    };
     // K-8's residue: the set's off-main rows are all held, and on main
     // stands a template an unlinked held row may have been built as, so
     // the "several domains" are one instance before and after its handoff.
@@ -954,34 +827,6 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
                 return None;
             }
             vec!["B-4"]
-        }
-        ("model", Kind::OnlyNew) => every(&|c| {
-            if c.contains("realizing a stdlib declaration") {
-                Some("M-2")
-            } else if c.starts_with("the root ") {
-                Some("M-1")
-            } else if c.starts_with("a literal `fn main` builds") {
-                Some("M-7")
-            } else if ["contract-typed", "aliased", "generic"].iter().any(|k| c.starts_with(k)) {
-                Some("M-5")
-            } else {
-                None
-            }
-        })?,
-        ("model", Kind::OnlyOld) if causes.iter().any(|c| c.starts_with("the arrangement's root")) => vec!["M-1"],
-        ("model", Kind::OnlyOld) if causes.iter().any(|c| c.starts_with("a path under the unlinked held row")) => {
-            vec!["M-9"]
-        }
-        ("model", Kind::Disagreement) if multi => vec!["M-c3"],
-        ("model", Kind::Disagreement) => {
-            // M-3: the arrangement names the user's locus where the table
-            // realizes a stdlib one.
-            let decl = |f: &Option<String>| f.as_deref().and_then(|v| v.split('@').next()).unwrap_or("").to_string();
-            if decl(&d.new).starts_with("__Std") && decl(&d.old) != decl(&d.new) {
-                vec!["M-3"]
-            } else {
-                return None;
-            }
         }
         ("budget", _) => {
             let mut ids = BTreeSet::new();

@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 11 canonical, 29 migrating (with 125 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 11 canonical, 29 migrating (with 124 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -19,7 +19,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
-| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 31 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
+| `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 30 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 5 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
@@ -409,7 +409,6 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-syntax/src/api_gen.rs` · `declared_roles` — `owner` joins the declared roles when any `is_main && !imported` declaration at any depth carries an `api:` entry. *Removed when:* same.
 - `crates/hale-frontend/src/snapshot.rs` · `inject_adopt` — an environment's constitution is adopted into EVERY top-level `is_main` of the program (an imported one included, a module-nested one not), and a program with none refuses it. *Removed when:* reads the entry: an environment binds law to the entry (L4).
 - `crates/hale-types/src/claims.rs` · `has_main = true` — world-tier claims are gathered from every `is_main` at any depth, and `has_main` refuses a top-level `claims` block in a seed that closes. *Removed when:* same.
-- `crates/hale-types/src/model_builder.rs` · `let main_decl` — the model's arrangement root is the first `is_main` among the model's loci, with no filter. *Removed when:* reads the entry (L4).
 - `crates/hale-types/src/model_builder.rs` · `let entrypoint = ast` — the model's `entrypoint` name is the first `is_main` among its loci, else `main`. *Removed when:* same.
 - `crates/hale-types/src/bus_graph.rs` · `let has_entry_point` — the bus graph's closed world is any top-level `is_main` or top-level `fn main`, an imported `main` included; deliberately broader than rule 9's. *Removed when:* reads the entry, beside the `fn main` entry point (L4).
 - `crates/hale-types/src/ownership_graph.rs` · `let has_entry_point` — the ownership DAG's closed world, the bus graph's test made again. *Removed when:* same.
@@ -421,7 +420,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership_graph.rs` · `entry.singleton |= l.is_main` — every `main locus` declaration is a singleton in the ownership graph: a property of each declaration, which derives no entry fact. *Removed when:* same.
 - `crates/hale-types/src/alloc_summary.rs` · `let mut eager_only_loci` — every top-level `main locus` declaration is excluded from eager reclamation, conservatively: a property of each declaration, which derives no entry fact. *Removed when:* same.
 
-**Consumers.** check (rule 1's count reads the witness: the seed's own mains, module-nested ones included) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check and the pinned-in-a-loop rule read it) (`crates/hale-types/src/placement.rs` · `derive_placement`); check (rule 9's closed world is a program with an entry) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import) (`crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind`); --env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal) (`crates/hale-frontend/src/snapshot.rs` · `demand_entry`); build; dna; codegen
+**Consumers.** check (rule 1's count reads the witness: the seed's own mains, module-nested ones included) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check, the pinned-in-a-loop rule and the model's arrangement read it) (`crates/hale-types/src/placement.rs` · `derive_placement`); check (rule 9's closed world is a program with an entry) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import) (`crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind`); --env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal) (`crates/hale-frontend/src/snapshot.rs` · `demand_entry`); build; dna; codegen
 
 **Invariants.**
 
@@ -1253,7 +1252,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/model_builder.rs` · `ModelInputs`; `crates/hale-types/src/lib.rs` · `derive_application_model`
 
-**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); a bundle no snapshot holds (the test entry's) (`crates/hale-types/src/lib.rs` · `derive_application_model_over`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`hale check`'s artifact and both gates: the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); topology (a bundle no snapshot holds) (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
+**Consumers.** demand (every verb and the LSP: the claims, over the snapshot's scope and graphs) (`crates/hale-frontend/src/snapshot.rs` · `derive_application_model_over`); a bundle no snapshot holds (the test entry's) (`crates/hale-types/src/lib.rs` · `derive_application_model_over`); the check's test entry, for a bundle nothing minted (its claims' model over a minted copy, since the arrangement is the placement table's rows) (`crates/hale-types/src/lib.rs` · `check_bundle_opts_scoped`); claims (a caller not on the snapshot) (`crates/hale-types/src/judgment.rs` · `derive_application_model`); topology (`hale check`'s artifact and both gates: the snapshot's model) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `dump_topology_over`); topology (a bundle no snapshot holds) (`crates/hale-types/src/topology.rs` · `derive_application_model`); model dump (the check's snapshot) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `demand_model`); the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model) (`crates/hale-cli/src/shared/options.rs` · `demand_model`); fleet (admits the artifact, never the model)
 
 **Invariants.**
 
@@ -1270,7 +1269,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `derive_application_model(` may be referenced from: `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×2
+- `derive_application_model(` may be referenced from: `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×2
 - `derive_application_model_over(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `claims` — Migrating · law
@@ -1338,7 +1337,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-syntax/src/sites.rs` · `SiteKind`; `crates/hale-types/src/snapshot.rs` · `resolve_uses`; `crates/hale-types/src/snapshot.rs` · `declaration_of`; `crates/hale-types/src/snapshot.rs` · `number`
 
-**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future); the resolved program (codegen's input is minted over the merged program)
+**Consumers.** every table; the shadow facility (compares through an explicit correspondence, never raw id equality); lsp (a later incremental future); the resolved program (codegen's input is minted over the merged program); the model's test entry (a bundle nothing minted is minted over clones of its programs, since the arrangement is the placement table's rows) (`crates/hale-types/src/lib.rs` · `derive_application_model`)
 
 **Invariants.**
 
@@ -1357,7 +1356,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Guarded seams.**
 
-- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
 
 ### `demand` — Canonical · derivation
 

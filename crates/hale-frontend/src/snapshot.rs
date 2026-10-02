@@ -1186,6 +1186,7 @@ impl Snapshot {
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: self.demand_effects().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
+                    placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(

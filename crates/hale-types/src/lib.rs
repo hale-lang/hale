@@ -333,7 +333,14 @@ pub fn check_bundle_opts_scoped(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
+        // A bundle nothing minted has an empty table, and the model's
+        // arrangement is the table's rows: its model is derived over a
+        // minted copy ([`derive_application_model`]).
+        let model = if bundle.snapshot.is_empty() {
+            derive_application_model(bundle)
+        } else {
+            model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &placement)
+        };
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
@@ -358,24 +365,49 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 /// handler rows, the effect rows — once each, and derives over them
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
+///
+/// The arrangement is the placement table's rows, and the table names
+/// minted sites, so a bundle nothing minted (an in-test `Bundle::new`)
+/// is minted first, over clones of its programs, as every verb's load
+/// mints its own; the model is derived over the clones.
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
+    if bundle.snapshot.is_empty() && !bundle.programs.is_empty() {
+        let mut owned: Vec<(String, hale_syntax::ast::Program)> =
+            bundle.programs.iter().map(|(k, p)| (k.clone(), (*p).clone())).collect();
+        let snapshot = snapshot::mint(owned.iter_mut().map(|(k, p)| (k.as_str(), p)), &bundle.sources);
+        let minted = Bundle {
+            programs: owned.iter().map(|(k, p)| (k.clone(), p)).collect(),
+            import_renames: bundle.import_renames.clone(),
+            sources: bundle.sources.clone(),
+            target_has_async_io: bundle.target_has_async_io,
+            target_label: bundle.target_label,
+            snapshot,
+        };
+        return model_of_minted(&minted);
+    }
+    model_of_minted(bundle)
+}
+
+/// [`derive_application_model`] over a bundle whose identities are minted.
+fn model_of_minted(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
     let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    model_over_scope(bundle, &top, &handlers, summary, &forms)
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &placement)
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary and the form rows its caller already built: the
-/// graphs the model reads beside them are built here.
+/// allocation summary, the form rows and the placement table its caller
+/// already built: the graphs the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     handlers: &handler_routing::HandlerRouting,
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
     forms: &form_rows::FormRows,
+    placement: &placement::PlacementTable,
 ) -> hale_model::ApplicationModel {
     let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
@@ -389,6 +421,7 @@ fn model_over_scope(
             handlers,
             effects: &effects,
             forms,
+            placement,
         },
     )
 }

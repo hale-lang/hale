@@ -1559,6 +1559,9 @@ crates/hale-types/tests/locus_field_store.rs#6 fb576285cf6c267e
 crates/hale-types/tests/locus_member_const.rs#3 36c5f94439f06042
 crates/hale-types/tests/locus_member_const.rs#4 36c5f94439f06042
 crates/hale-types/tests/locus_member_type.rs#2 7c7d6de5bd37c6a5
+crates/hale-types/tests/model_arrangement.rs#0 f9d60755d77ddbcb
+crates/hale-types/tests/model_arrangement.rs#1 59a01f7667f8dbf9
+crates/hale-types/tests/model_arrangement.rs#2 7a3dab914ecdbe5c
 crates/hale-types/tests/model_builder.rs#1 3393c58563b7e1ad
 crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48

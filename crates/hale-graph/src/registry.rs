@@ -610,7 +610,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(SNAPSHOT, "inject_adopt", "an environment's constitution is adopted into EVERY top-level `is_main` of the program (an imported one included, a module-nested one not), and a program with none refuses it", "reads the entry: an environment binds law to the entry (L4)"),
             legacy(CLAIMS, "has_main = true", "world-tier claims are gathered from every `is_main` at any depth, and `has_main` refuses a top-level `claims` block in a seed that closes", "same"),
             // The model, the graphs' closed worlds, effects, the editor, the DNA.
-            legacy(MODEL_BUILDER, "let main_decl", "the model's arrangement root is the first `is_main` among the model's loci, with no filter", "reads the entry (L4)"),
             legacy(MODEL_BUILDER, "let entrypoint = ast", "the model's `entrypoint` name is the first `is_main` among its loci, else `main`", "same"),
             legacy(BUS_GRAPH, "let has_entry_point", "the bus graph's closed world is any top-level `is_main` or top-level `fn main`, an imported `main` included; deliberately broader than rule 9's", "reads the entry, beside the `fn main` entry point (L4)"),
             legacy(OWNERSHIP_GRAPH, "let has_entry_point", "the ownership DAG's closed world, the bus graph's test made again", "same"),
@@ -626,7 +625,7 @@ pub const FAMILIES: &[Family] = &[
         ],
         consumers: &[
             consumer_at("check (rule 1's count reads the witness: the seed's own mains, module-nested ones included)", CHECK, "check_main_and_bindings"),
-            consumer_at("placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check and the pinned-in-a-loop rule read it)", PLACEMENT, "derive_placement"),
+            consumer_at("placement (the table is seeded from the lowering root; the F.31 rule, the form rows' sync inference, the blocking check, the pinned-in-a-loop rule and the model's arrangement read it)", PLACEMENT, "derive_placement"),
             consumer_at("check (rule 9's closed world is a program with an entry)", CHECK, "check_bus_graph"),
             consumer_at("check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import)", V_MATRIX, "seed_entry_kind"),
             consumer_at("--env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal)", SNAPSHOT, "demand_entry"),
@@ -1315,7 +1314,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["a checked bundle", "top_scope", "bus_graph", "ownership", "handler_routing", "placement", "effects", "alloc_summary", "topics", "bindings"],
         producer: Some(site(MODEL_BUILDER, "derive_application_model_over")),
         legacy: &[],
-        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
+        consumers: &[consumer_at("demand (every verb and the LSP: the claims, over the snapshot's scope and graphs)", SNAPSHOT, "derive_application_model_over"), consumer_at("a bundle no snapshot holds (the test entry's)", TLIB, "derive_application_model_over"), consumer_at("the check's test entry, for a bundle nothing minted (its claims' model over a minted copy, since the arrangement is the placement table's rows)", TLIB, "check_bundle_opts_scoped"), consumer_at("claims (a caller not on the snapshot)", JUDGMENT, "derive_application_model"), consumer_at("topology (`hale check`'s artifact and both gates: the snapshot's model)", V_CHECK, "dump_topology_over"), consumer_at("topology (a bundle no snapshot holds)", TOPOLOGY, "derive_application_model"), consumer_at("model dump (the check's snapshot)", V_CHECK, "demand_model"),consumer_at("the build identity: the model hash and the obs ids (build, run, replay: the snapshot's model)", OPTIONS, "demand_model"), consumer("fleet (admits the artifact, never the model)")],
         invariants: &[
             "one constructor; no artifact → model, no plan → model, no hand-authored model",
             "hale-model is rebuilt on hale-graph (phase 1.1a): its seed, source and provenance ids and its provenance store are the graph core's, re-exported under the model's paths; its canary allows that one dependency and no other",
@@ -1327,7 +1326,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/model.md"],
         owned: &[site(MODEL_BUILDER, "ModelInputs"), site(TLIB, "derive_application_model")],
         seams: &[
-            Seam { symbol: "derive_application_model(", allowed: &[(TLIB, 1), (JUDGMENT, 1), (TOPOLOGY, 2)] },
+            Seam { symbol: "derive_application_model(", allowed: &[(TLIB, 2), (JUDGMENT, 1), (TOPOLOGY, 2)] },
             Seam { symbol: "derive_application_model_over(", allowed: &[(MODEL_BUILDER, 1), (TLIB, 1), (SNAPSHOT, 1)] },
         ],
     },
@@ -1387,7 +1386,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(EFFECTS, "FnKey", "analysis keys are (locus name, fn name)", "same"),
             legacy(CHECK, "type_expr_key", "rule 12 compares stringified TypeExprs", "same"),
         ],
-        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)")],
+        consumers: &[consumer("every table"), consumer("the shadow facility (compares through an explicit correspondence, never raw id equality)"), consumer("lsp (a later incremental future)"), consumer("the resolved program (codegen's input is minted over the merged program)"), consumer_at("the model's test entry (a bundle nothing minted is minted over clones of its programs, since the arrangement is the placement table's rows)", TLIB, "derive_application_model")],
         invariants: &[
             "addresses are not identities (declarations are cloned); spans are not (the stdlib's coordinates overlap user files; desugars share spans)",
             "snapshot-local uniqueness and provenance are the requirement; persistent identity across editor revisions is a separate problem",
@@ -1400,7 +1399,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs", "crates/hale-types/tests/snapshot.rs (each_use_resolves_to_the_declaration_in_scope)", "crates/hale-types/tests/demand_gate.rs (each_snapshot_resolves_its_uses_once)", "crates/hale-syntax/tests/sites.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 1), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] }],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1), (SYNC, 1)] }],
     },
     Family {
         name: "demand",
