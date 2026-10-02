@@ -14,7 +14,12 @@
 //!   no rows. A dynamic literal's own locus fields are not rows of the
 //!   table (P1 enumerates no subtree it cannot key), so they are
 //!   instances here, each its field literal's template, in its owner's
-//!   domains.
+//!   domains. A field literal reached through several constructions of
+//!   its owner's declaration is one template that keeps each one's
+//!   contribution (owner, instantiating domain, own domain, bound), a
+//!   nested field the product of its owner's with its own placement:
+//!   its bound is their sum, and a claim is one domain where they agree
+//!   and their set where they do not, never one owner's alone.
 //! - the **handler rows**: which `on_failure` an instance's owner runs
 //!   for it, and the recovery ops it can invoke (a restart).
 //! - the **flow rows**: whether an accepted child is reclaimed at the
@@ -308,25 +313,23 @@ impl LiteralWalk<'_> {
 // ------------------------------------------------------- the instances
 
 /// One instance template: the declaration it realizes, where it sits,
-/// and the domains it is built on and runs on.
+/// and every parent context it is reached through.
 struct Subject<'a> {
     site: SourceSite,
     decl: &'a LocusDecl,
     universe: SiteUniverse,
-    /// The instance whose `on_failure` it fails to and whose arena holds
-    /// it: a field's owner, an accepted child's acceptor, a body
-    /// literal's enclosing locus. `None` for a template's top and a
-    /// literal in a free fn.
-    owner: Option<usize>,
     how: How,
-    /// The instantiating thread: the domain running the code that holds
-    /// the literal. `None` when the scope's domains are unknown or many.
-    it: Option<DomainId>,
-    /// The queue owner: where its `run()` runs and its cells land.
-    own: Option<DomainId>,
+    /// Every parent context, in construction order: one for a static
+    /// row, an adapter, a template's top and a body literal; one per
+    /// contribution of its owner for a dynamic literal's field, which is
+    /// one template however many constructions of its owner's
+    /// declaration reach it. Nothing about an occurrence is read from
+    /// one contribution alone.
+    contributions: Vec<Contribution>,
+    /// How many occurrences: the contributions' bounds, summed.
     bound: Bound,
-    /// Built in an `on_failure` body: it exists only on a path where the
-    /// handler runs.
+    /// Built in an `on_failure` body under every contribution: it exists
+    /// only on a path where the handler runs.
     in_handler: bool,
     /// A field whose declared type is a contract (an interface, a
     /// perspective) the literal implements: the cascade tears it down
@@ -336,6 +339,69 @@ struct Subject<'a> {
     /// Its domain was decided for it (a root entry, a binding), not
     /// inherited from its owner.
     placed: bool,
+}
+
+/// One parent context of a template: the owner it is built under there,
+/// the domains it is built and runs on, and how many occurrences it
+/// gives the template.
+#[derive(Debug, Clone)]
+struct Contribution {
+    /// The instance whose `on_failure` it fails to and whose arena holds
+    /// it: a field's owner, an accepted child's acceptor, a body
+    /// literal's enclosing locus. `None` for a template's top and a
+    /// literal in a free fn.
+    owner: Option<usize>,
+    /// The owner's contribution this one is built under: a field's,
+    /// which is its owner's context with the field's own placement.
+    /// `None` pairs it with every contribution of the owner.
+    under: Option<usize>,
+    /// The instantiating thread: the domain running the code that holds
+    /// the literal. `None` when the scope's domains are unknown or many.
+    it: Option<DomainId>,
+    /// The queue owner: where its `run()` runs and its cells land.
+    own: Option<DomainId>,
+    bound: Bound,
+    in_handler: bool,
+}
+
+impl Subject<'_> {
+    fn sum_bounds(&mut self) {
+        let mut bounds = self.contributions.iter().map(|c| c.bound.clone());
+        let first = bounds.next().unwrap_or(Bound::Once);
+        self.bound = bounds.fold(first, |a, b| add_bounds(&a, &b));
+        self.in_handler = self.contributions.iter().all(|c| c.in_handler);
+    }
+}
+
+/// Whether `to` is `from` or an owner of it, through any contribution.
+fn reaches(out: &[Subject<'_>], from: usize, to: usize) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![from];
+    while let Some(o) = stack.pop() {
+        if o == to {
+            return true;
+        }
+        if seen.insert(o) {
+            stack.extend(out[o].contributions.iter().filter_map(|c| c.owner));
+        }
+    }
+    false
+}
+
+/// One claim from every contribution's: the rule they share, over the
+/// domains they name together. None where one of them names none (that
+/// occurrence's domain is not known) or two state different rules.
+fn combine(claims: impl IntoIterator<Item = Option<RunsOn>>) -> Option<RunsOn> {
+    let mut out: Option<RunsOn> = None;
+    for c in claims {
+        let c = c?;
+        match &mut out {
+            None => out = Some(c),
+            Some(o) if o.rule == c.rule => o.domains.extend(c.domains),
+            Some(_) => return None,
+        }
+    }
+    out
 }
 
 /// Whether `owner`'s field `field` is declared with a type that names no
@@ -424,15 +490,21 @@ fn subjects<'a>(
             _ => false,
         };
         by_key.insert(key, out.len());
+        let bound = bound_of(&key.origin);
         out.push(Subject {
             site: SourceSite { decl: realizes.clone(), template: Template::Static(key.clone()) },
             decl,
             universe: realizes.site.universe,
-            owner,
             how,
-            it: Some(PlacementTable::MAIN),
-            own: Some(row.domain),
-            bound: bound_of(&key.origin),
+            contributions: vec![Contribution {
+                owner,
+                under: None,
+                it: Some(PlacementTable::MAIN),
+                own: Some(row.domain),
+                bound: bound.clone(),
+                in_handler: false,
+            }],
+            bound,
             in_handler: false,
             contract,
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
@@ -463,89 +535,121 @@ fn subjects<'a>(
             }
             Enclosing::Fn(_) => How::Body { built: at.built, in_fn_main: at.member == Member::FnMain },
         };
+        let in_handler = at.member == Member::Handler;
         out.push(Subject {
             site: SourceSite { decl: realizes.clone(), template: Template::Dynamic { literal: d.literal } },
             decl,
             universe: realizes.site.universe,
-            owner: None,
             how,
-            it: domain,
-            own: domain,
+            contributions: vec![Contribution {
+                owner: None,
+                under: None,
+                it: domain,
+                own: domain,
+                bound: d.bound.clone(),
+                in_handler,
+            }],
             bound: d.bound.clone(),
-            in_handler: at.member == Member::Handler,
+            in_handler,
             contract: false,
             placed: false,
         });
-        dynamic_fields(&mut out, i, index, &inputs.bundle.snapshot);
+        dynamic_fields(&mut out, i, 0..1, index, &inputs.bundle.snapshot, &mut Vec::new());
     }
     for (i, enclosing) in enclosed {
-        out[i].owner = (0..out.len()).find(|&j| j != i && out[j].site.decl == enclosing);
+        out[i].contributions[0].owner = (0..out.len()).find(|&j| j != i && out[j].site.decl == enclosing);
     }
     // A locus that builds itself (`B { }` in B's run, or two loci that
-    // build each other) owns no instance of its own chain: the instance
-    // closing a cycle of owners has none.
+    // build each other) owns no instance of its own chain: the
+    // contribution closing a cycle of owners has none.
     for i in 0..out.len() {
-        let mut seen = BTreeSet::new();
-        let mut at = out[i].owner;
-        while let Some(o) = at {
-            if o == i {
-                out[i].owner = None;
-                break;
+        for k in 0..out[i].contributions.len() {
+            if out[i].contributions[k].owner.is_some_and(|o| reaches(&out, o, i)) {
+                out[i].contributions[k].owner = None;
             }
-            if !seen.insert(o) {
-                break;
-            }
-            at = out[o].owner;
         }
     }
     out
 }
 
 /// The locus fields a dynamic literal's declaration builds from its
-/// defaults, each an instance of its field literal, recursively.
-fn dynamic_fields<'a>(out: &mut Vec<Subject<'a>>, parent: usize, index: &LocusIndex<'a>, ids: &Snapshot) {
+/// defaults, each an instance of its field literal, recursively: the
+/// parent's contributions `new`, each with the field's own placement,
+/// are the field's contributions (`path` holds the templates the
+/// recursion is inside, which a cycle of defaults does not re-enter).
+fn dynamic_fields<'a>(
+    out: &mut Vec<Subject<'a>>,
+    parent: usize,
+    new: std::ops::Range<usize>,
+    index: &LocusIndex<'a>,
+    ids: &Snapshot,
+    path: &mut Vec<usize>,
+) {
     let universe = out[parent].universe;
     if universe != SiteUniverse::User {
         return;
     }
+    path.push(parent);
     let decl = out[parent].decl;
     for m in &decl.members {
         let LocusMember::Params(pb) = m else { continue };
         for p in &pb.params {
-            let ParamInit::Value(Expr::Struct { path, id, .. }) = &p.init else { continue };
-            let ty = TypeExpr::Named { path: path.clone(), generic_args: Vec::new(), span: path.span };
+            let ParamInit::Value(Expr::Struct { path: lit_path, id, .. }) = &p.init else { continue };
+            let ty = TypeExpr::Named { path: lit_path.clone(), generic_args: Vec::new(), span: lit_path.span };
             let Some(site) = index.names(&ty, universe) else { continue };
             let Some(field_decl) = index.decl(site) else { continue };
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
             let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
             let contract = p.ty.as_ref().is_some_and(|ty| index.names(ty, universe).is_none());
+            // Built inline in the owner's params loop: on the owner's
+            // threads, under that owner.
+            let added: Vec<Contribution> = new
+                .clone()
+                .map(|k| {
+                    let c = &out[parent].contributions[k];
+                    Contribution {
+                        owner: Some(parent),
+                        under: Some(k),
+                        it: c.it,
+                        own: c.own,
+                        bound: c.bound.clone(),
+                        in_handler: c.in_handler,
+                    }
+                })
+                .collect();
             // Every instance of a literal shares its rows: a field literal
             // reached under several of its declaration's literals is one
-            // template, as often as they are.
+            // template, with a contribution from each.
             let template = Template::Dynamic { literal };
-            if let Some(j) = out.iter().position(|s| s.site.template == template) {
-                out[j].bound = add_bounds(&out[j].bound, &out[parent].bound);
-                continue;
-            }
-            let p = &out[parent];
-            let s = Subject {
-                contract,
-                placed: false,
-                site: SourceSite { decl: realizes, template: Template::Dynamic { literal } },
-                decl: field_decl,
-                universe,
-                owner: Some(parent),
-                how: How::Field,
-                it: p.it,
-                own: p.own,
-                bound: p.bound.clone(),
-                in_handler: p.in_handler,
+            let (j, from) = match out.iter().position(|s| s.site.template == template) {
+                Some(j) => {
+                    let from = out[j].contributions.len();
+                    out[j].contributions.extend(added);
+                    (j, from)
+                }
+                None => {
+                    out.push(Subject {
+                        contract,
+                        placed: false,
+                        site: SourceSite { decl: realizes, template },
+                        decl: field_decl,
+                        universe,
+                        how: How::Field,
+                        contributions: added,
+                        bound: Bound::Once,
+                        in_handler: false,
+                    });
+                    (out.len() - 1, 0)
+                }
             };
-            let i = out.len();
-            out.push(s);
-            dynamic_fields(out, i, index, ids);
+            out[j].sum_bounds();
+            if !path.contains(&j) {
+                let to = out[j].contributions.len();
+                dynamic_fields(out, j, from..to, index, ids, path);
+            }
         }
     }
+    path.pop();
 }
 
 /// How many occurrences two sources of one template give it together.
@@ -812,21 +916,59 @@ impl<'b, 'a> Builder<'b, 'a> {
         &self.plan.domains[d.0 as usize].kind
     }
 
+    fn contributions(&self, i: usize) -> &'b [Contribution] {
+        &self.subjects[i].contributions
+    }
+
+    /// Some contribution of `i`'s template answers yes.
+    fn any(&self, i: usize, f: impl Fn(&Contribution) -> bool) -> bool {
+        self.contributions(i).iter().any(f)
+    }
+
+    /// Every contribution of `i`'s template answers yes.
+    fn all(&self, i: usize, f: impl Fn(&Contribution) -> bool) -> bool {
+        self.contributions(i).iter().all(f)
+    }
+
+    /// One claim from each contribution's (see [`combine`]).
+    fn claim(&self, i: usize, f: impl Fn(&Contribution) -> Option<RunsOn>) -> Option<RunsOn> {
+        combine(self.contributions(i).iter().map(f))
+    }
+
+    /// Each instance `i` is built under, once, in construction order.
+    fn owners(&self, i: usize) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        for o in self.contributions(i).iter().filter_map(|c| c.owner) {
+            if !out.contains(&o) {
+                out.push(o);
+            }
+        }
+        out
+    }
+
+    /// The owner's contributions `c` is built under: the one it is paired
+    /// with, or every one.
+    fn under(&self, c: &Contribution) -> Vec<&'b Contribution> {
+        let Some(o) = c.owner else { return Vec::new() };
+        let all = self.contributions(o);
+        match c.under {
+            Some(k) => all.get(k).into_iter().collect(),
+            None => all.iter().collect(),
+        }
+    }
+
     /// The instance is a pinned domain's anchor: it runs on a thread of
     /// its own. A field of a pinned locus shares its anchor's domain for
     /// its cells, but is built, drained and dissolved off that thread.
     fn is_pinned(&self, i: usize) -> bool {
         let Template::Static(key) = &self.subjects[i].site.template else { return false };
-        self.subjects[i]
-            .own
-            .is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { anchor, .. } if anchor == key))
+        self.all(i, |c| c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { anchor, .. } if anchor == key)))
     }
 
     /// In a pinned domain without being its anchor: where its own run
     /// would execute is not the domain's thread.
-    fn under_pinned(&self, i: usize) -> bool {
-        let s = &self.subjects[i];
-        !self.is_pinned(i) && s.own != s.it && s.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. }))
+    fn under_pinned(&self, i: usize, c: &Contribution) -> bool {
+        !self.is_pinned(i) && c.own != c.it && c.own.is_some_and(|d| matches!(self.kind(d), DomainKind::Pinned { .. }))
     }
 
     fn is_pool(&self, d: Option<DomainId>) -> bool {
@@ -839,17 +981,15 @@ impl<'b, 'a> Builder<'b, 'a> {
 
     /// A field the root's placement entry put on a pool other than the
     /// one building it: its lifecycle methods' domains wait on line 3.
-    fn pool_placed(&self, i: usize) -> bool {
-        let s = &self.subjects[i];
-        self.is_pool(s.own) && s.own != s.it
+    fn pool_placed(&self, c: &Contribution) -> bool {
+        self.is_pool(c.own) && c.own != c.it
     }
 
     /// A field nested under a pool-placed field: the table gives it its
     /// owner's pool, and no pool is chosen for its `run()`, which runs
     /// inline on the instantiating thread (inventory C12, R17 and R18).
-    fn inline_off_its_pool(&self, i: usize) -> bool {
-        let s = &self.subjects[i];
-        self.is_pool(s.own) && !s.placed && s.own != s.it
+    fn inline_off_its_pool(&self, i: usize, c: &Contribution) -> bool {
+        self.is_pool(c.own) && !self.subjects[i].placed && c.own != c.it
     }
 
     /// Its `run()` is posted to the pool worker that tears its owner down
@@ -857,15 +997,15 @@ impl<'b, 'a> Builder<'b, 'a> {
     /// that teardown, which cancels it if it is still queued before it
     /// reclaims the child, so its end is ordered before the reclaim's
     /// completion, not before the drain.
-    fn posted_to_its_owners_teardown(&self, i: usize) -> bool {
-        let s = &self.subjects[i];
-        self.is_pool(s.own) && s.owner.is_some_and(|o| self.subjects[o].it == s.own)
+    fn posted_to_its_owners_teardown(&self, c: &Contribution) -> bool {
+        let under = self.under(c);
+        self.is_pool(c.own) && !under.is_empty() && under.iter().all(|o| o.it == c.own)
     }
 
     /// The domain the instance's birth runs on: its pinned thread, or
     /// the instantiating thread.
-    fn birth_domain(&self, i: usize) -> Option<DomainId> {
-        if self.is_pinned(i) { self.subjects[i].own } else { self.subjects[i].it }
+    fn birth_domain(&self, i: usize, c: &Contribution) -> Option<DomainId> {
+        if self.is_pinned(i) { c.own } else { c.it }
     }
 
     fn site(&self, i: usize) -> Option<SourceSite> {
@@ -892,7 +1032,7 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     fn on(domain: Option<DomainId>, rule: Rule) -> Option<RunsOn> {
-        domain.map(|domain| RunsOn { domain, rule })
+        domain.map(|domain| RunsOn { domains: BTreeSet::from([domain]), rule })
     }
 
     /// The spine that tears the instance down, and the domain role it
@@ -913,13 +1053,25 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
     }
 
-    /// The instance whose handler a failure of `i` reaches, and whether
-    /// that handler restarts it.
-    fn route(&self, i: usize) -> Option<(usize, bool)> {
-        let o = self.subjects[i].owner?;
+    /// The instances whose handler a failure of `i` reaches (each owner
+    /// it is built under that routes it), and whether a handler of
+    /// theirs restarts it.
+    fn route(&self, i: usize) -> Option<(Vec<usize>, bool)> {
+        let mut owners = Vec::new();
+        let mut restarts = false;
+        for o in self.owners(i) {
+            if let Some(r) = self.restarts_from(o, i) {
+                owners.push(o);
+                restarts |= r;
+            }
+        }
+        (!owners.is_empty()).then_some((owners, restarts))
+    }
+
+    /// Whether `o`'s handler restarts `i`, where it has one for it.
+    fn restarts_from(&self, o: usize, i: usize) -> Option<bool> {
         let row = self.inputs.handlers.route(&self.subjects[o].site.decl.lowered, &self.subjects[i].site.decl.lowered)?;
-        let restarts = row.ops.iter().any(|op| matches!(op, RecoveryOp::Restart | RecoveryOp::RestartInPlace));
-        Some((o, restarts))
+        Some(row.ops.iter().any(|op| matches!(op, RecoveryOp::Restart | RecoveryOp::RestartInPlace)))
     }
 
     /// Every row one instance owes, in the order its domain performs
@@ -929,8 +1081,9 @@ impl<'b, 'a> Builder<'b, 'a> {
         let s = &subjects[i];
         let mut r = Rows::default();
         let pinned = self.is_pinned(i);
-        let pool_placed = self.pool_placed(i);
-        let (it, own) = (s.it, s.own);
+        let on_pool = self.any(i, |c| self.is_pool(c.own));
+        let on_async_pool = self.any(i, |c| self.is_async_pool(c.own));
+        let posted_to_teardown = self.any(i, |c| self.posted_to_its_owners_teardown(c));
         let accepted = matches!(s.how, How::Accepted { .. });
         let flow = matches!(s.how, How::Accepted { flow: true });
         let let_bound = matches!(s.how, How::Body { built: Built::Let | Built::Nested, .. });
@@ -947,18 +1100,20 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.line = Some("1");
             // An owner placed on a cooperative pool settles on the
             // instantiating thread today; which domain it owes is pending.
-            o.runs_on = if pool_placed {
-                Self::on(it, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
-            } else {
-                Self::on(it, shipped("1"))
-            };
+            o.runs_on = self.claim(i, |c| {
+                if self.pool_placed(c) {
+                    Self::on(c.it, Rule::line("1", Status::Pending { condition: POOL_OWNER }))
+                } else {
+                    Self::on(c.it, shipped("1"))
+                }
+            });
             r.params_settle = Some(self.push(o));
         }
         // Accept (line 5): after the params, before the birth; no rejection.
         let accept = accepted.then(|| {
             let mut o = self.row(i, K::Accept, instantiation);
             o.line = Some("5");
-            o.runs_on = Self::on(it, shipped("5"));
+            o.runs_on = self.claim(i, |c| Self::on(c.it, shipped("5")));
             o.lifetime.push(Retention {
                 resource: Resource::OwnerArena,
                 until: Event { obligation: ObligationId(0), point: Point::Completed },
@@ -972,7 +1127,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         let subscribe = subscribes.then(|| {
             let mut o = self.row(i, K::Subscribe, instantiation);
             o.line = Some("6");
-            o.runs_on = Self::on(it, shipped("6"));
+            o.runs_on = self.claim(i, |c| Self::on(c.it, shipped("6")));
             self.push(o)
         });
         // Birth: on the pinned thread, else on the instantiating thread,
@@ -985,11 +1140,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         let mut o = self.row(i, K::Birth, birth_holder);
         o.multiplicity = Multiplicity::OncePerIncarnation;
         o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
-        o.runs_on = if pool_placed {
-            Self::on(it, Rule::line("3", Status::Pending { condition: NO_OPTION }))
-        } else {
-            Self::on(self.birth_domain(i), Rule::SHIPPED)
-        };
+        o.runs_on = self.claim(i, |c| {
+            if self.pool_placed(c) {
+                Self::on(c.it, Rule::line("3", Status::Pending { condition: NO_OPTION }))
+            } else {
+                Self::on(self.birth_domain(i, c), Rule::SHIPPED)
+            }
+        });
         if let Some(p) = r.params_settle {
             o.edges.entry.push(after(p, Point::Completed, Rule::SHIPPED));
         }
@@ -1017,7 +1174,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.failures(i, &mut r, &[FailureSource::BirthClosure, FailureSource::BirthCheck]);
         // The run: admitted to its pool (line 19), then executed.
         if run {
-            let posted = self.is_pool(own) || pinned;
+            let posted = on_pool || pinned;
             let run_holder = if pinned {
                 Holder { spine: Spine::PinnedMain, domain: DomainRole::Own }
             } else {
@@ -1040,20 +1197,23 @@ impl<'b, 'a> Builder<'b, 'a> {
             // A field nested under a pool-placed field owes its run() to
             // the pool the table gives it, and runs it inline on the
             // instantiating thread today (line 3, inventory C12).
-            o.runs_on = if self.under_pinned(i) {
-                None
-            } else if self.inline_off_its_pool(i) {
-                Self::on(own, open("3", "C12"))
-            } else {
-                Self::on(own, Rule::SHIPPED)
-            };
+            o.runs_on = self.claim(i, |c| {
+                if self.under_pinned(i, c) {
+                    None
+                } else if self.inline_off_its_pool(i, c) {
+                    Self::on(c.own, open("3", "C12"))
+                } else {
+                    Self::on(c.own, Rule::SHIPPED)
+                }
+            });
             o.edges.entry.push(after(birth, Point::Completed, Rule::SHIPPED));
+            // Every end an occurrence can reach, under any contribution.
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
-            if self.is_pool(own) {
+            if on_pool {
                 o.terminals.push(Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)));
                 o.terminals.push(Terminal::NotStarted(NotStarted::Acknowledged));
             }
-            if self.is_async_pool(own) {
+            if on_async_pool {
                 o.terminals.push(Terminal::CanceledAfterStart);
             }
             o.lifetime.push(Retention {
@@ -1065,12 +1225,18 @@ impl<'b, 'a> Builder<'b, 'a> {
             self.get(id).lifetime[0].until.obligation = id;
             r.run = Some(id);
             // A started run a shutdown abandons, parked on an async pool
-            // (line 19, R20a): its own named step.
-            if self.is_async_pool(own) {
+            // (line 19, R20a): its own named step, on the async pools of
+            // the contributions that put it on one.
+            if on_async_pool {
                 let mut o = self.row(i, K::Cancellation, Holder { spine: Spine::PoolRun, domain: DomainRole::PoolWorker });
                 o.line = Some("19");
                 o.guard = PathGuard::DrainInFlight;
-                o.runs_on = Self::on(own, shipped("19"));
+                o.runs_on = combine(
+                    self.contributions(i)
+                        .iter()
+                        .filter(|c| self.is_async_pool(c.own))
+                        .map(|c| Self::on(c.own, shipped("19"))),
+                );
                 o.edges.entry.push(after(id, Point::Entered, shipped("19")));
                 self.push(o);
             }
@@ -1081,7 +1247,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.epoch = Some(epoch);
             o.multiplicity = Multiplicity::OncePerIncarnation;
             match epoch {
-                Epoch::Tick | Epoch::Duration if self.is_pool(own) && own != it => {
+                Epoch::Tick | Epoch::Duration if self.any(i, |c| self.pool_placed(c)) => {
                     o.line = Some("2");
                     o.status = Status::Pending { condition: NO_OPTION };
                 }
@@ -1096,11 +1262,12 @@ impl<'b, 'a> Builder<'b, 'a> {
         let holder = Holder { spine, domain: role };
         let mut o = self.row(i, K::Drain, holder);
         if pinned {
-            o.runs_on = Self::on(own, shipped("12"));
+            o.runs_on = self.claim(i, |c| Self::on(c.own, shipped("12")));
         }
         // A run queued behind its owner's teardown is canceled by the
-        // reclaim, after this drain: its end is ordered before the reclaim.
-        if let Some(run) = r.run.filter(|_| !self.posted_to_its_owners_teardown(i)) {
+        // reclaim, after this drain: its end is ordered before the reclaim
+        // (for every occurrence, once one contribution posts it there).
+        if let Some(run) = r.run.filter(|_| !posted_to_teardown) {
             let rule = if flow || let_bound { shipped("11") } else { Rule::SHIPPED };
             o.edges.entry.push(after(run, Point::Ended, rule));
         }
@@ -1108,7 +1275,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let_bound {
             o.line = Some("11");
         }
-        if s.how == How::Field && s.owner.is_some_and(|p| self.is_pinned(p)) && !pinned {
+        if s.how == How::Field && self.owners(i).into_iter().any(|p| self.is_pinned(p)) && !pinned {
             o.line = Some("12");
             o.status = Status::KnownOpen { inventory_row: "C9" };
         }
@@ -1120,7 +1287,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // A pool-placed locus's dissolve runs on the teardown thread
         // today; its domain waits on line 3, as its birth's does.
         if pinned {
-            o.runs_on = Self::on(own, Rule::SHIPPED);
+            o.runs_on = self.claim(i, |c| Self::on(c.own, Rule::SHIPPED));
         }
         o.edges.entry.push(after(drain, Point::Completed, Rule::SHIPPED));
         let dissolve = self.push(o);
@@ -1185,15 +1352,24 @@ impl<'b, 'a> Builder<'b, 'a> {
         // canceled inside the reclaim and named, NotStarted(Acknowledged),
         // before the child is released (line 19, the retention L5
         // shipped).
-        if let Some(run) = r.run.filter(|_| self.posted_to_its_owners_teardown(i)) {
+        // Claimed on the pools of the contributions that post it there.
+        if let Some(run) = r.run.filter(|_| posted_to_teardown) {
             let mut o = self.row(i, K::Cancellation, reclaim_holder);
             o.line = Some("19");
             o.guard = PathGuard::DrainInFlight;
-            o.runs_on = Self::on(own, shipped("19"));
+            o.runs_on = combine(
+                self.contributions(i)
+                    .iter()
+                    .filter(|c| self.posted_to_its_owners_teardown(c))
+                    .map(|c| Self::on(c.own, shipped("19"))),
+            );
             o.edges.entry.push(after(id, Point::Entered, shipped("19")));
             let cancel = self.push(o);
             self.get(id).edges.completion.push(after(run, Point::Ended, shipped("19")));
-            self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
+            // Only an occurrence posted there has a cancellation to wait for.
+            if self.all(i, |c| self.posted_to_its_owners_teardown(c)) {
+                self.get(id).edges.completion.push(after(cancel, Point::Completed, shipped("19")));
+            }
         }
         r
     }
@@ -1203,31 +1379,30 @@ impl<'b, 'a> Builder<'b, 'a> {
     /// params are open, and the recovery decision and restart when the
     /// owner's handler can restart it.
     fn failures(&mut self, i: usize, r: &mut Rows, sources: &[FailureSource]) {
-        let Some((owner, restarts)) = self.route(i) else { return };
+        let Some((owners, restarts)) = self.route(i) else { return };
         let subjects = self.subjects;
         let s = &subjects[i];
         let pinned = self.is_pinned(i);
-        let owner_own = self.subjects[owner].own;
-        let owner_brackets = self.facts[owner].brackets;
+        let owner_brackets = owners.iter().any(|&o| self.facts[o].brackets);
         let field = s.how == How::Field;
-        let own = s.own;
         let flow = matches!(s.how, How::Accepted { flow: true });
         let in_fn_main_cascade = field && {
             // A field of a template's top whose cascade is lowered in
             // `fn main`, where no locus is `self` (inventory C31).
-            s.owner.is_some_and(|o| matches!(self.subjects[o].how, How::Top { .. }))
+            owners.iter().any(|&o| matches!(self.subjects[o].how, How::Top { .. }))
         };
+        // The occurrences a handler is reached from: the contributions
+        // whose owner routes the failure.
+        let routed: Vec<&Contribution> =
+            self.contributions(i).iter().filter(|c| c.owner.is_some_and(|o| owners.contains(&o))).collect();
         let present = self.facts[i].sources();
         for source in sources.iter().copied().filter(|src| present.contains(src)) {
-            let (guard, raised_on, epoch) = match source {
-                FailureSource::BirthClosure => (PathGuard::FailedInBirth, self.birth_domain(i), Some(Epoch::Birth)),
-                FailureSource::BirthCheck => (PathGuard::FailedInBirth, self.birth_domain(i), Some(Epoch::Inline)),
-                FailureSource::Run => (PathGuard::FailedInRun, own, Some(Epoch::Inline)),
-                FailureSource::Handler => (PathGuard::FailedInRun, own, Some(Epoch::Inline)),
-                FailureSource::Drain => (PathGuard::FailedInTeardown, if pinned { own } else { None }, Some(Epoch::Inline)),
-                FailureSource::Dissolve => {
-                    (PathGuard::FailedInTeardown, if pinned { own } else { None }, Some(Epoch::Dissolve))
-                }
+            let (guard, epoch) = match source {
+                FailureSource::BirthClosure => (PathGuard::FailedInBirth, Some(Epoch::Birth)),
+                FailureSource::BirthCheck => (PathGuard::FailedInBirth, Some(Epoch::Inline)),
+                FailureSource::Run | FailureSource::Handler => (PathGuard::FailedInRun, Some(Epoch::Inline)),
+                FailureSource::Drain => (PathGuard::FailedInTeardown, Some(Epoch::Inline)),
+                FailureSource::Dissolve => (PathGuard::FailedInTeardown, Some(Epoch::Dissolve)),
             };
             let enclosing = match source {
                 FailureSource::BirthClosure | FailureSource::BirthCheck => r.birth,
@@ -1247,12 +1422,21 @@ impl<'b, 'a> Builder<'b, 'a> {
             };
             // Decision L0-1: the handler runs on the owner's domain. In
             // place on the raising thread is the same thing only when the
-            // two are one domain (inventory C36 otherwise).
-            let claim = match (raised_on, owner_own) {
-                (Some(a), Some(b)) if a == b => Self::on(owner_own, shipped("L0-1")),
-                (_, Some(_)) => Self::on(owner_own, open("L0-1", "C36")),
-                _ => None,
-            };
+            // two are one domain (inventory C36 otherwise). Each occurrence
+            // against the owner occurrence it is built under.
+            let mut claims = Vec::new();
+            for c in &routed {
+                let raised_on = self.raised_on(i, c, source);
+                for oc in self.under(c) {
+                    claims.push(match (raised_on, oc.own) {
+                        (Some(a), Some(b)) if a == b => Self::on(oc.own, shipped("L0-1")),
+                        (_, Some(_)) => Self::on(oc.own, open("L0-1", "C36")),
+                        _ => None,
+                    });
+                }
+            }
+            let claim = combine(claims);
+            let delivered_in_place = claim.as_ref().is_some_and(|c| c.rule.status == Status::Shipped);
             let mut o = self.row(i, K::FailureDelivery, Holder { spine: Spine::QueueDrain, domain: DomainRole::Owner });
             o.source = Some(source);
             o.epoch = epoch;
@@ -1267,7 +1451,7 @@ impl<'b, 'a> Builder<'b, 'a> {
                     event: Event { obligation: ObligationId(0), point: Point::Completed },
                     owed_by: DomainRole::Owner,
                 },
-                status: if claim.is_some_and(|c| c.rule.status == Status::Shipped) {
+                status: if delivered_in_place {
                     Status::Shipped
                 } else {
                     Status::KnownOpen { inventory_row: "C36" }
@@ -1304,9 +1488,7 @@ impl<'b, 'a> Builder<'b, 'a> {
             // Delivered at the failing epoch: a run's own failure, in place
             // on its own domain, completes inside the run (line 9).
             if let Some(e) = enclosing {
-                if matches!(source, FailureSource::Run | FailureSource::Drain | FailureSource::Dissolve)
-                    && claim.is_some_and(|c| c.rule.status == Status::Shipped)
-                {
+                if matches!(source, FailureSource::Run | FailureSource::Drain | FailureSource::Dissolve) && delivered_in_place {
                     self.get(e).edges.completion.push(after(id, Point::Completed, shipped("9")));
                 }
             }
@@ -1319,7 +1501,23 @@ impl<'b, 'a> Builder<'b, 'a> {
                 && !pinned
                 && matches!(source, FailureSource::BirthClosure | FailureSource::BirthCheck | FailureSource::Run);
             if holdable {
-                self.held(i, source, epoch, raised_on, owner, restarts, r);
+                self.held(i, source, epoch, &routed, restarts, r);
+            }
+        }
+    }
+
+    /// Where the occurrences of contribution `c` raise a failure of
+    /// `source`; `None` where it is not one known domain.
+    fn raised_on(&self, i: usize, c: &Contribution, source: FailureSource) -> Option<DomainId> {
+        match source {
+            FailureSource::BirthClosure | FailureSource::BirthCheck => self.birth_domain(i, c),
+            FailureSource::Run | FailureSource::Handler => c.own,
+            FailureSource::Drain | FailureSource::Dissolve => {
+                if self.is_pinned(i) {
+                    c.own
+                } else {
+                    None
+                }
             }
         }
     }
@@ -1331,18 +1529,10 @@ impl<'b, 'a> Builder<'b, 'a> {
         i: usize,
         source: FailureSource,
         epoch: Option<Epoch>,
-        raised_on: Option<DomainId>,
-        owner: usize,
+        routed: &[&Contribution],
         restarts: bool,
         r: &mut Rows,
     ) {
-        let settling = self.subjects[owner].it;
-        let owner_on_pool = self.is_pool(self.subjects[owner].own) && self.subjects[owner].own != settling;
-        let rule = if owner_on_pool {
-            Rule::line("1", Status::Pending { condition: POOL_OWNER })
-        } else {
-            shipped("1")
-        };
         // The hold and the delivery at settle are shipped for every owner;
         // which domain a pool-placed owner's delivery owes is pending.
         let mut o = self.row(i, K::FailureDelivery, Holder { spine: Spine::Settle, domain: DomainRole::Instantiating });
@@ -1353,8 +1543,21 @@ impl<'b, 'a> Builder<'b, 'a> {
         o.multiplicity = Multiplicity::OncePerTrigger;
         o.terminals = vec![Terminal::Completed];
         // Raised and delivered on one thread only when the failing child
-        // raises on the settling thread.
-        o.runs_on = if raised_on == settling { Self::on(settling, rule) } else { None };
+        // raises on the thread settling the owner it is built under.
+        let mut claims = Vec::new();
+        for c in routed {
+            let raised_on = self.raised_on(i, c, source);
+            for oc in self.under(c) {
+                let settling = oc.it;
+                let rule = if self.pool_placed(oc) {
+                    Rule::line("1", Status::Pending { condition: POOL_OWNER })
+                } else {
+                    shipped("1")
+                };
+                claims.push(if raised_on == settling { Self::on(settling, rule) } else { None });
+            }
+        }
+        o.runs_on = combine(claims);
         let enclosing = match source {
             FailureSource::Run => r.run,
             _ => r.birth,
@@ -1365,9 +1568,8 @@ impl<'b, 'a> Builder<'b, 'a> {
                 _ => after(e, Point::Completed, shipped("8")),
             });
         }
-        if let Some(settle) = self.rows.get(owner).and_then(|rows| rows.params_settle) {
-            o.edges.completion.push(after(settle, Point::Completed, shipped("1")));
-        }
+        // Completed at each owner's settle: the tree's edges, once every
+        // owner's rows exist.
         let delivery = self.push(o);
         self.get(delivery).lifetime = vec![
             Retention { resource: Resource::Instance, until: Event { obligation: delivery, point: Point::Completed }, status: Status::Shipped },
@@ -1391,7 +1593,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         // handler returns, through the same placement and admission as a
         // first run (line 13; inline today for a pool-placed child, C43).
         if matches!(source, FailureSource::BirthClosure | FailureSource::BirthCheck) && self.facts[i].run {
-            let resume_rule = if self.pool_placed(i) { open("13", "C43") } else { shipped("13") };
+            let resume_rule = if routed.iter().any(|c| self.pool_placed(c)) { open("13", "C43") } else { shipped("13") };
             let mut o = self.row(i, K::Resume, Holder { spine: Spine::Settle, domain: DomainRole::Instantiating });
             o.source = Some(source);
             o.guard = PathGuard::FailedAtSettle;
@@ -1399,12 +1601,12 @@ impl<'b, 'a> Builder<'b, 'a> {
             o.status = resume_rule.status;
             o.edges.entry.push(after(delivery, Point::Completed, shipped("1")));
             let resume = self.push(o);
-            let own = self.subjects[i].own;
             let mut o = self.row(i, K::Run, Holder { spine: Spine::PoolRun, domain: DomainRole::Own });
             o.source = Some(source);
             o.guard = PathGuard::FailedAtSettle;
             o.multiplicity = Multiplicity::OncePerIncarnation;
-            o.runs_on = if self.under_pinned(i) { None } else { Self::on(own, resume_rule) };
+            o.runs_on =
+                combine(routed.iter().map(|c| if self.under_pinned(i, c) { None } else { Self::on(c.own, resume_rule) }));
             o.terminals = vec![Terminal::Completed, Terminal::FailureDelivered];
             o.edges.entry.push(after(resume, Point::Entered, resume_rule));
             o.edges.entry.push(after(delivery, Point::Completed, Rule::line("13", resume_rule.status)));
@@ -1464,18 +1666,23 @@ impl<'b, 'a> Builder<'b, 'a> {
         self.push(o);
     }
 
-    /// The edges between an instance and its owner: born before the
-    /// owner's birth, drained before its drain, dissolved after its
-    /// dissolve, reclaimed before its reclaim; and a held failure
-    /// delivered before the owner's birth.
+    /// The edges between an instance and each owner it is built under:
+    /// born before the owner's birth, drained before its drain,
+    /// dissolved after its dissolve, reclaimed before its reclaim; and a
+    /// held failure delivered before the owner's birth.
     fn tree_edges(&mut self, i: usize) {
-        let Some(o) = self.subjects[i].owner else { return };
+        for o in self.owners(i) {
+            self.owner_edges(i, o);
+        }
+    }
+
+    fn owner_edges(&mut self, i: usize, o: usize) {
         let child = self.rows[i].clone();
         let parent = self.rows[o].clone();
         let pinned = self.is_pinned(i);
         let parent_pinned = self.is_pinned(o);
         let field = self.subjects[i].how == How::Field;
-        let restartable = self.route(i).is_some_and(|(_, restarts)| restarts);
+        let restartable = self.restarts_from(o, i).unwrap_or(false);
         if field && !pinned {
             // Born inline in the owner's params loop (inventory C5); a
             // restart births it again later, so the order holds for a child
@@ -1516,14 +1723,19 @@ impl<'b, 'a> Builder<'b, 'a> {
             self.get(pr).edges.entry.push(after(cr, Point::Completed, shipped("14")));
         }
         // A held failure: delivered once the owner's last param is
-        // stored, before the owner's birth (line 1).
+        // stored, completed at its settle, before its birth (line 1).
+        let held: Vec<ObligationId> = child
+            .deliveries
+            .iter()
+            .copied()
+            .filter(|d| self.plan.obligations[d.0 as usize].guard == PathGuard::FailedAtSettle)
+            .collect();
+        if let Some(settle) = parent.params_settle.filter(|_| self.restarts_from(o, i).is_some()) {
+            for &d in &held {
+                self.get(d).edges.completion.push(after(settle, Point::Completed, shipped("1")));
+            }
+        }
         if let Some(pb) = parent.birth {
-            let held: Vec<ObligationId> = child
-                .deliveries
-                .iter()
-                .copied()
-                .filter(|d| self.plan.obligations[d.0 as usize].guard == PathGuard::FailedAtSettle)
-                .collect();
             for d in held {
                 let rule = Rule::line("1", self.plan.obligations[d.0 as usize].status);
                 self.get(pb).edges.entry.push(after(d, Point::Completed, rule));
@@ -1564,7 +1776,7 @@ impl<'b, 'a> Builder<'b, 'a> {
         for i in eager {
             let main_locus = matches!(self.subjects[i].how, How::Top { main_locus: true, .. });
             let fields: Vec<usize> =
-                (0..self.subjects.len()).filter(|&c| self.subjects[c].owner == Some(i) && self.subjects[c].how == How::Field).collect();
+                (0..self.subjects.len()).filter(|&c| self.subjects[c].how == How::Field && self.owners(c).contains(&i)).collect();
             // Every teardown spine pre-drains (line 18; not the eager one
             // yet, C13).
             let mut o = process_row(K::PreDrain, Spine::EagerTeardown, Some("18"), Status::KnownOpen { inventory_row: "C13" });
@@ -1654,11 +1866,13 @@ impl<'b, 'a> Builder<'b, 'a> {
         // A failure of a child the joins wait for completes before the join
         // does (join progress): today because the handler runs in place on
         // the child's thread (C36), once delivery follows L0-1 because the
-        // joining owner keeps completing its children's decisions.
+        // joining owner keeps completing its children's decisions. Stated
+        // for a template every occurrence of which is on a pool: the edge
+        // holds of each occurrence.
         for i in 0..self.subjects.len() {
             let join = if self.is_pinned(i) {
                 self.rows[i].pinned_join
-            } else if self.is_pool(self.subjects[i].own) {
+            } else if self.all(i, |c| self.is_pool(c.own)) {
                 first_join
             } else {
                 None
@@ -1682,13 +1896,15 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         // Every run on a pool ends before that pool's join completes, and
         // a canceled one names its cancellation first (line 19: a parked
-        // run abandoned, R20a, or a queued one its teardown cancels).
+        // run abandoned, R20a, or a queued one its teardown cancels). A
+        // run is held to the join where every occurrence is on a pool; a
+        // cancellation exists only on one.
         if let Some(join) = first_join {
             for i in 0..self.subjects.len() {
-                if !self.is_pool(self.subjects[i].own) {
+                if !self.any(i, |c| self.is_pool(c.own)) {
                     continue;
                 }
-                if let Some(run) = self.rows[i].run {
+                if let Some(run) = self.rows[i].run.filter(|_| self.all(i, |c| self.is_pool(c.own))) {
                     self.get(join).edges.completion.push(after(run, Point::Ended, shipped("19")));
                 }
                 let cancels: Vec<ObligationId> = self

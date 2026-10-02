@@ -243,9 +243,11 @@ pub struct Obligation {
     pub guard: PathGuard,
     pub holder: Holder,
     /// The domain the holder's role resolves to in this deployment,
-    /// with the rule that says so; `None` where the role does not
-    /// resolve to one domain (the events span two, the domain is a
-    /// hole, or the rule is pending).
+    /// with the rule that says so, or the set of them where the
+    /// template's occurrences are built under parents on different
+    /// domains; `None` where the role does not resolve (an occurrence's
+    /// events span two domains, the domain is a hole, or the rule is
+    /// pending).
     pub runs_on: Option<RunsOn>,
     pub edges: Edges,
     /// The named terminal alternatives, every one this obligation can
@@ -301,12 +303,28 @@ impl FailureSource {
     }
 }
 
-/// A resolved domain claim: every event of the obligation runs on this
-/// domain, by this rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A resolved domain claim, by this rule: every event of one occurrence
+/// of the obligation runs on one of these domains. One domain where
+/// every occurrence of the template runs on it; several where a field
+/// template is reached under parents on different domains and each
+/// occurrence runs on its own parent's (the producer keeps every
+/// parent's contribution; no claim is taken from one parent alone).
+/// Never empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunsOn {
-    pub domain: crate::placement::DomainId,
+    pub domains: std::collections::BTreeSet<crate::placement::DomainId>,
     pub rule: Rule,
+}
+
+impl RunsOn {
+    /// The domain, where the claim names one.
+    pub fn one(&self) -> Option<crate::placement::DomainId> {
+        let mut it = self.domains.iter();
+        match (it.next(), it.next()) {
+            (Some(&d), None) => Some(d),
+            _ => None,
+        }
+    }
 }
 
 /// The rule an edge or a claim states, and its status.

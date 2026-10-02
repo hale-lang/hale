@@ -10,8 +10,11 @@
 //! `Decl` is the lowered declaration name, `-` for a process-level
 //! obligation. A step is owed once by each of `N` subjects (default 1;
 //! `*+` at least one): instances, or incarnations for `Birth` and
-//! `Run`. `=Terminal` names the end it reaches (default `Completed`);
-//! `!domain` claims the thread it runs on. An edge's `Point` is
+//! `Run`. `=Terminal` names the end it reaches (default `Completed`;
+//! `=Ended` any end, where some subjects complete and some do not);
+//! `!domain` claims the thread it runs on, and `!{main,pool:side}` that
+//! each subject runs on one of a set (a template whose occurrences are
+//! built under parents on different domains). An edge's `Point` is
 //! `Entered`, `Completed` or `Ended`; within one declaration it holds
 //! per incarnation between two steps owed per incarnation, otherwise
 //! per instance, and across declarations for every instance of the
@@ -25,7 +28,7 @@
 //! renders, so each file leaves the other half dead.
 #![allow(dead_code)]
 
-use hale_types::lifecycle::trace::{Count, Expected, Owed};
+use hale_types::lifecycle::trace::{claim_label, Count, Expected, Owed};
 use hale_types::lifecycle::{Event, Multiplicity, ObligationId, ObligationKind, Point, Spine, Terminal};
 
 /// The kinds owed once per incarnation; the rest once per instance.
@@ -76,10 +79,14 @@ pub fn plan(text: &str) -> Expected {
         let mut seq = Vec::new();
         for step in steps.split_whitespace() {
             let (step, domain) = match step.split_once('!') {
-                Some((s, d)) => (s, Some(d.to_string())),
+                Some((s, d)) => {
+                    let set = d.strip_prefix('{').and_then(|d| d.strip_suffix('}'));
+                    (s, Some(set.map_or_else(|| vec![d.to_string()], |ds| ds.split(',').map(str::to_string).collect())))
+                }
                 None => (step, None),
             };
             let (step, ends) = match step.split_once('=') {
+                Some((s, "Ended")) => (s, Point::Ended),
                 Some((s, t)) => {
                     (s, Point::Terminal(Terminal::from_name(t).unwrap_or_else(|| panic!("plan: unknown terminal {t}"))))
                 }
@@ -140,15 +147,17 @@ pub fn render(exp: &Expected) -> String {
             Count::AtLeast(1) => s.push_str("*+"),
             Count::AtLeast(n) => s.push_str(&format!("*>={n}")),
         }
-        if o.ends != Point::Completed {
-            if let Point::Terminal(t) = o.ends {
+        match o.ends {
+            Point::Terminal(t) => {
                 s.push('=');
                 s.push_str(&t.name());
             }
+            Point::Ended => s.push_str("=Ended"),
+            _ => {}
         }
         if let Some(d) = &o.domain {
             s.push('!');
-            s.push_str(d);
+            s.push_str(&claim_label(d));
         }
         s
     };

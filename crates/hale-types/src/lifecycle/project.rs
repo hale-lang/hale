@@ -35,7 +35,12 @@
 //! one; every edge a held rule states between two rendered rows, except
 //! an instance's plain program order, which its line states. The trace
 //! names an instance by its declaration, so a row or an edge that only
-//! some of a declaration's templates on the path owe is not held.
+//! some of a declaration's templates on the path owe is not held, nor an
+//! edge between two declarations each with several occurrences (which
+//! occurrence is built under which is not in the trace). A domain claim
+//! is one domain, or the set a template's occurrences run on when they
+//! are built under parents on different domains, each occurrence held
+//! to one of them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,8 +64,11 @@ pub struct RunPath {
     pub abandoned: BTreeSet<String>,
     /// Declarations whose run, queued behind its owner's teardown on the
     /// worker, that teardown cancels before it starts (line 19, the
-    /// retention L5 shipped).
-    pub canceled: BTreeSet<String>,
+    /// retention L5 shipped), with how many of their occurrences: every
+    /// one, or some (a field template whose parents are on several
+    /// domains, its run posted behind the teardown on one), whose runs
+    /// then end either way.
+    pub canceled: BTreeMap<String, u32>,
     /// The run ends inside this obligation: entered, never ended, and
     /// nothing that waits for its end is owed.
     pub ends_inside: Option<Inside>,
@@ -189,7 +197,7 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                     None => match o.kind {
                         // The reclaim's cancellation of a queued run, or
                         // the pool worker's of a parked one.
-                        K::Cancellation if o.holder.domain == DomainRole::Teardown => path.canceled.contains(l),
+                        K::Cancellation if o.holder.domain == DomainRole::Teardown => path.canceled.contains_key(l),
                         K::Cancellation => path.abandoned.contains(l),
                         K::Run => !held_birth,
                         _ => true,
@@ -399,7 +407,7 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
     let mut exp = Expected::default();
     let mut index: BTreeMap<Key, usize> = BTreeMap::new();
     let mut of: Vec<Option<usize>> = vec![None; n];
-    let mut claims: BTreeMap<usize, BTreeSet<Option<String>>> = BTreeMap::new();
+    let mut claims: BTreeMap<usize, BTreeSet<Option<Vec<String>>>> = BTreeMap::new();
     let mut process_rows: BTreeMap<usize, usize> = BTreeMap::new();
     let mut lines: Vec<(Option<String>, Vec<usize>)> = Vec::new();
     for (i, o) in plan.obligations.iter().enumerate() {
@@ -420,8 +428,11 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                     Some(l) => {
                         let base = instances(l).unwrap_or(Count::Exactly(0));
                         let restarts = path.failures.iter().filter(|f| &f.decl == l).map(|f| f.restarts).sum::<u32>() as usize;
+                        // A teardown's cancellation, once per run it cancels.
+                        let canceled = path.canceled.get(l).filter(|_| o.holder.domain == DomainRole::Teardown);
                         match (o.kind, base) {
                             _ if never_started => Count::Exactly(0),
+                            (K::Cancellation, _) if canceled.is_some() => Count::Exactly(canceled.map_or(0, |&k| k as usize)),
                             (K::Restart, Count::Exactly(b)) => Count::Exactly(b * failure.map_or(0, |f| f.restarts as usize)),
                             (K::Birth | K::Run, Count::Exactly(b)) => Count::Exactly(b * (1 + restarts)),
                             (_, c) => c,
@@ -432,8 +443,15 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
                     K::Run if decl(o).is_some_and(|l| path.abandoned.contains(&l)) => {
                         Point::Terminal(Terminal::CanceledAfterStart)
                     }
-                    K::Run if decl(o).is_some_and(|l| path.canceled.contains(&l)) => {
-                        Point::Terminal(Terminal::NotStarted(NotStarted::Acknowledged))
+                    // Every occurrence's queued run canceled, or some: each
+                    // ends completed or not started.
+                    K::Run if decl(o).is_some_and(|l| path.canceled.contains_key(&l)) => {
+                        let l = decl(o).expect("a declaration");
+                        if instances(&l) == Some(Count::Exactly(path.canceled[&l] as usize)) {
+                            Point::Terminal(Terminal::NotStarted(NotStarted::Acknowledged))
+                        } else {
+                            Point::Ended
+                        }
                     }
                     _ => Point::Completed,
                 };
@@ -459,7 +477,10 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
             *process_rows.entry(at).or_insert(0) += 1;
         }
         of[i] = Some(at);
-        let claim = o.runs_on.filter(|r| focus.holds(r.rule)).map(|r| label(r.domain));
+        let claim = o.runs_on.as_ref().filter(|r| focus.holds(r.rule)).map(|r| {
+            let labels: BTreeSet<String> = r.domains.iter().map(|&d| label(d)).collect();
+            labels.into_iter().collect::<Vec<String>>()
+        });
         claims.entry(at).or_default().insert(claim);
     }
     for (at, rows) in process_rows {
@@ -503,9 +524,24 @@ pub fn expected(plan: &LifecyclePlan, focus: Focus<'_>, path: &RunPath) -> Resul
         }
     }
     let held_by_every = |at: usize, by: &BTreeSet<&Template>| exp.owed[at].decl.as_deref().is_none_or(|l| every_template(l, by));
+    // An edge between two declarations' instances ties each occurrence to
+    // the one it is built under, and the trace holds it for every
+    // occurrence of the first before any of the second: the same thing
+    // only where one side has a single occurrence. With several on both
+    // (a field reached under several constructions of its owner), the
+    // trace cannot tell which occurrence is whose, and the edge is not
+    // held.
+    let single = |at: usize| exp.owed[at].decl.as_deref().is_none_or(|l| instances(l) == Some(Count::Exactly(1)));
+    let tied = |a: usize, b: usize| {
+        let (da, db) = (&exp.owed[a].decl, &exp.owed[b].decl);
+        da.is_none() || db.is_none() || da == db || single(a) || single(b)
+    };
     exp.edges = edges
         .into_iter()
-        .filter(|((a, b), (by_a, by_b))| held_by_every(a.obligation.0 as usize, by_a) && held_by_every(b.obligation.0 as usize, by_b))
+        .filter(|((a, b), (by_a, by_b))| {
+            let (a, b) = (a.obligation.0 as usize, b.obligation.0 as usize);
+            held_by_every(a, by_a) && held_by_every(b, by_b) && tied(a, b)
+        })
         .map(|(edge, _)| edge)
         .collect();
     Ok(exp)

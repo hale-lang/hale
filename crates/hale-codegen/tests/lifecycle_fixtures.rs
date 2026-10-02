@@ -68,7 +68,7 @@ mod build_opts;
 #[path = "support/lifecycle_plan.rs"]
 mod lifecycle_plan;
 
-use lifecycle_plan::{normalized, plan};
+use lifecycle_plan::{normalized, plan, render};
 
 /// Every fixture finishes in well under a second; a hang is a known-open
 /// outcome of its own (`timeout`), not a stalled suite.
@@ -122,6 +122,9 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l01_neg_it_waits_worker_queue.hl", line: "1", adopted: Some("delivered-at-settle-queue-ran"), run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l02_tick_after_posted_run.hl", line: "2", adopted: None, run: RunMode::Plain, judge: outcome_line },
     Fixture { file: "l03_pool_birth_domain.hl", line: "3", adopted: None, run: RunMode::Plain, judge: outcome_line },
+    Fixture { file: "l03_field_parents_two_domains.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: leaf_born },
+    Fixture { file: "l03_field_parents_two_domains_nested.hl", line: "3", adopted: Some("born-on-each-parents-domain"), run: RunMode::Plain, judge: twig_born },
+    Fixture { file: "l03_field_parents_one_domain.hl", line: "3", adopted: Some("born-on-main"), run: RunMode::Plain, judge: leaf_born },
     Fixture { file: "l04_dissolve_route_reclaim.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: outcome_or_exit },
     Fixture { file: "l04_dissolve_route_cascade.hl", line: "4", adopted: Some("owner-handled-once"), run: RunMode::Plain, judge: handled_once },
     Fixture { file: "l05_accept_position.hl", line: "5", adopted: Some("accept-after-params-before-birth"), run: RunMode::Plain, judge: outcome_line },
@@ -256,6 +259,24 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
             p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
             &["4"]
         }
+        // One field template, its occurrences built under the two Parents
+        // on main and on pool `side`, where the Parent statement's
+        // teardown cancels the one run queued behind it; or both on main,
+        // the control.
+        "l03_field_parents_two_domains.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2)]);
+            p.canceled = count(&[("Leaf", 1)]);
+            &["3"]
+        }
+        "l03_field_parents_two_domains_nested.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2), ("Twig", 2)]);
+            p.canceled = count(&[("Twig", 1)]);
+            &["3"]
+        }
+        "l03_field_parents_one_domain.hl" => {
+            p.occurrences = count(&[("Parent", 2), ("Leaf", 2)]);
+            &["3"]
+        }
         "l05_accept_position.hl" => {
             p.occurrences = count(&[("Kid", 1)]);
             &["5"]
@@ -308,7 +329,7 @@ fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
         // that reclaims it, is canceled before it starts.
         "l19_queued_run_canceled.hl" => {
             p.occurrences = count(&[("Own", 1), ("Host", 1), ("Kid", 2)]);
-            p.canceled.insert("Kid".to_string());
+            p.canceled.insert("Kid".to_string(), 2);
             &["19"]
         }
         "l19_resumed_run_at_shutdown.hl" => {
@@ -1100,6 +1121,35 @@ fn completed_or_named(r: &Ran) -> String {
     }
 }
 
+/// Where each occurrence of `decl` was born: on its own parent's domain,
+/// one on main and one on pool `side`, or both on main.
+fn born_where(r: &Ran, decl: &str) -> String {
+    if r.timed_out || r.code != Some(0) {
+        return exit_word(r);
+    }
+    let mut on: Vec<&str> = r
+        .trace
+        .events
+        .iter()
+        .filter(|e| e.kind == ObligationKind::Birth && e.point == Point::Entered && e.decl.as_deref() == Some(decl))
+        .map(|e| e.domain.as_str())
+        .collect();
+    on.sort();
+    match on[..] {
+        ["main", side] if side.starts_with("pool:side") => "born-on-each-parents-domain".to_string(),
+        ["main", "main"] => "born-on-main".to_string(),
+        _ => format!("{decl} born on {on:?}"),
+    }
+}
+
+fn leaf_born(r: &Ran) -> String {
+    born_where(r, "Leaf")
+}
+
+fn twig_born(r: &Ran) -> String {
+    born_where(r, "Twig")
+}
+
 fn restart_during_teardown(r: &Ran) -> String {
     if r.timed_out {
         return "timeout".to_string();
@@ -1204,6 +1254,76 @@ fn every_planned_kind_has_a_negative_control() {
     }
 }
 
+/// The projected expectations of the field-template fixtures, in the
+/// notation: a template reached under parents on main and on pool
+/// `side` claims the set for its birth and run, two levels down as one,
+/// where the template that kept its first parent's context only claimed
+/// `Birth*2!pool:side Run*2!pool:side`, false of the occurrence on main;
+/// the side occurrence's run is canceled behind its parent's teardown
+/// and the main one's completes (`=Ended`). The edges between the
+/// Parents and their fields are not held: two occurrences of each, and
+/// the trace does not say which is whose. The control, both parents on
+/// main, claims main alone and renders byte for byte what it did before.
+const FIELD_PLANS: &[(&str, &str)] = &[
+    (
+        "l03_field_parents_two_domains.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Reclaim.Completed\n\
+         edge Leaf.Reclaim.Entered -> Leaf.Cancellation.Entered",
+    ),
+    (
+        "l03_field_parents_two_domains_nested.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth Run!pool:side Drain Dissolve Reclaim\n\
+         Parent: Birth*2 Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2\n\
+         Twig: Birth*2!{main,pool:side} Run*2=Ended!{main,pool:side} Drain*2 Dissolve*2 Reclaim*2 Cancellation!pool:side\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Twig.Run.Ended -> Twig.Reclaim.Completed\n\
+         edge Twig.Reclaim.Entered -> Twig.Cancellation.Entered",
+    ),
+    (
+        "l03_field_parents_one_domain.hl",
+        "App: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Worker: Birth!main Run!main Drain Dissolve Reclaim\n\
+         Parent: Birth*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         Leaf: Birth*2!main Run*2!main Drain*2 Dissolve*2 Reclaim*2\n\
+         edge App.Run.Ended -> App.Drain.Entered\n\
+         edge App.Dissolve.Completed -> Worker.Dissolve.Entered\n\
+         edge Worker.Birth.Completed -> App.Birth.Entered\n\
+         edge Worker.Run.Ended -> Worker.Drain.Entered\n\
+         edge Worker.Drain.Completed -> App.Drain.Entered\n\
+         edge Worker.Reclaim.Completed -> App.Reclaim.Entered\n\
+         edge Leaf.Run.Ended -> Leaf.Drain.Entered",
+    ),
+];
+
+#[test]
+fn a_field_reached_under_two_parents_claims_their_domains() {
+    let mut differ = Vec::new();
+    for (file, want) in FIELD_PLANS {
+        let got = render(&derived_plan(file).expect("a plan"));
+        if got != *want {
+            differ.push(format!("{file}:\n{got}"));
+        }
+    }
+    assert!(differ.is_empty(), "the projected plans differ:\n{}", differ.join("\n\n"));
+}
+
 /// The trace oracle over one run: clean, or, for a known-open trace,
 /// showing exactly the departures its entry names.
 fn assert_trace(file: &str, ran: &Ran) {
@@ -1263,6 +1383,9 @@ fixture_tests! {
     l01_neg_it_waits_worker_queue => "l01_neg_it_waits_worker_queue.hl",
     l02_tick_after_posted_run => "l02_tick_after_posted_run.hl",
     l03_pool_birth_domain => "l03_pool_birth_domain.hl",
+    l03_field_parents_two_domains => "l03_field_parents_two_domains.hl",
+    l03_field_parents_two_domains_nested => "l03_field_parents_two_domains_nested.hl",
+    l03_field_parents_one_domain => "l03_field_parents_one_domain.hl",
     l04_dissolve_route_reclaim => "l04_dissolve_route_reclaim.hl",
     l04_dissolve_route_cascade => "l04_dissolve_route_cascade.hl",
     l05_accept_position => "l05_accept_position.hl",

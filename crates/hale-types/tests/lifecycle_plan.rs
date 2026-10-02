@@ -13,10 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_types::lifecycle::{
-    FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationKind as K, PathGuard, Point, Spine, Status,
-    Template, Terminal, DECISION_LINES,
+    FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationId, ObligationKind as K, PathGuard, Point, Rule,
+    Spine, Status, Template, Terminal, DECISION_LINES,
 };
-use hale_types::placement::{DomainKind, SiteUniverse};
+use hale_types::placement::{Bound, DomainKind, SiteUniverse};
 
 fn snapshot(src: &str) -> Snapshot {
     let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("parse: {e:?}"));
@@ -226,9 +226,139 @@ fn a_field_under_a_pool_placed_field_owes_its_run_to_the_pool() {
         "locus Kid { run() { } }\nlocus Mid { params { k: Kid = Kid { }; } }\nmain locus App {\n    params { m: Mid = Mid { }; }\n    placement { m: cooperative(pool = side); }\n}\nfn main() { App { }; }\n",
     );
     let p = plan(&s);
-    let on = one(p, "Kid", K::Run).runs_on.expect("the table gives it a pool");
-    assert!(matches!(&p.domains[on.domain.0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
+    let on = one(p, "Kid", K::Run).runs_on.clone().expect("the table gives it a pool");
+    assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
     assert_eq!((on.rule.line, on.rule.status), (Some("3"), Status::KnownOpen { inventory_row: "C12" }));
+}
+
+/// The labels of the domains a row claims.
+fn claimed(p: &LifecyclePlan, o: &Obligation) -> BTreeSet<String> {
+    let on = o.runs_on.as_ref().unwrap_or_else(|| panic!("{} claims no domain", o.kind.name()));
+    on.domains
+        .iter()
+        .map(|d| match &p.domains[d.0 as usize].kind {
+            DomainKind::Main => "main".to_string(),
+            DomainKind::Pool { name, .. } => format!("pool:{name}"),
+            DomainKind::Pinned { .. } => "pinned".to_string(),
+        })
+        .collect()
+}
+
+fn labels(ls: &[&str]) -> BTreeSet<String> {
+    ls.iter().map(|l| l.to_string()).collect()
+}
+
+fn id_of(p: &LifecyclePlan, o: &Obligation) -> ObligationId {
+    p.iter().find(|(_, x)| std::ptr::eq(*x, o)).map(|(id, _)| id).expect("in the plan")
+}
+
+/// `Parent { }` built by App's run() on main and by Worker's on pool
+/// `side`: Parent's field default `Leaf { }` is one template with both.
+fn two_parents(leaf: &str, extra: &str, worker_placed: bool) -> String {
+    let placement = if worker_placed { "    placement { worker: cooperative(pool = side); }\n" } else { "" };
+    format!(
+        "{leaf}\n{extra}locus Parent {{ params {{ leaf: Leaf = Leaf {{ }}; }} }}\nlocus Worker {{ run() {{ Parent {{ }}; }} }}\nmain locus App {{\n    params {{ worker: Worker = Worker {{ }}; }}\n{placement}    run() {{ Parent {{ }}; }}\n}}\nfn main() {{ App {{ }}; }}\n"
+    )
+}
+
+/// Line 3: a field literal reached through two constructions of its
+/// owner's declaration, one on main and one on pool `side`, is one
+/// template that keeps both: its birth and run claim the set (each
+/// occurrence runs on its own parent's domain, never on the first
+/// parent's alone), its bound is the two summed, and it is a child of
+/// both parents.
+#[test]
+fn a_field_reached_under_parents_on_two_domains_claims_both() {
+    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", true));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let leaf: Vec<_> = p.instances.iter().filter(|i| i.site.decl.lowered == "Leaf").collect();
+    assert_eq!(leaf.len(), 1, "one template");
+    // Two literals in run() bodies, each unbounded.
+    assert!(matches!(leaf[0].bound, Bound::Unbounded(_)));
+    for kind in [K::Birth, K::Run] {
+        let o = one(p, "Leaf", kind);
+        assert_eq!(claimed(p, o), labels(&["main", "pool:side"]), "{}", kind.name());
+        assert_eq!(o.runs_on.as_ref().map(|r| r.rule), Some(Rule::SHIPPED), "{}", kind.name());
+        assert_eq!(o.runs_on.as_ref().and_then(|r| r.one()), None);
+    }
+    // A child of each parent: born before its birth, reclaimed before its
+    // arena.
+    let (leaf_birth, leaf_reclaim) = (id_of(p, one(p, "Leaf", K::Birth)), id_of(p, one(p, "Leaf", K::Reclaim)));
+    let parent_births = rows(p, "Parent", K::Birth);
+    assert_eq!(parent_births.len(), 2, "two Parent literals, two templates");
+    for b in parent_births {
+        assert!(b.edges.entry.iter().any(|pr| pr.event.obligation == leaf_birth));
+    }
+    for r in rows(p, "Parent", K::Reclaim) {
+        assert!(r.edges.entry.iter().any(|pr| pr.event.obligation == leaf_reclaim));
+    }
+}
+
+/// The same two levels down: Twig, Leaf's field, takes Leaf's
+/// contributions with its own placement, so it claims the same set; and
+/// its bound is the sum of its grandparents' (it kept the first one's
+/// alone before: `Once` for two Parents built once each).
+#[test]
+fn a_field_two_levels_under_parents_on_two_domains_claims_both() {
+    let s = snapshot(&two_parents("locus Leaf { params { twig: Twig = Twig { }; } }", "locus Twig { run() { } }\n", true));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    assert_eq!(p.instances.iter().filter(|i| i.site.decl.lowered == "Twig").count(), 1);
+    for kind in [K::Birth, K::Run] {
+        assert_eq!(claimed(p, one(p, "Twig", kind)), labels(&["main", "pool:side"]), "{}", kind.name());
+    }
+    assert_eq!(claimed(p, one(p, "Leaf", K::Birth)), labels(&["main", "pool:side"]));
+    let s = snapshot(
+        "locus Twig { }\nlocus Leaf { params { twig: Twig = Twig { }; } }\nlocus Parent { params { leaf: Leaf = Leaf { }; } }\nfn one() { Parent { }; }\nfn two() { Parent { }; }\nfn main() { one(); two(); }\n",
+    );
+    let p = plan(&s);
+    for decl in ["Leaf", "Twig"] {
+        let bound: Vec<&Bound> = p.instances.iter().filter(|i| i.site.decl.lowered == decl).map(|i| &i.bound).collect();
+        assert_eq!(bound, [&Bound::AtMost(2)], "{decl}");
+    }
+}
+
+/// The control: both parents on main. Every contribution agrees, and
+/// the claim is the one domain.
+#[test]
+fn a_field_reached_under_parents_on_one_domain_claims_it() {
+    let s = snapshot(&two_parents("locus Leaf { run() { } }", "", false));
+    let p = plan(&s);
+    for kind in [K::Birth, K::Run] {
+        let o = one(p, "Leaf", kind);
+        assert_eq!(claimed(p, o), labels(&["main"]), "{}", kind.name());
+        assert_eq!(o.runs_on.as_ref().and_then(|r| r.one()), Some(hale_types::placement::PlacementTable::MAIN));
+    }
+}
+
+/// The failure route of such a field reaches each parent's handler on
+/// that parent's domain: the delivery in place and the one held to the
+/// settle claim the set, and the held one waits for both parents'
+/// settles.
+#[test]
+fn a_field_under_parents_on_two_domains_fails_to_each() {
+    let s = snapshot(&two_parents(
+        "locus Leaf {\n    params { name: String = \"\"; }\n    closure fuse { captures: name; epoch inline; }\n    run() { violate fuse; }\n}",
+        "",
+        true,
+    )
+    .replace(
+        "locus Parent { params { leaf: Leaf = Leaf { }; } }",
+        "locus Parent {\n    params { leaf: Leaf = Leaf { }; }\n    on_failure(c: Leaf, err: ClosureViolation) { }\n}",
+    ));
+    let p = plan(&s);
+    assert!(laws(p).is_empty(), "{:?}", laws(p));
+    let deliveries = rows(p, "Leaf", K::FailureDelivery);
+    let in_place = deliveries.iter().find(|o| o.guard == PathGuard::FailedInRun).expect("delivered in place");
+    assert_eq!(claimed(p, in_place), labels(&["main", "pool:side"]));
+    assert_eq!(in_place.runs_on.as_ref().map(|r| (r.rule.line, r.rule.status)), Some((Some("L0-1"), Status::Shipped)));
+    let held = deliveries.iter().find(|o| o.guard == PathGuard::FailedAtSettle).expect("held to the settle");
+    assert_eq!(claimed(p, held), labels(&["main", "pool:side"]));
+    let settles: BTreeSet<ObligationId> = rows(p, "Parent", K::ParamsSettle).into_iter().map(|o| id_of(p, o)).collect();
+    assert_eq!(settles.len(), 2);
+    let waits: BTreeSet<ObligationId> = held.edges.completion.iter().map(|pr| pr.event.obligation).collect();
+    assert!(settles.is_subset(&waits), "the held delivery waits for each parent's settle");
 }
 
 /// Line 13: a locus that declares no run() owes none when it resumes;
@@ -293,7 +423,7 @@ fn the_eager_spine_owes_the_wait_abort_before_the_join() {
     assert_eq!(process(K::PreDrain, Spine::EagerTeardown).status, Status::KnownOpen { inventory_row: "C13" });
     // The pool's run ends before the join completes (line 19).
     let pusher_run = one(p, "Pusher", K::Run);
-    let on = pusher_run.runs_on.expect("a placed run names its domain");
-    assert!(matches!(&p.domains[on.domain.0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
+    let on = pusher_run.runs_on.clone().expect("a placed run names its domain");
+    assert!(matches!(&p.domains[on.one().expect("one domain").0 as usize].kind, DomainKind::Pool { name, .. } if name == "side"));
     assert!(join.edges.completion.iter().any(|pr| pr.rule.line == Some("19") && pr.event.point == Point::Ended));
 }

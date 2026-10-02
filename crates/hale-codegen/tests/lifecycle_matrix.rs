@@ -852,7 +852,7 @@ fn run_path(c: Cell) -> RunPath {
         p.failures.push(PathFailure { decl: "Subj".into(), source, held: held(c), in_teardown: false, restarts: 0 });
     }
     if run_canceled(c) {
-        p.canceled.insert("Subj".into());
+        p.canceled.insert("Subj".into(), c.position.instances() as u32);
     }
     p.occurrences.insert("Subj".into(), c.position.instances() as u32);
     if !own_is_root(c) {

@@ -1,0 +1,26 @@
+// Decision line 3, a field template reached under parents on two
+// domains (Birth, Run).
+//
+// `Parent`'s field default `Leaf { }` is one template however many
+// `Parent` literals build it, and two do: `App`'s run() on main and
+// `Worker`'s run() on pool `side`. Each Leaf is built inline in its own
+// Parent's params, on that Parent's thread, so the template's birth and
+// run claim the set of the two domains, and each occurrence runs on one
+// of them; neither parent's domain alone is the template's. (The
+// reviewer's program, with a body in Leaf's run(): an empty one is
+// never called.) On `side` the Leaf's run() is posted to the worker
+// running Worker's run(), behind the teardown of the Parent statement,
+// which cancels it before it starts (line 19); on main it runs.
+//
+// Expected terminal outcome: one Leaf born on each parent's domain,
+// judged by the harness from the trace: `born-on-each-parents-domain`.
+
+locus Leaf { run() { println("ev leaf-run"); } }
+locus Parent { params { leaf: Leaf = Leaf { }; } }
+locus Worker { run() { Parent { }; } }
+main locus App {
+    params { worker: Worker = Worker { }; }
+    placement { worker: cooperative(pool = side); }
+    run() { Parent { }; }
+}
+fn main() { App { }; }
