@@ -789,8 +789,8 @@ pub fn check_bundle_reporting(
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine. The flat
-        // stream is `effect_diags_with_renames`'s; the grouped report
-        // is kept for the certificate evidence.
+        // stream is the check's, demangled; the grouped report is kept
+        // for the certificate evidence.
         let (mut flat, groups) = crate::effects::effect_report_grouped(
             &programs_vec,
             inputs.alloc_summary,

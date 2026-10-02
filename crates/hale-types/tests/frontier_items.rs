@@ -242,7 +242,7 @@ fn manifest_and_cost_are_available() {
     "#;
     let mut program = hale_syntax::parse_source(src).expect("parse");
     let ids = hale_types::snapshot::mint([("app.hl", &mut program)], &[]);
-    let summary = alloc_summary::summarize_programs(&[&program], &ids);
+    let summary = alloc_summary::summarize_identified(&[(&program, &ids)], &[]);
     let ffi = std::collections::BTreeSet::new();
     let eff = frontier::infer_effects(
         &summary,

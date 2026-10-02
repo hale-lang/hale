@@ -36,7 +36,6 @@ use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
 use crate::effect_classes::EffectClassTable;
-use crate::snapshot::Snapshot;
 use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, FnKey};
 use crate::callgraph::{self, Probe};
@@ -662,58 +661,16 @@ fn placement_implied_diags(
     out
 }
 
-pub fn effect_diags(programs: &[&Program], ids: &Snapshot) -> Vec<Diag> {
-    effect_diags_with_renames(programs, ids, &[])
-}
-
-/// Same, with the bundle's cross-seed import renames so the
-/// callgraph can walk into an imported seed.
-pub fn effect_diags_with_renames(
-    programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> Vec<Diag> {
-    let mut out = effect_diags_inner(programs, ids, import_renames);
-    // A witness path through an imported seed would otherwise name
-    // the merged symbol (`__lib_foo_bar_baz`), which appears nowhere
-    // in the user's source.
-    crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
-    out
-}
-
-fn effect_diags_inner(
-    programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> Vec<Diag> {
-    effect_report_inner(programs, ids, import_renames).0
-}
-
 /// #392 §8: every fn-grained effect certificate (incl. the phase
 /// contracts) as a lowered claim row with its verdict — evaluated
 /// by the SAME pass that produces the diagnostics, so the two can
 /// never disagree. The topology artifact serializes these beside
-/// the bundle claims: one schema of record for all law.
-pub fn certificate_rows(
-    programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> Vec<LoweredCertificate> {
-    effect_report_inner(programs, ids, import_renames).1
-}
-
-/// Programs no snapshot holds: each form carries the discipline its
-/// written argument gives it.
-fn effect_report_inner(
-    programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<LoweredCertificate>) {
-    let summary =
-        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, ids, import_renames);
+/// the bundle claims: one schema of record for all law. `summary` is
+/// the `alloc_summary` family's. Programs no snapshot holds: each form
+/// carries the discipline its written argument gives it.
+pub fn certificate_rows(programs: &[&Program], summary: &AllocSummary) -> Vec<LoweredCertificate> {
     let forms = written_forms(programs);
-    let (d, certs) = effect_report_grouped(programs, &summary, &forms);
-    (d, certs.into_iter().map(|(row, _)| row).collect())
+    effect_report_grouped(programs, summary, &forms).1.into_iter().map(|(row, _)| row).collect()
 }
 
 /// The form rows of programs no snapshot holds and no scope was built

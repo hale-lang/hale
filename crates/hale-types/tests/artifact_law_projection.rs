@@ -71,12 +71,8 @@ fn diff_one(
     // comparison: the certificate ENGINES were never the thing
     // being migrated, so they can still disagree.
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let mut old_lowered = hale_types::effects::certificate_rows(
-        &programs_v,
-        &bundle.snapshot,
-        &[],
-    );
     let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
+    let mut old_lowered = hale_types::effects::certificate_rows(&programs_v, &summary);
     old_lowered.extend(hale_types::budget_check::certificate_rows(
         &programs_v,
         &summary,

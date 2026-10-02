@@ -4,7 +4,7 @@
 //!
 //! [`derive_effect_rows`] walks the checked programs with the
 //! stdlib's minted analysis copy beside them, as the allocation
-//! summary does ([`crate::stdlib_bodies::summarize_with_stdlib_and_renames`]),
+//! summary does ([`crate::alloc_summary::derive_alloc_summary`]),
 //! once, and answers per fn what every consumer used to re-derive for
 //! itself: the resolved call targets, the effect set the walk proves,
 //! how much of the walk it could see, and the fn's purity.

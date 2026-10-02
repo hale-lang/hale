@@ -1222,20 +1222,16 @@ fn carried_by(
 /// (`hale_frontend::snapshot::Snapshot::demand_alloc_summary`); a
 /// bundle no snapshot holds runs it once for itself.
 pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary {
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    )
-}
-
-/// The summary of `programs`, all minted with `ids` (the identities a
-/// body's escape tags read which declaration a use names from).
-pub fn summarize_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> AllocSummary {
-    let identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
-        programs.iter().map(|p| (*p, ids)).collect();
-    summarize_identified(&identified, &[])
+    let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
+        bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+    // The stdlib's analysis copy, with its own identities: a call through
+    // a stdlib handle has a body to walk (`stdlib_bodies`).
+    if let (Some(program), Some(ids)) =
+        (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities())
+    {
+        identified.push((program, ids));
+    }
+    summarize_identified(&identified, &bundle.import_renames)
 }
 
 /// Every top-level locus of `programs` with a param whose type is one of
@@ -3837,7 +3833,7 @@ mod tests {
 
     fn summarize(src: &str) -> AllocSummary {
         let (program, ids) = minted(src);
-        summarize_programs(&[&program], &ids)
+        summarize_identified(&[(&program, &ids)], &[])
     }
 
     /// The advisory over `programs` alone, every one minted with `ids`:
@@ -3848,7 +3844,8 @@ mod tests {
         sources: &[crate::symbol::SourceFile],
         include_all: bool,
     ) -> Vec<Diag> {
-        let summary = summarize_programs(programs, ids);
+        let identified: Vec<_> = programs.iter().map(|p| (*p, ids)).collect();
+        let summary = summarize_identified(&identified, &[]);
         unbounded_alloc_diags(&summary, programs, ids, sources, include_all)
     }
 

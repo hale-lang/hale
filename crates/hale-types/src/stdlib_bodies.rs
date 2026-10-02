@@ -63,31 +63,6 @@ pub fn identities() -> Option<&'static Snapshot> {
     analysis().map(|(_, ids)| ids)
 }
 
-/// Summarize the user programs **plus** the Hale-source stdlib, so
-/// the callgraph can walk into stdlib locus methods. Every effect
-/// query should build its summary through here; using
-/// `summarize_programs` directly reintroduces the blind spot. `ids`
-/// are the identities the user programs were minted with.
-pub fn summarize_with_stdlib(
-    programs: &[&Program],
-    ids: &Snapshot,
-) -> crate::alloc_summary::AllocSummary {
-    summarize_with_stdlib_and_renames(programs, ids, &[])
-}
-
-/// Same, additionally resolving cross-seed `alias::name` calls.
-pub fn summarize_with_stdlib_and_renames(
-    programs: &[&Program],
-    ids: &Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> crate::alloc_summary::AllocSummary {
-    let mut all: Vec<(&Program, &Snapshot)> = programs.iter().map(|p| (*p, ids)).collect();
-    if let Some((std_prog, std_ids)) = analysis() {
-        all.push((std_prog, std_ids));
-    }
-    crate::alloc_summary::summarize_identified(&all, import_renames)
-}
-
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled
 /// name the bodies actually declare. Struct-literal paths in user
 /// code are written in the public spelling, so resolving a
