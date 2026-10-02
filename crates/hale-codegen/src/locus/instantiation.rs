@@ -2344,7 +2344,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the bracket: one holding a locus (a field whose value is not
         // a plain value) or computing a default, where a literal can
         // route to it. `Sup { n: 0 }` in a hot loop stays as it was.
-        let settles_failures = !info.failure_handlers.is_empty()
+        // Whether it has a handler at all is the routing rows' answer,
+        // asked by its declaration's identity (a monomorph's are its
+        // template's).
+        let settles_failures = self.handlers.handlers_of_decl(info.decl).next().is_some()
             && (info
                 .fields
                 .iter()
