@@ -30,26 +30,43 @@ The snapshot key already carries the target. `SnapshotKey.target` is the configu
 ### 1.1 Rows
 
 ```text
-CapabilityMatrix = { (TargetClass, Capability) → Cell }
+CapabilityMatrix = { behaviours:  (TargetClass, Capability) → BehaviourCell,
+                     invocations: (TargetClass, Invocation) → InvocationCell,
+                     obligations: (TargetClass, Obligation) → ObligationCell }
 
-Cell     = { verdict: Lower(Lowering) | Reject(Refusal), witness: Witness }
+BehaviourCell  = { verdict: Lower(Lowering) | Reject(Refusal),
+                   origin:  Source            -- a program construct requests it: the use
+                                              -- producer (§1.4) finds it, and Reject is a
+                                              -- located diagnostic
+                          | Environment,      -- nothing in a program requests it (a signal
+                                              -- arrives from outside): Reject produces no
+                                              -- diagnostic and exists only as a premise
+                   requires: [Capability],    -- e.g. AsyncIoPool requires Threads
+                   witness: Witness }
+InvocationCell = { verdict: Allowed | Refused(Refusal), witness: Witness }
+                                              -- how the artifact may be invoked (run, replay,
+                                              -- record); the CLI reads it (OPT:386 becomes a read)
+ObligationCell = { verdict: Emit | Omit { premise: Premise }, witness: Witness }
+Premise  = Rejects(Capability)                -- that target's behaviour cell is Reject
+         | Refuses(Invocation)                -- that target's invocation cell is Refused
+         | Proven(ProofId)                    -- a stated proof, registered with its tests (§3.2)
+         | All([Premise])
 Witness  = { site:   the producer, a stable path::symbol (the registry's convention),
              reason: the one sentence a diagnostic or doc renders,
              spec:   the spec anchor whose sentence the cell implements }
 Refusal  = { wording: the diagnostic template (today's text verbatim where one exists),
              guidance: the substitute, if any }
-Lowering = Emit | Absent { because: Capability }       -- Absent: the obligation or runtime
-                                                       -- call is not emitted, legitimately,
-                                                       -- because the cell it depends on
-                                                       -- rejects (or the CLI refuses) every
-                                                       -- behaviour that needs it
+Lowering = the capability's lowering data, if any (ExportSurface's export list,
+           ForeignAbi(js)'s marshalling), else none
 ```
+
+**Behaviours and obligations are distinct types.** A behaviour cell answers "may a program do this on this target, and how is it lowered". An obligation cell answers "does a spine or prelude emit this runtime call on this target". An obligation never is a behaviour's verdict; it **refers to** one as its premise. A behaviour is never `Omit`, and an obligation is never `Reject`. Before this split one cell had to be both: `ProcessSignals` on wasm32 was written as `Lower(Absent { because: ProcessSignals })` and as `Reject` at once. Now `ProcessSignals × Wasm32` is a behaviour cell, `Reject` with origin `Environment` (no signal source exists), and the six emission sites are obligation cells `Omit { Rejects(ProcessSignals) }`. Replay is the other case the old schema could not say honestly: it was "absent because the CLI refuses it", a refusal outside the matrix posing as a matrix rejection. Now the CLI refusal is an invocation cell, and the replay obligations are `Omit { Refuses(Replay) }`.
 
 **Targets** (`TargetClass`). It is derived from `TargetSpec`'s `(arch, os, env)`, not from the triple's name: `PosixAsync` (glibc Linux, macOS), `PosixNoAsync` (musl), `Wasm32`. Windows stays `Planned` and is refused at argument parsing (OPT:292–300). It never reaches the matrix, because a tier is not a capability. Today the matrix has two populated columns, host and wasm32. musl joins only for the `async_io` cell it already has. A new target is a new column. **No cell has a default arm**: a capability added without a cell for every class fails the matrix's own law test (§1.6).
 
-**Capabilities.** These are the facts the seven rows decide today, plus the three lifecycle obligations line 16 names:
+**Capabilities, invocations and obligations.** These are the facts the seven rows decide today, the three lifecycle obligations line 16 names, and the emission sites the old rows decided implicitly:
 
-| capability | key | layer | the legacy row it comes from |
+| capability, invocation or obligation | key | layer | the legacy row it comes from |
 |---|---|---|---|
 | `StdNamespace(path)` | every `std::` namespace the stdlib defines (`crates/hale-stdlib/src/lib.rs:185–212` plus the codegen-native modules `crates/hale-codegen/src/stdlib/*.rs`) | 8 | `wasm_unavailable_stdlib`, `wasm_target` |
 | `LinkLibrary` | `[ffi] link` / `--link` | 8 | `link_wasm` |
@@ -61,8 +78,11 @@ Lowering = Emit | Absent { because: Capability }       -- Absent: the obligation
 | `Threads` | `pinned` placement; `cooperative(pool = X)`, X ≠ `main` | 5 | (none: admitted silently, §2.5) |
 | `RemoteTransport(kind)` | a `bindings { }` entry: `shm_ring`, `unix`, `udp`, CONNECT roles | 5 | (none: spec/ffi.md:423 says "unavailable in the sandbox"; CG:9813 lowers the prelude) |
 | `BoundedWait` | `or wait` on a topic with `on_full: fail` capacity (GH #255 phase 2), bound or not | 5 | (none: admitted on every target, CHECK:13103) |
-| `ReplayIngress` | record, replay, observation identity | 6 | INST:4584, CG:9673, CG:9824 |
-| `ProcessSignals` | the SIGINT drain flag, SIGPIPE, the drain observer | 6 | CG:9444, CG:9849, CG:33668, `dissolve.rs:227`, `restart.rs:169`, `stdlib/time.rs:495` |
+| behaviour `ProcessSignals` (origin `Environment`) | a process signal reaching the program: SIGINT's drain, SIGPIPE | 6 | (none: decided implicitly by the sites below) |
+| invocations `Run`, `Replay`, `Record` | `hale run`, `hale replay`, a recording run | 6 | OPT:386–391 |
+| obligations `ReplayIngress`, `ObservationIdentity` | replay ingress (INST:4584); observation identity and its eager init (CG:9673, CG:9824) | 6 | `lotus_replay_start_ingress` |
+| obligations `SignalInstall`, `DrainObserver`, `DrainTerm` | SIGPIPE and `lotus_io_init` (CG:9444), the drain installer (CG:9849's signal half), the drain observer (CG:33668); the process-flag term in `dissolve.rs:227`, `restart.rs:169`, `stdlib/time.rs:495` | 6 | `is_wasm` |
+| obligation `BindingConfig` | `lotus_bus_load_config` (CG:9849's transport half) | 5 | `is_wasm` |
 | obligations `PoolJoin` (R20), `WaitAbort` (R34), `IngressQuiesce` (R35) | the teardown spines | 6 | INST:4859–4865, CG:7125, CG:6954, CG:9984, CG:10029, CG:22585 |
 
 `bus_payload_is_flat` is **not** a target cell. It is a property of a topic's payload type and is target-independent today. It is wire-format specific, but both targets share the wire format (spec/ffi.md:414–425). It becomes a column of `dispatch`'s gate row (§2.8). P3 carries it because the registry assigns it there and because the gate's last leg is the one codegen still decides.
@@ -136,7 +156,7 @@ The matrix is demanded as a snapshot family, `target_capability`, keyed by the s
 
 The harness lowers without the check gate (SNAP:197–203). It still reads the cells for lowering, so a harness wasm build emits what a CLI wasm build emits.
 
-Codegen **reads** the matrix through the lowering view and decides nothing. Each SKIP/SUBSTITUTE site of §2.5 becomes `cells.lowering(cap)`, and each EXPORT site reads `ExportSurface`'s `Lower` data.
+Codegen **reads** the matrix through the lowering view and decides nothing. Each SKIP/SUBSTITUTE site of §2.5 becomes `cells.obligation(o)`, and each EXPORT site reads `ExportSurface`'s `Lower` data through `cells.behaviour(c)`.
 
 ### 1.5 A capability refusal is not a toolchain failure
 
@@ -152,16 +172,18 @@ The rule: a refusal that depends only on (program, configuration, target) is a c
 | zig / target sysroot missing (spec/projects.md:752) | build-time | unchanged |
 | `libhale_ts_shim.a` not built (CG:2157) | build-time, native only | unchanged for native. On wasm32 `std::ts` becomes a cell (T3), because today the wasm path returns at CG:1954 and never reaches CG:2157 |
 | Windows triple (OPT:292) | argument parsing, "not buildable yet" | unchanged: a tier, not a capability |
-| `hale run --target wasm32` (OPT:386) | argument parsing | unchanged: the host cannot execute the artifact, which is a fact about the host |
+| `hale run --target wasm32` (OPT:386) | argument parsing | the invocation cell `Run × Wasm32 = Refused`, still read at argument parsing, wording unchanged: the host cannot execute the artifact. It is a premise for the replay obligations (§2.4), so it lives in the matrix rather than in OPT alone |
 
 Test: on a PATH with no clang (a `Command::env("PATH", …)` on the child, never `set_var`), `hale build --target wasm32` of the `link = ["m"]` app reports the `[ffi] link` refusal, not "is clang installed?".
 
 ### 1.6 The matrix's own laws (a unit test in `hale-types`)
 
-- Every `(TargetClass, Capability)` pair has exactly one cell.
+- Every `(TargetClass, Capability)`, `(TargetClass, Invocation)` and `(TargetClass, Obligation)` pair has exactly one cell of its own type.
 - Every `Reject` has non-empty wording and a spec anchor that exists in `spec/`.
 - An approximating witness appears only on a layer-5 or layer-7 capability.
-- Every `Absent { because }` names a capability whose cell on that target is `Reject`, or one the CLI refuses on that target (`ReplayIngress` on wasm32: OPT:386).
+- Every `Omit` premise is validated on its own target: each `Rejects(c)` names a behaviour cell that is `Reject` there, each `Refuses(i)` an invocation cell that is `Refused` there, each `Proven(p)` a registered proof whose tests exist. An obligation whose premise does not validate fails the law.
+- The dependency relation is typed and acyclic: obligation → premise (behaviour, invocation, proof), behaviour → the behaviours it `requires`. A `requires` edge is consistent: a behaviour that is `Lower` requires only behaviours that are `Lower` on the same target. A cycle fails the law.
+- A behaviour of origin `Environment` has no use producer and renders no diagnostic. A behaviour of origin `Source` that is `Reject` on some target has a use producer.
 - Every `StdNamespace` cell's key is a namespace the stdlib defines, and every stdlib namespace has a cell. The second half is checked against `hale-stdlib`'s file list and codegen's `stdlib/` modules.
 - Every `Lower` cell for a stdlib namespace or operation on a target without the host's libc cites lowering-contract rows that cover every operation it admits, and every row names its probe (§2.1).
 
@@ -218,8 +240,8 @@ The import list keeps one job, the T7 backstop (§2.3): catching an **unresolved
 **Cells.**
 - `LinkLibrary × Wasm32 = Reject`, with today's wording (CG:2818–2822).
 - `LinkLibrary × Host = Lower`.
-- `ExportSurface × Wasm32 = Lower(Emit)`. Its data is the fixed export list plus the `@export` set. `link_wasm` reads that list instead of spelling it.
-- `ExportSurface × Host = Lower(Emit)`: `@export fn` is an unmangled C symbol, and `@export locus` is an ordinary locus (spec/ffi.md:473–478).
+- `ExportSurface × Wasm32 = Lower`. Its lowering data is the fixed export list plus the `@export` set. `link_wasm` reads that list instead of spelling it.
+- `ExportSurface × Host = Lower`: `@export fn` is an unmangled C symbol, and `@export locus` is an ordinary locus (spec/ffi.md:473–478).
 - The `csrc` failure stays toolchain (§1.5).
 
 **Moves.** The refusal moves ahead of the clang probe and into the check (T4). The import policy stays a link flag, but P3 3 of 3 adds a **backstop test**: every module the wasm tests build imports only the loader's writer set plus its declared `@ffi("js")` names. It catches an unresolved import, a syscall that reached the link undefined and would become a `() => 0`. It is **not** evidence that the matrix has no silent stub left: an inline stub needs no import, so that evidence is the contracts and probes of §2.1 (T7).
@@ -229,12 +251,12 @@ The import list keeps one job, the T7 backstop (§2.3): catching an **unresolved
 **Today.** On the main locus, replay ingress is skipped on wasm (INST:4584). The registry also says: "instantiation still emits pool shutdown and wait-abort on wasm where the main exit does not". Measured, that is half right (§3.1). Pool shutdown on wasm is emitted only by the eager spine (INST:4862). Wait-abort is emitted on wasm by the eager spine (INST:4865) **and** by the fall-through, test-failure and return spines, through `emit_frame_teardown`'s ungated `if self.in_main` (CG:6954–6956). Only the deferred spine (CG:7125) omits all three.
 
 **Cells.**
-- `ReplayIngress × Wasm32 = Lower(Absent { because: ReplayIngress refused at the CLI })`. `hale run`/`replay --target wasm32` are refused (OPT:386), and `getenv` returns NULL (SHIM:36), so no replay mode can arise.
-- `ReplayIngress × Host = Lower(Emit)`.
-- The same cell covers CG:9673 (observation identity) and CG:9824 (`lotus_obs_eager_init`).
-- The obligations are §3.
+- Invocation cells: `Replay × Wasm32 = Refused` and `Record × Wasm32 = Refused`, with OPT:386's wording; `Run × Wasm32 = Refused` with the same (the host cannot execute the artifact). The loader passes no mode either (CG:2983), so the cell describes every invocation the artifact has, not only the CLI's. On the host all three are `Allowed`.
+- Obligation cells: `ReplayIngress × Wasm32 = Omit { Refuses(Replay) }` and `ObservationIdentity × Wasm32 = Omit { All([Refuses(Replay), Refuses(Record)]) }` (CG:9673, CG:9824). On the host both are `Emit`.
+- The premise is the invocation policy, stated in the matrix and validated by §1.6. It is not "`getenv` returns NULL" (SHIM:36): that is a stub, and stubs justify nothing (§2.1).
+- The lifecycle obligations are §3.
 
-**Moves.** The skip becomes `cells.lowering(ReplayIngress)`, with identical IR.
+**Moves.** The skip becomes `cells.obligation(ReplayIngress)`, with identical IR. OPT:386 reads the invocation cells instead of spelling its own refusal.
 
 ### 2.5 `is_wasm` (CG:3136; 33 references, 30 sites read it, plus two that branch on the target without the name: INST:888, CG:9590)
 
@@ -245,7 +267,7 @@ The import list keeps one job, the T7 backstop (§2.3): catching an **unresolved
 | backend configuration (13) | CG:1164, 1173, 1182 (unreachable via the CLI), 1310, 1327, 1347, 1384, 1510 (DWARF silently ignored on wasm), 1723, 1790, 1861, 1883, 2080 (dead for wasm: it returns at CG:1954) | `TargetSpec` queries; not cells. CG:1182 and CG:2080's wasm arm are deleted as dead |
 | link (1) | CG:1954 | `TargetSpec::is_wasm()` chooses `link_wasm`; the refusals inside are §2.3 |
 | exports / entry inversion (3) | CG:8779, CG:9377 (refusals inside at 14130, 14187), INST:888 | `ExportSurface`, `EntryInversion` |
-| skip-emit (12) | CG:7125, 9444, 9673, 9824, 9849, 9984, 10029, 22585, 33668; INST:4584, 4859; `locus/restart.rs:169` | `cells.lowering(cap)`, one capability each (table below) |
+| skip-emit (12) | CG:7125, 9444, 9673, 9824, 9849, 9984, 10029, 22585, 33668; INST:4584, 4859; `locus/restart.rs:169` | `cells.obligation(o)`, one obligation each, whose premise names the behaviour or invocation (table below) |
 | substitute (2) | `locus/dissolve.rs:227`, `stdlib/time.rs:495` | `ProcessSignals` |
 | target-keyed, not wasm-named (1) | CG:9590 `self.target.has_async_io()`, which **emits** `lotus_coop_pool_enable_async_io` on wasm | `AsyncIoPool` |
 
@@ -253,7 +275,7 @@ The skip/substitute sites by capability:
 
 | capability | sites | what wasm gets today |
 |---|---|---|
-| `ProcessSignals` | CG:9444 (`lotus_io_init`, SIGPIPE), CG:9849 (`lotus_drain_signals_install`, key extractors, `lotus_bus_load_config`), CG:33668 (drain observer), `dissolve.rs:227` (`self.draining` without the process flag), `restart.rs:169` (no `process_draining` term), `time.rs:495` (a sleep never cut short by drain) | Lowered legitimately: wasm32 has no signal source, the flag exists and is always 0 (RT:1865), and the runtime stubs the installer (RT:10025–10033). The cell is `Lower(Absent { because: ProcessSignals })`, with `ProcessSignals × Wasm32 = Reject` and no source construct to reject, since SIGINT is not a program construct. The IR is identical |
+| `ProcessSignals` | CG:9444 (`lotus_io_init`, SIGPIPE), CG:9849 (`lotus_drain_signals_install`, key extractors, `lotus_bus_load_config`), CG:33668 (drain observer), `dissolve.rs:227` (`self.draining` without the process flag), `restart.rs:169` (no `process_draining` term), `time.rs:495` (a sleep never cut short by drain) | Lowered legitimately: wasm32 has no signal source, the flag exists and is always 0 (RT:1865), and the runtime stubs the installer (RT:10025–10033). Two types of cell: the behaviour `ProcessSignals × Wasm32 = Reject`, origin `Environment` (SIGINT is not a program construct, so nothing is diagnosed), and the obligations `SignalInstall`, `DrainObserver`, `DrainTerm` `× Wasm32 = Omit { Rejects(ProcessSignals) }`. The IR is identical |
 | `ReplayIngress` | INST:4584, CG:9673, CG:9824 | §2.4 |
 | `RemoteTransport` | CG:9849 (`lotus_bus_load_config`); quiesce at CG:7125, 9984, 10029, 22585, INST:4859 | **Not refused.** `emit_bindings_prelude` (CG:9813) is ungated, and the transports' syscalls are no-op imports. T2 |
 | `Threads`, `AsyncIoPool` | pool join skipped at CG:7125, 9984, 10029, 22585 and emitted at INST:4862. **Ungated:** pinned `pthread_create` (INST:4262–4272), pinned `pthread_join` (CG:7182), `lotus_coop_pool_register`/`start_all` (CG:9546–9647), `enable_async_io` (CG:9590) | **Not refused, and they never run.** `pthread_create` is a `() => 0` import. Pool start and shutdown are not under `#ifndef __wasm__` (RT:10075, RT:10149, outside RT:9827–10034), despite SHIM:47–53 saying so. `LOTUS_HAVE_ASYNC_IO` is 1 on wasm (RT:142–147), over epoll/eventfd imports that return 0. So a pinned locus or a pool's `run()` is posted and never executes. T2 |
@@ -363,9 +385,9 @@ An obligation is required on a target exactly when some behaviour the target adm
 
 | obligation | needed by | wasm32 after T2 |
 |---|---|---|
-| R20 pool join | a cooperative pool other than `main`, or an `async_io` pool (`Threads`, `AsyncIoPool`) | both `Reject` → `PoolJoin × Wasm32 = Lower(Absent { because: Threads })` |
-| R34 wait-abort | an `or wait` publisher parked in either admitted wait form (below): the binding-loss wait (`RemoteTransport`) or the local capacity wait (`BoundedWait`) | the binding-loss wait is refused (`RemoteTransport` `Reject`), the local capacity wait is admitted (`BoundedWait` `Lower`), so the omission needs the single-thread proof below. Until that proof lands, **`WaitAbort × Wasm32` stays emitted** |
-| R35 ingress quiesce | a LISTEN binding (`RemoteTransport`) | `Absent { because: RemoteTransport }` (identical to today: every spine skips it on wasm) |
+| R20 pool join | a cooperative pool other than `main`, or an `async_io` pool (`Threads`, `AsyncIoPool`) | both `Reject` → `PoolJoin × Wasm32 = Omit { All([Rejects(Threads), Rejects(AsyncIoPool)]) }` |
+| R34 wait-abort | an `or wait` publisher parked in either admitted wait form (below): the binding-loss wait (`RemoteTransport`) or the local capacity wait (`BoundedWait`) | the binding-loss wait is refused (`RemoteTransport` `Reject`), the local capacity wait is admitted (`BoundedWait` `Lower`), so the omission needs the single-thread proof below. Until that proof lands, **`WaitAbort × Wasm32 = Emit`**; after it, `Omit { All([Rejects(RemoteTransport), Proven(single_thread_no_live_waiter)]) }` |
+| R35 ingress quiesce | a LISTEN binding (`RemoteTransport`) | `IngressQuiesce × Wasm32 = Omit { Rejects(RemoteTransport) }` (identical to today: every spine skips it on wasm) |
 | pinned join (C18's `pthread_join`, CG:7182) | `pinned` (`Threads`) | no pinned entry can exist; nothing to gate |
 
 **The admitted wait forms.** `or wait` is legal on a topic that is transport-bound **or** has `on_full: fail` capacity: `*full_fail || self.bound_topics.contains(name)` (CHECK:13103, with the diagnostic at :13106–13111 naming both). Codegen emits both waits at every `or wait` publish, the binding wait first (`bus/dispatch.rs:450`, :515). There are therefore two wait forms, and R34 ends both:
@@ -383,14 +405,14 @@ Both loops read the same flag (RT:19107, RT:19129) and pump `lotus_bus_queue_dra
 2. **So liveness means reentrancy.** A waiter is live during a spine only if the spine is entered while the waiter's frame is on the stack: from a cell its own pump runs (`lotus_bus_queue_drain` → a handler), or from the host re-entering the module through an export while the waiter is inside a host import.
 3. **The Hale side.** No handler reaches a teardown spine. The spines are emitted only in `fn main`'s exits and the main locus's entry and dissolve (C13, C19, C21–C23), so this holds if `main` and the main locus's lifecycle cannot be reached from a cell. That is a claim for a checker rule and a test, not an assumption.
 4. **The embedding side.** The loader (CG:2983) and every `@ffi("js")` import must not re-enter `main`, `_hale_start` or any export that runs a spine while an export is on the stack. The loader states no such contract today. The proof needs either an emitted reentrancy guard on those exports (a flag that traps on reentry, observable in a test) or a stated embedding contract that the loader enforces.
-5. **Only then** is `WaitAbort × Wasm32` omitted, its premise naming the proof and its tests. Until both 3 and 4 are shown, R34 stays emitted on wasm32 in **all five** spines (C19 gains it; today it skips it). It is one release store and drags in no import (RT:19079–19081). The other way to discharge the obligation, refusing `or wait` on wasm32 (`BoundedWait × Wasm32 = Reject`), is not recommended: it removes a working feature to save that store.
+5. **Only then** is `WaitAbort × Wasm32` omitted, with the premise `All([Rejects(RemoteTransport), Proven(single_thread_no_live_waiter)])`, the proof registered with its tests. Until both 3 and 4 are shown, R34 stays emitted on wasm32 in **all five** spines (C19 gains it; today it skips it). It is one release store and drags in no import (RT:19079–19081). The other way to discharge the obligation, refusing `or wait` on wasm32 (`BoundedWait × Wasm32 = Reject`), is not recommended: it removes a working feature to save that store.
 
-**The order is the decision's condition.** An obligation is removed for a target only after the matrix rejects, or legitimately lowers, every behaviour that needs it, and every admitted wait form is accounted for. The J commit (P3 2 of 3) lands `Threads`, `AsyncIoPool` and `RemoteTransport` as `Reject` on wasm32 first. P3 3 of 3 then makes all five spines read `cells.lowering(PoolJoin | WaitAbort | IngressQuiesce)` in one commit. The result:
+**The order is the decision's condition.** An obligation is removed for a target only after the matrix rejects, or legitimately lowers, every behaviour that needs it, and every admitted wait form is accounted for. The J commit (P3 2 of 3) lands `Threads`, `AsyncIoPool` and `RemoteTransport` as `Reject` on wasm32 first. P3 3 of 3 then makes all five spines read `cells.obligation(PoolJoin | WaitAbort | IngressQuiesce)` in one commit. The result:
 
 - on wasm32 no spine emits R20 or R35, so C13 loses R20; every spine emits R34 until the proof of points 1–5 lands, so C19 gains it;
 - on the host every spine emits all three.
 
-The interim correction line 16 permits (gating C13 like the others) is unnecessary if P3 3 of 3 lands in wave 2. If L-line work needs it earlier, it gates R20 only and leaves R34 in every spine, so the spines do not diverge a third way. The rule is stated in the matrix, not in each spine, so L1's plan reads it: an obligation row exists for `(instance, action)` only if its cell is `Lower(Emit)` for the snapshot's effective target.
+The interim correction line 16 permits (gating C13 like the others) is unnecessary if P3 3 of 3 lands in wave 2. If L-line work needs it earlier, it gates R20 only and leaves R34 in every spine, so the spines do not diverge a third way. The rule is stated in the matrix, not in each spine, so L1's plan reads it: an obligation row exists for `(instance, action)` only if its obligation cell is `Emit` for the snapshot's effective target.
 
 **The matrix selects; the lifecycle plan orders.** The matrix says which obligations a target owes and nothing about their order. The order belongs to L1's plan (PR #1300, `hale-types::lifecycle`), whose obligations carry entry and completion edges, and follows inventory decision 7. The rule: **wait-abort completes before any blocking join whose worker may be parked in a wait it ends is entered.** As edges in the plan:
 
