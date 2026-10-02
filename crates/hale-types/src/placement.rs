@@ -2246,21 +2246,6 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     }
 }
 
-/// Legacy producers of the family that nothing outside their modules
-/// calls, reachable for the placement shadow (`tests/shadow_placement.rs`)
-/// alone: test support, not an API.
-#[doc(hidden)]
-pub mod legacy {
-    use hale_syntax::ast::LocusDecl;
-
-    use crate::check::PoolId;
-
-    /// F.31's owner-relative answer at `self.f`.
-    pub fn enclosing_field_placement(enclosing_locus: &LocusDecl, field_name: &str) -> Option<PoolId> {
-        crate::check::enclosing_field_placement(enclosing_locus, field_name)
-    }
-}
-
 /// A ref the lowering view resolves: a declaration, which joins by its
 /// lowered name, or any other site, which joins by position.
 #[derive(Debug, Clone, Copy)]
