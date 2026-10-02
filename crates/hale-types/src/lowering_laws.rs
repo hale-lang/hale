@@ -47,6 +47,7 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
     placement_entry_consumed(bundle, inputs, &mut diags);
     cross_pool_spawn_used_as_a_value(bundle, inputs, &mut diags);
+    self_containing_locus(bundle, &mut diags);
     diags
 }
 
@@ -252,11 +253,13 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
     .with_related(entry_span, format!("`{}` is placed here", field))
 }
 
-/// Every struct literal written in a body, handed to `f` with whether it
-/// is a bare expression statement (`T { … };`, its value discarded),
-/// found where the placement table's scopes find literals: every fn body
-/// (its parameters' defaults included) and every locus member body, at
-/// any nesting, through every statement and expression form.
+/// Every expression written in a body, handed to `f` once, outermost
+/// first, with whether it is a struct literal written as a bare
+/// expression statement (`T { … };`, its value discarded; `false` for
+/// every other expression). The bodies are where the placement table's
+/// scopes find literals: every fn body (its parameters' defaults
+/// included) and every locus member body, at any nesting, through every
+/// statement and expression form; `expr` walks one expression alone.
 struct Literals<F> {
     f: F,
 }
@@ -417,6 +420,9 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
     }
 
     fn expr(&mut self, e: &'a Expr) {
+        if !matches!(e, Expr::Struct { .. }) {
+            (self.f)(e, false);
+        }
         match e {
             Expr::Struct { .. } => self.literal(e, false),
             Expr::Binary { left, right, .. } => {
@@ -649,3 +655,311 @@ fn declarations<'a>(bundle: &'a Bundle<'a>) -> BTreeMap<SiteRef, &'a LocusDecl> 
     }
     out
 }
+
+/// One node of the param-default containment graph (GH #813): a
+/// locus name plus the field names a literal SUPPLIES. The defaults a
+/// literal expands are exactly the ones it does not supply, so the
+/// pair — not the locus alone — is what the construction re-enters.
+type ContainmentState = (String, Vec<String>);
+
+/// One edge out of a param default (GH #870): the state the default
+/// constructs, and the factory fn it went through — `None` when the
+/// default spells the literal itself. The graph is the same either
+/// way; the name is what the diagnostic shows the author, who is
+/// looking at a call, not at a literal.
+type ContainmentEdge = (ContainmentState, Option<String>);
+
+/// GH #813: a locus whose construction requires constructing one of
+/// its own kind.
+///
+/// `locus Node { params { next: Node = Node { n: 1 }; } }` is not a
+/// linked list — it is a locus that cannot exist. The `Node` the
+/// default builds leaves ITS `next` to the same default, which builds
+/// another, and the nesting has no floor. It cannot be broken from a
+/// call site either: writing `Node { next: … }` needs a `Node` to
+/// hand over, and building one asks the same question again. So the
+/// declaration is the error, independently of whether anything
+/// instantiates it.
+///
+/// Before this the program passed `hale check` and
+/// `lower_locus_instantiation` recursed through the default until the
+/// compiler's own stack ran out ("thread 'main' has overflowed its
+/// stack"). Lowering then kept a re-entry guard of its own, spanless,
+/// because a harness build never ran the checker; since F.40 phase 3,
+/// C7 the harness's lowering view demands this law too, and the guard
+/// is gone: every literal lowering expands from a default is one this
+/// walk visits (below), keyed as the guard keyed it.
+///
+/// The graph is over BY-VALUE containment: an edge `L → M` where a
+/// param default of `L` *constructs* an `M` — an `M { … }` locus
+/// literal anywhere in the default's expression, or (GH #870) a call
+/// to a fn that freshly constructs one.
+///
+/// The second half is the residue #813 left behind. `next: Node =
+/// make()` with `fn make() -> Node { return Node { }; }` compiled —
+/// lowering a call emits a call rather than inlining the callee, so
+/// nothing recursed at COMPILE time and there was no crash to
+/// prevent — and then overflowed the program's own stack at RUN time,
+/// because every `Node` `make` builds leaves ITS `next` to the same
+/// default, which calls `make` again. The ring is the same ring; only
+/// the spelling of one edge changed.
+///
+/// Telling that apart from an accessor handing back a `Node` somebody
+/// else already owns is a whole-program question, and the ownership
+/// family's fresh-factory rows are the answer
+/// ([`crate::ownership::fresh_factories`], the one producer the
+/// ownership pre-pass reads too, F.40 phase 1.2c): the rule reads each
+/// row's `products`, the (locus, supplied fields) a call constructs.
+/// The rows are computed over the bundle's files together, with the
+/// bundle's import renames, as lowering computes them (lowering then
+/// widens its set with the carrier fold, which this rule does not
+/// read). The products do not depend on the escape walk: a factory
+/// whose returned binding escapes into a call still constructs it, and
+/// still takes its edge. A call it cannot see as constructing — an
+/// accessor, a method, a `std::` path — takes no edge and stays
+/// accepted, exactly as before; a program like that recurses at RUN
+/// time only if the callee really does build one, which is what
+/// `@no_recursion` is the contract for.
+///
+/// A node is (locus, supplied field names) rather than the locus
+/// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
+/// expands no default and terminates, and keying on the type would
+/// report it as a cycle.
+///
+/// Nothing is reported for a locus this bundle cannot see. A single
+/// file of a multi-file seed holds no `TopDecl::Locus` for its
+/// sibling's types, so a cycle that crosses files simply has no edge
+/// here and stays permissive until the whole seed is checked
+/// together — the gating every other cross-file rule uses, arrived at
+/// by having nothing to say rather than by a flag; a build checks the
+/// whole seed. Keying a locus by its bare name is sound because loci
+/// share one namespace across a seed's modules (two of one name are
+/// refused as a duplicate top-level name), and a literal through a
+/// module or import path names a locus the seed's own check refuses or
+/// one whose own seed's check judges it.
+fn self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn collect<'a>(
+        items: &'a [TopDecl],
+        out: &mut BTreeMap<&'a str, &'a LocusDecl>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.entry(l.name.name.as_str()).or_insert(l);
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        collect(&program.items, &mut loci);
+    }
+    if loci.is_empty() {
+        return;
+    }
+    // GH #870: which fns hand back a locus they freshly built, and
+    // what each call constructs: the fresh-factory rows over the
+    // bundle's files together (a factory in one file may hand back
+    // what a sibling file's factory built), with the bundle's import
+    // renames, for the loci this bundle declares.
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let factories: BTreeMap<String, Vec<ContainmentState>> =
+        crate::ownership::fresh_factories(&programs, &bundle.snapshot, &bundle.import_renames)
+            .into_iter()
+            .filter(|(_, row)| loci.contains_key(row.locus.as_str()))
+            .map(|(name, row)| (name, row.products))
+            .collect();
+    // Classic gray/black DFS. `finished` is the black set: every
+    // cycle reachable from a state was found while that state was
+    // being explored, so re-entering it later has nothing to add —
+    // which is also what keeps one cycle from being reported once per
+    // locus on it.
+    let mut finished: BTreeSet<ContainmentState> = BTreeSet::new();
+    let mut reported: BTreeSet<(u32, String)> = BTreeSet::new();
+    for name in loci.keys().copied() {
+        let mut path: Vec<ContainmentState> = Vec::new();
+        walk_param_default_containment(
+            name,
+            &[],
+            &loci,
+            &factories,
+            &mut path,
+            &mut finished,
+            &mut reported,
+            diags,
+        );
+    }
+}
+
+/// One DFS step of the GH #813 containment walk. `supplied` is the
+/// set of field names the literal that got us here wrote out; every
+/// OTHER param of `locus` expands its default, and each locus literal
+/// inside that default — plus (GH #870) each fresh-factory call — is
+/// an edge.
+fn walk_param_default_containment(
+    locus: &str,
+    supplied: &[String],
+    loci: &BTreeMap<&str, &LocusDecl>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
+    path: &mut Vec<ContainmentState>,
+    finished: &mut BTreeSet<ContainmentState>,
+    reported: &mut BTreeSet<(u32, String)>,
+    diags: &mut Vec<Diag>,
+) {
+    let state: ContainmentState = (locus.to_string(), supplied.to_vec());
+    if finished.contains(&state) {
+        return;
+    }
+    let Some(decl) = loci.get(locus) else {
+        // A sibling file's locus, or a stdlib one reached by a
+        // multi-segment path: no body here, no edge, no report.
+        return;
+    };
+    path.push(state.clone());
+    for member in &decl.members {
+        let LocusMember::Params(pb) = member else {
+            continue;
+        };
+        for pd in &pb.params {
+            if supplied.iter().any(|s| s == &pd.name.name) {
+                continue;
+            }
+            let ParamInit::Value(e) = &pd.init else {
+                continue;
+            };
+            let mut built: Vec<ContainmentEdge> = Vec::new();
+            collect_constructed_loci(e, loci, factories, &mut built);
+            for (child, via) in built {
+                let Some(at) = path.iter().position(|s| *s == child) else {
+                    walk_param_default_containment(
+                        &child.0, &child.1, loci, factories, path,
+                        finished, reported, diags,
+                    );
+                    continue;
+                };
+                // The cycle, as a ring of type names, rotated so the
+                // locus the author is reading about comes first.
+                let mut ring: Vec<&str> =
+                    path[at..].iter().map(|s| s.0.as_str()).collect();
+                if let Some(k) = ring.iter().position(|n| *n == locus) {
+                    ring.rotate_left(k);
+                }
+                let chain = if ring.len() > 1 {
+                    format!(" (`{}` → `{}`)", ring.join("` → `"), ring[0])
+                } else {
+                    String::new()
+                };
+                // The two spellings of one edge: a literal in the
+                // default, or a call to a fn that builds one (GH
+                // #870). Same rule, same ring — what differs is what
+                // the author is looking at on that line.
+                let (how, why) = match &via {
+                    None => (
+                        format!("defaults to a `{}`", child.0),
+                        "every one the default builds needs another, \
+                         and no locus literal can end the chain"
+                            .to_string(),
+                    ),
+                    Some(f) => (
+                        format!(
+                            "defaults to `{}()`, which builds a fresh \
+                             `{}`",
+                            f, child.0,
+                        ),
+                        "every one the factory builds asks the same \
+                         default again, so the program compiles and \
+                         then recurses until its stack overflows"
+                            .to_string(),
+                    ),
+                };
+                let message = format!(
+                    "param `{}` of `{}` {}; a locus cannot contain \
+                     itself by value{} — {}. Drop the default and \
+                     take the child from the caller (`{}: {};`), or \
+                     hold a value rather than a locus.",
+                    pd.name.name,
+                    locus,
+                    how,
+                    chain,
+                    why,
+                    pd.name.name,
+                    child.0,
+                );
+                if reported.insert((pd.span.start.0, message.clone())) {
+                    diags.push(Diag::ty(pd.span, message));
+                }
+            }
+        }
+    }
+    path.pop();
+    finished.insert(state);
+}
+
+/// Every locus `M` constructed while `e` is evaluated, as (locus
+/// name, the field names it supplies) plus the factory fn the default
+/// reached it through, if any.
+///
+/// Two spellings construct one:
+///
+///   * a locus literal `M { … }`. Nested literals count too — a
+///     literal inside a literal's field is constructed just as surely
+///     as the outer one. Only single-segment paths that name a locus
+///     in this bundle are edges; a `type` literal, a stdlib path and
+///     a sibling file's name are all skipped;
+///   * GH #870: a call to a fn the fresh-factory rows classify as
+///     freshly building one. The states it contributes are the row's
+///     products, the literals that fn hands back, so `fn make() ->
+///     Node { return Node { n: 5 }; }` contributes `(Node, [n])` — the
+///     same node the literal `Node { n: 5 }` would.
+///
+/// Every sub-expression of the default is visited, through blocks, `if`
+/// and `match` arms and every statement a block holds: lowering lowers
+/// each of them, every branch of a conditional included, so a literal
+/// anywhere in the default is one lowering expands (F.40 phase 3, C7;
+/// the walk used to stop at a block, `if` or `match`).
+fn collect_constructed_loci(
+    e: &Expr,
+    loci: &BTreeMap<&str, &LocusDecl>,
+    factories: &BTreeMap<String, Vec<ContainmentState>>,
+    out: &mut Vec<ContainmentEdge>,
+) {
+    let mut walk = literals(|e, _bare| match e {
+        Expr::Struct { path, inits, .. } if path.segments.len() == 1 => {
+            let name = path.segments[0].name.as_str();
+            if loci.contains_key(name) {
+                let mut supplied: Vec<String> = inits.iter().map(|i| i.name.name.clone()).collect();
+                supplied.sort();
+                supplied.dedup();
+                out.push(((name.to_string(), supplied), None));
+            }
+        }
+        Expr::Call { callee, .. } => {
+            if let Some(f) = plain_callee_name(callee) {
+                if let Some(states) = factories.get(f) {
+                    for s in states {
+                        out.push((s.clone(), Some(f.to_string())));
+                    }
+                }
+            }
+        }
+        _ => {}
+    });
+    walk.expr(e);
+}
+
+/// The single-segment name a callee spells, or `None` for a method,
+/// a path, or anything computed. A qualified callee resolves through
+/// codegen's import-rename table, which the checker has no
+/// equivalent of, so it is not followed here.
+fn plain_callee_name(callee: &Expr) -> Option<&str> {
+    match callee {
+        Expr::Ident(i) => Some(i.name.as_str()),
+        Expr::Path(q) if q.segments.len() == 1 => {
+            Some(q.segments[0].name.as_str())
+        }
+        _ => None,
+    }
+}
+

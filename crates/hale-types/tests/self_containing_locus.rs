@@ -509,3 +509,28 @@ fn self_containment_inside_a_module_is_reported() {
     let ds = diags(src);
     assert_eq!(containment(&ds).len(), 1, "reported: {:?}", ds);
 }
+
+/// F.40 phase 3, C7: the walk reaches a literal anywhere in a default:
+/// an `if` or `match` arm, or a block's statements. Lowering lowers every
+/// one of them, every branch included, so each is an edge; the walk used
+/// to stop at a block, `if` or `match`, and lowering's guard, now
+/// deleted, was the only evaluator. (Spelled without raw strings so the
+/// corpus does not harvest them.)
+#[test]
+fn a_literal_in_a_conditional_or_a_block_default_is_an_edge() {
+    for (default, what) in [
+        ("if true { Node { n: 1 } } else { Node { n: 2 } }", "an if arm"),
+        ("match 1 { 1 -> Node { n: 1 }, _ -> Node { n: 2 }, }", "a match arm"),
+        ("match 1 { _ -> { let x = Node { n: 1 }; x }, }", "a statement of an arm's block"),
+    ] {
+        let src = format!(
+            "locus Node {{ params {{ n: Int = 0; next: Node = {default}; }} }}\n\
+             fn main() {{ let node = Node {{ }}; println(\"n=\", node.n); }}\n"
+        );
+        let ds = diags(&src);
+        assert!(
+            containment(&ds).iter().any(|m| m.contains("param `next` of `Node` defaults to a `Node`")),
+            "{what}: reported at the param: {ds:?}"
+        );
+    }
+}

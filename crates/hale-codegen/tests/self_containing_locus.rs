@@ -1,25 +1,29 @@
-//! GH #813 — the instantiation-path backstop.
+//! GH #813 — a self-containing locus never reaches lowering.
 //!
 //! A locus reachable from its own param defaults sent
 //! `lower_locus_instantiation` through the default, into the locus it
 //! builds, into ITS default, until the compiler's stack ran out
 //! ("thread 'main' has overflowed its stack", exit 134). `hale check`
-//! now refuses the program at the param, but `build_executable` never
-//! runs the checker — so the lowering keeps its own floor, and these
-//! tests are about that floor: an `Unsupported` error, returned.
+//! refuses the program at the param. `build_executable` never runs the
+//! checker, so lowering used to keep a re-entry guard of its own; since
+//! F.40 phase 3, C7 the law is one the harness's lowering view demands
+//! too (`hale_types::lowering_laws`), the guard is gone, and these
+//! tests pin that the harness refuses every shape the guard refused,
+//! with the law's wording, before lowering starts.
 //!
-//! A regression here does not fail politely. Without the guard this
-//! file's first test does not assert anything — it aborts the test
-//! process on a stack overflow, which is how it was proven to bite.
+//! A regression here does not fail politely. Without the law at the
+//! harness this file's first test does not assert anything — it aborts
+//! the test process on a stack overflow, which is how it was proven to
+//! bite.
 //!
-//! The three shapes that must keep building are the point of the two
-//! halves of the key. Re-entry is refused only from inside a param
-//! DEFAULT, because nesting written out in source is bounded by the
-//! source that spells it (`same_type_nesting_written_out_still_builds`
-//! re-enters `Box` with an identical argument list and is an ordinary
-//! program). And the key carries the field names the literal supplies,
-//! because the defaults a literal expands are exactly the ones it does
-//! not supply (`a_fully_supplied_literal_in_its_own_default_runs`).
+//! The shapes that must keep building are the point of the two halves
+//! of the key. Only a param DEFAULT's literal is an edge, because
+//! nesting written out in source is bounded by the source that spells
+//! it (`same_type_nesting_written_out_still_builds` nests `Box` in
+//! `Box` with an identical argument list and is an ordinary program).
+//! And the key carries the field names the literal supplies, because
+//! the defaults a literal expands are exactly the ones it does not
+//! supply (`a_fully_supplied_literal_in_its_own_default_runs`).
 
 use std::process::Command;
 
@@ -36,7 +40,7 @@ fn build_err(name: &str, source: &str) -> CodegenError {
     let out = build_executable_with_options(&program, &bin, &[], &build_opts::options());
     let _ = std::fs::remove_file(&bin);
     match out {
-        Ok(_) => panic!("expected the instantiation-path guard to refuse it"),
+        Ok(_) => panic!("expected the self-containment law to refuse it"),
         Err(e) => e,
     }
 }
@@ -68,9 +72,9 @@ fn refusal_message(e: &CodegenError, locus: &str) -> String {
     msg.clone()
 }
 
-/// The issue's program. Before the guard: stack overflow, SIGABRT.
+/// The issue's program. Before any guard: stack overflow, SIGABRT.
 #[test]
-fn the_backstop_refuses_the_direct_cycle() {
+fn the_law_refuses_the_direct_cycle() {
     let src = r#"
         locus Node {
             params {
@@ -83,11 +87,12 @@ fn the_backstop_refuses_the_direct_cycle() {
     refusal_message(&build_err("direct", src), "Node");
 }
 
-/// The same, through two types — the cycle the ancestor path catches
-/// that a self-reference check would not. The error names the ring it
-/// closed, since neither locus alone is the mistake.
+/// The same, through two types — the cycle a self-reference check
+/// would not catch. The error names the ring it closed, from the locus
+/// whose param it is reported at, since neither locus alone is the
+/// mistake.
 #[test]
-fn the_backstop_refuses_a_two_type_cycle() {
+fn the_law_refuses_a_two_type_cycle() {
     let src = r#"
         locus Alpha {
             params { tag: Int = 0; beta: Beta = Beta { tag: 1 }; }
@@ -99,7 +104,7 @@ fn the_backstop_refuses_a_two_type_cycle() {
     "#;
     let msg = refusal_message(&build_err("two_type", src), "Beta");
     assert!(
-        msg.contains("`Beta` → `Alpha` → `Beta`"),
+        msg.contains("param `beta` of `Alpha`") && msg.contains("`Alpha` → `Beta` → `Alpha`"),
         "the error spells the ring out: {}",
         msg
     );
@@ -162,25 +167,19 @@ fn a_fully_supplied_literal_in_its_own_default_runs() {
     assert!(stdout.contains("m=1"), "got: {:?}", stdout);
 }
 
-/// The division of labour, from codegen's side: a param default that
-/// is a CALL returning the same locus is not an instantiation-path
-/// re-entry, because lowering a call emits a call — `make`'s body is
-/// lowered once, as a function. So the COMPILER terminates and the
-/// build succeeds, and this half of the rule needs no backstop.
+/// A param default that is a CALL returning the same locus: lowering a
+/// call emits a call — `make`'s body is lowered once, as a function —
+/// so the compiler would terminate on it, and the built program would
+/// recurse until it overflowed its own stack at run time (`make()`
+/// builds a `Node` whose `next` default calls `make()` again).
 ///
-/// The built program does not terminate: `make()` builds a `Node`
-/// whose `next` default calls `make()` again, and it overflows its
-/// own stack at run time. Which is why this test builds it and stops
-/// there, deliberately, rather than running it.
-///
-/// GH #870 is what now keeps an author from getting here: `hale
-/// check` refuses this program at the param, having asked whether
-/// `make` builds a fresh `Node` (see
-/// `hale-types/tests/self_containing_locus.rs`). `build_executable`
-/// still never runs the checker, so what this test pins is unchanged
-/// — the lowering's floor, which the call spelling never needed.
+/// GH #870 refuses it at the param, having asked whether `make` builds
+/// a fresh `Node` (see `hale-types/tests/self_containing_locus.rs`).
+/// Until F.40 phase 3, C7 a harness build skipped that law and built
+/// the program; the harness demands the law now, so it is refused here
+/// too, with the factory spelled out.
 #[test]
-fn a_factory_call_in_a_default_still_builds() {
+fn a_factory_call_in_a_default_is_refused_at_the_harness_too() {
     let src = r#"
         locus Node {
             params {
@@ -191,9 +190,23 @@ fn a_factory_call_in_a_default_still_builds() {
         fn make() -> Node { return Node { n: 5 }; }
         fn main() { let node = Node { n: 1 }; println("n=", node.n); }
     "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
-    let bin = harness::unique_bin("hale_test_selfcontain_factory");
-    let out = build_executable_with_options(&program, &bin, &[], &build_opts::options());
-    let _ = std::fs::remove_file(&bin);
-    assert!(out.is_ok(), "the compiler terminates on it: {:?}", out.err());
+    let msg = refusal_message(&build_err("factory", src), "Node");
+    assert!(msg.contains("defaults to `make()`, which builds a fresh `Node`"), "the factory edge: {msg}");
+}
+
+/// F.40 phase 3, C7: a literal in a conditional default is one lowering
+/// expands (it lowers every branch), and the law's walk now reaches it;
+/// it used to stop at an `if`, and the guard refused the program
+/// without a span. Spelled without a raw string so the corpus does not
+/// harvest it.
+#[test]
+fn a_cycle_through_a_conditional_default_is_refused() {
+    let src = "locus Node {\n\
+               \x20   params {\n\
+               \x20       n: Int = 0;\n\
+               \x20       next: Node = if true { Node { n: 1 } } else { Node { n: 2 } };\n\
+               \x20   }\n\
+               }\n\
+               fn main() { let node = Node { }; println(\"n=\", node.n); }\n";
+    refusal_message(&build_err("conditional", src), "Node");
 }
