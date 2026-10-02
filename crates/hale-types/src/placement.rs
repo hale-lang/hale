@@ -77,9 +77,11 @@
 //!   the adapter literal has no site of its own; the entry's implicit
 //!   template's top likewise carries the entry's site.
 //! - [`Origin::Entry`] and [`PlacementTable::entry_literals`] (the entry as a
-//!   construction scope), and [`HoleKind::Reuse`] (a field that holds an
-//!   instance built elsewhere claims none) are the driver's rulings on what
-//!   the shadow found, not in the design's text.
+//!   construction scope), [`HoleKind::Reuse`] (a field that holds an
+//!   instance built elsewhere claims none), and [`InstanceRow::built_by`]
+//!   (a held instance's subtree lives in its holder's domain, and records
+//!   the source template's row it was built as) are the driver's rulings on
+//!   what the shadow found, not in the design's text.
 //!
 //! The design's case 6 (a generic locus as a params field) never reaches
 //! the producer's consumers: the checker refuses the shape, so G-2 is a
@@ -91,7 +93,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
-    OrDisposition, ParamInit, PinAffinity, PlacementConstraint, PlacementSpec, Program, RecoveryModifier, Stmt,
+    OrDisposition, ParamInit, Pattern, PinAffinity, PlacementConstraint, PlacementSpec, Program, RecoveryModifier, Stmt,
     StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::sites::{for_each_site_in_item, SiteKind};
@@ -336,6 +338,15 @@ pub struct InstanceRow {
     /// On or under a step with an `alternative`: live only in occurrences
     /// that took it.
     pub guarded: bool,
+    /// A held instance's row (a [`HoleKind::Reuse`]) or a row under one:
+    /// the source template's row that built it, on the domain where it
+    /// was built, for the retention question. The instance moved into its
+    /// holder's domain on the handoff, so this row's domain is the
+    /// holder's, and the source's row ([`PlacementTable::handed_off`])
+    /// answers where it was built, not where it runs. `None` for a row its
+    /// own template builds, and for a held row whose source is no
+    /// template's row (a parameter, a field of `self`, a dynamic literal).
+    pub built_by: Option<InstanceKey>,
 }
 
 /// The root lowering deploys.
@@ -398,7 +409,9 @@ pub enum HoleKind {
     UnenumerableInitializer,
     /// The field is initialized from an existing instance (`self.roles`,
     /// a local name), the source expression as written: the row is the
-    /// field's hold on an instance built elsewhere, not a new one.
+    /// field's hold on an instance built elsewhere, not a new one. The
+    /// hole sits on the held row alone; the rows under it are the
+    /// declared type's subtree, in the holder's domain.
     Reuse { source: String },
     /// A generic declaration realized with no substitution the producer
     /// could read.
@@ -430,8 +443,10 @@ impl HoleKind {
             }
             HoleKind::Reuse { .. } => {
                 "no new instance: the row claims none and anchors no domain of its own (it keeps its owner's, \
-                 an entry naming the field decides nothing), nothing below it is enumerated, and a count over \
-                 the table skips it"
+                 an entry naming the field decides nothing); the held instance moved into that domain on the \
+                 handoff, so the declared type's subtree is enumerated under the row, inherited, and each row \
+                 names the source template's row it was built as (`built_by`); a domain question skips the \
+                 source's rows, and a count over the table skips the held row and its subtree"
             }
             HoleKind::EntryDecidesNothing { .. } => {
                 "the entry is kept as a hole, never dropped: it names no field family a template builds"
@@ -473,6 +488,14 @@ impl PlacementTable {
     pub fn domain(&self, id: DomainId) -> &Domain {
         &self.domains[id.0 as usize]
     }
+
+    /// The rows a held instance was built as: every key some row names
+    /// as its [`InstanceRow::built_by`]. Each answers where its instance
+    /// was built (the retention question); where the instance runs is
+    /// its held row's domain, so a domain question skips these.
+    pub fn handed_off(&self) -> BTreeSet<&InstanceKey> {
+        self.instances.values().filter_map(|r| r.built_by.as_ref()).collect()
+    }
 }
 
 // ----------------------------------------------------- the producer
@@ -503,11 +526,13 @@ fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> Pla
         },
         pools: BTreeMap::new(),
         static_literals: BTreeSet::new(),
+        held: Vec::new(),
     };
     if let Some(root) = entry.lowering_root.as_ref() {
         b.root(bundle, entry, root, &scopes);
     }
     b.entry_literals(&scopes);
+    b.handoffs();
     b.dynamic_sites(&scopes);
     b.table
 }
@@ -826,7 +851,14 @@ struct Builder<'d, 'a> {
     pools: BTreeMap<String, DomainId>,
     /// Every literal the static tower visited: not a dynamic site.
     static_literals: BTreeSet<SiteRef>,
+    /// Each held row whose source names a literal, with that literal's
+    /// template top: linked once every template is built ([`Builder::handoffs`]).
+    held: Vec<(InstanceKey, InstanceKey)>,
 }
+
+/// The names a scope binds: each to the locus literal it is bound to,
+/// when bound once, immutably, to one; `None` otherwise.
+type Lets = BTreeMap<String, Option<SiteRef>>;
 
 impl<'d, 'a> Builder<'d, 'a> {
     fn new_domain(&mut self, kind: DomainKind) -> DomainId {
@@ -890,15 +922,15 @@ impl<'d, 'a> Builder<'d, 'a> {
                 _ => {}
             }
         }
-        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound)> = Vec::new();
+        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets)> = Vec::new();
         for s in &scopes.scopes {
             for lit in &s.literals {
                 if lit.decl == Some(site) && s.universe == SiteUniverse::User {
-                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop)));
+                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets));
                 }
             }
         }
-        constructions.sort_by_key(|(s, _, _)| *s);
+        constructions.sort_by_key(|(s, _, _, _)| *s);
         let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
@@ -906,24 +938,27 @@ impl<'d, 'a> Builder<'d, 'a> {
             is_entry,
             constructions: constructions
                 .iter()
-                .map(|(literal, _, bound)| Construction { literal: *literal, bound: bound.clone() })
+                .map(|(literal, _, bound, _)| Construction { literal: *literal, bound: bound.clone() })
                 .collect(),
         });
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
         // site, as an adapter's is its binding entry's.
-        let templates: Vec<(Origin, SiteRef, &'a [StructInit])> = if constructions.is_empty() {
+        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>)> = if constructions.is_empty() {
             let entry_site = scopes.entry_fn().unwrap_or(site);
-            vec![(Origin::Entry(entry_site), entry_site, &[])]
+            vec![(Origin::Entry(entry_site), entry_site, &[], None)]
         } else {
-            constructions.iter().map(|(literal, inits, _)| (Origin::Construction(*literal), *literal, *inits)).collect()
+            constructions
+                .iter()
+                .map(|(literal, inits, _, lets)| (Origin::Construction(*literal), *literal, *inits, Some(*lets)))
+                .collect()
         };
-        for (origin, literal, inits) in templates {
+        for (origin, literal, inits, lets) in templates {
             if matches!(origin, Origin::Construction(_)) {
                 self.static_literals.insert(literal);
             }
             let key = InstanceKey { origin, path: Vec::new(), replica: None };
-            self.top(&key, decl, realizes.clone(), literal, inits, Some(&entries));
+            self.top(&key, decl, realizes.clone(), literal, inits, Some(&entries), lets);
             // Invariant 5: every entry decides a field family in this
             // template, or it is a hole.
             for (field, (_, entry_site)) in &entries.entries {
@@ -967,12 +1002,13 @@ impl<'d, 'a> Builder<'d, 'a> {
                         decided_by: Decision::Binding { entry: entry_site },
                         owner_relative: OwnerRelative::SameAsOwner,
                         guarded: false,
+                        built_by: None,
                     },
                 );
                 if let Some(d) = realized {
                     let owner = Owner { key: &key, domain, guarded: false };
                     let mut stack = vec![d.site];
-                    self.fields(d, inits, &BTreeMap::new(), &owner, None, &mut stack);
+                    self.fields(d, inits, &BTreeMap::new(), &owner, None, None, &mut stack);
                 }
             }
         }
@@ -980,7 +1016,9 @@ impl<'d, 'a> Builder<'d, 'a> {
 
     /// A template's top row on main, and its tower below it. `root` is set
     /// for the root's templates, whose fields a `placement { }` entry
-    /// decides.
+    /// decides; `lets` are the names bound in the scope the literal is
+    /// written in.
+    #[allow(clippy::too_many_arguments)]
     fn top(
         &mut self,
         key: &InstanceKey,
@@ -989,6 +1027,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         literal: SiteRef,
         inits: &'a [StructInit],
         root: Option<&RootEntries<'a>>,
+        lets: Option<&Lets>,
     ) {
         self.table.instances.insert(
             key.clone(),
@@ -1000,11 +1039,12 @@ impl<'d, 'a> Builder<'d, 'a> {
                 decided_by: Decision::Default,
                 owner_relative: OwnerRelative::SameAsOwner,
                 guarded: false,
+                built_by: None,
             },
         );
         let owner = Owner { key, domain: PlacementTable::MAIN, guarded: false };
         let mut stack = vec![decl.site];
-        self.fields(decl, inits, &BTreeMap::new(), &owner, root, &mut stack);
+        self.fields(decl, inits, &BTreeMap::new(), &owner, root, lets, &mut stack);
     }
 
     /// The templates the entry builds besides the root: each locus
@@ -1026,15 +1066,56 @@ impl<'d, 'a> Builder<'d, 'a> {
             if !args_known {
                 self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedArguments);
             }
-            self.top(&key, d, realizes, lit.site, lit.inits, None);
+            self.top(&key, d, realizes, lit.site, lit.inits, None, Some(&main.lets));
             self.table.entry_literals.push(Construction { literal: lit.site, bound: scopes.bound(main, lit.in_loop) });
+        }
+    }
+
+    /// Each held row whose source names a template's literal gets that
+    /// template's top as its `built_by`, and each row under it the
+    /// source's row at the same relative path, where the source has one.
+    /// Run once every template is built: a source is usually one of `fn
+    /// main`'s literals, which are built after the root's.
+    fn handoffs(&mut self) {
+        let mut links: Vec<(InstanceKey, InstanceKey)> = Vec::new();
+        for (held, source) in &self.held {
+            if !self.table.instances.contains_key(source) {
+                continue;
+            }
+            for k in self.table.instances.keys() {
+                if k.origin != held.origin || k.replica != held.replica || !k.path.starts_with(&held.path) {
+                    continue;
+                }
+                let at = InstanceKey {
+                    origin: source.origin,
+                    path: k.path[held.path.len()..].to_vec(),
+                    replica: source.replica,
+                };
+                if self.table.instances.contains_key(&at) {
+                    links.push((k.clone(), at));
+                }
+            }
+        }
+        for (k, at) in links {
+            if let Some(r) = self.table.instances.get_mut(&k) {
+                r.built_by = Some(at);
+            }
         }
     }
 
     /// The params fields of `decl` as a literal with `inits` builds it,
     /// each a row under `owner`, and their fields below them. `root` is
     /// set when `decl` is the root and `owner` a construction's top: its
-    /// fields are the ones a `placement { }` entry decides.
+    /// fields are the ones a `placement { }` entry decides. `lets` is set
+    /// while `inits` were written in the template's scope, so a name among
+    /// them is one of its locals.
+    ///
+    /// A field held from an existing instance ([`HoleKind::Reuse`]) is a
+    /// row with no literal in its owner's domain; the instance moved there
+    /// on the handoff, so its declared type's subtree is walked under it
+    /// from the declaration's defaults, as for any row, and a source that
+    /// names a literal is recorded for [`Builder::handoffs`].
+    #[allow(clippy::too_many_arguments)]
     fn fields(
         &mut self,
         decl: &'d DeclEntry<'a>,
@@ -1042,6 +1123,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         subst: &BTreeMap<String, TypeExpr>,
         owner: &Owner<'_>,
         root: Option<&RootEntries<'a>>,
+        lets: Option<&Lets>,
         stack: &mut Vec<SiteRef>,
     ) {
         if stack.len() > 64 {
@@ -1052,14 +1134,11 @@ impl<'d, 'a> Builder<'d, 'a> {
             let LocusMember::Params(pb) = m else { continue };
             for p in &pb.params {
                 let field = p.name.name.as_str();
-                let init: Option<&'a Expr> = inits
-                    .iter()
-                    .find(|i| i.name.name == field)
-                    .map(|i| &i.value)
-                    .or(match &p.init {
-                        ParamInit::Value(e) => Some(e),
-                        ParamInit::Inferred => None,
-                    });
+                let written_here = inits.iter().find(|i| i.name.name == field).map(|i| &i.value);
+                let init: Option<&'a Expr> = written_here.or(match &p.init {
+                    ParamInit::Value(e) => Some(e),
+                    ParamInit::Inferred => None,
+                });
                 let declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
                 let declared_named = match &declared {
                     Some(TypeExpr::Named { path, .. }) => self.decls.resolve(&segments(path), universe),
@@ -1068,6 +1147,12 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
                 let alts = init.and_then(alternatives);
                 let reused = if alts.is_none() { init.and_then(reused_source) } else { None };
+                // The literal a held instance was built from: a local of
+                // the template's scope bound to one.
+                let source = match (&reused, written_here, lets) {
+                    (Some(name), Some(_), Some(lets)) => lets.get(name).copied().flatten(),
+                    _ => None,
+                };
                 // Each alternative: (its literal's site, the declaration
                 // it names, its inits, the path as written).
                 let mut built: Vec<(Option<SiteRef>, Option<&'d DeclEntry<'a>>, &'a [StructInit], String)> = Vec::new();
@@ -1209,12 +1294,22 @@ impl<'d, 'a> Builder<'d, 'a> {
                                 decided_by,
                                 owner_relative,
                                 guarded,
+                                built_by: None,
                             },
                         );
+                        if let Some(lit) = source {
+                            let top = InstanceKey { origin: Origin::Construction(lit), path: Vec::new(), replica: None };
+                            self.held.push((key.clone(), top));
+                        }
                         // Below a literal the producer resolved, the walk
-                        // goes on; a hole stops it (nothing below an
-                        // unknown literal is enumerated).
-                        let (Some(d), Some(_)) = (realized, literal) else { continue };
+                        // goes on, and below a held instance, from its
+                        // declared type; any other hole stops it (nothing
+                        // below an unknown literal is enumerated).
+                        let d = match (realized, literal, &declared_named) {
+                            (Some(d), Some(_), _) => d,
+                            (_, None, Named::Locus(d)) if reused.is_some() => *d,
+                            _ => continue,
+                        };
                         if stack.contains(&d.site) {
                             continue;
                         }
@@ -1233,7 +1328,8 @@ impl<'d, 'a> Builder<'d, 'a> {
                         };
                         stack.push(d.site);
                         let next = Owner { key: &key, domain, guarded };
-                        self.fields(d, lit_inits, &below, &next, None, stack);
+                        let lets_below = if written_here.is_some() { lets } else { None };
+                        self.fields(d, lit_inits, &below, &next, None, lets_below, stack);
                         stack.pop();
                     }
                 }
@@ -1399,13 +1495,14 @@ enum ScopeKind {
 }
 
 /// One scope's bodies: the literals in them, the free fns they call,
-/// and the free fns they name as values.
+/// the free fns they name as values, and the names they bind.
 struct Scope<'a> {
     universe: SiteUniverse,
     kind: ScopeKind,
     literals: Vec<Literal<'a>>,
     calls: Vec<(String, bool)>,
     escapes: BTreeSet<String>,
+    lets: Lets,
 }
 
 /// How many times a scope can run: finite, or unbounded with a reason.
@@ -1457,6 +1554,7 @@ impl<'a> Scopes<'a> {
                     let site = SiteRef { universe, id };
                     let mut w = BodyWalk::new(ids, universe, decls);
                     for p in &fd.params {
+                        w.bind(&p.name.name, None);
                         if let Some(d) = &p.default {
                             w.expr(d);
                         }
@@ -1474,6 +1572,7 @@ impl<'a> Scopes<'a> {
                         match m {
                             LocusMember::Fn(fd) => {
                                 for p in &fd.params {
+                                    w.bind(&p.name.name, None);
                                     if let Some(d) = &p.default {
                                         w.expr(d);
                                     }
@@ -1603,6 +1702,7 @@ struct BodyWalk<'a, 'd> {
     literals: Vec<Literal<'a>>,
     calls: Vec<(String, bool)>,
     escapes: BTreeSet<String>,
+    lets: Lets,
 }
 
 impl<'a, 'd> BodyWalk<'a, 'd> {
@@ -1615,11 +1715,47 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             literals: Vec::new(),
             calls: Vec::new(),
             escapes: BTreeSet::new(),
+            lets: BTreeMap::new(),
         }
     }
 
     fn finish(self, kind: ScopeKind) -> Scope<'a> {
-        Scope { universe: self.universe, kind, literals: self.literals, calls: self.calls, escapes: self.escapes }
+        Scope {
+            universe: self.universe,
+            kind,
+            literals: self.literals,
+            calls: self.calls,
+            escapes: self.escapes,
+            lets: self.lets,
+        }
+    }
+
+    /// `name` bound to `to`: a second binding of one name, anywhere in the
+    /// scope, binds it to nothing the producer follows.
+    fn bind(&mut self, name: &str, to: Option<SiteRef>) {
+        self.lets.entry(name.to_string()).and_modify(|b| *b = None).or_insert(to);
+    }
+
+    /// A match arm's bindings, each a name bound to nothing followed.
+    fn pattern(&mut self, p: &Pattern) {
+        match p {
+            Pattern::Binding(i) => self.bind(&i.name, None),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+                for a in args {
+                    self.pattern(a);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
+    /// The locus literal `e` is, when it is one.
+    fn locus_literal(&self, e: &Expr) -> Option<SiteRef> {
+        let Expr::Struct { path, id, .. } = e else { return None };
+        match self.decls.resolve(&segments(path), self.universe) {
+            Named::Locus(_) => self.ids.site_id(*id).map(|id| SiteRef { universe: self.universe, id }),
+            _ => None,
+        }
     }
 
     fn block(&mut self, b: &'a Block) {
@@ -1656,7 +1792,17 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 
     fn stmt(&mut self, s: &'a Stmt) {
         match s {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => self.expr(value),
+            Stmt::Let { is_mut, name, value, .. } => {
+                let to = if *is_mut { None } else { self.locus_literal(value) };
+                self.bind(&name.name, to);
+                self.expr(value);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                for n in names {
+                    self.bind(&n.name, None);
+                }
+                self.expr(value);
+            }
             Stmt::Assign { target, value, .. } => {
                 self.expr(value);
                 for seg in &target.tail {
@@ -1669,6 +1815,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             Stmt::Match(m) => {
                 self.expr(&m.scrutinee);
                 for arm in &m.arms {
+                    self.pattern(&arm.pattern);
                     if let Some(g) = &arm.guard {
                         self.expr(g);
                     }
@@ -1678,7 +1825,8 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                     }
                 }
             }
-            Stmt::For { iter, body, .. } => {
+            Stmt::For { name, iter, body, .. } => {
+                self.bind(&name.name, None);
                 self.expr(iter);
                 self.looped(body);
             }
@@ -1780,6 +1928,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             Expr::Match(m) => {
                 self.expr(&m.scrutinee);
                 for arm in &m.arms {
+                    self.pattern(&arm.pattern);
                     if let Some(g) = &arm.guard {
                         self.expr(g);
                     }

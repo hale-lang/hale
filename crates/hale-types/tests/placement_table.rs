@@ -17,6 +17,7 @@ use hale_types::placement::{
     join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
     InstanceKey, InstanceRow, LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
 };
+use hale_types::check::{compute_pool_of_locus_type, PoolId};
 use hale_types::snapshot::STDLIB_SEED;
 
 fn fixture(name: &str) -> PathBuf {
@@ -583,6 +584,64 @@ fn a_field_from_an_existing_instance_is_a_reuse_hole() {
     assert!(matches!(&roles.decided_by, Decision::Inherited { from } if from.path.len() == 1));
     let reuse = HoleKind::Reuse { source: "r".into() };
     assert!(t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone()) && x.kind == reuse));
+}
+
+/// Case 16: a held instance's subtree lives in its holder's domain (K-8 /
+/// M-8). `fn main` builds `r` on main and hands it to `h`, placed pinned:
+/// the held row keeps the `Reuse` hole naming `r`, the declared type's
+/// fields are rows under it in the pinned domain, inherited, and each row
+/// names the source template's row it was built as. The legacy checker's
+/// map and the model's arrangement place the subtree under the holder,
+/// and the table now agrees with both.
+#[test]
+fn a_held_instances_subtree_lives_in_its_holders_domain() {
+    let s = clean("held_subtree.hl");
+    let t = table(&s);
+    let (_, h) = one(t, "h");
+    assert!(is_pinned(t, h.domain) && matches!(h.decided_by, Decision::Entry { .. }));
+
+    // The source: `fn main`'s `Roles { }`, a template on main.
+    let tops: BTreeMap<&str, &InstanceKey> = rows(t, "").into_iter().map(|(k, r)| (lowered(r), k)).collect();
+    let source = tops["Roles"];
+    assert!(matches!(source.origin, Origin::Construction(lit) if t.entry_literals.iter().any(|c| c.literal == lit)));
+    let source_k = InstanceKey { origin: source.origin, path: one(t, "k").0.path.clone(), replica: None };
+    assert_eq!(t.instances[source].domain, PlacementTable::MAIN, "built on main");
+    assert_eq!(t.instances[&source_k].domain, PlacementTable::MAIN);
+
+    // The held row: the hole, the holder's domain, built as the source.
+    let (held, roles) = one(t, "h.roles");
+    assert_eq!((lowered(roles), roles.literal, roles.domain), ("Roles", None, h.domain));
+    assert!(matches!(&roles.decided_by, Decision::Inherited { from } if from.path.len() == 1));
+    assert_eq!(roles.built_by.as_ref(), Some(source));
+    let at_held: Vec<&HoleKind> = t.holes.iter().filter(|x| x.at == HoleAt::Instance(held.clone())).map(|x| &x.kind).collect();
+    assert_eq!(at_held, [&HoleKind::Reuse { source: "r".into() }]);
+
+    // Its subtree: the declared type's, under the holder, no hole.
+    let (k, kr) = one(t, "h.roles.k");
+    assert_eq!((lowered(kr), kr.domain), ("K", h.domain));
+    assert!(kr.literal.is_some(), "`Roles`' default literal");
+    assert!(matches!(&kr.decided_by, Decision::Inherited { from } if from == held));
+    assert_eq!(kr.built_by.as_ref(), Some(&source_k));
+    assert!(!t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone())), "the hole is the held row's alone");
+    assert_eq!(t.handed_off(), [source, &source_k].into_iter().collect::<BTreeSet<_>>());
+
+    // Agreement: where `K` and `Roles` run, the handed-off rows skipped,
+    // is the legacy checker's pinned; the model's `App.h.roles.k` is the
+    // table's row.
+    let handed_off = t.handed_off();
+    let runs_in = |name: &str| -> BTreeSet<DomainId> {
+        t.instances.iter().filter(|(k, r)| !handed_off.contains(k) && lowered(r) == name).map(|(_, r)| r.domain).collect()
+    };
+    let legacy = compute_pool_of_locus_type(&s.bundle(), s.demand_scope().unwrap(), s.demand_entry().unwrap());
+    for name in ["Roles", "K"] {
+        assert_eq!(runs_in(name), [h.domain].into_iter().collect(), "`{name}` runs in the holder's domain");
+        assert!(matches!(&legacy[name], PoolId::Pinned(f) if f == "h"), "the legacy map says `{name}` is pinned at `h`");
+    }
+    let model = s.demand_model().unwrap_or_else(|_| panic!("the model is blocked"));
+    let e = &model.entities;
+    let i = e.locus_instances.iter().position(|x| x.path == "App.h.roles.k").expect("the arrangement holds `App.h.roles.k`");
+    let placed = model.relations.placed_in.iter().find(|p| p.instance.0 as usize == i).expect("placed");
+    assert_eq!(e.thread_domains[placed.domain.0 as usize].name, "pinned:App.h");
 }
 
 /// Checkpoint 4: an alternative one step under a replicated field. Every

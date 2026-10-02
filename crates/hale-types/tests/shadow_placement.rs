@@ -583,11 +583,46 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
         global.push(format!("cause: non-root main `{}` ({why}){}", m.name, if placed { ", with entries" } else { "" }));
     }
 
+    // A held instance runs where its held row is: the rows its source
+    // template built it as answer where it was built (K-8 / M-8), so no
+    // projection of where instances run reads them.
+    let handed_off = t.handed_off();
+    // The held rows, and the declarations of those whose source the
+    // producer could not link (a parameter, a name bound twice): a
+    // template `fn main` builds of one of them may be that source, still
+    // standing on main where it was built.
+    let held: Vec<&InstanceKey> = t
+        .holes
+        .iter()
+        .filter_map(|h| match (&h.at, &h.kind) {
+            (HoleAt::Instance(k), HoleKind::Reuse { .. }) => Some(k),
+            _ => None,
+        })
+        .collect();
+    let unlinked: BTreeSet<&str> = held
+        .iter()
+        .filter_map(|k| t.instances.get(*k))
+        .filter(|r| r.built_by.is_none())
+        .filter_map(|r| r.realizes.as_ref().map(|d| d.lowered.as_str()))
+        .collect();
+    let under_held =
+        |k: &InstanceKey| held.iter().any(|h| h.origin == k.origin && h.replica == k.replica && k.path.starts_with(&h.path));
+    let unlinked_source = |k: &InstanceKey| {
+        t.entry_literals.iter().any(|c| Origin::Construction(c.literal) == k.origin)
+            && t.instances
+                .get(&InstanceKey { origin: k.origin, path: Vec::new(), replica: None })
+                .and_then(|r| r.realizes.as_ref())
+                .is_some_and(|d| unlinked.contains(d.lowered.as_str()))
+    };
+
     // Per locus type (the lowered name), the domains its instances run
     // in, and the rows that decided them.
     let mut by_type: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut rows_of: BTreeMap<String, Vec<(&InstanceKey, &InstanceRow)>> = BTreeMap::new();
     for (k, r) in &t.instances {
+        if handed_off.contains(k) {
+            continue;
+        }
         let Some(d) = &r.realizes else { continue };
         by_type.entry(d.lowered.clone()).or_default().insert(domain_key(t, r.domain));
         rows_of.entry(d.lowered.clone()).or_default().push((k, r));
@@ -602,12 +637,19 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             }
         };
         format!(
-            "`{}` on {} ({}, {} field{})",
+            "`{}` on {} ({}, {} field{}{})",
             paths.path(k),
             domain_key(t, r.domain),
             r.decided_by_kind(),
             own,
-            if r.guarded { ", guarded" } else { "" }
+            if r.guarded { ", guarded" } else { "" },
+            if under_held(k) {
+                ", held"
+            } else if unlinked_source(k) {
+                ", a template an unlinked held row may be"
+            } else {
+                ""
+            }
         )
     };
     let type_witness = |seen: &dyn Fn(&InstanceKey, &InstanceRow) -> bool| -> BTreeMap<String, Vec<String>> {
@@ -645,6 +687,9 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
     // Owner.field → the declarations the field's rows realize.
     let mut field_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (k, r) in &t.instances {
+        if handed_off.contains(k) {
+            continue;
+        }
         let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
         let Some(owner) = t.instances.get(o).and_then(|o| o.realizes.as_ref()) else { continue };
         let key = format!("{}.{}", owner.lowered, step.field);
@@ -797,7 +842,7 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             model_decls.entry(path.clone()).or_default().insert(fact.split('@').next().unwrap_or("").to_string());
         }
         for (k, r) in &t.instances {
-            if matches!(k.origin, Origin::Binding(_)) {
+            if matches!(k.origin, Origin::Binding(_)) || handed_off.contains(k) {
                 continue;
             }
             let path = paths.path(k);
@@ -836,7 +881,7 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
     }
     let mut new: BTreeSet<String> = BTreeSet::new();
     for (k, r) in &t.instances {
-        if r.owner_relative != OwnerRelative::OffOwner {
+        if r.owner_relative != OwnerRelative::OffOwner || handed_off.contains(k) {
             continue;
         }
         let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
@@ -1036,6 +1081,15 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          seeded from the root's tower alone, does not hold (§ 10.1; cases 13-15, `placement_table.rs`). § 2.1",
     ),
     (
+        "K-8",
+        Class::Correction,
+        "a held instance's subtree lives in its holder's domain (K-8 / M-8, § 10.8; case 16): the table enumerates \
+         it under the holder, as the legacy producers do, and the source template's rows answer where it was built \
+         (`built_by`), read by no domain question. Agreement where the producer links the source; where it cannot \
+         (a parameter, a name bound twice), the source template stands on main beside the held rows and the type's \
+         set holds both. § 2.1",
+    ),
+    (
         "B-1",
         Class::KnownOldBug,
         "a locus nested under a root field placed off main inherits its owner's domain (sem:3511-3542, rt:364-371); \
@@ -1195,17 +1249,35 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
         let ids: BTreeSet<&'static str> = causes.iter().map(|c| f(c)).collect::<Option<_>>()?;
         (!ids.is_empty()).then(|| ids.into_iter().collect())
     };
+    // K-8's residue: the set's off-main rows are all held, and on main
+    // stands a template an unlinked held row may have been built as, so
+    // the "several domains" are one instance before and after its handoff.
+    // Held rows alone in several domains (one instance several holders
+    // hold) are K-3's shape, not this.
+    let rows: Vec<&String> = d.witnesses.iter().filter(|w| w.starts_with('`')).collect();
+    let source = ", a template an unlinked held row may be)";
+    let held_residue = rows.iter().any(|w| w.contains(", held)"))
+        && rows.iter().any(|w| w.contains("` on main (") && w.contains(source))
+        && rows.iter().all(|w| w.contains(", held)") || (w.contains("` on main (") && w.contains(source)));
     let ids = match (col, d.kind) {
+        ("checker", Kind::Disagreement) if multi && held_residue => vec!["K-8"],
         ("checker", Kind::Disagreement) if multi => vec!["K-3"],
         ("checker", Kind::OnlyNew) | ("receiver", Kind::OnlyNew) => {
             every(&|c| checker_cause_row(c.strip_prefix("the owner is not in the checker's map: ").unwrap_or(c)))?
         }
         ("bus", Kind::Disagreement) | ("ownership", Kind::Disagreement) => {
             let o = col == "ownership";
-            if multi {
+            if multi && held_residue && d.old.as_deref() == Some("main") {
+                // The held rows off main are B-1's (O-1's) shape; the
+                // source standing on main beside them is K-8's residue.
+                if o {
+                    vec!["K-8", "O-1/O-2"]
+                } else {
+                    vec!["B-1", "K-8"]
+                }
+            } else if multi {
                 vec![if o { "O-3" } else { "B-6" }]
             } else if d.old.as_deref() == Some("main") {
-                let rows: Vec<&String> = d.witnesses.iter().filter(|w| w.starts_with('`')).collect();
                 if rows.iter().any(|w| w.contains("(binding,")) {
                     vec![if o { "O-7" } else { "B-7" }]
                 } else if rows.iter().all(|w| w.contains("(inherited,")) {
