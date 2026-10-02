@@ -1243,7 +1243,7 @@ fn collect_sync_holding_loci(
     out: &mut BTreeSet<String>,
 ) {
     for program in programs {
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             let TopDecl::Locus(l) = item else { continue };
             for m in &l.members {
                 let LocusMember::Params(pb) = m else { continue };
@@ -1273,7 +1273,7 @@ impl AllocSummary {
     /// discipline sync inference gave the form.
     pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 if let TopDecl::Locus(l) = item {
                     if forms.synchronizes(l) {
                         self.sync_forms.insert(l.name.name.clone());
@@ -1292,7 +1292,7 @@ impl AllocSummary {
         programs: &[&Program],
         forms: &crate::form_rows::FormRows,
     ) -> std::borrow::Cow<'_, AllocSummary> {
-        let adds = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
+        let adds = programs.iter().flat_map(|p| flat_decls(&p.items)).any(|item| {
             matches!(item, TopDecl::Locus(l)
                 if forms.synchronizes(l) && !self.sync_forms.contains(&l.name.name))
         });
@@ -1358,16 +1358,21 @@ pub fn summarize_identified(
     let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
         crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
     };
-    // What the checked programs declare at their top level. A program
-    // that is stdlib source itself (`hale check` over a stdlib file)
-    // declares what the analysis copy beside it declares; the program's
-    // declaration is the row, and the copy's of the same name stays out.
+    // What the checked programs declare. A program that is stdlib source
+    // itself (`hale check` over a stdlib file) declares what the analysis
+    // copy beside it declares; the program's declaration is the row, and
+    // the copy's of the same name stays out.
+    //
+    // Every declaration pass below walks `module { … }` nesting
+    // (`flat_decls`): a module is a namespace, not an analysis boundary
+    // (GH #764), and the resolver keys a nested declaration by its bare
+    // name, so the summary keys it the same way.
     let mut declared_by_program: BTreeSet<String> = BTreeSet::new();
     for (program, ids) in identified {
         if is_stdlib_copy(ids) {
             continue;
         }
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             match item {
                 TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
                 TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
@@ -1405,7 +1410,7 @@ pub fn summarize_identified(
     // conformer instead of binding to the default literal.
     let mut interface_names: BTreeSet<String> = BTreeSet::new();
     for p in programs {
-        for item in &p.items {
+        for item in flat_decls(&p.items) {
             match item {
                 TopDecl::Locus(l) => {
                     locus_type_names.insert(l.name.name.clone());
@@ -1439,7 +1444,7 @@ pub fn summarize_identified(
     // bound instead of ranking as a runtime `while`.
     let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
     for program in programs {
-        for item in &program.items {
+        for item in flat_decls(&program.items) {
             if let TopDecl::Const(c) = item {
                 if let Some(v) =
                     const_int_eval(&c.value, &const_ints)
@@ -1518,7 +1523,7 @@ pub fn summarize_identified(
             }
         }
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 let TopDecl::Locus(l) = item else { continue };
                 all.insert(l.name.name.clone());
                 if l.is_main {
@@ -1585,7 +1590,7 @@ pub fn summarize_identified(
             }
         }
         for program in programs {
-            for item in &program.items {
+            for item in flat_decls(&program.items) {
                 if let TopDecl::Fn(f) = item {
                     scan_lets(&f.body, &mut deferred);
                 }
@@ -1600,7 +1605,7 @@ pub fn summarize_identified(
 
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
-        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
                     {
@@ -2031,7 +2036,7 @@ pub fn summarize_identified(
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
     for (program, ids) in identified {
-        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+        for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
                     if is_stdlib_copy(ids) {
@@ -2127,7 +2132,7 @@ pub fn summarize_identified(
         let mut started: BTreeSet<String> = BTreeSet::new();
         let mut pending: Vec<String> = Vec::new();
         for (program, ids) in identified {
-            for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+            for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
                 let TopDecl::Locus(l) = item else { continue };
                 let held = param_starts.entry(l.name.name.clone()).or_default();
                 for m in &l.members {
@@ -2455,7 +2460,7 @@ impl AuthorPositions {
         let origin = |id: hale_syntax::ast::NodeId| ids.site_id(id).and_then(|s| ids.origin(s));
         let mut synthesized = BTreeMap::new();
         for p in programs {
-            for item in &p.items {
+            for item in flat_decls(&p.items) {
                 match item {
                     TopDecl::Fn(f) => {
                         if let Some(o) = origin(f.id) {

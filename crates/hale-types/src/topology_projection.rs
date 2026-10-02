@@ -21,7 +21,7 @@
 //!
 //!  * `sorts.fns` / call endpoints — `Function.display`, restricted
 //!    to the SUMMARIZED set (`ApplicationModel::summarized_fns`):
-//!    module-scoped and empty declarations exist in the model but
+//!    `on_failure` handlers and empty declarations exist in the model but
 //!    have no behavior summary, so no fn-keyed section ranges over
 //!    them.
 //!  * `calls_via_stdlib` — the model's own `ViaStdlib` call rows,
@@ -197,7 +197,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         }
         // The legacy relation covers summary-resolved user→user
         // edges only; edges the model recovers into unanalyzed
-        // callees (module-scoped bodies) have no legacy row.
+        // callees have no legacy row.
         if !v1.contains(&c.from) || !v1.contains(&c.to) {
             continue;
         }

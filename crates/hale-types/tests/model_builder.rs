@@ -374,7 +374,7 @@ fn model_and_artifact_extract_the_same_facts() {
         .map(|r| r["fn"].as_str().unwrap().to_string())
         .collect();
     // The model's residue is a SUPERSET: it holes bodies the legacy
-    // summary never walked (on_failure, module scope). Every
+    // summary never walked (on_failure). Every
     // artifact anchor must be a model hole, and every extra must be
     // exactly that richer species.
     let model_hole_fns: BTreeSet<String> = m
@@ -1151,9 +1151,12 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 7): module-scoped and on_failure bodies the behavior
-/// analysis never walked HOLE OUT — the entities exist, their
-/// behavior is typed-unknown, and the capabilities go false.
+/// P1 (round 7): an on_failure body the behavior analysis never
+/// walks HOLES OUT — the entity exists, its behavior is
+/// typed-unknown, and the capabilities go false. A module-scoped
+/// body is walked like a top-level one (F.40 phase 3, E3a part C: a
+/// module is a namespace, not an analysis boundary), so the module
+/// fn beside it is analyzed and does not.
 #[test]
 fn unanalyzed_bodies_hole_out() {
     let src = r#"
@@ -1197,7 +1200,8 @@ fn main() { App { }; }
         handler.kind,
         hale_model::FunctionKind::FailureHandler
     );
-    // …and both hole out as UnanalyzedBody…
+    // …the failure handler holes out as UnanalyzedBody, the module fn
+    // does not…
     let unanalyzed: Vec<String> = m
         .holes
         .iter()
@@ -1210,10 +1214,12 @@ fn main() { App { }; }
         })
         .collect();
     assert!(
-        unanalyzed.iter().any(|n| n == "sneaky"),
-        "module body holes out: {:?}",
+        !unanalyzed.iter().any(|n| n == "sneaky"),
+        "a module body is analyzed: {:?}",
         unanalyzed
     );
+    let sneaky = e.functions.iter().find(|f| f.name == "sneaky").unwrap();
+    assert!(sneaky.analyzed && sneaky.summarized);
     assert!(
         unanalyzed.iter().any(|n| n.contains("on_failure")),
         "failure body holes out: {:?}",
@@ -1271,19 +1277,20 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 9): a DIRECT call from an analyzed body into an
-/// unanalyzed (module-scoped) callee is a KNOWN edge — the summary
-/// resolves callees only against its analyzed-body set, so the edge
-/// arrives `Unresolved`, but the declaration universe knows the
-/// target. Dropping it would make "a concrete path beats a hole"
-/// impossible: the path would be absent, and a boundary claim would
-/// miss a concrete cross-group call.
+/// P1 (round 9): a DIRECT call from an analyzed body into a callee
+/// whose body the analysis never walks is a KNOWN edge. Dropping it
+/// would make "a concrete path beats a hole" impossible: the path
+/// would be absent, and a boundary claim would miss a concrete
+/// cross-group call. The callee here is an `@ffi` declaration, which
+/// has no body to walk; the summary keys it with an empty one, so the
+/// edge resolves and the callee is a summarized entity. (This was a
+/// module-scoped callee until the summary collected module-nested
+/// bodies, F.40 phase 3, E3a part C; every declared fn now has a row,
+/// so no source program has a callable unanalyzed callee.)
 #[test]
-fn direct_call_into_unanalyzed_callee_is_a_known_edge() {
+fn direct_call_into_a_bodiless_callee_is_a_known_edge() {
     let src = r#"
-module hidden {
-    fn helper(v: Int) -> Int { return v + 1; }
-}
+@ffi("c") fn helper(v: Int) -> Int;
 fn caller(v: Int) -> Int { return helper(v); }
 main locus App {
     run() { println(caller(1)); }
@@ -1299,14 +1306,11 @@ fn main() { App { }; }
         .calls
         .iter()
         .find(|c| fname(c.from) == "caller" && fname(c.to) == "helper")
-        .expect("the concrete edge into the unanalyzed callee exists");
+        .expect("the concrete edge into the bodiless callee exists");
     assert_eq!(edge.dispatch, DispatchKind::Direct);
-    // …and the callee still holes out, bounding reasoning PAST it —
-    // the edge and the hole coexist.
-    assert!(m.holes.iter().any(|h| h.kind == HoleKind::UnanalyzedBody
-        && matches!(h.at, EntityRef::Function(id)
-            if e.functions[id.index()].name == "helper")));
-    assert!(!m.capabilities.exact_calls);
+    let helper = e.functions.iter().find(|f| f.name == "helper").unwrap();
+    assert!(helper.analyzed && helper.summarized);
+    assert!(!m.holes.iter().any(|h| h.kind == HoleKind::UnanalyzedBody));
 }
 
 /// P1 (round 9): opaque payload contracts and enum key-type names

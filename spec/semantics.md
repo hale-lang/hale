@@ -4903,10 +4903,10 @@ check reach inside a module (GH #764, `verification.md`), while
 several siblings in `check.rs` still stop at the top level and are
 tracked by GH #825 — there, a declaration one brace deeper can
 escape a check the identical top-level declaration would fail.
-Effect inference is the same shape and fails closed: it qualifies a
-module-scoped subject's name but does not summarize its body, so
-the manifest reports `unclassified` ("may do anything") rather than
-a narrower set.
+The behavior summary that effect inference, the allocation analyses
+and the certificate engines read collects module-nested bodies like
+top-level ones (F.40 phase 3): a module-nested fn has a row, a call
+into it resolves, and what it does is in its callers' effect sets.
 
 (GH #764 for the lint; GH #884 and GH #854 for codegen's
 declaration collection, the cross-seed mangler and the pre-typecheck

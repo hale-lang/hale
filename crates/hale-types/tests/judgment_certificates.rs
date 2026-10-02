@@ -254,7 +254,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let mut old_sorted = old.clone();
     let mut new_sorted = new.clone();
     // Round 8/9 documented divergence: a report-less subject
-    // (module-scoped body) judges `uncertified` WITH its residue
+    // (an unanalyzed body) judges `uncertified` WITH its residue
     // reason — a diagnostic the old engine (which skipped the
     // subject entirely) never produced.
     new_sorted.retain(|(m, _)| {
@@ -1204,6 +1204,60 @@ fn certs_for_unanalyzed_subjects_are_refused() {
     );
 }
 
+/// Mark `display`'s body as one the behavior analysis never walked,
+/// in the shape the builder gives such a body: unanalyzed and
+/// unsummarized, an UnanalyzedBody hole hiding its calls, publishes
+/// and effects, those capabilities withdrawn, and its owning locus
+/// (if any) unanalyzable. The model stays lawful.
+///
+/// The coverage tests below need an unanalyzed ordinary fn or
+/// member, and no program has one: the summary collects
+/// module-nested bodies (F.40 phase 3, E3a part C), which is how
+/// these tests used to get one, an `@ffi` fn is summarized with an
+/// empty body, and a stdlib call is not an entity. The one body left
+/// unanalyzed is an `on_failure` handler, which carries no
+/// annotation and never counts toward its locus's coverage.
+fn mark_unanalyzed(
+    model: &mut hale_model::ApplicationModel,
+    display: &str,
+) -> usize {
+    let idx = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == display)
+        .expect("the subject");
+    let f = &mut model.entities.functions[idx];
+    f.analyzed = false;
+    f.summarized = false;
+    let owner = f.owner;
+    let provenance =
+        hale_model::ProvenanceId(model.provenance.records.len() as u32);
+    model.provenance.records.push(hale_model::Provenance::Synthetic {
+        origin: "unanalyzed body".to_string(),
+    });
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            idx as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::CALLS
+            .union(hale_model::RelationSet::PUBLISHES)
+            .union(hale_model::RelationSet::EFFECTS),
+        authored_site: None,
+        reason: "body not walked by the behavior analysis".to_string(),
+        provenance,
+    });
+    model.capabilities.exact_calls = false;
+    model.capabilities.exact_publishes = false;
+    model.capabilities.exact_effects = false;
+    if let Some(l) = owner {
+        model.entities.loci[l.index()].analyzable = false;
+    }
+    model.validate().expect("an unanalyzed body is lawful");
+    idx
+}
+
 const MODULE_ANNOTATED_SRC: &str = r#"
 module inner {
     @effects(none: { syscall })
@@ -1217,7 +1271,7 @@ fn main() { App { }; }
 "#;
 
 /// Round 14: the FUNCTION-grain coverage upgrade is a model-law
-/// violation — flipping a module fn to analyzed (with its
+/// violation — flipping an unanalyzed fn to analyzed (with its
 /// UnanalyzedBody residue removed so the hole law is silent) still
 /// fails `ApplicationModel::validate` on `analyzed ⇒ summarized`.
 #[test]
@@ -1227,12 +1281,7 @@ fn function_coverage_upgrade_fails_model_validation() {
     let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
-    let idx = model
-        .entities
-        .functions
-        .iter()
-        .position(|f| f.display == "f")
-        .expect("module fn");
+    let idx = mark_unanalyzed(&mut model, "f");
     model.entities.functions[idx].analyzed = true;
     model.holes.retain(|h| {
         !(h.kind == hale_model::HoleKind::UnanalyzedBody
@@ -1260,13 +1309,8 @@ fn function_coverage_upgrade_cannot_manufacture_holds() {
         .expect("parse");
     let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
     let mut model = derive_application_model(&bundle);
+    let idx = mark_unanalyzed(&mut model, "f");
     let table = lower_claims(&bundle, &model);
-    let idx = model
-        .entities
-        .functions
-        .iter()
-        .position(|f| f.display == "f")
-        .expect("module fn");
     model.entities.functions[idx].analyzed = true;
     model.holes.retain(|h| {
         !(h.kind == hale_model::HoleKind::UnanalyzedBody
@@ -1290,7 +1334,7 @@ fn function_coverage_upgrade_cannot_manufacture_holds() {
                 .iter()
                 .any(|r| r.ordinal == j.ordinal && r.name == "f")
         })
-        .expect("the module annotation row");
+        .expect("the annotation row");
     assert_ne!(
         row.verdict,
         Verdict::Holds,
@@ -1326,6 +1370,7 @@ fn locus_coverage_upgrade_fails_model_validation() {
     let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
     model.validate().expect("the honest model is lawful");
+    mark_unanalyzed(&mut model, "Hidden::poke");
     let idx = model
         .entities
         .loci
@@ -1355,6 +1400,7 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
     let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
+    mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
     let idx = model
         .entities
@@ -1400,6 +1446,7 @@ fn deleted_membership_is_refused_everywhere() {
     let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
+    mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
     let fid = model
         .entities
@@ -1465,6 +1512,7 @@ fn coordinated_ownership_laundering_is_refused() {
     let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
+    mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
     let fid = model
         .entities
@@ -1536,6 +1584,7 @@ fn moved_membership_is_refused_everywhere() {
     let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
     let mut model = derive_application_model(&bundle);
+    mark_unanalyzed(&mut model, "Hidden::poke");
     let table = lower_claims(&bundle, &model);
     let fid = model
         .entities

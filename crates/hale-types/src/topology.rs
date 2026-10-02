@@ -1124,8 +1124,8 @@ pub fn dump_topology_over(
             )
         };
         // Round 10: function-grain ANALYSIS COVERAGE — the model's
-        // `analyzed` bit per function (false for module-scoped
-        // bodies and `on_failure` handlers). The analyzed subset
+        // `analyzed` bit per function (false for `on_failure`
+        // handlers). The analyzed subset
         // must equal `sorts.fns` exactly (the hashed summary
         // universe), which is what anchors the coverage account.
         {
@@ -1177,10 +1177,10 @@ pub fn dump_topology_over(
                 rows.join(", ")
             ));
         }
-        // Loci carry an ANALYZABLE flag: the legacy certificate
-        // engines walk only top-level loci, so a module-scoped
-        // locus's phase contracts have no engine report and judge
-        // `uncertified` — a consumer needs the discriminator to
+        // Loci carry an ANALYZABLE flag: a locus with an executable
+        // member the engines did not walk has no engine report for
+        // its phase contracts, which judge `uncertified` — a
+        // consumer needs the discriminator to
         // hold the two shapes to their exact verdicts. Round 9:
         // the fact is the MODEL's (`LocusDecl::analyzable`) — one
         // authority shared with the evidence layer; this
