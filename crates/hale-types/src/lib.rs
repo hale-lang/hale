@@ -313,8 +313,7 @@ pub(crate) fn with_identities<R>(bundle: &Bundle<'_>, f: impl FnOnce(&Bundle<'_>
         programs: programs.iter().map(|(name, p)| (name.clone(), p)).collect(),
         import_renames: bundle.import_renames.clone(),
         sources: bundle.sources.clone(),
-        target_has_async_io: bundle.target_has_async_io,
-        target_label: bundle.target_label,
+        target: bundle.target.clone(),
         snapshot,
     })
 }
@@ -345,6 +344,7 @@ fn check_numbered_bundle(
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings);
+    let target = capability::target_row(bundle);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -359,6 +359,7 @@ fn check_numbered_bundle(
             bus: &bus,
             intra_locus: &bundle_intra_locus(bundle),
             placement: &placement,
+            target: &target,
         },
         allow_unowned_subscriber,
         strict_callees,

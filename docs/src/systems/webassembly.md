@@ -16,18 +16,27 @@ hale build client/main.hl --target wasm32
 
 This emits `client/main.wasm` (self-contained — the runtime is
 linked in, with no libc and no external runtime) and `client/main.mjs` (a loader that
-instantiates the module and wires the host functions). The program
-declares the target so the typechecker can gate the parts of the
-standard library that need syscalls:
+instantiates the module and wires the host functions). A program
+written for the browser can say so itself:
 
 ```hale
 target wasm { }
 ```
 
-It goes at the top level of the file. A `target` block inside a
-`module { }` is a parse error — it is a directive for the whole
-program, and putting it out of reach of everything that reads it
-would only look like it worked.
+With that declaration, `hale build client/main.hl` builds for wasm32
+with no flag at all, and `hale check` and the editor judge the program
+as wasm32 — the same cells, the same refusals. It goes at the top level
+of the file. A `target` block inside a `module { }` is a parse error —
+it is a directive for the whole program, and putting it out of reach
+of everything that reads it would only look like it worked.
+
+`--target` always wins over the host, and `hale check` takes it too:
+`hale check --target wasm32 app.hl` judges an undeclared program as the
+browser build will. A `--target` that contradicts the declaration —
+building a `target wasm` program for the host — is refused at the
+declaration rather than quietly building the other thing. And since
+nothing a wasm32 build emits runs here, `hale run` refuses a declared
+program, as it refuses `--target wasm32`.
 
 The browser sandbox has no syscalls, so the parts of a program that
 need them are refused or do nothing there; [What wasm32
@@ -219,9 +228,12 @@ once natively. Because it works on the AST, not the source text:
   stdlib (`std::io::tcp`, `std::process`, …) is rejected with a precise
   diagnostic, on untouched source.
 
-It is **wasm-only and opt-in**: it requires `--target wasm32` (there is
-no native entry-inversion to wrap, so it errors on a native build), and
-it's never implied — a normal wasm program may legitimately keep a bare
+It is **wasm-only and opt-in**: it requires a wasm32 build — `--target
+wasm32` (or `wasm32-unknown-unknown`), or a `target wasm { }` the source
+itself declares — since there is no native entry-inversion to wrap; on
+a native build it errors. The declaration it injects doesn't count:
+`hale build --wrap-main snippet.hl` alone is still refused. It's never
+implied — a normal wasm program may legitimately keep a bare
 `fn main` exported as `main`. If the program already declares an
 `@export` entry, `--wrap-main` leaves it untouched (prefer-explicit).
 This is the one flag the browser playground passes so it can hand the

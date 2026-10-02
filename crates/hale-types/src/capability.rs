@@ -699,8 +699,30 @@ impl CapabilityMatrix {
 
 // ----------------------------------------------------- effective target
 
+/// The target the configuration names: `--target`, or the host when
+/// nothing names one. A snapshot's config carries it, and its bundle
+/// hands it to the effective-target row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredTarget {
+    /// `host`, or the triple `--target` names.
+    pub name: String,
+    pub spec: TargetSpec,
+    /// Whether `--target` named it. An explicit target is the effective
+    /// target; the host a configuration falls back to is not, and a
+    /// source declaration overrides it.
+    pub explicit: bool,
+}
+
+impl ConfiguredTarget {
+    /// The machine the compiler runs on, named by nothing: the target
+    /// of every check and build that passes no `--target`.
+    pub fn host() -> Self {
+        ConfiguredTarget { name: "host".to_string(), spec: TargetSpec::host(), explicit: false }
+    }
+}
+
 /// A source `target` declaration: a top-level `target wasm { }` or
-/// `target browser_js { }`, the two names the stdlib gate reads.
+/// `target browser_js { }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetDeclaration {
     /// The program that declares it, as the bundle keys it.
@@ -708,65 +730,108 @@ pub struct TargetDeclaration {
     /// `wasm` or `browser_js`.
     pub name: String,
     pub span: Span,
+    /// Injected by `--wrap-main`, not written: a consequence of the
+    /// configured target, which never selects one.
+    pub synthesized: bool,
 }
 
-/// Today's precedence, recorded as a fact (design §1.3): which target
-/// each reader acts on. The readers disagree, which is what T1(b)
-/// corrects in P3 2 of 3: one effective target for analysis and
-/// emission alike, an explicit `--target` first, then the declaration,
-/// then the host. `None` is a reader that acts on no class (Windows,
-/// a tier refused before the matrix; or the stdlib gate, off).
+/// What selected the effective target (design §1.3, T1(b)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Precedence {
-    /// The backend: the configured target alone. Codegen ignores a
-    /// source declaration, so `hale build` of a declared program builds
-    /// natively unless `--target` says wasm32.
-    pub backend: Option<TargetClass>,
-    /// The checker's stdlib gate: wasm32 when any program declares
-    /// `target wasm`/`browser_js`, and off otherwise, whatever the
-    /// configured target; `--target wasm32` alone gates nothing.
-    pub stdlib_gate: Option<TargetClass>,
-    /// The checker's `where async_io` gate: the configured target's
-    /// `has_async_io` (GH #970); a declaration does not move it.
-    pub async_io_gate: Option<TargetClass>,
+pub enum Selection {
+    /// `--target` named it.
+    Configured,
+    /// A written `target wasm`/`browser_js` declaration, with no
+    /// `--target`: wasm32.
+    Declared,
+    /// Neither: the host.
+    Host,
 }
+
+/// The refusal of an explicit `--target` that a written declaration
+/// contradicts, located at the declaration (design §1.3): `{name}` is
+/// the declaration's, `{triple}` the configured target's.
+pub const TARGET_CONFLICT_WORDING: &str = "this program declares `target {name}`, and is being checked for \
+     `{triple}`: build it with `--target wasm32`, or drop the declaration";
 
 /// The effective-target row of a snapshot (the `target_capability`
-/// family's first row): the configured target, the source declaration,
-/// and the precedence today's readers apply between them. Consulted by
-/// nothing yet; P3 2 of 3 makes it the one target every entry point
-/// reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// family's first row): the one target check, build and the editor
+/// act on, for analysis and emission alike (T1(b)). An explicit
+/// `--target` is the effective target; with none, a written
+/// `target wasm`/`browser_js` declaration selects wasm32; with neither,
+/// the host. An explicit `--target` of another class than a written
+/// declaration's is refused at the declaration.
+#[derive(Debug, Clone, PartialEq)]
 pub struct TargetRow {
-    /// The configured target's name: `host`, or the triple `--target`
-    /// names.
-    pub configured_name: String,
-    pub configured: TargetSpec,
+    pub configured: ConfiguredTarget,
     /// The first declaring program's, in the bundle's order.
     pub declaration: Option<TargetDeclaration>,
-    pub precedence: Precedence,
+    /// The target every reader acts on.
+    pub effective: TargetSpec,
+    /// Its column; `None` only for a Windows triple, which argument
+    /// parsing refuses before any snapshot exists.
+    pub class: Option<TargetClass>,
+    pub selected_by: Selection,
+    /// The row's own refusals: the conflict between `--target` and a
+    /// written declaration.
+    pub refusals: Vec<hale_syntax::Diag>,
 }
 
-/// The effective-target row for the programs a snapshot holds, under
-/// its configured target.
-pub fn target_row(bundle: &crate::Bundle<'_>, configured_name: &str, configured: TargetSpec) -> TargetRow {
+impl TargetRow {
+    pub fn is_wasm32(&self) -> bool {
+        self.class == Some(TargetClass::Wasm32)
+    }
+
+    /// How a stdlib refusal names what put the program under wasm32:
+    /// the declaration when the program holds one (written or injected
+    /// by `--wrap-main`), else the configuration.
+    pub fn wasm32_selector(&self) -> &'static str {
+        if self.declaration.is_some() {
+            "`target wasm`"
+        } else {
+            "`--target wasm32`"
+        }
+    }
+}
+
+/// The wasm32 target, as a declaration selects it.
+pub fn wasm32_spec() -> TargetSpec {
+    TargetSpec::parse("wasm32-unknown-unknown").expect("wasm32 is a known triple")
+}
+
+/// The effective-target row for the programs a bundle holds, under the
+/// configured target the bundle carries.
+pub fn target_row(bundle: &crate::Bundle<'_>) -> TargetRow {
+    let configured = bundle.target.clone();
     let declaration = bundle.programs.iter().find_map(|(file, p)| {
         p.items.iter().find_map(|it| match it {
             TopDecl::Target(t) if matches!(t.name.name.as_str(), "wasm" | "browser_js") => Some(TargetDeclaration {
                 file: file.clone(),
                 name: t.name.name.clone(),
                 span: t.span,
+                synthesized: t.synthesized,
             }),
             _ => None,
         })
     });
-    let class = TargetClass::of(&configured);
-    let precedence = Precedence {
-        backend: class,
-        stdlib_gate: declaration.as_ref().map(|_| TargetClass::Wasm32),
-        async_io_gate: class,
+    let written = declaration.as_ref().filter(|d| !d.synthesized);
+    let (effective, selected_by) = if configured.explicit {
+        (configured.spec, Selection::Configured)
+    } else if written.is_some() {
+        (wasm32_spec(), Selection::Declared)
+    } else {
+        (configured.spec, Selection::Host)
     };
-    TargetRow { configured_name: configured_name.to_string(), configured, declaration, precedence }
+    let class = TargetClass::of(&effective);
+    let mut refusals = Vec::new();
+    if let Some(d) = written {
+        if configured.explicit && class != Some(TargetClass::Wasm32) {
+            refusals.push(hale_syntax::Diag::ty(
+                d.span,
+                TARGET_CONFLICT_WORDING.replace("{name}", &d.name).replace("{triple}", configured.spec.triple),
+            ));
+        }
+    }
+    TargetRow { configured, declaration, effective, class, selected_by, refusals }
 }
 
 // ------------------------------------------------------------ known open
@@ -1359,9 +1424,9 @@ const PTHREAD_JOIN_MISMATCH: &str = "wasm-ld: function signature mismatch: pthre
 
 const ADAPTER_NATIVE: &str = "a user adapter locus on its own thread, its `send` handed to the bus runtime";
 const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
-const CHECK_ASYNC_IO: &str = "crates/hale-types/src/check.rs::target_has_async_io";
+const CHECK_ASYNC_IO: &str = "crates/hale-types/src/check.rs::self.target.effective.has_async_io()";
 const RT_WAIT_SPACE: &str = "crates/hale-codegen/runtime/lotus_arena.c::lotus_bus_subject_wait_space";
-const V_BUILD_WRAP: &str = "crates/hale-cli/src/verbs/build.rs::--wrap-main requires --target wasm32";
+const V_BUILD_WRAP: &str = "crates/hale-cli/src/verbs/build.rs::WRAP_MAIN_WORDING";
 
 /// The `--wrap-main` refusal, `hale build`'s wording verbatim.
 pub const WRAP_MAIN_WORDING: &str = "--wrap-main requires --target wasm32 — it \

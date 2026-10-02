@@ -705,6 +705,11 @@ pub struct TargetDecl {
     pub name: Ident,
     pub capabilities: Vec<Capability>,
     pub span: Span,
+    /// True when `--wrap-main` injected it (`desugar::wrap_main_as_wasm_export`).
+    /// An injected declaration is a consequence of the configured
+    /// target and never selects one: the effective target reads only a
+    /// written declaration.
+    pub synthesized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,4 +1,4 @@
-//! The `tooling_build` integration-test binary: 19 test files of this area, kept
+//! The `tooling_build` integration-test binary: 20 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -35,6 +35,8 @@ mod run_scratch_is_private;
 mod shadow_capability_cli;
 #[path = "target_model.rs"]
 mod target_model;
+#[path = "target_precedence.rs"]
+mod target_precedence;
 #[path = "test_ffi_pickup.rs"]
 mod test_ffi_pickup;
 #[path = "verify.rs"]

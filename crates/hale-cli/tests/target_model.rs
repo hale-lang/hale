@@ -381,6 +381,15 @@ fn main() { App { }; }
     let (_, stderr, code) = run(&["build", src.to_str().unwrap(), "--target", musl]);
     assert_ne!(code, 0, "{musl} has no async_io, the check accepted it");
     assert!(stderr.contains("aren't supported on musl Linux"), "{stderr}");
+
+    // `hale check` takes the same `--target` and refuses it alike; with
+    // none it checks for the host, which has the backend.
+    let (_, check_stderr, code) = run(&["check", src.to_str().unwrap(), "--target", musl]);
+    assert_eq!(code, 1, "{musl}: check accepted it: {check_stderr}");
+    let refusal = |s: &str| s.lines().find(|l| l.contains("aren't supported on musl Linux")).map(String::from);
+    assert_eq!(refusal(&check_stderr), refusal(&stderr), "check and build refuse alike");
+    let (_, check_stderr, code) = run(&["check", src.to_str().unwrap()]);
+    assert_eq!(code, 0, "the host has async_io: {check_stderr}");
 }
 
 /// Naming the host by its triple is the same build as `native`.
