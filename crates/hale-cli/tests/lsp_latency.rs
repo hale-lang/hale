@@ -6,7 +6,10 @@
 //! ```
 //!
 //! For each program it starts `hale lsp`, opens the file, then changes
-//! it (one newline appended), and times each event to the first
+//! it three times — one declaration's body edited, the same body edited
+//! again, one newline appended ([`EVENTS`], X2: the first two are the
+//! incremental typing stage's case, the edit before each one's previous
+//! snapshot) — and times each event to the first
 //! `publishDiagnostics` for the file and to the last one before a fence
 //! request sent behind the event is answered: the typing stage's
 //! publication, and the final one, which differs only for a program
@@ -89,9 +92,23 @@ impl Server {
     }
 }
 
-/// One session over `file`: (open, edit), each (first ms, final ms,
+/// The events a session times, after the open: one declaration's body
+/// edited (a `let` added to the first fn's body: the declaration's typing
+/// changes, its interface does not), the same body edited again (the
+/// steady state of typing in one place), and one newline appended (no
+/// declaration changes).
+const EVENTS: [&str; 4] = ["open", "body edit", "body edit again", "newline"];
+
+/// `text` with `stmt` added at the start of the first fn's body.
+fn body_edited(text: &str, stmt: &str) -> String {
+    let at = text.find("fn ").expect("a fn");
+    let brace = at + text[at..].find('{').expect("its body");
+    format!("{}{stmt}{}", &text[..=brace], &text[brace + 1..])
+}
+
+/// One session over `file`: each of [`EVENTS`], (first ms, final ms,
 /// publications).
-fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 2] {
+fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 4] {
     let text = std::fs::read_to_string(file).expect("the program");
     let uri = format!("file://{}", file.display());
     let mut s = Server::start(bin);
@@ -104,17 +121,22 @@ fn session(bin: &Path, file: &Path) -> [(f64, f64, usize); 2] {
             "params": { "textDocument": { "uri": uri, "languageId": "hale", "version": 1, "text": text } } }),
         101,
     );
-    let edit = s.timed(
-        &uri,
-        serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didChange",
-            "params": { "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": format!("{text}\n") }] } }),
-        102,
-    );
+    let mut change = |version: u64, text: String| {
+        s.timed(
+            &uri,
+            serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didChange",
+                "params": { "textDocument": { "uri": uri, "version": version }, "contentChanges": [{ "text": text }] } }),
+            100 + version,
+        )
+    };
+    let edit = change(2, body_edited(&text, " let x2_probe: Int = 1;"));
+    let again = change(3, body_edited(&text, " let x2_probe: Int = 2;"));
+    let newline = change(4, format!("{text}\n"));
     s.send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null }));
     while s.recv().get("id").and_then(|i| i.as_u64()) != Some(2) {}
     s.send(serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": null }));
     let _ = s.child.wait();
-    [open, edit]
+    [open, edit, again, newline]
 }
 
 fn median(mut v: Vec<f64>) -> f64 {
@@ -135,17 +157,18 @@ fn lsp_latency_first_and_final_publication() {
     if let Some(base) = std::env::var_os("HALE_LSP_LATENCY_BASE") {
         bins.insert(0, ("base", PathBuf::from(base)));
     }
-    println!("| binary | program | open: first / final | edit: first / final |");
-    println!("|---|---|---|---|");
+    println!("| binary | program | {} |", EVENTS.map(|e| format!("{e}: first / final")).join(" | "));
+    println!("|---|---|---|---|---|---|");
     for (label, bin) in &bins {
         for p in programs {
-            let runs: Vec<[(f64, f64, usize); 2]> = (0..5).map(|_| session(bin, &root.join(p))).collect();
+            let runs: Vec<[(f64, f64, usize); 4]> = (0..5).map(|_| session(bin, &root.join(p))).collect();
             let cell = |event: usize| {
                 let first = median(runs.iter().map(|r| r[event].0).collect());
                 let last = median(runs.iter().map(|r| r[event].1).collect());
                 format!("{first:.0} / {last:.0} ms ({} pub.)", runs[0][event].2)
             };
-            println!("| {label} | {p} | {} | {} |", cell(0), cell(1));
+            let cells: Vec<String> = (0..EVENTS.len()).map(cell).collect();
+            println!("| {label} | {p} | {} |", cells.join(" | "));
         }
     }
 }
