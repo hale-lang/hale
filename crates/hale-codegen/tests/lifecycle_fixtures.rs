@@ -152,7 +152,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
     ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
-    ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
     ("l19_full_ring.hl", "R19", "not-run"),
     ("l19_empty_ring_last_check.hl", "R19", "not-run"),
@@ -336,12 +335,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
     ),
     // Late declares no run(), and its resumed incarnation enters one.
     ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
-    // Inner is never drained, so Outer's drain starts without it.
-    (
-        "l12_pinned_fields_drain.hl",
-        "C9",
-        &["missing: Inner.Drain", "edge: Outer.Drain.Entered (inst _ inc 0) with Inner.Drain.Completed not reached"],
-    ),
     ("l13_resume_pool_child.hl", "C43", &["domain: Kid.Run (inst _ inc 0) ran on main, claimed pool:side"]),
     // Line 18: the step the outcome cannot show, and Sub's drain that
     // should follow it.

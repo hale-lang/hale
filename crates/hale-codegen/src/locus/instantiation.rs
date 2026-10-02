@@ -3091,14 +3091,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // record WHICH locus the bit is about. The cascade is
                 // emitted once per owner type and the field's declared
                 // type names a contract, not an impl, so the teardown
-                // call has to be an indirect one through this slot.
+                // calls have to be indirect ones through this slot: the
+                // impl's teardown pair, its drain for the owner's drain
+                // cascade and the rest for its dissolve cascade (C32).
                 if let (Some(impl_name), Some(&slot_idx)) = (
                     owned_child_impl.as_ref(),
                     info.owned_child_reclaim_field_idxs.get(fname.as_str()),
                 ) {
-                    if let Some(reclaim) =
-                        self.reclaim_fns.get(impl_name).copied()
-                    {
+                    if let Some(table) = self.contract_teardown_table(impl_name) {
                         let slot = self
                             .builder
                             .build_struct_gep(
@@ -3114,10 +3114,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
                         self.builder
-                            .build_store(
-                                slot,
-                                reclaim.as_global_value().as_pointer_value(),
-                            )
+                            .build_store(slot, table)
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
@@ -4280,6 +4277,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(loop_after);
             }
+            // Line 12 (C9, L4's cascade): a pinned locus's owned fields
+            // drain on its thread, before its own drain(), as the plan's
+            // edges place them; their dissolve cascade runs after the
+            // join (the deferred entry's teardown), which never drains a
+            // pinned entry's fields.
+            let prev_fn = self.current_fn.replace(thread_main);
+            let drained = self.emit_locus_field_drains(&info, thread_self, locus_name);
+            self.current_fn = prev_fn;
+            drained?;
             for (kind, obligation) in [("drain", "Drain"), ("dissolve", "Dissolve")] {
                 let method = info
                     .methods

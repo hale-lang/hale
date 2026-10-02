@@ -113,7 +113,7 @@
 //! 9     FailureDelivery Closures                 Shipped
 //! 10    Closures Dissolve                        Shipped
 //! 11    Drain                                    Shipped
-//! 12    Drain                                    KnownOpen C9; KnownOpen C32
+//! 12    Drain                                    Shipped (C9, L4); Shipped (C32, L4)
 //! 13    Resume RunAdmission Run                  KnownOpen C43; KnownOpen C48
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
@@ -1052,10 +1052,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "owned fields drain before their parent, in the child's domain",
         kinds: &[K::Drain],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "C9" }, "a pinned locus's owned fields are never drained"),
+            (Status::Shipped, "a pinned locus's owned fields drain on its thread before its drain() (C9, L4)"),
             (
-                Status::KnownOpen { inventory_row: "C32" },
-                "an interface- or perspective-typed field is drained after its owner's dissolve",
+                Status::Shipped,
+                "an interface- or perspective-typed field drains before its owner's drain, like every owned field (C32, L4)",
             ),
         ],
     },

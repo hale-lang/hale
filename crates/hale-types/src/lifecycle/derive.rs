@@ -103,6 +103,7 @@ pub fn derive_lifecycle(inputs: &LifecycleInputs<'_>) -> LifecyclePlan {
     for i in 0..subjects.len() {
         b.tree_edges(i);
     }
+    b.sibling_edges();
     b.process();
     b.plan
 }
@@ -328,29 +329,20 @@ struct Subject<'a> {
     /// Built in an `on_failure` body: it exists only on a path where the
     /// handler runs.
     in_handler: bool,
-    /// A field whose declared type is a contract (an interface, a
-    /// perspective) the literal implements: the cascade tears it down
-    /// through its recorded reclaim (inventory C32), after its owner's
-    /// dissolve.
-    contract: bool,
+    /// A field's name in its owner's params: where it falls in the
+    /// owner's declaration order, the order the cascade walks fields in.
+    field: Option<String>,
     /// Its domain was decided for it (a root entry, a binding), not
     /// inherited from its owner.
     placed: bool,
 }
 
-/// Whether `owner`'s field `field` is declared with a type that names no
-/// locus (a contract the literal implements).
-fn contract_field(owner: &LocusDecl, field: &str, universe: SiteUniverse, index: &LocusIndex<'_>) -> bool {
-    owner
-        .members
+/// How many field templates of `owner` the field `name` has.
+fn fields_named(subjects: &[Subject<'_>], owner: usize, name: &str) -> usize {
+    subjects
         .iter()
-        .filter_map(|m| match m {
-            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field),
-            _ => None,
-        })
-        .next()
-        .and_then(|p| p.ty.as_ref())
-        .is_some_and(|ty| index.names(ty, universe).is_none())
+        .filter(|s| s.how == How::Field && s.owner == Some(owner) && s.field.as_deref() == Some(name))
+        .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,10 +411,6 @@ fn subjects<'a>(
             How::Field
         };
         let owner = row.owner.as_ref().and_then(|k| by_key.get(k).copied());
-        let contract = match (owner, key.path.last()) {
-            (Some(o), Some(step)) => contract_field(out[o].decl, &step.field, out[o].universe, index),
-            _ => false,
-        };
         by_key.insert(key, out.len());
         out.push(Subject {
             site: SourceSite { decl: realizes.clone(), template: Template::Static(key.clone()) },
@@ -434,7 +422,7 @@ fn subjects<'a>(
             own: Some(row.domain),
             bound: bound_of(&key.origin),
             in_handler: false,
-            contract,
+            field: (how == How::Field).then(|| key.path.last().map(|s| s.field.clone())).flatten(),
             placed: matches!(row.decided_by, Decision::Entry { .. } | Decision::Binding { .. }),
         });
     }
@@ -473,7 +461,7 @@ fn subjects<'a>(
             own: domain,
             bound: d.bound.clone(),
             in_handler: at.member == Member::Handler,
-            contract: false,
+            field: None,
             placed: false,
         });
         dynamic_fields(&mut out, i, index, &inputs.bundle.snapshot);
@@ -518,7 +506,7 @@ fn dynamic_fields<'a>(out: &mut Vec<Subject<'a>>, parent: usize, index: &LocusIn
             let Some(field_decl) = index.decl(site) else { continue };
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
             let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
-            let contract = p.ty.as_ref().is_some_and(|ty| index.names(ty, universe).is_none());
+            let field = p.name.name.clone();
             // Every instance of a literal shares its rows: a field literal
             // reached under several of its declaration's literals is one
             // template, as often as they are.
@@ -529,7 +517,7 @@ fn dynamic_fields<'a>(out: &mut Vec<Subject<'a>>, parent: usize, index: &LocusIn
             }
             let p = &out[parent];
             let s = Subject {
-                contract,
+                field: Some(field),
                 placed: false,
                 site: SourceSite { decl: realizes, template: Template::Dynamic { literal } },
                 decl: field_decl,
@@ -1118,9 +1106,12 @@ impl<'b, 'a> Builder<'b, 'a> {
         if let_bound {
             o.line = Some("11");
         }
-        if s.how == How::Field && s.owner.is_some_and(|p| self.is_pinned(p)) && !pinned {
+        // A field of a pinned locus, at any depth, drains on that
+        // locus's thread, before its owner's drain (line 12, C9, shipped
+        // by L4's cascade).
+        if s.how == How::Field && self.under_pinned(i) {
             o.line = Some("12");
-            o.status = Status::KnownOpen { inventory_row: "C9" };
+            o.runs_on = Self::on(own, shipped("12"));
         }
         let drain = self.push(o);
         r.drain = Some(drain);
@@ -1484,7 +1475,6 @@ impl<'b, 'a> Builder<'b, 'a> {
         let child = self.rows[i].clone();
         let parent = self.rows[o].clone();
         let pinned = self.is_pinned(i);
-        let parent_pinned = self.is_pinned(o);
         let field = self.subjects[i].how == How::Field;
         let restartable = self.route(i).is_some_and(|(_, restarts)| restarts);
         if field && !pinned {
@@ -1501,18 +1491,11 @@ impl<'b, 'a> Builder<'b, 'a> {
         }
         if field {
             // Owned fields drain before their owner, in their own domain
-            // (line 12). A pinned locus's are never drained (C9), and a
-            // contract-typed field is torn down through its recorded
-            // reclaim, its whole spine after the owner's dissolve (C32).
+            // (line 12): a pinned locus's on its thread (C9), and a
+            // contract-typed field through the drain its instantiation
+            // records (C32), both shipped by L4's cascade.
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
-                let rule = if parent_pinned {
-                    open("12", "C9")
-                } else if self.subjects[i].contract {
-                    open("12", "C32")
-                } else {
-                    shipped("12")
-                };
-                self.get(pd).edges.entry.push(after(cd, Point::Completed, rule));
+                self.get(pd).edges.entry.push(after(cd, Point::Completed, shipped("12")));
             }
         }
         if matches!(self.subjects[i].how, How::Accepted { .. }) {
@@ -1538,6 +1521,49 @@ impl<'b, 'a> Builder<'b, 'a> {
             for d in held {
                 let rule = Rule::line("1", self.plan.obligations[d.0 as usize].status);
                 self.get(pb).edges.entry.push(after(d, Point::Completed, rule));
+            }
+        }
+    }
+
+    /// Line 12 over the instance tree: an owner's fields are drained in
+    /// their declaration order, and each is torn down whole (dissolved,
+    /// its own fields after it, reclaimed) before the next is dissolved,
+    /// the order the cascade walks them in (`spec/runtime.md` § Lifecycle).
+    /// Left out of the chain: a pinned field, which its own thread and
+    /// its join tear down, and a field with several templates, only one
+    /// of which a run builds.
+    fn sibling_edges(&mut self) {
+        let mut by_owner: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+        for (i, s) in self.subjects.iter().enumerate() {
+            if let (How::Field, Some(o), Some(_)) = (s.how, s.owner, &s.field) {
+                if !self.is_pinned(i) {
+                    by_owner.entry(o).or_default().push(i);
+                }
+            }
+        }
+        for (o, mut fields) in by_owner {
+            let decl = self.subjects[o].decl;
+            let declared: Vec<&str> = decl
+                .members
+                .iter()
+                .filter_map(|m| match m {
+                    LocusMember::Params(pb) => Some(pb.params.iter().map(|p| p.name.name.as_str())),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            let name = |i: usize| self.subjects[i].field.as_deref().unwrap_or("");
+            let at = |i: usize| declared.iter().position(|f| *f == name(i));
+            fields.retain(|&i| at(i).is_some() && fields_named(self.subjects, o, name(i)) == 1);
+            fields.sort_by_key(|&i| at(i));
+            for w in fields.windows(2) {
+                let (a, b) = (self.rows[w[0]].clone(), self.rows[w[1]].clone());
+                if let (Some(ad), Some(bd)) = (a.drain, b.drain) {
+                    self.get(bd).edges.entry.push(after(ad, Point::Completed, shipped("12")));
+                }
+                if let (Some(ar), Some(bd)) = (a.reclaim, b.dissolve) {
+                    self.get(bd).edges.entry.push(after(ar, Point::Completed, Rule::SHIPPED));
+                }
             }
         }
     }

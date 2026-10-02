@@ -91,6 +91,48 @@ pub const RECLAIM_STEPS: &[ReclaimStep] = &[
     ReclaimStep::ReleaseStruct,
 ];
 
+/// A step of an owner's teardown, as the dissolve cascade over its
+/// instance tree places its fields' around its own: the fields' drains
+/// before its drain (line 12), its dissolve after its drain, its fields'
+/// dissolves after its dissolve (line 10), its reclaim after theirs (line
+/// 14). [`LifecyclePlan::cascade_order`] reads it from the edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CascadeStep {
+    /// The owned fields' drains, each field's own fields first.
+    FieldDrains,
+    /// The owner's `drain()`.
+    Drain,
+    /// The owner's dissolve-epoch closures and `dissolve()`.
+    Dissolve,
+    /// The owned fields' dissolves, each with its own fields' and its
+    /// reclaim.
+    FieldDissolves,
+    /// The owner's reclaim.
+    Reclaim,
+}
+
+/// The producer's order of an owner's cascade steps, for a pair no row
+/// orders.
+pub const CASCADE_STEPS: &[CascadeStep] = &[
+    CascadeStep::FieldDrains,
+    CascadeStep::Drain,
+    CascadeStep::Dissolve,
+    CascadeStep::FieldDissolves,
+    CascadeStep::Reclaim,
+];
+
+impl CascadeStep {
+    pub fn name(self) -> &'static str {
+        match self {
+            CascadeStep::FieldDrains => "FieldDrains",
+            CascadeStep::Drain => "Drain",
+            CascadeStep::Dissolve => "Dissolve",
+            CascadeStep::FieldDissolves => "FieldDissolves",
+            CascadeStep::Reclaim => "Reclaim",
+        }
+    }
+}
+
 impl ReclaimStep {
     pub fn name(self) -> &'static str {
         match self {
@@ -177,6 +219,129 @@ impl LifecyclePlan {
         let own = pairs(&mut self.templates(lowered));
         let every = pairs(&mut self.instances.iter().map(|i| &i.site));
         order_by(lowered, RECLAIM_STEPS, &own, &every, RECLAIM_STEPS, |s| s.name())
+    }
+
+    /// The order the plan places an owner's cascade steps in
+    /// ([`CascadeStep`]) for the declaration lowered as `lowered`: read
+    /// from its templates' edges; for two none of them orders (a
+    /// declaration with no field in the plan), from every template; and
+    /// for two no template orders, in the producer's order
+    /// ([`CASCADE_STEPS`]).
+    pub fn cascade_order(&self, lowered: &str) -> Result<Vec<CascadeStep>, String> {
+        let pairs = |sites: &mut dyn Iterator<Item = &SourceSite>| -> BTreeSet<(CascadeStep, CascadeStep)> {
+            let mut out = BTreeSet::new();
+            for site in sites {
+                out.extend(self.cascade_pairs(site));
+            }
+            out
+        };
+        let own = pairs(&mut self.templates(lowered));
+        let every = pairs(&mut self.instances.iter().map(|i| &i.site));
+        order_by(lowered, CASCADE_STEPS, &own, &every, CASCADE_STEPS, |s| s.name())
+    }
+
+    /// The pairs of cascade steps one owner template's rows order.
+    pub fn cascade_pairs(&self, site: &SourceSite) -> BTreeSet<(CascadeStep, CascadeStep)> {
+        use CascadeStep as C;
+        let mut out = BTreeSet::new();
+        let row = |kind: ObligationKind| {
+            self.iter().find(|(_, o)| {
+                o.kind == kind && o.site.as_ref() == Some(site) && o.guard == PathGuard::Normal && o.source.is_none()
+            })
+        };
+        let (Some((drain, d)), Some((dissolve, ds))) = (row(ObligationKind::Drain), row(ObligationKind::Dissolve)) else {
+            return out;
+        };
+        // A row of one of the owner's children: a static template one
+        // field below the owner's, or a literal site (a body's, an
+        // accepted child's).
+        let other = |id: ObligationId, kind: ObligationKind| {
+            self.get(id).is_some_and(|o| {
+                o.kind == kind
+                    && o.site.as_ref().is_some_and(|s| {
+                        s != site
+                            && match (&site.template, &s.template) {
+                                (super::Template::Static(a), super::Template::Static(b)) => {
+                                    b.origin == a.origin && b.path.len() == a.path.len() + 1 && b.path.starts_with(&a.path)
+                                }
+                                _ => true,
+                            }
+                    })
+            })
+        };
+        let completed = |p: &super::Prerequisite| p.event.point.satisfies(Point::Completed);
+        // Line 12: a field's drain completes before its owner's is entered.
+        if d.edges.entry.iter().any(|p| completed(p) && other(p.event.obligation, ObligationKind::Drain)) {
+            out.insert((C::FieldDrains, C::Drain));
+        }
+        if ds.edges.entry.iter().any(|p| completed(p) && p.event.obligation == drain) {
+            out.insert((C::Drain, C::Dissolve));
+        }
+        // Line 10: a field is dissolved once its owner's dissolve completes.
+        let after_mine = Event { obligation: dissolve, point: Point::Completed };
+        if self.obligations.iter().any(|o| {
+            o.kind == ObligationKind::Dissolve
+                && o.site.as_ref() != Some(site)
+                && o.edges.entry.iter().any(|p| p.event == after_mine)
+        }) {
+            out.insert((C::Dissolve, C::FieldDissolves));
+        }
+        // Line 14: a field's reclaim completes before its owner's is entered.
+        if let Some((_, r)) = row(ObligationKind::Reclaim) {
+            if r.edges.entry.iter().any(|p| completed(p) && other(p.event.obligation, ObligationKind::Reclaim)) {
+                out.insert((C::FieldDissolves, C::Reclaim));
+            }
+        }
+        out
+    }
+
+    /// The owned fields of the declaration lowered as `lowered`, by name,
+    /// in the order the plan's edges chain their drains (line 12: the
+    /// owner's declaration order), read from its templates' fields. A
+    /// field no edge places (a pinned one, one with several templates) is
+    /// not named.
+    pub fn cascade_fields(&self, lowered: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut before: BTreeSet<(String, String)> = BTreeSet::new();
+        for owner in self.templates(lowered) {
+            let super::Template::Static(key) = &owner.template else { continue };
+            // The owner's field templates, by field name, and their drains.
+            let mut drains: BTreeMap<ObligationId, String> = BTreeMap::new();
+            for (id, o) in self.iter() {
+                let Some(super::Template::Static(k)) = o.site.as_ref().map(|s| &s.template) else { continue };
+                if o.kind == ObligationKind::Drain
+                    && o.guard == PathGuard::Normal
+                    && o.source.is_none()
+                    && k.origin == key.origin
+                    && k.path.len() == key.path.len() + 1
+                    && k.path.starts_with(&key.path)
+                {
+                    drains.insert(id, k.path.last().expect("a field step").field.clone());
+                }
+            }
+            for (&id, name) in &drains {
+                let o = self.get(id).expect("a row");
+                for p in &o.edges.entry {
+                    if let Some(prev) = drains.get(&p.event.obligation) {
+                        before.insert((prev.clone(), name.clone()));
+                        for n in [prev, name] {
+                            if !names.contains(n) {
+                                names.push(n.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut out: Vec<String> = Vec::new();
+        while !names.is_empty() {
+            let i = names
+                .iter()
+                .position(|n| !names.iter().any(|m| m != n && before.contains(&(m.clone(), n.clone()))))
+                .unwrap_or(0);
+            out.push(names.remove(i));
+        }
+        out
     }
 
     /// The pairs of reclaim steps one template's rows order (the rest

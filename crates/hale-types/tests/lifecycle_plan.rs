@@ -16,7 +16,7 @@ use hale_types::lifecycle::{
     FailureSource, LifecyclePlan, NotStarted, Obligation, ObligationKind as K, PathGuard, Point, Spine, Status,
     Template, Terminal, DECISION_LINES,
 };
-use hale_types::lifecycle::spine::{BIRTH_KINDS, RECLAIM_STEPS};
+use hale_types::lifecycle::spine::{BIRTH_KINDS, CASCADE_STEPS, RECLAIM_STEPS};
 use hale_types::placement::{DomainKind, SiteUniverse};
 
 fn snapshot(src: &str) -> Snapshot {
@@ -210,6 +210,14 @@ fn every_declaration_reads_one_birth_order_over_the_corpus() {
                 Ok(_) => {}
                 Err(e) => broken.push(format!("{}: {e}", p.origin)),
             }
+            // And the cascade's, the one the dissolve cascade emits.
+            match plan.cascade_order(name) {
+                Ok(order) if order != CASCADE_STEPS => {
+                    broken.push(format!("{}: {name}: the cascade order {order:?} departs from CASCADE_STEPS", p.origin))
+                }
+                Ok(_) => {}
+                Err(e) => broken.push(format!("{}: {e}", p.origin)),
+            }
         }
     }
     assert!(decls > 100, "the corpus shrank to {decls} declarations");
@@ -323,7 +331,8 @@ fn a_held_failure_is_delivered_at_settle_before_the_owners_birth() {
 }
 
 /// Lines 12 and 17: a pinned locus runs on its own thread, owes its
-/// join, and its own fields are owed a drain the code never runs (C9).
+/// join, and its own fields drain on that thread before it does (C9,
+/// shipped by L4's cascade).
 #[test]
 fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l12_pinned_fields_drain.hl"));
@@ -333,13 +342,27 @@ fn a_pinned_anchor_owes_its_thread_and_its_fields_their_drain() {
     assert_eq!(rows(p, "Outer", K::PinnedJoin).len(), 1);
     assert_eq!(one(p, "Inner", K::Birth).holder.spine, Spine::Instantiation, "a field of a pinned locus is born off its thread");
     let drain = one(p, "Inner", K::Drain);
-    assert_eq!((drain.line, drain.status), (Some("12"), Status::KnownOpen { inventory_row: "C9" }));
+    assert_eq!((drain.line, drain.status), (Some("12"), Status::Shipped));
+    let on = drain.runs_on.expect("its owner's thread");
+    assert!(matches!(p.domains[on.domain.0 as usize].kind, DomainKind::Pinned { .. }), "drained on the pinned thread");
     let outer_drain = one(p, "Outer", K::Drain);
-    assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule.status == Status::KnownOpen { inventory_row: "C9" }));
+    assert!(outer_drain.edges.entry.iter().any(|pr| pr.rule == hale_types::lifecycle::Rule::line("12", Status::Shipped)));
+}
+
+/// Line 12 over the instance tree: an owner's fields drain in their
+/// declaration order, and each is torn down before the next is dissolved.
+#[test]
+fn an_owners_fields_are_torn_down_in_declaration_order() {
+    let s = snapshot(
+        "locus Kid { run() { } }\nmain locus App { params { z: Kid = Kid { }; a: Kid = Kid { }; m: Kid = Kid { }; } }\nfn main() { App { }; }\n",
+    );
+    let p = plan(&s);
+    assert_eq!(p.cascade_fields("App"), ["z", "a", "m"]);
+    assert_eq!(p.cascade_order("App").expect("ordered"), CASCADE_STEPS);
 }
 
 /// Line 12 for a field typed by an interface: it drains before its
-/// owner, a rule its recorded reclaim does not keep today (C32).
+/// owner, like every owned field (C32, shipped by L4's cascade).
 #[test]
 fn a_contract_typed_field_owes_its_drain_before_its_owners() {
     let s = snapshot(
@@ -353,7 +376,7 @@ fn a_contract_typed_field_owes_its_drain_before_its_owners() {
         .iter()
         .find(|pr| Some(pr.event.obligation.0 as usize) == kid_drain)
         .expect("the owner's drain waits for its field's");
-    assert_eq!((order.rule.line, order.rule.status), (Some("12"), Status::KnownOpen { inventory_row: "C32" }));
+    assert_eq!((order.rule.line, order.rule.status), (Some("12"), Status::Shipped));
 }
 
 /// Line 3: a field nested under a pool-placed field owes its run() to

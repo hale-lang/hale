@@ -170,14 +170,20 @@ the model: runtime is automatic; stdlib is explicit.
   child's locus — an `interface` slot, a `perspective(P)`
   handle — carries an owned child on the same terms, and the
   cascade reaches it: the declared type names no impl, so the
-  instantiation records the child's `__reclaim_<Impl>` in a
-  synthetic per-field slot and the cascade runs that whole
-  spine (drain → dissolve → arena reclaim) through it, under
-  the same ownership-mask gate. The consequence users can
-  check is arena residency: no locus arena, at any depth and
-  behind any field type, survives its owner.
-  Pinned-thread tail still skips the cascade
-  per the v1 trade-off. An `accept`'d child is reclaimed on its
+  instantiation records the child's teardown in a synthetic
+  per-field slot, a pair of its drain and the rest of its spine
+  (dissolve → arena reclaim), and the cascade runs each half
+  through it where a `LocusRef` field's runs, under the same
+  ownership-mask gate: the drain with the other fields' drains,
+  before the outer's drain, the rest after the outer's dissolve.
+  The consequence users can check is arena residency: no locus
+  arena, at any depth and behind any field type, survives its
+  owner. A pinned locus's thread drains its own fields before
+  its `drain()`; their dissolve cascade runs after its join.
+  The cascade walks the fields in the order the lifecycle plan
+  places them (§ "Lifecycle obligations", line 12: declaration
+  order), each torn down whole before the next is dissolved.
+  An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the
   parent's cascade.
@@ -1828,15 +1834,20 @@ its `KNOWN_OPEN` table.
   a pinned locus's fields drain on its thread before its own
   `drain()`, and nothing is called unconditionally on a parent's
   pinned thread from outside it. A field the locus was handed and
-  does not own acquires no drain obligation. Not yet shipped
-  (inventory rows C9, C18): a pinned locus's thread runs its
-  `drain()` with no field drains, and its fields are dissolved after
-  the join without one (`l12_pinned_fields_drain.hl`, and the
-  lifecycle matrix's pinned grandchild cells); and a field typed by
-  an interface or a perspective is torn down through its recorded
-  reclaim, its drain, dissolve and reclaim together, after its
-  owner's `dissolve()` (inventory row C32; the matrix's
-  interface-field and perspective-slot cells).
+  does not own acquires no drain obligation. An owner's fields drain
+  in their declaration order, and each is torn down whole (dissolved,
+  its own fields after it, reclaimed) before the next is dissolved.
+  Shipped, and emitted from the lifecycle plan (F.40 phase 3, L4's
+  dissolve cascade): a pinned locus's thread drains its fields
+  before its `drain()` (inventory rows C9, C18;
+  `l12_pinned_fields_drain.hl` and the lifecycle matrix's pinned
+  grandchild cells), and a field typed by an interface or a
+  perspective drains with the others, before its owner's drain,
+  through the drain half of the teardown its instantiation records
+  (inventory row C32; the matrix's interface-field and
+  perspective-slot cells). Before, a pinned locus's fields were
+  dissolved after the join without a drain, and a contract-typed
+  field's whole spine ran after its owner's `dissolve()`.
 - **Line 13, resume.** A child resumed after a held handler goes
   through the same placement and admission as a first run, so a
   pool-placed child's `run()` is posted to its pool; under shutdown

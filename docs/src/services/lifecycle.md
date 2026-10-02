@@ -507,6 +507,11 @@ so nothing tears it down twice. The rules that order gives you:
   params the failure is held and delivered once they are all set,
   before the parent's `birth()`. The failed child stays readable in
   the handler, and `restart` reuses it.
+- **Fields drain first, in declaration order.** A locus's own locus
+  fields drain before it does, one after another in the order they
+  are declared, each after its own fields; a pinned locus's on its
+  thread, and a field typed by an interface or a perspective like
+  any other. Each is dissolved after its owner's `dissolve()`.
 - **Dissolve-epoch closures run before `dissolve()`.** A violation
   there reaches the parent before your cleanup runs.
 - **Ctrl-C raises a flag.** The signal calls none of your methods;
@@ -521,10 +526,6 @@ A few rules are decided and not yet true of every program;
 the compiler's test suite carries a program that shows today's
 behaviour until it changes:
 
-- a pinned locus's own locus fields are not drained, only
-  dissolved;
-- a field typed by an interface or a perspective is drained after
-  its owner's `dissolve()`, not before its owner's `drain()`;
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
 - a pool-placed publisher waiting in `or wait` on a queue only

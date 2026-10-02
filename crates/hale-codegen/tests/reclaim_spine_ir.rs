@@ -15,6 +15,14 @@
 //! its run's end and in its owner's cascade) and an elided-arena child
 //! (the struct's release alone).
 //!
+//! The dissolve cascade over the instance tree is pinned beside it, in
+//! the order the plan places it (`LifecyclePlan::cascade_order` and
+//! `cascade_fields`, line 12): an owner's fields drained in declaration
+//! order, each before the owner's drain, a contract-typed field's
+//! through the drain half its instantiation records (C32); the owner's
+//! dissolve; the fields' dissolves and reclaims; a pinned locus's fields
+//! drained on its thread before its `drain()` (C9).
+//!
 //! The order is read from the control flow, not the text: a step comes
 //! before another when the other's block is reachable from its block and
 //! not the reverse (or, in one block, by line).
@@ -308,4 +316,125 @@ fn an_accepted_and_an_elided_childs_reclaim_read_the_plans_order() {
     assert!(fns.contains("__reclaim_Kid"), "{fns:?}");
     let fns = assert_every(&ir, "Leaf", &["latch", "cancel", "struct"]);
     assert!(fns.contains("__reclaim_Leaf"), "{fns:?}");
+}
+
+/// The steps `marks` names, in `f`, ordered by the control flow: each
+/// mark is (name, the substrings, `&&`-joined, of the one line that is
+/// its step).
+fn ordered(f: &Func, marks: &[(&'static str, String)]) -> Vec<&'static str> {
+    let mut steps: Vec<(&'static str, (usize, usize))> = Vec::new();
+    for (name, pat) in marks {
+        let found = f.find(|l| pat.split(" && ").all(|p| l.contains(p)));
+        assert_eq!(found.len(), 1, "{}: `{pat}` ({name}) is not one line: {found:?}", f.name);
+        steps.push((name, found[0]));
+    }
+    steps.sort_by(|a, b| if f.before(a.1, b.1) { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater });
+    for w in steps.windows(2) {
+        assert!(f.before(w[0].1, w[1].1), "{}: {} and {} are not ordered by the control flow", f.name, w[0].0, w[1].0);
+    }
+    steps.into_iter().map(|(n, _)| n).collect()
+}
+
+fn func<'a>(fs: &'a [Func], name: &str) -> &'a Func {
+    fs.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no function {name}"))
+}
+
+/// C32: a contract-typed field drains before its owner's drain, through
+/// the drain half of its recorded pair; the rest of its spine runs after
+/// the owner's dissolve.
+#[test]
+fn a_contract_fields_drain_runs_before_its_owners() {
+    let src = "interface Probe { fn v() -> Int; }
+locus Kid {
+    fn v() -> Int { return 1; }
+    drain() { println(\"ev kid-drain\"); }
+    dissolve() { println(\"ev kid-dissolve\"); }
+}
+main locus App {
+    params { k: Probe = Kid { }; }
+    drain() { println(\"ev app-drain\"); }
+    dissolve() { println(\"ev app-dissolve\"); }
+}
+fn main() { App { }; }
+";
+    let ir = ir("contract_field", src);
+    let fs = functions(&ir);
+    let half = |n: u32| format!("%App.k.contract.half.ptr && getelementptr inbounds [2 x ptr] && i32 0, i32 {n}");
+    for name in ["main", "__reclaim_App"] {
+        let f = func(&fs, name);
+        let marks = [
+            ("field drain", half(0)),
+            ("drain", "call void @App.drain(".to_string()),
+            ("dissolve", "call void @App.dissolve(".to_string()),
+            ("field rest", half(1)),
+            ("reclaim", "%App.arena.already_freed = ".to_string()),
+        ];
+        assert_eq!(ordered(f, &marks), ["field drain", "drain", "dissolve", "field rest", "reclaim"], "{name}");
+    }
+    // The pair: Kid's drain half drains it once (latched), the rest is
+    // its spine without the drain.
+    assert!(ir.contains("@__contract_teardown_Kid = internal constant [2 x ptr] [ptr @__drain_Kid, ptr @__reclaim_drained_Kid]"));
+    let drain = func(&fs, "__drain_Kid");
+    assert_eq!(drain.find(|l| l.contains("call void @Kid.drain(")).len(), 1);
+    let rest = func(&fs, "__reclaim_drained_Kid");
+    assert!(rest.find(|l| l.contains("call void @Kid.drain(")).is_empty(), "the rest does not drain again");
+    assert_eq!(rest.find(|l| l.contains("call void @Kid.dissolve(")).len(), 1);
+}
+
+/// C9: a pinned locus's thread drains its owned fields before its own
+/// drain().
+#[test]
+fn a_pinned_locus_drains_its_fields_on_its_thread_first() {
+    let src = "locus Inner { drain() { println(\"ev inner-drain\"); } }
+locus Outer {
+    params { i: Inner = Inner { }; }
+    run() { println(\"ev outer-run\"); }
+    drain() { println(\"ev outer-drain\"); }
+}
+main locus App {
+    params { o: Outer = Outer { }; }
+    placement { o: pinned; }
+}
+fn main() { App { }; }
+";
+    let ir = ir("pinned_fields", src);
+    let fs = functions(&ir);
+    let f = func(&fs, "__pinned_main_Outer");
+    let marks = [("field drain", "call void @Inner.drain(".to_string()), ("drain", "call void @Outer.drain(".to_string())];
+    assert_eq!(ordered(f, &marks), ["field drain", "drain"]);
+}
+
+/// Line 12 over the tree: fields in declaration order (not by name),
+/// each drained before the owner's drain and dissolved after its
+/// dissolve, each torn down whole before the next.
+#[test]
+fn fields_are_torn_down_in_declaration_order() {
+    let src = "locus Kid {
+    params { n: Int = 0; }
+    drain() { println(\"ev kid-drain \", self.n); }
+    dissolve() { println(\"ev kid-dissolve \", self.n); }
+}
+main locus App {
+    params { z: Kid = Kid { n: 1 }; a: Kid = Kid { n: 2 }; m: Kid = Kid { n: 3 }; }
+    drain() { println(\"ev app-drain\"); }
+    dissolve() { println(\"ev app-dissolve\"); }
+}
+fn main() { App { }; }
+";
+    let ir = ir("declaration_order", src);
+    let fs = functions(&ir);
+    let f = func(&fs, "main");
+    let mut marks: Vec<(&'static str, String)> = Vec::new();
+    for (step, field) in [("z drain", "z"), ("a drain", "a"), ("m drain", "m")] {
+        marks.push((step, ["call void @Kid.drain(ptr %App.", field, ".drain.load"].concat()));
+    }
+    marks.push(("drain", "call void @App.drain(".to_string()));
+    marks.push(("dissolve", "call void @App.dissolve(".to_string()));
+    for (step, field) in [("z dissolve", "z"), ("a dissolve", "a"), ("m dissolve", "m")] {
+        marks.push((step, ["call void @Kid.dissolve(ptr %App.", field, ".cascade.load"].concat()));
+    }
+    assert_eq!(
+        ordered(f, &marks),
+        ["z drain", "a drain", "m drain", "drain", "dissolve", "z dissolve", "a dissolve", "m dissolve"]
+    );
 }

@@ -8,7 +8,7 @@ use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, ProjectionClass,
     RecognitionSubMode, ScheduleClass,
 };
-use hale_types::lifecycle::spine::ReclaimStep;
+use hale_types::lifecycle::spine::{ReclaimStep, CASCADE_STEPS};
 use inkwell::types::StructType;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
@@ -16,6 +16,11 @@ use inkwell::AddressSpace;
 use crate::codegen::{
     CodegenError, CodegenTy, Cx, LocusInfo, Scope, SlotForm,
 };
+
+/// The halves of a contract-typed field's recorded teardown, as indices
+/// into its pair (`Cx::contract_teardown_table`).
+pub(crate) const CONTRACT_DRAIN: u64 = 0;
+pub(crate) const CONTRACT_REST: u64 = 1;
 
 pub(crate) trait LocusDissolve<'ctx> {
     fn lower_locus_kmax(
@@ -59,10 +64,14 @@ pub(crate) trait LocusDissolve<'ctx> {
 
     /// GH #871: the cascade arm for a param field that holds an
     /// owned child WITHOUT naming its type — an `interface` slot or
-    /// a `perspective(P)` handle. Runs the child's whole teardown
-    /// spine through the `__reclaim_<Impl>` pointer the
-    /// instantiation recorded in `__owned_child_reclaim_<f>`.
-    fn emit_owned_contract_child_reclaim(
+    /// a `perspective(P)` handle. Runs one half of the child's
+    /// teardown through the pair the instantiation recorded in
+    /// `__owned_child_reclaim_<f>` (`Cx::contract_teardown_table`):
+    /// its drain ([`CONTRACT_DRAIN`], in the owner's drain cascade) or
+    /// the rest of its spine ([`CONTRACT_REST`], in the owner's
+    /// dissolve cascade).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_owned_contract_child_teardown(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
@@ -70,6 +79,7 @@ pub(crate) trait LocusDissolve<'ctx> {
         fname: &str,
         field_idx: u32,
         via_fat_pointer: bool,
+        half: u64,
     ) -> Result<(), CodegenError>;
 
     /// Phase-2 (3) drain cascade. Per spec/runtime.md: "drain()
@@ -369,14 +379,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
-        // Sort field iteration by index so ordering is deterministic
-        // (BTreeMap iter is sorted by key — name; we want index).
-        let mut field_entries: Vec<(String, u32, CodegenTy)> = info
-            .fields
-            .iter()
-            .map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone()))
-            .collect();
-        field_entries.sort_by_key(|(_, idx, _)| *idx);
+        // The fields in the order the plan places their teardowns (line
+        // 12: declaration order), each torn down whole before the next.
+        let field_entries = self.cascade_field_entries(info, locus_name)?;
         for (fname, field_idx, field_ty) in field_entries {
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
             if is_main_locus
@@ -408,13 +413,14 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             ) {
                 let via_fat_pointer =
                     matches!(field_ty, CodegenTy::Interface(_));
-                self.emit_owned_contract_child_reclaim(
+                self.emit_owned_contract_child_teardown(
                     info,
                     self_ptr,
                     locus_name,
                     &fname,
                     field_idx,
                     via_fat_pointer,
+                    CONTRACT_REST,
                 )?;
                 continue;
             }
@@ -645,24 +651,24 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
     /// default). The cascade, though, is emitted once per OWNER
     /// type — inside `__reclaim_<Owner>`, inside the deferred-frame
     /// teardown, inside every eager-dissolve site. So the
-    /// instantiation records the child's `__reclaim_<Impl>` in
-    /// `__owned_child_reclaim_<f>` and this emits the indirect call.
+    /// instantiation records the child's teardown pair
+    /// (`{ __drain_<Impl>, __reclaim_drained_<Impl> }`) in
+    /// `__owned_child_reclaim_<f>` and this emits the indirect call
+    /// to one half.
     ///
     /// Three guards, all runtime: the F.29 owned-bit (a child handed
     /// in from outside belongs to its own owner and is left alone),
-    /// a null reclaim pointer (the field was never initialized from
-    /// a literal on this path) and a null child pointer. The spine
-    /// itself is idempotent — `__reclaim_<L>` latches on a NULL
-    /// `__arena` — so a second pass over the same field is a no-op
-    /// rather than a double free.
+    /// a null pair (the field was never initialized from a literal on
+    /// this path) and a null child pointer. Both halves are idempotent
+    /// — each latches on a NULL `__arena` — so a second pass over the
+    /// same field is a no-op rather than a double free.
     ///
-    /// Ordering note: the `LocusRef` arm splits a child's teardown
-    /// in two, drain via `emit_locus_field_drains` before the
-    /// owner's own drain and the rest after its dissolve body. A
-    /// contract child gets the whole spine here, drain included, at
-    /// the second point: its type is not known at the first one, and
-    /// the reclaim entry point is the one indirection recorded.
-    fn emit_owned_contract_child_reclaim(
+    /// Ordering (line 12, C32): the child's teardown splits in two as
+    /// a `LocusRef` field's does, its drain in the owner's drain
+    /// cascade, before the owner's own drain, and the rest after the
+    /// owner's dissolve body. Its whole spine used to run at the
+    /// second point, drain included.
+    fn emit_owned_contract_child_teardown(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
@@ -670,6 +676,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         fname: &str,
         field_idx: u32,
         via_fat_pointer: bool,
+        half: u64,
     ) -> Result<(), CodegenError> {
         let reclaim_slot_idx =
             match info.owned_child_reclaim_field_idxs.get(fname) {
@@ -709,7 +716,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 &format!("{}.{}.contract.reclaim.ptr", locus_name, fname),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let reclaim_fp = self
+        let pair = self
             .builder
             .build_load(
                 ptr_t,
@@ -739,7 +746,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         let fp_null = self
             .builder
             .build_is_null(
-                reclaim_fp,
+                pair,
                 &format!("{}.{}.contract.fp.null", locus_name, fname),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -798,14 +805,30 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         } else {
             held
         };
+        let i32_t = self.context.i32_type();
+        let half_ptr = unsafe {
+            self.builder.build_in_bounds_gep(
+                ptr_t.array_type(2),
+                pair,
+                &[i32_t.const_zero(), i32_t.const_int(half, false)],
+                &format!("{}.{}.contract.half.ptr", locus_name, fname),
+            )
+        }
+        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let half_fp = self
+            .builder
+            .build_load(ptr_t, half_ptr, &format!("{}.{}.contract.half", locus_name, fname))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
         let reclaim_ty =
             self.context.void_type().fn_type(&[ptr_t.into()], false);
+        let call = if half == CONTRACT_DRAIN { "drain" } else { "reclaim" };
         self.builder
             .build_indirect_call(
                 reclaim_ty,
-                reclaim_fp,
+                half_fp,
                 &[child.into()],
-                &format!("{}.{}.contract.reclaim.call", locus_name, fname),
+                &format!("{}.{}.contract.{}.call", locus_name, fname, call),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder
@@ -908,13 +931,28 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
-        let mut field_entries: Vec<(String, u32, CodegenTy)> = info
-            .fields
-            .iter()
-            .map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone()))
-            .collect();
-        field_entries.sort_by_key(|(_, idx, _)| *idx);
+        // The fields in the order the plan chains their drains (line 12:
+        // declaration order), each drained after its own fields.
+        let field_entries = self.cascade_field_entries(info, locus_name)?;
         for (fname, field_idx, field_ty) in field_entries {
+            // C32 (line 12): an owned child behind a contract-typed
+            // field drains here, before its owner's drain, like every
+            // owned field, through the drain half its instantiation
+            // recorded; the rest of its spine runs in the dissolve
+            // cascade.
+            if matches!(field_ty, CodegenTy::Interface(_) | CodegenTy::Perspective(_)) {
+                let via_fat_pointer = matches!(field_ty, CodegenTy::Interface(_));
+                self.emit_owned_contract_child_teardown(
+                    info,
+                    self_ptr,
+                    locus_name,
+                    &fname,
+                    field_idx,
+                    via_fat_pointer,
+                    CONTRACT_DRAIN,
+                )?;
+                continue;
+            }
             let inner_name = match field_ty {
                 CodegenTy::LocusRef(n) => n,
                 _ => continue,
@@ -1406,6 +1444,49 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The fields the dissolve cascade walks for `locus_name`, in the
+    /// order the plan places them (`LifecyclePlan::cascade_fields`: line
+    /// 12's declaration order), the fields the plan names no order for in
+    /// their declaration order between them. Refused where the plan
+    /// places the owner's cascade steps (`LifecyclePlan::cascade_order`)
+    /// in an order the walk cannot emit: the fields' drains before the
+    /// owner's drain, its dissolve after, the fields' dissolves after it,
+    /// its reclaim last.
+    pub(crate) fn cascade_field_entries(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+    ) -> Result<Vec<(String, u32, CodegenTy)>, CodegenError> {
+        let mut entries: Vec<(String, u32, CodegenTy)> =
+            info.fields.iter().map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone())).collect();
+        entries.sort_by_key(|(_, idx, _)| *idx);
+        if !self.cascade_orders.contains_key(locus_name) {
+            let plan = self.lifecycle.ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "`{locus_name}`: the lowering view carries no lifecycle plan, and the dissolve cascade is read from it"
+                ))
+            })?;
+            let steps = plan.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;
+            if steps != CASCADE_STEPS {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{locus_name}`: the lifecycle plan orders its cascade {steps:?}, which the dissolve cascade cannot emit"
+                )));
+            }
+            let fields = plan.cascade_fields(locus_name);
+            self.cascade_orders.insert(locus_name.to_string(), fields);
+        }
+        let order = &self.cascade_orders[locus_name];
+        // The plan's fields keep the positions they hold among the
+        // entries, in the plan's order.
+        let at: Vec<usize> = (0..entries.len()).filter(|&i| order.contains(&entries[i].0)).collect();
+        let mut placed: Vec<(String, u32, CodegenTy)> = at.iter().map(|&i| entries[i].clone()).collect();
+        placed.sort_by_key(|(n, _, _)| order.iter().position(|o| o == n));
+        for (slot, e) in at.into_iter().zip(placed) {
+            entries[slot] = e;
+        }
+        Ok(entries)
+    }
+
     /// The order the plan places a reclaim's steps in for the
     /// declaration `locus` (`LifecyclePlan::reclaim_order`), refused
     /// where it could not be emitted: a release or the cancellation
@@ -1413,7 +1494,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// children after the arena's release would be torn down out of a
     /// freed arena, and the struct released before its arena would lose
     /// the arena's handle.
-    pub(crate) fn reclaim_spine_order(&self, locus: &str) -> Result<Vec<ReclaimStep>, CodegenError> {
+    pub(crate) fn reclaim_spine_order(&mut self, locus: &str) -> Result<Vec<ReclaimStep>, CodegenError> {
+        if let Some(order) = self.reclaim_orders.get(locus) {
+            return Ok(order.clone());
+        }
         let plan = self.lifecycle.ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "`{locus}`: the lowering view carries no lifecycle plan, and the reclaim spine is read from it"
@@ -1436,6 +1520,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         refuse(ReclaimStep::Latch, ReclaimStep::ReleaseStruct)?;
         refuse(ReclaimStep::Children, ReclaimStep::ReleaseArena)?;
         refuse(ReclaimStep::ReleaseArena, ReclaimStep::ReleaseStruct)?;
+        self.reclaim_orders.insert(locus.to_string(), order.clone());
         Ok(order)
     }
 
