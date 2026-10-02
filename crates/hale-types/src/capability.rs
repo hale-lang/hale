@@ -859,33 +859,11 @@ pub enum OpenCell {
     Premise(Obligation),
 }
 
-const T2: &str = "T2: Reject at the placement entry or binding until a real lowering exists (P3 2 of 3)";
-const T3: &str = "T3: the known stubs are rejected, with guidance naming an `@ffi(\"js\")` host import (P3 2 of 3)";
-const T3_UNCLASSIFIED: &str = "T3: syscall-backed and not in the table; refused whole unless a reviewed lowering contract is written (P3 2 of 3)";
-const T5: &str = "T5: a located refusal at the `@ffi(\"js\")` declaration on a native target (P3 2 of 3)";
-const T2_LATE: &str = "T2: refused today only by wasm-ld, unlocated, after clang has run; a located refusal at the placement entry or binding (P3 2 of 3)";
-const T2_PREMISE: &str = "T2: the premise holds once the behaviours it names are Reject on wasm32 (P3 2 of 3)";
-
-pub const KNOWN_OPEN: &[KnownOpen] = &[
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::LateRefusal(Capability::PinnedThreads), decision: T2_LATE },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::PoolThreads), decision: T2 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::AsyncIoPool), decision: T2 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::Unix)), decision: T2 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::RemoteTransport(Transport::ShmRing)), decision: T2 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::LateRefusal(Capability::RemoteTransport(Transport::Adapter)), decision: T2_LATE },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("time")), decision: T3 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("env")), decision: T3 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("ts")), decision: T3 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::unix")), decision: T3_UNCLASSIFIED },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::sockopt")), decision: T3_UNCLASSIFIED },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("io::mirror")), decision: T3_UNCLASSIFIED },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Behaviour(Capability::StdNamespace("ring")), decision: T3_UNCLASSIFIED },
-    KnownOpen { class: TargetClass::PosixAsync, cell: OpenCell::Behaviour(Capability::ForeignAbi(Abi::Js)), decision: T5 },
-    KnownOpen { class: TargetClass::PosixNoAsync, cell: OpenCell::Behaviour(Capability::ForeignAbi(Abi::Js)), decision: T5 },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::BindingConfig), decision: T2_PREMISE },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::PoolJoin), decision: T2_PREMISE },
-    KnownOpen { class: TargetClass::Wasm32, cell: OpenCell::Premise(Obligation::IngressQuiesce), decision: T2_PREMISE },
-];
+/// The cells written as today's answer that a decision changes. Empty
+/// since P3 2 of 3 landed T2, T3 and T5 (design §7): each entry went
+/// with the flip that closed it, and the laws hold a new one to the
+/// same rules.
+pub const KNOWN_OPEN: &[KnownOpen] = &[];
 
 // -------------------------------------------------------------- sites
 
@@ -946,9 +924,6 @@ const STD_WASM: Behaviour = lower(w(
     "admitted: outside the browser-unavailable set, lowered through the wasm shim",
     SPEC_WASM_GATE,
 ));
-const fn std_wasm_stub(reason: &'static str) -> Behaviour {
-    lower(w("crates/hale-codegen/runtime/wasm/lotus_wasm_shim.h::__wasm__", reason, SPEC_WASM_GATE))
-}
 const fn std_wasm_reject(reason: &'static str, guidance: &'static str) -> Behaviour {
     reject(
         STD_WASM_WORDING,
@@ -1000,6 +975,37 @@ const WASM_HTTP: Behaviour = std_wasm_reject(
      in the browser",
     "(server is built on raw TCP)",
 );
+// T3: the known stubs, refused directly; what each did under wasm32
+// is its reason (the shim says it), and an `@ffi("js")` host import is
+// the substitute.
+const WASM_TIME: Behaviour = std_wasm_reject(
+    "the browser module has no clock of its own: the shim's inline `clock_gettime` \
+     writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read \
+     is always the epoch and a sleep never waits",
+    "a host clock (`performance.now`, `Date.now`) or timer through an `@ffi(\"js\")` host import",
+);
+const WASM_ENV: Behaviour = std_wasm_reject(
+    "the browser has no process environment: the shim's inline `getenv` returns NULL",
+    "configuration handed in through an `@ffi(\"js\")` host import or an `@export` fn's arguments",
+);
+const WASM_TS: Behaviour = std_wasm_reject(
+    "the tree-sitter parser is a native static library the wasm link never reaches",
+    "parsing on the host, through an `@ffi(\"js\")` host import",
+);
+// T3, the unclassified syscall-backed namespaces: refused whole, no
+// lowering contract having been written for them.
+const WASM_UNIX: Behaviour = std_wasm_reject(
+    "AF_UNIX sockets are syscalls the browser sandbox does not have",
+    "a WebSocket bus adapter (`ws://`), or an `@ffi(\"js\")` host import",
+);
+const WASM_SOCKOPT: Behaviour = std_wasm_reject(
+    "socket options are syscalls the browser sandbox does not have",
+    "(no sockets in the browser)",
+);
+const WASM_SHM: Behaviour = std_wasm_reject(
+    "a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have",
+    "(no shared memory in the browser)",
+);
 
 /// The behaviours. The stdlib rows come first: the rejected
 /// namespaces in the order the documents list them, then every other
@@ -1025,31 +1031,11 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("crypto", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("decimal", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("diag", STD_NATIVE, STD_NATIVE, STD_WASM),
-    std_ns(
-        "env",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and a stub: every operation reads the shim's inline `getenv`, which returns NULL"),
-    ),
+    std_ns("env", STD_NATIVE, STD_NATIVE, WASM_ENV),
     std_ns("io", STD_NATIVE, STD_NATIVE, STD_WASM),
-    std_ns(
-        "io::mirror",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
-    ),
-    std_ns(
-        "io::sockopt",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
-    ),
-    std_ns(
-        "io::unix",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
-    ),
+    std_ns("io::mirror", STD_NATIVE, STD_NATIVE, WASM_SHM),
+    std_ns("io::sockopt", STD_NATIVE, STD_NATIVE, WASM_SOCKOPT),
+    std_ns("io::unix", STD_NATIVE, STD_NATIVE, WASM_UNIX),
     std_ns("iter", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("json", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("lang", STD_NATIVE, STD_NATIVE, STD_WASM),
@@ -1060,12 +1046,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("os", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("rand", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("regex", STD_NATIVE, STD_NATIVE, STD_WASM),
-    std_ns(
-        "ring",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0`"),
-    ),
+    std_ns("ring", STD_NATIVE, STD_NATIVE, WASM_SHM),
     std_ns("secret", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("shm", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("source", STD_NATIVE, STD_NATIVE, STD_WASM),
@@ -1075,22 +1056,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("test", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("text", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("text::base64", STD_NATIVE, STD_NATIVE, STD_WASM),
-    std_ns(
-        "time",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub(
-            "admitted, and mixed: the clock reads go through the shim's inline `clock_gettime`, \
-             which writes zero, and `sleep` calls `clock_nanosleep`, an import stubbed to 0; the \
-             conversions compute on their argument",
-        ),
-    ),
-    std_ns(
-        "ts",
-        STD_NATIVE,
-        STD_NATIVE,
-        std_wasm_stub("admitted, and a stub: the wasm link returns before the tree-sitter shim is linked"),
-    ),
+    std_ns("time", STD_NATIVE, STD_NATIVE, WASM_TIME),
+    std_ns("ts", STD_NATIVE, STD_NATIVE, WASM_TS),
     std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
     // ---- link, exports, entry
     BehaviourRow {
@@ -1209,16 +1176,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     BehaviourRow {
         capability: Capability::ForeignAbi(Abi::Js),
         cells: Columns {
-            posix_async: lower(w(
-                CG_FFI_DECL,
-                "admitted: declared as an external symbol, so a call fails at the native link as an undefined reference",
-                SPEC_JS,
-            )),
-            posix_no_async: lower(w(
-                CG_FFI_DECL,
-                "admitted: declared as an external symbol, so a call fails at the native link as an undefined reference",
-                SPEC_JS,
-            )),
+            posix_async: reject(JS_NATIVE_WORDING, Some(JS_NATIVE_GUIDANCE), w(ADMISSION, JS_NATIVE_REASON, SPEC_JS)),
+            posix_no_async: reject(JS_NATIVE_WORDING, Some(JS_NATIVE_GUIDANCE), w(ADMISSION, JS_NATIVE_REASON, SPEC_JS)),
             wasm32: Behaviour {
                 verdict: BehaviourVerdict::Lower(Lowering::IntAsF64),
                 origin: Origin::Source,
@@ -1298,11 +1257,15 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
             },
             wasm32: Behaviour {
                 requires: &[Capability::PoolThreads],
-                ..lower(w(
-                    CHECK_ASYNC_IO,
-                    "admitted: the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, so the pool never runs",
-                    SPEC_ASYNC_IO,
-                ))
+                ..reject(
+                    WASM_ASYNC_IO_WORDING,
+                    Some("use a cooperative pool on `main` (drop `where async_io` and the pool)"),
+                    w(
+                        CHECK_ASYNC_IO,
+                        "the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, and the pool's workers are threads the module does not have",
+                        SPEC_ASYNC_IO,
+                    ),
+                )
             },
         },
     },
@@ -1311,7 +1274,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
         cells: Columns {
             posix_async: lower(w(CG_PINNED_JOIN, "a pinned locus owns a POSIX thread, which main joins at dissolve", SPEC_PLACEMENT)),
             posix_no_async: lower(w(CG_PINNED_JOIN, "a pinned locus owns a POSIX thread, which main joins at dissolve", SPEC_PLACEMENT)),
-            wasm32: reject(WASM_LD_WORDING, None, w(BUILTIN_PTHREAD_JOIN, PTHREAD_JOIN_MISMATCH, SPEC_PLACEMENT)),
+            wasm32: reject(WASM_PINNED_WORDING, Some(WASM_PLACE_ON_MAIN), w(ADMISSION, WASM_ONE_THREAD, SPEC_PLACEMENT)),
         },
     },
     BehaviourRow {
@@ -1319,26 +1282,20 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
         cells: Columns {
             posix_async: lower(w(CG_POOL_START, "a pool's workers are POSIX threads", SPEC_PLACEMENT)),
             posix_no_async: lower(w(CG_POOL_START, "a pool's workers are POSIX threads", SPEC_PLACEMENT)),
-            wasm32: lower(w(
-                CG_POOL_START,
-                "admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pool's `run()` is posted and \
-                 never executes; the module links with wasm-ld's signature-mismatch warnings on `lotus_coop_pool_post` \
-                 and `lotus_bus_dispatch_keyed`, a trap if either call executes",
-                SPEC_PLACEMENT,
-            )),
+            wasm32: reject(WASM_POOL_WORDING, Some(WASM_PLACE_ON_MAIN), w(ADMISSION, WASM_ONE_THREAD, SPEC_PLACEMENT)),
         },
     },
     transport_row(
         Transport::Unix,
         "an AF_UNIX socket served by the runtime's transport threads",
         "an AF_UNIX socket served by the runtime's transport threads",
-        "admitted: the bindings prelude is ungated and the socket calls are imports the loader stubs with `() => 0`, so the binding never connects",
+        "the browser sandbox has no AF_UNIX sockets",
     ),
     transport_row(
         Transport::ShmRing,
         "a POSIX shared-memory ring",
         "a POSIX shared-memory ring",
-        "admitted: the bindings prelude is ungated and `shm_open` and `mmap` are imports the loader stubs with `() => 0`, so the ring never maps",
+        "the browser sandbox has no shared memory to map",
     ),
     BehaviourRow {
         capability: Capability::RemoteTransport(Transport::Adapter),
@@ -1348,14 +1305,9 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
             wasm32: Behaviour {
                 requires: &[Capability::PinnedThreads],
                 ..reject(
-                    WASM_LD_WORDING,
-                    None,
-                    w(
-                        BUILTIN_PTHREAD_JOIN,
-                        "an adapter's instance runs on its own thread, so its binding requires `PinnedThreads`, and \
-                         meets the same late refusal: wasm-ld: function signature mismatch: pthread_join",
-                        SPEC_BINDINGS,
-                    ),
+                    WASM_TRANSPORT_WORDING,
+                    Some(WASM_TRANSPORT_GUIDANCE),
+                    w(ADMISSION, "an adapter's instance runs on a thread of its own, which the wasm32 module does not have", SPEC_BINDINGS),
                 )
             },
         },
@@ -1401,6 +1353,32 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
 
 const CG_HAS_EXPORTS: &str = "crates/hale-codegen/src/codegen.rs::has_exports";
 
+/// T5: an `@ffi("js")` declaration on a native target, refused at the
+/// declaration whether or not anything calls it: the declaration is the
+/// use.
+const JS_NATIVE_WORDING: &str = "`@ffi(\"js\")` fn `{fn}` is a host import of the wasm32 loader, and this \
+     program is built for {selector}: {reason}; {guidance}";
+const JS_NATIVE_GUIDANCE: &str = "build it for wasm32 (`target wasm { }` or `--target wasm32`), or bind a C \
+     library with `@ffi(\"c\")`";
+const JS_NATIVE_REASON: &str = "a native build has no loader to supply it, so it would be an undefined symbol at the link";
+
+/// T2: placement and transports on wasm32, refused at the entry or the
+/// binding until each has a real lowering. The module is driven by its
+/// host on one thread.
+const WASM_ONE_THREAD: &str = "the wasm32 module runs on its host's one thread (the loader stubs \
+     `pthread_create` with `() => 0`)";
+const WASM_PINNED_WORDING: &str = "placement entry `{field}`: `pinned` is not available under {selector} — a \
+     pinned locus owns a thread of its own, and {reason}; {guidance}";
+const WASM_POOL_WORDING: &str = "placement entry `{field}`: a cooperative pool other than `main` is not \
+     available under {selector} — its workers are threads, and {reason}; {guidance}";
+const WASM_ASYNC_IO_WORDING: &str = "placement entry `{field}`: `async_io` pools aren't supported on wasm32 \
+     — {guidance}. ({reason}.)";
+const WASM_PLACE_ON_MAIN: &str = "place it `cooperative` (pool `main`)";
+const WASM_TRANSPORT_WORDING: &str = "bindings entry `{topic}`: this transport is not available under \
+     {selector} — {reason}; {guidance}";
+const WASM_TRANSPORT_GUIDANCE: &str = "keep the topic in-process, or reach the host through an `@ffi(\"js\")` \
+     host import";
+
 /// An `@export`-only program on a native target (design §1.3): located
 /// at its first `@export`. It replaces codegen's late, unlocated
 /// "program has no `fn main()`".
@@ -1412,16 +1390,13 @@ const CG_FFI_DECL: &str = "crates/hale-codegen/src/codegen.rs::f.ffi.is_some()";
 const CG_POOL_START: &str = "crates/hale-codegen/src/codegen.rs::lotus_coop_pool_start_all";
 const CG_PINNED_JOIN: &str = "crates/hale-codegen/src/codegen.rs::pinned.tid";
 const CG_BINDINGS: &str = "crates/hale-codegen/src/codegen.rs::emit_bindings_prelude";
-const BUILTIN_PTHREAD_JOIN: &str = "crates/hale-codegen/src/shared/builtins.rs::declare i32 @pthread_join(i64 thread, ptr retval)";
 
-/// The late refusal a `pinned` placement or an adapter binding meets
-/// on wasm32 today, `link_wasm`'s text verbatim: wasm-ld's own error
-/// goes to stderr, and the build reports its exit.
+/// A late refusal's text, `link_wasm`'s verbatim: wasm-ld's own error
+/// goes to stderr, and the build reports its exit. A `pinned` placement
+/// and an adapter binding met it on wasm32 (codegen's `pthread_join(i64,
+/// ptr)` against the shim's i32 `pthread_t`) until T2 located them; a
+/// known-open late refusal is held to it.
 pub const WASM_LD_WORDING: &str = "wasm-ld failed: exit status: 1";
-
-const PTHREAD_JOIN_MISMATCH: &str = "wasm-ld: function signature mismatch: pthread_join; codegen declares \
-     `pthread_join(i64, ptr)` while the wasm shim's `pthread_t` is i32, and the only emitted call is the \
-     pinned-child join: a late, unlocated refusal after clang has run";
 
 const ADAPTER_NATIVE: &str = "a user adapter locus on its own thread, its `send` handed to the bus runtime";
 const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
@@ -1446,19 +1421,21 @@ pub const WASM_FIXED_EXPORTS: &[Export] = &[
     Export { name: "lotus_wasm_set_inbox", if_defined: false },
 ];
 
+/// A transport's row: lowered over the target's sockets or shared
+/// memory on both POSIX columns, each written out, and refused on
+/// wasm32 (T2) with the reason the sandbox gives.
 const fn transport_row(
     t: Transport,
     posix_async: &'static str,
     posix_no_async: &'static str,
     wasm32: &'static str,
 ) -> BehaviourRow {
-    let site = CG_BINDINGS;
     BehaviourRow {
         capability: Capability::RemoteTransport(t),
         cells: Columns {
-            posix_async: lower(w(site, posix_async, SPEC_BINDINGS)),
-            posix_no_async: lower(w(site, posix_no_async, SPEC_BINDINGS)),
-            wasm32: lower(w(site, wasm32, SPEC_BINDINGS)),
+            posix_async: lower(w(CG_BINDINGS, posix_async, SPEC_BINDINGS)),
+            posix_no_async: lower(w(CG_BINDINGS, posix_no_async, SPEC_BINDINGS)),
+            wasm32: reject(WASM_TRANSPORT_WORDING, Some(WASM_TRANSPORT_GUIDANCE), w(ADMISSION, wasm32, SPEC_BINDINGS)),
         },
     }
 }
@@ -1814,7 +1791,7 @@ pub const DOC_REGION_END: &str = "<!-- /capability-matrix -->";
 /// The constructs a program writes for the placement and bus rows, in
 /// the order the book lists them.
 const PLACEMENT_CONSTRUCTS: &[(Capability, &str)] = &[
-    (Capability::PinnedThreads, "a `pinned` placement, or an adapter binding"),
+    (Capability::PinnedThreads, "a `pinned` placement"),
     (Capability::PoolThreads, "`cooperative(pool = X)`, X other than `main`"),
     (Capability::AsyncIoPool, "`where async_io`"),
     (Capability::RemoteTransport(Transport::Unix), "a `unix(...)` binding"),
@@ -1903,13 +1880,15 @@ pub fn render_markdown(region: DocRegion) -> String {
                     _ => None,
                 })
                 .collect();
-            out.push_str(
-                "\nThese namespaces type-check and build under wasm32, and what they do there is a stub:\n\n\
-                 | Namespace | Under wasm32 |\n|---|---|\n",
-            );
-            for ns in &stubs {
-                let cell = m.behaviour(TargetClass::Wasm32, Capability::StdNamespace(ns)).expect("a row");
-                out.push_str(&format!("| `std::{ns}` | {} |\n", cell.witness.reason));
+            if !stubs.is_empty() {
+                out.push_str(
+                    "\nThese namespaces type-check and build under wasm32, and what they do there is a stub:\n\n\
+                     | Namespace | Under wasm32 |\n|---|---|\n",
+                );
+                for ns in &stubs {
+                    let cell = m.behaviour(TargetClass::Wasm32, Capability::StdNamespace(ns)).expect("a row");
+                    out.push_str(&format!("| `std::{ns}` | {} |\n", cell.witness.reason));
+                }
             }
             let available: Vec<&'static str> = m
                 .behaviours
@@ -1924,8 +1903,9 @@ pub fn render_markdown(region: DocRegion) -> String {
             out.push_str("\n**Placement and the bus.**\n\n| Construct | Under wasm32 | Why |\n|---|---|---|\n");
             for (cap, construct) in PLACEMENT_CONSTRUCTS {
                 let cell = m.behaviour(TargetClass::Wasm32, *cap).expect("a row");
+                let holes = [("field", "<field>"), ("topic", "<Topic>"), ("selector", "`target wasm`")];
                 let verdict = match cell.refusal() {
-                    Some(r) => format!("refused: `{}`", r.render(&cell.witness, &[])),
+                    Some(r) => format!("refused: ``{}``", r.render(&cell.witness, &holes)),
                     None => "admitted".to_string(),
                 };
                 out.push_str(&format!("| {construct} | {verdict} | {} |\n", cell.witness.reason));

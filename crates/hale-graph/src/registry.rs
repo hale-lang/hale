@@ -258,7 +258,6 @@ const CG_WIRE: &str = "crates/hale-codegen/src/bus/wire.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
-const TY_TARGET: &str = "crates/hale-types/src/target.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
 const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
 const CAPABILITY_USES: &str = "crates/hale-types/src/capability/uses.rs";
@@ -1246,7 +1245,6 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG_INST, "lotus_replay_start_ingress", "one of the per-site wasm skips; on wasm the eager main-locus spine emits the pool join where every other spine omits it, and every spine but the deferred entry emits wait-abort", "same"),
             legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory", "emission configuration through TargetSpec only; every capability through the matrix"),
             legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
-            legacy(TY_TARGET, "TargetSpec", "has_async_io is true for wasm32, where the AsyncIoPool cell the admission reads is still Lower", "the matrix is the one statement, on every entry point"),
         ],
         consumers: &[
             consumer("check"),
@@ -1276,11 +1274,12 @@ pub const FAMILIES: &[Family] = &[
             "crates/hale-codegen/tests/wasm_target.rs",
             "crates/hale-cli/tests/target_model.rs",
             "crates/hale-cli/tests/target_precedence.rs (the precedence table: source x --target, check, build and the editor agreeing per cell; wasm-flower built for its declared target; run refusing a declared program; the agreement test: every wasm-relevant program's located refusals equal on check, build and the editor, with and without --target wasm32)",
-            "crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires, KNOWN_OPEN still today's answer)",
+            "crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires; KNOWN_OPEN empty since T2, T3 and T5 landed, a new entry held to today's answer)",
+            "crates/hale-types/src/target.rs (async_io_follows_the_libc: TargetSpec::has_async_io is the runtime's shape, the AsyncIoPool cell what a program may ask for; they differ on wasm32 alone)",
             "crates/hale-types/tests/shadow_capability.rs (the checker rows against their cells over the corpus, tests/hale, the DNA seeds and the wasm programs, on three columns: 0 divergences)",
-            "crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi(\"js\") against their cells, both targets built, a harness build refused by the admission before lowering; 10 classified divergences, all the design's: 2 PoolJoin, 4 @ffi(\"js\") native links, 4 declared export-only programs a harness lowers natively anyway, where codegen still says `program has no fn main()`)",
+            "crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi(\"js\") against their cells, both targets built, a harness build refused by the admission before lowering; 7 classified divergences, all the design's: 4 declared export-only programs and 3 declared @ffi(\"js\") programs a harness lowers natively anyway, where codegen still says `program has no fn main()` and the native link fails)",
             "crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences)",
-            "crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); each type-only variant admitted)",
+            "crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); T2's pinned, pool, async_io and transport refusals at the entry or binding; T3's stub namespaces; T5's @ffi(\"js\") on a native target, called or not; each type-only variant admitted)",
             "crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)",
         ],
         spec: &["spec/decisions.md F.35", "spec/ffi.md § The `target` declaration + stdlib gating", "docs/src/systems/webassembly.md"],
@@ -1290,7 +1289,14 @@ pub const FAMILIES: &[Family] = &[
             // the use producer and the admission law
             Seam {
                 symbol: "derive_capability_matrix(",
-                allowed: &[(CAPABILITY, 2), (CAPABILITY_TRANSPORT, 1), ("crates/hale-types/src/capability/laws.rs", 12), (CAPABILITY_USES, 2)],
+                allowed: &[
+                    (CAPABILITY, 2),
+                    (CAPABILITY_TRANSPORT, 1),
+                    ("crates/hale-types/src/capability/laws.rs", 12),
+                    (CAPABILITY_USES, 2),
+                    // the target model's test, holding has_async_io to the cell
+                    ("crates/hale-types/src/target.rs", 1),
+                ],
             },
             // the definition, the snapshot's family, and the two checks
             // of a bundle no snapshot holds
