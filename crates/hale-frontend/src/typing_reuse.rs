@@ -58,7 +58,7 @@ pub(crate) struct ReuseKey {
     pub mode: Option<crate::frontend::LoadMode>,
     pub target: String,
     pub config_digest: u64,
-    /// The import renames, as a set.
+    /// The import renames, in the table's order.
     pub import_renames: u64,
 }
 

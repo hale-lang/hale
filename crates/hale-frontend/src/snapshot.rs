@@ -1198,12 +1198,11 @@ impl Snapshot {
             target: self.key.target.clone(),
             config_digest: self.key.config_digest,
             import_renames: {
-                // A set: two loads of one seed list it in different orders.
-                let mut renames: Vec<&(Vec<String>, String)> = self.import_renames.iter().collect();
-                renames.sort_unstable();
+                // In the table's order, which the load makes stable
+                // (`ImportRenames`).
                 let mut d = Digest::new();
-                d.count(renames.len());
-                for (path, mangled) in renames {
+                d.count(self.import_renames.len());
+                for (path, mangled) in &self.import_renames {
                     d.count(path.len());
                     for seg in path {
                         d.field(seg.as_bytes());
