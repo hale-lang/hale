@@ -1,4 +1,4 @@
-//! The `tooling_services` integration-test binary: 11 test files of this area, kept
+//! The `tooling_services` integration-test binary: 12 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -19,6 +19,8 @@ mod iris_cli;
 mod iris_seeds_check;
 #[path = "lsp.rs"]
 mod lsp;
+#[path = "lsp_latency.rs"]
+mod lsp_latency;
 #[path = "obs_entity_ids.rs"]
 mod obs_entity_ids;
 #[path = "obs_model_hash.rs"]
