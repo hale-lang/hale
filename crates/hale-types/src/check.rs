@@ -835,7 +835,14 @@ pub fn check_bundle_by_declaration(
     // stdlib list), gets a hard error pointing at the canonical
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
-    check_nested_long_running_child(bundle, &mut diags);
+    //
+    // The flow rows, surveyed once: the long-running-child rule and the
+    // starvation and birth-order laws read their run rows (F.40 phase 3,
+    // E2: "long-running" and "never returns" are two columns), and the
+    // accept/release law their release clauses.
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let flows = crate::flows::survey(&programs, &bundle.import_renames);
+    check_nested_long_running_child(bundle, &flows, &mut diags);
     // GH #813: a locus reachable from its own param defaults. The
     // by-value containment graph must be acyclic — a locus that
     // contains itself can never be built, and the compiler used to
@@ -851,8 +858,8 @@ pub fn check_bundle_by_declaration(
         let fields = root_field_placements(bundle, inputs.placement);
         let errored_pools =
             check_cooperative_pool_blocking(bundle, inputs.bus, inputs.effects, &fields, &mut diags);
-        check_pool_starvation(main, &fields, &errored_pools, &mut diags);
-        check_birth_order(main, &fields, &mut diags);
+        check_pool_starvation(main, &fields, &flows, &errored_pools, &mut diags);
+        check_birth_order(main, &fields, &flows, &mut diags);
     }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
@@ -865,7 +872,7 @@ pub fn check_bundle_by_declaration(
     check_decorator_stacks(bundle, &mut diags);
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
-    check_accept_release(bundle, &mut diags);
+    check_accept_release(bundle, &flows, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     // hot-path allocation contract. A hard error when an annotated fn
     // allocates more than its declared per-call ceiling (0 = zero-alloc
@@ -1363,185 +1370,6 @@ fn is_known_long_running_stdlib(path_segments: &[&str]) -> bool {
     KNOWN_LONG_RUNNING_STDLIB_LOCI
         .iter()
         .any(|known| *known == path_segments)
-}
-
-fn locus_has_nontrivial_run(l: &LocusDecl) -> bool {
-    l.members.iter().any(|m| match m {
-        LocusMember::Lifecycle(LifecycleDecl {
-            kind: LifecycleKind::Run,
-            body,
-            ..
-        }) => !body.stmts.is_empty(),
-        _ => false,
-    })
-}
-
-// === statically non-returning run() (pool starvation) =========
-//
-// A cooperative pool runs each posted `run()` cell to completion, so
-// two loci on one pool whose `run()` bodies never return means the
-// second never starts — silently (bus handlers still fire at
-// sleep/yield drains, which makes the hang look like a healthy idle).
-// The predicate below is deliberately conservative (same style as
-// `while_counter_bounded` in alloc_summary.rs): it only claims
-// "statically never returns" for shapes it can prove, so the
-// starvation warning never false-fires on a loop that can exit.
-
-/// Does this block contain a statement that can exit the enclosing
-/// `run()` loop — `break`, `return`, `terminate`, `fail`, or
-/// `violate`? Walked recursively through nested statement bodies but
-/// NOT into expressions (a `return` inside a failure-closure exits
-/// the closure, not `run()`). A `break` in a *nested* loop only exits
-/// that loop, but counting it as an exit here is the conservative
-/// direction (a missed warning, never a false one).
-fn block_has_loop_exit(block: &Block) -> bool {
-    block.stmts.iter().any(stmt_has_loop_exit)
-}
-
-fn stmt_has_loop_exit(stmt: &Stmt) -> bool {
-    match stmt {
-        Stmt::Break(_)
-        | Stmt::Return(..)
-        | Stmt::Terminate(_)
-        | Stmt::Fail { .. }
-        | Stmt::Violate { .. } => true,
-        Stmt::If(if_stmt) => if_has_loop_exit(if_stmt),
-        Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
-            MatchArmBody::Block(b) => block_has_loop_exit(b),
-            MatchArmBody::Expr(_) => false,
-        }),
-        Stmt::For { body, .. } | Stmt::While { body, .. } => block_has_loop_exit(body),
-        Stmt::Block(b) => block_has_loop_exit(b),
-        Stmt::ShmWrite { body, .. } => block_has_loop_exit(body),
-        _ => false,
-    }
-}
-
-fn if_has_loop_exit(if_stmt: &IfStmt) -> bool {
-    if block_has_loop_exit(&if_stmt.then_block) {
-        return true;
-    }
-    match if_stmt.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => block_has_loop_exit(b),
-        Some(ElseBranch::ElseIf(inner)) => if_has_loop_exit(inner),
-        None => false,
-    }
-}
-
-/// `Some(field_name)` iff the expression is a bare `self.<field>` read.
-fn self_bool_field(e: &Expr) -> Option<&str> {
-    match e {
-        Expr::Field { receiver, name, .. }
-            if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-        {
-            Some(name.name.as_str())
-        }
-        _ => None,
-    }
-}
-
-/// Is `self.<field> = ...` (or a compound assign to it) present in any
-/// member body of the locus? Walked through nested statement bodies.
-fn locus_assigns_self_field(decl: &LocusDecl, field: &str) -> bool {
-    fn block_assigns(block: &Block, field: &str) -> bool {
-        block.stmts.iter().any(|s| stmt_assigns(s, field))
-    }
-    fn if_assigns(if_stmt: &IfStmt, field: &str) -> bool {
-        block_assigns(&if_stmt.then_block, field)
-            || match if_stmt.else_block.as_deref() {
-                Some(ElseBranch::Else(b)) => block_assigns(b, field),
-                Some(ElseBranch::ElseIf(inner)) => if_assigns(inner, field),
-                None => false,
-            }
-    }
-    fn stmt_assigns(stmt: &Stmt, field: &str) -> bool {
-        match stmt {
-            Stmt::Assign { target, .. } => {
-                target.head.name == "self"
-                    && matches!(
-                        target.tail.first(),
-                        Some(LValueSeg::Field(f)) if f.name == field
-                    )
-            }
-            Stmt::If(if_stmt) => if_assigns(if_stmt, field),
-            Stmt::Match(m) => m.arms.iter().any(|arm| match &arm.body {
-                MatchArmBody::Block(b) => block_assigns(b, field),
-                MatchArmBody::Expr(_) => false,
-            }),
-            Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                block_assigns(body, field)
-            }
-            Stmt::Block(b) => block_assigns(b, field),
-            Stmt::ShmWrite { body, .. } => block_assigns(body, field),
-            _ => false,
-        }
-    }
-    decl.members.iter().any(|m| match m {
-        LocusMember::Fn(f) => block_assigns(&f.body, field),
-        LocusMember::Lifecycle(l) => block_assigns(&l.body, field),
-        LocusMember::Mode(md) => block_assigns(&md.body, field),
-        LocusMember::Failure(fd) => block_assigns(&fd.body, field),
-        _ => false,
-    })
-}
-
-/// The literal Bool default of a params field, if it has one.
-fn param_bool_default(decl: &LocusDecl, field: &str) -> Option<bool> {
-    decl.members.iter().find_map(|m| {
-        let LocusMember::Params(pb) = m else { return None };
-        pb.params.iter().find_map(|p| {
-            if p.name.name != field {
-                return None;
-            }
-            match &p.init {
-                ParamInit::Value(Expr::Literal(Literal::Bool(b), _)) => Some(*b),
-                _ => None,
-            }
-        })
-    })
-}
-
-/// `Some(span of the terminal while)` iff this `run()` body statically
-/// never returns: its last statement is a `while` whose body contains
-/// no exit statement and whose condition provably never flips false —
-///   - `while true`,
-///   - `while !self.draining` (the synthetic drain flag flips only at
-///     shutdown, so for the pool's purposes the loop runs forever),
-///   - `while !self.f` / `while self.f` where `f` is a Bool params
-///     field that no member body ever assigns and whose declared
-///     default keeps the loop live (`false` / `true` respectively).
-fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Span> {
-    let Some(Stmt::While { cond, body, span }) = run_body.stmts.last() else {
-        return None;
-    };
-    if block_has_loop_exit(body) {
-        return None;
-    }
-    let never_flips = match cond {
-        Expr::Literal(Literal::Bool(true), _) => true,
-        Expr::Unary { op: UnaryOp::Not, operand, .. } => {
-            match self_bool_field(operand) {
-                Some("draining") => true,
-                Some(f) => {
-                    !locus_assigns_self_field(decl, f)
-                        && param_bool_default(decl, f) == Some(false)
-                }
-                None => false,
-            }
-        }
-        _ => match self_bool_field(cond) {
-            Some(f) if f != "draining" => {
-                !locus_assigns_self_field(decl, f)
-                    && param_bool_default(decl, f) == Some(true)
-            }
-            _ => false,
-        },
-    };
-    if never_flips {
-        Some(*span)
-    } else {
-        None
-    }
 }
 
 /// A stdlib path call that blocks the calling OS thread until the
@@ -2342,7 +2170,7 @@ fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// resident children are O(accepted) growth until OOM. Daemon signal
 /// (deliberately narrow, corpus-clean): the accepting locus's own
 /// `run()` contains a literal `while true` loop.
-fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+fn check_accept_release(bundle: &Bundle<'_>, flows: &crate::flows::FlowRows, diags: &mut Vec<Diag>) {
     fn block_has_while_true(b: &Block) -> bool {
         b.stmts.iter().any(|s| match s {
             Stmt::While { cond, body, .. } => {
@@ -2364,8 +2192,6 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
     // The law reads the flow rows: the release clauses a locus declares
     // are the rows' clauses that sit inside it.
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    let flows = crate::flows::survey(&programs, &bundle.import_renames);
     // GH #825: a daemon-shaped locus inside a `module { … }` leaks
     // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
@@ -2618,6 +2444,7 @@ fn check_cooperative_pool_blocking<'r>(
 fn check_pool_starvation(
     main: &LocusDecl,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
+    flows: &crate::flows::FlowRows,
     errored_pools: &BTreeSet<String>,
     diags: &mut Vec<Diag>,
 ) {
@@ -2660,7 +2487,7 @@ fn check_pool_starvation(
                 }
             }
             for decl in fp.map(|fp| fp.decls.as_slice()).unwrap_or(&[]) {
-                let Some(span) = run_nonreturning(decl) else {
+                let Some(span) = never_returns(flows, decl) else {
                     continue;
                 };
                 by_pool.entry(pool_name.clone()).or_default().push((
@@ -2674,21 +2501,12 @@ fn check_pool_starvation(
     // begins only after params-init completes, so it is
     // birth-ordered last.
     let mut main_starved_on_main = false;
-    if let Some(main_run) = main.members.iter().find_map(|m| match m {
-        LocusMember::Lifecycle(LifecycleDecl {
-            kind: LifecycleKind::Run,
-            body,
-            ..
-        }) => Some(body),
-        _ => None,
-    }) {
-        if let Some(span) = run_statically_nonreturning(main_run, main) {
-            by_pool.entry("main".to_string()).or_default().push((
-                format!("the main locus `{}`", main.name.name),
-                span,
-            ));
-            main_starved_on_main = true;
-        }
+    if let Some(span) = never_returns(flows, main) {
+        by_pool.entry("main".to_string()).or_default().push((
+            format!("the main locus `{}`", main.name.name),
+            span,
+        ));
+        main_starved_on_main = true;
     }
     for (pool_name, members) in &by_pool {
         if members.len() < 2 || errored_pools.contains(pool_name) {
@@ -2763,6 +2581,7 @@ fn check_pool_starvation(
 fn check_birth_order(
     main: &LocusDecl,
     fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
+    flows: &crate::flows::FlowRows,
     diags: &mut Vec<Diag>,
 ) {
     // Params in declaration order, tagged with whether
@@ -2796,7 +2615,7 @@ fn check_birth_order(
             // known-long-running allowlist (whose body
             // typecheck cannot see).
             let nonreturning = is_known_long_running_stdlib(&segs)
-                || fp.is_some_and(|fp| fp.decls.iter().any(|d| run_nonreturning(d).is_some()));
+                || fp.is_some_and(|fp| fp.decls.iter().any(|d| never_returns(flows, d).is_some()));
             ordered.push((
                 field,
                 pd.span,
@@ -2924,18 +2743,24 @@ fn root_field_placements<'a>(
     out
 }
 
-/// The span `run_statically_nonreturning` proves for a locus's `run()`,
-/// if it has one that never returns.
-fn run_nonreturning(decl: &LocusDecl) -> Option<Span> {
-    let body = decl.members.iter().find_map(|m| match m {
-        LocusMember::Lifecycle(LifecycleDecl { kind: LifecycleKind::Run, body, .. }) => Some(body),
-        _ => None,
-    })?;
-    run_statically_nonreturning(body, decl)
+/// The "never returns" column of a declaration's run row: the terminal
+/// `while` its `run()` provably never leaves. What the starvation and
+/// birth-order laws ask.
+fn never_returns(flows: &crate::flows::FlowRows, decl: &LocusDecl) -> Option<Span> {
+    flows.run_of(decl).and_then(|r| r.never_returns)
+}
+
+/// The "long-running" column of a declaration's run row: its `run()`
+/// has a statement of its own. What the nested-long-running-child rule
+/// asks: a nested child's `run()` completes before its parent's begins,
+/// so any body delays the parent, whether or not it ever returns.
+fn long_running(flows: &crate::flows::FlowRows, decl: &LocusDecl) -> bool {
+    flows.run_of(decl).is_some_and(|r| r.long_running)
 }
 
 fn check_nested_long_running_child(
     bundle: &Bundle<'_>,
+    flows: &crate::flows::FlowRows,
     diags: &mut Vec<Diag>,
 ) {
     // Build a name → LocusDecl index across the bundle so we can
@@ -2961,7 +2786,7 @@ fn check_nested_long_running_child(
             if parent.is_main {
                 return;
             }
-            if !locus_has_nontrivial_run(parent) {
+            if !long_running(flows, parent) {
                 return;
             }
             // Walk params fields. Each ParamDecl whose declared
@@ -2990,7 +2815,7 @@ fn check_nested_long_running_child(
                         local_loci
                             .get(segs[0])
                             .filter(|l| !l.is_main)
-                            .map(|l| locus_has_nontrivial_run(l))
+                            .map(|l| long_running(flows, l))
                             .unwrap_or(false)
                     } else {
                         is_known_long_running_stdlib(&segs)

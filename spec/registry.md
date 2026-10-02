@@ -26,7 +26,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
 | `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 1 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
-| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
+| `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
 | `api_surface` | Layer 3 | Migrating | derivation | `api_surface` | 3 | The served surface: commands, reads, streams, their schemas, the roles that gate them, and the description's wire form. |
@@ -38,7 +38,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 1 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
-| `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 1 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
+| `nonreturning` | Layer 4 | Canonical | law | `run_statically_nonreturning` | 0 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 4 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
@@ -679,19 +679,20 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 ### `flows` — Canonical · derivation
 
-**Answers.** Which children are flows (released per completion) and which are resident.
+**Answers.** Which children are flows (released per completion) and which are resident; and, per locus declaration, whether its `run()` is long-running and whether it never returns.
 
-**Inputs.** release declarations; accept declarations; declared loci and type aliases (handler_routing's resolver); import renames
+**Inputs.** release declarations; accept declarations; run bodies; declared loci and type aliases (handler_routing's resolver); import renames
 
 **Producer.** `crates/hale-types/src/flows.rs` · `survey`
 
-**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); a declaration's dependents (X2: a flow child and its `release` owners are neighbours, `Snapshot::declaration_dependents`) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); the lifecycle plan (an accepted flow is torn down by the reclaim its run's end runs, a resident by its owner's cascade: the snapshot's rows over the checked programs) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`); codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies) (`crates/hale-codegen/src/codegen.rs` · `specialize(`)
+**Consumers.** check --flows (each flow type as written, with its clauses) (`crates/hale-cli/src/verbs/check/run_impl.rs` · `flows::survey(`); check (a daemon-shaped locus that accepts a child type it releases no clause for: a law over the rows) (`crates/hale-types/src/check.rs` · `check_accept_release`); check (the run rows: the long-running-child rule's long-running column, the starvation and birth-order laws' never-returns column; one survey per check, handed to all four) (`crates/hale-types/src/check.rs` · `run_of`); resolved program (the lowering view's rows, over the merged program) (`crates/hale-types/src/resolved.rs` · `flows::survey(`); a declaration's dependents (X2: a flow child and its `release` owners are neighbours, `Snapshot::declaration_dependents`) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); the lifecycle plan (an accepted flow is torn down by the reclaim its run's end runs, a resident by its owner's cascade: the snapshot's rows over the checked programs) (`crates/hale-frontend/src/snapshot.rs` · `flows::survey(`); codegen (run elision, run-end reclaim and the release call: `Cx::is_flow`, one row read) (`crates/hale-codegen/src/codegen.rs` · `is_flow`); codegen (the generic-instantiation queue: each locus specialization it creates asks the row for its template's clauses, under the substitution its synthesis applies) (`crates/hale-codegen/src/codegen.rs` · `specialize(`)
 
 **Invariants.**
 
 - a release clause's child is resolved once, by `child_locus_name` (handler_routing's resolver: aliases, generic instantiations, qualified paths), into the row (`FlowClause::locus`); lowering's flow-ness is a row read (`flows::is_flow`), never a comparison of its own
 - the flow facts cover the specializations lowering creates: a clause whose type mentions its owner's type parameters names no locus by itself and carries its template (`FlowClause::template`: the owner's identity, its parameters in order, the type as written); `FlowRows::specialize` answers for one specialization by resolving the template's type under the substitution lowering's synthesis applied, so `Manager<Worker>`'s `release(c: T)` makes `Worker` a flow exactly as a concrete `release(c: Worker)` does
 - the checker's accept/release rule judges over the rows: the release clauses a locus declares are the rows' clauses inside its declaration
+- every locus declaration, a module's included, has a run row (`RunRow`: the declaration's name and span, which `FlowRows::run_of` finds it by, and two columns, long-running and never-returns, the `nonreturning` family's two definitions); the checker surveys the rows once per check and its four readers share that survey
 
 **Missing data.** a missing required row is a compiler error
 
@@ -1021,31 +1022,32 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `bare_fallible_calls(` may be referenced from: `crates/hale-types/src/bare_fallible.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-cli/src/verbs/check/run_impl.rs` ×1
 
-### `nonreturning` — Migrating · law
+### `nonreturning` — Canonical · law
 
 **Answers.** Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it.
 
-**Inputs.** run bodies; params order; placement (the table's rows for the deployed root's fields)
+**Inputs.** flows (each locus declaration's run row: the long-running and never-returns columns); params order; placement (the table's rows for the deployed root's fields)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `run_statically_nonreturning`
-
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-types/src/check.rs` · `check_nested_long_running_child` — a second `long-running` predicate (a hand table naming std::http::Server) that disagrees with the first. *Removed when:* one predicate.
+**Producer.** `crates/hale-types/src/flows.rs` · `run_statically_nonreturning`
 
 **Also owned.** `crates/hale-types/src/check.rs` · `check_pool_starvation`; `crates/hale-types/src/check.rs` · `check_birth_order`
 
-**Consumers.** check
+**Consumers.** check (the nested-long-running-child rule reads the long-running column) (`crates/hale-types/src/check.rs` · `check_nested_long_running_child`); check (the starvation and birth-order laws read the never-returns column) (`crates/hale-types/src/check.rs` · `never_returns`)
 
 **Invariants.**
 
-- one definition of long-running
+- two definitions, two columns of the flow rows' run row (`flows::RunRow`), named in spec/runtime.md § Typecheck enforcement: long-running is a `run()` body with a statement of its own (a nested child's `run()` completes before its parent's begins, so any body delays the parent, whether or not it returns), never-returns is a terminal `while` with no exit whose condition never flips false (only such a body starves the cells a pool runs after it); every body that never returns is long-running, not the converse, and a child whose `run()` is `std::time::sleep(1m)` keeps the long-running-child error
+- the checker surveys the flow rows once per check and the three rules read the columns; none decides either question itself; a stdlib locus, whose body the checker does not see, is both when it is on the known-long-running allowlist (`KNOWN_LONG_RUNNING_STDLIB_LOCI`)
 
 **Missing data.** an unknown is a hole with a stated policy
 
-**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-codegen/tests/birth_order_trap.rs
+**Focused tests.** crates/hale-types/tests/birth_order_trap.rs; crates/hale-codegen/tests/birth_order_trap.rs; crates/hale-codegen/tests/nested_long_running_child.rs; crates/hale-types/src/flows.rs (long_running_and_never_returns_are_two_columns)
 
-**Spec.** spec/semantics.md
+**Spec.** spec/semantics.md; spec/runtime.md § Typecheck enforcement
+
+**Guarded seams.**
+
+- `run_statically_nonreturning(` may be referenced from: `crates/hale-types/src/flows.rs` ×2
 
 ### `working_set` — Canonical · derivation
 
