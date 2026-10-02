@@ -19,6 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
+use hale_types::capability::Transport;
 use hale_types::resolved::LoweringView;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
@@ -882,6 +883,14 @@ impl LtoMode {
 /// A topic payload's struct name when it is written as one bare,
 /// non-generic segment: the only payload shape the shm-ring and
 /// routing-key lowering handle today.
+/// The binding row and the entry it was minted for name different
+/// transports: a lowering view whose rows are not its program's.
+fn row_disagrees(topic: &str) -> CodegenError {
+    CodegenError::Unsupported(format!(
+        "binding for topic `{topic}`: the binding row and the entry disagree on the transport"
+    ))
+}
+
 fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
     match payload {
         TypeExpr::Named { path, generic_args, .. }
@@ -1400,6 +1409,7 @@ pub fn build_resolved(
         topics: &resolved.top.topics,
         flows: &resolved.flows,
         forms: &resolved.forms,
+        bindings: &resolved.bindings,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3197,6 +3207,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `@form(hashmap)` slot is laid out by its row's effective `sync`
     /// discipline, inference's included.
     pub(crate) forms: &'p hale_types::form_rows::FormRows,
+    /// The binding rows (the lowering view's, F.40 phase 3, P2): the
+    /// transport, role, codec and producer-versus-attach of each
+    /// `bindings { }` entry. Lowering reads an entry's decisions here
+    /// and derives none.
+    pub(crate) bindings: &'p hale_types::binding_rows::BindingRows,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
@@ -9021,82 +9036,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// path (which fails at codegen time for publisher-only
     /// programs).
     fn collect_shm_ring_subjects(&mut self) {
-        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
-            _ => None,
-        });
-        let Some(l) = main_locus else { return };
-        for m in &l.members {
-            if let LocusMember::Bindings(b) = m {
-                for entry in &b.entries {
-                    if let TransportSpec::ShmRing {
-                        name, slot_count, overflow, layout, ..
-                    } = &entry.transport
-                    {
-                        let subj = self.topic_wire(&entry.topic.name);
-                        // The topic's payload-type name, from its row
-                        // (the size_of lookup at codegen). For now a
-                        // single-segment TypeExpr only; post-v1 can
-                        // widen.
-                        let payload_name = self
-                            .topics
-                            .named(&entry.topic.name)
-                            .and_then(|row| single_segment_type_name(&row.payload))
-                            .unwrap_or_default();
-                        // Proposal B: resolve `layout: Name` to its
-                        // decl (validated upstream in hale-types) so
-                        // the subscriber register can build the
-                        // descriptor. None → native ring.
-                        let layout_decl = layout.as_ref().and_then(|lid| {
-                            hale_syntax::ast::flat_decls(&self.program.items)
-                                .find_map(|it| match it {
-                                TopDecl::RingLayout(r) if r.name.name == lid.name => {
-                                    Some(r.clone())
-                                }
-                                _ => None,
-                            })
-                        });
-                        self.shm_ring_subjects.insert(
-                            subj,
-                            ShmRingBindingInfo {
-                                payload_type_name: payload_name,
-                                slot_count: *slot_count,
-                                shm_name: name.clone(),
-                                overflow: *overflow,
-                                layout: layout_decl,
-                            },
-                        );
-                    }
-                }
+        // A root whose entry has no row is the prelude's error to name.
+        for (entry, row) in self.root_bindings().unwrap_or_default() {
+            if row.transport != Transport::ShmRing {
+                continue;
             }
-        }
-    }
-
-    /// Proposal B M3a (2026-06-06): does any locus in this bundle
-    /// `publish` the topic on the given wire subject? Drives whether a
-    /// `layout:`-bound binding creates the foreign ring (producer) in
-    /// the prelude or merely attaches it read-only at a subscriber's
-    /// birth. `desugar` has already rewritten `publish Foo;` to a
-    /// `BusSubject::Literal` carrying the topic's wire subject, so we
-    /// match that (and the pre-desugar `Topic` form defensively).
-    fn bundle_publishes_topic(&self, wire_subject: &str) -> bool {
-        use hale_syntax::ast::{BusMember, BusSubject, LocusMember};
-        hale_syntax::ast::flat_decls(&self.program.items).any(|item| {
-            let TopDecl::Locus(l) = item else { return false };
-            l.members.iter().any(|m| {
-                let LocusMember::Bus(bus) = m else { return false };
-                bus.members.iter().any(|bm| match bm {
-                    BusMember::Publish { subject: BusSubject::Literal { subject, .. }, .. } => {
-                        subject == wire_subject
+            let TransportSpec::ShmRing { name, slot_count, overflow, layout, .. } = &entry.transport else {
+                continue;
+            };
+            let subj = row.key().to_string();
+            // The topic's payload-type name, from its row
+            // (the size_of lookup at codegen). For now a
+            // single-segment TypeExpr only; post-v1 can
+            // widen.
+            let payload_name = self
+                .topics
+                .named(&entry.topic.name)
+                .and_then(|row| single_segment_type_name(&row.payload))
+                .unwrap_or_default();
+            // Proposal B: resolve `layout: Name` to its
+            // decl (validated upstream in hale-types) so
+            // the subscriber register can build the
+            // descriptor. None → native ring.
+            let layout_decl = layout.as_ref().and_then(|lid| {
+                hale_syntax::ast::flat_decls(&self.program.items)
+                    .find_map(|it| match it {
+                    TopDecl::RingLayout(r) if r.name.name == lid.name => {
+                        Some(r.clone())
                     }
-                    BusMember::Publish { subject: BusSubject::Topic(i), .. } => {
-                        i.name == wire_subject
-                    }
-                    _ => false,
+                    _ => None,
                 })
-            })
-        })
+            });
+            self.shm_ring_subjects.insert(
+                subj,
+                ShmRingBindingInfo {
+                    payload_type_name: payload_name,
+                    slot_count: *slot_count,
+                    shm_name: name.clone(),
+                    overflow: *overflow,
+                    layout: layout_decl,
+                },
+            );
+        }
     }
 
     /// Phase 3 (2026-05-25): walk top-level topic decls and
@@ -9424,298 +9405,284 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // birth must run inline on the boot path so realization
         // failure refuses the boot synchronously; their serve
         // thread is C-spawned by birth, not placement-spawned.)
-        for m in &l.members {
-            if let LocusMember::Bindings(bb) = m {
-                for entry in &bb.entries {
-                    if let TransportSpec::Adapter { locus, .. } =
-                        &entry.transport
-                    {
-                        self.deployment.pinned_locus_types.insert(locus.name.clone());
-                    }
-                }
+        // A root whose entry has no row is the prelude's error to name.
+        for (_, row) in self.root_bindings().unwrap_or_default() {
+            if let (Transport::Adapter, Some(locus)) = (row.transport, &row.adapter) {
+                self.deployment.pinned_locus_types.insert(locus.clone());
             }
         }
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
-        // Each binding entry resolves its topic ref through the topic
-        // rows. Topic-graph cycle / unknown-parent diagnostics already
-        // fired during typecheck; we just consume the resolved chain.
-
-        // Locate the (single) main locus, if any. Multiple-mains
-        // would have errored in typecheck; we defensively pick the
-        // first match here.
-        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
-            _ => None,
-        });
-        let Some(l) = main_locus else { return Ok(()) };
-        let bindings: Vec<BindingsBlock> = l
-            .members
-            .iter()
-            .filter_map(|m| match m {
-                LocusMember::Bindings(b) => Some(b.clone()),
-                _ => None,
-            })
-            .collect();
-        if bindings.is_empty() {
+        // Each binding entry is decided by its row (F.40 phase 3, P2):
+        // the transport kind, the role, the codec and whether the bundle
+        // produces the topic are the row's, and the entry's own text
+        // supplies the parameters of the transport (a path, a ring's
+        // name and slots, an adapter's and a codec's initializers).
+        // Topic-graph cycle / unknown-parent diagnostics already fired
+        // during typecheck; we just consume the resolved chain.
+        let entries = self.root_bindings()?;
+        if entries.is_empty() {
             return Ok(());
         }
 
         let i32_t = self.context.i32_type();
-        let mut any_connect_binding = false;
+        let mut connect_transport: Option<&'static str> = None;
 
-        for block in bindings {
-            for entry in block.entries {
-                // Resolve subject. Fall back to the topic name if no
-                // row declares it (defensive — typecheck would have
-                // flagged the missing topic already).
-                let subject = self.topic_wire(&entry.topic.name);
+        for (entry, row) in entries {
+            // Resolve subject: the row's canonical key, the topic name
+            // when no row declares it (defensive — typecheck would have
+            // flagged the missing topic already).
+            let subject = row.key().to_string();
 
-                // Emit per transport spec: unix entries become
-                // __StdBusUnix{Listen,Connect}Transport locus
-                // children (GH #233); adapter / shm_ring keep
-                // their dedicated paths.
-                match &entry.transport {
-                    TransportSpec::Unix { path, role, .. } => {
-                        // Role inference filled this in during desugar
-                        // (publish-only → connect, subscribe-only →
-                        // listen). Typecheck emitted a diag if the
-                        // binding was ambiguous or unused; in that
-                        // path role stays None and we fall through to
-                        // the error arm below.
-                        let listen = match role {
-                            Some(TransportRole::Listen) => true,
-                            Some(TransportRole::Connect) => false,
-                            None => {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "binding for topic `{}`: role could not be \
-                                     inferred (no publisher or subscriber declared \
-                                     in this bundle, or both); add `role:` kwarg \
-                                     to `unix(...)`",
-                                    entry.topic.name
-                                )));
-                            }
-                        };
-                        if !listen {
-                            any_connect_binding = true;
+            // Emit per transport spec: unix entries become
+            // __StdBusUnix{Listen,Connect}Transport locus
+            // children (GH #233); adapter / shm_ring keep
+            // their dedicated paths.
+            match (row.transport, &entry.transport) {
+                (Transport::Unix, TransportSpec::Unix { path, .. }) => {
+                    // The row's role: the entry's own, else the one the
+                    // topic's ends decide (publish-only → connect,
+                    // subscribe-only → listen). Typecheck emitted a diag
+                    // if the binding was ambiguous or unused; in that
+                    // path the role is None and we refuse here.
+                    let listen = match row.role {
+                        Some(TransportRole::Listen) => true,
+                        Some(TransportRole::Connect) => false,
+                        None => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "binding for topic `{}`: role could not be \
+                                 inferred (no publisher or subscriber declared \
+                                 in this bundle, or both); add `role:` kwarg \
+                                 to `unix(...)`",
+                                entry.topic.name
+                            )));
                         }
-                        self.emit_unix_transport_binding(
+                    };
+                    // The locus the entry instantiates as its transport,
+                    // named by the row; a connect entry's is the one
+                    // whose loss main's `on_failure` handles.
+                    let transport = row.loss_locus.ok_or_else(|| row_disagrees(&row.topic))?;
+                    if !listen {
+                        connect_transport = Some(transport);
+                    }
+                    self.emit_unix_transport_binding(
+                        transport,
+                        &subject,
+                        &entry.topic.name,
+                        path,
+                        listen,
+                        entry.topic.span,
+                    )?;
+                    // F.36 Slice 3a (2026-05-28): codec
+                    // attachment rides the unix binding.
+                    if row.codec.is_some() {
+                        let codec = entry.codec.as_ref().ok_or_else(|| row_disagrees(&row.topic))?;
+                        self.emit_codec_binding_register(
                             &subject,
                             &entry.topic.name,
-                            path,
-                            listen,
-                            entry.topic.span,
+                            &codec.locus,
+                            &codec.inits,
                         )?;
-                        // F.36 Slice 3a (2026-05-28): codec
-                        // attachment rides the unix binding.
-                        if let Some(codec) = &entry.codec {
-                            self.emit_codec_binding_register(
-                                &subject,
-                                &entry.topic.name,
-                                &codec.locus,
-                                &codec.inits,
-                            )?;
-                        }
-                        continue;
                     }
-                    TransportSpec::Adapter { locus, inits, .. } => {
-                        // GH #1040: a codec on an adapter binding.
-                        // The codec is built BEFORE the adapter: the
-                        // adapter is pinned, so its `run()` recv loop
-                        // starts at instantiation and may decode
-                        // through the thunk at once — the thunk's
-                        // codec_self global has to be stored first.
-                        // The runtime attach waits for the adapter's
-                        // remote entry to exist.
-                        let codec_self = match &entry.codec {
-                            Some(codec) => Some(self.emit_codec_binding_instance(
-                                &subject,
-                                &entry.topic.name,
-                                &codec.locus,
-                                &codec.inits,
-                            )?),
-                            None => None,
-                        };
-                        self.emit_adapter_binding_register(
+                }
+                (Transport::Adapter, TransportSpec::Adapter { locus, inits, .. }) => {
+                    // GH #1040: a codec on an adapter binding.
+                    // The codec is built BEFORE the adapter: the
+                    // adapter is pinned, so its `run()` recv loop
+                    // starts at instantiation and may decode
+                    // through the thunk at once — the thunk's
+                    // codec_self global has to be stored first.
+                    // The runtime attach waits for the adapter's
+                    // remote entry to exist.
+                    let codec_self = if row.codec.is_some() {
+                        let codec = entry.codec.as_ref().ok_or_else(|| row_disagrees(&row.topic))?;
+                        Some(self.emit_codec_binding_instance(
                             &subject,
                             &entry.topic.name,
-                            locus,
-                            inits,
+                            &codec.locus,
+                            &codec.inits,
+                        )?)
+                    } else {
+                        None
+                    };
+                    self.emit_adapter_binding_register(
+                        &subject,
+                        &entry.topic.name,
+                        locus,
+                        inits,
+                    )?;
+                    if let (Some(codec), Some(codec_self)) = (&entry.codec, codec_self) {
+                        self.emit_codec_runtime_attach(
+                            &subject,
+                            &entry.topic.name,
+                            &codec.locus,
+                            codec_self,
                         )?;
-                        if let (Some(codec), Some(codec_self)) =
-                            (&entry.codec, codec_self)
-                        {
-                            self.emit_codec_runtime_attach(
-                                &subject,
-                                &entry.topic.name,
-                                &codec.locus,
-                                codec_self,
-                            )?;
-                        }
-                        continue;
                     }
+                }
+                (
+                    Transport::ShmRing,
                     TransportSpec::ShmRing {
                         name, slot_count, overflow, layout, buffer_size, ..
-                    } => {
-                        // Proposal B M3a (2026-06-06): a foreign-layout
-                        // binding does NOT create the native LRSRNG1
-                        // ring. If this bundle PUBLISHES the topic, it
-                        // is the ring's producer and creates it here;
-                        // otherwise a subscriber attaches it read-only
-                        // at locus birth (PR3) and the prelude emits
-                        // nothing. (Without this branch the native
-                        // register below would stamp an LRSRNG1 header
-                        // onto a foreign ring name — wrong either way.)
-                        if let Some(lid) = layout {
-                            if self.bundle_publishes_topic(&subject) {
-                                let decl = hale_syntax::ast::flat_decls(
-                                    &self.program.items,
-                                )
-                                .find_map(
-                                    |it| match it {
-                                        TopDecl::RingLayout(r)
-                                            if r.name.name == lid.name =>
-                                        {
-                                            Some(r.clone())
-                                        }
-                                        _ => None,
-                                    },
-                                );
-                                if let Some(decl) = decl {
-                                    // Default capacity when the binding
-                                    // omits `buffer_size:` — 1 MiB data
-                                    // region. A consumer reads the
-                                    // actual size from the header.
-                                    const DEFAULT_CAP: u64 = 1 << 20;
-                                    let cap = buffer_size.unwrap_or(DEFAULT_CAP);
-                                    // The bound payload's fixed byte size,
-                                    // framed as each record's `len` (and
-                                    // checked == len on the consumer).
-                                    let value_size = self
-                                        .shm_ring_subjects
-                                        .get(&subject)
-                                        .map(|i| i.payload_type_name.clone())
-                                        .and_then(|n| self.user_types.get(&n))
-                                        .map(|pi| self.target_data.get_abi_size(&pi.struct_ty))
-                                        .unwrap_or(0);
-                                    self.emit_bus_register_shm_ring_layout_producer(
-                                        &subject, name, &decl, cap, value_size,
-                                    )?;
-                                }
+                    },
+                ) => {
+                    // Proposal B M3a (2026-06-06): a foreign-layout
+                    // binding does NOT create the native LRSRNG1
+                    // ring. If this bundle PUBLISHES the topic (the
+                    // row's producer), it is the ring's producer and
+                    // creates it here; otherwise a subscriber attaches
+                    // it read-only at locus birth (PR3) and the prelude
+                    // emits nothing. (Without this branch the native
+                    // register below would stamp an LRSRNG1 header
+                    // onto a foreign ring name — wrong either way.)
+                    if let Some(lid) = layout {
+                        if row.producer {
+                            let decl = hale_syntax::ast::flat_decls(
+                                &self.program.items,
+                            )
+                            .find_map(
+                                |it| match it {
+                                    TopDecl::RingLayout(r)
+                                        if r.name.name == lid.name =>
+                                    {
+                                        Some(r.clone())
+                                    }
+                                    _ => None,
+                                },
+                            );
+                            if let Some(decl) = decl {
+                                // Default capacity when the binding
+                                // omits `buffer_size:` — 1 MiB data
+                                // region. A consumer reads the
+                                // actual size from the header.
+                                const DEFAULT_CAP: u64 = 1 << 20;
+                                let cap = buffer_size.unwrap_or(DEFAULT_CAP);
+                                // The bound payload's fixed byte size,
+                                // framed as each record's `len` (and
+                                // checked == len on the consumer).
+                                let value_size = self
+                                    .shm_ring_subjects
+                                    .get(&subject)
+                                    .map(|i| i.payload_type_name.clone())
+                                    .and_then(|n| self.user_types.get(&n))
+                                    .map(|pi| self.target_data.get_abi_size(&pi.struct_ty))
+                                    .unwrap_or(0);
+                                self.emit_bus_register_shm_ring_layout_producer(
+                                    &subject, name, &decl, cap, value_size,
+                                )?;
                             }
-                            continue;
                         }
-                        // Form K4c (2026-05-20): emit the
-                        // shm_ring registration + record the
-                        // subject for lower_send's publish-side
-                        // routing branch.
-                        //
-                        // Look up the topic's payload type to
-                        // derive slot_size. v1 requires a
-                        // struct-typed payload (single-segment
-                        // TypeExpr::Path resolving in user_types).
-                        // Primitive-typed shm_ring payloads are
-                        // post-v1.
-                        let topic_decl = hale_syntax::ast::flat_decls(
-                            &self.program.items,
-                        )
-                        .find_map(|it| match it {
-                            TopDecl::Topic(t) if t.name.name == entry.topic.name => Some(t),
-                            _ => None,
-                        }).ok_or_else(|| CodegenError::Unsupported(format!(
-                            "binding for topic `{}`: topic decl not found in \
-                             this bundle (typecheck should have caught this)",
-                            entry.topic.name
-                        )))?;
-                        let payload_ty_name = match &topic_decl.payload {
-                            TypeExpr::Named { path, generic_args, .. }
-                                if path.segments.len() == 1
-                                    && generic_args.is_empty() =>
-                            {
-                                path.segments[0].name.clone()
-                            }
-                            other => {
-                                return Err(CodegenError::Unsupported(format!(
-                                    "shm_ring binding for topic `{}`: only \
-                                     single-segment struct payloads are \
-                                     supported in v1; got payload type {:?}",
-                                    entry.topic.name, other
-                                )));
-                            }
-                        };
-                        let payload_info = self
-                            .user_types
-                            .get(&payload_ty_name)
-                            .cloned()
-                            .ok_or_else(|| CodegenError::Unsupported(format!(
-                                "shm_ring binding for topic `{}`: payload type \
-                                 `{}` not a user-declared struct (primitives \
-                                 are post-v1)",
-                                entry.topic.name, payload_ty_name
-                            )))?;
-                        let slot_size = payload_info
-                            .struct_ty
-                            .size_of()
-                            .expect("flat struct has compile-time size");
-                        let slot_count_val =
-                            self.context.i64_type().const_int(*slot_count, false);
-                        let subj_ptr = self
-                            .builder
-                            .build_global_string_ptr(
-                                &subject,
-                                &format!(
-                                    "lotus.shm_ring.subject.{}",
-                                    entry.topic.name
-                                ),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .as_pointer_value();
-                        let name_ptr = self
-                            .builder
-                            .build_global_string_ptr(
-                                name,
-                                &format!(
-                                    "lotus.shm_ring.name.{}",
-                                    entry.topic.name
-                                ),
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .as_pointer_value();
-                        let register_shm_ring_fn = self
-                            .module
-                            .get_function("lotus_bus_register_shm_ring")
-                            .expect("lotus_bus_register_shm_ring declared");
-                        // Form K7: overflow policy passed as i32
-                        // discriminator. Block=0, Drop=1, Fail=2;
-                        // matches lotus_shm_overflow_policy_t in
-                        // the C runtime.
-                        let policy_val = i32_t.const_int(
-                            overflow.runtime_tag() as u64,
-                            true,
-                        );
-                        self.builder
-                            .build_call(
-                                register_shm_ring_fn,
-                                &[
-                                    subj_ptr.into(),
-                                    slot_size.into(),
-                                    slot_count_val.into(),
-                                    name_ptr.into(),
-                                    policy_val.into(),
-                                ],
-                                "lotus.shm_ring.register",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        // `collect_shm_ring_subjects` already
-                        // populated `shm_ring_subjects` in the
-                        // pre-pass; lower_send + the subscriber-
-                        // registration codegen consult it from
-                        // there.
                         continue;
                     }
-                };
+                    // Form K4c (2026-05-20): emit the
+                    // shm_ring registration + record the
+                    // subject for lower_send's publish-side
+                    // routing branch.
+                    //
+                    // Look up the topic's payload type to
+                    // derive slot_size. v1 requires a
+                    // struct-typed payload (single-segment
+                    // TypeExpr::Path resolving in user_types).
+                    // Primitive-typed shm_ring payloads are
+                    // post-v1.
+                    let topic_decl = hale_syntax::ast::flat_decls(
+                        &self.program.items,
+                    )
+                    .find_map(|it| match it {
+                        TopDecl::Topic(t) if t.name.name == entry.topic.name => Some(t),
+                        _ => None,
+                    }).ok_or_else(|| CodegenError::Unsupported(format!(
+                        "binding for topic `{}`: topic decl not found in \
+                         this bundle (typecheck should have caught this)",
+                        entry.topic.name
+                    )))?;
+                    let payload_ty_name = match &topic_decl.payload {
+                        TypeExpr::Named { path, generic_args, .. }
+                            if path.segments.len() == 1
+                                && generic_args.is_empty() =>
+                        {
+                            path.segments[0].name.clone()
+                        }
+                        other => {
+                            return Err(CodegenError::Unsupported(format!(
+                                "shm_ring binding for topic `{}`: only \
+                                 single-segment struct payloads are \
+                                 supported in v1; got payload type {:?}",
+                                entry.topic.name, other
+                            )));
+                        }
+                    };
+                    let payload_info = self
+                        .user_types
+                        .get(&payload_ty_name)
+                        .cloned()
+                        .ok_or_else(|| CodegenError::Unsupported(format!(
+                            "shm_ring binding for topic `{}`: payload type \
+                             `{}` not a user-declared struct (primitives \
+                             are post-v1)",
+                            entry.topic.name, payload_ty_name
+                        )))?;
+                    let slot_size = payload_info
+                        .struct_ty
+                        .size_of()
+                        .expect("flat struct has compile-time size");
+                    let slot_count_val =
+                        self.context.i64_type().const_int(*slot_count, false);
+                    let subj_ptr = self
+                        .builder
+                        .build_global_string_ptr(
+                            &subject,
+                            &format!(
+                                "lotus.shm_ring.subject.{}",
+                                entry.topic.name
+                            ),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .as_pointer_value();
+                    let name_ptr = self
+                        .builder
+                        .build_global_string_ptr(
+                            name,
+                            &format!(
+                                "lotus.shm_ring.name.{}",
+                                entry.topic.name
+                            ),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .as_pointer_value();
+                    let register_shm_ring_fn = self
+                        .module
+                        .get_function("lotus_bus_register_shm_ring")
+                        .expect("lotus_bus_register_shm_ring declared");
+                    // Form K7: overflow policy passed as i32
+                    // discriminator. Block=0, Drop=1, Fail=2;
+                    // matches lotus_shm_overflow_policy_t in
+                    // the C runtime.
+                    let policy_val = i32_t.const_int(
+                        overflow.runtime_tag() as u64,
+                        true,
+                    );
+                    self.builder
+                        .build_call(
+                            register_shm_ring_fn,
+                            &[
+                                subj_ptr.into(),
+                                slot_size.into(),
+                                slot_count_val.into(),
+                                name_ptr.into(),
+                                policy_val.into(),
+                            ],
+                            "lotus.shm_ring.register",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // `collect_shm_ring_subjects` already
+                    // populated `shm_ring_subjects` in the
+                    // pre-pass; lower_send + the subscriber-
+                    // registration codegen consult it from
+                    // there.
+                }
+                _ => return Err(row_disagrees(&row.topic)),
             }
         }
         // GH #233 steps 3-4: when connect bindings exist and the
@@ -9723,19 +9690,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the loss dispatcher. Without the handler, the C drain
         // falls straight through to the structural exit — no
         // dispatcher needed. The handler is main's routing row for
-        // the connect transport's locus type (picked by that name).
-        if any_connect_binding {
+        // the locus the connect entry's row names as its transport.
+        if let Some(transport) = connect_transport {
             let main_handler = self
                 .deployment.main_locus_name
                 .as_ref()
-                .and_then(|n| {
-                    self.failure_handler_for(n, "__StdBusUnixConnectTransport")
-                });
+                .and_then(|n| self.failure_handler_for(n, transport));
             if let Some(handler) = main_handler {
-                self.emit_transport_loss_dispatch(handler)?;
+                self.emit_transport_loss_dispatch(handler, transport)?;
             }
         }
         Ok(())
+    }
+
+    /// The lowering root's `bindings { }` entries, each with the row
+    /// that decides it (F.40 phase 3, P2): the root is the first `main
+    /// locus` over the flat declarations that is not a library's, as
+    /// `collect_main_placement` takes it. An entry the view holds no row
+    /// for is a missing required row, an error, not a guess.
+    fn root_bindings(
+        &self,
+    ) -> Result<Vec<(&'p hale_syntax::ast::BindingEntry, &'p hale_types::binding_rows::BindingRow)>, CodegenError>
+    {
+        let program: &'p Program = self.program;
+        let rows = self.bindings;
+        let root = hale_syntax::ast::flat_decls(&program.items).find_map(|item| match item {
+            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
+            _ => None,
+        });
+        let Some(l) = root else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for m in &l.members {
+            let LocusMember::Bindings(b) = m else { continue };
+            for entry in &b.entries {
+                let row = rows.for_entry(entry).ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "binding for topic `{}`: the lowering view holds no binding row for this entry",
+                        entry.topic.name
+                    ))
+                })?;
+                out.push((entry, row));
+            }
+        }
+        Ok(out)
     }
 
     /// GH #233: emit a `bindings { T: unix(...) }` entry as a
@@ -9751,17 +9748,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the #227 register-call shape this replaces.
     fn emit_unix_transport_binding(
         &mut self,
+        locus_name: &str,
         subject: &str,
         topic_name: &str,
         path: &str,
         listen: bool,
         span: hale_syntax::Span,
     ) -> Result<(), CodegenError> {
-        let locus_name = if listen {
-            "__StdBusUnixListenTransport"
-        } else {
-            "__StdBusUnixConnectTransport"
-        };
         let url = format!("unix://{}", path);
         let str_init = |name: &str, value: &str| StructInit {
             name: Ident::new(name, span),
@@ -9915,13 +9908,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_transport_loss_dispatch(
         &mut self,
         main_handler: inkwell::values::FunctionValue<'ctx>,
+        transport: &str,
     ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let void_t = self.context.void_type();
         let info = self
             .user_loci
-            .get("__StdBusUnixConnectTransport")
+            .get(transport)
             .cloned()
             .expect("connect transport locus declared");
 
@@ -9999,7 +9993,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let locus_str = self
             .builder
             .build_global_string_ptr(
-                "__StdBusUnixConnectTransport",
+                transport,
                 "loss.viol.locus",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -10568,36 +10562,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn synthesize_codec_thunks_for_main_bindings(
         &mut self,
     ) -> Result<(), CodegenError> {
-        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
-            .find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
-            _ => None,
-        });
-        let Some(l) = main_locus else { return Ok(()) };
-
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let saved_block = self.builder.get_insert_block();
 
         // Collect (topic_name, subject, locus_ident, payload_type)
-        // up front so we don't iterate `l.members` while borrowing
-        // `self` for the synthesis call.
+        // up front so we don't hold the rows while borrowing `self`
+        // for the synthesis call. Which entries carry a codec is the
+        // row's.
         let mut to_synth: Vec<(String, String, Ident, String)> = Vec::new();
-        for m in &l.members {
-            if let LocusMember::Bindings(bb) = m {
-                for entry in &bb.entries {
-                    let Some(codec) = &entry.codec else { continue };
-                    let topic_name = entry.topic.name.clone();
-                    let subject = self.topic_wire(&topic_name);
-                    let payload_type = self
-                        .lookup_topic_payload_type_name(&topic_name)?;
-                    to_synth.push((
-                        topic_name,
-                        subject,
-                        codec.locus.clone(),
-                        payload_type,
-                    ));
-                }
+        for (entry, row) in self.root_bindings()? {
+            if row.codec.is_none() {
+                continue;
             }
+            let codec = entry.codec.as_ref().ok_or_else(|| row_disagrees(&row.topic))?;
+            let topic_name = row.topic.clone();
+            let subject = row.key().to_string();
+            let payload_type = self.lookup_topic_payload_type_name(&topic_name)?;
+            to_synth.push((topic_name, subject, codec.locus.clone(), payload_type));
         }
 
         for (topic_name, subject, locus_ident, payload_type) in to_synth {

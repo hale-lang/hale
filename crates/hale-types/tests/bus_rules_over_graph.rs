@@ -31,7 +31,7 @@ fn graph(src: &str) -> BusGraph {
     programs.insert(String::new(), &prog);
     let bundle = Bundle::new(programs);
     let (top, _) = build_top_scope(&bundle);
-    build_bus_graph(&bundle, &top)
+    build_bus_graph(&bundle, &top, &hale_types::binding_rows::derive_binding_rows(&bundle, &top))
 }
 
 fn orphans(msgs: &[String]) -> Vec<&String> {
@@ -503,7 +503,8 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let entry = hale_types::entry::entry_row(&bundle);
     let placement = hale_types::placement::derive_placement(&bundle, &top, &entry);
     let forms = hale_types::form_rows::form_rows(&bundle, &top, &placement, true);
-    let bus = build_bus_graph(&bundle, &top);
+    let bindings = hale_types::binding_rows::derive_binding_rows(&bundle, &top);
+    let bus = build_bus_graph(&bundle, &top, &bindings);
     let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog).intra_locus;
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
     let inputs = CheckInputs {
@@ -511,6 +512,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         handlers: &handlers,
         effects: &effects,
         entry: &entry,
+        bindings: &bindings,
         alloc_summary: &alloc_summary,
         forms: &forms,
         bus: &bus,

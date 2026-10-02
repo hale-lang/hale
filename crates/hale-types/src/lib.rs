@@ -23,6 +23,7 @@
 
 pub mod alloc_routing;
 pub mod alloc_summary;
+pub mod binding_rows;
 pub mod borrow_lifetime;
 pub mod bare_fallible;
 pub mod budget_check;
@@ -340,7 +341,8 @@ fn check_numbered_bundle(
     let entry = entry::entry_row(bundle);
     let placement = placement::derive_placement(bundle, &top, &entry);
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let bus = bundle_bus_graph(bundle, &top);
+    let bindings = binding_rows::derive_binding_rows(bundle, &top);
+    let bus = bundle_bus_graph(bundle, &top, &bindings);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -348,6 +350,7 @@ fn check_numbered_bundle(
             handlers: &handlers,
             effects: &effects,
             entry: &entry,
+            bindings: &bindings,
             alloc_summary: &alloc_summary,
             forms: &forms,
             bus: &bus,
@@ -376,8 +379,15 @@ fn check_numbered_bundle(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model =
-            model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms, &bus);
+        let model = model_over_scope(
+            bundle,
+            &top,
+            &handlers,
+            alloc_summary.clone(),
+            &forms,
+            &bus,
+            &bindings,
+        );
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
@@ -408,16 +418,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let placement = placement::derive_placement(bundle, &top, &entry::entry_row(bundle));
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
-    let bus = bundle_bus_graph(bundle, &top);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus)
+    let bindings = binding_rows::derive_binding_rows(bundle, &top);
+    let bus = bundle_bus_graph(bundle, &top, &bindings);
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings)
 }
 
 /// The bus graph of a bundle no snapshot holds, over its scope: what
 /// the test entries' check and model read ([`check_bundle_opts_scoped`],
 /// [`check::check_bundle`], [`derive_application_model`]). Every verb
 /// reads its snapshot's (`Snapshot::demand_bus_graph`).
-pub(crate) fn bundle_bus_graph(bundle: &Bundle<'_>, top: &resolve::TopScope) -> bus_graph::BusGraph {
-    bus_graph::build_bus_graph(bundle, top)
+pub(crate) fn bundle_bus_graph(
+    bundle: &Bundle<'_>,
+    top: &resolve::TopScope,
+    bindings: &binding_rows::BindingRows,
+) -> bus_graph::BusGraph {
+    bus_graph::build_bus_graph(bundle, top, bindings)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds
@@ -446,6 +461,7 @@ fn model_over_scope(
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
     forms: &form_rows::FormRows,
     bus_graph: &bus_graph::BusGraph,
+    bindings: &binding_rows::BindingRows,
 ) -> hale_model::ApplicationModel {
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
@@ -458,6 +474,7 @@ fn model_over_scope(
             handlers,
             effects: &effects,
             forms,
+            bindings,
         },
     )
 }

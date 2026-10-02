@@ -199,6 +199,9 @@ pub struct ModelInputs<'a> {
     /// The form rows (F.40 phase 3, C1): which forms carry a `sync`
     /// discipline, inference's included, for each locus's `sync_form`.
     pub forms: &'a crate::form_rows::FormRows,
+    /// The binding rows (F.40 phase 3, P2): main's entries with the
+    /// role the ends decide, for the binding thread domains.
+    pub bindings: &'a crate::binding_rows::BindingRows,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -2947,7 +2950,7 @@ pub fn derive_application_model_over(
             TransportKind,
         };
         use hale_syntax::ast::{
-            LocusMember, PlacementSpec, TopDecl, TransportSpec,
+            LocusMember, PlacementSpec, TopDecl,
         };
         // Locus decls by RAW name, with their members, across the
         // whole bundle (modules included — a module locus can be
@@ -3165,45 +3168,19 @@ pub fn derive_application_model_over(
         }
         let mut binding_entries: Vec<BindingEntry> = Vec::new();
         if let Some((main_name, _)) = &main_decl {
-            if let Some(decl) = decls_by_name.get(main_name.as_str())
-            {
-                for m in &decl.members {
-                    if let LocusMember::Bindings(bb) = m {
-                        for e2 in &bb.entries {
-                            let adapter = !matches!(
-                                e2.transport,
-                                TransportSpec::Unix { .. }
-                            );
-                            // The AUTHORED role, resolved through
-                            // the ONE rule the desugar uses (this
-                            // bundle is not desugared, so the field
-                            // is still `None` on every inferred
-                            // binding — reading it raw would model
-                            // a publish-only `connect` binding as
-                            // whatever the builder defaulted to).
-                            let unix_role = match &e2.transport {
-                                TransportSpec::Unix {
-                                    role, ..
-                                } => hale_syntax::desugar::binding_role_for(
-                                    &all_items,
-                                    &e2.topic.name,
-                                    *role,
-                                ),
-                                _ => None,
-                            };
-                            binding_entries.push(BindingEntry {
-                                topic: e2.topic.name.clone(),
-                                span: e2.span,
-                                unix_role,
-                                adapter,
-                            });
-                            domain_names.insert(format!(
-                                "binding:{}",
-                                e2.topic.name
-                            ));
-                        }
-                    }
-                }
+            // The binding rows of main's `bindings { }` block, in the
+            // order the entries are declared. The role is the row's: the
+            // one rule the checker and lowering read (this bundle is not
+            // desugared, so the AST field is still `None` on every
+            // inferred binding).
+            for row in inputs.bindings.rows.iter().filter(|r| &r.locus == main_name) {
+                binding_entries.push(BindingEntry {
+                    topic: row.topic.clone(),
+                    span: row.span,
+                    unix_role: row.role,
+                    adapter: row.transport != crate::capability::Transport::Unix,
+                });
+                domain_names.insert(format!("binding:{}", row.topic));
             }
         }
         let domain_id: BTreeMap<&String, ThreadDomainId> =

@@ -227,6 +227,7 @@ const HANDLER_ROUTING: &str = "crates/hale-types/src/handler_routing.rs";
 const EFFECTS: &str = "crates/hale-types/src/effects.rs";
 const EFFECT_ROWS: &str = "crates/hale-types/src/effect_rows.rs";
 const ENTRY: &str = "crates/hale-types/src/entry.rs";
+const BINDING_ROWS: &str = "crates/hale-types/src/binding_rows.rs";
 const LIFECYCLE: &str = "crates/hale-types/src/lifecycle.rs";
 const LIFECYCLE_TRACE: &str = "crates/hale-types/src/lifecycle/trace.rs";
 const PLACEMENT: &str = "crates/hale-types/src/placement.rs";
@@ -256,6 +257,7 @@ const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
 const TY_TARGET: &str = "crates/hale-types/src/target.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
+const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
@@ -596,8 +598,8 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "is_main_entry", "the deferred entry teardown compares the entry's locus name with `main_locus_name` to decide whether it joins the pools (#1208)", "same"),
             legacy(CG, "emit_bindings_prelude", "the connect-transport loss handler is looked up in the locus named by `main_locus_name`", "same"),
             legacy(CG, "in_main", "whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it", "same"),
-            legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read from the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
-            legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
+            legacy(CG, "collect_shm_ring_subjects", "the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again", "same"),
+            legacy(CG, "synthesize_codec_thunks_for_main_bindings", "the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again", "same"),
             legacy(CG, "let has_socket_binding", "whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen", "same"),
             // The checker's own readers of `main` that E0 did not switch.
             legacy(CHECK, "check_placement_entry_consumed", "rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error)", "reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4"),
@@ -753,7 +755,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Topic declarations", "spec/semantics.md § Phase 3: routing keys"],
         owned: &[site(TOPIC_ID, "TopicRows::of"), site(TOPIC_ID, "by_wire")],
         seams: &[
-            Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (BUS_GRAPH, 1), (TY_RESOLVED, 1)] },
+            Seam { symbol: "topic_wire_subjects(", allowed: &[(TOPIC_ID, 2), (TY_RESOLVED, 1)] },
             Seam { symbol: "TopicRows::of(", allowed: &[(TOPIC_ID, 1), (RESOLVE, 1)] },
             Seam { symbol: "by_wire(", allowed: &[(TOPIC_ID, 6), (CHECK, 2)] },
         ],
@@ -761,25 +763,38 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "bindings",
         layer: Layer::Locus,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
         answers: "Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload.",
         inputs: &["bindings blocks", "topics", "transport specs", "purity (codecs)"],
-        producer: Some(site(CHECK, "check_main_and_bindings")),
-        legacy: &[
-            legacy(CHECK, "bound_topics", "the set of transport-bound topics, one of four copies (two more in the checker, one in bus_graph), disagreeing on imported mains", "one row"),
-            legacy(CHECK, "collect_topic_pub_sub", "infers the binding role without calling the desugar's `binding_role_for`, which model_builder uses", "one role rule"),
-            legacy(DESUGAR, "binding_role_for", "THE binding-role rule, by its own comment, applied at desugar and again by the model builder", "one role row"),
-            legacy(CG, "emit_bindings_prelude", "codegen decides transport, adapter, codec and producer-vs-attach at emission, and refuses a role still `None`", "codegen reads the binding rows"),
-            legacy(CHECK, "transport_satisfies", "the transport capability table", "a capability row in the matrix"),
+        producer: Some(site(BINDING_ROWS, "derive_binding_rows")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set)", CHECK, "check_main_and_bindings"),
+            consumer_at("check (a binding's `where` constraints are held to its transport's guarantee: the capability module's table, read through the row's transport kind)", CAPABILITY_TRANSPORT, "guarantee"),
+            consumer_at("the transport's cell on the effective target: `RemoteTransport(kind)` × the target row's backend, read through the snapshot (verdict-neutral: the adapter's wasm refusal is a late link refusal today, a known-open cell)", SNAPSHOT, "binding_cell"),
+            consumer_at("model (main's binding thread domains: the role and the transport kind)", MODEL_BUILDER, "ModelInputs"),
+            consumer_at("bus graph (the bound-topic set, at both grains, is the rows' projection)", BUS_GRAPH, "collect_bus_walk"),
+            consumer_at("codegen (the prelude, the shm-ring subjects, the codec thunks and the pinned adapter loci read each entry's transport kind, role, codec and producer-versus-attach from its row, through the lowering view; the entry's own text supplies the transport's parameters; a missing row is an error)", CG, "root_bindings"),
+            consumer("api_surface"),
         ],
-        consumers: &[consumer("check"), consumer("model (binds)"), consumer("codegen"), consumer("api_surface")],
-        invariants: &["F.36 and F.37: binding failure is structural; codec purity is a law over rows"],
+        invariants: &[
+            "the transport-loss handler is named by the row: a `unix` entry's row carries the stdlib locus its transport instantiates (`loss_locus`, by role), lowering instantiates that locus, and a connect entry's is the locus whose failure the main locus's `on_failure` handles, so the handler is main's routing row for the locus the bindings row names, not one picked by a spelled name",
+            "lowering holds the rows (`LoweringView::bindings`, the snapshot's) and finds an entry's by the id the mint kept (`BindingRows::for_entry`); it decides no transport, role, codec or producer-versus-attach itself, and an entry with no row is a `CodegenError`, not a guess",
+            "F.36 and F.37: binding failure is structural; codec purity is a law over rows",
+            "one row per snapshot (`Snapshot::demand_bindings`, the `bindings` count): one row per `bindings { }` entry of every locus of the bundle, an imported main's and a module-nested one's included, each with the entry's site, the topic and its wire key, the transport kind, the role, the codec, whether the bundle produces the topic and the stdlib locus a transport's loss surfaces through; the checker builds none (`CheckInputs::bindings`), and a bundle no snapshot holds builds it once",
+            "the role is decided once, over the topic's ends read by wire subject (`desugar::role_from_ends` over the row's `publishes` and `subscribes`): the entry's own role wins, otherwise publish-only is `Connect` and subscribe-only is `Listen`, and a `unix` entry with neither is the checker's diagnostic. The checker, the model and lowering read it; the desugar's in-place fill applies the same pure rule over the topic names before the topic rewrite erases them, and agrees with it over the corpus",
+            "what a transport carries is data beside the matrix, not a branch in the checker: the transport kind's guarantee for each `where` constraint (`capability::transport::GUARANTEES`, three rows of four cells, the former `transport_satisfies` cell for cell, its words verbatim), which does not vary by target; and whether a target realizes the transport at all is the matrix's own `RemoteTransport(kind)` row, asked through the snapshot's target row (`Snapshot::binding_cell`)",
+            "the bound-topic set is the rows' projection (`bound_names`, `bound_subjects`): the `or wait` legality check, the api gates and the bus graph's eligibility gate read it, and none walks `bindings { }` itself. An imported main's entries are in the set, as they were in each of the walks it replaces",
+        ],
         missing: Missing::Error,
         tests: &["crates/hale-cli/tests/binding_imported_main.rs", "crates/hale-codegen/tests/bindings_codec_clause.rs"],
         spec: &["spec/decisions.md F.36, F.37", "spec/semantics.md § Operational constraints (Form K)"],
         owned: &[],
-        seams: &[Seam { symbol: "binding_role_for(", allowed: &[(DESUGAR, 1), (MODEL_BUILDER, 1)] }],
+        seams: &[
+            Seam { symbol: "derive_binding_rows(", allowed: &[(BINDING_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2)] },
+            Seam { symbol: "role_from_ends(", allowed: &[(DESUGAR, 2), (BINDING_ROWS, 1)] },
+        ],
     },
     Family {
         name: "dispatch",
@@ -815,7 +830,6 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CG_CHANNELS, "failure_handler_for", "looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows)", "the handler fn is a column of the row"),
             legacy(CG_CHANNELS, "resolve_failure_route", "the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's", "phase 3, when the instance is a row of an instance tree: the snapshot has no instance-tree family, so the parent instance is still the lowering context's (at the phase-2 close)"),
-            legacy(CG, "__StdBusUnixConnectTransport", "the transport-loss handler is picked by name through the routing table", "the bindings family names the transport's locus"),
             legacy(MODEL_BUILDER, "fn_rows", "the model's function rows key a failure handler by a signature string built from its params' written types", "phase 3, keyed by the row's SiteId, with handler routing by identity: the routing rows carry SiteId columns no model reader joins on yet (the phase-2 exit's #1199 re-measurement), and round 3's findings 16 (a monomorph's rows found by linear scan) and 17 (a generic supervisor's unsubstituted row) land with that join"),
             legacy(MODEL_BUILDER, "SupervisedRef::External", "a child the routing rows resolve as external is recorded by its written name", "phase 3, keyed by the row's SiteId, with the same join as `fn_rows` (still by written name at the phase-2 close)"),
             legacy(CG_INST, "settles_failures", "whether the parent has any handler, read from the lowering's handler table at the params-settle bracket", "phase 3, a query over the routing rows: lowering still reads its own `LocusInfo::failure_handlers`, and joins the rows to LLVM functions by the two positional ordinal joins the #1199 re-measurement found unchanged (at the phase-2 close)"),
@@ -1224,7 +1238,7 @@ pub const FAMILIES: &[Family] = &[
         seams: &[
             Seam { symbol: "wasm_unavailable_stdlib(", allowed: &[(CHECK, 2)] },
             // the definition and the document rendering, and the laws
-            Seam { symbol: "derive_capability_matrix(", allowed: &[(CAPABILITY, 2), ("crates/hale-types/src/capability/laws.rs", 12)] },
+            Seam { symbol: "derive_capability_matrix(", allowed: &[(CAPABILITY, 2), (CAPABILITY_TRANSPORT, 1), ("crates/hale-types/src/capability/laws.rs", 12)] },
             Seam { symbol: "target_row(", allowed: &[(CAPABILITY, 1), (SNAPSHOT, 1)] },
         ],
     },

@@ -488,6 +488,10 @@ pub struct CheckInputs<'a> {
     /// exists.
     pub effects: &'a dyn Fn() -> Option<&'a crate::effect_rows::EffectRows>,
     pub entry: &'a crate::entry::EntryRow,
+    /// The binding rows (F.40 phase 3, P2): one per `bindings { }`
+    /// entry, with the role, the ends and the bound-topic set the
+    /// binding rules read.
+    pub bindings: &'a crate::binding_rows::BindingRows,
     /// The allocation summary the effects certificate engine walks: the
     /// `alloc_summary` family's, the one the effect rows read.
     pub alloc_summary: &'a crate::alloc_summary::AllocSummary,
@@ -542,13 +546,15 @@ fn check_numbered_bundle(
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
-    let bus = crate::bundle_bus_graph(bundle, top);
+    let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
+    let bus = crate::bundle_bus_graph(bundle, top, &bindings);
     let intra_locus = crate::bundle_intra_locus(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
         effects: &effects,
         entry: &entry,
+        bindings: &bindings,
         alloc_summary: &alloc_summary,
         forms: &forms,
         bus: &bus,
@@ -617,21 +623,7 @@ pub fn check_bundle_reporting(
     // no transport", so a legal `or wait` is REFUSED. A correct
     // program with its `bindings { }` block one brace deeper did not
     // compile.
-    let mut bound_topics: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                for member in &l.members {
-                    if let LocusMember::Bindings(bb) = member {
-                        for e in &bb.entries {
-                            bound_topics.insert(e.topic.name.clone());
-                        }
-                    }
-                }
-            }
-        });
-    }
+    let bound_topics = inputs.bindings.bound_names();
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
     // consumer of a library whose seed is not in the bundle.
@@ -691,7 +683,7 @@ pub fn check_bundle_reporting(
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
-    check_main_and_bindings(bundle, top, inputs.effects, inputs.entry, &mut diags);
+    check_main_and_bindings(bundle, top, inputs.effects, inputs.entry, inputs.bindings, &mut diags);
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
@@ -5081,6 +5073,7 @@ fn render_impurity(
 }
 
 fn check_binding_constraints(
+    row: &crate::binding_rows::BindingRow,
     entry: &BindingEntry,
     top: &TopScope,
     diags: &mut Vec<Diag>,
@@ -5147,7 +5140,7 @@ fn check_binding_constraints(
 
     // (2) transport-constraint compatibility.
     for c in &entry.constraints {
-        if let Some(msg) = transport_satisfies(&entry.transport, c.kind) {
+        if let Some(msg) = crate::capability::transport::guarantee(row.transport, c.kind).refusal() {
             diags.push(Diag::ty(
                 c.span,
                 format!("binding for topic `{}`: {}", entry.topic.name, msg),
@@ -5187,66 +5180,6 @@ fn check_binding_constraints(
                 ));
             }
         }
-    }
-}
-
-/// Returns `Some(reason)` if `transport` cannot satisfy
-/// `constraint`. Returns `None` when the transport satisfies it
-/// (or when the satisfaction can't be determined and trust
-/// defaults to "OK" — adapter loci for scope constraints).
-fn transport_satisfies(
-    transport: &TransportSpec,
-    constraint: BindingConstraint,
-) -> Option<String> {
-    use BindingConstraint::*;
-    match (transport, constraint) {
-        // unix: intra-machine substrate, kernel-memcpy at the
-        // socket boundary.
-        (TransportSpec::Unix { .. }, IntraProcess) => Some(
-            "`unix` transport crosses OS process boundaries; cannot \
-             satisfy `intra_process`"
-                .into(),
-        ),
-        (TransportSpec::Unix { .. }, IntraMachine) => None,
-        (TransportSpec::Unix { .. }, CrossMachine) => Some(
-            "`unix` transport is host-local (AF_UNIX); cannot satisfy \
-             `cross_machine`"
-                .into(),
-        ),
-        (TransportSpec::Unix { .. }, ZeroCopy) => Some(
-            "`unix` transport memcpys at the kernel boundary; cannot \
-             satisfy `zero_copy`"
-                .into(),
-        ),
-
-        // Adapter: user-supplied. Trust for scope constraints
-        // (the adapter body knows where it routes). Reject
-        // zero_copy — the Adapter contract (`fn send(subject: \
-        // String, bytes: Bytes)`) requires serialization.
-        (TransportSpec::Adapter { .. }, ZeroCopy) => Some(
-            "`Adapter` transports cannot satisfy `zero_copy` — the \
-             Adapter contract (`fn send(subject, bytes)`) requires \
-             serialization to Bytes"
-                .into(),
-        ),
-        (TransportSpec::Adapter { .. }, _) => None,
-
-        // shm_ring: POSIX SHM ring substrate. Cross-process by
-        // design (different procs mmap the same fd); host-local
-        // (POSIX SHM doesn't traverse the network); satisfies
-        // zero_copy intrinsically.
-        (TransportSpec::ShmRing { .. }, IntraProcess) => Some(
-            "`shm_ring` is cross-process by design (POSIX SHM); \
-             cannot satisfy `intra_process`"
-                .into(),
-        ),
-        (TransportSpec::ShmRing { .. }, IntraMachine) => None,
-        (TransportSpec::ShmRing { .. }, CrossMachine) => Some(
-            "`shm_ring` is host-local (POSIX SHM); cannot satisfy \
-             `cross_machine`"
-                .into(),
-        ),
-        (TransportSpec::ShmRing { .. }, ZeroCopy) => None,
     }
 }
 
@@ -5571,6 +5504,7 @@ fn check_main_and_bindings<'e>(
     top: &TopScope,
     effects: &dyn Fn() -> Option<&'e crate::effect_rows::EffectRows>,
     entry: &crate::entry::EntryRow,
+    bindings: &crate::binding_rows::BindingRows,
     diags: &mut Vec<Diag>,
 ) {
     // Rule 1 counts the entry row's witness (F.40 phase 3, E0): the
@@ -5582,14 +5516,6 @@ fn check_main_and_bindings<'e>(
     let mains: Vec<(&str, Span)> = entry.own().map(|m| (m.name.as_str(), m.span)).collect();
     let mut bound: BTreeMap<String, Span> = BTreeMap::new();
 
-    // For role inference: gather, per wire-subject, whether ANY
-    // locus in the bundle publishes / subscribes to it. Bindings
-    // reference a topic by name, and ask by its row's wire subject.
-    let (topic_publishes, topic_subscribes) = collect_topic_pub_sub(bundle, &top.topics);
-    let wire_of = |name: &str| {
-        top.topics.named(name).map_or_else(|| name.to_string(), |t| t.wire.clone())
-    };
-
     // F.36 Slice 2 (2026-05-28): binding-site codec checks assert the
     // codec's encode/decode methods are pure, reading the purity
     // column of the effect rows (`effects`, demanded by the first
@@ -5598,291 +5524,273 @@ fn check_main_and_bindings<'e>(
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
 
     // GH #825: a `bindings { }` block inside a `module { … }` is an
-    // ordinary bundle member. (`collect_topic_pub_sub`, which feeds
-    // role inference, already recursed — it grew its own
-    // `TopDecl::Module` arm.)
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            if let TopDecl::Locus(l) = item {
-                // An imported main's bindings are inert (GH #1104 piece 5):
-                // they bind nothing here and count toward nothing — not
-                // "already bound", not a role to infer.
-                if l.imported {
-                    return;
+    // ordinary bundle member: the rows cover every entry the bundle
+    // declares. An imported main's bindings are inert (GH #1104
+    // piece 5): they bind nothing here and count toward nothing — not
+    // "already bound", not a role to infer.
+    for row in bindings.rows.iter().filter(|r| !r.imported) {
+        let Some(entry) = row.entry(bundle) else { continue };
+        // Topic existence
+        match top.lookup(&entry.topic.name) {
+            Some(TopSymbol::Topic(_)) => {}
+            _ => {
+                diags.push(Diag::ty(
+                    entry.topic.span,
+                    format!(
+                        "binding references unknown topic `{}`",
+                        entry.topic.name
+                    ),
+                ));
+            }
+        }
+        // Duplicate topic across all bindings
+        if let Some(prev) = bound.get(&entry.topic.name) {
+            diags.push(
+                Diag::ty(
+                    entry.topic.span,
+                    format!(
+                        "topic `{}` already bound",
+                        entry.topic.name
+                    ),
+                )
+                .with_related(*prev, "previous binding"),
+            );
+        } else {
+            bound.insert(entry.topic.name.clone(), entry.topic.span);
+        }
+
+        // Role inference validation. Substrate
+        // Unix bindings need a role (inferred or
+        // explicit); Adapter bindings carry
+        // direction inside the adapter locus's
+        // own params and are opaque here. The row
+        // holds the role the ends decide.
+        if row.transport == crate::capability::Transport::Unix {
+            if row.role.is_none() {
+                let (pubs, subs) = (row.publishes, row.subscribes);
+                if pubs && subs {
+                    diags.push(Diag::ty(
+                        entry.topic.span,
+                        format!(
+                            "binding for topic `{}` is ambiguous: \
+                             some locus publishes it AND some locus \
+                             subscribes to it; specify `role:` \
+                             (e.g. `unix(\"/path\", role: listen)`)",
+                            entry.topic.name
+                        ),
+                    ));
+                } else if !pubs && !subs {
+                    diags.push(Diag::ty(
+                        entry.topic.span,
+                        format!(
+                            "binding for topic `{}` has no publisher \
+                             or subscriber in the bundle; nothing to \
+                             route. Add a `bus {{ publish | subscribe }}` \
+                             or remove the binding",
+                            entry.topic.name
+                        ),
+                    ));
                 }
-                for member in &l.members {
-                    if let LocusMember::Bindings(bb) = member {
-                        for entry in &bb.entries {
-                            // Topic existence
-                            match top.lookup(&entry.topic.name) {
-                                Some(TopSymbol::Topic(_)) => {}
-                                _ => {
-                                    diags.push(Diag::ty(
-                                        entry.topic.span,
-                                        format!(
-                                            "binding references unknown topic `{}`",
-                                            entry.topic.name
-                                        ),
-                                    ));
+                // Otherwise (exactly one of pubs/subs):
+                // role is inferable; desugar fills it in.
+            }
+        }
+
+        // Wave B: adapter binding checks. Verify
+        // the named symbol is a locus and that it
+        // structurally satisfies `__StdBusAdapter`
+        // (i.e. exposes `fn send(subject: String,
+        // bytes: Bytes)`). Field-init shape is
+        // codegen's job once the locus is
+        // resolved.
+        if let TransportSpec::Adapter { locus, .. } =
+            &entry.transport
+        {
+            match top.lookup(&locus.name) {
+                Some(TopSymbol::Locus(_)) => {
+                    if let Err(msg) = check_satisfies_bus_adapter(
+                        top, &locus.name,
+                    ) {
+                        diags.push(Diag::ty(
+                            locus.span,
+                            format!(
+                                "adapter binding for topic `{}`: {}",
+                                entry.topic.name, msg
+                            ),
+                        ));
+                    }
+                }
+                Some(_) => {
+                    diags.push(Diag::ty(
+                        locus.span,
+                        format!(
+                            "adapter binding for topic `{}`: \
+                             `{}` is not a locus — adapter \
+                             transport spec must name a locus \
+                             that satisfies `__StdBusAdapter`",
+                            entry.topic.name, locus.name
+                        ),
+                    ));
+                }
+                None => {
+                    diags.push(Diag::ty(
+                        locus.span,
+                        format!(
+                            "adapter binding for topic `{}`: \
+                             unknown locus `{}`",
+                            entry.topic.name, locus.name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // shm-ring-interop Proposal B: a
+        // `shm_ring(..., layout: Name)` binding's
+        // layout reference must resolve to a
+        // declared `ring_layout`. Absent layout =
+        // the native shape (back-compat).
+        if let TransportSpec::ShmRing {
+            layout: Some(lid), buffer_size, ..
+        } = &entry.transport
+        {
+            match top.lookup(&lid.name) {
+                Some(TopSymbol::RingLayout(rl)) => {
+                    // The producer's compile-time
+                    // `buffer_size:` must be a multiple
+                    // of the layout's record `align`,
+                    // else a record header near the wrap
+                    // lands in (cap-len_prefix, cap) →
+                    // OOB. (The consumer enforces the
+                    // same at attach for the foreign
+                    // header's capacity.)
+                    if let Some(bs) = buffer_size {
+                        use hale_syntax::ast::RingAttrValue;
+                        let align = rl
+                            .decl
+                            .framing
+                            .as_ref()
+                            .and_then(|f| f.attrs.iter().find_map(|a| {
+                                match (a.key.name.as_str(), &a.value) {
+                                    ("align", RingAttrValue::Int(n)) => Some(*n),
+                                    _ => None,
                                 }
-                            }
-                            // Duplicate topic across all bindings
-                            if let Some(prev) = bound.get(&entry.topic.name) {
-                                diags.push(
-                                    Diag::ty(
-                                        entry.topic.span,
-                                        format!(
-                                            "topic `{}` already bound",
-                                            entry.topic.name
-                                        ),
-                                    )
-                                    .with_related(*prev, "previous binding"),
-                                );
-                            } else {
-                                bound.insert(entry.topic.name.clone(), entry.topic.span);
-                            }
-
-                            // Role inference validation. Substrate
-                            // Unix bindings need a role (inferred or
-                            // explicit); Adapter bindings carry
-                            // direction inside the adapter locus's
-                            // own params and are opaque here.
-                            if let TransportSpec::Unix { role, .. } =
-                                &entry.transport
-                            {
-                                if role.is_none() {
-                                    let wire = wire_of(&entry.topic.name);
-                                    let pubs = topic_publishes.contains(&wire);
-                                    let subs = topic_subscribes.contains(&wire);
-                                    if pubs && subs {
-                                        diags.push(Diag::ty(
-                                            entry.topic.span,
-                                            format!(
-                                                "binding for topic `{}` is ambiguous: \
-                                                 some locus publishes it AND some locus \
-                                                 subscribes to it; specify `role:` \
-                                                 (e.g. `unix(\"/path\", role: listen)`)",
-                                                entry.topic.name
-                                            ),
-                                        ));
-                                    } else if !pubs && !subs {
-                                        diags.push(Diag::ty(
-                                            entry.topic.span,
-                                            format!(
-                                                "binding for topic `{}` has no publisher \
-                                                 or subscriber in the bundle; nothing to \
-                                                 route. Add a `bus {{ publish | subscribe }}` \
-                                                 or remove the binding",
-                                                entry.topic.name
-                                            ),
-                                        ));
-                                    }
-                                    // Otherwise (exactly one of pubs/subs):
-                                    // role is inferable; desugar fills it in.
-                                }
-                            }
-
-                            // Wave B: adapter binding checks. Verify
-                            // the named symbol is a locus and that it
-                            // structurally satisfies `__StdBusAdapter`
-                            // (i.e. exposes `fn send(subject: String,
-                            // bytes: Bytes)`). Field-init shape is
-                            // codegen's job once the locus is
-                            // resolved.
-                            if let TransportSpec::Adapter { locus, .. } =
-                                &entry.transport
-                            {
-                                match top.lookup(&locus.name) {
-                                    Some(TopSymbol::Locus(_)) => {
-                                        if let Err(msg) = check_satisfies_bus_adapter(
-                                            top, &locus.name,
-                                        ) {
-                                            diags.push(Diag::ty(
-                                                locus.span,
-                                                format!(
-                                                    "adapter binding for topic `{}`: {}",
-                                                    entry.topic.name, msg
-                                                ),
-                                            ));
-                                        }
-                                    }
-                                    Some(_) => {
-                                        diags.push(Diag::ty(
-                                            locus.span,
-                                            format!(
-                                                "adapter binding for topic `{}`: \
-                                                 `{}` is not a locus — adapter \
-                                                 transport spec must name a locus \
-                                                 that satisfies `__StdBusAdapter`",
-                                                entry.topic.name, locus.name
-                                            ),
-                                        ));
-                                    }
-                                    None => {
-                                        diags.push(Diag::ty(
-                                            locus.span,
-                                            format!(
-                                                "adapter binding for topic `{}`: \
-                                                 unknown locus `{}`",
-                                                entry.topic.name, locus.name
-                                            ),
-                                        ));
-                                    }
-                                }
-                            }
-
-                            // shm-ring-interop Proposal B: a
-                            // `shm_ring(..., layout: Name)` binding's
-                            // layout reference must resolve to a
-                            // declared `ring_layout`. Absent layout =
-                            // the native shape (back-compat).
-                            if let TransportSpec::ShmRing {
-                                layout: Some(lid), buffer_size, ..
-                            } = &entry.transport
-                            {
-                                match top.lookup(&lid.name) {
-                                    Some(TopSymbol::RingLayout(rl)) => {
-                                        // The producer's compile-time
-                                        // `buffer_size:` must be a multiple
-                                        // of the layout's record `align`,
-                                        // else a record header near the wrap
-                                        // lands in (cap-len_prefix, cap) →
-                                        // OOB. (The consumer enforces the
-                                        // same at attach for the foreign
-                                        // header's capacity.)
-                                        if let Some(bs) = buffer_size {
-                                            use hale_syntax::ast::RingAttrValue;
-                                            let align = rl
-                                                .decl
-                                                .framing
-                                                .as_ref()
-                                                .and_then(|f| f.attrs.iter().find_map(|a| {
-                                                    match (a.key.name.as_str(), &a.value) {
-                                                        ("align", RingAttrValue::Int(n)) => Some(*n),
-                                                        _ => None,
-                                                    }
-                                                }))
-                                                .unwrap_or(1);
-                                            if align > 1 && (*bs as i64) % align != 0 {
-                                                diags.push(Diag::ty(
-                                                    entry.span,
-                                                    format!(
-                                                        "shm_ring binding for topic `{}`: \
-                                                         `buffer_size: {}` must be a \
-                                                         multiple of the `{}` layout's \
-                                                         record `align` ({}) — otherwise a \
-                                                         record header can straddle the \
-                                                         wrap boundary",
-                                                        entry.topic.name, bs, lid.name, align
-                                                    ),
-                                                ));
-                                            }
-                                        }
-                                        // Conformance (2026-06-06): a
-                                        // layout-bound topic is read by
-                                        // direct pointer-cast and written
-                                        // by memcpy of the payload struct
-                                        // (the bindgen-style contract — the
-                                        // foreign format is fixed, so the
-                                        // Hale struct must *be* the record
-                                        // bytes). That's only sound if the
-                                        // payload is flat-shapeable, and it
-                                        // holds whether or not the binding
-                                        // also asserts `where zero_copy`.
-                                        if let Some(TopSymbol::Topic(topic)) =
-                                            top.lookup(&entry.topic.name)
-                                        {
-                                            // A `BytesView` payload selects the raw-frame
-                                            // mode: the consumer hands the handler a
-                                            // bounded view over each record (decoded with
-                                            // `std::bytes::read_*` + a discriminator), for
-                                            // heterogeneous / variable-length rings. Any
-                                            // other payload takes the typed-flat path,
-                                            // which is read by direct cast and so must be
-                                            // flat-shapeable.
-                                            let is_raw_view = matches!(
-                                                &topic.payload,
-                                                Ty::Prim(hale_syntax::ast::PrimType::BytesView)
-                                            );
-                                            if !is_raw_view
-                                                && !is_flat_shapeable(&topic.payload, top)
-                                            {
-                                                diags.push(Diag::ty(
-                                                    entry.span,
-                                                    format!(
-                                                        "shm_ring binding for topic \
-                                                         `{}` with `layout: {}` requires \
-                                                         a flat-shapeable payload (read by \
-                                                         direct cast) or a `BytesView` \
-                                                         payload (raw-frame mode), but \
-                                                         `{}` is neither — it contains \
-                                                         String, Bytes, or other \
-                                                         variable-size fields",
-                                                        entry.topic.name,
-                                                        lid.name,
-                                                        topic.payload.display()
-                                                    ),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    Some(_) => diags.push(Diag::ty(
-                                        lid.span,
-                                        format!(
-                                            "shm_ring binding for topic `{}`: \
-                                             `layout: {}` is not a `ring_layout` \
-                                             declaration",
-                                            entry.topic.name, lid.name
-                                        ),
-                                    )),
-                                    None => diags.push(Diag::ty(
-                                        lid.span,
-                                        format!(
-                                            "shm_ring binding for topic `{}`: \
-                                             unknown ring_layout `{}`",
-                                            entry.topic.name, lid.name
-                                        ),
-                                    )),
-                                }
-                            }
-
-                            // Form K4a (2026-05-20): operational-
-                            // constraint validity. The `where ...`
-                            // clause asserts properties of the
-                            // route; the typechecker validates
-                            // intra-constraint consistency,
-                            // transport compatibility, and
-                            // payload-shape compatibility.
-                            check_binding_constraints(
-                                entry, top, diags,
-                            );
-
-                            // F.36 Slice 2 (2026-05-28): pluggable
-                            // codec validity. When the binding
-                            // entry carries a `codec(L { ... })`
-                            // clause, verify L has the encode /
-                            // decode methods with the right
-                            // signatures (against the topic's
-                            // payload type) AND that both methods
-                            // are pure per Slice 1's inference.
-                            check_binding_codec(entry, top, effects, diags);
-
-                            // Form K6b (2026-05-20): shm_ring
-                            // Hale-side subscribers are wired
-                            // (reader thread + handler dispatch
-                            // in lotus_bus_register_subscriber_shm_ring).
-                            // No typecheck rejection needed; the
-                            // codegen handles both publish-only
-                            // and subscribe-bearing programs.
-                            let _ = &topic_subscribes;
+                            }))
+                            .unwrap_or(1);
+                        if align > 1 && (*bs as i64) % align != 0 {
+                            diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "shm_ring binding for topic `{}`: \
+                                     `buffer_size: {}` must be a \
+                                     multiple of the `{}` layout's \
+                                     record `align` ({}) — otherwise a \
+                                     record header can straddle the \
+                                     wrap boundary",
+                                    entry.topic.name, bs, lid.name, align
+                                ),
+                            ));
+                        }
+                    }
+                    // Conformance (2026-06-06): a
+                    // layout-bound topic is read by
+                    // direct pointer-cast and written
+                    // by memcpy of the payload struct
+                    // (the bindgen-style contract — the
+                    // foreign format is fixed, so the
+                    // Hale struct must *be* the record
+                    // bytes). That's only sound if the
+                    // payload is flat-shapeable, and it
+                    // holds whether or not the binding
+                    // also asserts `where zero_copy`.
+                    if let Some(TopSymbol::Topic(topic)) =
+                        top.lookup(&entry.topic.name)
+                    {
+                        // A `BytesView` payload selects the raw-frame
+                        // mode: the consumer hands the handler a
+                        // bounded view over each record (decoded with
+                        // `std::bytes::read_*` + a discriminator), for
+                        // heterogeneous / variable-length rings. Any
+                        // other payload takes the typed-flat path,
+                        // which is read by direct cast and so must be
+                        // flat-shapeable.
+                        let is_raw_view = matches!(
+                            &topic.payload,
+                            Ty::Prim(hale_syntax::ast::PrimType::BytesView)
+                        );
+                        if !is_raw_view
+                            && !is_flat_shapeable(&topic.payload, top)
+                        {
+                            diags.push(Diag::ty(
+                                entry.span,
+                                format!(
+                                    "shm_ring binding for topic \
+                                     `{}` with `layout: {}` requires \
+                                     a flat-shapeable payload (read by \
+                                     direct cast) or a `BytesView` \
+                                     payload (raw-frame mode), but \
+                                     `{}` is neither — it contains \
+                                     String, Bytes, or other \
+                                     variable-size fields",
+                                    entry.topic.name,
+                                    lid.name,
+                                    topic.payload.display()
+                                ),
+                            ));
                         }
                     }
                 }
+                Some(_) => diags.push(Diag::ty(
+                    lid.span,
+                    format!(
+                        "shm_ring binding for topic `{}`: \
+                         `layout: {}` is not a `ring_layout` \
+                         declaration",
+                        entry.topic.name, lid.name
+                    ),
+                )),
+                None => diags.push(Diag::ty(
+                    lid.span,
+                    format!(
+                        "shm_ring binding for topic `{}`: \
+                         unknown ring_layout `{}`",
+                        entry.topic.name, lid.name
+                    ),
+                )),
             }
-        });
-    }
+        }
+
+        // Form K4a (2026-05-20): operational-
+        // constraint validity. The `where ...`
+        // clause asserts properties of the
+        // route; the typechecker validates
+        // intra-constraint consistency,
+        // transport compatibility, and
+        // payload-shape compatibility.
+        check_binding_constraints(
+            row, entry, top, diags,
+        );
+
+        // F.36 Slice 2 (2026-05-28): pluggable
+        // codec validity. When the binding
+        // entry carries a `codec(L { ... })`
+        // clause, verify L has the encode /
+        // decode methods with the right
+        // signatures (against the topic's
+        // payload type) AND that both methods
+        // are pure per Slice 1's inference.
+        check_binding_codec(entry, top, effects, diags);
+
+        // Form K6b (2026-05-20): shm_ring
+        // Hale-side subscribers are wired
+        // (reader thread + handler dispatch
+        // in lotus_bus_register_subscriber_shm_ring).
+        // No typecheck rejection needed; the
+        // codegen handles both publish-only
+        // and subscribe-bearing programs.
+                        }
     check_api_binding(&programs_vec, diags);
-    check_api_roles(&programs_vec, &top.topics, diags);
+    check_api_roles(&programs_vec, &top.topics, bindings, diags);
     check_duplicate_members(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -6088,6 +5996,7 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
 fn check_api_roles(
     programs: &[&Program],
     topics: &crate::topic_identity::TopicRows,
+    bindings: &crate::binding_rows::BindingRows,
     diags: &mut Vec<Diag>,
 ) {
     use hale_syntax::ast::{ApiRoles, BusSubject, ContractDirection, ContractKind, Expr, Ident, PrimType};
@@ -6160,7 +6069,7 @@ fn check_api_roles(
     // Topics bound to a transport in `bindings { }` have no gate; the
     // api entry's own source, and the main locus's params (a source
     // may be `self.<param>`).
-    let mut bound: BTreeSet<String> = BTreeSet::new();
+    let bound: BTreeSet<String> = bindings.bound_names();
     let mut api_roles: Option<ApiRoles> = None;
     let mut api_span: Option<Span> = None;
     let mut main_params: Vec<(String, TypeExpr)> = Vec::new();
@@ -6169,9 +6078,6 @@ fn check_api_roles(
             if let TopDecl::Locus(l) = item {
                 for m in &l.members {
                     if let LocusMember::Bindings(bb) = m {
-                        for e in &bb.entries {
-                            bound.insert(e.topic.name.clone());
-                        }
                         if let Some(api) = &bb.api {
                             api_span = Some(api.span);
                             if let Some(r) = &api.roles {
@@ -6487,47 +6393,6 @@ fn check_api_roles(
             .with_related(entry, "the api entry that names it"),
         );
     }
-}
-
-/// Walk the bundle and collect, by wire subject (spec/model.md rule
-/// 8), the topics that have at least one publisher and the topics
-/// that have at least one subscriber across all loci. Used by
-/// role-inference validation in `check_main_and_bindings`, which asks
-/// by a binding's topic row. Only topic references count: the
-/// desugar's role rule (`binding_role_for`) reads those, and the check
-/// must not call a role inferable that the desugar cannot infer.
-fn collect_topic_pub_sub(
-    bundle: &Bundle<'_>,
-    topics: &crate::topic_identity::TopicRows,
-) -> (
-    std::collections::BTreeSet<String>,
-    std::collections::BTreeSet<String>,
-) {
-    let mut pubs = std::collections::BTreeSet::new();
-    let mut subs = std::collections::BTreeSet::new();
-    let key = |id: &Ident| {
-        topics.named(&id.name).map_or_else(|| id.name.clone(), |t| t.wire.clone())
-    };
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let TopDecl::Locus(l) = item else { return };
-            for member in &l.members {
-                let LocusMember::Bus(bb) = member else { continue };
-                for bm in &bb.members {
-                    match bm {
-                        BusMember::Publish { subject: BusSubject::Topic(id), .. } => {
-                            pubs.insert(key(id));
-                        }
-                        BusMember::Subscribe { subject: BusSubject::Topic(id), .. } => {
-                            subs.insert(key(id));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        });
-    }
-    (pubs, subs)
 }
 
 // === Bus-graph property checks (GH #18 #4) =========================

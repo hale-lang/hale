@@ -209,36 +209,17 @@ fn desugar_binding_roles(program: &mut Program) {
     fill_roles_in_items(&mut program.items, &pubs, &subs);
 }
 
-/// THE binding-role rule, for callers that must agree with the
-/// desugar without mutating a program.
+/// THE binding-role rule, over the two ends of a topic: publish-only is
+/// `Connect`, subscribe-only is `Listen`, and `None` means "not
+/// inferable" (typecheck has already diagnosed it; codegen refuses to
+/// lower it). An explicit role wins before the rule is asked.
 ///
-/// The canonical model (GH #476 Change 8) derives its binding rows
-/// from the AUTHORED bundle — the desugar has not run there, so
-/// `role` is still `None` on every inferred binding. Reading the
-/// syntax field directly would model a publish-only `unix(...)`
-/// binding as whatever the model happened to default to, which is
-/// the second-authority failure this epic exists to remove. Both
-/// callers go through here instead: explicit role wins, otherwise
-/// publish-only is `Connect` and subscribe-only is `Listen`, and
-/// `None` means "not inferable" (typecheck has already diagnosed
-/// it; codegen refuses to lower it).
-pub fn binding_role_for(
-    items: &[TopDecl],
-    topic: &str,
-    explicit: Option<TransportRole>,
-) -> Option<TransportRole> {
-    if explicit.is_some() {
-        return explicit;
-    }
-    role_from_ends(
-        collect_topic_publishers(items).contains(topic),
-        collect_topic_subscribers(items).contains(topic),
-    )
-}
-
-/// The rule itself, over the two ends. One body, two callers (the
-/// desugar's in-place fill and `binding_role_for`).
-fn role_from_ends(p: bool, s: bool) -> Option<TransportRole> {
+/// The rule is applied by the `bindings` family's producer
+/// (`hale_types::binding_rows`, whose row the checker, the model and
+/// lowering read) and by this module's in-place fill, which runs
+/// before the topic rewrite erases the references the ends are read
+/// from.
+pub fn role_from_ends(p: bool, s: bool) -> Option<TransportRole> {
     match (p, s) {
         // Ambiguous (both) and unused (neither) are typecheck
         // diagnostics, not defaults.

@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::Span;
 
+use crate::binding_rows::BindingRows;
 use crate::resolve::TopScope;
 use crate::symbol::{Bundle, TopSymbol};
 use crate::topic_identity::TopicRows;
@@ -99,12 +100,28 @@ pub(crate) struct BusWalk {
 /// collecting the publisher/subscriber ends AND the per-site detail,
 /// each site's subject resolved through the topic rows. The one walk
 /// [`build_bus_graph`] reads — do not duplicate it.
-pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWalk {
+pub(crate) fn collect_bus_walk(
+    bundle: &Bundle<'_>,
+    topics: &TopicRows,
+    bindings: &BindingRows,
+) -> BusWalk {
+    // The bound set is the binding rows' projection, at both grains the
+    // graph is keyed at (the entry's topic name and its wire subject);
+    // and the canonical subject each entry binds, for the wire rows: the
+    // topic's row, when one answers.
+    let bound_wires = bindings
+        .rows
+        .iter()
+        .filter_map(|r| match Subject::of_topic(&r.topic, topics) {
+            Subject::Wire(wire) => Some(wire),
+            Subject::Unresolved(_) => None,
+        })
+        .collect();
     let mut w = BusWalk {
         publishers: BusEnd::default(),
         subscribers: BusEnd::default(),
-        bound: BTreeSet::new(),
-        bound_wires: BTreeSet::new(),
+        bound: bindings.bound_subjects(),
+        bound_wires,
         cross_seed: BTreeSet::new(),
         pub_sites: Vec::new(),
         sub_sites: Vec::new(),
@@ -112,23 +129,7 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWa
         edges: Vec::new(),
     };
 
-    // Wire subjects for every topic decl in the bundle, so a
-    // `bindings { }` entry can be recorded at both grains.
-    let all_items: Vec<TopDecl> = bundle
-        .programs
-        .values()
-        .flat_map(|p| p.items.iter().cloned())
-        .collect();
-    let wire_subjects =
-        crate::topic_identity::topic_wire_subjects(&all_items);
-
-    fn walk(
-        items: &[TopDecl],
-        w: &mut BusWalk,
-        wire_subjects: &BTreeMap<String, String>,
-        topics: &TopicRows,
-        at: &mut LocusDeclRow,
-    ) {
+    fn walk(items: &[TopDecl], w: &mut BusWalk, topics: &TopicRows, at: &mut LocusDeclRow) {
         for (i, item) in items.iter().enumerate() {
             at.path.push(i);
             match item {
@@ -191,54 +192,13 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWa
                                     }
                                 }
                             }
-                            LocusMember::Bindings(bbk) => {
-                                for entry in &bbk.entries {
-                                    // BOTH spellings of the bound
-                                    // topic: the decl name and the
-                                    // wire subject. A `bindings { }`
-                                    // entry names the topic DECL
-                                    // (`Beat`), but by the time
-                                    // codegen builds this graph the
-                                    // topic references have been
-                                    // desugared to their wire
-                                    // subject (`demo.beat`) — so
-                                    // keying on the decl name alone
-                                    // let a transport-bound subject
-                                    // slip past the eligibility gate
-                                    // there and get devirtualized to
-                                    // a static bucket, cutting the
-                                    // adapter out of its own
-                                    // deliveries. Recording both
-                                    // makes the gate hit whichever
-                                    // grain the graph is keyed at.
-                                    // (GH #476 Change 8 found this:
-                                    // model plan vs codegen plan
-                                    // disagreed on exactly one
-                                    // corpus program.)
-                                    w.bound.insert(entry.topic.name.clone());
-                                    if let Some(wire) =
-                                        wire_subjects.get(&entry.topic.name)
-                                    {
-                                        w.bound.insert(wire.clone());
-                                    }
-                                    // The canonical subject the entry
-                                    // binds, for the wire rows: the
-                                    // topic's row, when one answers.
-                                    if let Subject::Wire(wire) = Subject::of_topic(
-                                        &entry.topic.name,
-                                        topics,
-                                    ) {
-                                        w.bound_wires.insert(wire);
-                                    }
-                                }
-                            }
                             _ => {}
                         }
                     }
                 }
                 TopDecl::Module(md) => {
                     at.modules.push(md.name.name.clone());
-                    walk(&md.items, w, wire_subjects, topics, at);
+                    walk(&md.items, w, topics, at);
                     at.modules.pop();
                 }
                 _ => {}
@@ -248,7 +208,7 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>, topics: &TopicRows) -> BusWa
     }
     for (name, program) in &bundle.programs {
         let mut at = LocusDeclRow { program: name.clone(), ..LocusDeclRow::default() };
-        walk(&program.items, &mut w, &wire_subjects, topics, &mut at);
+        walk(&program.items, &mut w, topics, &mut at);
     }
     w
 }
@@ -804,9 +764,10 @@ impl BusGraph {
 ///
 /// Reads the one walk, [`collect_bus_walk`]: joins per-site detail
 /// (locus, handler, payload, placement), applies the eligibility gate,
-/// and builds the canonical subjects the checker's bus rules read.
-pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
-    let walk = collect_bus_walk(bundle, &top.topics);
+/// and builds the canonical subjects the checker's bus rules read. The
+/// bound-topic set is the binding rows' projection.
+pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope, bindings: &BindingRows) -> BusGraph {
+    let walk = collect_bus_walk(bundle, &top.topics, bindings);
     let (wires, holes) = wire_rows(&walk, &top.topics);
 
     // Closed-world gate input (DEVIRT-ONLY notion): a complete,

@@ -23,9 +23,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `ownership` | Layer 3 | Migrating | derivation | `resolve_owners` | 6 | Who owns each locus-producing expression and each instance: the tower, with its two relations `accepts_ancestor` and `owner_of_site`; and, per binding site, whether its value is handed back, moved by `=`, or a frame-local array. |
 | `bus_graph` | Layer 3 | Migrating | derivation | `build_bus_graph` | 2 | The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates. |
 | `topics` | Layer 3 | Canonical | derivation | `topic_wire_subjects` | 0 | What each topic is on the wire: its subject, payload contract, routing key, bounds and shed policy; and which topic a send's subject names. |
-| `bindings` | Layer 3 | Migrating | derivation | `check_main_and_bindings` | 5 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
+| `bindings` | Layer 3 | Canonical | derivation | `derive_binding_rows` | 0 | Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload. |
 | `dispatch` | Layer 3 | Migrating | derivation | `fn derive` | 2 | How each bus subject dispatches: dynamic, static bucket or static direct, given its gates and the arrangement. |
-| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 6 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
+| `handler_routing` | Layer 3 | Migrating | derivation | `handler_rows` | 5 | Which `on_failure` handler a failing child's locus type reaches, and from which parent. |
 | `flows` | Layer 3 | Canonical | derivation | `survey` | 0 | Which children are flows (released per completion) and which are resident. |
 | `restart` | Layer 3 | Migrating | derivation | `handler_rows` | 2 | Which loci declare restart operations, which restart in place, and what the restart bound is. |
 | `closures` | Layer 3 | Migrating | law | `check_locus_member` | 1 | Whether each closure clause is well formed, and which lifecycle events (`epoch`, `persists_through`, `resets_on`) it names. |
@@ -398,8 +398,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `is_main_entry` — the deferred entry teardown compares the entry's locus name with `main_locus_name` to decide whether it joins the pools (#1208). *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `emit_bindings_prelude` — the connect-transport loss handler is looked up in the locus named by `main_locus_name`. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `in_main` — whether lowering is inside `fn main` is a flag set while main's body is emitted (and cleared around a generic fn lowered from inside it); the frame flush's main-exit wait-abort and `return`-from-main's teardown key on it. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring subjects are read from the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again. *Removed when:* same.
-- `crates/hale-codegen/src/codegen.rs` · `synthesize_codec_thunks_for_main_bindings` — the binding codec thunks are synthesized for the first `is_main && !__lib_` over the flat declarations, the same choice made again. *Removed when:* same.
+- `crates/hale-codegen/src/codegen.rs` · `collect_shm_ring_subjects` — the shm-ring subjects are read through `root_bindings`, which takes the first `is_main && !__lib_` over the flat declarations, `collect_main_placement`'s choice made again. *Removed when:* same.
+- `crates/hale-codegen/src/codegen.rs` · `synthesize_codec_thunks_for_main_bindings` — the binding codec thunks are synthesized for the entries `root_bindings` reads, the first `is_main && !__lib_` over the flat declarations, the same choice made again. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `let has_socket_binding` — whether the program has a socket binding (so the cooperative queue is locked) asks the TOP-LEVEL `is_main && !__lib_` declarations only, where `collect_main_placement` walks the flat declarations: a module-nested root's bindings are not seen. *Removed when:* same.
 - `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` — rule 18's scope is the LAST `is_main && !__lib_` over every declaration, module-nested ones included (lowering takes the first; the two differ only under rule 1's error). *Removed when:* reads `lowering_root`, since the rule guards what lowering emits; reads the entry with L4.
 - `crates/hale-types/src/check.rs` · `check_instance_aliasing` — instance aliasing relates the placed fields of the LAST `is_main` declaration's static params tower, with no filter (an imported `main` included). *Removed when:* same.
@@ -557,31 +557,29 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/bus_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `topic_wire_subjects(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 - `TopicRows::of(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×1, `crates/hale-types/src/resolve.rs` ×1
 - `by_wire(` may be referenced from: `crates/hale-types/src/topic_identity.rs` ×6, `crates/hale-types/src/check.rs` ×2
 
-### `bindings` — Migrating · derivation
+### `bindings` — Canonical · derivation
 
 **Answers.** Which topics are bound to which transport, in which role, with which codec, and whether the transport can carry the payload.
 
 **Inputs.** bindings blocks; topics; transport specs; purity (codecs)
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_main_and_bindings`
+**Producer.** `crates/hale-types/src/binding_rows.rs` · `derive_binding_rows`
 
-**Legacy producers (permitted until removal).**
-
-- `crates/hale-types/src/check.rs` · `bound_topics` — the set of transport-bound topics, one of four copies (two more in the checker, one in bus_graph), disagreeing on imported mains. *Removed when:* one row.
-- `crates/hale-types/src/check.rs` · `collect_topic_pub_sub` — infers the binding role without calling the desugar's `binding_role_for`, which model_builder uses. *Removed when:* one role rule.
-- `crates/hale-syntax/src/desugar.rs` · `binding_role_for` — THE binding-role rule, by its own comment, applied at desugar and again by the model builder. *Removed when:* one role row.
-- `crates/hale-codegen/src/codegen.rs` · `emit_bindings_prelude` — codegen decides transport, adapter, codec and producer-vs-attach at emission, and refuses a role still `None`. *Removed when:* codegen reads the binding rows.
-- `crates/hale-types/src/check.rs` · `transport_satisfies` — the transport capability table. *Removed when:* a capability row in the matrix.
-
-**Consumers.** check; model (binds); codegen; api_surface
+**Consumers.** check (the binding rules walk the rows: topic, duplicate, role, adapter, ring layout, constraints, codec; the `or wait` legality check and the api gates read the bound-topic set) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (a binding's `where` constraints are held to its transport's guarantee: the capability module's table, read through the row's transport kind) (`crates/hale-types/src/capability/transport.rs` · `guarantee`); the transport's cell on the effective target: `RemoteTransport(kind)` × the target row's backend, read through the snapshot (verdict-neutral: the adapter's wasm refusal is a late link refusal today, a known-open cell) (`crates/hale-frontend/src/snapshot.rs` · `binding_cell`); model (main's binding thread domains: the role and the transport kind) (`crates/hale-types/src/model_builder.rs` · `ModelInputs`); bus graph (the bound-topic set, at both grains, is the rows' projection) (`crates/hale-types/src/bus_graph.rs` · `collect_bus_walk`); codegen (the prelude, the shm-ring subjects, the codec thunks and the pinned adapter loci read each entry's transport kind, role, codec and producer-versus-attach from its row, through the lowering view; the entry's own text supplies the transport's parameters; a missing row is an error) (`crates/hale-codegen/src/codegen.rs` · `root_bindings`); api_surface
 
 **Invariants.**
 
+- the transport-loss handler is named by the row: a `unix` entry's row carries the stdlib locus its transport instantiates (`loss_locus`, by role), lowering instantiates that locus, and a connect entry's is the locus whose failure the main locus's `on_failure` handles, so the handler is main's routing row for the locus the bindings row names, not one picked by a spelled name
+- lowering holds the rows (`LoweringView::bindings`, the snapshot's) and finds an entry's by the id the mint kept (`BindingRows::for_entry`); it decides no transport, role, codec or producer-versus-attach itself, and an entry with no row is a `CodegenError`, not a guess
 - F.36 and F.37: binding failure is structural; codec purity is a law over rows
+- one row per snapshot (`Snapshot::demand_bindings`, the `bindings` count): one row per `bindings { }` entry of every locus of the bundle, an imported main's and a module-nested one's included, each with the entry's site, the topic and its wire key, the transport kind, the role, the codec, whether the bundle produces the topic and the stdlib locus a transport's loss surfaces through; the checker builds none (`CheckInputs::bindings`), and a bundle no snapshot holds builds it once
+- the role is decided once, over the topic's ends read by wire subject (`desugar::role_from_ends` over the row's `publishes` and `subscribes`): the entry's own role wins, otherwise publish-only is `Connect` and subscribe-only is `Listen`, and a `unix` entry with neither is the checker's diagnostic. The checker, the model and lowering read it; the desugar's in-place fill applies the same pure rule over the topic names before the topic rewrite erases them, and agrees with it over the corpus
+- what a transport carries is data beside the matrix, not a branch in the checker: the transport kind's guarantee for each `where` constraint (`capability::transport::GUARANTEES`, three rows of four cells, the former `transport_satisfies` cell for cell, its words verbatim), which does not vary by target; and whether a target realizes the transport at all is the matrix's own `RemoteTransport(kind)` row, asked through the snapshot's target row (`Snapshot::binding_cell`)
+- the bound-topic set is the rows' projection (`bound_names`, `bound_subjects`): the `or wait` legality check, the api gates and the bus graph's eligibility gate read it, and none walks `bindings { }` itself. An imported main's entries are in the set, as they were in each of the walks it replaces
 
 **Missing data.** a missing required row is a compiler error
 
@@ -591,7 +589,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `binding_role_for(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×1, `crates/hale-types/src/model_builder.rs` ×1
+- `derive_binding_rows(` may be referenced from: `crates/hale-types/src/binding_rows.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2
+- `role_from_ends(` may be referenced from: `crates/hale-syntax/src/desugar.rs` ×2, `crates/hale-types/src/binding_rows.rs` ×1
 
 ### `dispatch` — Migrating · derivation
 
@@ -637,7 +636,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-codegen/src/channels/mod.rs` · `failure_handler_for` — looks the row up by ordinal in the parent's handler table (one fn per row, built in declare_locus_methods; a monomorph reads its template's rows). *Removed when:* the handler fn is a column of the row.
 - `crates/hale-codegen/src/channels/mod.rs` · `resolve_failure_route` — the parent instance is the lowering context's (supervising parent, then self, then params-init self); the handler is the row's. *Removed when:* phase 3, when the instance is a row of an instance tree: the snapshot has no instance-tree family, so the parent instance is still the lowering context's (at the phase-2 close).
-- `crates/hale-codegen/src/codegen.rs` · `__StdBusUnixConnectTransport` — the transport-loss handler is picked by name through the routing table. *Removed when:* the bindings family names the transport's locus.
 - `crates/hale-types/src/model_builder.rs` · `fn_rows` — the model's function rows key a failure handler by a signature string built from its params' written types. *Removed when:* phase 3, keyed by the row's SiteId, with handler routing by identity: the routing rows carry SiteId columns no model reader joins on yet (the phase-2 exit's #1199 re-measurement), and round 3's findings 16 (a monomorph's rows found by linear scan) and 17 (a generic supervisor's unsubstituted row) land with that join.
 - `crates/hale-types/src/model_builder.rs` · `SupervisedRef::External` — a child the routing rows resolve as external is recorded by its written name. *Removed when:* phase 3, keyed by the row's SiteId, with the same join as `fn_rows` (still by written name at the phase-2 close).
 - `crates/hale-codegen/src/locus/instantiation.rs` · `settles_failures` — whether the parent has any handler, read from the lowering's handler table at the params-settle bracket. *Removed when:* phase 3, a query over the routing rows: lowering still reads its own `LocusInfo::failure_handlers`, and joins the rows to LLVM functions by the two positional ordinal joins the #1199 re-measurement found unchanged (at the phase-2 close).
@@ -1131,7 +1129,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `wasm_unavailable_stdlib(` may be referenced from: `crates/hale-types/src/check.rs` ×2
-- `derive_capability_matrix(` may be referenced from: `crates/hale-types/src/capability.rs` ×2, `crates/hale-types/src/capability/laws.rs` ×12
+- `derive_capability_matrix(` may be referenced from: `crates/hale-types/src/capability.rs` ×2, `crates/hale-types/src/capability/transport.rs` ×1, `crates/hale-types/src/capability/laws.rs` ×12
 - `target_row(` may be referenced from: `crates/hale-types/src/capability.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `deployment` — Reserved · derivation
