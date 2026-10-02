@@ -1101,6 +1101,7 @@ impl Snapshot {
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
+                    ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     effects: &effects,
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     bindings: self.demand_bindings().map_err(Clone::clone)?,
@@ -1147,7 +1148,8 @@ impl Snapshot {
             .as_ref()
     }
 
-    /// The ownership graph over the checked programs: the model's
+    /// The ownership graph over the checked programs: the checker's
+    /// unowned-subscriber rule (type-check rule 20) and the model's
     /// dynamic births.
     pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
         self.ownership_graph
@@ -1232,7 +1234,8 @@ impl Snapshot {
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
     /// total over a program that does not typecheck. The check's F.31
-    /// rule and sync inference read it (F.40 phase 3, P1).
+    /// rule and sync inference read it (F.40 phase 3, P1), and type-check
+    /// rule 20 climbs the construction paths it records (C4).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {

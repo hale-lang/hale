@@ -465,11 +465,12 @@ the shape a model invents.
 
 ---
 
-## F.19 — a subscriber born in a bus handler must be the handler's own child
+## F.19 — a subscriber born in a bus handler had to be the handler's own child
 
 **Tag:** `handler-born-subscriber-must-be-owned`
 **Severity:** informational; it fixes where child workflows are created.
-**Status:** by design (a check, with a clear diagnostic).
+**Status:** FIXED in the checker (F.40 phase 3, C4, 2026-10-01): the
+refusal was a false positive. Recorded at the time as by design.
 
 A resident step that wants a child workflow cannot create it from its
 reply handler unless the step itself accepts that type. Interest-based
@@ -488,6 +489,19 @@ publishes a request, and the owner of Tasks creates the child from its
 own handler and owns it; the child's settlement comes back over the bus,
 keyed by the parent. `dna/tests/workflow_lifetime_test.hl` case 4b does
 exactly that.
+
+**Resolution (F.40 phase 3, C4, 2026-10-01): FIXED.** The refusal was
+the old checker's limitation, not a safety check: the rule looked only
+at the handler's own locus, while lowering already bubbles the birth to
+the nearest ancestor that accepts it. Type-check rule 20 reads the
+ownership graph now, and an ancestor accepting the subscriber's type
+through an `accept` edge owns it, so the nearest accepting ancestor owns
+a handler-born subscriber as it owns any other birth. The reproducer
+checks and builds; run with a later poke to the child's key, `Manager`
+accepts the handler-born `Run` and the `Run` hears the poke. The pin is
+`the_nearest_accepting_ancestor_owns_it` in
+`crates/hale-cli/tests/check_unowned_subscriber.rs`. Supersystem
+mediation (case 4b) still works.
 
 **Reproducer:** `dna/friction/f19-handler-born-subscriber/`.
 

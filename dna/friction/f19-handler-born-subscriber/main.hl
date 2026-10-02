@@ -1,13 +1,18 @@
-// F.19 — a subscriber born in a bus handler must be the handler's own
-// child. `hale check` refuses this program: Part does not accept Run, and
-// interest-based ownership (bubbling to Manager, which does) is not
-// considered for a subscribing locus born in a handler.
+// F.19 — a subscriber born in a bus handler had to be the handler's own
+// child. `hale check` used to refuse this program: Part does not accept
+// Run, and the old rule looked only at the handler's own locus, so the
+// bubble to Manager (which does accept Run) went unseen:
 //
 //   type error: locus `Run` declares `bus subscribe` but is instantiated
 //   unowned inside `Part`'s bus handler `on_poke`.
 //
-// The shape that works (dna/tests/workflow_lifetime_test.hl, case 4b):
-// Part asks Manager over the bus, and Manager's handler creates the Run.
+// The rule reads the ownership graph now (spec/semantics.md, type-check
+// rule 20): the nearest accepting ancestor owns a handler-born subscriber
+// as it owns any other birth, so the program checks and builds, and the
+// Run is passed up to Manager. The pin is
+// `the_nearest_accepting_ancestor_owns_it` in
+// crates/hale-cli/tests/check_unowned_subscriber.rs. Asking the owner over
+// the bus (dna/tests/workflow_lifetime_test.hl, case 4b) still works too.
 
 type Poke { key: String = ""; }
 topic Pokes { payload: Poke; subject: "f19.poke"; keyed_by key; }

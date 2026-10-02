@@ -110,6 +110,65 @@ side can't hold onto it. There a cross-pool spawn is
 `let s = Ship { ... }`. The compiler will tell you if you try to
 keep the value.
 
+### A subscriber born in a handler needs an owner
+
+There is one place where "no owner is fine" stops being true. A bus
+handler returns after every message, so a locus it creates and nobody
+owns dissolves at that return — and if that locus subscribes to the
+bus itself, its subscription can never fire for a later message. The
+compiler refuses that shape:
+
+```hale,refused
+type Ping { n: Int = 0; }
+topic Tick { payload: Ping; }
+
+locus Watcher {
+    bus { subscribe Tick as on_tick; }
+    fn on_tick(t: Ping) { }
+}
+
+locus Hub {
+    bus { subscribe Tick as on_msg; }
+    fn on_msg(p: Ping) {
+        Watcher { };   // error: instantiated unowned in a bus handler
+    }
+}
+
+main locus App {
+    params { h: Hub = Hub { }; }
+    run() { }
+}
+```
+
+Owning it fixes it: `accept(w: Watcher)` on `Hub`, or on any ancestor
+of `Hub` — the nearest accepting ancestor collects it, exactly as
+bubbling does anywhere else. What counts is the *declaration* the
+`accept` names, not the spelling. `accept(w: W)` with `type W =
+Watcher` owns it; an `accept(w: lib::Watcher)` that names another
+seed's `Watcher` doesn't own yours, however alike the last segment
+reads. For a generic subscriber the specialization must match:
+`accept(c: Cell<Int>)` owns a birth declared `Cell<Int>`, not one
+declared `Cell<String>`. If two loci share a name, the compiler judges
+the first one declared and says which it judged.
+
+The ancestor has to be there on *every* path that builds `Hub`. If
+`App` accepts `Watcher` and holds a `Hub` as a field, but `fn main`
+also builds a `Hub { }` of its own, that second `Hub` has no parent to
+collect what it births — so the compiler still refuses the birth, and
+its note points at the `Hub` that `main` builds. The same goes for a
+`Hub` built somewhere the compiler can't follow: inside a plain
+function, or in a locus whose placement it can't work out. An owner it
+can't see is not an owner it can count on.
+
+Where the compiler can't tell who owns the child, it stays quiet
+rather than guess. A library seed with no entry point can't be judged,
+because its consumer may supply the owner. Neither can a generic
+subscriber whose specialization nothing declares. A subscriber
+created in `run()`, `birth()` or an ordinary method is fine too: it
+lives for that scope and hears what's published meanwhile. And if you
+manage its lifetime some other way, `--allow-unowned-subscriber` lets
+the shape through.
+
 ## The contract: what crosses the boundary
 
 A child declares what its parent may see in a `contract`, and a

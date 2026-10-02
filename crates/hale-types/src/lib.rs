@@ -331,6 +331,7 @@ fn check_numbered_bundle(
     // same ones.
     let (top, mut diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
+    let ownership = bundle_ownership_graph(bundle, &top);
     let alloc_summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -348,6 +349,7 @@ fn check_numbered_bundle(
         &check::CheckInputs {
             top: &top,
             handlers: &handlers,
+            ownership: &ownership,
             effects: &effects,
             entry: &entry,
             bindings: &bindings,
@@ -387,6 +389,7 @@ fn check_numbered_bundle(
             &forms,
             &bus,
             &bindings,
+            &ownership,
         );
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
@@ -402,6 +405,17 @@ fn check_numbered_bundle(
 pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::HandlerRouting {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     handler_routing::handler_rows(&programs, &bundle.import_renames, &bundle.snapshot)
+}
+
+/// The ownership graph of a bundle no snapshot holds: what the test
+/// entries' check and model read ([`check_bundle_opts_scoped`],
+/// [`check::check_bundle`], [`derive_application_model`]). Every verb
+/// reads its snapshot's (`Snapshot::demand_ownership_graph`).
+pub(crate) fn bundle_ownership_graph(
+    bundle: &Bundle<'_>,
+    top: &resolve::TopScope,
+) -> ownership_graph::OwnershipGraph {
+    ownership_graph::build_ownership_graph(bundle, top)
 }
 
 /// The application model of a bundle no snapshot holds: the test
@@ -420,7 +434,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let forms = form_rows::form_rows(bundle, &top, &placement, diags.is_empty());
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings);
-    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings)
+    let ownership = bundle_ownership_graph(bundle, &top);
+    model_over_scope(bundle, &top, &handlers, summary, &forms, &bus, &bindings, &ownership)
 }
 
 /// The bus graph of a bundle no snapshot holds, over its scope: what
@@ -452,8 +467,9 @@ pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desuga
 }
 
 /// [`derive_application_model`] over the scope, the rows, the
-/// allocation summary, the form rows and the bus graph its caller
-/// already built: the graphs the model reads beside them are built here.
+/// allocation summary, the form rows, the bus graph, the binding rows
+/// and the ownership graph its caller already built: the effect rows
+/// the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
@@ -462,15 +478,15 @@ fn model_over_scope(
     forms: &form_rows::FormRows,
     bus_graph: &bus_graph::BusGraph,
     bindings: &binding_rows::BindingRows,
+    ownership: &ownership_graph::OwnershipGraph,
 ) -> hale_model::ApplicationModel {
-    let ownership = ownership_graph::build_ownership_graph(bundle, top);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
         bundle,
         &model_builder::ModelInputs {
             top,
             bus_graph,
-            ownership: &ownership,
+            ownership,
             handlers,
             effects: &effects,
             forms,

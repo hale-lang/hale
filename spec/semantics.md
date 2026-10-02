@@ -3545,6 +3545,54 @@ main locus App {
     desugar topics (lowering does), so that half is still diagnosed
     during lowering. (GH #876, 2026-09-20.)
 
+20. **Unowned subscriber (error).** A locus with bus handlers that is
+    born in another locus's bus handler — a literal in the body of a
+    `fn` that one of its `bus { subscribe … as h }` entries names —
+    must be owned: a handler returns after each message, so a local
+    it binds dissolves at its return, and the subscription could
+    never fire for a later message. A locus with bus handlers is
+    owned: it is the entry's root, a replica or field of an owned
+    locus, a binding's instance, or accepted by an ancestor through
+    an `accept` edge of the ownership graph. The judgment reads the
+    graph's edges, which are keyed by declaration identity: an
+    `accept` that names the subscriber's declaration through an
+    alias, a module path or a generic specialization owns it; a name
+    that merely matches the declaration's last segment, or its
+    template, does not. When two declarations share a name, the graph
+    orders them by declaration order and the diagnostic names the
+    declaration it judged. Where the graph cannot decide which locus
+    is born, or whether the tower is complete (an unresolved type, an
+    open world), the rule does not fire: unknown ownership is not
+    proven absence, and the row records the hole. An unknown
+    construction path cuts the other way: it proves no owner.
+    A literal in a handler's body is not the entry's root, a replica
+    or a binding's instance, so the rule reads its `accept` edges: the
+    nearest accepting ancestor owns it as it owns any other birth, and
+    a literal assigned to a field of `self` is judged by those edges
+    too, since the graph records no assignment target. An ancestor
+    owns it only if one accepts it on every construction path of the
+    handler's locus: the paths the placement table records (each
+    instance row under its owner's declaration; at a template's top,
+    a literal directly in `fn main`, the root's construction, the
+    entry's implicit one or a `bindings { }` adapter, none of which
+    has an ancestor; each dynamic site in a locus's bodies, or in a
+    free fn, whose callers are not followed), together with the
+    graph's own edges (a literal in a locus's bodies or params
+    defaults). A path that reaches no acceptor, a free fn or a hole of
+    the table (a held instance it does not link, a field whose
+    initializer is no literal, a dynamic site of unknown domain)
+    refuses the birth, and the diagnostic names that path: an accepting
+    parent somewhere is no proof that every instance has one. The graph
+    cannot decide in an open world (no entry, so a consumer may
+    complete the tower), for a generic template no declared type
+    specializes, or for a qualified path that names no declaration.
+    A subscriber born in `run()`, `birth()` or a plain method is not
+    judged: it lives for that scope and can receive what is published
+    during it. `--allow-unowned-subscriber` allows the shape for a
+    program that manages the subscriber's lifetime another way.
+    (2026-05-29; judged over the ownership graph since F.40 phase 3,
+    C4.)
+
 ### Single-threaded-method invariant
 
 A locus's methods may be invoked only on the OS thread that

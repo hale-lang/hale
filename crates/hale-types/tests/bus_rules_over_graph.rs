@@ -493,6 +493,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let bundle = Bundle::new(BTreeMap::from([(String::new(), &prog)]));
     let (top, _) = build_top_scope(&bundle);
     let handlers = hale_types::handler_routing::handler_rows(&[&prog], &[], &bundle.snapshot);
+    let ownership = hale_types::ownership_graph::build_ownership_graph(&bundle, &top);
     let alloc_summary = std::sync::Arc::new(hale_types::alloc_summary::derive_alloc_summary(&bundle));
     let rows = std::cell::OnceCell::new();
     let effects = || {
@@ -510,6 +511,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
+        ownership: &ownership,
         effects: &effects,
         entry: &entry,
         bindings: &bindings,
