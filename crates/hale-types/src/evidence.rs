@@ -914,19 +914,12 @@ pub fn derive_certificate_evidence_over(
     // happens; rows key by ordinal from here on.
     let mut by_key: BTreeMap<(String, String), Vec<usize>> =
         BTreeMap::new();
+    let demangler =
+        crate::stdlib_bodies::Demangler::new(&bundle.import_renames);
     let demangled: Vec<(String, String)> = groups
         .iter()
         .map(|(row, _)| {
-            (
-                crate::stdlib_bodies::demangle_str(
-                    &row.subject,
-                    &bundle.import_renames,
-                ),
-                crate::stdlib_bodies::demangle_str(
-                    &row.form,
-                    &bundle.import_renames,
-                ),
-            )
+            (demangler.demangle(&row.subject), demangler.demangle(&row.form))
         })
         .collect();
     for (i, key) in demangled.iter().enumerate() {
@@ -1000,10 +993,7 @@ pub fn derive_certificate_evidence_over(
             // told from a user span numerically).
             let (mut only_diags, flags): (Vec<_>, Vec<bool>) =
                 ds.iter().cloned().unzip();
-            crate::stdlib_bodies::demangle_imports(
-                &mut only_diags,
-                &bundle.import_renames,
-            );
+            demangler.demangle_diags(&mut only_diags);
             for (d, foreign) in
                 only_diags.into_iter().zip(flags)
             {

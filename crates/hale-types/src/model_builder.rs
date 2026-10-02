@@ -216,7 +216,7 @@ pub fn derive_application_model_over(
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // GH #1159: the rename table once per derivation, not per string.
-    let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
+    let rename_table = crate::stdlib_bodies::Demangler::new(&bundle.import_renames);
     let graph = inputs.bus_graph;
     // The summary the effect rows' walk read: the checked programs with
     // the stdlib's analysis copy beside them, cross-seed calls resolved.
@@ -2710,7 +2710,7 @@ pub fn derive_application_model_over(
                     let shown = if ast.interfaces.iter().any(|(n, _)| *n == i.as_str()) {
                         i.clone()
                     } else {
-                        crate::stdlib_bodies::demangle_with(i, &rename_table)
+                        rename_table.demangle(i)
                     };
                     (shown, next.fn_name.clone())
                 });
@@ -2719,7 +2719,7 @@ pub fn derive_application_model_over(
             let entry_provenance =
                 intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
-                crate::stdlib_bodies::demangle_with(&kk.display(), &rename_table)
+                rename_table.demangle(&kk.display())
             };
             let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
             let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
@@ -2777,7 +2777,7 @@ pub fn derive_application_model_over(
                                     .as_ref()
                                     .map(|i| {
                                         (
-                                            crate::stdlib_bodies::demangle_with(i, &rename_table),
+                                            rename_table.demangle(i),
                                             nn.fn_name.clone(),
                                         )
                                     });

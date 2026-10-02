@@ -427,6 +427,8 @@ pub struct Snapshot {
     sources: BTreeMap<PathBuf, String>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     import_renames: ImportRenames,
+    /// [`Snapshot::demangler`].
+    demangler: OnceCell<hale_types::stdlib_bodies::Demangler>,
     /// The target's own `import`s, as written.
     entry_imports: Vec<Import>,
     source_map: Vec<SourceFile>,
@@ -632,6 +634,7 @@ impl Snapshot {
             sources: loaded.sources,
             file_bases: loaded.file_bases,
             import_renames: loaded.import_renames,
+            demangler: OnceCell::new(),
             entry_imports: loaded.entry_imports,
             source_map: Vec::new(),
             identities: hale_types::snapshot::Snapshot::default(),
@@ -816,6 +819,13 @@ impl Snapshot {
 
     pub fn import_renames(&self) -> &ImportRenames {
         &self.import_renames
+    }
+
+    /// The demangling of [`Snapshot::import_renames`], indexed once per
+    /// snapshot (F.40 phase 3, X3): what puts a diagnostic in the
+    /// author's spelling, for every publication made from this load.
+    pub fn demangler(&self) -> &hale_types::stdlib_bodies::Demangler {
+        self.demangler.get_or_init(|| hale_types::stdlib_bodies::Demangler::new(&self.import_renames))
     }
 
     /// The target's own `import`s, as written: what a build reads each
