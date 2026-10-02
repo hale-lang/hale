@@ -602,8 +602,50 @@ pub fn check_bundle_reporting(
     strict_callees: bool,
     strict_idents: bool,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
+    let (diags, certificates, _) =
+        check_bundle_by_declaration(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents, &|_, _| None);
+    (diags, certificates)
+}
+
+/// What the check's two per-declaration passes report for one top-level
+/// declaration (F.40 phase 3, X2): the checker's walk of it
+/// (`check_top_decl`) and the reveal rule's
+/// ([`crate::secret_reveal::secret_reveal_by_item`]). Every other rule
+/// the check runs is bundle-wide and runs whole.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeclChecked {
+    pub typing: Vec<Diag>,
+    pub reveal: Vec<Diag>,
+}
+
+/// Each program's declarations' [`DeclChecked`], by the bundle's program
+/// key, in item order.
+pub type ByDeclaration = BTreeMap<String, Vec<DeclChecked>>;
+
+/// [`check_bundle_reporting`], with what the per-declaration passes
+/// reported for each declaration beside it, and the passes skipped for a
+/// declaration `reuse` answers: its answer stands in for the walk's and
+/// the reveal rule's, at the place in the order the walk's would have
+/// been. `reuse` answers `(program key, item index)`; a caller answers
+/// only for a declaration whose result it knows is the walk's (the
+/// editor's typing stage, `Snapshot::reusing_typing`); answering none is
+/// the whole check.
+pub fn check_bundle_by_declaration(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> (Vec<Diag>, crate::effects::EffectCertificates, ByDeclaration) {
     let top = inputs.top;
     let mut diags = Vec::new();
+    let reused: BTreeMap<&str, Vec<Option<DeclChecked>>> = bundle
+        .programs
+        .iter()
+        .map(|(key, p)| (key.as_str(), (0..p.items.len()).map(|i| reuse(key, i)).collect()))
+        .collect();
+    let mut by_decl: ByDeclaration = BTreeMap::new();
     let certificates;
     let known = &top.names;
     // WASM plan: the bundle targets wasm if any program declares
@@ -641,7 +683,7 @@ pub fn check_bundle_reporting(
     // the model resolve it. Handed in (phase 2.3): the model reads the
     // same rows.
     let handlers = inputs.handlers;
-    for program in bundle.programs.values() {
+    for (key, program) in &bundle.programs {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
         let mut generic_types: BTreeMap<String, &TypeDecl> =
@@ -675,9 +717,21 @@ pub fn check_bundle_reporting(
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
         };
-        for item in &program.items {
-            cx.check_top_decl(item);
+        let mut per = Vec::with_capacity(program.items.len());
+        for (i, item) in program.items.iter().enumerate() {
+            match &reused[key.as_str()][i] {
+                Some(done) => {
+                    cx.diags.extend(done.typing.iter().cloned());
+                    per.push(DeclChecked { typing: done.typing.clone(), reveal: Vec::new() });
+                }
+                None => {
+                    let start = cx.diags.len();
+                    cx.check_top_decl(item);
+                    per.push(DeclChecked { typing: cx.diags[start..].to_vec(), reveal: Vec::new() });
+                }
+            }
         }
+        by_decl.insert(key.clone(), per);
     }
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
@@ -855,9 +909,21 @@ pub fn check_bundle_reporting(
     // § "@sealed"): `Credential.reveal()` only in a locus method, its
     // value reaching a wire write, a comparison or a `@secret` parameter
     // within the statement, and a `@secret` parameter held to the same.
-    diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames, &bundle.sources));
+    let reveals = crate::secret_reveal::secret_reveal_by_item(
+        &bundle.programs,
+        &bundle.import_renames,
+        &bundle.sources,
+        &|key, i| reused[key][i].as_ref().map(|done| done.reveal.clone()),
+    );
+    for (key, per) in reveals {
+        let rows = by_decl.get_mut(&key).expect("the walk recorded every program");
+        for (row, found) in rows.iter_mut().zip(per) {
+            diags.extend(found.iter().cloned());
+            row.reveal = found;
+        }
+    }
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    (diags, certificates)
+    (diags, certificates, by_decl)
 }
 
 /// True if the locus declares at least one `bus { subscribe ... }`.

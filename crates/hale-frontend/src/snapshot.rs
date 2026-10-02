@@ -90,6 +90,7 @@ use crate::frontend::{
     CheckableFailure, LoadMode,
 };
 use crate::dependents::{Declaration, DependencyIndex, Dependents};
+use crate::typing_reuse::{Plan, ReuseKey, Side, TypingReuse};
 use crate::imports::ImportRenames;
 use crate::source::SourceProvider;
 
@@ -381,6 +382,17 @@ pub struct Checked {
     pub diags: Vec<Diag>,
 }
 
+/// The typing's record: what the resolver and the checker report, the
+/// effects certificate report, the per-declaration passes' results per
+/// declaration (what a later snapshot of the seed may reuse), and what
+/// this one reused.
+struct Typed {
+    diags: Vec<Diag>,
+    certificates: EffectCertificates,
+    by_decl: hale_types::check::ByDeclaration,
+    reuse: TypingReuse,
+}
+
 /// The top scope and what building it reported.
 struct Scope {
     top: TopScope,
@@ -440,9 +452,15 @@ pub struct Snapshot {
     partial_scope: OnceCell<Result<Scope, Blocked>>,
     bindings: OnceCell<Result<BindingRows, Blocked>>,
     forms: OnceCell<Result<FormRows, Blocked>>,
-    /// The typing's diagnostics, and the effects certificate report its
-    /// check produced ([`Snapshot::demand_effect_certificates`]).
-    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates), Blocked>>,
+    /// The typing's diagnostics, the effects certificate report its
+    /// check produced ([`Snapshot::demand_effect_certificates`]), what
+    /// the per-declaration passes reported per declaration, and what was
+    /// reused.
+    typing: OnceCell<Result<Typed, Blocked>>,
+    /// The editor's previous snapshot of this seed, offered for its
+    /// typing's reuse ([`Snapshot::reusing_typing`]); taken when the
+    /// typing runs.
+    previous: Cell<Option<Box<Snapshot>>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
@@ -628,6 +646,7 @@ impl Snapshot {
             bindings: OnceCell::new(),
             forms: OnceCell::new(),
             typing: OnceCell::new(),
+            previous: Cell::new(None),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
@@ -1096,10 +1115,10 @@ impl Snapshot {
     /// does not typecheck (it reads declarations, not types), so a
     /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
-        self.typed().map(|(diags, _)| diags.as_slice())
+        self.typed().map(|t| t.diags.as_slice())
     }
 
-    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates), &Blocked> {
+    fn typed(&self) -> Result<&Typed, &Blocked> {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
@@ -1119,18 +1138,97 @@ impl Snapshot {
                     placement: self.demand_placement().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
+                // The editor's previous snapshot of the seed, if it offered
+                // one: what its per-declaration passes may stand in for.
+                let (plan, reuse) = match self.previous.take() {
+                    None => (None, TypingReuse::Fresh),
+                    Some(prev) => match self.reuse_plan(&prev) {
+                        Ok((plan, reuse)) => (Some(plan), reuse),
+                        Err(why) => (None, TypingReuse::Whole(why)),
+                    },
+                };
                 let mut diags = scope.diags.clone();
-                let (checked, certificates) = hale_types::check::check_bundle_reporting(
+                let (checked, certificates, by_decl) = hale_types::check::check_bundle_by_declaration(
                     &self.bundle(),
                     &inputs,
                     self.config.allow_unowned_subscriber,
                     self.config.whole_program,
                     self.config.whole_program,
+                    &|key, i| plan.as_ref()?.get(key)?.get(i)?.clone(),
                 );
                 diags.extend(checked);
-                Ok((diags, certificates))
+                Ok(Typed { diags, certificates, by_decl, reuse })
             })
             .as_ref()
+    }
+
+    /// Offer the previous snapshot of this seed for the typing's reuse
+    /// (F.40 phase 3, X2, [`crate::typing_reuse`]): the typing stage keeps
+    /// the per-declaration results of every declaration unchanged since
+    /// `previous` and no dependent of a changed one, and checks the rest.
+    /// Opt-in; the editor opts in, every other entry point checks whole.
+    /// `previous` is taken when the typing runs: a snapshot whose typing
+    /// is blocked (a seed with a hole) leaves it to
+    /// [`Snapshot::take_previous`]. A previous snapshot whose typing never
+    /// ran, or that loaded another seed or under another config, offers
+    /// nothing and the typing is whole ([`TypingReuse::Whole`]).
+    pub fn reusing_typing(self, previous: Snapshot) -> Snapshot {
+        drop(previous.previous.take());
+        self.previous.set(Some(Box::new(previous)));
+        self
+    }
+
+    /// The previous snapshot [`Snapshot::reusing_typing`] offered, if the
+    /// typing has not taken it.
+    pub fn take_previous(&self) -> Option<Snapshot> {
+        self.previous.take().map(|b| *b)
+    }
+
+    /// What the typing stage reused, once it ran: nothing offered, the
+    /// seed checked whole and why, or how many declarations were checked
+    /// and reused.
+    pub fn typing_reuse(&self) -> Option<&TypingReuse> {
+        self.typing.get()?.as_ref().ok().map(|t| &t.reuse)
+    }
+
+    fn reuse_key(&self) -> ReuseKey {
+        ReuseKey {
+            entry: self.key.entry.clone(),
+            mode: self.key.mode,
+            target: self.key.target.clone(),
+            config_digest: self.key.config_digest,
+            import_renames: {
+                // A set: two loads of one seed list it in different orders.
+                let mut renames: Vec<&(Vec<String>, String)> = self.import_renames.iter().collect();
+                renames.sort_unstable();
+                let mut d = Digest::new();
+                d.count(renames.len());
+                for (path, mangled) in renames {
+                    d.count(path.len());
+                    for seg in path {
+                        d.field(seg.as_bytes());
+                    }
+                    d.field(mangled.as_bytes());
+                }
+                d.finish()
+            },
+        }
+    }
+
+    fn reuse_plan(&self, prev: &Snapshot) -> Result<(Plan, TypingReuse), &'static str> {
+        if prev.reuse_key() != self.reuse_key() {
+            return Err("another load: the entry, mode, target, config or import renames changed");
+        }
+        let Some(Ok(done)) = prev.typing.get() else {
+            return Err("the previous snapshot was not typed");
+        };
+        let prev_dependents = |site| prev.declaration_dependents(site).ok();
+        let next_dependents = |site| self.declaration_dependents(site).ok();
+        crate::typing_reuse::plan(
+            &Side { programs: &prev.programs, decls: prev.declarations(), dependents: &prev_dependents },
+            &done.by_decl,
+            &Side { programs: &self.programs, decls: self.declarations(), dependents: &next_dependents },
+        )
     }
 
     /// The effects certificate report the typing's check produced: each
@@ -1139,7 +1237,7 @@ impl Snapshot {
     /// check's laws, and the artifact's), so the engine runs once per
     /// snapshot. Blocked with the typing; no family of its own.
     pub fn demand_effect_certificates(&self) -> Result<&EffectCertificates, &Blocked> {
-        self.typed().map(|(_, certificates)| certificates)
+        self.typed().map(|t| &t.certificates)
     }
 
     /// The bus graph over the checked programs, with the scope's topic
