@@ -29,4 +29,5 @@ pub mod imports;
 pub mod parse_cache;
 pub mod snapshot;
 pub mod source;
+pub mod typing_reuse;
 pub mod workspace;

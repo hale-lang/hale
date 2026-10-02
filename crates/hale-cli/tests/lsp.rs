@@ -1590,6 +1590,179 @@ fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
     assert_eq!(laws_judged, 1, "the laws seed's law is judged, and only there");
 }
 
+/// A diagnostic whole, as the incremental stage is held to it: kind,
+/// origin, span, message, and every related location.
+fn full_key(d: &hale_syntax::Diag) -> String {
+    format!("{d:?}")
+}
+
+/// The editor's load of `entry` through `overlays`, typed: reusing
+/// `previous` when one is given (F.40 phase 3, X2), whole otherwise.
+fn typed_snapshot(
+    entry: &std::path::Path,
+    overlays: &std::collections::BTreeMap<std::path::PathBuf, String>,
+    previous: Option<hale_frontend::snapshot::Snapshot>,
+) -> (hale_frontend::snapshot::Snapshot, Vec<String>) {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Overlay;
+    let Ok(snap) = Snapshot::load(entry, LoadMode::Editor, &Overlay::new(overlays), Config::editor()) else {
+        panic!("{} loads", entry.display())
+    };
+    let snap = match previous {
+        Some(p) => snap.reusing_typing(p),
+        None => snap,
+    };
+    let keys = snap.demand_typing().expect("typed").diags.iter().map(full_key).collect();
+    (snap, keys)
+}
+
+/// The edits of one step: per file, the bodies to edit (by the span of
+/// the body's opening brace in the file) and the text each gets first.
+fn edit_bodies(text: &str, at: &[usize], insert: &str) -> String {
+    let mut out = text.to_string();
+    let mut at = at.to_vec();
+    at.sort_unstable_by(|a, b| b.cmp(a));
+    for i in at {
+        out.insert_str(i + 1, insert);
+    }
+    out
+}
+
+/// One edit sequence over a seed: from a fresh typing, each step's text
+/// is typed reusing the previous step's snapshot (as the editor chains
+/// them) and fresh, and the two typing stages must be one, diagnostic
+/// for diagnostic. Returns each step's reuse.
+fn incremental_equals_full(
+    tag: &str,
+    entry: &std::path::Path,
+    steps: &[std::collections::BTreeMap<std::path::PathBuf, String>],
+) -> Vec<hale_frontend::typing_reuse::TypingReuse> {
+    let (mut prev, _) = typed_snapshot(entry, &std::collections::BTreeMap::new(), None);
+    let mut reuses = Vec::new();
+    for (n, overlays) in steps.iter().enumerate() {
+        let (snap, incremental) = typed_snapshot(entry, overlays, Some(prev));
+        let (_, fresh) = typed_snapshot(entry, overlays, None);
+        assert_eq!(incremental, fresh, "{tag}, step {n}: the incremental typing stage is the full one");
+        reuses.push(snap.typing_reuse().expect("typed").clone());
+        prev = snap;
+    }
+    reuses
+}
+
+/// The bodies an edit sequence edits: for each fn and locus declaration
+/// of `snap`'s own `file`, the file offset of its body's opening brace
+/// (a locus's first member with a body).
+fn bodies_in(snap: &hale_frontend::snapshot::Snapshot, file: &std::path::Path) -> Vec<(String, usize)> {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    let (base, _, len) = snap.file_bases().iter().find(|(_, p, _)| p == file).cloned().expect("the file's base");
+    let mut out = Vec::new();
+    for d in snap.declarations() {
+        let body = match &snap.programs()[&d.program].items[d.index] {
+            TopDecl::Fn(f) => Some(f.body.span),
+            TopDecl::Locus(l) => l.members.iter().find_map(|m| match m {
+                LocusMember::Fn(f) => Some(f.body.span),
+                LocusMember::Lifecycle(lc) => Some(lc.body.span),
+                _ => None,
+            }),
+            _ => None,
+        };
+        if let Some(b) = body.filter(|b| base <= b.start.0 && b.end.0 <= base + len) {
+            out.push((d.name.clone(), (b.start.0 - base) as usize));
+        }
+    }
+    out
+}
+
+/// The editor's incremental typing stage is the full one (F.40 phase 3,
+/// X2): over every parity seed, each fn and locus body of the app's files
+/// edited (an ill-typed `let` added) and undone in turn, then two edited
+/// at once, then a declared surface changed and a newline appended; each
+/// step typed reusing the step before and fresh, the two compared
+/// diagnostic for diagnostic, whole. A body edit reuses the declarations
+/// it does not reach; an edit to what a declaration declares checks the
+/// seed whole.
+#[test]
+fn the_incremental_typing_stage_is_the_full_one() {
+    use hale_frontend::typing_reuse::TypingReuse;
+    const PROBE: &str = " let x2_probe: Int = \"probe\";";
+    let (mut reused, mut whole) = (0, 0);
+    for (tag, app, lib) in PARITY {
+        let root = scratch_root(&format!("incremental-{tag}"));
+        std::fs::create_dir_all(root.join("lib")).expect("mkdir");
+        let dir = root.canonicalize().expect("canonical dir");
+        for (f, text) in *app {
+            std::fs::write(dir.join(f), text).expect("write app");
+        }
+        for (f, text) in *lib {
+            std::fs::write(dir.join("lib").join(f), text).expect("write lib");
+        }
+        let entry = dir.join(app.last().expect("an app file").0);
+        let (s0, _) = typed_snapshot(&entry, &std::collections::BTreeMap::new(), None);
+        let mut steps = Vec::new();
+        let mut twice = Vec::new();
+        for (f, text) in *app {
+            let path = dir.join(f);
+            let bodies = bodies_in(&s0, &path);
+            for (_, at) in &bodies {
+                steps.push(std::collections::BTreeMap::from([(path.clone(), edit_bodies(text, &[*at], PROBE))]));
+                steps.push(std::collections::BTreeMap::from([(path.clone(), text.to_string())]));
+            }
+            if bodies.len() >= 2 {
+                twice.push((path.clone(), edit_bodies(text, &[bodies[0].1, bodies[1].1], PROBE)));
+            }
+        }
+        steps.extend(twice.into_iter().map(|(p, t)| std::collections::BTreeMap::from([(p, t)])));
+        let (f, text) = app[0];
+        steps.push(std::collections::BTreeMap::from([(dir.join(f), format!("{text}\nfn x2_added() {{ }}\n"))]));
+        steps.push(std::collections::BTreeMap::from([(dir.join(f), format!("{text}\n"))]));
+        for reuse in incremental_equals_full(tag, &entry, &steps) {
+            match reuse {
+                TypingReuse::Reused { reused: n, .. } if n > 0 => reused += 1,
+                TypingReuse::Whole(_) => whole += 1,
+                _ => {}
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    assert!(reused > 10, "body edits reuse what they do not reach: {reused} steps");
+    assert!(whole >= PARITY.len(), "an added declaration checks the seed whole: {whole} steps");
+}
+
+/// The same equality over `dna/host` (X2): one declaration's body
+/// edited, the edit undone, two edited at once; each step reuses the
+/// rest of the seed and types exactly as a fresh check does.
+#[test]
+fn the_incremental_typing_stage_is_the_full_one_over_the_dna_host() {
+    use hale_frontend::typing_reuse::TypingReuse;
+    const PROBE: &str = " let x2_probe: Int = \"probe\";";
+    let host = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/host").canonicalize().expect("dna/host");
+    let entry = host.join("main.hl");
+    let (s0, _) = typed_snapshot(&entry, &std::collections::BTreeMap::new(), None);
+    let pick = |file: &str, n: usize| -> (std::path::PathBuf, String, usize) {
+        let path = host.join(file);
+        let text = std::fs::read_to_string(&path).expect("the host's file");
+        let (_, at) = bodies_in(&s0, &path).into_iter().nth(n).expect("a body to edit");
+        (path, text, at)
+    };
+    let (main, main_text, a) = pick("main.hl", 0);
+    let (verbs, verbs_text, b) = pick("verbs.hl", 0);
+    let steps = vec![
+        std::collections::BTreeMap::from([(main.clone(), edit_bodies(&main_text, &[a], PROBE))]),
+        std::collections::BTreeMap::from([(main.clone(), main_text.clone())]),
+        std::collections::BTreeMap::from([
+            (main.clone(), edit_bodies(&main_text, &[a], PROBE)),
+            (verbs.clone(), edit_bodies(&verbs_text, &[b], PROBE)),
+        ]),
+    ];
+    for (n, reuse) in incremental_equals_full("dna/host", &entry, &steps).into_iter().enumerate() {
+        assert!(
+            matches!(reuse, TypingReuse::Reused { reused, .. } if reused > 1000),
+            "step {n}: the rest of the host is reused: {reuse:?}"
+        );
+    }
+}
+
 /// The overlay parity fixture (F.40 phase 2.1a): one seed, checked
 /// three ways, one answer.
 ///

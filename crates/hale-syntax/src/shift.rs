@@ -27,22 +27,50 @@ use crate::span::{Pos, Span};
 /// what `parse_source_at_in(source, base, classes)` returns is
 /// `parse_source_at_in(source, 0, classes)` with `shift_program(&mut p, base)`.
 pub fn shift_program(prog: &mut Program, delta: u32) {
-    prog.shift(delta);
+    prog.shift(Move::By(delta));
+}
+
+/// Offset every position in one declaration by `delta` bytes (wrapping,
+/// so a declaration moves either way): an edit before it moves it whole
+/// (F.40 phase 3, X2, the typing stage's reuse).
+pub fn shift_item(item: &mut TopDecl, delta: u32) {
+    item.shift(Move::By(delta));
+}
+
+/// Set every position in one declaration to zero: two declarations
+/// equal after it are one declaration wherever their text sits and
+/// however its whitespace runs (X2: what an edit changed, apart from
+/// where it put things).
+pub fn erase_positions(item: &mut TopDecl) {
+    item.shift(Move::Erase);
+}
+
+/// What the walk does to each position.
+#[derive(Clone, Copy)]
+enum Move {
+    By(u32),
+    Erase,
 }
 
 trait Shift {
-    fn shift(&mut self, d: u32);
+    fn shift(&mut self, d: Move);
 }
 
 impl Shift for Span {
-    fn shift(&mut self, d: u32) {
-        *self = self.shifted(d);
+    fn shift(&mut self, d: Move) {
+        *self = match d {
+            Move::By(d) => self.shifted(d),
+            Move::Erase => Span::new(0, 0),
+        };
     }
 }
 
 impl Shift for Pos {
-    fn shift(&mut self, d: u32) {
-        *self = self.shifted(d);
+    fn shift(&mut self, d: Move) {
+        *self = match d {
+            Move::By(d) => self.shifted(d),
+            Move::Erase => Pos(0),
+        };
     }
 }
 
@@ -52,7 +80,7 @@ impl Shift for Pos {
 macro_rules! no_position {
     ($($t:ty),* $(,)?) => {
         $(impl Shift for $t {
-            fn shift(&mut self, _: u32) {}
+            fn shift(&mut self, _: Move) {}
         })*
     };
 }
@@ -60,7 +88,7 @@ macro_rules! no_position {
 no_position!(String, bool, u8, u16, u32, u64, i64, f64);
 
 impl<T: Shift> Shift for Vec<T> {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         for x in self {
             x.shift(d);
         }
@@ -68,7 +96,7 @@ impl<T: Shift> Shift for Vec<T> {
 }
 
 impl<T: Shift> Shift for Option<T> {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         if let Some(x) = self {
             x.shift(d);
         }
@@ -76,13 +104,13 @@ impl<T: Shift> Shift for Option<T> {
 }
 
 impl<T: Shift> Shift for Box<T> {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         (**self).shift(d);
     }
 }
 
 impl<A: Shift, B: Shift> Shift for (A, B) {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         self.0.shift(d);
         self.1.shift(d);
     }
@@ -99,7 +127,7 @@ macro_rules! sh {
 macro_rules! shift_struct {
     ($t:ident { $($f:ident),* $(,)? }) => {
         impl Shift for $t {
-            fn shift(&mut self, d: u32) {
+            fn shift(&mut self, d: Move) {
                 let $t { $($f),* } = self;
                 sh!(d; $($f),*);
             }
@@ -112,7 +140,7 @@ macro_rules! shift_struct {
 macro_rules! shift_unit_enum {
     ($t:ident { $($v:ident),* $(,)? }) => {
         impl Shift for $t {
-            fn shift(&mut self, _: u32) {
+            fn shift(&mut self, _: Move) {
                 match self {
                     $($t::$v)|* => {}
                 }
@@ -135,7 +163,7 @@ shift_struct!(EffectClasses { names, declared, defs });
 shift_struct!(Import { path, alias, span, path_span });
 
 impl Shift for TopDecl {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             TopDecl::Locus(x) => x.shift(d),
             TopDecl::Perspective(x) => x.shift(d),
@@ -165,7 +193,7 @@ shift_struct!(ClaimsBlock { entries, adopts, lib_tier, span });
 shift_struct!(ClaimDecl { name, form, span });
 
 impl Shift for ClaimForm {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ClaimForm::ForbidReaches { src, dst, via_calls, via_bus, during, avoiding } => {
                 sh!(d; src, dst, via_calls, via_bus, during, avoiding)
@@ -188,7 +216,7 @@ shift_struct!(TopicRef { segments, span });
 shift_struct!(EdgeGrant { publish, topic, span });
 
 impl Shift for ClaimSet {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ClaimSet::Group(x) => x.shift(d),
             ClaimSet::Effects { class, name, span } => sh!(d; class, name, span),
@@ -227,7 +255,7 @@ shift_struct!(RingFramingBlock { kind, attrs, span });
 shift_struct!(RingAttr { key, value, span });
 
 impl Shift for RingAttrValue {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             RingAttrValue::Ident(x) => x.shift(d),
             RingAttrValue::Int(x) => x.shift(d),
@@ -270,7 +298,7 @@ shift_struct!(FfiAnnotation { abi, span });
 shift_struct!(FormArg { name, value, span });
 
 impl Shift for LocusAnnotation {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             LocusAnnotation::Tier(x) => x.shift(d),
             LocusAnnotation::Projection(x) => x.shift(d),
@@ -279,7 +307,7 @@ impl Shift for LocusAnnotation {
 }
 
 impl Shift for ProjectionClass {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ProjectionClass::Rich | ProjectionClass::Chunked => {}
             ProjectionClass::Recognition(x) => x.shift(d),
@@ -291,7 +319,7 @@ shift_struct!(RecognitionParams { cap, sub_mode });
 shift_unit_enum!(RecognitionSubMode { FixedCell, Spillover, SummaryOnly, SharedSlab });
 
 impl Shift for ScheduleClass {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ScheduleClass::Cooperative => {}
             ScheduleClass::Pinned(x) => x.shift(d),
@@ -300,7 +328,7 @@ impl Shift for ScheduleClass {
 }
 
 impl Shift for CoreSpec {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             CoreSpec::Single(x) => x.shift(d),
             CoreSpec::Range { lo, hi, inclusive } => sh!(d; lo, hi, inclusive),
@@ -310,7 +338,7 @@ impl Shift for CoreSpec {
 }
 
 impl Shift for PinAffinity {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             PinAffinity::Any => {}
             PinAffinity::Cores(x) => x.shift(d),
@@ -325,7 +353,7 @@ shift_struct!(TopologyNode { id, id_span, domains, span });
 shift_struct!(L3Domain { name, cores, span });
 
 impl Shift for LocusMember {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             LocusMember::Params(x) => x.shift(d),
             LocusMember::Contract(x) => x.shift(d),
@@ -355,7 +383,7 @@ shift_struct!(PlacementBlock { entries, span });
 shift_struct!(PlacementEntry { field, spec, constraints, span, id });
 
 impl Shift for PlacementSpec {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             PlacementSpec::Cooperative { pool, affinity } => sh!(d; pool, affinity),
             PlacementSpec::Pinned { affinity, replicas } => sh!(d; affinity, replicas),
@@ -383,7 +411,7 @@ shift_unit_enum!(ApiUnauthorizedPolicy { Refuse, Drop });
 shift_struct!(ApiRoles { expr, span });
 
 impl Shift for ApiTransport {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ApiTransport::Unix { path, span } => sh!(d; path, span),
         }
@@ -397,7 +425,7 @@ shift_unit_enum!(BindingConstraint { IntraProcess, IntraMachine, CrossMachine, Z
 shift_struct!(SpannedBindingConstraint { kind, span });
 
 impl Shift for TransportSpec {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             TransportSpec::Unix { path, role, span } => sh!(d; path, role, span),
             TransportSpec::Adapter { locus, inits, span } => sh!(d; locus, inits, span),
@@ -420,7 +448,7 @@ shift_struct!(ParamsBlock { params, span });
 shift_struct!(ParamDecl { name, ty, init, span, id });
 
 impl Shift for ParamInit {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ParamInit::Value(x) => x.shift(d),
             ParamInit::Inferred => {}
@@ -431,7 +459,7 @@ impl Shift for ParamInit {
 shift_struct!(ContractBlock { kind, span });
 
 impl Shift for ContractKind {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ContractKind::Inferred => {}
             ContractKind::Members(x) => x.shift(d),
@@ -443,7 +471,7 @@ shift_struct!(ContractMember { direction, name, ty, gated, span });
 shift_unit_enum!(ContractDirection { Expose, Consume });
 
 impl Shift for ContractName {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ContractName::Named(x) => x.shift(d),
             ContractName::Inferred => {}
@@ -454,7 +482,7 @@ impl Shift for ContractName {
 shift_struct!(BusBlock { members, span });
 
 impl Shift for BusSubject {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             BusSubject::Literal { subject, span } => sh!(d; subject, span),
             BusSubject::Topic(x) => x.shift(d),
@@ -464,7 +492,7 @@ impl Shift for BusSubject {
 }
 
 impl Shift for BusMember {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             BusMember::Subscribe { subject, handler, ty, key_filter, bound, span, id } => {
                 sh!(d; subject, handler, ty, key_filter, bound, span, id)
@@ -480,7 +508,7 @@ shift_struct!(SubBound { cap, policy, span });
 shift_unit_enum!(ShedPolicy { DropNew, DropOld });
 
 impl Shift for KeyFilter {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             KeyFilter::Specific { expr, span } => sh!(d; expr, span),
             KeyFilter::Unmatched { span } => sh!(d; span),
@@ -500,7 +528,7 @@ shift_struct!(ClosureDecl { name, assertion, clauses, span, id });
 shift_struct!(ClosureAssertion { left, right, tolerance, span });
 
 impl Shift for ClosureClause {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ClosureClause::Epoch(x) => x.shift(d),
             ClosureClause::PersistsThrough(x) => x.shift(d),
@@ -512,7 +540,7 @@ impl Shift for ClosureClause {
 }
 
 impl Shift for EpochSpec {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             EpochSpec::Duration(x) => x.shift(d),
             EpochSpec::Tick
@@ -529,7 +557,7 @@ impl Shift for EpochSpec {
 shift_struct!(PerspectiveDecl { name, generics, members, span, id });
 
 impl Shift for PerspectiveMember {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             PerspectiveMember::Params(x) => x.shift(d),
             PerspectiveMember::StableWhen(x) => x.shift(d),
@@ -543,7 +571,7 @@ impl Shift for PerspectiveMember {
 shift_struct!(TypeDecl { name, display, generics, body, span, id, synthetic });
 
 impl Shift for TypeDeclBody {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             TypeDeclBody::Alias(x) => x.shift(d),
             TypeDeclBody::Struct(x) => x.shift(d),
@@ -561,7 +589,7 @@ shift_struct!(ConstDecl { name, ty, value, span, id });
 shift_struct!(PhaseEffects { phases, span });
 
 impl Shift for QuantDim {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             QuantDim::StackBytes | QuantDim::BlockPoints | QuantDim::Publish | QuantDim::Fanout => {}
             QuantDim::UserClass(x) => x.shift(d),
@@ -570,7 +598,7 @@ impl Shift for QuantDim {
 }
 
 impl Shift for EffectClass {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             EffectClass::User(x) => x.shift(d),
             EffectClass::Syscall
@@ -591,7 +619,7 @@ impl Shift for EffectClass {
 shift_struct!(DependsSet { subjects, span });
 
 impl Shift for EffectAssert {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             EffectAssert::Forbid(x) => x.shift(d),
             EffectAssert::PublishSet(x) => x.shift(d),
@@ -630,7 +658,7 @@ shift_struct!(Param { name, ty, default, secret, span });
 // Type expressions.
 
 impl Shift for TypeExpr {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             TypeExpr::Primitive(p, span) => sh!(d; p, span),
             TypeExpr::Named { path, generic_args, span } => sh!(d; path, generic_args, span),
@@ -665,7 +693,7 @@ shift_struct!(QualifiedName { segments, span });
 shift_struct!(Block { stmts, tail, span });
 
 impl Shift for Stmt {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             Stmt::Let { is_mut, name, ty, value, span, id } => {
                 sh!(d; is_mut, name, ty, value, span, id)
@@ -713,7 +741,7 @@ shift_unit_enum!(AssignOp {
 shift_struct!(LValue { head, tail, span });
 
 impl Shift for LValueSeg {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             LValueSeg::Field(x) => x.shift(d),
             LValueSeg::Index(x) => x.shift(d),
@@ -724,7 +752,7 @@ impl Shift for LValueSeg {
 shift_struct!(IfStmt { cond, then_block, else_block, span });
 
 impl Shift for ElseBranch {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             ElseBranch::Else(x) => x.shift(d),
             ElseBranch::ElseIf(x) => x.shift(d),
@@ -736,7 +764,7 @@ shift_struct!(MatchStmt { scrutinee, arms, span });
 shift_struct!(MatchArm { pattern, guard, body, span });
 
 impl Shift for MatchArmBody {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             MatchArmBody::Expr(x) => x.shift(d),
             MatchArmBody::Block(x) => x.shift(d),
@@ -745,7 +773,7 @@ impl Shift for MatchArmBody {
 }
 
 impl Shift for Pattern {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             Pattern::Literal(lit, span) => sh!(d; lit, span),
             Pattern::Wildcard(span) => sh!(d; span),
@@ -759,7 +787,7 @@ impl Shift for Pattern {
 shift_unit_enum!(RecoveryOp { Restart, RestartInPlace, Quarantine, Reorganize, Bubble });
 
 impl Shift for RecoveryModifier {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             RecoveryModifier::For(x) => x.shift(d),
             RecoveryModifier::Until(x) => x.shift(d),
@@ -768,7 +796,7 @@ impl Shift for RecoveryModifier {
 }
 
 impl Shift for NodeId {
-    fn shift(&mut self, _: u32) {
+    fn shift(&mut self, _: Move) {
         let NodeId(_) = self;
     }
 }
@@ -776,7 +804,7 @@ impl Shift for NodeId {
 // Expressions.
 
 impl Shift for Expr {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             Expr::Literal(lit, span) => sh!(d; lit, span),
             Expr::Ident(x) => x.shift(d),
@@ -807,7 +835,7 @@ impl Shift for Expr {
 }
 
 impl Shift for OrDisposition {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             OrDisposition::Raise(span) => sh!(d; span),
             OrDisposition::Substitute(x) => x.shift(d),
@@ -842,7 +870,7 @@ shift_unit_enum!(BinOp {
 shift_unit_enum!(UnaryOp { Neg, Not, BitNot });
 
 impl Shift for Literal {
-    fn shift(&mut self, d: u32) {
+    fn shift(&mut self, d: Move) {
         match self {
             Literal::Int(x) => x.shift(d),
             Literal::Float(x) => x.shift(d),

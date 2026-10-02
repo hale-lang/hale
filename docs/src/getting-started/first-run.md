@@ -103,7 +103,13 @@ A few switches worth knowing from day one:
   a seed file that cannot be read is an error on the file you have
   open, not a clean result. On a program that declares laws the
   diagnostics arrive in two steps: the type check's findings first,
-  then the laws' verdicts added to the files they concern. Hover shows
+  then the laws' verdicts added to the files they concern. The first
+  step is incremental: when an edit changes only what bodies do, the
+  server type-checks again just the declarations you edited and the
+  ones that read them, and keeps the rest from the last check. An edit
+  to a signature, a field, or which declarations exist checks the
+  whole seed. Either way the findings are the ones a full check
+  gives. Hover shows
   signatures with their contracts (fallibility, `@hot`/`@budget`
   status, a topic's routing key), completion covers `self.`
   members, the `std::` surface, and your seed's symbols,

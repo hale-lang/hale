@@ -77,6 +77,9 @@ struct State {
     /// closed buffer's seed, found only through the closed file, is not
     /// left with the publication the discarded pass never sent.
     pending: Vec<PathBuf>,
+    /// Per checked seed (`seed_key`): the last snapshot whose typing
+    /// stage ran, which the next pass's typing reuses (F.40 phase 3, X2).
+    typed: BTreeMap<PathBuf, Snapshot>,
     shutdown_requested: bool,
 }
 
@@ -691,7 +694,7 @@ fn check_open_seeds(
     }
     let checked: BTreeSet<PathBuf> = seeds.iter().map(|(k, _)| k.clone()).collect();
     for (_, via) in &seeds {
-        if let Pass::Superseded = check_and_publish(writer, via, &state.overlays, &mut state.published, &checked, superseded) {
+        if let Pass::Superseded = check_and_publish(writer, via, &state.overlays, &mut state.published, &mut state.typed, &checked, superseded) {
             state.pending = changed.to_vec();
             return;
         }
@@ -739,22 +742,50 @@ enum Pass {
 /// buffers this check read are not the client's any more, so what is
 /// left unsent is discarded (the second publication alone, or both),
 /// `published` keeps what was sent, and the next pass rechecks.
+///
+/// The typing stage reuses the seed's last typed snapshot (F.40 phase 3,
+/// X2, `Snapshot::reusing_typing`): `typed` holds one per seed, the
+/// snapshot this pass typed replaces it, and a pass that typed nothing (a
+/// hole, a refused load) leaves it for the next.
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
     published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    typed: &mut BTreeMap<PathBuf, Snapshot>,
     checked: &BTreeSet<PathBuf>,
     superseded: &mut dyn FnMut() -> bool,
 ) -> Pass {
     let own = seed_key(changed);
+    let (first, snap) = match seed_typing(changed, overlays, typed.remove(&own)) {
+        SeedCheck::Once(per_file, previous) => {
+            typed.extend(previous.map(|p| (own.clone(), p)));
+            (per_file, None)
+        }
+        SeedCheck::Staged(snap, per_file) => (per_file, Some(snap)),
+    };
+    let pass = publish_stages(writer, &own, first, snap.as_ref(), published, checked, superseded);
+    if let Some(snap) = snap {
+        typed.insert(own, snap);
+    }
+    pass
+}
+
+/// The publications of [`check_and_publish`], from the seed's typing
+/// stage (`first`) and the snapshot the laws are judged from.
+fn publish_stages(
+    writer: &mut impl Write,
+    own: &Path,
+    mut first: BTreeMap<PathBuf, Vec<Value>>,
+    snap: Option<&Snapshot>,
+    published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    checked: &BTreeSet<PathBuf>,
+    superseded: &mut dyn FnMut() -> bool,
+) -> Pass {
+    let own = own.to_path_buf();
     let ours = |p: &Path| {
         let key = seed_key(p);
         key == own || !checked.contains(&key)
-    };
-    let (mut first, snap) = match seed_typing(changed, overlays) {
-        SeedCheck::Once(per_file) => (per_file, None),
-        SeedCheck::Staged(snap, per_file) => (per_file, Some(snap)),
     };
     first.retain(|p, _| ours(p));
     if superseded() {
@@ -771,7 +802,7 @@ fn check_and_publish(
     if superseded() {
         return Pass::Superseded;
     }
-    let mut last = seed_laws(&snap);
+    let mut last = seed_laws(snap);
     last.retain(|p, diags| ours(p) && first.get(p) != Some(diags));
     if superseded() {
         return Pass::Superseded;
@@ -791,21 +822,23 @@ fn seed_key(file: &Path) -> PathBuf {
 /// A seed's check as its publications carry it: path → the diagnostics
 /// to publish on it, an EMPTY list for every seed file found clean.
 enum SeedCheck {
-    /// The one publication of a seed the snapshot does not check.
-    Once(BTreeMap<PathBuf, Vec<Value>>),
+    /// The one publication of a seed the snapshot does not check, and
+    /// the previous typed snapshot it was offered, unused.
+    Once(BTreeMap<PathBuf, Vec<Value>>, Option<Snapshot>),
     /// The first publication of a seed it checks, the typing stage's,
     /// and the snapshot the laws are judged from ([`seed_laws`]).
     Staged(Snapshot, BTreeMap<PathBuf, Vec<Value>>),
 }
 
-/// The seed of `changed`, through the check's typing stage.
-fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>) -> SeedCheck {
+/// The seed of `changed`, through the check's typing stage, which
+/// reuses what it can of `previous`, the seed's last typed snapshot.
+fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>, previous: Option<Snapshot>) -> SeedCheck {
     // A file inside the stdlib cache gets an EMPTY publish — it is
     // a definition-jump target, not a seed member, and clearing
     // (rather than skipping) removes anything a client already
     // showed for it.
     if is_stdlib_cache_path(changed) {
-        return SeedCheck::Once(BTreeMap::from([(changed.to_path_buf(), Vec::new())]));
+        return SeedCheck::Once(BTreeMap::from([(changed.to_path_buf(), Vec::new())]), previous);
     }
     // F.40 phase 2.3: the seed as `hale check <dir>` loads it — the
     // file's directory and every seed its imports reach — read through
@@ -835,12 +868,16 @@ fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>) -> SeedChec
             for io in &f.io {
                 publish_file_level(&mut per_file, &io.path, changed, &io.text);
             }
-            return SeedCheck::Once(per_file);
+            return SeedCheck::Once(per_file, previous);
         }
         Err(LoadError::Refused(msg)) => {
             per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(&msg));
-            return SeedCheck::Once(per_file);
+            return SeedCheck::Once(per_file, previous);
         }
+    };
+    let snap = match previous {
+        Some(previous) => snap.reusing_typing(previous),
+        None => snap,
     };
     let typed = match snap.demand_typing() {
         // The editor's config carries the build rules and the allocation
@@ -871,7 +908,8 @@ fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>) -> SeedChec
             for (f, os_error) in snap.unreadable() {
                 publish_file_level(&mut per_file, f, changed, &unreadable_message(f, os_error));
             }
-            return SeedCheck::Once(per_file);
+            // The hole keeps the last typed snapshot for the next pass.
+            return SeedCheck::Once(per_file, snap.take_previous());
         }
     };
     SeedCheck::Staged(snap, typed)
@@ -3162,6 +3200,41 @@ fn main() { App { }; }\n";
         pubs
     }
 
+    /// F.40 phase 3, X2: a pass types the seed reusing its last typed
+    /// snapshot, and publishes what a pass with nothing to reuse does; a
+    /// hole types nothing and keeps the last typed snapshot for the pass
+    /// after it.
+    #[test]
+    fn a_pass_reuses_the_seeds_last_typed_snapshot() {
+        use hale_frontend::typing_reuse::TypingReuse;
+        let dir = std::env::temp_dir().join(format!("hale_lsp_typing_reuse_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, LAW_SRC).unwrap();
+        let seed = seed_key(&file);
+        let checked: BTreeSet<PathBuf> = [seed.clone()].into_iter().collect();
+        let mut typed = BTreeMap::new();
+        let pass = |text: &str, typed: &mut BTreeMap<PathBuf, Snapshot>| {
+            let mut out = Vec::new();
+            let overlays = BTreeMap::from([(file.clone(), text.to_string())]);
+            check_and_publish(&mut out, &file, &overlays, &mut BTreeMap::new(), typed, &checked, &mut || false);
+            publications_in(&out)
+        };
+        let edited = LAW_SRC.replace("fn save() {", "fn save() { let x2: Int = \"probe\";");
+        pass(LAW_SRC, &mut typed);
+        assert_eq!(typed[&seed].typing_reuse(), Some(&TypingReuse::Fresh));
+        let reusing = pass(&edited, &mut typed);
+        assert!(matches!(typed[&seed].typing_reuse(), Some(TypingReuse::Reused { reused, .. }) if *reused > 0), "{:?}", typed[&seed].typing_reuse());
+        assert_eq!(reusing, pass(&edited, &mut BTreeMap::new()), "what a pass with nothing to reuse publishes");
+        pass("fn main( {", &mut typed);
+        assert!(typed[&seed].typing_reuse().is_some(), "the hole keeps the last typed snapshot");
+        pass(LAW_SRC, &mut typed);
+        assert!(matches!(typed[&seed].typing_reuse(), Some(TypingReuse::Reused { .. })), "{:?}", typed[&seed].typing_reuse());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// F.40 phase 3, X1: a seed whose law is broken is published twice,
     /// the typing stage and then the whole check, which replaces the
     /// first only on the file the law adds a finding to; the first is a
@@ -3189,7 +3262,7 @@ fn main() { App { }; }\n";
                 asked += 1;
                 asked >= from
             };
-            let ended = check_and_publish(&mut out, &file, &BTreeMap::new(), &mut published, &checked, &mut superseded);
+            let ended = check_and_publish(&mut out, &file, &BTreeMap::new(), &mut published, &mut BTreeMap::new(), &checked, &mut superseded);
             (matches!(ended, Pass::Superseded), publications_in(&out), published)
         };
 
