@@ -1148,7 +1148,8 @@ impl Snapshot {
             .as_ref()
     }
 
-    /// The ownership graph over the checked programs: the model's
+    /// The ownership graph over the checked programs: the checker's
+    /// unowned-subscriber rule (type-check rule 20) and the model's
     /// dynamic births.
     pub fn demand_ownership_graph(&self) -> Result<&OwnershipGraph, &Blocked> {
         self.ownership_graph
