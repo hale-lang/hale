@@ -1,4 +1,4 @@
-//! The `bus_topics` integration-test binary: 21 test files of this area, kept
+//! The `bus_topics` integration-test binary: 22 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -33,6 +33,8 @@ mod codec_encode_oversize;
 mod codec_instantiation;
 #[path = "gate_counters.rs"]
 mod gate_counters;
+#[path = "nested_offthread_delivery.rs"]
+mod nested_offthread_delivery;
 #[path = "nested_struct_bus_payload.rs"]
 mod nested_struct_bus_payload;
 #[path = "replica_keys.rs"]
