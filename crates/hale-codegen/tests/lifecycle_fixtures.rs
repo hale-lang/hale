@@ -262,6 +262,10 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_self_post_overflow.hl", line: "19", adopted: Some("all-completed"), run: RunMode::Plain, judge: all_completed },
     Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
     Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
+    Fixture { file: "l19_started_run_retained.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_retained_async.hl", line: "19", adopted: Some("run-held"), run: RunMode::Plain, judge: run_held },
+    Fixture { file: "l19_started_run_publishes_back.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
+    Fixture { file: "l19_started_run_publishes_back_async.hl", line: "19", adopted: Some("answered-in-wait"), run: RunMode::Plain, judge: answered_in_wait },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Env(SMALL_RING), judge: full_ring },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::Plain, judge: empty_ring },
@@ -309,6 +313,33 @@ const PLANS: &[(&str, &str)] = &[
          Kid*2: Birth Drain Dissolve Reclaim
          Kid: Cancellation!main
          edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered",
+    ),
+    // R19a: a started run holds its child until it returns. The old
+    // child's reclaim on main waits for its run on `side` to end before
+    // it completes; the replacement inherits main and runs there.
+    (
+        "l19_started_run_retained.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*2: Birth Run Drain Dissolve Reclaim
+         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
+    ),
+    (
+        "l19_started_run_retained_async.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*2: Birth Run Drain Dissolve Reclaim
+         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
+    ),
+    (
+        "l19_started_run_publishes_back.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*2: Birth Run Drain Dissolve Reclaim
+         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
+    ),
+    (
+        "l19_started_run_publishes_back_async.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*2: Birth Run Drain Dissolve Reclaim
+         edge Kid.Run.Ended -> Kid.Reclaim.Completed",
     ),
     // R19's other half: a run admitted after the worker's last check is
     // canceled by its child's reclaim; once the canceled cells fill the
@@ -735,6 +766,17 @@ const CONTROLS: &[Control] = &[
         skip: "Run.Terminal(NotStarted(Acknowledged))",
         plan: None,
         fails_with: "missing: Kid.Run",
+        baseline_passes: true,
+    },
+    // R19a: without the reclaim's wait for the run hold, the old child's
+    // reclaim completes while its started run is still running.
+    Control {
+        name: "run_hold_wait_removed",
+        covers: ObligationKind::Run,
+        fixture: "l19_started_run_retained.hl",
+        skip: "RunHold",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Completed (inst 1 inc 0) with Kid.Run.Ended not reached",
         baseline_passes: true,
     },
     Control {
@@ -1181,6 +1223,41 @@ fn cross_pool_printed(r: &Ran) -> bool {
         && count(r, "ev kid-dissolve 1") == 1
 }
 
+/// Both children's runs read their own names, and each child is torn
+/// down once.
+fn started_printed(r: &Ran) -> bool {
+    count(r, "ev kid-run 0 kid-0-name") == 1
+        && count(r, "ev kid-run 1 kid-1-name") == 1
+        && count(r, "ev kid-dissolve 0") == 1
+        && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The started run returned, reading its own child, and the trace's
+/// plan holds its end before its child's reclaim completes.
+fn run_held(r: &Ran) -> String {
+    match (started_printed(r), r.code) {
+        (true, Some(0)) => "run-held".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
+/// As [`started_printed`], and App's handler heard the run's note on
+/// main before the reassignment completed: inside the reclaim's wait.
+fn answered_in_wait_printed(r: &Ran) -> bool {
+    let heard = r.stdout.find("ev heard 0");
+    let replaced = r.stdout.find("ev replaced");
+    started_printed(r) && matches!((heard, replaced), (Some(h), Some(p)) if h < p)
+}
+
+fn answered_in_wait(r: &Ran) -> String {
+    match (answered_in_wait_printed(r), r.code) {
+        (true, Some(0)) => "answered-in-wait".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => "printed otherwise".to_string(),
+    }
+}
+
 /// The run queued on `side` is canceled by the reclaim on main and
 /// named there.
 fn cross_pool_run_canceled(r: &Ran) -> String {
@@ -1586,6 +1663,10 @@ fixture_tests! {
     l19_self_post_overflow => "l19_self_post_overflow.hl",
     l19_queued_run_canceled => "l19_queued_run_canceled.hl",
     l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
+    l19_started_run_retained => "l19_started_run_retained.hl",
+    l19_started_run_retained_async => "l19_started_run_retained_async.hl",
+    l19_started_run_publishes_back => "l19_started_run_publishes_back.hl",
+    l19_started_run_publishes_back_async => "l19_started_run_publishes_back_async.hl",
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
@@ -1652,6 +1733,43 @@ fn l19_cross_pool_queued_run_canceled_under_asan() {
     assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
+/// Decision line 19, a started run, under AddressSanitizer with chunk
+/// pooling off (GH #816): main reclaims a child whose run is running on
+/// `side`, and the run then reads the heap String in the child's arena.
+/// Before the run hold the reclaim released that arena under the run (a
+/// heap-use-after-free); with it the reclaim waits for the run to return.
+fn assert_clean_under_asan(file: &str, tag: &str, printed: fn(&Ran) -> bool) {
+    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
+    let bin = harness::unique_bin(&format!("hale_lifecycle_asan_{tag}"));
+    harness::build_asan(&program, &bin);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
+    let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
+    assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
+    assert!(printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
+}
+
+#[test]
+fn l19_started_run_retained_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained.hl", "l19_started", started_printed);
+}
+
+#[test]
+fn l19_started_run_retained_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_retained_async.hl", "l19_started_async", started_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back.hl", "l19_publishes_back", answered_in_wait_printed);
+}
+
+#[test]
+fn l19_started_run_publishes_back_async_under_asan() {
+    assert_clean_under_asan("l19_started_run_publishes_back_async.hl", "l19_publishes_back_async", answered_in_wait_printed);
+}
+
 macro_rules! control_tests {
     ($($name:ident),* $(,)?) => {
         mod controls {
@@ -1673,6 +1791,7 @@ control_tests! {
     canceled_run_unnamed,
     cancellation_completion_omitted,
     queued_run_cancel_unnamed,
+    run_hold_wait_removed,
     restart_completion_omitted,
     wait_abort_removed,
     birth_removed,

@@ -2063,13 +2063,36 @@ its `KNOWN_OPEN` table.
   arena's struct) is released: every reclaim path makes the call,
   past its latch, so a queued run finds the child whole or finds its
   run canceled, never a released arena. The ticket's lock
-  linearizes the cancellation against admission: a worker that
-  takes the run first holds the child for it, and a reclaim that
-  cancels first wins. A child torn down by its owner on the worker
-  its `run()` was posted to is reclaimed without that run starting,
-  and so is one whose run waits on another pool's worker; each is
-  torn down once. A run that started before the teardown began is
-  ordered against it by the join, as before. Shipped (F.40 phase 3,
+  linearizes the cancellation against admission: a reclaim that
+  cancels first wins, and a worker that takes the run first converts
+  the ticket into the run's hold on the child. A child torn down by
+  its owner on the worker its `run()` was posted to is reclaimed
+  without that run starting, and so is one whose run waits on another
+  pool's worker; each is torn down once. A run that has started holds
+  its child until it returns: the child's Reclaim, past the
+  cancellation, waits for its started runs before the arena is
+  released, so a placed field reassigned while its run is running on
+  another pool keeps the old child's memory until that run returns.
+  An async pool's parked run that its pool's shutdown abandons
+  releases its hold where its coroutine is freed. The wait is not a
+  join. The reclaim's drain and dissolve still run beside the run, as
+  before, and the hold guards the memory only. A run executing on the
+  reclaiming thread is not waited for. Such a run is the one whose
+  end reclaims its own child, which happens after `run()` returned.
+  The wait services the reclaiming thread's queue as a yield does, so
+  a run that publishes back to that thread and waits for its answer
+  cannot deadlock it. A coroutine on an async pool parks while it
+  waits, so its worker runs its other cells and coroutines. Main
+  drains its bus queue between short sleeps, and a pinned thread
+  drains its mailbox the same way (`l19_started_run_retained.hl` and
+  `l19_started_run_retained_async.hl`, both also under
+  AddressSanitizer; `l19_started_run_publishes_back.hl` and its
+  `_async` twin). Before the hold, admission freed the ticket and
+  nothing held the child. Such a reclaim released the arena under the
+  running run, a heap-use-after-free under AddressSanitizer in both
+  dispatch modes. A run whose child is never reclaimed until its
+  pool joins is still ordered against the teardown by the join.
+  Shipped (F.40 phase 3,
   L5): the cancellation is named in the trace build on the thread
   that reclaims, inside the Reclaim's bracket, and the release build
   runs the same path (`l19_queued_run_canceled.hl`;

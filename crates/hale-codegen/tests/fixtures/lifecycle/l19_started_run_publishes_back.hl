@@ -1,0 +1,64 @@
+// Decision line 19, a started run that publishes back to the thread
+// reclaiming its child (Run, Cancellation): the reclaim's wait for the
+// run hold services that thread's queue, as a yield does.
+//
+// As `l19_started_run_retained.hl`, but the old child's run() publishes
+// a note to App, a subscriber on main, the thread that is replacing `k`,
+// and returns only once App's handler has answered through a gate file.
+// App's run() is inside the reassignment, waiting for that run to
+// return; the wait drains main's queue between its sleeps, so App's
+// handler runs, the run returns, and the reclaim completes. A wait that
+// serviced nothing would never end.
+//
+// Expected terminal outcome: App hears the note before the
+// reassignment completes, both children's runs read their own names,
+// and each child is torn down once, judged by the harness:
+// `answered-in-wait`.
+
+type Note { tag: Int; }
+topic Notes { payload: Note; subject: "lifecycle.l19.started"; }
+
+fn gate(what: String) -> String {
+    return "/tmp/hale-l19-publish-" + what + "-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    bus { publish Notes; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    run() {
+        if self.tag == 0 {
+            std::io::fs::write_file(gate("started"), "go") or discard;
+            std::time::sleep(50ms);
+            Notes <- Note { tag: self.tag };
+            while !std::io::fs::file_exists(gate("heard")) {
+                std::time::sleep(1ms);
+            }
+        }
+        println("ev kid-run " + to_string(self.tag) + " " + self.name);
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; }
+    placement { k: cooperative(pool = side); }
+    bus { subscribe Notes as on_note; }
+    fn on_note(n: Note) {
+        println("ev heard " + to_string(n.tag));
+        std::io::fs::write_file(gate("heard"), "go") or discard;
+    }
+    run() {
+        while !std::io::fs::file_exists(gate("started")) {
+            std::time::sleep(1ms);
+        }
+        self.k = Kid { tag: 1 };
+        println("ev replaced");
+    }
+    dissolve() {
+        std::io::fs::unlink(gate("started")) or discard;
+        std::io::fs::unlink(gate("heard")) or discard;
+    }
+}
+
+fn main() { App { }; }

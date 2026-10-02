@@ -1,0 +1,42 @@
+// Decision line 19, a run already started when its child is reclaimed,
+// on an async_io pool (Run, Cancellation): the admitted run holds its
+// child until its coroutine returns.
+//
+// As `l19_started_run_retained.hl`, with `side` an async_io pool: the
+// old child's run() is a started coroutine parked in its sleep when App,
+// on main, replaces `k`. The reclaim waits for the coroutine to return
+// before the old child's arena is released.
+//
+// Expected terminal outcome: both children's runs read their own
+// names, the old one's run ends before its reclaim completes, and each
+// child is torn down once, judged by the harness: `run-held`.
+
+fn gate() -> String {
+    return "/tmp/hale-l19-started-async-" + to_string(std::process::pid());
+}
+
+locus Kid {
+    params { tag: Int = 0; name: String = ""; }
+    birth() { self.name = "kid-" + to_string(self.tag) + "-name"; }
+    run() {
+        if self.tag == 0 { std::io::fs::write_file(gate(), "go") or discard; }
+        std::time::sleep(100ms);
+        println("ev kid-run " + to_string(self.tag) + " " + self.name);
+    }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+main locus App {
+    params { k: Kid = Kid { tag: 0 }; }
+    placement { k: cooperative(pool = side) where async_io; }
+    run() {
+        while !std::io::fs::file_exists(gate()) {
+            std::time::sleep(1ms);
+        }
+        self.k = Kid { tag: 1 };
+        println("ev replaced");
+    }
+    dissolve() { std::io::fs::unlink(gate()) or discard; }
+}
+
+fn main() { App { }; }
