@@ -114,8 +114,17 @@ Each cell runs `hale check`, `hale build`, and the editor's snapshot (`Config::e
 The matrix is demanded as a snapshot family, `target_capability`, keyed by the snapshot, so the configured target is in its key. It produces:
 
 - the effective target (§1.3);
-- one **use row** per capability use in the program: a `std::` call path (the site the CHECK:14811 gate reads today), a placement entry naming `pinned`/a pool/`where async_io`, a `bindings` entry, an `@export` declaration, an `@ffi("js")` declaration, a `run()` on an `@export locus`, plus the manifest's `[ffi] link`;
-- the refusals: every use whose cell is `Reject` for the effective target, as a located `Diag` carrying the cell's witness.
+- one **use row** per operational use in the program (the producer's contract is below), plus the declaration-level uses: a placement entry naming `pinned`/a pool/`where async_io`, a `bindings` entry, an `@export` declaration, an `@ffi("js")` declaration, a `run()` on an `@export locus`, and the manifest's `[ffi] link`;
+- the refusals: every use whose cell is `Reject` for the effective target, as a located `Diag` carrying the cell's witness and the use's witness chain.
+
+**The operational use producer.** Today's gate (CHECK:14811–14825) reads one shape: an `Expr::Call` whose callee is an `Expr::Path` spelled `std::…`. It misses every other way a program reaches a capability. A `target wasm` program that constructs `std::io::tcp::Listener { … }` in a params initializer with no off-main placement (the shape of `crates/hale-cli/tests/target_model.rs:335`, minus its placement) passes it, because the literal is an `Expr::Struct`. So do a method call on a `std::io::tcp::Stream` handle, a call through an imported seed's alias, and a call to a wrapper whose body holds the written use. The producer's contract:
+
+- **Resolved identities, never spelling.** It runs over the resolved graph, under the graph's horizon policy: each expression's resolved declaration, not its path text. No `std::` prefix is matched anywhere; CHECK:14811's segment match goes.
+- **What is a use.** A construction (`Expr::Struct` whose resolved type is a stdlib locus or struct carrying a requirement); a receiver call resolved to a stdlib method, whatever the receiver's spelling; a free call resolved to a stdlib function, directly or through an import alias; a call to a function outside the program's own sources (a library's or the stdlib's) whose requirement summary is non-empty; and the implicit obligations a use brings with it: the constructed locus's lifecycle (`birth`, `run()`, `dissolve`; a `Listener`'s accept loop is its `run()`), and the runtime calls its placement or binding implies.
+- **Where a requirement comes from.** From the stdlib body, walked through resolved calls, until it reaches a primitive. At a primitive (a codegen-native `lower_std_*`, a `lotus_*` runtime entry) it comes from the audited primitive lowering contract (§2.1's rows), which names the capability. Each function gets a requirement summary, computed once per snapshot.
+- **The witness travels.** Each use row carries its chain from the source site to the requirement (use → resolved callee → … → primitive → capability). The refusal is located at the first site in the program's own sources and names the chain's last link. The program's own sources are the horizon: a wrapper inside the program is refused at the written use in its body, once, and its callers carry no duplicate; a callee beyond the horizon (a library, the stdlib) is refused at the call that crosses it.
+- **Type-only mentions stay admitted.** A parameter, field, return or annotation type, or a generic argument, is not a use: a portable signature may name `std::io::tcp::Stream` (`target_model.rs:331`).
+- **Holes have a policy.** When a use's requirements cannot be resolved (an unresolved callee, a receiver typed `Ty::Unknown`, a summary cycle the walk cannot close), the use is a located refusal on any target whose column holds a `Reject` in that capability family ("cannot establish what `<callee>` requires on wasm32"), and a recorded hole, counted in the shadow and never silent, on a target whose column admits the whole family. An unresolved requirement is never an admission on a restricted target.
 
 `Snapshot::demand_check` appends the refusals beside `build_rule_diags` (SNAP:1088–1091). The check, the build and the editor therefore show the same refusals. The build is gated by them through `demand_lowering` (SNAP:1104–1113), and the editor publishes them as it publishes every check diagnostic. The entry points, all through `Snapshot::load`:
 
@@ -192,7 +201,7 @@ Each section gives the question the row answers today, the cell that replaces it
 
 The import list keeps one job, the T7 backstop (§2.3): catching an **unresolved** import that reaches the link. It says nothing about semantics.
 
-**Moves.** The gate reads the effective target instead of `wasm_target`. The seam (`spec/registry.md`: `wasm_unavailable_stdlib(` ×2 in `check.rs`) moves to `capability.rs`. The table becomes the cells, and the function is deleted. Call forms only, as today: a path in type position (`std::io::tcp::Stream` as a parameter type, `crates/hale-cli/tests/target_model.rs:331`) is not a use. That is a deliberate keep, so a portable signature can name a type.
+**Moves.** The gate reads the effective target instead of `wasm_target`. The seam (`spec/registry.md`: `wasm_unavailable_stdlib(` ×2 in `check.rs`) moves to `capability.rs`. The table becomes the cells, and the function is deleted. The gate stops being a call-form match: uses come from the operational use producer (§1.4), so construction, receiver calls, import aliases and wrappers carry the capability too. A path in type position (`std::io::tcp::Stream` as a parameter type, `crates/hale-cli/tests/target_model.rs:331`) is still not a use. That is a deliberate keep, so a portable signature can name a type.
 
 ### 2.2 `wasm_target` (CHECK:589)
 
@@ -308,6 +317,7 @@ Every wasm-relevant program in the tree is listed below. There are 33 in tracked
 | docs `hale` blocks (`docs/src/systems/webassembly.md:23, 57, 187`), spec/ffi.md:384, 435 | parse only (`docs_snippets.rs`) | the same | unchanged |
 | a program using `pinned`, `cooperative(pool = X≠main)`, `where async_io` or a `bindings { }` entry under wasm32 | admitted; never runs | `Reject` (T2) | **new**; no program in the tree is affected |
 | a program calling a `std::time` clock read or `sleep`, `std::env`, `std::ts`, or an operation without a passing lowering contract, under wasm32 | admitted; stubbed | `Reject` per T3 | **new**; no program in the tree is affected |
+| a program reaching a refused namespace by construction, a handle's method, an import alias or a library wrapper, under wasm32 | admitted (the gate reads `std::` call paths only) | refused at the use, with the witness chain (§1.4) | **new**; no program in the tree is affected |
 | an `@ffi("js")` declaration in a native build | native link failure (inferred) | located refusal (T5) | **new located diagnostic**; no native program in the tree declares one |
 | `@export locus` with `run()` under wasm32 | codegen refusal (CG:14130) | checker refusal, same wording | **moves to `hale check`**; no program in the tree |
 
@@ -487,6 +497,12 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 | 7 | `@export locus L { fn run() { } }` | lowers (an ordinary locus) | refused at `run` |
 | 8 (reverse) | `@export fn go() { }` with no `fn main` and no declaration | refused at the `@export` (`EntryInversion × Host`, §1.3's wording) | lowers |
 | 9 (reverse) | `@ffi("js") fn console_log(m: String);` called from main | refused at the declaration (T5) | lowers |
+| 10 | `main locus App { params { l: std::io::tcp::Listener = std::io::tcp::Listener { … }; } }`, no placement | lowers | refused at the struct literal; witness `Listener` → its `run()` accept → `StdNamespace(io::tcp)` |
+| 11 | `fn serve(conn: std::io::tcp::Stream) { let _ = conn.recv(64) or ""; }` (the receiver shape of `examples/http-hello/main.hl:25`) | lowers | the parameter type admitted; refused at `conn.recv`, witness the resolved method → `StdNamespace(io::tcp)` |
+| 12 | `import "clock" as c;` whose `stamp()` calls `std::time::now()`; main calls `c::stamp()` | lowers | refused at `c::stamp()`, witness `c::stamp` → `std::time::now` → the clock-read contract row |
+| 13 | `fn pid() -> Int { return std::process::pid(); }` called from main twice | lowers | refused once, at the written call inside `pid`, none at the two call sites |
+
+Cases 10–13 are the use producer's acceptance cases: each asserts the location and the full witness chain, on check, build and the editor alike, and a type-only variant of each (the same declarations with the use removed) is admitted.
 
 ### P3 3 of 3: codegen reads the cells; lifecycle; the gate column (M · Sonnet pane for the site switch; S · Opus for the lifecycle commit and the gate column)
 
