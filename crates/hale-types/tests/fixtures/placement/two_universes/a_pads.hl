@@ -1,0 +1,121 @@
+// Two universes, one numeric id (the placement correspondence, § 3
+// case 12). Each `PadN` is two sites (the declaration and the `run`
+// the omitted-run desugar adds), so the 106 pads put `Collider` at
+// seed 0, index 212: the id the stdlib analysis copy, minted alone
+// from seed 0 and index 0, gives `__StdIoUdpReader`. The test asserts
+// the collision before anything else, so a stdlib edit that moves the
+// reader is a red test and a new padding count, never a vacuous pass.
+locus Pad0 { }
+locus Pad1 { }
+locus Pad2 { }
+locus Pad3 { }
+locus Pad4 { }
+locus Pad5 { }
+locus Pad6 { }
+locus Pad7 { }
+locus Pad8 { }
+locus Pad9 { }
+locus Pad10 { }
+locus Pad11 { }
+locus Pad12 { }
+locus Pad13 { }
+locus Pad14 { }
+locus Pad15 { }
+locus Pad16 { }
+locus Pad17 { }
+locus Pad18 { }
+locus Pad19 { }
+locus Pad20 { }
+locus Pad21 { }
+locus Pad22 { }
+locus Pad23 { }
+locus Pad24 { }
+locus Pad25 { }
+locus Pad26 { }
+locus Pad27 { }
+locus Pad28 { }
+locus Pad29 { }
+locus Pad30 { }
+locus Pad31 { }
+locus Pad32 { }
+locus Pad33 { }
+locus Pad34 { }
+locus Pad35 { }
+locus Pad36 { }
+locus Pad37 { }
+locus Pad38 { }
+locus Pad39 { }
+locus Pad40 { }
+locus Pad41 { }
+locus Pad42 { }
+locus Pad43 { }
+locus Pad44 { }
+locus Pad45 { }
+locus Pad46 { }
+locus Pad47 { }
+locus Pad48 { }
+locus Pad49 { }
+locus Pad50 { }
+locus Pad51 { }
+locus Pad52 { }
+locus Pad53 { }
+locus Pad54 { }
+locus Pad55 { }
+locus Pad56 { }
+locus Pad57 { }
+locus Pad58 { }
+locus Pad59 { }
+locus Pad60 { }
+locus Pad61 { }
+locus Pad62 { }
+locus Pad63 { }
+locus Pad64 { }
+locus Pad65 { }
+locus Pad66 { }
+locus Pad67 { }
+locus Pad68 { }
+locus Pad69 { }
+locus Pad70 { }
+locus Pad71 { }
+locus Pad72 { }
+locus Pad73 { }
+locus Pad74 { }
+locus Pad75 { }
+locus Pad76 { }
+locus Pad77 { }
+locus Pad78 { }
+locus Pad79 { }
+locus Pad80 { }
+locus Pad81 { }
+locus Pad82 { }
+locus Pad83 { }
+locus Pad84 { }
+locus Pad85 { }
+locus Pad86 { }
+locus Pad87 { }
+locus Pad88 { }
+locus Pad89 { }
+locus Pad90 { }
+locus Pad91 { }
+locus Pad92 { }
+locus Pad93 { }
+locus Pad94 { }
+locus Pad95 { }
+locus Pad96 { }
+locus Pad97 { }
+locus Pad98 { }
+locus Pad99 { }
+locus Pad100 { }
+locus Pad101 { }
+locus Pad102 { }
+locus Pad103 { }
+locus Pad104 { }
+locus Pad105 { }
+
+locus Collider {
+    params {
+        inner: Inner = Inner { };
+    }
+}
+
+locus Inner { }

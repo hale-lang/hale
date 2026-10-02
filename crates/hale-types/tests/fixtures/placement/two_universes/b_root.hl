@@ -1,0 +1,20 @@
+fn ignore_conn(s: std::io::tcp::Stream) { }
+
+main locus App {
+    params {
+        c: Collider = Collider { };
+        u: std::io::udp::Reader = std::io::udp::Reader { };
+        l: std::io::tcp::Listener = std::io::tcp::Listener {
+            host: "127.0.0.1",
+            port: 0,
+            max_accepts: -1,
+            on_connection: ignore_conn,
+        };
+    }
+    placement {
+        u: cooperative(pool = io);
+        l: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
