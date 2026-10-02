@@ -750,10 +750,9 @@ fn seed_diagnostics(
     }
     match snap.demand_check() {
         Ok(checked) => {
+            // The editor's config carries the allocation advisory in the
+            // check's typing stage, beside the build rules.
             let mut diags = checked.diags.clone();
-            if let Ok(summary) = snap.demand_alloc_summary() {
-                diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), summary, true));
-            }
             // What `hale check` does last: every name in the author's
             // spelling, and an advisory about a seed the target imports
             // left to that seed's own check.

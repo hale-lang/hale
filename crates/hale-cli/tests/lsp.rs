@@ -1295,6 +1295,230 @@ fn lsp_publishes_claim_diagnostics_against_the_right_file() {
 /// column, the message.
 type Finding = (String, u64, u64, String);
 
+/// A seed's files: name and text.
+type Files = &'static [(&'static str, &'static str)];
+
+/// The plain parity seed (`lsp_overlays_lsp_on_disk_and_check_agree`).
+const PLAIN: Files = &[
+    ("a.hl", "fn helper(n: Int) -> Int {\n    let s: String = n;\n    return n + 1;\n}\n"),
+    ("b.hl", "fn main() {\n    let x: Int = helper(1);\n    let y: Int = \"not an int\";\n    println(x);\n    save();\n    Work { };\n}\n"),
+    (
+        "c.hl",
+        "interface Performer { fn perform(x: Int) -> Int; }\n\
+locus Doubler { fn perform(x: Int) -> Int { return x * 2; } }\n\
+locus Rt { params { performer: Performer = Doubler { }; } fn go() -> Int { return self.performer.perform(2); } }\n\
+locus Work {\n    params { rt: Rt = Rt { }; }\n    fn rewire() { let d = Doubler { }; self.rt = Rt { performer: d }; }\n    run() { self.rewire(); }\n}\n\
+fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity\", \"x\");\n}\n",
+    ),
+];
+
+/// The importing parity seed and its library
+/// (`lsp_and_check_agree_over_a_seed_that_imports`).
+const IMPORTING: Files =
+    &[("main.hl", "import \"lib\" as lib;\n\nfn main() {\n    let x: String = lib::helper(1);\n    println(x);\n}\n")];
+const IMPORTED: Files = &[("lib.hl", "fn helper(n: Int) -> Int {\n    return n + 1;\n}\n")];
+
+/// The generated-source parity seed
+/// (`lsp_and_check_agree_over_a_seed_with_generated_source`).
+const GENERATED: Files = &[(
+    "main.hl",
+    "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        let bad: String = o.id;\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-generated.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        let o = Order::from_json(\"{}\");\n\
+        println(o.id);\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n",
+)];
+
+/// The author's-leak parity seed
+/// (`lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls`).
+const AUTHOR_LEAK_APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
+type Ack { id: Int; }\n\
+type Seen { ids: [Int; 2]; }\n\
+topic Orders { payload: Order; subject: \"app.order\"; }\n\
+locus Desk {\n\
+    params { seen: Seen = Seen { ids: [0, 0] }; }\n\
+    bus { subscribe Orders as on_order; }\n\
+    fn on_order(o: Order) -> Ack {\n\
+        self.seen = Seen { ids: [o.id, o.qty] };\n\
+        return Ack { id: o.id };\n\
+    }\n\
+}\n\
+main locus App {\n\
+    params { desk: Desk = Desk { }; }\n\
+    bindings { api: unix(\"/tmp/hale-lsp-parity-author-leak.sock\", bound: 4, on_full: refuse); }\n\
+    run() {\n\
+        println(\"up\");\n\
+    }\n\
+}\n\
+fn main() { App { }; }\n";
+const AUTHOR_LEAK: Files = &[("main.hl", AUTHOR_LEAK_APP)];
+
+/// The laws parity seed (`lsp_and_check_agree_over_a_seed_with_laws`):
+/// a law the program breaks, beside a finding of each kind the typing
+/// stage carries — a build rule (a bare fallible call) and the
+/// allocation advisory (a builder per loop turn) — none of which keeps
+/// the program from denoting a model, so the law is judged. The law
+/// sits in the second file, past the first file's bytes.
+const LAWS: Files = &[
+    (
+        "a_domain.hl",
+        "locus B {\n    params { n: Int = 0; }\n    fn stop() { self.n = self.n + 1; }\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n        }\n    }\n}\n\
+locus A {\n    params { b: B = B { }; }\n    fn go() { self.b.stop(); }\n}\n\
+group src = { A };\ngroup dst = { B };\n",
+    ),
+    (
+        "b_app.hl",
+        "main locus App {\n    params { a: A = A { }; }\n    claims {\n        isolation: forbid reaches(src, dst);\n    }\n    run() { self.a.go(); save(); }\n}\n\
+fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity-laws\", \"x\");\n}\n\
+fn main() { App { }; }\n",
+    ),
+];
+
+/// Every parity seed: its tag, its files and its library's.
+const PARITY: &[(&str, Files, Files)] = &[
+    ("plain", PLAIN, &[]),
+    ("import", IMPORTING, IMPORTED),
+    ("generated", GENERATED, &[]),
+    ("author-leak", AUTHOR_LEAK, &[]),
+    ("laws", LAWS, &[]),
+];
+
+/// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
+/// law and holds a finding of each kind the typing stage carries is
+/// checked three ways, one answer, the law among the findings.
+#[test]
+fn lsp_and_check_agree_over_a_seed_with_laws() {
+    let check = agree_three_ways("laws", LAWS, &[]);
+    for (file, want) in [
+        ("b_app.hl", "claim `isolation` violated"),
+        ("b_app.hl", "can fail (IoError) and this call says nothing about it"),
+        ("a_domain.hl", "unbounded allocation"),
+    ] {
+        assert!(
+            check.iter().any(|(f, .., m)| f == file && m.contains(want)),
+            "no `{want}` finding in {file}: {check:?}"
+        );
+    }
+}
+
+/// A diagnostic as the stage test compares it: kind, span, message.
+fn diag_key(d: &hale_syntax::Diag) -> (String, usize, usize, String) {
+    (d.kind_str().to_string(), d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone())
+}
+
+fn diag_keys<'d>(diags: impl IntoIterator<Item = &'d hale_syntax::Diag>) -> Vec<(String, usize, usize, String)> {
+    diags.into_iter().map(diag_key).collect()
+}
+
+/// The check's two stages over every parity seed (F.40 phase 3, X1).
+///
+/// - `demand_check` is `demand_typing`'s diagnostics followed by
+///   `demand_laws`', each stage counted once.
+/// - The typing stage ends with what the editor's config asks of it,
+///   the build rules then the allocation advisory; the laws are the
+///   claims judged over the model, finished after the typing's own, and
+///   the two stages' own findings repeat nothing.
+/// - Today's single pass (`finish_check_diags` over the typing and the
+///   claims, then the rules and the advisory) reports the same findings,
+///   only with the laws ahead of the rules and the advisory.
+/// - `hale check`'s composition (its snapshot's check, which holds no
+///   rule and no advisory, then the advisory and the rules it runs
+///   itself) reports the same findings as the editor's check.
+#[test]
+fn the_check_is_its_typing_stage_followed_by_its_laws_stage() {
+    use hale_frontend::frontend::LoadMode;
+    use hale_frontend::snapshot::{Config, Snapshot};
+    use hale_frontend::source::Disk;
+    let load = |entry: &std::path::Path, mode: LoadMode, config: Config| match Snapshot::load(entry, mode, &Disk, config) {
+        Ok(s) => s,
+        Err(_) => panic!("{} loads", entry.display()),
+    };
+    let mut laws_judged = 0;
+    for (tag, app, lib) in PARITY {
+        let root = scratch_root(&format!("stages-{tag}"));
+        std::fs::create_dir_all(root.join("lib")).expect("mkdir");
+        let dir = root.canonicalize().expect("canonical dir");
+        for (f, text) in *app {
+            std::fs::write(dir.join(f), text).expect("write app");
+        }
+        for (f, text) in *lib {
+            std::fs::write(dir.join("lib").join(f), text).expect("write lib");
+        }
+        let (last, _) = app.last().expect("an app file");
+        let s = load(&dir.join(last), LoadMode::Editor, Config::editor());
+        let typing = s.demand_typing().expect("typed").diags.clone();
+        let laws = s.demand_laws().expect("judged").diags.clone();
+        let check = s.demand_check().expect("checked").diags.clone();
+        assert_eq!(diag_keys(&check), diag_keys(typing.iter().chain(&laws)), "{tag}: the check is its two stages");
+        let builds = s.builds();
+        for stage in ["typing_stage", "laws_stage", "expression_typing"] {
+            assert_eq!(builds[stage], 1, "{tag}: `{stage}` once");
+        }
+
+        let bundle = s.bundle();
+        let tail: Vec<hale_syntax::Diag> = hale_types::build_rule_diags(&bundle)
+            .into_iter()
+            .chain(hale_types::unbounded_alloc_warnings(&bundle, s.demand_alloc_summary().expect("the summary"), true))
+            .collect();
+        assert!(typing.len() >= tail.len(), "{tag}: the typing stage holds the rules and the advisory");
+        let own = &typing[..typing.len() - tail.len()];
+        assert_eq!(diag_keys(&typing[own.len()..]), diag_keys(&tail), "{tag}: the rules, then the advisory");
+        let mut claims = Vec::new();
+        if hale_types::denotes_a_model(own) && hale_types::judgment::has_claim_surface(&bundle) {
+            let model = s.demand_model().expect("a model");
+            let effects = s.demand_effect_certificates().expect("the report");
+            claims = s.with_env(|| hale_types::judgment::claim_law_diags_over(&bundle, model, effects, s.demand_alloc_summary().expect("the summary")));
+            laws_judged += 1;
+        }
+        let mut finished = claims.clone();
+        hale_types::finish_check_diags_after(own, &mut finished);
+        assert_eq!(diag_keys(&laws), diag_keys(&finished), "{tag}: the laws, finished after the typing's own");
+        let mut seen = std::collections::BTreeSet::new();
+        for k in diag_keys(own.iter().chain(&laws)) {
+            assert!(seen.insert(k.clone()), "{tag}: {k:?} repeats");
+        }
+        let sorted = |mut v: Vec<(String, usize, usize, String)>| {
+            v.sort();
+            v
+        };
+        let mut today = own.to_vec();
+        today.extend(claims);
+        hale_types::finish_check_diags(&mut today);
+        today.extend(tail);
+        assert_eq!(sorted(diag_keys(&check)), sorted(diag_keys(&today)), "{tag}: the findings of today's single pass");
+
+        let c = load(&dir, LoadMode::WholeSeed, Config::check(true, false));
+        let (c_typing, c_laws) = (c.demand_typing().expect("typed"), c.demand_laws().expect("judged"));
+        let c_check = c.demand_check().expect("checked");
+        assert_eq!(diag_keys(&c_check.diags), diag_keys(c_typing.diags.iter().chain(&c_laws.diags)), "{tag}: hale check's too");
+        let c_bundle = c.bundle();
+        let cli: Vec<hale_syntax::Diag> = c_check
+            .diags
+            .iter()
+            .cloned()
+            .chain(hale_types::unbounded_alloc_warnings(&c_bundle, c.demand_alloc_summary().expect("the summary"), true))
+            .chain(hale_types::build_rule_diags(&c_bundle))
+            .collect();
+        assert_eq!(sorted(diag_keys(&cli)), sorted(diag_keys(&check)), "{tag}: hale check's findings are the editor's");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    assert_eq!(laws_judged, 1, "the laws seed's law is judged, and only there");
+}
+
 /// The overlay parity fixture (F.40 phase 2.1a): one seed, checked
 /// three ways, one answer.
 ///
@@ -1315,15 +1539,7 @@ type Finding = (String, u64, u64, String);
 /// trusted.
 #[test]
 fn lsp_overlays_lsp_on_disk_and_check_agree() {
-    const A: &str = "fn helper(n: Int) -> Int {\n    let s: String = n;\n    return n + 1;\n}\n";
-    const B: &str = "fn main() {\n    let x: Int = helper(1);\n    let y: Int = \"not an int\";\n    println(x);\n    save();\n    Work { };\n}\n";
-    const C: &str = "interface Performer { fn perform(x: Int) -> Int; }\n\
-locus Doubler { fn perform(x: Int) -> Int { return x * 2; } }\n\
-locus Rt { params { performer: Performer = Doubler { }; } fn go() -> Int { return self.performer.perform(2); } }\n\
-locus Work {\n    params { rt: Rt = Rt { }; }\n    fn rewire() { let d = Doubler { }; self.rt = Rt { performer: d }; }\n    run() { self.rewire(); }\n}\n\
-fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity\", \"x\");\n}\n";
-
-    let check = agree_three_ways("plain", &[("a.hl", A), ("b.hl", B), ("c.hl", C)], &[]);
+    let check = agree_three_ways("plain", PLAIN, &[]);
     // Not vacuous: a finding in each file, the cross-file call among
     // none (the whole seed was loaded), and one of each build rule.
     for f in ["a.hl", "b.hl", "c.hl"] {
@@ -1345,10 +1561,7 @@ fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity\", \"x\");\n}\n"
 /// mismatch.
 #[test]
 fn lsp_and_check_agree_over_a_seed_that_imports() {
-    const APP: &str = "import \"lib\" as lib;\n\nfn main() {\n    let x: String = lib::helper(1);\n    println(x);\n}\n";
-    const LIB: &str = "fn helper(n: Int) -> Int {\n    return n + 1;\n}\n";
-
-    let check = agree_three_ways("import", &[("main.hl", APP)], &[("lib.hl", LIB)]);
+    let check = agree_three_ways("import", IMPORTING, IMPORTED);
     assert!(
         check.iter().any(|(file, line, ..)| file == "main.hl" && *line == 4),
         "hale check found no mismatch at the imported call: {check:?}"
@@ -1365,27 +1578,7 @@ fn lsp_and_check_agree_over_a_seed_that_imports() {
 /// inside generated code.
 #[test]
 fn lsp_and_check_agree_over_a_seed_with_generated_source() {
-    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
-type Ack { id: Int; }\n\
-topic Orders { payload: Order; subject: \"app.order\"; }\n\
-locus Desk {\n\
-    bus { subscribe Orders as on_order; }\n\
-    fn on_order(o: Order) -> Ack {\n\
-        let bad: String = o.id;\n\
-        return Ack { id: o.id };\n\
-    }\n\
-}\n\
-main locus App {\n\
-    params { desk: Desk = Desk { }; }\n\
-    bindings { api: unix(\"/tmp/hale-lsp-parity-generated.sock\", bound: 4, on_full: refuse); }\n\
-    run() {\n\
-        let o = Order::from_json(\"{}\");\n\
-        println(o.id);\n\
-    }\n\
-}\n\
-fn main() { App { }; }\n";
-
-    let check = agree_three_ways("generated", &[("main.hl", APP)], &[]);
+    let check = agree_three_ways("generated", GENERATED, &[]);
     assert!(
         check.iter().all(|(file, ..)| file == "main.hl"),
         "a finding positioned outside the author's file (inside generated source?): {check:?}"
@@ -1407,28 +1600,8 @@ fn main() { App { }; }\n";
 /// generated code.
 #[test]
 fn lsp_and_check_report_an_authors_leak_in_a_handler_the_api_binding_calls() {
-    const APP: &str = "type Order { id: Int `json:\"id\"`; qty: Int `json:\"qty\"`; }\n\
-type Ack { id: Int; }\n\
-type Seen { ids: [Int; 2]; }\n\
-topic Orders { payload: Order; subject: \"app.order\"; }\n\
-locus Desk {\n\
-    params { seen: Seen = Seen { ids: [0, 0] }; }\n\
-    bus { subscribe Orders as on_order; }\n\
-    fn on_order(o: Order) -> Ack {\n\
-        self.seen = Seen { ids: [o.id, o.qty] };\n\
-        return Ack { id: o.id };\n\
-    }\n\
-}\n\
-main locus App {\n\
-    params { desk: Desk = Desk { }; }\n\
-    bindings { api: unix(\"/tmp/hale-lsp-parity-author-leak.sock\", bound: 4, on_full: refuse); }\n\
-    run() {\n\
-        println(\"up\");\n\
-    }\n\
-}\n\
-fn main() { App { }; }\n";
-
-    let check = agree_three_ways("author-leak", &[("main.hl", APP)], &[]);
+    const APP: &str = AUTHOR_LEAK_APP;
+    let check = agree_three_ways("author-leak", AUTHOR_LEAK, &[]);
     assert!(
         check.iter().all(|(file, ..)| file == "main.hl"),
         "a finding positioned outside the author's file: {check:?}"

@@ -26,9 +26,17 @@
 //!   domain each instance of the deployed root's tower runs in.
 //! - [`Snapshot::demand_model`]: the application model, over the scope
 //!   and those three.
-//! - [`Snapshot::demand_check`]: what the checker reports — the scope's
-//!   and the typing's diagnostics, and the laws judged over the model
-//!   when the program declares any.
+//! - [`Snapshot::demand_typing`]: the check's first stage, everything
+//!   that needs no model — the scope's and the typing's diagnostics,
+//!   then the build rules and the allocation advisory where the config
+//!   asks for them.
+//! - [`Snapshot::demand_laws`]: the check's second stage — the laws
+//!   judged over the model, when the program declares any and denotes a
+//!   model.
+//! - [`Snapshot::demand_check`]: what the checker reports, the
+//!   composition of the two stages: the typing's diagnostics followed by
+//!   the laws', ordered and deduplicated as one pass over both would
+//!   leave them.
 //! - [`Snapshot::demand_lowering`]: the view codegen lowers
 //!   ([`LoweringView`]), after a check that reported no error.
 //!
@@ -117,6 +125,12 @@ pub const FAMILIES: [&str; 19] = [
     "lowering_view",
 ];
 
+/// The check's two stages ([`Snapshot::demand_typing`],
+/// [`Snapshot::demand_laws`]), counted by [`Snapshot::builds`] beside
+/// the families: a stage is the `demand` family's composition of
+/// families, not a family of the registry's.
+pub const STAGES: [&str; 2] = ["typing_stage", "laws_stage"];
+
 /// The target a snapshot is configured for: `--target`, or the host.
 /// The checker asks it what `where async_io` may assume and how a
 /// refusal names the platform; the effective-target row
@@ -178,8 +192,13 @@ pub struct Config {
     /// The rules a build refuses beside the check (the borrow rule and
     /// bare fallible calls, `hale_types::build_rule_diags`), appended to
     /// the check's diagnostics, so they block lowering. `hale check`
-    /// runs them itself, beside its reports.
+    /// runs them itself, beside its reports. Part of the typing stage.
     pub build_rules: bool,
+    /// The allocation advisory (`hale_types::unbounded_alloc_warnings`,
+    /// every site surveyed), appended to the typing stage after the
+    /// build rules. The editor's: `hale check` runs it itself, beside
+    /// its reports, under its own `--no-warn-unbounded-alloc`.
+    pub alloc_advisory: bool,
     /// Whether the lowering view waits for a check with no error. On
     /// for every entry point; off only for the test harness's snapshot
     /// ([`Config::harness`]), which lowers what it is handed.
@@ -198,6 +217,7 @@ impl Config {
             allow_unowned_subscriber,
             wrap_main: false,
             build_rules: false,
+            alloc_advisory: false,
             check_gates_lowering: true,
         }
     }
@@ -216,6 +236,7 @@ impl Config {
             allow_unowned_subscriber: false,
             wrap_main: false,
             build_rules: true,
+            alloc_advisory: false,
             check_gates_lowering: true,
         }
     }
@@ -235,9 +256,10 @@ impl Config {
     /// once every member of it read and parsed, so it holds a whole
     /// program (GH #721), and its check carries the build rules `hale
     /// check` runs beside its own (the borrow rule, bare fallible
-    /// calls), so the editor shows every error the CLI prints.
+    /// calls) and the allocation advisory, so the editor shows every
+    /// finding the CLI prints, all of them before the laws.
     pub fn editor() -> Self {
-        Config { build_rules: true, ..Config::check(true, false) }
+        Config { build_rules: true, alloc_advisory: true, ..Config::check(true, false) }
     }
 
     fn digest(&self) -> u64 {
@@ -267,6 +289,7 @@ impl Config {
         d.flag(self.allow_unowned_subscriber);
         d.flag(self.wrap_main);
         d.flag(self.build_rules);
+        d.flag(self.alloc_advisory);
         d.flag(self.check_gates_lowering);
         d.finish()
     }
@@ -427,10 +450,17 @@ pub struct Snapshot {
     effects: OnceCell<Result<EffectRows, Blocked>>,
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
+    /// The typing stage, and how many of its diagnostics are the
+    /// check's own (the scope's and the typing's, finished) before the
+    /// build rules and the advisory: what the laws are deduplicated
+    /// against.
+    typing_stage: OnceCell<Result<(Checked, usize), Blocked>>,
+    laws: OnceCell<Result<Checked, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
     intra_locus: OnceCell<Result<IntraLocusStage, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
+    stage_builds: [Cell<u32>; STAGES.len()],
 }
 
 /// What [`Snapshot::from_program`]'s program is keyed and minted by:
@@ -599,10 +629,13 @@ impl Snapshot {
             effects: OnceCell::new(),
             placement: OnceCell::new(),
             model: OnceCell::new(),
+            typing_stage: OnceCell::new(),
+            laws: OnceCell::new(),
             check: OnceCell::new(),
             intra_locus: OnceCell::new(),
             lowering: OnceCell::new(),
             builds,
+            stage_builds: Default::default(),
         };
         snap.count("seed_loading");
         if snap.config.wrap_main {
@@ -873,22 +906,28 @@ impl Snapshot {
         hale_types::claims::with_env_binding(&self.env, f)
     }
 
-    /// How many times each family's producer ran for this snapshot:
-    /// every family of [`FAMILIES`], zero when never demanded.
+    /// How many times each family's producer ran for this snapshot,
+    /// and each stage of the check: every family of [`FAMILIES`] and
+    /// every stage of [`STAGES`], zero when never demanded.
     pub fn builds(&self) -> BTreeMap<&'static str, u32> {
         FAMILIES
             .iter()
             .zip(&self.builds)
+            .chain(STAGES.iter().zip(&self.stage_builds))
             .map(|(f, n)| (*f, n.get()))
             .collect()
     }
 
     fn count(&self, family: &'static str) {
-        let i = FAMILIES
+        let (names, cells): (&[&str], &[Cell<u32>]) = match STAGES.contains(&family) {
+            true => (&STAGES, &self.stage_builds),
+            false => (&FAMILIES, &self.builds),
+        };
+        let i = names
             .iter()
             .position(|f| *f == family)
-            .expect("a snapshot counts only its own families");
-        self.builds[i].set(self.builds[i].get() + 1);
+            .expect("a snapshot counts only its own families and stages");
+        cells[i].set(cells[i].get() + 1);
     }
 
     /// The entry row: which `main locus` is the program's entry, by the
@@ -1243,30 +1282,59 @@ impl Snapshot {
             .as_ref()
     }
 
-    /// The check: the typing's diagnostics, and — when the program
-    /// denotes a model and declares a law — the laws judged over the
-    /// model. A program that swears to nothing demands no model (the
-    /// epic's demand rule, GH #476 criterion 1). A build's config
-    /// ([`Config::build_rules`]) appends the build rules after them.
-    pub fn demand_check(&self) -> Result<&Checked, &Blocked> {
-        self.check
+    /// The check's first stage, everything that needs no model: the
+    /// scope's and the typing's diagnostics in the user's spelling with
+    /// no repeats; then, where the config asks, the build rules
+    /// ([`Config::build_rules`]) and the allocation advisory
+    /// ([`Config::alloc_advisory`]). Blocked with the typing. The
+    /// editor publishes it before the laws are judged.
+    pub fn demand_typing(&self) -> Result<&Checked, &Blocked> {
+        self.typing_stage().map(|(stage, _)| stage)
+    }
+
+    fn typing_stage(&self) -> Result<&(Checked, usize), &Blocked> {
+        self.typing_stage
             .get_or_init(|| self.with_env(|| {
                 let mut diags = self.typing().map_err(Clone::clone)?.to_vec();
+                self.count("typing_stage");
+                hale_types::finish_check_diags(&mut diags);
+                let own = diags.len();
                 let bundle = self.bundle();
-                if hale_types::denotes_a_model(&diags)
-                    && hale_types::judgment::has_claim_surface(&bundle)
-                {
+                if self.config.build_rules {
+                    diags.extend(hale_types::build_rule_diags(&bundle));
+                }
+                if self.config.alloc_advisory {
+                    let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
+                    diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, true));
+                }
+                Ok((Checked { diags }, own))
+            }))
+            .as_ref()
+    }
+
+    /// The check's second stage: when the program denotes a model and
+    /// declares a law, the laws judged over the model, in the user's
+    /// spelling, none repeating a diagnostic of the typing's own or an
+    /// earlier law's; empty otherwise. A program that swears to nothing
+    /// demands no model (the epic's demand rule, GH #476 criterion 1).
+    /// Blocked with the typing.
+    pub fn demand_laws(&self) -> Result<&Checked, &Blocked> {
+        self.laws
+            .get_or_init(|| self.with_env(|| {
+                let typed = self.typing().map_err(Clone::clone)?;
+                let (stage, own) = self.typing_stage().map_err(Clone::clone)?;
+                self.count("laws_stage");
+                let mut diags = Vec::new();
+                let bundle = self.bundle();
+                if hale_types::denotes_a_model(typed) && hale_types::judgment::has_claim_surface(&bundle) {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");
                         let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
                         let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
-                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary));
+                        diags = hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary);
                     }
                 }
-                hale_types::finish_check_diags(&mut diags);
-                if self.config.build_rules {
-                    diags.extend(hale_types::build_rule_diags(&bundle));
-                }
+                hale_types::finish_check_diags_after(&stage.diags[..*own], &mut diags);
                 Ok(Checked { diags })
             }))
             .as_ref()
@@ -1301,6 +1369,20 @@ impl Snapshot {
                 };
                 self.count("intra_locus");
                 Ok(hale_types::resolved::rewrite_intra_locus(program))
+            })
+            .as_ref()
+    }
+
+    /// The check: [`Snapshot::demand_typing`]'s diagnostics followed by
+    /// [`Snapshot::demand_laws`]', each stage demanded once. Every
+    /// entry point reads it; the editor publishes the two stages apart,
+    /// and its second publication is this.
+    pub fn demand_check(&self) -> Result<&Checked, &Blocked> {
+        self.check
+            .get_or_init(|| {
+                let typing = self.demand_typing().map_err(Clone::clone)?;
+                let laws = self.demand_laws().map_err(Clone::clone)?;
+                Ok(Checked { diags: typing.diags.iter().chain(&laws.diags).cloned().collect() })
             })
             .as_ref()
     }
