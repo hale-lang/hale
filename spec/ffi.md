@@ -464,7 +464,10 @@ A call whose requirements cannot be established (a method on a receiver
 whose type is not known, a call through a function-typed parameter, a
 computed callee, a call in the program's own code or in another seed's
 params initializer or `on_failure` handler through a local function value
-bound to anything but a fn — `let f = self.g; f()`) is refused under
+bound to anything but a fn — `let f = self.g; f()` — or reassigned; a
+local a `while` or `for` loop reassigns anywhere in its condition or body
+is unresolved for the whole loop and after it, since a call ahead of the
+assignment runs, on the next iteration, the value it stored) is refused under
 wasm32 as ``cannot
 establish what `<callee>` requires on wasm32: <why>``, since an unknown
 requirement is never an admission there; on the native targets it is

@@ -247,6 +247,40 @@ fn a_call_through_an_unresolved_local_is_a_hole_in_the_programs_own_code() {
     admitted(&format!("{fns}fn main() {{\n    let f = one;\n    println(f());\n}}\n"));
 }
 
+/// The review of #1318, round 3 (loops): a loop is walked once, so a
+/// local the loop reassigns is a hole where it is called ahead of the
+/// assignment — on a later iteration it runs the value the assignment
+/// stored — in a fn's body (the summary's walk) and in a params
+/// initializer (the admission's own walk) alike. A local the loop only
+/// reads is still followed to what it names.
+#[test]
+fn a_call_through_a_local_a_loop_reassigns_is_a_hole() {
+    let fns = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n";
+    let hole = format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}");
+    refused_on_wasm32(
+        &format!(
+            "{fns}fn main() {{\n    let mut f = one;\n    let mut i = 0;\n    while i < 2 {{\n        println(f());\n        \
+             f = two;\n        i = i + 1;\n    }}\n}}\n"
+        ),
+        &[(8, 17, &hole)],
+    );
+    refused_on_wasm32(
+        &format!(
+            "{fns}locus Holder {{\n    params {{\n        n: Int = {{\n            let mut f = one;\n            \
+             let mut n = 0;\n            for i in 0..2 {{\n                n = f();\n                f = two;\n            \
+             }}\n            n\n        }};\n    }}\n    run() {{ println(self.n); }}\n}}\n\nfn main() {{ Holder {{ }}; }}\n"
+        ),
+        &[(10, 21, &hole)],
+    );
+    // The control: a local no assignment in the loop touches is followed
+    // to the path it names, the witness through it.
+    refused_on_wasm32(
+        "fn main() {\n    let f = std::process::pid;\n    let mut i = 0;\n    while i < 2 {\n        println(f());\n        \
+         i = i + 1;\n    }\n}\n",
+        &[(5, 17, &format!("`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `f` → `std::process::pid`"))],
+    );
+}
+
 /// The declaration-level uses: placement entries and bindings are use
 /// rows with their capability, located at the entry.
 #[test]

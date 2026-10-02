@@ -740,6 +740,121 @@ fn a_call_through_an_unresolved_local_in_own_code_is_a_hole() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const WIDTH: &str = "fn width() -> Int { return 1; }\n";
+
+/// The host admits `main` importing `lib` as `kidlib`.
+fn host_admits(tag: &str, lib: &str, main: &str) {
+    let dir = case_dir(&format!("{tag}_host"));
+    std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+    std::fs::write(dir.join("kidlib/kid.hl"), lib).unwrap();
+    std::fs::write(dir.join("main.hl"), format!("import \"kidlib\" as lib;\n{main}")).unwrap();
+    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "{tag}: the host admits it:\n{check}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The review of #1318, round 3 (loops): the walk visited a loop body
+/// once with the binding at its entry, so `n = f(); f = pid;` in a
+/// two-iteration `while` met `width` and nothing else, though the second
+/// iteration calls `pid`, and `lib::Kid { }` was admitted. A local a loop
+/// reassigns is unresolved for the whole loop: the construction is
+/// refused as a hole, in a `while` and a `for` alike, as the sequential
+/// reassignment is. A local the loop only reads still resolves, with the
+/// witness through its target. The host admits each.
+#[test]
+fn a_call_ahead_of_a_loops_reassignment_is_refused_at_the_construction() {
+    if !wasm_toolchain() {
+        eprintln!(
+            "SKIP a_call_ahead_of_a_loops_reassignment_is_refused_at_the_construction: no wasm32 clang or wasm-ld"
+        );
+        return;
+    }
+    let hole = "cannot establish what `lib::Kid` requires on wasm32: the callee is a function value the summary \
+                cannot resolve — witness: `lib::Kid` → `params { n }` → `f()`";
+    let fixed = format!(
+        "`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `lib::Kid` → `params {{ n }}` → `f` → \
+         `lib::pid` → `std::process::pid`"
+    );
+    let cases = [
+        (
+            "loop_while",
+            "{\n            let mut f = width;\n            let mut i = 0;\n            let mut n = 0;\n            \
+             while i < 2 {\n                n = f();\n                f = pid;\n                i = i + 1;\n            \
+             }\n            n\n        }",
+            hole,
+        ),
+        (
+            "loop_for",
+            "{\n            let mut f = width;\n            let mut n = 0;\n            for i in 0..2 {\n                \
+             n = f();\n                f = pid;\n            }\n            n\n        }",
+            hole,
+        ),
+        ("loop_sequential", "{ let mut f = width; f = pid; f() }", hole),
+        (
+            "loop_fixed",
+            "{ let f = pid; let mut i = 0; let mut n = 0; while i < 2 { n = f(); i = i + 1; } n }",
+            &fixed,
+        ),
+    ];
+    for (tag, init, want) in cases {
+        let lib = format!(
+            "{WIDTH}{PID}locus Kid {{\n    params {{\n        n: Int = {init};\n    }}\n    run() {{ println(self.n); }}\n}}\n"
+        );
+        let main = "fn main() { lib::Kid { }; }\n";
+        seeded_case(tag, Some(&lib), main, |at, selector| {
+            vec![format!("{}:13 {}", at + 1, want.replace("{selector}", selector))]
+        });
+        host_admits(tag, &lib, main);
+    }
+}
+
+/// The same loop in an imported `on_failure` body, which the member walk
+/// serves too: refused at the construction as a hole through
+/// `on_failure()`.
+#[test]
+fn a_call_ahead_of_a_loops_reassignment_in_on_failure_is_refused() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_ahead_of_a_loops_reassignment_in_on_failure_is_refused: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let keeper = format!(
+        "{ONCE}{WIDTH}{PID}locus Keeper {{\n    params {{ early: Once = Once {{ }}; seen: Int = 0; }}\n    \
+         on_failure(c: Once, err: ClosureViolation) {{\n        let mut f = width;\n        let mut i = 0;\n        \
+         while i < 2 {{\n            self.seen = f();\n            f = pid;\n            i = i + 1;\n        }}\n    \
+         }}\n}}\n"
+    );
+    let main = "fn main() { lib::Keeper { }; }\n";
+    seeded_case("loop_failure", Some(&keeper), main, |at, _| {
+        vec![format!(
+            "{}:13 cannot establish what `lib::Keeper` requires on wasm32: the callee is a function value the \
+             summary cannot resolve — witness: `lib::Keeper` → `on_failure()` → `f()`",
+            at + 1
+        )]
+    });
+    host_admits("loop_failure", &keeper, main);
+}
+
+/// The same loop in the program's own code, where the summary walks the
+/// body: the call ahead of the reassignment is a hole, located at it.
+#[test]
+fn a_call_ahead_of_a_loops_reassignment_in_own_code_is_a_hole() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_ahead_of_a_loops_reassignment_in_own_code_is_a_hole: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let lib = format!("{WIDTH}{PID}");
+    let main = "fn main() {\n    let mut f = lib::width;\n    let mut i = 0;\n    while i < 2 {\n        println(f());\n        \
+                f = lib::pid;\n        i = i + 1;\n    }\n}\n";
+    seeded_case("loop_own", Some(&lib), main, |at, _| {
+        vec![format!(
+            "{}:17 cannot establish what `f()` requires on wasm32: the callee is a function value the summary \
+             cannot resolve",
+            at + 5
+        )]
+    });
+    host_admits("loop_own", &lib, main);
+}
+
 /// `hale run` executes what it builds, and a declared program builds a
 /// wasm32 module: refused, as `--target wasm32` is.
 #[test]
