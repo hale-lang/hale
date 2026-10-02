@@ -501,7 +501,8 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         }))
     };
     let entry = hale_types::entry::entry_row(&bundle);
-    let forms = hale_types::form_rows::form_rows(&bundle, &top, &entry, true);
+    let placement = hale_types::placement::derive_placement(&bundle, &top, &entry);
+    let forms = hale_types::form_rows::form_rows(&bundle, &top, &placement, true);
     let bus = build_bus_graph(&bundle, &top);
     let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog).intra_locus;
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
@@ -514,6 +515,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         forms: &forms,
         bus: &bus,
         intra_locus: &intra_locus,
+        placement: &placement,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags

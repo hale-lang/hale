@@ -60,9 +60,10 @@
 //! not dynamic sites: `fn main` runs once, on main, so each is bound by its
 //! statement's loop context alone.
 //!
-//! The pre-mint pool map sync inference reads
-//! ([`crate::check::compute_pool_of_locus_type`], run per program before the
-//! sequence and the mint) is untouched and never converted into rows.
+//! The checker's F.31 rule and sync inference read the table per instance,
+//! through [`PlacementTable::running`]: a type's answer is the domains of
+//! its instances, never one per type, and an instance the table does not
+//! place is a hole that disables a proof, never main by default.
 //!
 //! ## Where the schema departs from the design's § 1
 //!
@@ -258,6 +259,19 @@ pub enum Bound {
     /// No static bound; the reason, which a count over the table renders
     /// as its uncertainty.
     Unbounded(String),
+}
+
+/// The reason a literal written inside a loop is unbounded.
+const BUILT_IN_A_LOOP: &str = "built in a loop";
+
+impl Bound {
+    /// The literal is written inside a loop, so one site builds an
+    /// occurrence per iteration. Distinct from a literal in a scope that
+    /// runs many times (a factory called in a loop, a locus body), each
+    /// run of which builds one occurrence at its own site.
+    pub fn built_in_a_loop(&self) -> bool {
+        matches!(self, Bound::Unbounded(why) if why == BUILT_IN_A_LOOP)
+    }
 }
 
 /// One literal of the root declaration: a construction template.
@@ -503,6 +517,79 @@ impl PlacementTable {
     /// its held row's domain, so a domain question skips these.
     pub fn handed_off(&self) -> BTreeSet<&InstanceKey> {
         self.instances.values().filter_map(|r| r.built_by.as_ref()).collect()
+    }
+
+    /// Where instances run: every row but the [`PlacementTable::handed_off`]
+    /// ones, indexed for the questions a consumer asks of a declaration's
+    /// instances and of an instance's fields.
+    pub fn running(&self) -> Running<'_> {
+        let handed_off = self.handed_off();
+        let unlinked: BTreeSet<&InstanceKey> = self
+            .holes
+            .iter()
+            .filter_map(|h| match (&h.at, &h.kind) {
+                (HoleAt::Instance(k), HoleKind::Reuse { .. }) => Some(k),
+                _ => None,
+            })
+            .filter(|k| self.instances.get(*k).is_some_and(|r| r.built_by.is_none()))
+            .collect();
+        let mut of_decl: BTreeMap<SiteRef, Vec<&InstanceKey>> = BTreeMap::new();
+        let mut fields: BTreeMap<&InstanceKey, BTreeMap<&str, Vec<&InstanceKey>>> = BTreeMap::new();
+        for (k, r) in &self.instances {
+            if handed_off.contains(k) {
+                continue;
+            }
+            if let Some(d) = &r.realizes {
+                of_decl.entry(d.site).or_default().push(k);
+            }
+            if let (Some(o), Some(step)) = (&r.owner, k.path.last()) {
+                fields.entry(o).or_default().entry(step.field.as_str()).or_default().push(k);
+            }
+        }
+        Running { table: self, of_decl, fields, unlinked }
+    }
+}
+
+/// The rows of a [`PlacementTable`] where instances run
+/// ([`PlacementTable::running`]): a held instance is its held row, never
+/// the source row it was built as.
+pub struct Running<'t> {
+    pub table: &'t PlacementTable,
+    of_decl: BTreeMap<SiteRef, Vec<&'t InstanceKey>>,
+    fields: BTreeMap<&'t InstanceKey, BTreeMap<&'t str, Vec<&'t InstanceKey>>>,
+    unlinked: BTreeSet<&'t InstanceKey>,
+}
+
+impl<'t> Running<'t> {
+    /// A held row whose source the producer could not link (K-9): the
+    /// instance was built elsewhere, nothing below the row is asserted,
+    /// and an instance there runs in an unknown domain.
+    pub fn is_unlinked_held(&self, key: &InstanceKey) -> bool {
+        self.unlinked.contains(key)
+    }
+
+    /// The static instances of the declaration at `decl`, in key order.
+    /// Empty when the static tower builds none (a locus built only
+    /// dynamically, or one below a held row whose source is unlinked).
+    pub fn of_decl(&self, decl: SiteRef) -> &[&'t InstanceKey] {
+        self.of_decl.get(&decl).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The rows of `owner`'s field `field`: one, or one per replica or
+    /// alternative. Empty when the field holds no locus, or when nothing
+    /// below `owner` is enumerated (a hole).
+    pub fn field(&self, owner: &InstanceKey, field: &str) -> &[&'t InstanceKey] {
+        self.fields.get(owner).and_then(|f| f.get(field)).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn row(&self, key: &InstanceKey) -> &'t InstanceRow {
+        &self.table.instances[key]
+    }
+
+    /// The instance a row stands for: a held row's source row when the
+    /// source is linked (one instance, held), the row's own key otherwise.
+    pub fn instance(&self, key: &'t InstanceKey) -> &'t InstanceKey {
+        self.table.instances[key].built_by.as_ref().unwrap_or(key)
     }
 }
 
@@ -1740,7 +1827,7 @@ impl<'a> Scopes<'a> {
 
     fn bound(&self, s: &Scope<'a>, in_loop: bool) -> Bound {
         if in_loop {
-            return Bound::Unbounded("built in a loop".to_string());
+            return Bound::Unbounded(BUILT_IN_A_LOOP.to_string());
         }
         let i = self
             .scopes
@@ -2031,16 +2118,8 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 pub mod legacy {
     use std::collections::BTreeMap;
 
-    use hale_syntax::ast::LocusDecl;
-
     use crate::bus_graph::Placement;
-    use crate::check::PoolId;
     use crate::symbol::Bundle;
-
-    /// F.31's owner-relative answer at `self.f`.
-    pub fn enclosing_field_placement(enclosing_locus: &LocusDecl, field_name: &str) -> Option<PoolId> {
-        crate::check::enclosing_field_placement(enclosing_locus, field_name)
-    }
 
     /// The ownership graph's per-type labels.
     pub fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {

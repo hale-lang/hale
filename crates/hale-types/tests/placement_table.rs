@@ -17,7 +17,7 @@ use hale_types::placement::{
     join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
     InstanceKey, InstanceRow, LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
 };
-use hale_types::check::{compute_pool_of_locus_type, PoolId};
+use hale_types::check::PoolId;
 use hale_types::snapshot::STDLIB_SEED;
 
 fn fixture(name: &str) -> PathBuf {
@@ -229,12 +229,13 @@ fn two_universes_one_numeric_id_stay_two_identities() {
 
 // ---------------------------------------------------- the producer
 
-/// The table is a family of the snapshot: demanded, it runs once, and
-/// a check demands it not at all (no consumer reads it yet).
+/// The table is a family of the snapshot: demanded, it runs once. The
+/// check reads it (the F.31 rule and sync inference, per instance), and
+/// a demand after the check reads the same table.
 #[test]
 fn the_table_is_demanded_once_per_snapshot() {
     let s = clean("two_instances.hl");
-    assert_eq!(s.builds()["placement"], 0, "the check reads no placement table");
+    assert_eq!(s.builds()["placement"], 1, "the check demands the table once");
     let first: *const PlacementTable = table(&s);
     let again: *const PlacementTable = table(&s);
     assert_eq!(first, again);
@@ -440,11 +441,15 @@ fn dynamic_sites_carry_their_domains_and_bounds() {
     let root = t.root.as_ref().unwrap();
     assert_eq!(root.constructions.len(), 1);
     assert!(matches!(&root.constructions[0].bound, Bound::Unbounded(why) if why.contains("loop")));
+    // The pinned-in-a-loop rule reads the cause: the root's literal is in
+    // a factory called in a loop, each call of which joins its own
+    // threads, not in a loop itself.
+    assert!(!root.constructions[0].bound.built_in_a_loop(), "{:?}", root.constructions[0].bound);
     let user: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
     let job = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Job")).expect("Job");
     assert!(matches!(&job.enclosing, Enclosing::Locus(d) if d.lowered == "App"));
     assert_eq!(job.domains, [PlacementTable::MAIN].into_iter().collect());
-    assert!(matches!(&job.bound, Bound::Unbounded(why) if why == "built in a loop"));
+    assert!(job.bound.built_in_a_loop(), "{:?}", job.bound);
     let child = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Child")).expect("Child");
     assert!(matches!(&child.enclosing, Enclosing::Locus(d) if d.lowered == "Hub"));
     assert_eq!(child.domains, [PlacementTable::MAIN].into_iter().collect());
@@ -663,17 +668,16 @@ fn a_held_instances_subtree_lives_in_its_holders_domain() {
     assert!(!t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone())), "the hole is the held row's alone");
     assert_eq!(t.handed_off(), [source, &source_k].into_iter().collect::<BTreeSet<_>>());
 
-    // Agreement: where `K` and `Roles` run, the handed-off rows skipped,
-    // is the legacy checker's pinned; the model's `App.h.roles.k` is the
-    // table's row.
-    let handed_off = t.handed_off();
-    let runs_in = |name: &str| -> BTreeSet<DomainId> {
-        t.instances.iter().filter(|(k, r)| !handed_off.contains(k) && lowered(r) == name).map(|(_, r)| r.domain).collect()
-    };
-    let legacy = compute_pool_of_locus_type(&s.bundle(), s.demand_scope().unwrap(), s.demand_entry().unwrap());
+    // Where `K` and `Roles` run, as the checker's F.31 rule and sync
+    // inference read it (`running`, the handed-off rows skipped), is the
+    // holder's pinned domain, as the legacy checker's map said; the
+    // model's `App.h.roles.k` is the table's row.
+    let running = t.running();
     for name in ["Roles", "K"] {
-        assert_eq!(runs_in(name), [h.domain].into_iter().collect(), "`{name}` runs in the holder's domain");
-        assert!(matches!(&legacy[name], PoolId::Pinned(f) if f == "h"), "the legacy map says `{name}` is pinned at `h`");
+        let site = t.instances.values().find(|r| lowered(r) == name).and_then(|r| r.realizes.as_ref()).unwrap().site;
+        let runs_in: BTreeSet<DomainId> = running.of_decl(site).iter().map(|k| t.instances[*k].domain).collect();
+        assert_eq!(runs_in, [h.domain].into_iter().collect(), "`{name}` runs in the holder's domain");
+        assert_eq!(PoolId::of_domain(t, h.domain), PoolId::Pinned("h".into()), "displayed as pinned at `h`");
     }
     let model = s.demand_model().unwrap_or_else(|_| panic!("the model is blocked"));
     let e = &model.entities;

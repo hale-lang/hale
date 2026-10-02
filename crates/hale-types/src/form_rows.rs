@@ -23,7 +23,7 @@
 //!
 //! The rows are the `sync_inference` family's: the snapshot demands
 //! them after the mint (`Snapshot::demand_forms`), over its scope and
-//! its entry row, and hands them to the checker (with its effects
+//! its placement table, and hands them to the checker (with its effects
 //! certificate engine), to the model and to lowering, which lays each
 //! map out by its effective discipline. Nothing writes the discipline
 //! into the program. A bundle no snapshot holds (the checker's and the
@@ -33,7 +33,7 @@ use std::collections::BTreeMap;
 
 use hale_syntax::ast::{Expr, FormAnnotation, LocusDecl, NodeId, TopDecl};
 
-use crate::entry::EntryRow;
+use crate::placement::PlacementTable;
 use crate::resolve::TopScope;
 use crate::sync_inference::{InferredSync, SyncDiscipline};
 use crate::Bundle;
@@ -264,20 +264,19 @@ pub fn sync_config(form: &FormAnnotation) -> SyncConfig {
 
 /// The producer: every `@form` declaration of `bundle` with its written
 /// configuration, and for a `hashmap` form its author did not configure,
-/// the discipline sync inference picks from the pools its methods are
-/// called from (the entry row's pool map over `top`).
+/// the discipline sync inference picks from the domains each of its
+/// instances is accessed from (the placement table's, per instance).
 ///
 /// `resolved` is whether `top` was built without a diagnostic. Inference
 /// reads declarations through the scope, and over a scope that did not
 /// resolve it does not run: such a program does not build, and the rows
 /// carry only what was written.
-pub fn form_rows(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow, resolved: bool) -> FormRows {
+pub fn form_rows(bundle: &Bundle<'_>, top: &TopScope, placement: &PlacementTable, resolved: bool) -> FormRows {
     let mut rows = FormRows::configured(bundle.programs.values().flat_map(|p| p.items.iter()));
     if !resolved {
         return rows;
     }
-    let pool_map = crate::check::compute_pool_of_locus_type(bundle, top, entry);
-    let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, &pool_map, &rows);
+    let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, placement, &rows);
     for row in &mut rows.rows {
         // Inference keys its candidates by name over the top level: a
         // module's form of the same name is not one of them.

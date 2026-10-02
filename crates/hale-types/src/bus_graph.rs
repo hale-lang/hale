@@ -1009,9 +1009,8 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
 /// (the multi-instance case); placement is informational for the
 /// gate, so a conservative single label suffices.
 /// `pub` for the F.40 placement shadow (`tests/shadow_placement.rs`),
-/// which runs this beside `check::compute_pool_of_locus_type` over the
-/// corpus; not an API. Both are legacy producers of the `placement`
-/// family in the registry.
+/// which runs this beside the placement table over the corpus; not an
+/// API. A legacy producer of the `placement` family in the registry.
 pub fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
     let mut out: BTreeMap<String, Placement> = BTreeMap::new();
 

@@ -1,48 +1,12 @@
-//! The first shadow (F.40 phase 0, step 0.5): two producers of the
-//! `placement` family, run beside each other over the whole corpus.
+//! The placement table against every legacy producer (F.40 phase 3, P1).
 //!
-//! `check::compute_pool_of_locus_type` is the checker's answer to
-//! "which pool does a locus type run in" (type-global: main's params
-//! and nested fields, inheriting the owner's pool; a qualified type
-//! path gets no row). `bus_graph::collect_subscriber_placements` is
-//! the bus graph's answer to the same question (only the loci main's
-//! placement entries name directly, keyed by the entry's last path
-//! segment). The correspondence resolves the bus graph's names to
-//! the checker's (a qualified stdlib path to its mangled name), so the
-//! two producers are compared in one key space and a fixed checker
-//! row would show as agreement, not as two one-sided rows. The
-//! registry lists both under `placement` as legacy
-//! producers; phase 1's placement lane replaces them with one table,
-//! and this shadow is the divergence report that lane starts from.
-//!
-//! Only programs that check clean are shadowed: the compiler's rows
-//! for a program it refuses decide nothing. A program is named by its
-//! content (`hale_graph::shadow::program_id`), so the fixture does
-//! not churn when a test file gains a literal above it.
-//!
-//! What this shadow cannot see: it parses each program alone, with
-//! no stdlib merge, no imports and no desugar, which is not the
-//! snapshot the compiler acts on. Phase 1.1's snapshot harness
-//! replaces the parse.
-//!
-//! The gate: every divergence over the corpus is classified in
-//! `fixtures/shadow_placement.txt` (known old bug, correction, spec
-//! disagreement) with a note, and none is a regression. Regenerate
-//! the fixture with `HALE_SHADOW_REGEN=1`, then classify by hand.
-//!
-//! ## The table against every legacy producer (F.40 phase 3, P1)
-//!
-//! The second test is the placement table's shadow
+//! The placement table's shadow
 //! (`notes/f40-placement-correspondence.md` § 3, hale-lang/hale#1296). It
 //! loads every seed through the frontend's snapshot — the load, the
 //! desugar sequence, the mint, the imports — and compares the table
 //! (`Snapshot::demand_placement`) with each legacy producer the snapshot
 //! can reach, one column each, every key prefixed by its column:
 //!
-//! - `checker`: `compute_pool_of_locus_type`, per locus type;
-//! - `receiver`: F.31's owner-relative answer at `self.f`
-//!   (`enclosing_field_placement`, else the caller's pool), per
-//!   `Owner.field`;
 //! - `bus`: `collect_subscriber_placements`, per type (no row is
 //!   `SameThread`, as the graph defines it);
 //! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
@@ -57,6 +21,12 @@
 //! `collect_main_placement` and its `DeploymentPlan` are the two legacy
 //! producers this shadow cannot run: they exist only inside lowering's
 //! context, and the lowering view (P1's PR 2) is where they are compared.
+//! The checker's per-type map (`compute_pool_of_locus_type`) and F.31's
+//! owner-relative answer at `self.f` (`enclosing_field_placement`) had a
+//! column each, and the phase-0 shadow compared the map with the bus
+//! graph's, until the F.31 rule, sync inference and the blocking check
+//! read the table (P1's checker switch): their classified divergences
+//! became the diagnostics that switch pins.
 //!
 //! **The gate.** The comparison runs per row, in memory, and `classify`
 //! names the correspondence's rows (§ 2, § 10) that explain each
@@ -77,223 +47,25 @@ use std::path::{Path, PathBuf};
 use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
-use hale_graph::shadow::{gate_message, parse_fixture, program_id, Class, Divergence, Kind, Report};
+use hale_graph::shadow::{gate_message, program_id, Class, Divergence, Kind, Report};
 use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
 use hale_types::bus_graph::{collect_subscriber_placements, Placement};
-use hale_types::check::{compute_pool_of_locus_type, PoolId};
-use hale_types::placement::legacy::{collect_placements, enclosing_field_placement};
+use hale_types::placement::legacy::collect_placements;
 use hale_types::placement::{
     Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
     PlacementTable, SiteUniverse,
 };
 use hale_types::resolve::TopScope;
 use hale_types::stdlib_bodies::mangled_locus_name;
-use hale_types::symbol::{SourceFile, TopSymbol, TypeKind};
+use hale_types::symbol::{TopSymbol, TypeKind};
 use hale_types::Bundle;
 
-fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shadow_placement.txt")
-}
-
-/// The correspondence: both producers onto one rendering of "where
-/// the type runs".
-fn pool_key(p: &PoolId) -> String {
-    match p {
-        PoolId::Cooperative(name) if name == "main" => "main".into(),
-        PoolId::Cooperative(name) => format!("pool:{name}"),
-        PoolId::Pinned(_) => "pinned".into(),
-    }
-}
 fn placement_key(p: &Placement) -> String {
     match p {
         Placement::SameThread => "main".into(),
         Placement::CrossPool(name) => format!("pool:{name}"),
         Placement::Pinned => "pinned".into(),
     }
-}
-
-/// A written locus type, as the checker names it: a qualified stdlib
-/// path (`std::io::tcp::Listener`) resolves to its mangled name
-/// (`__StdIoTcpListener`); a single segment is itself.
-fn checker_name(segments: &[&str]) -> String {
-    if segments.len() > 1 {
-        if let Some(m) = mangled_locus_name(segments) {
-            return m.to_string();
-        }
-    }
-    segments.last().map(|s| s.to_string()).unwrap_or_default()
-}
-
-/// The correspondence's table for one program: the last path segment
-/// of every locus-typed params field, as the bus graph keys it, to
-/// the name the checker keys the same type by. Built from the AST,
-/// the same fields both producers read.
-fn bus_graph_to_checker_names(program: &hale_syntax::ast::Program) -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
-    for item in &program.items {
-        let TopDecl::Locus(l) = item else { continue };
-        for member in &l.members {
-            let LocusMember::Params(pb) = member else { continue };
-            for p in &pb.params {
-                let Some(TypeExpr::Named { path, .. }) = &p.ty else { continue };
-                let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                let Some(last) = segs.last() else { continue };
-                map.insert(last.to_string(), checker_name(&segs));
-            }
-        }
-    }
-    map
-}
-
-/// What the source says about a locus type: where fields of that
-/// type are declared (and under which locus), and which placement
-/// entries name those fields. Read from the text, since neither
-/// producer keeps provenance on its rows.
-fn witnesses(src: &str, key: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::from("<top level>");
-    let mut fields: Vec<(String, String, usize)> = Vec::new();
-    for (i, line) in src.lines().enumerate() {
-        let t = line.trim();
-        if let Some(rest) = t.strip_prefix("main locus ").or_else(|| t.strip_prefix("locus ")) {
-            current = rest.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
-        }
-        // `name: Type = ...` or `name: a::b::Type = ...`
-        if let Some((name, rest)) = t.split_once(':') {
-            let name = name.trim();
-            let ty = rest.trim().split(|c: char| c == '=' || c == ';' || c == ' ').next().unwrap_or("");
-            let segs: Vec<&str> = ty.split("::").collect();
-            let resolved = checker_name(&segs);
-            let last = segs.last().copied().unwrap_or(ty);
-            if (resolved == key || last == key) && name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
-                fields.push((current.clone(), name.to_string(), i + 1));
-                out.push(format!("field `{name}: {ty}` declared in locus `{current}` (line {})", i + 1));
-            }
-        }
-    }
-    for (i, line) in src.lines().enumerate() {
-        let t = line.trim();
-        for (_, name, _) in &fields {
-            if t.starts_with(&format!("{name}:")) && (t.contains("pinned") || t.contains("cooperative")) {
-                out.push(format!("placement entry `{}` (line {})", t.trim_end_matches(';'), i + 1));
-            }
-        }
-    }
-    if out.is_empty() {
-        out.push(format!("no field of type `{key}` is declared by name in this program (a qualified or generated type)"));
-    }
-    out
-}
-
-/// What depends on the row: the subjects the locus subscribes, whose
-/// `direct_call_eligible` gate reads the bus graph's placement, and
-/// the F.31 cross-pool check, which reads the checker's.
-fn slice(src: &str, key: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut inside = false;
-    let mut depth = 0i32;
-    for line in src.lines() {
-        let t = line.trim();
-        if !inside {
-            if t.starts_with(&format!("locus {key} ")) || t.starts_with(&format!("locus {key}{{")) || t.starts_with(&format!("main locus {key} ")) {
-                inside = true;
-                depth = 0;
-            } else {
-                continue;
-            }
-        }
-        depth += t.matches('{').count() as i32 - t.matches('}').count() as i32;
-        if let Some(rest) = t.strip_prefix("subscribe ") {
-            let subject = rest.split(|c: char| c == ' ' || c == ';').next().unwrap_or("");
-            out.push(format!("dispatch gate of subject `{subject}` (direct_call_eligible reads the bus graph's placement of `{key}`)"));
-        }
-        if depth <= 0 && inside && t.contains('}') {
-            break;
-        }
-    }
-    out.push(format!("F.31 cross-pool method check for `{key}` (reads the checker's map)"));
-    out
-}
-
-fn shadow_one(report: &mut Report, origin: &str, src: &str) {
-    let Ok(program) = hale_syntax::parse_source(src) else { return };
-    if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
-        return;
-    }
-    let mut programs = BTreeMap::new();
-    programs.insert("app.hl".to_string(), &program);
-    let mut bundle = Bundle::new(programs);
-    bundle.sources = vec![SourceFile {
-        id: 0,
-        path: "app.hl".to_string(),
-        digest: "0".to_string(),
-        base: 0,
-        len: src.len() as u32,
-    }];
-    let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
-    let entry = hale_types::entry::entry_row(&bundle);
-    let old: Vec<(String, String)> = compute_pool_of_locus_type(&bundle, &top, &entry)
-        .iter()
-        .map(|(k, v)| (k.clone(), pool_key(v)))
-        .collect();
-    let mut new: Vec<(String, String)> = collect_subscriber_placements(&bundle)
-        .iter()
-        .map(|(k, v)| (k.clone(), placement_key(v)))
-        .collect();
-    // The correspondence's one explicit rule: the bus graph records a
-    // row only for a locus a placement entry names, and defines
-    // `SameThread` as "no placement entry at all", so for every type
-    // the checker knows, no row IS the bus graph's answer `main`.
-    // (Keys only the bus graph has stay as they are: the checker has
-    // no row for a qualified locus type, and that is a divergence.)
-    let names_for_fill = bus_graph_to_checker_names(&program);
-    for (k, _) in &old {
-        let present = new
-            .iter()
-            .any(|(n, _)| names_for_fill.get(n).map(|r| r == k).unwrap_or(n == k));
-        if !present {
-            new.push((k.clone(), "main".to_string()));
-        }
-    }
-    // The correspondence: the checker keys a type by its resolved name
-    // (a stdlib locus by its mangled name), the bus graph by the last
-    // segment of the path the field wrote. Both onto the checker's.
-    let names = bus_graph_to_checker_names(&program);
-    let id = program_id(origin, src);
-    report.compare_rows(
-        &id,
-        &old,
-        &new,
-        |k| Some(k.clone()),
-        |k| Some(names.get(k).cloned().unwrap_or_else(|| k.clone())),
-        |k| witnesses(src, k),
-        |k| slice(src, k),
-    );
-}
-
-#[test]
-fn the_two_placement_producers_agree_or_every_divergence_is_classified() {
-    let mut report = Report::new("placement");
-    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
-        shadow_one(&mut report, &p.origin, &p.source);
-    }
-    assert!(report.programs > 300, "the corpus walk is vacuous ({} programs)", report.programs);
-    let path = fixture_path();
-    let existing = std::fs::read_to_string(&path)
-        .ok()
-        .map(|t| parse_fixture(&t).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
-        .unwrap_or_default();
-    if std::env::var("HALE_SHADOW_REGEN").as_deref() == Ok("1") {
-        std::fs::write(&path, report.render_fixture(&existing)).expect("write fixture");
-        eprintln!("{}", report.render());
-        return;
-    }
-    let (unexplained, stale) = report.explain(&existing);
-    assert!(
-        unexplained.is_empty() && stale.is_empty(),
-        "{}",
-        gate_message(&report, &unexplained, &stale, "crates/hale-types/tests/fixtures/shadow_placement.txt")
-    );
 }
 
 // ---------------------------------- the table against every legacy producer
@@ -665,25 +437,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             .collect()
     };
 
-    // checker: the type map, first-wins.
-    let pool_map = compute_pool_of_locus_type(&bundle, top, entry);
-    let in_pool_map =
-        |_: &InstanceKey, r: &InstanceRow| r.realizes.as_ref().is_some_and(|d| pool_map.contains_key(&d.lowered));
-    columns.push(Column {
-        name: "checker",
-        old: pool_map.iter().map(|(k, v)| (k.clone(), pool_key(v))).collect(),
-        new: typed_new.clone(),
-        map_old: BTreeMap::new(),
-        witness: type_witness(&in_pool_map),
-        global: global.clone(),
-        slice: "F.31 cross-pool rule; pinned-in-a-loop; sync inference's pre-mint map",
-        decl: BTreeMap::new(),
-    });
-
-    // receiver: F.31's owner-relative answer at `self.f`, per Owner.field.
-    let mut recv_new: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut recv_old: BTreeMap<String, String> = BTreeMap::new();
-    let mut recv_witness: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // Owner.field → the declarations the field's rows realize.
     let mut field_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (k, r) in &t.instances {
@@ -692,47 +445,12 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
         }
         let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
         let Some(owner) = t.instances.get(o).and_then(|o| o.realizes.as_ref()) else { continue };
-        let key = format!("{}.{}", owner.lowered, step.field);
         field_decls
-            .entry(key.clone())
+            .entry(format!("{}.{}", owner.lowered, step.field))
             .or_default()
             .insert(r.realizes.as_ref().map(|d| d.lowered.clone()).unwrap_or_else(|| "<hole>".into()));
-        let rel = match r.owner_relative {
-            OwnerRelative::SameAsOwner => "same",
-            OwnerRelative::OffOwner => "off",
-        };
-        recv_new.entry(key.clone()).or_default().insert(rel.to_string());
-        let w = recv_witness.entry(key.clone()).or_default();
-        w.push(describe(k, r));
-        let decl = decl_of(&bundle, owner);
-        let Some(caller) = pool_map.get(&owner.lowered) else {
-            if let Some(c) = paths.first_unseen(o, &bundle, top, &in_pool_map) {
-                w.push(format!("cause: the owner is not in the checker's map: {c}"));
-            }
-            continue;
-        };
-        let Some(decl) = decl else { continue };
-        // The checker evaluates a receiver only when the field's type is a
-        // single-segment locus name.
-        let kind = field_kind(decl, &step.field, top);
-        if kind != "locus" {
-            w.push(format!("cause: {kind} {}field `{}`", if k.path.len() == 1 { "root " } else { "nested " }, paths.path(k)));
-            continue;
-        }
-        let callee = enclosing_field_placement(decl, &step.field).unwrap_or_else(|| caller.clone());
-        recv_old.insert(key, if &callee == caller { "same".into() } else { "off".into() });
     }
     let field_decls: BTreeMap<String, String> = field_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect();
-    columns.push(Column {
-        name: "receiver",
-        old: recv_old.into_iter().collect(),
-        new: recv_new.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
-        map_old: BTreeMap::new(),
-        witness: recv_witness,
-        global: global.clone(),
-        slice: "F.31 receiver check (the callee's pool relative to the caller's)",
-        decl: field_decls.clone(),
-    });
 
     // bus and ownership: the per-type label, keyed by the last segment of
     // the placed field's written type; no row is `SameThread`. A label's
@@ -1075,31 +793,6 @@ fn table_report() -> TableReport {
 /// open class among them.
 const DESIGN_ROWS: &[(&str, Class, &str)] = &[
     (
-        "K-1",
-        Class::KnownOldBug,
-        "a root field typed by a qualified path: `type_expr_locus_name` returns None for any multi-segment path, so \
-         the checker's derivation has no row there or below. § 2.1",
-    ),
-    (
-        "K-3",
-        Class::KnownOldBug,
-        "one type, instances in several domains: the checker's map is first-wins per type, the table per instance. \
-         Agreement for F.31 (off the root a receiver co-locates); sync inference's switch is C1's (K-5). § 2.1",
-    ),
-    (
-        "K-6",
-        Class::KnownOldBug,
-        "a field typed by a contract, a generic or a qualified path, or by an alias at the root, which the checker's \
-         derivation does not resolve to a locus, so it has no row there or below. A nested alias is seen: the nested \
-         walk reads the resolved type (§ 10.6). § 2.1",
-    ),
-    (
-        "K-7",
-        Class::Correction,
-        "the entry is an implicit construction: a literal directly in `fn main` builds a template the checker's map, \
-         seeded from the root's tower alone, does not hold (§ 10.1; cases 13-15, `placement_table.rs`). § 2.1",
-    ),
-    (
         "K-8",
         Class::Correction,
         "a held instance's subtree lives in its holder's domain (K-8 / M-8, § 10.8; case 16): the table projects \
@@ -1107,15 +800,6 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          rows answer where it was built (`built_by`), read by no domain question. Agreement where the producer \
          links the source; where it cannot (a parameter, a name bound twice), the source template stands on main \
          beside the held row and the type's set holds both. § 2.1",
-    ),
-    (
-        "K-9",
-        Class::Correction,
-        "an unlinked held source (K-9 / M-9, § 10.9): the table records the `Reuse` hole and asserts no subtree; \
-         the checker's map took the declared type's default subtree under the holder (a known old bug: it \
-         fabricates rows an override may contradict), so a type whose only table rows stand in the template the \
-         held row may be is pinned there and main here. A consumer switch treats the hole as unknown: it disables \
-         a proof or an optimization and never defaults to main or to pinned. § 2.1",
     ),
     (
         "B-1",
@@ -1258,24 +942,6 @@ fn openness(c: Class) -> u8 {
     }
 }
 
-/// The design row a first-unseen cause names for the checker's columns:
-/// what the checker's derivation cannot see.
-fn checker_cause_row(c: &str) -> Option<&'static str> {
-    if c.starts_with("a literal `fn main` builds") {
-        return Some("K-7");
-    }
-    if c.starts_with("an adapter of the root's bindings") {
-        return Some("B-7");
-    }
-    // "<kind> root|nested field `path`[ realizing a stdlib declaration]"
-    let root = c.contains(" root field ");
-    Some(match (c.split(' ').next().unwrap_or(""), root) {
-        ("qualified-stdlib" | "qualified", true) => "K-1",
-        ("contract-typed" | "generic" | "qualified-stdlib" | "qualified", _) | ("aliased", true) => "K-6",
-        _ => return None,
-    })
-}
-
 /// The design rows that explain a divergence, or `None` when none does:
 /// a divergence the design does not name fails the gate.
 fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
@@ -1296,19 +962,7 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
     let held_residue = rows.iter().any(|w| w.contains(", held)"))
         && rows.iter().any(|w| w.contains("` on main (") && w.contains(source))
         && rows.iter().all(|w| w.contains(", held)") || (w.contains("` on main (") && w.contains(source)));
-    // K-9's: the table's only rows of the type stand in a template an
-    // unlinked held row may be; the off-main answer is the declared
-    // type's default subtree the checker took under the holder.
-    let unlinked_only = !rows.is_empty() && rows.iter().all(|w| w.contains("` on main (") && w.contains(source));
     let ids = match (col, d.kind) {
-        ("checker", Kind::Disagreement) if multi && held_residue => vec!["K-8"],
-        ("checker", Kind::Disagreement) if !multi && unlinked_only && d.old.as_deref() != Some("main") => {
-            vec!["K-9"]
-        }
-        ("checker", Kind::Disagreement) if multi => vec!["K-3"],
-        ("checker", Kind::OnlyNew) | ("receiver", Kind::OnlyNew) => {
-            every(&|c| checker_cause_row(c.strip_prefix("the owner is not in the checker's map: ").unwrap_or(c)))?
-        }
         ("bus", Kind::Disagreement) | ("ownership", Kind::Disagreement) => {
             let o = col == "ownership";
             if multi && held_residue && d.old.as_deref() == Some("main") {

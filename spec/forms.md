@@ -801,14 +801,14 @@ runtime has no synchronization on the hashmap entry points
 into a `@form(hashmap)` receiver whose discipline does not
 synchronize are typecheck-rejected (F.32-0). The opt-in path is
 the `sync = ` kwarg. A top-level map with no `sync =` argument
-gets the discipline sync inference picks from the pools its
-methods are called from (F.32-1∞), and `sync = none` keeps a map
+gets the discipline sync inference picks from the pools each of
+its instances is called from (F.32-1∞), and `sync = none` keeps a map
 unsynchronized whatever inference would pick; see `semantics.md`
 § "A form's sync discipline" for the rule both follow.
 
 | Annotation | Discipline | Status |
 |---|---|---|
-| `@form(hashmap)` | inferred: none (single-pool only) unless its methods are called from several pools | shipped |
+| `@form(hashmap)` | inferred: none (single-pool only) unless one of its instances is called from several pools | shipped |
 | `@form(hashmap, sync = none)` | single-pool only; inference does not run | shipped |
 | `@form(hashmap, sync = serialized)` | per-map `pthread_mutex_t` (F.32-1α) | shipped |
 | `@form(hashmap, sync = striped)` | cell-level CAS + per-map `pthread_rwlock_t` for grow + cache-padded cells (F.32-1β2-v2) | shipped |

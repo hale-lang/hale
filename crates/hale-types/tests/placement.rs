@@ -522,6 +522,192 @@ fn main() { App { }; }
     );
 }
 
+// F.40 phase 3, P1: the F.31 rule reads the placement table. The caller
+// is each instance of the enclosing locus, in the domain the table gives
+// it, and the receiver is that instance's row at the field, however the
+// field's type is written. The legacy per-type map read a field's type
+// only as a single-segment locus name, so a field typed by a qualified
+// path (K-1), an alias or a contract (K-6) was no receiver at all.
+
+fn cross_pool(src: &str) -> Vec<String> {
+    check(src).into_iter().filter(|m| m.contains("cross-pool method call")).collect()
+}
+
+/// K-1: a root field typed by a qualified stdlib path is a locus, placed
+/// like any other, and a direct call into it from the root's thread is
+/// the same F.31 error.
+#[test]
+fn a_qualified_locus_field_is_placed() {
+    let src = r#"
+main locus App {
+    params {
+        log: std::log::Logger = std::log::Logger { name: "app" };
+    }
+    placement {
+        log: cooperative(pool = io);
+    }
+    run() {
+        self.log.info("up");
+    }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        cross_pool(src),
+        ["cross-pool method call: `self.log.info` invokes a method on locus `std::log::Logger` placed \
+          `cooperative(pool = io)`, but the enclosing locus `App` is placed `cooperative(pool = main)`. \
+          Cross-pool coordination must go through the bus, not a direct call. See spec/types.md \
+          § \"Single-threaded-method invariant (F.31)\"."],
+    );
+}
+
+/// K-6: a root field typed by an alias is the declaration the alias
+/// names, and one typed by a contract holds the implementation that was
+/// built; either, placed off the root's thread, is a receiver the F.31
+/// rule judges, named by the declaration it realizes. Rule 2 refuses
+/// the contract-typed field's placement entry, as it did before; the
+/// F.31 error now stands beside that refusal.
+#[test]
+fn an_aliased_or_contract_typed_root_field_is_placed() {
+    let aliased = r#"
+type Held = Holder;
+
+locus Holder {
+    fn poke() { }
+}
+
+main locus App {
+    params {
+        h: Held = Holder { };
+    }
+    placement {
+        h: pinned;
+    }
+    run() {
+        self.h.poke();
+    }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        cross_pool(aliased),
+        ["cross-pool method call: `self.h.poke` invokes a method on locus `Holder` placed `pinned (at `h`)`, \
+          but the enclosing locus `App` is placed `cooperative(pool = main)`. Cross-pool coordination must go \
+          through the bus, not a direct call. See spec/types.md § \"Single-threaded-method invariant (F.31)\"."],
+    );
+    let contract = r#"
+interface Counter {
+    fn count() -> Int;
+}
+
+locus Churner {
+    fn count() -> Int { return 3; }
+}
+
+main locus App {
+    params {
+        j: Counter = Churner { };
+    }
+    placement {
+        j: cooperative(pool = io);
+    }
+    run() {
+        let n = self.j.count();
+    }
+}
+
+fn main() { App { }; }
+"#;
+    assert_eq!(
+        check(contract),
+        [
+            "placement entry: field `j` has type `Counter` which is not a locus type; placement applies only \
+             to locus instances",
+            "cross-pool method call: `self.j.count` invokes a method on locus `Churner` placed \
+             `cooperative(pool = io)`, but the enclosing locus `App` is placed `cooperative(pool = main)`. \
+             Cross-pool coordination must go through the bus, not a direct call. See spec/types.md \
+             § \"Single-threaded-method invariant (F.31)\".",
+        ],
+    );
+}
+
+/// K-3 and K-7, agreement: one type built in two domains, and a locus
+/// `fn main` builds directly (the entry's construction, which the legacy
+/// map did not hold), each call their own fields from their own thread.
+/// Off the root a field co-locates with its owner, per instance, so
+/// nothing is flagged.
+#[test]
+fn an_instance_calling_its_own_field_is_never_cross_pool() {
+    let src = r#"
+locus K {
+    fn poke() { }
+}
+
+locus W {
+    params {
+        k: K = K { };
+    }
+    run() {
+        self.k.poke();
+    }
+}
+
+main locus App {
+    params {
+        a: W = W { };
+        b: W = W { };
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() {
+    let side = W { };
+    App { };
+}
+"#;
+    assert_eq!(cross_pool(src), Vec::<String>::new());
+}
+
+/// K-8: a root field that holds an instance built elsewhere runs in its
+/// holder's domain, whatever an entry names for it: the entry decides
+/// nothing (GH #890 refuses it, as before), so the root's call into the
+/// field is not cross-pool. The legacy owner-relative read
+/// (`enclosing_field_placement`) took the entry's pool and drew the F.31
+/// error beside that refusal.
+#[test]
+fn a_held_root_field_runs_in_its_holders_domain() {
+    let src = r#"
+locus W {
+    fn poke() { }
+}
+
+main locus App {
+    params {
+        w: W = W { };
+    }
+    placement {
+        w: pinned;
+    }
+    run() {
+        self.w.poke();
+    }
+}
+
+fn main() {
+    let held = W { };
+    App { w: held };
+}
+"#;
+    assert_eq!(cross_pool(src), Vec::<String>::new());
+    let errs = errors(src);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].contains(UNCONSUMED), "{}", errs[0]);
+}
+
 // ---------------------------------------------------------------
 // Dead bus receiver (a downstream handoff 2026-06-02): a locus that
 // subscribes to the bus but is placed cooperative on a non-main
