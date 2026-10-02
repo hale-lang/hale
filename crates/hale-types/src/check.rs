@@ -499,6 +499,10 @@ pub struct CheckInputs<'a> {
     /// The bus graph over the checked programs: rules 7, 9 and 10 read
     /// it (F.40 phase 3, C4).
     pub bus: &'a crate::bus_graph::BusGraph,
+    /// The sends lowering turns into direct calls, by each send's id
+    /// (the snapshot's `intra_locus` family): rule 10 reads it to tell
+    /// a synchronous cycle from one the queue carries.
+    pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -524,6 +528,7 @@ pub fn check_bundle(
     let entry = crate::entry::entry_row(bundle);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
     let bus = crate::bundle_bus_graph(bundle, top);
+    let intra_locus = crate::bundle_intra_locus(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -532,6 +537,7 @@ pub fn check_bundle(
         alloc_summary: &alloc_summary,
         forms: &forms,
         bus: &bus,
+        intra_locus: &intra_locus,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -819,9 +825,9 @@ pub fn check_bundle_reporting(
     check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
-    // an intra-locus loop is devirtualized synchronous self-dispatch
-    // that recurses without bound (error).
-    check_bus_cycles(inputs.bus, &mut diags);
+    // an intra-locus loop lowering turns into direct calls is
+    // synchronous self-dispatch that recurses without bound (error).
+    check_bus_cycles(inputs.bus, inputs.intra_locus, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
@@ -7023,15 +7029,16 @@ fn check_wildcard_publish_payloads(
 // graph is a publish→subscribe→publish loop.
 //
 // The dispatch model splits the two outcomes:
-//   - A **cross-locus** cycle (edges from ≥2 loci) hops between loci
-//     via the cooperative *queue* (drained at yield) — it spins the
-//     queue / livelocks → WARNING.
-//   - An **intra-locus** cycle (all edges in one locus) is
-//     intra-locus self-dispatch, which is **devirtualized to a direct
-//     synchronous call** (spec/semantics.md), so it recurses on one
-//     thread without bound → stack overflow → ERROR.
-// The error stays on the provably-synchronous intra-locus case only,
-// matching the error-precision discipline used elsewhere.
+//   - A cycle that hops through the cooperative *queue* (drained at
+//     yield) spins the queue / livelocks → WARNING. Every cross-locus
+//     cycle (edges from ≥2 loci) does, and so does an intra-locus one
+//     with a hop lowering leaves on the bus.
+//   - An **intra-locus** cycle whose every send the intra-locus rewrite
+//     **turns into a direct synchronous call** (spec/semantics.md)
+//     recurses on one thread without bound → stack overflow → ERROR.
+// The error stays on the provably-synchronous case only, matching the
+// error-precision discipline used elsewhere: the rewrite's relation,
+// not the subjects' spelling, says which hop is a call.
 
 /// The subjects a cycle passes through, as the graph's subscriptions
 /// spell them: `a → b → a`.
@@ -7044,46 +7051,69 @@ fn cycle_path(cycle: &[&crate::bus_graph::BusEdge]) -> String {
 /// Rule 10, over the graph's edges (F.40 phase 3, C4): an edge belongs
 /// to the declaration that wrote its handler, so the intra-locus check
 /// reads one declaration's edges and a cross-locus cycle counts
-/// declarations, not names.
-fn check_bus_cycles(bus: &crate::bus_graph::BusGraph, diags: &mut Vec<Diag>) {
+/// declarations, not names. Whether a hop is a direct call is the
+/// intra-locus rewrite's relation (`intra_locus`, by the send's id),
+/// never re-derived here.
+fn check_bus_cycles(
+    bus: &crate::bus_graph::BusGraph,
+    intra_locus: &[hale_syntax::desugar::IntraLocusRewrite],
+    diags: &mut Vec<Diag>,
+) {
     use crate::bus_graph::BusEdge;
     let roots = |keep: &dyn Fn(&BusEdge) -> bool| -> BTreeSet<&str> {
         bus.edges.iter().filter(|e| keep(e)).map(|e| e.from.as_str()).collect()
     };
+    let first_cycle = |keep: &dyn Fn(&BusEdge) -> bool| {
+        roots(keep).into_iter().find_map(|root| bus.cycle_from(root, keep))
+    };
+    let direct: BTreeSet<u32> =
+        intra_locus.iter().filter(|r| !r.send.is_none()).map(|r| r.send.0).collect();
 
-    // 1) Intra-locus cycles → error (one per declaration, in name
-    //    order). Sound because intra-locus self-dispatch is
-    //    devirtualized synchronous; only unconditional sends are edges.
+    // 1) Intra-locus cycles (one diagnostic per declaration, in name
+    //    order); only unconditional sends are edges. A cycle whose every
+    //    send lowering turns into a direct call recurses on one thread →
+    //    error. Otherwise a hop goes through the queue, which a cell can
+    //    spin but not overflow → the queue's warning.
     let mut order: Vec<usize> = (0..bus.decls.len()).collect();
     order.sort_by(|a, b| bus.decls[*a].name.cmp(&bus.decls[*b].name));
     let mut intra: BTreeSet<usize> = BTreeSet::new();
     for d in order {
         let keep = |e: &BusEdge| e.decl == d && e.unconditional;
-        for root in roots(&keep) {
-            if let Some(cycle) = bus.cycle_from(root, &keep) {
-                diags.push(Diag::ty(
-                    cycle[0].span,
-                    format!(
-                        "locus `{}` has a re-entrant synchronous bus cycle \
-                         `{}`: each publish onto a topic the locus also \
-                         subscribes is a direct in-thread call (intra-locus \
-                         self-dispatch), so this recurses without bound and \
-                         overflows the stack. Break the cycle, or route one \
-                         hop through a different pool (an async enqueue).",
-                        bus.decls[d].name,
-                        cycle_path(&cycle),
-                    ),
-                ));
-                intra.insert(d);
-                break;
-            }
+        let called = |e: &BusEdge| keep(e) && direct.contains(&e.send.0);
+        if let Some(cycle) = first_cycle(&called) {
+            diags.push(Diag::ty(
+                cycle[0].span,
+                format!(
+                    "locus `{}` has a re-entrant synchronous bus cycle \
+                     `{}`: each publish onto a topic the locus also \
+                     subscribes is a direct in-thread call (intra-locus \
+                     self-dispatch), so this recurses without bound and \
+                     overflows the stack. Break the cycle, or route one \
+                     hop through a different pool (an async enqueue).",
+                    bus.decls[d].name,
+                    cycle_path(&cycle),
+                ),
+            ));
+            intra.insert(d);
+        } else if let Some(cycle) = first_cycle(&keep) {
+            diags.push(Diag::warn(
+                cycle[0].span,
+                format!(
+                    "bus cycle `{}` in locus `{}`: a cell can re-trigger \
+                     its own publish, spinning the cooperative queue. Break \
+                     the loop or add a terminating condition.",
+                    cycle_path(&cycle),
+                    bus.decls[d].name,
+                ),
+            ));
+            intra.insert(d);
         }
     }
 
     // 2) Cross-locus cycles → warning: every send, guarded or not.
     //    Exclude the edges of declarations that already have an
-    //    intra-locus error so those don't shadow a genuine cross-locus
-    //    loop.
+    //    intra-locus diagnostic so those don't shadow a genuine
+    //    cross-locus loop.
     let keep = |e: &BusEdge| !intra.contains(&e.decl);
     let mut reported: BTreeSet<String> = BTreeSet::new();
     for root in roots(&keep) {

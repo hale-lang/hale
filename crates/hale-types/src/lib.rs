@@ -310,6 +310,7 @@ pub fn check_bundle_opts_scoped(
             alloc_summary: &alloc_summary,
             forms: &forms,
             bus: &bus,
+            intra_locus: &bundle_intra_locus(bundle),
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -374,6 +375,19 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
 /// reads its snapshot's (`Snapshot::demand_bus_graph`).
 pub(crate) fn bundle_bus_graph(bundle: &Bundle<'_>, top: &resolve::TopScope) -> bus_graph::BusGraph {
     bus_graph::build_bus_graph(bundle, top)
+}
+
+/// The intra-locus rewrite's relation for a bundle no snapshot holds
+/// (the test entries), over its programs merged as a build merges them:
+/// what the snapshot's `intra_locus` family holds for a verb.
+pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
+    let mut programs = bundle.programs.values();
+    let Some(first) = programs.next() else { return Vec::new() };
+    let mut merged = (*first).clone();
+    for p in programs {
+        merged.items.extend(p.items.iter().cloned());
+    }
+    resolved::rewrite_intra_locus(&merged).intra_locus
 }
 
 /// [`derive_application_model`] over the scope, the rows, the

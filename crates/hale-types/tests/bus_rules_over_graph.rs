@@ -348,15 +348,29 @@ fn main() { App { }; }
 
 /// A handler subscribed to the literal `"t"` that sends `T` by name
 /// sends to its own subject: one subject under the canonical key, so
-/// the unconditional self-republish is the intra-locus error. Before
-/// the migration the edge ran from `t` to `T`, two nodes, and rule 10
-/// said nothing.
+/// the unconditional self-republish is a cycle. Before the migration
+/// the edge ran from `t` to `T`, two nodes, and rule 10 said nothing.
+/// It is not the synchronous error: the intra-locus rewrite makes a
+/// direct call only of a send to a topic subscribed by its name, so
+/// this send is queued (the relation holds no row for it), and the
+/// cycle is the queue's warning. The same locus subscribing `T` by
+/// name is rewritten, and is the error.
 #[test]
 fn a_send_by_name_meets_a_subscription_by_literal_subject() {
     let msgs = check(NAME_SENT_LITERAL_SUBSCRIBED);
+    assert_eq!(
+        cycles(&msgs),
+        ["bus cycle `t → t` in locus `Echo`: a cell can re-trigger its own publish, spinning \
+          the cooperative queue. Break the loop or add a terminating condition."],
+        "{msgs:?}"
+    );
+    assert!(!msgs.iter().any(|m| m.contains("re-entrant")), "{msgs:?}");
+
+    let by_name = NAME_SENT_LITERAL_SUBSCRIBED.replace("subscribe \"t\" as on_t of type Tick", "subscribe T as on_t");
+    let msgs = check(&by_name);
     assert!(
         msgs.iter().any(|m| m
-            == "locus `Echo` has a re-entrant synchronous bus cycle `t → t`: each publish onto \
+            == "locus `Echo` has a re-entrant synchronous bus cycle `T → T`: each publish onto \
                 a topic the locus also subscribes is a direct in-thread call (intra-locus \
                 self-dispatch), so this recurses without bound and overflows the stack. Break \
                 the cycle, or route one hop through a different pool (an async enqueue)."),

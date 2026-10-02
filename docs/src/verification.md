@@ -81,8 +81,10 @@ compiler walks it. This is the analysis that is **on by default** and
 fails the build:
 
 - *orphan* topics (wired to only one end) — warning
-- *cross-locus cycles* that can spin — warning
-- *intra-locus re-entrant* self-publish (unbounded recursion) — **error**
+- *cycles through the queue* that can spin (across loci, or within one
+  locus when a hop stays on the bus) — warning
+- *intra-locus re-entrant* self-publish, every hop a direct call
+  (unbounded recursion) — **error**
 - *backpressure* — an unthrottled publish in an unbounded loop — warning
 - *subject type-mismatch* — two sites disagreeing on a payload type — **error**
 

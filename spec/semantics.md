@@ -3340,14 +3340,26 @@ main locus App {
     - A **cross-locus** cycle (edges from ≥2 loci) hops between loci
       through the cooperative *queue* (drained at yield) — it spins
       the queue / livelocks → **warning**.
-    - An **intra-locus** cycle (every edge in one locus) is
-      intra-locus self-dispatch, which is devirtualized to a direct
-      synchronous call (rule 7), so it recurses on one thread without
-      bound → stack overflow → **error**. To keep the error precise,
-      only **unconditional** sends form intra-locus edges: a
+    - An **intra-locus** cycle (every edge in one locus) whose every
+      send the intra-locus rewrite turns into a direct synchronous
+      call (rule 7) recurses on one thread without bound → stack
+      overflow → **error**. To keep the error precise, only
+      **unconditional** sends form intra-locus edges: a
       self-republish guarded by an `if`/`match`/loop is a terminating
       state machine, not unbounded recursion, and is not flagged.
       (GH #18 #4.)
+    - An intra-locus cycle with a send the rewrite leaves on the bus
+      is carried by the queue like a cross-locus one: each cell is
+      handled at a later drain, so the stack does not grow, and it is
+      the queue's **warning**. The rewrite makes a direct call only
+      where its preconditions hold (§ "Phase 2: hierarchy, subjects,
+      bindings, closed-world optimization", *Closed-world topology
+      optimization*), and it counts only a subscription by the
+      topic's declared name, so a topic sent by name and subscribed
+      by its literal subject cycles through the queue. The check
+      reads which sends lowering rewrites from the rewrite's own
+      relation, keyed by each send's identity, never from the
+      subjects' spelling. (F.40 phase 3, C4.)
 
     The graph's edges are keyed by declaration identity: a handler
     body belongs to the declaration that wrote it, so two loci of one

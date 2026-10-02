@@ -321,6 +321,10 @@ pub struct BusEdge {
     pub handler: String,
     /// The send's span.
     pub span: Span,
+    /// The send's identity: what the intra-locus rewrite's relation
+    /// names (`IntraLocusRewrite::send`) when lowering turns the send
+    /// into a direct call.
+    pub send: NodeId,
     /// The send fires on every run of the handler: no `if`, `match` or
     /// loop encloses it.
     pub unconditional: bool,
@@ -344,7 +348,7 @@ fn handler_edges(l: &LocusDecl, decl: usize, topics: &TopicRows) -> Vec<BusEdge>
             let Some(body) = bodies.get(handler.name.as_str()) else { continue };
             let mut sends = Vec::new();
             sends_in_block(body, false, &mut sends);
-            for (to, span, conditional) in sends {
+            for (to, span, send, conditional) in sends {
                 let Some(to) = send_subject(to, topics) else { continue };
                 edges.push(BusEdge {
                     from: from.clone(),
@@ -353,6 +357,7 @@ fn handler_edges(l: &LocusDecl, decl: usize, topics: &TopicRows) -> Vec<BusEdge>
                     decl,
                     handler: handler.name.clone(),
                     span,
+                    send,
                     unconditional: !conditional,
                 });
             }
@@ -372,14 +377,17 @@ fn send_subject(e: &Expr, topics: &TopicRows) -> Option<String> {
     }
 }
 
+/// A send: its subject, span and identity, and whether it is guarded.
+type SendSite<'a> = (&'a Expr, Span, NodeId, bool);
+
 /// The sends of a block, each with whether an `if`, `match` or loop
 /// encloses it. A plain `{ ... }` block always executes, so its sends
 /// keep the enclosing answer; a `match` arm counts only when it is a
 /// block.
-fn sends_in_block<'a>(b: &'a Block, conditional: bool, out: &mut Vec<(&'a Expr, Span, bool)>) {
+fn sends_in_block<'a>(b: &'a Block, conditional: bool, out: &mut Vec<SendSite<'a>>) {
     for s in &b.stmts {
         match s {
-            Stmt::Send { subject, span, .. } => out.push((subject, *span, conditional)),
+            Stmt::Send { subject, span, id, .. } => out.push((subject, *span, *id, conditional)),
             Stmt::If(i) => sends_in_if(i, out),
             Stmt::Match(m) => {
                 for arm in &m.arms {
@@ -395,7 +403,7 @@ fn sends_in_block<'a>(b: &'a Block, conditional: bool, out: &mut Vec<(&'a Expr, 
     }
 }
 
-fn sends_in_if<'a>(i: &'a IfStmt, out: &mut Vec<(&'a Expr, Span, bool)>) {
+fn sends_in_if<'a>(i: &'a IfStmt, out: &mut Vec<SendSite<'a>>) {
     sends_in_block(&i.then_block, true, out);
     match i.else_block.as_deref() {
         Some(ElseBranch::Else(b)) => sends_in_block(b, true, out),

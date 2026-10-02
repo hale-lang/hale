@@ -71,7 +71,7 @@ use hale_types::handler_routing::HandlerRouting;
 use hale_types::ownership_graph::OwnershipGraph;
 use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
-use hale_types::resolved::LoweringView;
+use hale_types::resolved::{IntraLocusStage, LoweringView};
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
 
@@ -85,14 +85,16 @@ use crate::source::SourceProvider;
 /// The families a snapshot produces, in the order a build demands them.
 /// The names are the registry's (`spec/registry.md`). `bus_graph`,
 /// `ownership` and `handler_routing` count the checked programs' graphs,
-/// the model's inputs; `lowering_view` is the `demand` family's own, the
+/// the model's inputs; `intra_locus` is the intra-locus rewrite, whose
+/// relation the check reads (rule 10) and whose program lowering
+/// continues from; `lowering_view` is the `demand` family's own, the
 /// view over the resolved program whose tables are lowering's ownership,
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs. `target_capability` counts the
 /// effective-target row, which no consumer demands yet; `sync_inference`
 /// counts the form rows ([`Snapshot::demand_forms`]).
-pub const FAMILIES: [&str; 17] = [
+pub const FAMILIES: [&str; 18] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -109,6 +111,7 @@ pub const FAMILIES: [&str; 17] = [
     "placement",
     "model",
     "claims",
+    "intra_locus",
     "lowering_view",
 ];
 
@@ -315,7 +318,7 @@ pub struct Blocked {
     pub family: &'static str,
     pub because: Vec<Diag>,
     /// What blocked it with no position to report it at: the lowering
-    /// view's own producer refusing (`resolve_program`: a bundled
+    /// view's own producer refusing (`resolve_rewritten`: a bundled
     /// stdlib that does not parse, a site the mint left unnumbered), or
     /// the editor's seed members that would not read, one
     /// [`unreadable_message`] each. `None` when every reason is a
@@ -422,6 +425,7 @@ pub struct Snapshot {
     placement: OnceCell<Result<PlacementTable, Blocked>>,
     model: OnceCell<Result<ApplicationModel, Blocked>>,
     check: OnceCell<Result<Checked, Blocked>>,
+    intra_locus: OnceCell<Result<IntraLocusStage, Blocked>>,
     lowering: OnceCell<Result<LoweringView, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
 }
@@ -592,6 +596,7 @@ impl Snapshot {
             placement: OnceCell::new(),
             model: OnceCell::new(),
             check: OnceCell::new(),
+            intra_locus: OnceCell::new(),
             lowering: OnceCell::new(),
             builds,
         };
@@ -1025,6 +1030,7 @@ impl Snapshot {
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bus: self.demand_bus_graph().map_err(Clone::clone)?,
+                    intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1225,11 +1231,45 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The intra-locus rewrite over the snapshot's program
+    /// ([`hale_types::resolved::rewrite_intra_locus`]): the sends
+    /// lowering turns into direct calls, as a relation keyed by each
+    /// send's id, and the rewritten program lowering continues from.
+    /// The check reads the relation (rule 10: a cycle is synchronous
+    /// only where every hop is a direct call) and lowering reads both,
+    /// so the judgment and the lowering read one rewrite. It runs on a
+    /// copy: the check judges the program as written. Blocked with a
+    /// hole in the seed.
+    pub fn demand_intra_locus(&self) -> Result<&IntraLocusStage, &Blocked> {
+        self.intra_locus
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(self.hole_blocked());
+                }
+                // A whole seed's load holds one program; the editor's
+                // holds one per file, merged here as a directory build
+                // merges them.
+                let merged;
+                let program = match self.program() {
+                    Some(p) => p,
+                    None => {
+                        merged = merge_programs(self.programs.values())
+                            .expect("a snapshot with no hole holds a program");
+                        &merged
+                    }
+                };
+                self.count("intra_locus");
+                Ok(hale_types::resolved::rewrite_intra_locus(program))
+            })
+            .as_ref()
+    }
+
     /// The view codegen lowers: the check first, then
-    /// [`hale_types::resolved::resolve_program`] over the snapshot's
-    /// program, source map, renames and api config — the two lowering
-    /// rewrites as relations, the stdlib merge, the mint over the
-    /// merged program, and the tables. A check that reported an error
+    /// [`hale_types::resolved::resolve_rewritten`] over the intra-locus
+    /// rewrite ([`Snapshot::demand_intra_locus`]) with the snapshot's
+    /// source map, renames and api config — the topic rewrite as a
+    /// relation, the stdlib merge, the mint over the merged program, and
+    /// the tables. A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
     /// The harness's snapshot ([`Config::harness`]) is not gated.
     pub fn demand_lowering(&self) -> Result<&LoweringView, &Blocked> {
@@ -1243,22 +1283,11 @@ impl Snapshot {
                         return Err(Blocked { family: "lowering_view", because: errors, refused: None });
                     }
                 }
-                // A whole seed's load holds one program; the editor's
-                // holds one per file, merged here as a directory build
-                // merges them.
-                let merged;
-                let program = match self.program() {
-                    Some(p) => p,
-                    None => {
-                        merged = merge_programs(self.programs.values())
-                            .expect("a checked snapshot holds a program");
-                        &merged
-                    }
-                };
+                let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
                 self.count("lowering_view");
-                hale_types::resolved::resolve_program(
-                    program,
+                hale_types::resolved::resolve_rewritten(
+                    stage,
                     &self.source_map,
                     &self.import_renames,
                     self.config.api.as_deref(),

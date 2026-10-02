@@ -1,0 +1,59 @@
+// A same-locus bus cycle the queue carries is not stack recursion
+// (spec/semantics.md rule 10; F.40 phase 3, C4 review finding).
+//
+// `Echo` subscribes the literal `"t"`, the wire of topic `T`, and its
+// handler sends `T` on every run: one subject under the graph's
+// canonical key, so the cycle `t → t` is real. But the intra-locus
+// rewrite turns a send into a direct call only for a topic subscribed
+// by its name, so this send stays on the bus: each cell is queued and
+// handled at the next drain, the stack never grows, and the handler's
+// `terminate` ends the loop after two cells. The check used to call it
+// a re-entrant synchronous cycle and refuse it; it is the queue's
+// warning, and the program prints its two cells.
+//
+// Its exit code is not asserted: under `hale run` the program is killed
+// by SIGSEGV after the second line, on main's binary as on this one, and
+// also when no cell is queued at the `terminate` (a params child ending
+// itself from a bus handler). That is a runtime defect of its own, not
+// the cycle's.
+
+fn echo_source() -> String {
+    return "type Tick { n: Int; }\n"
+        + "topic T { payload: Tick; subject: \"t\"; }\n"
+        + "locus Echo {\n"
+        + "    bus { publish T; subscribe \"t\" as on_t of type Tick; }\n"
+        + "    fn on_t(t: Tick) {\n"
+        + "        T <- Tick { n: t.n + 1 };\n"
+        + "        println(\"seen \", t.n);\n"
+        + "        if t.n >= 1 { terminate; }\n"
+        + "    }\n"
+        + "    run() { T <- Tick { n: 0 }; }\n"
+        + "}\n"
+        + "main locus App {\n"
+        + "    params { e: Echo = Echo { }; }\n"
+        + "    run() { time::sleep(50ms); }\n"
+        + "}\n"
+        + "fn main() { App { }; }\n";
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let marker = std::io::fs::mktemp("/tmp/hale-queued-cycle-", "") or "";
+    std::test::assert(marker != "", "a scratch path");
+    let src = marker + ".hl";
+    std::io::fs::write_file(src, echo_source()) or discard;
+
+    let checked = std::process::run(hale + "\ncheck\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "check failed to start" };
+    let said = checked.stdout + checked.stderr;
+    std::test::assert_eq_int(checked.code, 0, "the check accepts the queued cycle: " + said);
+    std::test::assert(std::str::contains(said, "in locus `Echo`: a cell can re-trigger its own publish, spinning the cooperative queue"), "the cycle is the queue's warning: " + said);
+    std::test::assert(!std::str::contains(said, "re-entrant"), "and not the synchronous error: " + said);
+
+    let ran = std::process::run(hale + "\nrun\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed to start" };
+    std::test::assert_eq_str(ran.stdout, "seen 0\nseen 1\n", "two cells, then terminate: " + ran.stderr);
+
+    let _gone = std::process::run("rm\n-f\n" + src + "\n" + marker)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "" };
+}
