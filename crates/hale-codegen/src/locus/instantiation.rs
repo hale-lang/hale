@@ -451,17 +451,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `child_locus_name` to the locus lowering resolves (an alias,
         // generic arguments and a `std::` path included), the same
         // relation `accept_param` spells (the checker admits one
-        // `accept` per locus). The graph's rows are per declaration, so
-        // a locus codegen monomorphised (`Holder<T>` lowered as
-        // `Holder_Int`) has none, and keeps the lowering's own read.
+        // `accept` per locus). A locus codegen monomorphised
+        // (`Holder<T>` lowered as `Holder_Int`) reads its template's
+        // accept rows, asked for by the template's identity and
+        // specialized by the instantiation's substitution
+        // (`specialized_accepts`, filled at synthesis).
         let parent_accepts_us = if let Some(cs) = self.current_self.as_ref() {
-            match self.ownership_accepts.get(&cs.locus_name) {
+            match self.specialized_accepts.get(&cs.locus_name) {
                 Some(accepts) => accepts.contains(locus_name),
                 None => self
-                    .user_loci
+                    .ownership_accepts
                     .get(&cs.locus_name)
-                    .and_then(|p| p.accept_param.as_ref())
-                    .is_some_and(|(_, child_ty)| child_ty == locus_name),
+                    .is_some_and(|accepts| accepts.contains(locus_name)),
             }
         } else {
             false

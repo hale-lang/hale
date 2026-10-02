@@ -1451,6 +1451,8 @@ pub fn build_resolved(
         ownership_forwarding_sets: bubble.forwarding,
         ownership_bubble_crosspool_plan: bubble.crosspool,
         ownership_accepts: ownership.accepts.clone(),
+        ownership_accept_rows: &ownership.accept_rows,
+        specialized_accepts: BTreeMap::new(),
         handlers: handlers.clone(),
         bare_locus_instantiation_stmt: false,
         program_has_offthread,
@@ -3488,6 +3490,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// emptied under `LOTUS_NO_OWNERSHIP_BUBBLE=1`: direct acceptance
     /// is not a bubble.
     pub(crate) ownership_accepts:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// The ownership graph's `accept` rows, by the declaring locus's
+    /// identity: a generic template's, which the synthesis loop
+    /// specializes for each monomorph (`specialized_accepts`).
+    pub(crate) ownership_accept_rows: &'p hale_types::ownership_graph::AcceptRows,
+    /// The child loci each specialization lowering created accepts (a
+    /// generic locus's monomorphs, by mangled name): its template's
+    /// accept rows, asked for by the template's identity, with the
+    /// instantiation queue's own substitution. Filled before any body
+    /// is lowered.
+    pub(crate) specialized_accepts:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// Which `on_failure` handler a failing child reaches: one row per
     /// handler, the child type resolved once (F.40 phase 1.4). The
@@ -7982,6 +7995,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.specialized_flows.push((mangled.clone(), child));
                 }
+                // So do the accept rows: the template's, by its identity,
+                // with the same substitution.
+                let accepts = self
+                    .ownership_accept_rows
+                    .specialize(template, |t| Self::substitute_type_expr(t, &subst));
+                self.specialized_accepts.insert(mangled.clone(), accepts);
                 // The elision rows answer for it too: the same producer
                 // over the synthesized declaration.
                 let elision = self.alloc_routing.specialize(&synthesized);
