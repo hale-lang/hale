@@ -66,6 +66,9 @@ followed to the function the local holds (`let f = pid; f()` needs what
 `pid` needs, and the refusal's witness names `f`); in your own code and
 in a library locus's params default, a local holding a field, a call's
 result or an `if` value can't be followed, and is refused the same way.
+So is a local you reassign — and a loop that reassigns one anywhere
+inside it makes it unfollowable for the whole loop, since the next
+iteration calls whatever the assignment stored.
 
 The **in-process typed bus** — `topic` / `bus { publish … }` /
 `bus { subscribe … }` across loci — runs under wasm exactly as it

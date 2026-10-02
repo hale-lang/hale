@@ -3339,6 +3339,22 @@ impl<'a> Walker<'a> {
         self.locals.iter().rev().find_map(|scope| scope.get(name))
     }
 
+    /// The binding `name` names now holds a value the walk does not
+    /// follow.
+    fn unresolve(&mut self, name: &str) {
+        if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(name)) {
+            scope.insert(name.to_string(), Local::Unresolved);
+        }
+    }
+
+    /// Before a loop is walked, each binding it reassigns is unresolved
+    /// for the whole loop and after it ([`loop_reassigned`]).
+    fn enter_loop(&mut self, cond: Option<&Expr>, body: &Block) {
+        for name in loop_reassigned(cond, body) {
+            self.unresolve(&name);
+        }
+    }
+
     /// What a direct call of a `Path` callee resolves to.
     fn path_callee(&self, qp: &QualifiedName) -> Callee {
         let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
@@ -3476,9 +3492,7 @@ impl<'a> Walker<'a> {
                 // A reassigned local holds whichever value the run took
                 // last: the walk does not follow flow.
                 if target.tail.is_empty() {
-                    if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(&target.head.name)) {
-                        scope.insert(target.head.name.clone(), Local::Unresolved);
-                    }
+                    self.unresolve(&target.head.name);
                 }
             }
             Stmt::Return(Some(e), _) => self.walk_diverging_payload(e),
@@ -3552,6 +3566,7 @@ impl<'a> Walker<'a> {
                 self.loop_stack.push(bounded);
                 self.infinite_stack.push(false);
                 self.loops_as_written += 1;
+                self.enter_loop(None, body);
                 self.locals.push(BTreeMap::from([(name.name.clone(), Local::Unresolved)]));
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.locals.pop();
@@ -3568,6 +3583,7 @@ impl<'a> Walker<'a> {
                 }
             }
             Stmt::While { cond, body, span } => {
+                self.enter_loop(Some(cond), body);
                 self.walk_expr(cond, depth, Escape::Local);
                 // Loop-ranking: a `while v < N` counter whose `v` is
                 // const-initialized and only ever incremented by positive
@@ -3956,6 +3972,187 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
             }
         }
         Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+    }
+}
+
+/// The bindings a loop reassigns (P3 2 of 3, a review fix): every name a
+/// plain assignment in its condition or body rebinds, at any depth, but
+/// not one a `let`, loop binder or pattern inside the loop shadows where
+/// the assignment is written. A walk that follows a local function value
+/// visits a loop once, so before it walks the loop it takes each of these
+/// for unresolved, for the whole loop and after it: a call ahead of the
+/// assignment runs, on a later iteration, the value the assignment
+/// stored. Every walker that tracks bindings uses this one rule.
+pub(crate) fn loop_reassigned(cond: Option<&Expr>, body: &Block) -> BTreeSet<String> {
+    let mut a = Reassigned { scopes: Vec::new(), out: BTreeSet::new() };
+    if let Some(c) = cond {
+        a.expr(c);
+    }
+    a.block(body, Vec::new());
+    a.out
+}
+
+/// [`loop_reassigned`]'s walk: the names bound inside the loop, innermost
+/// scope last.
+struct Reassigned {
+    scopes: Vec<BTreeSet<String>>,
+    out: BTreeSet<String>,
+}
+
+impl Reassigned {
+    fn bind(&mut self, name: &str) {
+        self.scopes.last_mut().expect("a scope").insert(name.to_string());
+    }
+
+    fn block(&mut self, b: &Block, binders: Vec<String>) {
+        self.scopes.push(binders.into_iter().collect());
+        for s in &b.stmts {
+            self.stmt(s);
+        }
+        if let Some(t) = &b.tail {
+            self.expr(t);
+        }
+        self.scopes.pop();
+    }
+
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                self.expr(value);
+                self.bind(&name.name);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                self.expr(value);
+                for n in names {
+                    self.bind(&n.name);
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                for seg in &target.tail {
+                    if let LValueSeg::Index(e) = seg {
+                        self.expr(e);
+                    }
+                }
+                self.expr(value);
+                let name = &target.head.name;
+                if target.tail.is_empty() && !self.scopes.iter().any(|s| s.contains(name)) {
+                    self.out.insert(name.clone());
+                }
+            }
+            Stmt::If(i) => self.if_stmt(i),
+            Stmt::Match(m) => self.match_stmt(m),
+            Stmt::For { name, iter, body, .. } => {
+                self.expr(iter);
+                self.block(body, vec![name.name.clone()]);
+            }
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body, Vec::new());
+            }
+            Stmt::ShmWrite { max, binding, body, .. } => {
+                self.expr(max);
+                self.block(body, vec![binding.name.clone()]);
+            }
+            Stmt::Block(b) => self.block(b, Vec::new()),
+            Stmt::Return(Some(e), _) | Stmt::Fail { value: e, .. } | Stmt::Expr(e) => self.expr(e),
+            Stmt::Violate { payload: Some(e), .. } => self.expr(e),
+            Stmt::Recovery { args, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                self.expr(subject);
+                self.expr(value);
+                if let Some(OrDisposition::Substitute(x) | OrDisposition::Fail(x, _)) = or_disposition {
+                    self.expr(x);
+                }
+            }
+            Stmt::Return(None, _)
+            | Stmt::Violate { payload: None, .. }
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => {}
+        }
+    }
+
+    fn if_stmt(&mut self, i: &IfStmt) {
+        self.expr(&i.cond);
+        self.block(&i.then_block, Vec::new());
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => self.block(b, Vec::new()),
+            Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
+            None => {}
+        }
+    }
+
+    fn match_stmt(&mut self, m: &MatchStmt) {
+        self.expr(&m.scrutinee);
+        for arm in &m.arms {
+            let mut bound = BTreeMap::new();
+            pattern_bindings(&arm.pattern, &mut bound);
+            self.scopes.push(bound.into_keys().collect());
+            if let Some(g) = &arm.guard {
+                self.expr(g);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e),
+                MatchArmBody::Block(b) => self.block(b, Vec::new()),
+            }
+            self.scopes.pop();
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Block(b) => self.block(b, Vec::new()),
+            Expr::If(i) => self.if_stmt(i),
+            Expr::Match(m) => self.match_stmt(m),
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+            }
+            Expr::Range { lo: left, hi: right, .. } | Expr::Index { receiver: left, index: right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            Expr::Unary { operand: x, .. }
+            | Expr::Field { receiver: x, .. }
+            | Expr::Path2 { receiver: x, .. }
+            | Expr::Sum(x, _)
+            | Expr::Prod(x, _)
+            | Expr::ArrayRepeat { val: x, .. } => self.expr(x),
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
+                for x in xs {
+                    self.expr(x);
+                }
+            }
+            Expr::Struct { inits, .. } => {
+                for i in inits {
+                    self.expr(&i.value);
+                }
+            }
+            Expr::Or { inner, disposition, .. } => {
+                self.expr(inner);
+                if let OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) = disposition {
+                    self.expr(x);
+                }
+            }
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        }
     }
 }
 
@@ -5623,5 +5820,67 @@ mod tests {
             [("f", true), ("h", false), ("k", true), ("cb", true), ("len", false), ("unknown", false), ("target", false)]
                 .map(|(n, m)| (n.to_string(), m))
         );
+    }
+
+    /// The walk visits a loop once, so a binding the loop reassigns is
+    /// not followed anywhere in it — its condition included — nor after
+    /// it (P3 2 of 3, a review fix): a call ahead of the assignment runs,
+    /// on a later iteration, the value the assignment stored. A binding
+    /// the loop only reads is followed, and an assignment to a `let` the
+    /// loop shadows leaves the outer binding alone.
+    #[test]
+    fn a_binding_a_loop_reassigns_is_not_followed() {
+        let src = r#"
+            fn width() -> Int { return 1; }
+            fn other() -> Int { return 2; }
+            fn g(c: Bool) -> Int {
+                let mut f = width;
+                let mut i = 0;
+                while i < 2 {
+                    f();
+                    f = other;
+                    i = i + 1;
+                }
+                f();
+                let mut q = width;
+                while q() < 2 {
+                    q = other;
+                }
+                let mut h = width;
+                for x in [1, 2] {
+                    h();
+                    if c {
+                        h = other;
+                    }
+                }
+                let k = width;
+                let s = width;
+                while c {
+                    k();
+                    let mut s = other;
+                    s();
+                    s = width;
+                }
+                s();
+                return k();
+            }
+            fn main() { }
+        "#;
+        assert_eq!(
+            local_calls(src, "g"),
+            vec![
+                written("?f"),
+                written("?f"),
+                written("?q"),
+                written("?h"),
+                through("width", "k"),
+                through("other", "s"),
+                through("width", "s"),
+                through("width", "k"),
+            ],
+        );
+        let s = summarize(src);
+        let marked: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.unresolved_local).collect();
+        assert_eq!(marked, [true, true, true, true, false, false, false, false]);
     }
 }

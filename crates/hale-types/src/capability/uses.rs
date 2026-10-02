@@ -60,7 +60,7 @@ use super::{
     Abi, BehaviourVerdict, Capability, CapabilityMatrix, Inversion, KnownOpen, OpenCell, Origin,
     TargetClass, TargetRow, Transport, KNOWN_OPEN,
 };
-use crate::alloc_summary::{AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, FnKey};
+use crate::alloc_summary::{loop_reassigned, AllocKind, AllocSummary, CallEdge, CallSpelling, Callee, FnKey};
 
 /// What a use asks for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -882,6 +882,23 @@ impl<'w, 'a> Walker<'w, 'a> {
         self.locals.iter().rev().find_map(|scope| scope.get(name))
     }
 
+    /// The binding `name` names now holds a value the walk cannot
+    /// resolve.
+    fn unresolve(&mut self, name: &str) {
+        if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(name)) {
+            scope.insert(name.to_string(), None);
+        }
+    }
+
+    /// Before a loop is walked, each binding it reassigns is unresolved
+    /// for the whole loop and after it, as in the summary's walk
+    /// ([`loop_reassigned`]).
+    fn enter_loop(&mut self, cond: Option<&Expr>, body: &Block) {
+        for name in loop_reassigned(cond, body) {
+            self.unresolve(&name);
+        }
+    }
+
     /// Whether a bare callee names a builtin or a fn a direct call
     /// reaches: a merged name beyond the horizon, a fn of the program's
     /// own in its sources.
@@ -1085,20 +1102,20 @@ impl<'w, 'a> Walker<'w, 'a> {
                     // A reassigned binding holds whichever value the
                     // run took last: the walk does not follow flow.
                     if target.tail.is_empty() {
-                        if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(&target.head.name)) {
-                            scope.insert(target.head.name.clone(), None);
-                        }
+                        self.unresolve(&target.head.name);
                     }
                 }
                 Stmt::If(i) => self.if_stmt(i),
                 Stmt::Match(m) => self.match_stmt(m),
                 Stmt::For { name, iter, body, .. } => {
                     self.expr(iter);
+                    self.enter_loop(None, body);
                     self.locals.push(BTreeMap::from([(name.name.clone(), None)]));
                     self.block(body);
                     self.locals.pop();
                 }
                 Stmt::While { cond, body, .. } => {
+                    self.enter_loop(Some(cond), body);
                     self.expr(cond);
                     self.block(body);
                 }
