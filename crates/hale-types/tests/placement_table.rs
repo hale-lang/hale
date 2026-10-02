@@ -452,6 +452,44 @@ fn dynamic_sites_carry_their_domains_and_bounds() {
     assert_eq!(user.len(), 2, "the construction literal is a template, not a dynamic site");
 }
 
+/// The domains of the one user dynamic site that builds `name`.
+fn dynamic_domains(t: &PlacementTable, name: &str) -> BTreeSet<DomainId> {
+    let user: Vec<_> = t
+        .dynamic
+        .iter()
+        .filter(|d| d.literal.universe == SiteUniverse::User && d.realizes.as_ref().is_some_and(|r| r.lowered == name))
+        .collect();
+    assert_eq!(user.len(), 1, "one dynamic `{name}`");
+    user[0].domains.clone()
+}
+
+/// A placed field's literal runs its body where the entry placed it,
+/// whatever scope the literal is written in (review of hale-lang/hale#1306):
+/// restating a pinned or pooled field's default in `fn main` adds no main
+/// execution of its body, so a locus built there runs in the placed
+/// domain alone, as with the default spelling. A declaration built both
+/// as a placed field and dynamically on main runs in both.
+#[test]
+fn a_static_fields_literal_runs_its_body_where_it_was_placed() {
+    for name in ["static_field_explicit.hl", "static_field_default.hl"] {
+        let s = clean(name);
+        let t = table(&s);
+        let (_, w) = one(t, "w");
+        let (_, p) = one(t, "p");
+        let (_, sh) = one(t, "s");
+        assert!(is_pinned(t, w.domain) && is_pinned(t, sh.domain), "{name}");
+        assert_eq!(pool_name(t, p.domain), Some("io"), "{name}");
+        assert_eq!(dynamic_domains(t, "Child"), [w.domain].into_iter().collect(), "{name}: `Child` runs pinned alone");
+        assert_eq!(dynamic_domains(t, "Leaf"), [p.domain].into_iter().collect(), "{name}: `Leaf` runs on `io` alone");
+        assert_eq!(
+            dynamic_domains(t, "Grand"),
+            [PlacementTable::MAIN, sh.domain].into_iter().collect(),
+            "{name}: `Shared` runs pinned and, built in `App.run()`, on main"
+        );
+        assert!(t.holes.iter().all(|h| !matches!(h.kind, HoleKind::UnknownDomains { .. })), "{name}");
+    }
+}
+
 /// Case 11: two constructions of one root are two templates; a choice
 /// among literals is one guarded step per alternative.
 #[test]
@@ -706,7 +744,7 @@ fn the_table_names_each_universe_and_joins_lowering_once() {
 }
 
 /// The fixtures every law test walks: those that check clean.
-const CLEAN: [&str; 17] = [
+const CLEAN: [&str; 19] = [
     "claims_only.hl",
     "library_alone.hl",
     "verbs.hl",
@@ -721,6 +759,8 @@ const CLEAN: [&str; 17] = [
     "adapter.hl",
     "adapter_two_sites.hl",
     "dynamic.hl",
+    "static_field_explicit.hl",
+    "static_field_default.hl",
     "two_constructions.hl",
     "alternatives_under_replicas.hl",
     "two_universes",

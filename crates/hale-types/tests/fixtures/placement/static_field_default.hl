@@ -1,0 +1,42 @@
+// The control for `static_field_explicit.hl`: the same placed fields,
+// each built from its declared default. Each body runs where the entry
+// placed it, and `s`'s on main as well, where `App.run()` builds one.
+locus Child {
+    run() { }
+}
+
+locus Leaf {
+    run() { }
+}
+
+locus Grand {
+    run() { }
+}
+
+locus Worker {
+    run() { Child { }; }
+}
+
+locus Pooled {
+    run() { Leaf { }; }
+}
+
+locus Shared {
+    run() { Grand { }; }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        p: Pooled = Pooled { };
+        s: Shared = Shared { };
+    }
+    placement {
+        w: pinned;
+        p: cooperative(pool = io);
+        s: pinned;
+    }
+    run() { Shared { }; }
+}
+
+fn main() { App { }; }

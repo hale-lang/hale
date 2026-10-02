@@ -1385,8 +1385,18 @@ impl<'d, 'a> Builder<'d, 'a> {
                 }
             }
         }
+        // The domains the static tower assigned each literal it visited.
+        let mut placed: BTreeMap<SiteRef, BTreeSet<DomainId>> = BTreeMap::new();
+        for r in self.table.instances.values() {
+            if let Some(l) = r.literal.filter(|l| self.static_literals.contains(l)) {
+                placed.entry(l).or_default().insert(r.domain);
+            }
+        }
         // To a fixpoint: a literal's declaration runs where the literal
-        // runs; a callee runs where its caller does.
+        // runs; a callee runs where its caller does. A literal of the
+        // static tower runs where its rows were placed, whatever scope it
+        // is written in: an explicit field initializer in `fn main` builds
+        // a pinned field, not a main-thread instance.
         loop {
             let mut changed = false;
             for (i, s) in scopes.scopes.iter().enumerate() {
@@ -1397,14 +1407,22 @@ impl<'d, 'a> Builder<'d, 'a> {
                 let targets = s
                     .literals
                     .iter()
-                    .filter_map(|l| l.decl.and_then(|d| scopes.locus_scope(d)))
-                    .chain(s.calls.iter().filter_map(|(f, _)| scopes.fn_named(s.universe, f)));
-                for t in targets.collect::<Vec<_>>() {
+                    .filter_map(|l| {
+                        let t = l.decl.and_then(|d| scopes.locus_scope(d))?;
+                        let add = match placed.get(&l.site) {
+                            Some(set) => Ok(set.clone()),
+                            None if self.static_literals.contains(&l.site) => Ok(BTreeSet::new()),
+                            None => here.clone(),
+                        };
+                        Some((t, add))
+                    })
+                    .chain(s.calls.iter().filter_map(|(f, _)| Some((scopes.fn_named(s.universe, f)?, here.clone()))));
+                for (t, add) in targets.collect::<Vec<_>>() {
                     if !reached[t] {
                         reached[t] = true;
                         changed = true;
                     }
-                    let next = match (&dom[t], &here) {
+                    let next = match (&dom[t], &add) {
                         (Err(_), _) => continue,
                         (Ok(_), Err(why)) => Err(why.clone()),
                         (Ok(have), Ok(add)) => {
