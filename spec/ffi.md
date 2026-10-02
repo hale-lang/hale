@@ -459,7 +459,10 @@ erases a requirement. A type that only
 names a gated namespace — a parameter, field or return typed
 `std::io::tcp::Stream` — is not a use. A call whose requirements cannot
 be established (a method on a receiver whose type is not known, a call
-through a function-typed parameter) is refused under wasm32 as ``cannot
+through a function-typed parameter, a call in another seed's params
+initializer or `on_failure` handler through a local function value bound
+to anything but a fn — `let f = self.g; f()`) is refused under wasm32 as
+``cannot
 establish what `<callee>` requires on wasm32: <why>``, since an unknown
 requirement is never an admission there; on the native targets it is
 admitted.
