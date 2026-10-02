@@ -27,6 +27,16 @@ const ADAPTER_ACCEPTS: &str = "type Tick { n: Int; }\n\
 
 const RULE_6: &str = "binding entry `Beat`: adapter `Sink` runs pinned";
 
+/// Rule 17 (GH #826): a root that pins a field, built inside a loop. The
+/// literal is line 4, column 21.
+const PINNED_ROOT_IN_A_LOOP: &str = "locus Worker { run() { } }\n\
+     main locus App { params { w: Worker = Worker { }; } placement { w: pinned; } }\n\
+     fn main() {\n\
+     \x20   for i in 0..3 { App { }; }\n\
+     }\n";
+
+const RULE_17: &str = "locus `App` is instantiated inside a loop, but its `placement { }` block pins field `w`";
+
 fn seed(tag: &str, src: &str) -> PathBuf {
     let d: PathBuf = std::env::temp_dir().join(format!(
         "hale_check_lowering_laws_{}_{}",
@@ -74,4 +84,23 @@ fn build_refuses_it_at_the_check_with_the_same_span() {
     assert!(out.contains(RULE_6) && out.contains(":6:"), "{out}");
     assert!(!bin.exists(), "nothing was lowered");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
+    for verb in ["check", "build"] {
+        let d = seed(&format!("rule17_{verb}"), PINNED_ROOT_IN_A_LOOP);
+        let bin = d.join("out");
+        let dir = d.to_string_lossy().to_string();
+        let out_path = bin.to_string_lossy().to_string();
+        let args: Vec<&str> = match verb {
+            "check" => vec!["check", &dir],
+            _ => vec!["build", &dir, "-o", &out_path],
+        };
+        let (ok, out) = hale(&args);
+        assert!(!ok, "{verb} must fail:\n{out}");
+        assert!(out.contains(RULE_17) && out.contains(":4:21:"), "{verb}: located at the literal:\n{out}");
+        assert!(!bin.exists(), "nothing was lowered");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

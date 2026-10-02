@@ -18,7 +18,7 @@ use hale_syntax::ast::{EpochSpec, LifecycleKind, LocusDecl, LocusMember, Program
 use hale_syntax::Diag;
 
 use crate::binding_rows::BindingRows;
-use crate::placement::{Decision, DomainKind, PlacementTable, SiteRef};
+use crate::placement::{Decision, DomainKind, Origin, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
 use crate::Bundle;
 
@@ -35,7 +35,71 @@ pub struct LoweringLawInputs<'a> {
 pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec<Diag> {
     let mut diags = Vec::new();
     pinned_features(bundle, inputs, &mut diags);
+    pinned_root_in_a_loop(bundle, inputs, &mut diags);
     diags
+}
+
+/// Rule 17 (GH #826): a root literal whose template pins a field is not
+/// written inside a loop.
+///
+/// A `pinned` entry gives its field an OS thread whose join record (the
+/// deferred-dissolve slot and the `pthread_t` it joins) is one alloca
+/// per instantiation site, so a site reached a second time overwrites
+/// the record of the first: only the last instance is joined and
+/// arena-destroyed, and every earlier thread is orphaned with its arena
+/// live. Placement names static resources, one thread per entry for the
+/// program's life, so the shape is refused rather than joined per
+/// iteration.
+///
+/// Read off the placement table: each of the root's constructions
+/// (every literal of the root declaration, resolved, a module-qualified
+/// one included) whose bound says it is written inside a loop body, and
+/// whose template holds a row a `pinned` entry decides. A factory called
+/// in a loop is not one (its literal is not in a loop, and each call
+/// joins its own thread at the factory's exit), nor is an adapter, which
+/// the bindings prelude builds once however often the root is built.
+fn pinned_root_in_a_loop(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+    let placement = inputs.placement;
+    let Some(root) = &placement.root else { return };
+    let span_of = |site: SiteRef| match site.universe {
+        SiteUniverse::User => bundle.snapshot.site(site.id).map(|s| s.span),
+        SiteUniverse::StdlibAnalysis => None,
+    };
+    for construction in root.constructions.iter().filter(|c| c.bound.in_a_loop()) {
+        let origin = Origin::Construction(construction.literal);
+        // The first entry in source order that pins a field of this
+        // template.
+        let pinned = placement
+            .instances
+            .iter()
+            .filter(|(key, row)| {
+                key.origin == origin && matches!(placement.domain(row.domain).kind, DomainKind::Pinned { .. })
+            })
+            .filter_map(|(key, row)| match &row.decided_by {
+                Decision::Entry { entry, .. } => Some((span_of(*entry)?, key.path.first()?.field.as_str())),
+                _ => None,
+            })
+            .min_by_key(|(span, _)| span.start.0);
+        let Some((entry_span, field)) = pinned else { continue };
+        let Some(span) = span_of(construction.literal) else { continue };
+        let locus = root.realizes.lowered.as_str();
+        diags.push(
+            Diag::ty(
+                span,
+                format!(
+                    "locus `{}` is instantiated inside a loop, but its `placement {{ }}` block pins \
+                     field `{}` to its own OS thread. Every iteration spawns a fresh pinned thread \
+                     while only the last one is joined, so the earlier threads are orphaned and their \
+                     arenas leak. Placement names static resources (a core, a NUMA node, `replicas = \
+                     K`) — one thread per entry for the program's life — so instantiate `{}` once, \
+                     outside the loop. (A loop that calls a fn holding the literal is fine: each call \
+                     joins its own thread.)",
+                    locus, field, locus
+                ),
+            )
+            .with_related(entry_span, format!("field `{}` is placed `pinned` here", field)),
+        );
+    }
 }
 
 /// Rule 6 (F.31): an instance that runs on a thread of its own, a

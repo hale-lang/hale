@@ -45,7 +45,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
-| `law_backstops` | Layer 8 | Migrating | law | `lowering_laws` | 1 | The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries, pinned loci in loops. |
+| `law_backstops` | Layer 8 | Migrating | law | `lowering_laws` | 1 | The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries consumed by a literal. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
@@ -424,7 +424,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-types/src/ownership_graph.rs` · `entry.singleton |= l.is_main` — every `main locus` declaration is a singleton in the ownership graph: a property of each declaration, which derives no entry fact. *Removed when:* same.
 - `crates/hale-types/src/alloc_summary.rs` · `let mut eager_only_loci` — every top-level `main locus` declaration is excluded from eager reclamation, conservatively: a property of each declaration, which derives no entry fact. *Removed when:* same.
 
-**Consumers.** check (rule 1's count reads the witness: the seed's own mains, module-nested ones included) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (the pinned-in-a-loop rule reads the lowering root) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (the F.31 pool map is seeded from the lowering root; the form rows' sync inference reads the same map over the snapshot's entry row) (`crates/hale-types/src/check.rs` · `compute_pool_of_locus_type`); check (rule 9's closed world is a program with an entry) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import) (`crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind`); --env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal) (`crates/hale-frontend/src/snapshot.rs` · `demand_entry`); build; dna; codegen
+**Consumers.** check (rule 1's count reads the witness: the seed's own mains, module-nested ones included) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); check (the pinned-in-a-loop rule reads the placement table's root constructions, which the lowering root seeds) (`crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop`); check (the F.31 pool map is seeded from the lowering root; the form rows' sync inference reads the same map over the snapshot's entry row) (`crates/hale-types/src/check.rs` · `compute_pool_of_locus_type`); check (rule 9's closed world is a program with an entry) (`crates/hale-types/src/check.rs` · `check_bus_graph`); check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import) (`crates/hale-cli/src/verbs/check/matrix.rs` · `seed_entry_kind`); --env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal) (`crates/hale-frontend/src/snapshot.rs` · `demand_entry`); build; dna; codegen
 
 **Invariants.**
 
@@ -1063,7 +1063,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rule 6, the lowering laws) (`crates/hale-types/src/lowering_laws.rs` · `pinned_features`); check (rules 2-5, 13-18; F.31); sync_inference; dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rule 6, the lowering laws) (`crates/hale-types/src/lowering_laws.rs` · `pinned_features`); check (rule 17, the lowering laws: the root's constructions and their bounds) (`crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop`); check (rules 2-5, 13-18; F.31); sync_inference; dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 
@@ -1222,7 +1222,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `law_backstops` — Migrating · law
 
-**Answers.** The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries, pinned loci in loops.
+**Answers.** The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements, placement entries consumed by a literal.
 
 **Inputs.** the AST; the placement table; the binding rows
 
@@ -1230,7 +1230,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements, placement entries consumed by a literal, pinned loci in loops), kept for harness builds that skip the checker. *Removed when:* phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted.
+- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements, placement entries consumed by a literal), kept for harness builds that skip the checker. *Removed when:* phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted.
 
 **Consumers.** the check (every verb and the LSP) (`crates/hale-types/src/check.rs` · `lowering_laws`); the harness's lowering view (`Config::harness`), which is not gated on the check (`crates/hale-frontend/src/snapshot.rs` · `lowering_laws`)
 
@@ -1239,10 +1239,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - a law is judged once, with a span
 - lowering judges no rule `lowering_laws` states: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so a refusal reaches no entry point unlocated (C7)
 - rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)
+- rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`); crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check); crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`); crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check); crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness); crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
 
 **Spec.** spec/semantics.md rules 6, 17, 18; GH #813, #876
 
@@ -1455,7 +1456,7 @@ A registered rule without an evaluator fails the compiler's own build.
 | semantics/placement/14 | topology consistency and node/l3 resolution | `placement` | `crates/hale-types/src/check.rs` · `check_topology_block` | Canonical |
 | semantics/placement/15 | `replicas = K`: K >= 1, pinned only | `placement` | `crates/hale-types/src/check.rs` · `check_placement_block` | Canonical |
 | semantics/placement/16 | pool affinity agrees per pool | `placement` | `crates/hale-types/src/check.rs` · `check_pool_affinity` | Migrating |
-| semantics/placement/17 | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop` | Migrating |
+| semantics/placement/17 | a pinned locus is not instantiated in a loop | `placement` | `crates/hale-types/src/lowering_laws.rs` · `pinned_root_in_a_loop` | Canonical |
 | semantics/placement/18 | every placement entry is consumed exactly once | `placement` | `crates/hale-types/src/check.rs` · `check_placement_entry_consumed` | Migrating |
 | semantics/placement/19 | a bus payload is carriable | `bus_graph` | `crates/hale-types/src/check.rs` · `check_bus_payload_carriable` | Migrating |
 

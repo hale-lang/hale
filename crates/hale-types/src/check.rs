@@ -715,14 +715,10 @@ pub fn check_bundle_reporting(
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
     check_placement_single_thread(bundle, top, inputs.entry, inputs.forms, &mut diags);
-    // GH #826: a `pinned` placement entry gives its field an OS
-    // thread whose join record is one alloca per instantiation SITE,
-    // so instantiating the placing locus inside a loop orphans every
-    // thread but the last and leaks its arena. Placement describes a
-    // static topology; the loop is rejected.
-    check_pinned_locus_in_loop(bundle, top, inputs.entry, &mut diags);
     // F.40 phase 3, C7: the laws that replaced lowering's backstops,
-    // the one entry the harness's lowering view demands too.
+    // the one entry the harness's lowering view demands too: rule 6
+    // (a pinned instance's features) and rule 17 (GH #826, a root that
+    // pins a field is not built in a loop).
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
@@ -3964,257 +3960,6 @@ fn check_placement_single_thread(
     }
 }
 
-/// GH #826: a locus whose `placement { }` block pins a field cannot
-/// be instantiated inside a loop.
-///
-/// `pinned` is the placement class that gives a field its OWN OS
-/// thread, spawned in the enclosing locus's params-init and joined
-/// at the instantiating scope's exit. Both halves of that bookkeeping
-/// — the deferred-dissolve slot and the `pthread_t` it joins — are
-/// ONE alloca per instantiation SITE, so a site reached a second time
-/// overwrites the record of the first: at scope exit only the LAST
-/// instance is joined and arena-destroyed, and every earlier pinned
-/// thread is orphaned with its arena still live (GH #815's per-
-/// iteration slot reclaim deliberately stepped over the pinned entry,
-/// because reclaiming it means joining the previous thread).
-///
-/// `placement { }` is `main locus`-only (rule 1), so the reachable
-/// shape is the main locus itself instantiated inside a loop —
-/// the deployment root booted once per iteration. That is a category
-/// error against the model placement describes: entries name static
-/// resources (a core, a NUMA node, `replicas = K`), one thread per
-/// entry for the program's life. Rejecting it is rule 17 rather than
-/// a per-iteration join because a per-iteration OS thread is never
-/// the intent, and because today's behaviour turns on an invisible
-/// internal path — a main locus with a bus subscription takes the
-/// deferred teardown and leaks, one without takes the eager path and
-/// happens to be clean. A rule that fires on only one of those is
-/// worse than one that rejects the shape.
-///
-/// Scope: the check is positional — it flags the locus LITERAL where
-/// it stands, in any fn, locus method, or lifecycle hook, at any loop
-/// nesting depth. A factory called in a loop (`fn boot() { App { }; }`)
-/// is not flagged and does not leak: the literal is not in a loop, so
-/// the pinned entry is flushed at the factory's own fn exit and every
-/// call joins its own thread. Hoisting the literal out of the loop —
-/// or behind a fn the loop calls — is the fix in both directions.
-fn check_pinned_locus_in_loop(
-    bundle: &Bundle<'_>,
-    top: &TopScope,
-    entry: &crate::entry::EntryRow,
-    diags: &mut Vec<Diag>,
-) {
-    // Loci that pin at least one field: the deployment root's, the
-    // entry row's lowering root (F.40 phase 3, E0), module-nested or
-    // not, since its placement is what spawns the threads. An imported
-    // seed's main locus is NOT the deployment root, so its placement
-    // entries never reach the plan and never spawn a thread — flagging
-    // it would be a false positive.
-    let mut pinned_by: BTreeMap<String, (String, Span)> = BTreeMap::new();
-    for l in entry.lowering_root.iter().filter_map(|m| m.decl(bundle)) {
-        for m in &l.members {
-            let LocusMember::Placement(pb) = m else { continue };
-            for entry in &pb.entries {
-                if matches!(entry.spec, PlacementSpec::Pinned { .. }) {
-                    pinned_by
-                        .entry(l.name.name.clone())
-                        .or_insert_with(|| (entry.field.name.clone(), entry.span));
-                }
-            }
-        }
-    }
-    if pinned_by.is_empty() {
-        return;
-    }
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| {
-            let mut cx = PinnedLoopCx {
-                top,
-                pinned_by: &pinned_by,
-                diags: &mut *diags,
-                loop_depth: 0,
-            };
-            match item {
-                TopDecl::Fn(fd) => pinned_walk_block(&fd.body, &mut cx),
-                TopDecl::Locus(l) => {
-                    for member in &l.members {
-                        if let Some(body) = locus_member_body(member) {
-                            pinned_walk_block(body, &mut cx);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        });
-    }
-}
-
-struct PinnedLoopCx<'a> {
-    top: &'a TopScope,
-    /// locus name → (the first field it pins, that entry's span).
-    pinned_by: &'a BTreeMap<String, (String, Span)>,
-    diags: &'a mut Vec<Diag>,
-    loop_depth: u32,
-}
-
-fn pinned_walk_block(b: &Block, cx: &mut PinnedLoopCx) {
-    for s in &b.stmts {
-        pinned_walk_stmt(s, cx);
-    }
-    if let Some(t) = &b.tail {
-        pinned_walk_expr(t, cx);
-    }
-}
-
-fn pinned_walk_if(i: &IfStmt, cx: &mut PinnedLoopCx) {
-    pinned_walk_expr(&i.cond, cx);
-    pinned_walk_block(&i.then_block, cx);
-    if let Some(eb) = &i.else_block {
-        match eb.as_ref() {
-            ElseBranch::Else(b) => pinned_walk_block(b, cx),
-            ElseBranch::ElseIf(i2) => pinned_walk_if(i2, cx),
-        }
-    }
-}
-
-fn pinned_walk_match(m: &MatchStmt, cx: &mut PinnedLoopCx) {
-    pinned_walk_expr(&m.scrutinee, cx);
-    for arm in &m.arms {
-        if let Some(g) = &arm.guard {
-            pinned_walk_expr(g, cx);
-        }
-        match &arm.body {
-            MatchArmBody::Expr(e) => pinned_walk_expr(e, cx),
-            MatchArmBody::Block(b) => pinned_walk_block(b, cx),
-        }
-    }
-}
-
-fn pinned_walk_stmt(s: &Stmt, cx: &mut PinnedLoopCx) {
-    match s {
-        Stmt::While { cond, body, .. } => {
-            pinned_walk_expr(cond, cx);
-            cx.loop_depth += 1;
-            pinned_walk_block(body, cx);
-            cx.loop_depth -= 1;
-        }
-        Stmt::For { iter, body, .. } => {
-            pinned_walk_expr(iter, cx);
-            cx.loop_depth += 1;
-            pinned_walk_block(body, cx);
-            cx.loop_depth -= 1;
-        }
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-            pinned_walk_expr(value, cx)
-        }
-        Stmt::Assign { value, .. } => pinned_walk_expr(value, cx),
-        Stmt::If(i) => pinned_walk_if(i, cx),
-        Stmt::Match(m) => pinned_walk_match(m, cx),
-        Stmt::Return(Some(e), _) => pinned_walk_expr(e, cx),
-        Stmt::Fail { value, .. } => pinned_walk_expr(value, cx),
-        Stmt::Expr(e) => pinned_walk_expr(e, cx),
-        _ => {}
-    }
-}
-
-fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
-    match e {
-        Expr::Struct { path, inits, span, .. } => {
-            for init in inits {
-                pinned_walk_expr(&init.value, cx);
-            }
-            if cx.loop_depth == 0 {
-                return;
-            }
-            // A `placement { }` block lives on the bundle's own main
-            // locus, which is never reached through an import alias
-            // (an imported main is renamed `__lib_*` and filtered
-            // above), so a single-segment name is the whole surface.
-            let segs: Vec<&str> =
-                path.segments.iter().map(|s| s.name.as_str()).collect();
-            if segs.len() != 1 {
-                return;
-            }
-            if !matches!(cx.top.lookup(segs[0]), Some(TopSymbol::Locus(_))) {
-                return;
-            }
-            let Some((field, entry_span)) = cx.pinned_by.get(segs[0]) else {
-                return;
-            };
-            cx.diags.push(
-                Diag::ty(
-                    *span,
-                    format!(
-                        "locus `{}` is instantiated inside a loop, but its \
-                         `placement {{ }}` block pins field `{}` to its own \
-                         OS thread. Every iteration spawns a fresh pinned \
-                         thread while only the last one is joined, so the \
-                         earlier threads are orphaned and their arenas leak. \
-                         Placement names static resources (a core, a NUMA \
-                         node, `replicas = K`) — one thread per entry for \
-                         the program's life — so instantiate `{}` once, \
-                         outside the loop. (A loop that calls a fn holding \
-                         the literal is fine: each call joins its own \
-                         thread.)",
-                        segs[0], field, segs[0]
-                    ),
-                )
-                .with_related(
-                    *entry_span,
-                    format!("field `{}` is placed `pinned` here", field),
-                ),
-            );
-        }
-        Expr::Call { callee, args, .. } => {
-            pinned_walk_expr(callee, cx);
-            for a in args {
-                pinned_walk_expr(a, cx);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            pinned_walk_expr(left, cx);
-            pinned_walk_expr(right, cx);
-        }
-        Expr::Unary { operand, .. } => pinned_walk_expr(operand, cx),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            pinned_walk_expr(receiver, cx)
-        }
-        Expr::Index { receiver, index, .. } => {
-            pinned_walk_expr(receiver, cx);
-            pinned_walk_expr(index, cx);
-        }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => {
-            for e in es {
-                pinned_walk_expr(e, cx);
-            }
-        }
-        Expr::Sum(e, _) | Expr::Prod(e, _) => pinned_walk_expr(e, cx),
-        Expr::Approx { left, right, tolerance, .. } => {
-            pinned_walk_expr(left, cx);
-            pinned_walk_expr(right, cx);
-            pinned_walk_expr(tolerance, cx);
-        }
-        Expr::Range { lo, hi, .. } => {
-            pinned_walk_expr(lo, cx);
-            pinned_walk_expr(hi, cx);
-        }
-        Expr::ArrayRepeat { val, .. } => pinned_walk_expr(val, cx),
-        Expr::Block(b) => pinned_walk_block(b, cx),
-        Expr::If(i) => pinned_walk_if(i, cx),
-        Expr::Match(m) => pinned_walk_match(m, cx),
-        Expr::Or { inner, disposition, .. } => {
-            pinned_walk_expr(inner, cx);
-            match disposition {
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    pinned_walk_expr(e, cx)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
 /// GH #890: a `placement { }` entry no instantiation consumes.
 ///
 /// A placement entry is carried to codegen as an override on the
@@ -4245,7 +3990,7 @@ fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
 /// default every site overrides is dead text, not a dropped
 /// placement.
 ///
-/// Scope mirrors `collect_main_placement` (and rule 17's check): an
+/// Scope mirrors `collect_main_placement`: an
 /// imported seed's main locus is renamed `__lib_*` and is not the
 /// deployment root, so its entries never reach the plan and flagging
 /// them would be a false positive.
@@ -4419,14 +4164,12 @@ fn placement_unconsumed_diag(
     .with_related(entry_span, format!("`{}` is placed here", field))
 }
 
-/// Collects the field inits of every literal of the main locus.
-/// Same AST coverage `pinned_walk_*` has, without rule 17's loop
-/// bookkeeping — a placement site is positional in neither sense.
+/// Collects the field inits of every literal of the main locus, in any
+/// fn, locus method or lifecycle hook, at any nesting.
 struct PlacementSiteCx<'a> {
     /// The bundle's main locus name. `placement { }` is main-only
     /// (rule 1) and an imported main is renamed `__lib_*`, so a
-    /// single-segment name is the whole surface — the same reasoning
-    /// rule 17's walk uses.
+    /// single-segment name is the whole surface.
     main: &'a str,
     sites: Vec<&'a [StructInit]>,
 }

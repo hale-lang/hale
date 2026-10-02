@@ -3451,8 +3451,12 @@ main locus App {
     a loop that *calls a fn* holding the literal is unaffected and
     correct (each call joins its own thread at that fn's exit), and
     the rule is positional on that literal, so it is not a rule
-    about the whole call graph. Codegen keeps a matching refusal for
-    embedders that bypass the checker. (GH #826, 2026-09-20.)
+    about the whole call graph. The typechecker judges it over the
+    placement table's constructions of the root (every literal of
+    the root declaration, as resolved), and the test harness's
+    build, which skips the rest of the check, judges it too, so
+    lowering keeps no refusal of its own. (GH #826, 2026-09-20;
+    F.40 phase 3, C7.)
 18. **Every entry is consumed by exactly one instantiation
     (error).** A placement entry is carried by the locus LITERAL
     lowered for its field, and by nothing else: the thread class,

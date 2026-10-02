@@ -114,10 +114,13 @@ fn locus_literal_default_under_a_placement_entry_still_builds() {
 /// `build_executable` does not run the checker — which is what this
 /// whole file is about.
 ///
-/// The oracle is the GH #826 refusal: a PINNED locus instantiated
-/// inside a loop cannot build, because its thread's join record is
-/// one slot per site. So if the stale override reaches the loop's
-/// literal the build is refused, and the fix is the build succeeding.
+/// The oracle is the IR: a locus instantiated pinned gets a thread
+/// entry of its own (`__pinned_main_<Locus>`), so if the stale override
+/// reaches the loop's `Other` literal the module carries
+/// `__pinned_main_Other`, and the fix is its absence. (Until F.40
+/// phase 3, C7 the oracle was lowering's GH #826 refusal of a pinned
+/// locus in a loop; that rule is now a law judged before lowering, over
+/// the placement table, which places no `Other`.)
 /// The program is assembled without a raw string literal so
 /// `hale_corpus::embedded` does not harvest it.
 #[test]
@@ -155,12 +158,15 @@ fn a_placement_entry_does_not_reach_a_later_instantiation() {
     .concat();
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = harness::unique_bin("hale_placement_slot_scope_921");
-    let built = build_executable_with_options(&program, &bin, &[], &build_opts::options());
+    let ll = bin.with_extension("ll");
+    let options = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &options).expect("build");
+    let ir = std::fs::read_to_string(&ll).expect("read IR");
+    let _ = std::fs::remove_file(&ll);
     assert!(
-        built.is_ok(),
+        !ir.contains("__pinned_main_Other"),
         "a placement entry on an earlier field must not pin a later \
-         instantiation — the GH #826 loop refusal is the tell: {:?}",
-        built.err()
+         instantiation: `Other` was lowered pinned"
     );
     let out = std::process::Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

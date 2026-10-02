@@ -1868,7 +1868,9 @@ fn main() { App { }; }
 // every iteration and the scope-exit flush joins only the LAST
 // instance — every earlier thread is orphaned with its arena live.
 // `placement { }` is main-only, so the reachable shape is the main
-// locus itself instantiated inside a loop.
+// locus itself instantiated inside a loop. Judged since F.40 phase 3,
+// C7 over the placement table's root constructions
+// (`hale_types::lowering_laws`), which the harness demands too.
 
 /// The GH #826 rejection, keyed on a substring stable across message
 /// edits.

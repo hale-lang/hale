@@ -3871,38 +3871,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // shutdown) can both reach it.
         //
         // A pinned locus accepts no children and declares no birth
-        // or dissolve closure (rule 6): the law judges it over the
-        // placement table before lowering, at every entry point
+        // or dissolve closure (rule 6), and is never instantiated
+        // inside a loop (rule 17, GH #826): this branch's join record
+        // — the deferred-dissolve slot below and the `pthread_t`
+        // alloca it carries — is ONE alloca per instantiation SITE,
+        // hoisted to the fn's entry block, so a site in a loop would
+        // orphan every thread but the last. The laws judge both over
+        // the placement table before lowering, at every entry point
         // (`hale_types::lowering_laws`), so lowering does not.
         if is_pinned {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            // GH #826 backstop. This branch's join record — the
-            // deferred-dissolve slot below and the `pthread_t`
-            // alloca it carries — is ONE alloca per instantiation
-            // SITE, hoisted to the fn's entry block. A site inside a
-            // loop rewrites both every iteration, so the scope-exit
-            // flush joins and arena-destroys only the LAST instance
-            // and every earlier pinned thread is orphaned with its
-            // arena live (GH #815's per-iteration slot reclaim
-            // deliberately steps over a pinned entry: reclaiming it
-            // means joining the previous thread).
-            //
-            // `check_pinned_locus_in_loop` rejects the shape with a
-            // located diagnostic, so nothing that runs the checker
-            // reaches this. `build_executable` does NOT run the
-            // checker, and neither does a direct codegen embedder —
-            // refuse there rather than emit the leak.
-            if !self.loops.is_empty() {
-                return Err(CodegenError::Unsupported(format!(
-                    "pinned locus `{}` is instantiated inside a loop; its \
-                     thread's join record is one slot per site, so every \
-                     iteration but the last would be orphaned with its arena \
-                     live. Instantiate it once outside the loop (see \
-                     spec/semantics.md § Placement block rule 17)",
-                    locus_name
-                )));
-            }
-
             let i64_t = self.context.i64_type();
             let i32_t = self.context.i32_type();
 
