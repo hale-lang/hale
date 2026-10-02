@@ -179,7 +179,11 @@ impl LoweringView {
 /// with, recorded on the envelope for lowering to hold its options
 /// to. `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
-/// gets its written discipline. The error is the message codegen
+/// gets its written discipline. `placement` is the snapshot's placement
+/// table (`Snapshot::demand_placement`), which the intra-locus rewrite
+/// reads for the fields off their owner's thread; a caller with none
+/// passes `&PlacementTable::default()`, which runs no field off its
+/// owner. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_program(
@@ -189,6 +193,7 @@ pub fn resolve_program(
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
+    placement: &crate::placement::PlacementTable,
 ) -> Result<LoweringView, String> {
     // A7 (G16): `BusSubject::QualifiedTopic(alias::Foo)` — cross-seed
     // topic refs the parser admits — are already the plain
@@ -219,8 +224,12 @@ pub fn resolve_program(
     // numbering, not a mint: nothing reads rows of the user program on
     // its own, so no snapshot is made of it.
     crate::snapshot::number([&mut program_owned]);
-    let intra_locus =
-        hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    // A publish into a field the table runs off its owner's thread stays
+    // on the bus (F.31 pool safety).
+    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(
+        &mut program_owned,
+        &placement.off_owner_fields(),
+    );
     let topic_rewrites = hale_syntax::desugar::desugar_topics(&mut program_owned);
     // The bus-inert verdict, over the user's program before the stdlib
     // merge: whether a bus cell can ever be in flight (`bus_inert`).

@@ -11,7 +11,6 @@
 //!   `SameThread`, as the graph defines it);
 //! - `ownership`: the ownership graph's verbatim copy, `collect_placements`;
 //! - `model`: the arrangement's `PlacedIn`, per instance path;
-//! - `desugar`: `collect_off_owner_thread_fields`, per `Owner.field`;
 //! - `budget`: `budget_for_programs`' threads and pools.
 //!
 //! The seeds are the corpus (each program a bare snapshot), every
@@ -26,7 +25,11 @@
 //! column each, and the phase-0 shadow compared the map with the bus
 //! graph's, until the F.31 rule, sync inference and the blocking check
 //! read the table (P1's checker switch): their classified divergences
-//! became the diagnostics that switch pins.
+//! became the diagnostics that switch pins. The intra-locus rewrite's
+//! off-owner-thread fields (`collect_off_owner_thread_fields`) had one
+//! too, until the rewrite read the table's `off_owner_fields` (P1's part
+//! 4): its only divergences were an imported root's entries, which
+//! lowering never deploys (fixture F-R's principle).
 //!
 //! **The gate.** The comparison runs per row, in memory, and `classify`
 //! names the correspondence's rows (§ 2, § 10) that explain each
@@ -52,8 +55,8 @@ use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
 use hale_types::bus_graph::{collect_subscriber_placements, Placement};
 use hale_types::placement::legacy::collect_placements;
 use hale_types::placement::{
-    Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
-    PlacementTable, SiteUniverse,
+    Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, PlacementTable,
+    SiteUniverse,
 };
 use hale_types::resolve::TopScope;
 use hale_types::stdlib_bodies::mangled_locus_name;
@@ -437,21 +440,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             .collect()
     };
 
-    // Owner.field → the declarations the field's rows realize.
-    let mut field_decls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (k, r) in &t.instances {
-        if handed_off.contains(k) {
-            continue;
-        }
-        let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
-        let Some(owner) = t.instances.get(o).and_then(|o| o.realizes.as_ref()) else { continue };
-        field_decls
-            .entry(format!("{}.{}", owner.lowered, step.field))
-            .or_default()
-            .insert(r.realizes.as_ref().map(|d| d.lowered.clone()).unwrap_or_else(|| "<hole>".into()));
-    }
-    let field_decls: BTreeMap<String, String> = field_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect();
-
     // bus and ownership: the per-type label, keyed by the last segment of
     // the placed field's written type; no row is `SameThread`. A label's
     // consumers match it against a declaration's name, so a key that names
@@ -608,34 +596,6 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
             decl: model_decls.iter().map(|(k, v)| (k.clone(), joined(v))).collect(),
         });
     }
-
-    // desugar: the intra-locus rewrite's off-owner-thread fields.
-    let mut old = Vec::new();
-    for p in bundle.programs.values() {
-        for (owner, field) in hale_syntax::desugar::shadow_support::collect_off_owner_thread_fields(&p.items) {
-            old.push((format!("{owner}.{field}"), "off".to_string()));
-        }
-    }
-    let mut new: BTreeSet<String> = BTreeSet::new();
-    for (k, r) in &t.instances {
-        if r.owner_relative != OwnerRelative::OffOwner || handed_off.contains(k) {
-            continue;
-        }
-        let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
-        if let Some(owner) = t.instances.get(o).and_then(|o| o.realizes.as_ref()) {
-            new.insert(format!("{}.{}", owner.lowered, step.field));
-        }
-    }
-    columns.push(Column {
-        name: "desugar",
-        old,
-        new: new.into_iter().map(|k| (k, "off".to_string())).collect(),
-        map_old: BTreeMap::new(),
-        witness: BTreeMap::new(),
-        global: global.clone(),
-        slice: "the intra-locus rewrite (a publish to an off-thread field's handler stays a publish)",
-        decl: field_decls,
-    });
 
     // budget: threads and pools.
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
@@ -859,12 +819,6 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          graph-switch PR. § 2.3, § 10.2",
     ),
     (
-        "F-R",
-        Class::Correction,
-        "fixture F-R's principle: the walk reads an imported root's placement block; a `__lib_` root is never \
-         deployed, so nothing observable differs. § 2.5",
-    ),
-    (
         "M-1",
         Class::Correction,
         "the arrangement is rooted at the first `main` in program order, the table at lowering's root (fixture F-R's \
@@ -995,11 +949,11 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
                 return None;
             }
         }
-        ("bus" | "ownership" | "desugar", Kind::OnlyOld) => {
+        ("bus" | "ownership", Kind::OnlyOld) => {
             if !causes.iter().any(|c| c.contains("(imported), with entries")) {
                 return None;
             }
-            vec![if col == "desugar" { "F-R" } else { "B-4" }]
+            vec!["B-4"]
         }
         ("model", Kind::OnlyNew) => every(&|c| {
             if c.contains("realizing a stdlib declaration") {

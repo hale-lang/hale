@@ -1227,7 +1227,8 @@ impl Snapshot {
 
     /// The view codegen lowers: the check first, then
     /// [`hale_types::resolved::resolve_program`] over the snapshot's
-    /// program, source map, renames and api config — the two lowering
+    /// program, source map, renames and api config, its form rows and its
+    /// placement table (which the intra-locus rewrite reads) — the two lowering
     /// rewrites as relations, the stdlib merge, the mint over the
     /// merged program, and the tables. A check that reported an error
     /// blocks it, with the errors as the reason; a warning does not.
@@ -1256,6 +1257,7 @@ impl Snapshot {
                     }
                 };
                 let forms = self.demand_forms().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_program(
                     program,
@@ -1264,6 +1266,7 @@ impl Snapshot {
                     self.config.api.as_deref(),
                     self.config.api_roles.as_deref(),
                     forms,
+                    placement,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })

@@ -992,16 +992,24 @@ pub struct IntraLocusRewrite {
 /// rewrote. Idempotent: re-running on already-optimized input is a
 /// no-op returning an empty vector (rewritten Sends become method-call
 /// Stmt::Expr nodes, which the rewrite step skips).
-pub fn desugar_intra_locus_topics(program: &mut Program) -> Vec<IntraLocusRewrite> {
+///
+/// `placed_off_owner_thread` is the set of `(owner_locus, field)`
+/// pairs the placement table runs off their owner's thread (F.40
+/// phase 3, P1: `PlacementTable::off_owner_fields`, handed in by
+/// `resolve_program`). A caller with no placement passes an empty set.
+pub fn desugar_intra_locus_topics(
+    program: &mut Program,
+    placed_off_owner_thread: &BTreeSet<(String, String)>,
+) -> Vec<IntraLocusRewrite> {
     let bindings = collect_bindings(&program.items);
     let (pubs, subs) = collect_pub_sub(&program.items);
     let locus_types = collect_locus_type_names(&program.items);
     let locus_fields = collect_locus_typed_fields(&program.items, &locus_types);
     let ctx_handlers = context_handlers(&program.items);
-    // F.31 pool-safety (2026-05-31): the set of (owner_locus,
-    // field) pairs whose `placement { }` puts the field-child on
-    // a thread OTHER than its owner's (a named cooperative pool
-    // that isn't `main`, or a pinned thread). The intra-locus
+    // F.31 pool-safety (2026-05-31): `placed_off_owner_thread` is
+    // the set of (owner_locus, field) pairs the placement table runs
+    // on a thread OTHER than their owner's (a root field placed on a
+    // named cooperative pool that isn't `main`, or pinned). The intra-locus
     // rewrite below turns a publish into a *direct, synchronous*
     // method call on the publisher's own thread — correct only
     // when publisher and subscriber share an execution context.
@@ -1017,7 +1025,6 @@ pub fn desugar_intra_locus_topics(program: &mut Program) -> Vec<IntraLocusRewrit
     // (case a) and non-main-owner field-children (placement is a
     // main-locus-only seam, so those share the owner's pool) are
     // unaffected.
-    let placed_off_owner_thread = collect_off_owner_thread_fields(&program.items);
     // Phase 3 (2026-05-25): collect the set of topic names that
     // declare `keyed_by` (or `on_unmatched`). The intra-locus
     // optimization rewrites publishes to direct method calls,
@@ -1147,70 +1154,6 @@ pub fn desugar_intra_locus_topics(program: &mut Program) -> Vec<IntraLocusRewrit
         }
     }
     rewrites
-}
-
-/// Set of (owner_locus, field) pairs whose `placement { }` entry
-/// puts the field-child on a thread other than the owner's: a
-/// named cooperative pool that isn't `main`, or a pinned thread.
-/// `cooperative` with no pool (or `pool = main`) keeps the child
-/// on the owner's (main) thread, so a direct same-thread call is
-/// safe and stays eligible for the intra-locus rewrite.
-///
-/// F.31 scopes `placement { }` to the main locus, so in practice
-/// only main-locus fields appear here — but the walk is
-/// locus-agnostic, so a future non-main placement seam is covered
-/// automatically.
-fn collect_off_owner_thread_fields(
-    items: &[TopDecl],
-) -> std::collections::BTreeSet<(String, String)> {
-    let mut out = std::collections::BTreeSet::new();
-    fn walk(
-        items: &[TopDecl],
-        out: &mut std::collections::BTreeSet<(String, String)>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    for member in &l.members {
-                        if let LocusMember::Placement(pb) = member {
-                            for e in &pb.entries {
-                                let off_thread = match &e.spec {
-                                    PlacementSpec::Cooperative { pool, .. } => pool
-                                        .as_ref()
-                                        .is_some_and(|p| p.name != "main"),
-                                    PlacementSpec::Pinned { .. } => true,
-                                };
-                                if off_thread {
-                                    out.insert((
-                                        l.name.name.clone(),
-                                        e.field.name.clone(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    walk(items, &mut out);
-    out
-}
-
-/// `collect_off_owner_thread_fields`, reachable for the placement
-/// shadow (`hale-types`'s `tests/shadow_placement.rs`) alone: test
-/// support, not an API.
-#[doc(hidden)]
-pub mod shadow_support {
-    use super::TopDecl;
-
-    pub fn collect_off_owner_thread_fields(
-        items: &[TopDecl],
-    ) -> std::collections::BTreeSet<(String, String)> {
-        super::collect_off_owner_thread_fields(items)
-    }
 }
 
 /// Set of every declared locus type name in the program (across

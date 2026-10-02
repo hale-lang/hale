@@ -548,6 +548,29 @@ impl PlacementTable {
         }
         Running { table: self, of_decl, fields, unlinked }
     }
+
+    /// The `(owner, field)` pairs whose row runs off its owner's thread
+    /// ([`OwnerRelative::OffOwner`]), the owner by the name lowering keys
+    /// on: the intra-locus rewrite keeps a publish into such a field's
+    /// handler on the bus (`desugar_intra_locus_topics`). The
+    /// handed-off rows are skipped. Only a root field's entry puts a row
+    /// off its owner (invariant 2), so a held row, a row below one and a
+    /// dynamic literal are never here, and none of them is unknown to
+    /// this question: each runs in its owner's domain.
+    pub fn off_owner_fields(&self) -> BTreeSet<(String, String)> {
+        let handed_off = self.handed_off();
+        let mut out = BTreeSet::new();
+        for (k, r) in &self.instances {
+            if r.owner_relative != OwnerRelative::OffOwner || handed_off.contains(k) {
+                continue;
+            }
+            let (Some(o), Some(step)) = (&r.owner, k.path.last()) else { continue };
+            if let Some(owner) = self.instances.get(o).and_then(|o| o.realizes.as_ref()) {
+                out.insert((owner.lowered.clone(), step.field.clone()));
+            }
+        }
+        out
+    }
 }
 
 /// The rows of a [`PlacementTable`] where instances run

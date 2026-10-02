@@ -221,8 +221,9 @@ pub(crate) fn collect_bus_walk(bundle: &Bundle<'_>) -> BusWalk {
 // === Public graph =================================================
 
 /// Where a subscriber's handler runs relative to the publisher's
-/// thread — mirrors the placement classification computed in
-/// `hale-syntax::desugar` (`collect_off_owner_thread_fields`).
+/// thread, per type: the classification the placement table answers
+/// per instance (`InstanceRow::owner_relative`, which the intra-locus
+/// rewrite reads through `PlacementTable::off_owner_fields`).
 ///
 /// `CrossPool`/`Pinned` mean the handler runs on a *different* OS
 /// thread, so any later devirtualization must still route through
@@ -606,10 +607,9 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
 }
 
 /// Map each locus *type* name to the [`Placement`] it receives
-/// where instantiated as a placed field. Mirrors
-/// `desugar::collect_off_owner_thread_fields`: a `placement { }`
-/// entry keys on the owner's `params` field name, and that field's
-/// declared type names the placed child locus.
+/// where instantiated as a placed field: a `placement { }` entry keys
+/// on the owner's `params` field name, and that field's declared type
+/// names the placed child locus.
 ///
 /// First-placement-wins when a type is placed in multiple fields
 /// (the multi-instance case); placement is informational for the

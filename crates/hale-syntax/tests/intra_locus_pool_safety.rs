@@ -1,22 +1,14 @@
-//! F.31 pool-safety guard on the intra-locus publish→direct-call
-//! optimization (`desugar_intra_locus_topics`).
+//! The intra-locus publish→direct-call optimization
+//! (`desugar_intra_locus_topics`) over the set of fields it is handed as
+//! off their owner's thread.
 //!
-//! The optimization rewrites a 1-publisher / 1-subscriber publish
-//! into a direct, *synchronous* method call on the publisher's own
-//! thread. That is correct only when publisher and subscriber share
-//! an execution context. When the subscriber field is placed on a
-//! separate cooperative pool (or pinned thread), the direct call
-//! would run the handler on the publisher's thread (e.g. main) —
-//! violating the single-threaded-pool invariant and dropping the
-//! pool context that any locus the handler instantiates needs to
-//! inherit (an accept'd child's run() would go synchronous and its
-//! subscriptions would register on the global queue; observed as a
-//! per-connection handler blocking the main thread in accept()).
-//!
-//! So: an off-thread subscriber must keep its publish on the bus
-//! dispatch path (Send preserved), while an on-thread subscriber
-//! (pool = main / no placement) still gets the optimization
-//! (Send rewritten to a method-call Stmt::Expr).
+//! Which fields those are is the placement table's answer (F.40 phase 3,
+//! P1), and `hale-types`'s `tests/intra_locus_pool_safety.rs` checks the
+//! F.31 pool-safety guard end to end, through the frontend's load and the
+//! lowering view. Here the set is written by hand: a field in it keeps
+//! its publish on the bus, and the rewrite returns what it rewrote.
+
+use std::collections::BTreeSet;
 
 use hale_syntax::ast::{Block, LifecycleKind, LocusMember, Stmt, TopDecl};
 use hale_syntax::desugar::desugar_intra_locus_topics;
@@ -48,7 +40,7 @@ fn has_send(body: &Block) -> bool {
     body.stmts.iter().any(|s| matches!(s, Stmt::Send { .. }))
 }
 
-const SRC_TEMPLATE: &str = r#"
+const SRC: &str = r#"
     type Ping { n: Int = 0; }
     topic PingT { payload: Ping; subject: "p.ping"; }
 
@@ -59,7 +51,6 @@ const SRC_TEMPLATE: &str = r#"
 
     main locus App {
         params { w: Worker = Worker { }; }
-        placement { __PLACEMENT__ }
         bus { publish PingT; }
         run() {
             PingT <- Ping { n: 1 };
@@ -69,56 +60,24 @@ const SRC_TEMPLATE: &str = r#"
     fn main() { App { }; }
 "#;
 
-fn desugared_with_placement(placement: &str) -> hale_syntax::ast::Program {
-    let src = SRC_TEMPLATE.replace("__PLACEMENT__", placement);
-    let mut program = hale_syntax::parse_source(&src).expect("parse");
-    desugar_intra_locus_topics(&mut program);
-    program
-}
-
 #[test]
-fn off_thread_pool_subscriber_keeps_publish_on_bus() {
-    // Worker on a named non-main pool → the publish must NOT be
-    // devirtualized to a direct call on main.
-    let program = desugared_with_placement("w: cooperative(pool = io);");
+fn a_field_off_its_owners_thread_keeps_its_publish_on_the_bus() {
+    let mut program = hale_syntax::parse_source(SRC).expect("parse");
+    let off: BTreeSet<(String, String)> = [("App".to_string(), "w".to_string())].into();
+    assert!(desugar_intra_locus_topics(&mut program, &off).is_empty());
     assert!(
         has_send(run_body(&program, "App")),
-        "publish to a pool-placed subscriber was rewritten to a direct \
-         call — it must stay on the bus dispatch path so the handler \
-         runs on the pool's worker"
+        "publish to an off-thread subscriber was rewritten to a direct call"
     );
 }
 
 #[test]
-fn async_io_pool_subscriber_keeps_publish_on_bus() {
-    // The exact shape that wedged the main thread: an async_io pool.
-    let program =
-        desugared_with_placement("w: cooperative(pool = io) where async_io;");
-    assert!(
-        has_send(run_body(&program, "App")),
-        "publish to an async_io-pool subscriber was rewritten to a \
-         direct call"
-    );
-}
-
-#[test]
-fn pinned_subscriber_keeps_publish_on_bus() {
-    let program = desugared_with_placement("w: pinned;");
-    assert!(
-        has_send(run_body(&program, "App")),
-        "publish to a pinned subscriber was rewritten to a direct call"
-    );
-}
-
-#[test]
-fn pool_main_subscriber_still_optimizes() {
-    // Explicit `pool = main` keeps Worker on the publisher's thread,
-    // so the optimization is safe and must still fire.
-    let program = desugared_with_placement("w: cooperative(pool = main);");
+fn a_field_on_its_owners_thread_is_optimized() {
+    let mut program = hale_syntax::parse_source(SRC).expect("parse");
+    desugar_intra_locus_topics(&mut program, &BTreeSet::new());
     assert!(
         !has_send(run_body(&program, "App")),
-        "publish to a same-thread (pool = main) subscriber should still \
-         be optimized to a direct call"
+        "publish to a same-thread subscriber should be optimized to a direct call"
     );
 }
 
@@ -130,8 +89,7 @@ fn pool_main_subscriber_still_optimizes() {
 fn the_rewrite_returns_what_it_rewrote_once() {
     use hale_syntax::ast::{Expr, NodeId};
     use hale_syntax::desugar::IntraLocusRewrite;
-    let src = SRC_TEMPLATE.replace("placement { __PLACEMENT__ }", "");
-    let mut program = hale_syntax::parse_source(&src).expect("parse");
+    let mut program = hale_syntax::parse_source(SRC).expect("parse");
     for item in &mut program.items {
         let TopDecl::Locus(l) = item else { continue };
         for m in &mut l.members {
@@ -143,7 +101,7 @@ fn the_rewrite_returns_what_it_rewrote_once() {
             }
         }
     }
-    let rewrites = desugar_intra_locus_topics(&mut program);
+    let rewrites = desugar_intra_locus_topics(&mut program, &BTreeSet::new());
     assert_eq!(
         rewrites,
         vec![IntraLocusRewrite {
@@ -159,22 +117,7 @@ fn the_rewrite_returns_what_it_rewrote_once() {
     });
     assert_eq!(call_id, Some(NodeId(42)), "the direct call carries the send's identity");
     assert!(
-        desugar_intra_locus_topics(&mut program).is_empty(),
+        desugar_intra_locus_topics(&mut program, &BTreeSet::new()).is_empty(),
         "a second run rewrites nothing"
-    );
-}
-
-#[test]
-fn unplaced_subscriber_still_optimizes() {
-    // No placement block at all → Worker is on main with the
-    // publisher → optimization must still fire. (Drop the
-    // placement line entirely.)
-    let src = SRC_TEMPLATE.replace("placement { __PLACEMENT__ }", "");
-    let mut program = hale_syntax::parse_source(&src).expect("parse");
-    desugar_intra_locus_topics(&mut program);
-    assert!(
-        !has_send(run_body(&program, "App")),
-        "publish to an unplaced (main-thread) subscriber should still be \
-         optimized to a direct call"
     );
 }
