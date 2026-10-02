@@ -860,6 +860,25 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
                 w.push(format!("cause: {c}"));
             }
         }
+        // K-9 / M-9: below a held row whose source the producer could not
+        // link the table asserts nothing; a path the arrangement has there
+        // is the declared type's default subtree it built under the holder.
+        let unlinked_held: Vec<String> = held
+            .iter()
+            .filter(|k| t.instances.get(**k).is_some_and(|r| r.built_by.is_none()))
+            .map(|k| paths.path(k))
+            .collect();
+        for (path, _) in &old {
+            if new.contains_key(path) {
+                continue;
+            }
+            if let Some(h) = unlinked_held.iter().find(|h| path.starts_with(&format!("{h}."))) {
+                witness
+                    .entry(path.clone())
+                    .or_insert_with(|| model_global.clone())
+                    .push(format!("cause: a path under the unlinked held row `{h}`"));
+            }
+        }
         columns.push(Column {
             name: "model",
             old,
@@ -1083,11 +1102,20 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
     (
         "K-8",
         Class::Correction,
-        "a held instance's subtree lives in its holder's domain (K-8 / M-8, § 10.8; case 16): the table enumerates \
-         it under the holder, as the legacy producers do, and the source template's rows answer where it was built \
-         (`built_by`), read by no domain question. Agreement where the producer links the source; where it cannot \
-         (a parameter, a name bound twice), the source template stands on main beside the held rows and the type's \
-         set holds both. § 2.1",
+        "a held instance's subtree lives in its holder's domain (K-8 / M-8, § 10.8; case 16): the table projects \
+         the source's actual rows under the holder, never the declaration's defaults, and the source template's \
+         rows answer where it was built (`built_by`), read by no domain question. Agreement where the producer \
+         links the source; where it cannot (a parameter, a name bound twice), the source template stands on main \
+         beside the held row and the type's set holds both. § 2.1",
+    ),
+    (
+        "K-9",
+        Class::Correction,
+        "an unlinked held source (K-9 / M-9, § 10.9): the table records the `Reuse` hole and asserts no subtree; \
+         the checker's map took the declared type's default subtree under the holder (a known old bug: it \
+         fabricates rows an override may contradict), so a type whose only table rows stand in the template the \
+         held row may be is pinned there and main here. A consumer switch treats the hole as unknown: it disables \
+         a proof or an optimization and never defaults to main or to pinned. § 2.1",
     ),
     (
         "B-1",
@@ -1183,6 +1211,15 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
          root's tree) does not hold, and contract 3 applies to them. § 2.4, § 10.1",
     ),
     (
+        "M-9",
+        Class::Correction,
+        "an unlinked held source (K-9 / M-9, § 10.9): the table records the `Reuse` hole and asserts no subtree; \
+         the arrangement builds the declared type's default subtree under the holder (a known old bug: it \
+         fabricates rows an override may contradict), so a path below the held row is the arrangement's alone. A \
+         consumer switch treats the hole as unknown: it disables a proof or an optimization and never defaults to \
+         main or to pinned. § 2.4",
+    ),
+    (
         "M-c3",
         Class::Correction,
         "contract 3: one arrangement path, several construction templates or alternatives that disagree; the \
@@ -1259,8 +1296,15 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
     let held_residue = rows.iter().any(|w| w.contains(", held)"))
         && rows.iter().any(|w| w.contains("` on main (") && w.contains(source))
         && rows.iter().all(|w| w.contains(", held)") || (w.contains("` on main (") && w.contains(source)));
+    // K-9's: the table's only rows of the type stand in a template an
+    // unlinked held row may be; the off-main answer is the declared
+    // type's default subtree the checker took under the holder.
+    let unlinked_only = !rows.is_empty() && rows.iter().all(|w| w.contains("` on main (") && w.contains(source));
     let ids = match (col, d.kind) {
         ("checker", Kind::Disagreement) if multi && held_residue => vec!["K-8"],
+        ("checker", Kind::Disagreement) if !multi && unlinked_only && d.old.as_deref() != Some("main") => {
+            vec!["K-9"]
+        }
         ("checker", Kind::Disagreement) if multi => vec!["K-3"],
         ("checker", Kind::OnlyNew) | ("receiver", Kind::OnlyNew) => {
             every(&|c| checker_cause_row(c.strip_prefix("the owner is not in the checker's map: ").unwrap_or(c)))?
@@ -1317,6 +1361,9 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
             }
         })?,
         ("model", Kind::OnlyOld) if causes.iter().any(|c| c.starts_with("the arrangement's root")) => vec!["M-1"],
+        ("model", Kind::OnlyOld) if causes.iter().any(|c| c.starts_with("a path under the unlinked held row")) => {
+            vec!["M-9"]
+        }
         ("model", Kind::Disagreement) if multi => vec!["M-c3"],
         ("model", Kind::Disagreement) => {
             // M-3: the arrangement names the user's locus where the table

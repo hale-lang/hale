@@ -1,0 +1,35 @@
+// Case 16, an unlinked source: the held instance reaches the root's
+// literal through a parameter, so the producer cannot say which
+// template built it. The held row keeps its `Reuse` hole, and nothing
+// below it is enumerated: the declaration's defaults are not what was
+// built.
+locus K { }
+
+locus Roles {
+    params {
+        k: K = K { };
+    }
+}
+
+locus Holder {
+    params {
+        roles: Roles = Roles { };
+    }
+}
+
+main locus App {
+    params {
+        h: Holder = Holder { };
+    }
+    placement {
+        h: pinned;
+    }
+}
+
+fn start(r: Roles) {
+    App { h: Holder { roles: r } };
+}
+
+fn main() {
+    start(Roles { k: K { } });
+}

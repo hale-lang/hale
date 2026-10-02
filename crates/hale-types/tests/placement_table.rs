@@ -626,8 +626,8 @@ fn a_field_from_an_existing_instance_is_a_reuse_hole() {
 
 /// Case 16: a held instance's subtree lives in its holder's domain (K-8 /
 /// M-8). `fn main` builds `r` on main and hands it to `h`, placed pinned:
-/// the held row keeps the `Reuse` hole naming `r`, the declared type's
-/// fields are rows under it in the pinned domain, inherited, and each row
+/// the held row keeps the `Reuse` hole naming `r`, the source's rows are
+/// projected under it in the pinned domain, inherited, and each row
 /// names the source template's row it was built as. The legacy checker's
 /// map and the model's arrangement place the subtree under the holder,
 /// and the table now agrees with both.
@@ -654,10 +654,10 @@ fn a_held_instances_subtree_lives_in_its_holders_domain() {
     let at_held: Vec<&HoleKind> = t.holes.iter().filter(|x| x.at == HoleAt::Instance(held.clone())).map(|x| &x.kind).collect();
     assert_eq!(at_held, [&HoleKind::Reuse { source: "r".into() }]);
 
-    // Its subtree: the declared type's, under the holder, no hole.
+    // Its subtree: the source's, under the holder, no hole.
     let (k, kr) = one(t, "h.roles.k");
     assert_eq!((lowered(kr), kr.domain), ("K", h.domain));
-    assert!(kr.literal.is_some(), "`Roles`' default literal");
+    assert_eq!(kr.literal, t.instances[&source_k].literal, "the literal that built the source's `k`");
     assert!(matches!(&kr.decided_by, Decision::Inherited { from } if from == held));
     assert_eq!(kr.built_by.as_ref(), Some(&source_k));
     assert!(!t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone())), "the hole is the held row's alone");
@@ -680,6 +680,68 @@ fn a_held_instances_subtree_lives_in_its_holders_domain() {
     let i = e.locus_instances.iter().position(|x| x.path == "App.h.roles.k").expect("the arrangement holds `App.h.roles.k`");
     let placed = model.relations.placed_in.iter().find(|p| p.instance.0 as usize == i).expect("placed");
     assert_eq!(e.thread_domains[placed.domain.0 as usize].name, "pinned:App.h");
+}
+
+/// Case 16 with an override: `r` is built with `k: B { }`, not `Roles`'
+/// default `A { }`. The held tree is the source's actual rows projected
+/// under the holder, never the declaration's defaults: `h.roles.k`
+/// realizes `B` and `h.roles.k.child` is a row in the holder's domain,
+/// each naming its own source row, and both source rows are handed off.
+#[test]
+fn a_held_subtree_projects_its_sources_overrides() {
+    let s = clean("held_override.hl");
+    let t = table(&s);
+    let (_, h) = one(t, "h");
+    assert!(is_pinned(t, h.domain));
+    let tops: BTreeMap<&str, &InstanceKey> = rows(t, "").into_iter().map(|(k, r)| (lowered(r), k)).collect();
+    let source = tops["Roles"];
+    let at_source = |p: &str| {
+        let (k, r) = t.instances.iter().find(|(k, _)| k.origin == source.origin && path(k) == p).expect("a source row");
+        assert_eq!(r.domain, PlacementTable::MAIN, "`{p}` was built on main");
+        k
+    };
+    let (source_k, source_child) = (at_source("k"), at_source("k.child"));
+    assert_eq!(lowered(&t.instances[source_k]), "B");
+
+    let (held, roles) = one(t, "h.roles");
+    assert_eq!((lowered(roles), roles.built_by.as_ref()), ("Roles", Some(source)));
+    let (k, kr) = one(t, "h.roles.k");
+    assert_eq!((lowered(kr), kr.domain, kr.built_by.as_ref()), ("B", h.domain, Some(source_k)));
+    assert_eq!(kr.literal, t.instances[source_k].literal, "the override literal, not `A {{ }}`");
+    assert!(matches!(&kr.decided_by, Decision::Inherited { from } if from == held));
+    let (_, child) = one(t, "h.roles.k.child");
+    assert_eq!((lowered(child), child.domain, child.built_by.as_ref()), ("Child", h.domain, Some(source_child)));
+    assert!(matches!(&child.decided_by, Decision::Inherited { from } if from == k));
+    assert!(!t.instances.values().any(|r| lowered(r) == "A"), "no row realizes the default nothing built");
+    assert_eq!(t.handed_off(), [source, source_k, source_child].into_iter().collect::<BTreeSet<_>>());
+    let at_held: Vec<&HoleKind> = t.holes.iter().filter(|x| x.at == HoleAt::Instance(held.clone())).map(|x| &x.kind).collect();
+    assert_eq!(at_held, [&HoleKind::Reuse { source: "r".into() }]);
+    assert!(!t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone())));
+}
+
+/// Case 16 with an unlinked source: the held instance reaches the root's
+/// literal through a parameter, so no template is its source. The held
+/// row keeps its `Reuse` hole, links nothing, and has nothing below it:
+/// the subtree is unknown, and the declaration's defaults are not what
+/// was built.
+#[test]
+fn a_held_row_whose_source_is_unlinked_asserts_no_subtree() {
+    let s = clean("held_unlinked.hl");
+    let t = table(&s);
+    let (_, h) = one(t, "h");
+    assert!(is_pinned(t, h.domain));
+    let (held, roles) = one(t, "h.roles");
+    assert_eq!((lowered(roles), roles.literal, roles.domain, roles.built_by.as_ref()), ("Roles", None, h.domain, None));
+    let at_held: Vec<&HoleKind> = t.holes.iter().filter(|x| x.at == HoleAt::Instance(held.clone())).map(|x| &x.kind).collect();
+    assert_eq!(at_held, [&HoleKind::Reuse { source: "r".into() }]);
+    let below: Vec<String> = t
+        .instances
+        .keys()
+        .filter(|k| k.origin == held.origin && k.path.len() > held.path.len() && k.path.starts_with(&held.path))
+        .map(path)
+        .collect();
+    assert!(below.is_empty(), "nothing below an unlinked held row: {below:?}");
+    assert!(t.handed_off().is_empty());
 }
 
 /// Checkpoint 4: an alternative one step under a replicated field. Every

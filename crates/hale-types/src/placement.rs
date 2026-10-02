@@ -79,8 +79,9 @@
 //! - [`Origin::Entry`] and [`PlacementTable::entry_literals`] (the entry as a
 //!   construction scope), [`HoleKind::Reuse`] (a field that holds an
 //!   instance built elsewhere claims none), and [`InstanceRow::built_by`]
-//!   (a held instance's subtree lives in its holder's domain, and records
-//!   the source template's row it was built as) are the driver's rulings on
+//!   (a held instance's subtree is its source's rows projected into its
+//!   holder's domain, each recording the source row it was built as) are
+//!   the driver's rulings on
 //!   what the shadow found, not in the design's text.
 //!
 //! The design's case 6 (a generic locus as a params field) never reaches
@@ -339,13 +340,16 @@ pub struct InstanceRow {
     /// that took it.
     pub guarded: bool,
     /// A held instance's row (a [`HoleKind::Reuse`]) or a row under one:
-    /// the source template's row that built it, on the domain where it
-    /// was built, for the retention question. The instance moved into its
-    /// holder's domain on the handoff, so this row's domain is the
-    /// holder's, and the source's row ([`PlacementTable::handed_off`])
-    /// answers where it was built, not where it runs. `None` for a row its
-    /// own template builds, and for a held row whose source is no
-    /// template's row (a parameter, a field of `self`, a dynamic literal).
+    /// the source template's row it was built as, on the domain where it
+    /// was built, for the retention question. The rows under a held row
+    /// are its source's rows projected (each realizes what its source row
+    /// realizes), and they exist only where the source is linked. The
+    /// instance moved into its holder's domain on the handoff, so this
+    /// row's domain is the holder's, and the source's row
+    /// ([`PlacementTable::handed_off`]) answers where it was built, not
+    /// where it runs. `None` for a row its own template builds, and for a
+    /// held row whose source is no template's row (a parameter, a field
+    /// of `self`, a dynamic literal), which has nothing below it.
     pub built_by: Option<InstanceKey>,
 }
 
@@ -410,8 +414,9 @@ pub enum HoleKind {
     /// The field is initialized from an existing instance (`self.roles`,
     /// a local name), the source expression as written: the row is the
     /// field's hold on an instance built elsewhere, not a new one. The
-    /// hole sits on the held row alone; the rows under it are the
-    /// declared type's subtree, in the holder's domain.
+    /// hole sits on the held row alone; the rows under it are its
+    /// source's actual rows, projected into the holder's domain, where
+    /// the source is linked, and there are none where it is not.
     Reuse { source: String },
     /// A generic declaration realized with no substitution the producer
     /// could read.
@@ -444,9 +449,12 @@ impl HoleKind {
             HoleKind::Reuse { .. } => {
                 "no new instance: the row claims none and anchors no domain of its own (it keeps its owner's, \
                  an entry naming the field decides nothing); the held instance moved into that domain on the \
-                 handoff, so the declared type's subtree is enumerated under the row, inherited, and each row \
-                 names the source template's row it was built as (`built_by`); a domain question skips the \
-                 source's rows, and a count over the table skips the held row and its subtree"
+                 handoff, so where the source template is linked its actual rows (declarations, overrides, \
+                 descendants) are projected under the row, inherited, each naming the source row it was built \
+                 as (`built_by`), and where it is not, the subtree is unknown and nothing below the row is \
+                 enumerated (an instance of it runs in an unknown domain, which disables a proof or an \
+                 optimization and is never main or pinned by default); a domain question skips the source's rows, and a count over the table skips the \
+                 held row and its subtree"
             }
             HoleKind::EntryDecidesNothing { .. } => {
                 "the entry is kept as a hole, never dropped: it names no field family a template builds"
@@ -852,7 +860,7 @@ struct Builder<'d, 'a> {
     /// Every literal the static tower visited: not a dynamic site.
     static_literals: BTreeSet<SiteRef>,
     /// Each held row whose source names a literal, with that literal's
-    /// template top: linked once every template is built ([`Builder::handoffs`]).
+    /// template top: projected once every template is built ([`Builder::handoffs`]).
     held: Vec<(InstanceKey, InstanceKey)>,
 }
 
@@ -1071,35 +1079,75 @@ impl<'d, 'a> Builder<'d, 'a> {
         }
     }
 
-    /// Each held row whose source names a template's literal gets that
-    /// template's top as its `built_by`, and each row under it the
-    /// source's row at the same relative path, where the source has one.
-    /// Run once every template is built: a source is usually one of `fn
-    /// main`'s literals, which are built after the root's.
+    /// Each held row whose source names a template's literal becomes the
+    /// projection of that template's rows into its holder's domain: the
+    /// held row realizes what the source's top realizes, and every row of
+    /// the source is copied under it (its declaration, its literal, its
+    /// holes and its descendants), inherited, each naming its own source
+    /// row as `built_by`. A held row with no template to project keeps its
+    /// `Reuse` hole and nothing below it. Run once every template is
+    /// built: a source is usually one of `fn main`'s literals, which are
+    /// built after the root's. A source that holds an instance itself is
+    /// projected after that instance is, so its copy carries the subtree.
     fn handoffs(&mut self) {
-        let mut links: Vec<(InstanceKey, InstanceKey)> = Vec::new();
-        for (held, source) in &self.held {
-            if !self.table.instances.contains_key(source) {
-                continue;
-            }
-            for k in self.table.instances.keys() {
-                if k.origin != held.origin || k.replica != held.replica || !k.path.starts_with(&held.path) {
-                    continue;
-                }
-                let at = InstanceKey {
-                    origin: source.origin,
-                    path: k.path[held.path.len()..].to_vec(),
-                    replica: source.replica,
-                };
-                if self.table.instances.contains_key(&at) {
-                    links.push((k.clone(), at));
+        let mut pending = std::mem::take(&mut self.held);
+        while let Some(i) =
+            pending.iter().position(|(_, source)| !pending.iter().any(|(h, _)| h.origin == source.origin))
+        {
+            let (held, source) = pending.remove(i);
+            self.project(&held, &source);
+        }
+    }
+
+    /// The rows of `source`'s template, projected under `held`.
+    fn project(&mut self, held: &InstanceKey, source: &InstanceKey) {
+        let Some(top) = self.table.instances.get(source).cloned() else { return };
+        let Some(holder) = self.table.instances.get(held).cloned() else { return };
+        let at = |k: &InstanceKey| InstanceKey {
+            origin: held.origin,
+            path: held.path.iter().chain(&k.path[source.path.len()..]).cloned().collect(),
+            replica: k.replica.or(held.replica),
+        };
+        let rows: Vec<(InstanceKey, InstanceRow)> = self
+            .table
+            .instances
+            .iter()
+            .filter(|(k, _)| k.origin == source.origin && k.path.len() > source.path.len() && k.path.starts_with(&source.path))
+            .map(|(k, r)| (k.clone(), r.clone()))
+            .collect();
+        // The held row's own holes are the declared type's reading; the
+        // source's top says what was built.
+        self.table.holes.retain(|h| {
+            h.at != HoleAt::Instance(held.clone()) || matches!(h.kind, HoleKind::Reuse { .. })
+        });
+        let mut holes: Vec<Hole> = Vec::new();
+        for (from, to) in std::iter::once((source.clone(), held.clone())).chain(rows.iter().map(|(k, _)| (k.clone(), at(k)))) {
+            for h in &self.table.holes {
+                if h.at == HoleAt::Instance(from.clone()) {
+                    holes.push(Hole { at: HoleAt::Instance(to.clone()), kind: h.kind.clone() });
                 }
             }
         }
-        for (k, at) in links {
-            if let Some(r) = self.table.instances.get_mut(&k) {
-                r.built_by = Some(at);
-            }
+        self.table.holes.extend(holes);
+        if let Some(r) = self.table.instances.get_mut(held) {
+            r.realizes = top.realizes;
+            r.built_by = Some(source.clone());
+        }
+        for (k, r) in rows {
+            let owner = r.owner.as_ref().map(at).unwrap_or_else(|| held.clone());
+            self.table.instances.insert(
+                at(&k),
+                InstanceRow {
+                    realizes: r.realizes,
+                    literal: r.literal,
+                    decided_by: Decision::Inherited { from: owner.clone() },
+                    owner: Some(owner),
+                    domain: holder.domain,
+                    owner_relative: OwnerRelative::SameAsOwner,
+                    guarded: holder.guarded || r.guarded,
+                    built_by: Some(k),
+                },
+            );
         }
     }
 
@@ -1111,10 +1159,11 @@ impl<'d, 'a> Builder<'d, 'a> {
     /// them is one of its locals.
     ///
     /// A field held from an existing instance ([`HoleKind::Reuse`]) is a
-    /// row with no literal in its owner's domain; the instance moved there
-    /// on the handoff, so its declared type's subtree is walked under it
-    /// from the declaration's defaults, as for any row, and a source that
-    /// names a literal is recorded for [`Builder::handoffs`].
+    /// row with no literal in its owner's domain, and the walk stops
+    /// there: the instance was built elsewhere, so its declaration's
+    /// defaults say nothing about it. A source that names a literal is
+    /// recorded for [`Builder::handoffs`], which projects that template's
+    /// rows under the held row.
     #[allow(clippy::too_many_arguments)]
     fn fields(
         &mut self,
@@ -1302,14 +1351,10 @@ impl<'d, 'a> Builder<'d, 'a> {
                             self.held.push((key.clone(), top));
                         }
                         // Below a literal the producer resolved, the walk
-                        // goes on, and below a held instance, from its
-                        // declared type; any other hole stops it (nothing
-                        // below an unknown literal is enumerated).
-                        let d = match (realized, literal, &declared_named) {
-                            (Some(d), Some(_), _) => d,
-                            (_, None, Named::Locus(d)) if reused.is_some() => *d,
-                            _ => continue,
-                        };
+                        // goes on; any hole stops it (nothing below an
+                        // unknown literal is enumerated, and below a held
+                        // instance only its source's rows, projected).
+                        let (Some(d), Some(_)) = (realized, literal) else { continue };
                         if stack.contains(&d.site) {
                             continue;
                         }

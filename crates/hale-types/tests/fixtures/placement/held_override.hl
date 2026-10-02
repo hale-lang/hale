@@ -1,0 +1,51 @@
+// Case 16, an override: the held instance was built with `k: B { }`,
+// not the declaration's default `A { }`. The held tree is the source's
+// rows projected under the holder: `h.roles.k` realizes `B`, and
+// `h.roles.k.child` is in the holder's domain.
+interface Thing {
+    fn n() -> Int;
+}
+
+locus Child { }
+
+locus A {
+    fn n() -> Int {
+        return 1;
+    }
+}
+
+locus B {
+    params {
+        child: Child = Child { };
+    }
+
+    fn n() -> Int {
+        return 2;
+    }
+}
+
+locus Roles {
+    params {
+        k: Thing = A { };
+    }
+}
+
+locus Holder {
+    params {
+        roles: Roles = Roles { };
+    }
+}
+
+main locus App {
+    params {
+        h: Holder = Holder { };
+    }
+    placement {
+        h: pinned;
+    }
+}
+
+fn main() {
+    let r = Roles { k: B { } };
+    App { h: Holder { roles: r } };
+}

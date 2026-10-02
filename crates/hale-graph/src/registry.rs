@@ -1142,7 +1142,7 @@ pub const FAMILIES: &[Family] = &[
             "the root is `lowering_root`, never the entry; an imported `main` is never the root",
             "every root entry decides exactly one field family in each construction template, or it is a hole",
             "unknown is a hole, not a default: an unresolved declaration, an unenumerable initializer, a held instance (`Reuse`) and a dynamic site of unknown domain each carry their policy, and none is main",
-            "a held instance's subtree lives in its holder's domain: the held row keeps its `Reuse` hole and its owner's domain, the declared type's subtree is enumerated under it, inherited, and each of those rows names the source template's row it was built as (`built_by`); a question of where an instance runs skips the source's rows, a count of instances skips the held ones",
+            "a held instance's subtree lives in its holder's domain: the held row keeps its `Reuse` hole and its owner's domain, the source's actual rows (never the declaration's defaults) are projected under it, inherited, and each of those rows names its own source row, the one it was built as (`built_by`); where the source is not linked, nothing below the held row is asserted, and an instance there runs in an unknown domain; a question of where an instance runs skips the source's rows, a count of instances skips the held ones",
             "every site the table names carries the universe that minted it (`SiteRef`); lowering joins the stdlib's into its merged mint once, totally and injectively",
             "F.38: placement is semantics-free, so a backend may Approximate it",
             "placement is a choice point: v1's declared placement is the single candidate",
