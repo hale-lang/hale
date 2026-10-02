@@ -1372,7 +1372,10 @@ const AUTHOR_LEAK: Files = &[("main.hl", AUTHOR_LEAK_APP)];
 /// stage carries — a build rule (a bare fallible call) and the
 /// allocation advisory (a builder per loop turn) — none of which keeps
 /// the program from denoting a model, so the law is judged. The law
-/// sits in the second file, past the first file's bytes.
+/// sits in the second file, past the first file's bytes. The app imports
+/// a library with an advisory of its own, which neither `hale check` nor
+/// either publication reports (an advisory about an imported seed is
+/// that seed's check's).
 const LAWS: Files = &[
     (
         "a_domain.hl",
@@ -1382,11 +1385,17 @@ group src = { A };\ngroup dst = { B };\n",
     ),
     (
         "b_app.hl",
-        "main locus App {\n    params { a: A = A { }; }\n    claims {\n        isolation: forbid reaches(src, dst);\n    }\n    run() { self.a.go(); save(); }\n}\n\
+        "import \"lib\" as lib;\n\
+main locus App {\n    params { a: A = A { }; }\n    claims {\n        isolation: forbid reaches(src, dst);\n    }\n    run() { self.a.go(); save(); println(lib::tick()); }\n}\n\
 fn save() {\n    std::io::fs::write_file(\"/tmp/hale-lsp-parity-laws\", \"x\");\n}\n\
 fn main() { App { }; }\n",
     ),
 ];
+const LAWS_LIB: Files = &[(
+    "lib.hl",
+    "fn tick() -> Int { return 1; }\n\
+locus Spin {\n    run() {\n        let mut i = 0;\n        while true {\n            let b = std::bytes::BytesBuilder { };\n            i = i + 1;\n        }\n    }\n}\n",
+)];
 
 /// Every parity seed: its tag, its files and its library's.
 const PARITY: &[(&str, Files, Files)] = &[
@@ -1394,7 +1403,7 @@ const PARITY: &[(&str, Files, Files)] = &[
     ("import", IMPORTING, IMPORTED),
     ("generated", GENERATED, &[]),
     ("author-leak", AUTHOR_LEAK, &[]),
-    ("laws", LAWS, &[]),
+    ("laws", LAWS, LAWS_LIB),
 ];
 
 /// The laws parity fixture (F.40 phase 3, X1): a program that breaks a
@@ -1402,7 +1411,8 @@ const PARITY: &[(&str, Files, Files)] = &[
 /// checked three ways, one answer, the law among the findings.
 #[test]
 fn lsp_and_check_agree_over_a_seed_with_laws() {
-    let check = agree_three_ways("laws", LAWS, &[]);
+    let check = agree_three_ways("laws", LAWS, LAWS_LIB);
+    assert!(check.iter().all(|(f, ..)| f != "lib.hl"), "the library's advisory is its own check's: {check:?}");
     for (file, want) in [
         ("b_app.hl", "claim `isolation` violated"),
         ("b_app.hl", "can fail (IoError) and this call says nothing about it"),
@@ -1412,6 +1422,67 @@ fn lsp_and_check_agree_over_a_seed_with_laws() {
             check.iter().any(|(f, .., m)| f == file && m.contains(want)),
             "no `{want}` finding in {file}: {check:?}"
         );
+    }
+}
+
+/// The editor's two publications (F.40 phase 3, X1), over the laws
+/// parity seed, on open and on an edit: every file of the seed once with
+/// the check's typing stage, then the whole check on the one file the
+/// law adds a finding to, and nothing else. Per file, the first
+/// publication is a prefix of the final one and the rest is the law's;
+/// the first carries the typing stage's findings (the build rule, the
+/// advisory) and no law; the library's advisory is in neither, as `hale
+/// check` reports none; and each file's final list holds `hale check`'s
+/// findings for it.
+#[test]
+fn lsp_publishes_the_typing_stage_first_and_the_laws_replace_it() {
+    let root = scratch_root("two-publications");
+    std::fs::create_dir_all(root.join("lib")).expect("mkdir");
+    let dir = root.canonicalize().expect("canonical dir");
+    for (f, text) in LAWS {
+        std::fs::write(dir.join(f), text).expect("write app");
+    }
+    for (f, text) in LAWS_LIB {
+        std::fs::write(dir.join("lib").join(f), text).expect("write lib");
+    }
+    let (check, _) = check_json(&dir);
+    let (domain, app) = (dir.join(LAWS[0].0), dir.join(LAWS[1].0));
+    let mut lsp = LspSession::start();
+    lsp.lsp.send(open(&app, LAWS[1].1));
+    let opened = lsp.publications();
+    lsp.lsp.send(change(&app, 2, &format!("{}\n", LAWS[1].1)));
+    let edited = lsp.publications();
+    lsp.close();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let sorted = |mut v: Vec<String>| {
+        v.sort();
+        v
+    };
+    let seed = [uri(&domain), uri(&app)];
+    for (event, pubs) in [("open", &opened), ("edit", &edited)] {
+        let uris: Vec<&String> = pubs.iter().map(|(u, _)| u).collect();
+        assert!(pubs.len() > seed.len(), "{event}: two publications: {pubs:?}");
+        let (first, second) = pubs.split_at(seed.len());
+        assert_eq!(&uris[..seed.len()], &[&seed[0], &seed[1]], "{event}: the first publication, every file once: {pubs:?}");
+        for (i, (u, _)) in second.iter().enumerate() {
+            assert!(seed.contains(u) && second[..i].iter().all(|(v, _)| v != u), "{event}: the second, a file of the seed at most once: {pubs:?}");
+        }
+        assert!(first[1].1.iter().any(|m| m.contains("can fail (IoError)")), "{event}: the build rule comes first: {first:?}");
+        assert!(first[0].1.iter().any(|m| m.contains("unbounded allocation")), "{event}: the advisory comes first: {first:?}");
+        assert!(
+            first.iter().flat_map(|(_, m)| m).all(|m| !m.contains("claim `isolation`")),
+            "{event}: no law in the first publication: {first:?}"
+        );
+        for (file, (u, initial)) in LAWS.iter().map(|(f, _)| *f).zip(first) {
+            let last = second.iter().find(|(v, _)| v == u).map_or(initial, |(_, l)| l);
+            assert_eq!(&last[..initial.len()], &initial[..], "{event}: {file}'s first publication is a prefix of its final one");
+            assert!(last[initial.len()..].iter().all(|m| m.contains("claim `isolation`")), "{event}: the rest is the law's: {last:?}");
+            assert_eq!(second.iter().any(|(v, _)| v == u), last.len() > initial.len(), "{event}: {file} is published again only when the law adds to it");
+            let want: Vec<String> = check.iter().filter(|(f, ..)| f == file).map(|(.., m)| m.clone()).collect();
+            assert_eq!(sorted(last.clone()), sorted(want), "{event}: {file}'s final list is hale check's");
+        }
+        assert!(second.iter().any(|(u, _)| *u == seed[1]), "{event}: the violation itself, on the app: {second:?}");
     }
 }
 
@@ -2073,10 +2144,14 @@ fn published(lsp: &mut Lsp, fence: u64) -> Vec<Finding> {
     findings(publications(lsp, fence))
 }
 
-/// Publications as findings, sorted.
+/// Publications as findings, sorted: each file's LAST publication, the
+/// one the client keeps. A seed with a broken law is published twice
+/// (F.40 phase 3, X1), the typing stage and then the whole check, which
+/// replaces the first per file; the findings are the second's.
 fn findings(pubs: Vec<(String, Vec<serde_json::Value>)>) -> Vec<Finding> {
+    let last: std::collections::BTreeMap<String, Vec<serde_json::Value>> = pubs.into_iter().collect();
     let mut out = Vec::new();
-    for (uri, diags) in pubs {
+    for (uri, diags) in last {
         let file = uri.rsplit('/').next().unwrap_or("").to_string();
         for d in diags {
             out.push((
