@@ -306,3 +306,37 @@ fn an_unpinned_generic_call_is_a_hole() {
         other => panic!("expected a hole: {other:?}"),
     }
 }
+
+/// A bare builtin argument is typed by the signature table lowering
+/// reads, so the generic call it feeds binds its parameter instead of
+/// staying a hole.
+#[test]
+fn a_bare_builtin_argument_pins_a_generic_call() {
+    let src = r#"
+fn first<T>(x: T) -> T { return x; }
+fn main() {
+    let a = first(len("abc"));
+    let b = first(abs(-2.5));
+    let c = first(to_string(1));
+    let d = first(Float(2));
+    let e = first(starts_with("ab", "a"));
+    println(a, b, c, d, e);
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = s.program().unwrap();
+    use hale_syntax::ast::PrimType::{Bool, Float, Int, String};
+    let want = [Int, Float, String, Float, Bool];
+    let calls = main_calls(p);
+    assert_eq!(calls.len(), want.len());
+    for (call, want) in calls.into_iter().zip(want) {
+        let Some(Typed::Known(row)) = table.generic_call(call) else {
+            panic!("typed: {:?}", table.generic_call(call))
+        };
+        assert_eq!(row.type_args, vec![Ty::Prim(want)]);
+    }
+}

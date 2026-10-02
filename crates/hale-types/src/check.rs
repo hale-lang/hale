@@ -14898,6 +14898,21 @@ impl<'a> Checker<'a> {
                     Ty::Function { ret, .. } => *ret,
                     _ => Ty::Unknown,
                 };
+                // A bare builtin types by the signature table lowering
+                // reads (F.40 phase 3, E4), where lowering would lower
+                // it; anywhere else it stays Unknown, as before.
+                let base_ret = match (callee.as_ref(), base_ret) {
+                    (Expr::Ident(id), Ty::Unknown)
+                        if self.locals.lookup(&id.name).is_none()
+                            && self.top.lookup(&id.name).is_none()
+                            && !self.generic_fns.contains_key(id.name.as_str()) =>
+                    {
+                        crate::builtin_sigs::bare_builtin_sig(&id.name)
+                            .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
+                            .unwrap_or(Ty::Unknown)
+                    }
+                    (_, t) => t,
+                };
                 // v1.x-FORM-1: if the callee resolves to a
                 // fallible fn, wrap the result type so the
                 // caller is forced to address the error.

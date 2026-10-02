@@ -1003,6 +1003,22 @@ not when it looks like it should (GH #800). The compiler tests both
 directions over its whole program corpus rather than trusting the
 list.
 
+The value builtins have types, and the checker and the compiler read
+them from one signature table:
+
+| call | operands | type |
+| --- | --- | --- |
+| `len(x)` | a `String` or `Bytes` (or a view of either), a fixed-size array | `Int` |
+| `to_string(x)` | a printable value | `String` |
+| `Int(x)` / `Float(x)` | an `Int` or a `Float` | `Int` / `Float` |
+| `abs(x)`, `min(a, b)`, `max(a, b)` | `Int`, `Float`, `Duration` or `Decimal`, one type throughout | the operands' type |
+| `starts_with(s, p)`, `contains(s, p)` | two `String`s | `Bool` |
+
+A call over operands outside its row is typed as unknown: the checker
+names no type for it, and the compiler refuses it where it lowers it. So
+`first(len(s))` instantiates `first<Int>`, and `let n: String =
+len(s)` is a type error at the `let`.
+
 ### Bare identifiers
 
 The same rule holds in value position. A bare identifier must name

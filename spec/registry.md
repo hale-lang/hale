@@ -264,15 +264,16 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Producer.** `crates/hale-types/src/check.rs` · `check_bundle_scoped`
 
-**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`
+**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`; `crates/hale-types/src/builtin_sigs.rs` · `BARE_BUILTIN_SIGS`
 
-**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); every layer
+**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); codegen (a bare builtin's arity and result: its signature row) (`crates/hale-codegen/src/codegen.rs` · `builtin_sig`); every layer
 
 **Invariants.**
 
 - expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)
 - codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span
 - the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason
+- the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row
 
 **Missing data.** a missing required row is a compiler error
 
@@ -294,7 +295,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/codegen.rs` · `unify_generic_param_bindings` — a Ty-level mirror of the checker's unification, by its own comment. *Removed when:* codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them); blocked until the checker types the bare builtins a generic call's argument can be (`len`, `abs`, `min`, `max`, `to_string`, the numeric casts), which it types `Unknown` today, so `first(len(s))` is a hole the base lowers.
+- `crates/hale-codegen/src/codegen.rs` · `unify_generic_param_bindings` — a Ty-level mirror of the checker's unification, by its own comment. *Removed when:* codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them).
 - `crates/hale-codegen/src/codegen.rs` · `infer_generic_fn_args` — codegen infers generic arguments again from lowered types. *Removed when:* same.
 
 **Also owned.** `crates/hale-types/src/check.rs` · `monomorph_table`; `crates/hale-types/src/check.rs` · `specialize_generic_fns`

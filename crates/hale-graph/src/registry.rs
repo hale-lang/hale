@@ -244,6 +244,7 @@ const CLAIMS: &str = "crates/hale-types/src/claims.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
 const FORM_ROWS: &str = "crates/hale-types/src/form_rows.rs";
 const TYPED_BODIES: &str = "crates/hale-types/src/typed_bodies.rs";
+const BUILTIN_SIGS: &str = "crates/hale-types/src/builtin_sigs.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
@@ -498,16 +499,17 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["top_scope", "declarations", "bodies"],
         producer: Some(site(CHECK, "check_bundle_scoped")),
         legacy: &[],
-        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer("every layer"), ],
+        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer_at("codegen (a bare builtin's arity and result: its signature row)", CG, "builtin_sig"), consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
             "codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span",
             "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check but for a typing that reused a declaration, the snapshot family's X2 row; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason",
+            "the bare builtins (`len`, `to_string`, the `Int` / `Float` casts, `abs` / `min` / `max`, `starts_with` / `contains`) are typed by one signature table (`BARE_BUILTIN_SIGS`), lowering's inference written down: the checker types a call by its row where lowering lowers it and leaves it `Unknown` where lowering refuses, and lowering reads each builtin's arity and result from the same row",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
         spec: &["spec/types.md"],
-        owned: &[site(RESOLVE, "infer_literal_ty"), site(TYPED_BODIES, "typed_bodies")],
+        owned: &[site(RESOLVE, "infer_literal_ty"), site(TYPED_BODIES, "typed_bodies"), site(BUILTIN_SIGS, "BARE_BUILTIN_SIGS")],
         seams: &[Seam { symbol: "typed_bodies(", allowed: &[(TYPED_BODIES, 1), (SNAPSHOT, 1)] }],
     },
     Family {
@@ -519,7 +521,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["generic declarations", "call arguments", "the mangled token vocabulary"],
         producer: Some(site(CHECK, "unify_generic_ty")),
         legacy: &[
-            legacy(CG, "unify_generic_param_bindings", "a Ty-level mirror of the checker's unification, by its own comment", "codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them); blocked until the checker types the bare builtins a generic call's argument can be (`len`, `abs`, `min`, `max`, `to_string`, the numeric casts), which it types `Unknown` today, so `first(len(s))` is a hole the base lowers"),
+            legacy(CG, "unify_generic_param_bindings", "a Ty-level mirror of the checker's unification, by its own comment", "codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them)"),
             legacy(CG, "infer_generic_fn_args", "codegen infers generic arguments again from lowered types", "same"),
         ],
         consumers: &[consumer_at("check (a mangled monomorph name: the table's row)", CHECK, "resolve_generic_monomorph"), consumer("codegen")],

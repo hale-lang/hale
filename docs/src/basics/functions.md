@@ -144,7 +144,9 @@ anything: `len`, `to_string`, the two numeric casts `Int` /
 verification accumulators `sum` / `prod` and `check_closures()`,
 and the `bounded` collection intrinsics. Those are not magic names to
 memorise — you'll meet each one where it's useful — but they are
-why `len(s)` needs no import.
+why `len(s)` needs no import. They are typed like any other call:
+`len(s)` is an `Int`, `to_string(x)` a `String`, `abs(x)` whatever
+`x` is, so `let n: String = len(s)` is refused at the `let`.
 
 A builtin call is the same call wherever you write it. `len(s)` in
 the middle of an expression and `len(s);` on a line of its own are

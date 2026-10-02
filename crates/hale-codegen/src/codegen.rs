@@ -18069,6 +18069,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `user_fn_shadows_bounded_intrinsic` (`form/bounded.rs`) — so
     /// the guarded arms no longer hijack it and still need no
     /// refusal here.
+    /// A bare builtin's row of the signature table the checker types
+    /// its calls by (F.40 phase 3, E4): lowering reads the arity and
+    /// the result from it.
+    fn builtin_sig(name: &str) -> &'static hale_types::builtin_sigs::BuiltinSig {
+        hale_types::builtin_sigs::bare_builtin_sig(name).expect("every lowered bare builtin has a signature row")
+    }
+
+    /// The type a builtin's row gives a call over its (first) operand.
+    fn builtin_result(sig: &hale_types::builtin_sigs::BuiltinSig, operand: &CodegenTy) -> CodegenTy {
+        use hale_types::builtin_sigs::Returns;
+        match sig.returns {
+            Returns::Prim(PrimType::Int) => CodegenTy::Int,
+            Returns::Prim(PrimType::Float) => CodegenTy::Float,
+            Returns::Prim(PrimType::Bool) => CodegenTy::Bool,
+            Returns::Prim(PrimType::String) => CodegenTy::String,
+            Returns::Prim(other) => unreachable!("no builtin row returns {other:?}"),
+            Returns::Operand => operand.clone(),
+        }
+    }
+
     fn reject_builtin_over_user_fn(
         &self,
         name: &str,
@@ -18101,7 +18121,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("len");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`len` expects exactly 1 argument, got {}",
                 args.len()
@@ -18126,7 +18147,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Bytes | CodegenTy::BytesView => {
                 // m89: Bytes carries an explicit length prefix —
@@ -18147,11 +18168,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_len returns i64");
-                Ok((val, CodegenTy::Int))
+                Ok((val, Self::builtin_result(sig, &ty)))
             }
             CodegenTy::Array(_, n) => {
                 let val = self.context.i64_type().const_int(n, true);
-                Ok((val.into(), CodegenTy::Int))
+                Ok((val.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`len` not supported for argument type {:?}",
@@ -18171,7 +18192,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Int");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Int` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18179,7 +18201,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Int => Ok((v, CodegenTy::Int)),
+            CodegenTy::Int => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Float => {
                 let res = self
                     .builder
@@ -18189,7 +18211,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Int.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Int))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Int(...)` cast not supported for argument type {:?} \
@@ -18214,7 +18236,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("Float");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`Float` cast expects exactly 1 argument, got {}",
                 args.len()
@@ -18222,7 +18245,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Float => Ok((v, CodegenTy::Float)),
+            CodegenTy::Float => Ok((v, Self::builtin_result(sig, &ty))),
             CodegenTy::Int => {
                 let res = self
                     .builder
@@ -18232,7 +18255,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Float.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), CodegenTy::Float))
+                Ok((res.into(), Self::builtin_result(sig, &ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
@@ -18253,7 +18276,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let arity = if name == "abs" { 1 } else { 2 };
+        let sig = Self::builtin_sig(name);
+        let arity = sig.arity;
         if args.len() != arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly {} argument(s), got {}",
@@ -18293,7 +18317,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             CodegenTy::Float => {
                 let pred = match name {
@@ -18314,7 +18338,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, at))
+                Ok((v, Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {:?}",
@@ -18358,7 +18382,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             CodegenTy::Float => {
                 let fv = v.into_float_value();
@@ -18380,7 +18404,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, ty.clone()))
+                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {:?}",
@@ -18398,7 +18422,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 2 {
+        let sig = Self::builtin_sig(name);
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`{}` expects exactly 2 arguments, got {}",
                 name,
@@ -18442,7 +18467,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("str.{}.bool", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v.into(), CodegenTy::Bool))
+        Ok((v.into(), Self::builtin_result(sig, &st)))
     }
 
     /// m37: lower a `to_string(x)` builtin call. Routes by the
@@ -18503,7 +18528,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        if args.len() != 1 {
+        let sig = Self::builtin_sig("to_string");
+        if args.len() != sig.arity {
             return Err(CodegenError::Unsupported(format!(
                 "`to_string` expects exactly 1 argument, got {}",
                 args.len()
@@ -18511,7 +18537,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
-        Ok((res, CodegenTy::String))
+        Ok((res, Self::builtin_result(sig, &ty)))
     }
 
     /// m47-payloads-followup: convert any single value to a
