@@ -154,6 +154,7 @@ Test: on a PATH with no clang (a `Command::env("PATH", …)` on the child, never
 - An approximating witness appears only on a layer-5 or layer-7 capability.
 - Every `Absent { because }` names a capability whose cell on that target is `Reject`, or one the CLI refuses on that target (`ReplayIngress` on wasm32: OPT:386).
 - Every `StdNamespace` cell's key is a namespace the stdlib defines, and every stdlib namespace has a cell. The second half is checked against `hale-stdlib`'s file list and codegen's `stdlib/` modules.
+- Every `Lower` cell for a stdlib namespace or operation on a target without the host's libc cites lowering-contract rows that cover every operation it admits, and every row names its probe (§2.1).
 
 ### 1.7 No target leaks across snapshots
 
@@ -173,14 +174,23 @@ Each section gives the question the row answers today, the cell that replaces it
 
 **Cell.** `StdNamespace(p) × Wasm32` is `Reject` for the 8 prefixes. The wording is unchanged: `` `std::<path>` is unavailable under `target wasm`: <reason> `` (CHECK:14816–14823). The phrase names what selected the target: `` under `target wasm` `` when the declaration did, `` under `--target wasm32` `` when the configuration did, so every existing pinned wording stays byte-identical. The reasons and substitutes are the table's strings. `StdNamespace(p) × Host` is `Lower` for every namespace.
 
-**The namespaces with no stated cell today (T3).** They are admitted on wasm32 and lowered to stubs. `--allow-undefined` (CG:2872) and the loader's `() => 0` for every unknown import (CG:2983–2986) turn their syscalls into silent zeros:
+**The namespaces with no stated cell today (T3).** They are admitted on wasm32 and lowered to stubs of two kinds. **Inline stubs** are defined in the shim header and compile into the module with no import at all: `getenv` returns NULL (SHIM:36), `clock_gettime` writes zero and `nanosleep` returns at once (SHIM:483–488). **Import stubs** are syscalls left undefined, which `--allow-undefined` (CG:2872) and the loader's `() => 0` for every unknown import (CG:2983–2986) turn into silent zeros.
 
-- `std::time`: `clock_gettime` returns 0 and `nanosleep` returns at once (SHIM:483–488); `sleep` calls `clock_nanosleep` (`stdlib/time.rs:614–618`), an import stubbed to 0.
-- `std::env`: `getenv` returns NULL (SHIM:36).
+- `std::time`: mixed. The clock reads (`now`, `current`, `monotonic`, `monotonic_ns`; `stdlib/time.rs:115–306`) go through the inline `clock_gettime` and return zero; `sleep` calls `clock_nanosleep` (`stdlib/time.rs:614–618`), an import stubbed to 0. The conversions (`iso8601`, `unix`, `nanos`, `from_nanos`, `from_unix`, `parse_iso8601`, `parse_time`) compute on their argument.
+- `std::env`: every operation reads the inline `getenv`, which returns NULL.
 - `std::ts`: the wasm link returns at CG:1954, before the native shim check at CG:2157.
-- `std::io::unix`, `std::sockopt`, mirror/ring (`stdlib/io_unix.rs`, `sockopt.rs`, `mirror.rs`, `ring.rs`): syscall-backed and not in the table. Unmeasured.
+- `std::io::unix`, `std::sockopt`, mirror/ring (`stdlib/io_unix.rs`, `sockopt.rs`, `mirror.rs`, `ring.rs`): syscall-backed and not in the table. Unclassified.
 
-P3 1 of 3 classifies each by an objective oracle: build a one-call program per namespace for wasm32, list the module's function imports (`WebAssembly.Module.imports`, as the loader does at CG:2983), and call a namespace `Lower` only if every import is in the loader's writer set or a declared `@ffi("js")`. A namespace that fails the oracle is a T3 line, `Reject` by recommendation.
+**Support is classified by reviewed lowering contracts and operation coverage, never by the import list.** An import list cannot see an inline stub: a namespace of inline no-ops imports nothing and passes any import oracle. So:
+
+- **A contract per operation.** A `Lower` verdict for a stdlib operation on wasm32 cites a contract row saying what the wasm lowering does: computes in the module, calls a named loader import whose semantics the loader states, or calls a declared `@ffi("js")` import. The rows sit beside the cells and are reviewed with them.
+- **Coverage.** Every public operation the namespace defines (the stdlib's declarations plus codegen's `lower_std_*` dispatch for the codegen-native modules) has a row, or the namespace is not `Lower`. An operation with no row cannot be admitted by its namespace's default.
+- **A probe per row.** A one-call program per operation runs under node, and its result is checked against the row: equal to the native result for a deterministic operation, or the row's stated property (advances, non-zero, waits at least the requested duration) for a clock or a sleep.
+- **Mixed namespaces.** A namespace whose operations split gets operation-level cells, `StdOperation(path::fn)`, beside its `StdNamespace` cell, or is refused whole. The cell table says which, and the generated documentation renders the split. Recommended: `std::time` per operation, with the clock reads and `sleep` `Reject` and each conversion `Lower` once its row and probe pass (one that fails joins the `Reject` set); `std::env` and `std::ts` refused whole; `std::io::unix`, `std::sockopt` and mirror/ring refused whole unless contracts are written for them in P3 1 of 3.
+- **The known stubs need no measurement.** The time and environment stubs above are rejected directly under T3; P3 1 of 3 writes their cells as `Reject`-to-be in `KNOWN_OPEN`, not as findings of a measurement.
+- **The verification is itself tested.** A test build of the runtime with one contracted operation's helper replaced by an injected `static inline` no-op (a test-only define, never set by a build) must fail the support verification, while the module's import list contains nothing forbidden. That is the evidence that the verification observes behaviour, not linkage.
+
+The import list keeps one job, the T7 backstop (§2.3): catching an **unresolved** import that reaches the link. It says nothing about semantics.
 
 **Moves.** The gate reads the effective target instead of `wasm_target`. The seam (`spec/registry.md`: `wasm_unavailable_stdlib(` ×2 in `check.rs`) moves to `capability.rs`. The table becomes the cells, and the function is deleted. Call forms only, as today: a path in type position (`std::io::tcp::Stream` as a parameter type, `crates/hale-cli/tests/target_model.rs:331`) is not a use. That is a deliberate keep, so a portable signature can name a type.
 
@@ -203,7 +213,7 @@ P3 1 of 3 classifies each by an objective oracle: build a one-call program per n
 - `ExportSurface × Host = Lower(Emit)`: `@export fn` is an unmangled C symbol, and `@export locus` is an ordinary locus (spec/ffi.md:473–478).
 - The `csrc` failure stays toolchain (§1.5).
 
-**Moves.** The refusal moves ahead of the clang probe and into the check (T4). The import policy stays a link flag, but P3 3 of 3 adds a **backstop test**: every module the wasm tests build imports only the loader's writer set plus its declared `@ffi("js")` names. That is the oracle that the matrix has no silent stub left (T7).
+**Moves.** The refusal moves ahead of the clang probe and into the check (T4). The import policy stays a link flag, but P3 3 of 3 adds a **backstop test**: every module the wasm tests build imports only the loader's writer set plus its declared `@ffi("js")` names. It catches an unresolved import, a syscall that reached the link undefined and would become a `() => 0`. It is **not** evidence that the matrix has no silent stub left: an inline stub needs no import, so that evidence is the contracts and probes of §2.1 (T7).
 
 ### 2.4 `lotus_replay_start_ingress` (INST:4584) and the lifecycle residue
 
@@ -297,7 +307,7 @@ Every wasm-relevant program in the tree is listed below. There are 33 in tracked
 | `play/examples/*.hl`, `play/ui.hl`, `play/sim.hl` (`play/build.sh:51,63`; deploy-only, `.github/workflows/docs.yml:121–123`) | build with `--target wasm32 --wrap-main` | the same | unchanged (verified: none places, binds, sleeps or reads env) |
 | docs `hale` blocks (`docs/src/systems/webassembly.md:23, 57, 187`), spec/ffi.md:384, 435 | parse only (`docs_snippets.rs`) | the same | unchanged |
 | a program using `pinned`, `cooperative(pool = X≠main)`, `where async_io` or a `bindings { }` entry under wasm32 | admitted; never runs | `Reject` (T2) | **new**; no program in the tree is affected |
-| a program calling `std::time`/`env`/`ts` (or a namespace failing the import oracle) under wasm32 | admitted; stubbed | `Reject` per T3 | **new**; no program in the tree is affected |
+| a program calling a `std::time` clock read or `sleep`, `std::env`, `std::ts`, or an operation without a passing lowering contract, under wasm32 | admitted; stubbed | `Reject` per T3 | **new**; no program in the tree is affected |
 | an `@ffi("js")` declaration in a native build | native link failure (inferred) | located refusal (T5) | **new located diagnostic**; no native program in the tree declares one |
 | `@export locus` with `run()` under wasm32 | codegen refusal (CG:14130) | checker refusal, same wording | **moves to `hale check`**; no program in the tree |
 
@@ -445,7 +455,7 @@ Each PR is one of the plan's shapes (§6). Each carries its registry re-horizon 
 2. `hale-types::capability`: `TargetClass`, `Capability`, `Cell`, the table with **today's** verdicts (T2/T3 not yet applied: a capability admitted today is `Lower`), and §1.6's laws. Today's admissions are written as they are, with a `KNOWN_OPEN` list (the `ownership_matrix.rs` precedent) naming each cell that T2/T3 will flip, asserted to be today's answer.
 3. The `target_capability` snapshot family and `Target { name, spec }`, with the digest folding the spec (§1.7) and the leak test.
 4. The **shadow**: for every program in §2.9 and the corpus, under host and wasm32, the legacy answers equal the cells' answers. The legacy answers are `wasm_unavailable_stdlib` under the source declaration, `has_async_io`, `link_wasm`'s refusal, and every `is_wasm` site's branch. Zero unclassified divergences.
-5. The namespace import oracle (§2.1) runs and records its measurements as T3's evidence.
+5. The lowering contracts, their operation coverage and their probes (§2.1), with the injected-no-op test of the verification itself. Their results are T3's evidence for every namespace that is not one of the known stubs.
 6. The generated doc region and its test (§4), rendering today's cells.
 
 Closes nothing yet; the registry names `capability.rs` as the producer, with the legacy rows still permitted.
@@ -483,8 +493,8 @@ Closes nothing yet; the registry names `capability.rs` as the producer, with the
 1. Every skip/substitute/export site of §2.5 reads a cell, one commit per capability: `ProcessSignals`, `ReplayIngress`, `RemoteTransport`, `ExportSurface`/`EntryInversion`, `ForeignAbi`. The `is_wasm` field is deleted, and backend sites read `self.target`. The oracle: IR identical over the corpus and `wasm_target.rs` for both targets (the module dump before and after).
 2. The lifecycle commit (§3): the obligations from the cells in all five spines, ordered by the plan's edges (§3.2), with the spine and wait-form tests of §3.3. It lands after the line-7 reorder, or carries it as the commit before.
 3. The gate column (§2.8): `payload_flat` on the gate row, `DispatchFlavor::of` with three legs, codegen reading the flavor, and the shadow against the old predicate at every publish site.
-4. The **portable subset**: programs whose stdout agrees byte-for-byte between the native binary and `node <loader>.mjs`. These are `wasm_target.rs` :846 (`STRUCTSUM=330`), :792 (run it; sum of squares 1..10, 385), :747 (`wrapped-main-ran`), :87 and :208 with `console_log` replaced by `println`, `wasm_link_is_quiet.rs:66` (`len=5`, `b0=104`, `hello`), `wasm_target_gating.rs:39` (`n=42`), and `play/examples/{collections,decimal,closure,enums,fallible,jobqueue}.hl` through `--wrap-main`. Each is built for both targets and run on both, and the outputs are compared. The test skips, naming what is missing, only when node or wasm-ld is absent. CI must have both: today `tests.yml` installs `clang-18` and not `lld` explicitly, so P3 3 of 3 states the dependency in the workflow.
-5. The import backstop (§2.3, T7).
+4. The **portable subset**: programs whose stdout agrees byte-for-byte between the native binary and `node <loader>.mjs`. These are `wasm_target.rs` :846 (`STRUCTSUM=330`), :792 (run it; sum of squares 1..10, 385), :747 (`wrapped-main-ran`), :87 and :208 with `console_log` replaced by `println`, `wasm_link_is_quiet.rs:66` (`len=5`, `b0=104`, `hello`), `wasm_target_gating.rs:39` (`n=42`), and `play/examples/{collections,decimal,closure,enums,fallible,jobqueue}.hl` through `--wrap-main`. Each is built for both targets and run on both, and the outputs are compared. The test skips, naming what is missing, only when node or wasm-ld is absent. CI must have both: today `tests.yml` installs `clang-18` and not `lld` explicitly, so P3 3 of 3 states the dependency in the workflow. The comparison proves agreement for these programs and nothing outside them: no namespace or operation is `Lower` because a subset program happens to call it.
+5. The import backstop (§2.3, T7), for unresolved imports only.
 6. Closes `target_capability` · `link_wasm` (export list), `lotus_replay_start_ingress`, `is_wasm`, `ffi_type_unportable` (as the matrix's column); `dispatch` · `bus_payload_is_flat`. The family becomes Canonical.
 
 ## 6. What the rows contradict
