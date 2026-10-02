@@ -742,7 +742,7 @@ pub fn check_bundle_reporting(
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
-    check_hot_path_alloc(bundle, top, &mut diags);
+    check_hot_path_alloc(inputs.alloc_summary, top, &mut diags);
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
@@ -1819,62 +1819,112 @@ fn find_blocking_deep_in_expr(
 // dominate the p50 tax and (per the recv_bytes-in-a-loop footgun) can
 // grow unboundedly. Loop-scoped keeps the signal clean (per-iteration
 // is the unambiguous case); a handler-scratch instantiation reclaims
-// per invocation and isn't flagged.
+// per invocation and isn't flagged. The lint reads the allocation
+// summary's rows (`check_hot_path_alloc`).
 // ===================================================================
-
-struct HotPathCx<'a> {
-    top: &'a TopScope,
-    diags: &'a mut Vec<Diag>,
-    loop_depth: u32,
-    /// Gap D (2026-07-17): walking a BUS HANDLER body. A handler runs
-    /// per message, so per-call allocation findings fire at any
-    /// nesting depth, not just inside loops (the ~4.5 KB/frame
-    /// locus-in-handler class).
-    in_handler: bool,
-    /// Gap D: inside an `@hot fn`. Findings become hard errors and
-    /// the stricter perf hints (`snapshot()`/`finish()` in a loop,
-    /// whole-struct self-field replace) activate.
-    hot: bool,
-    /// GH #526 (2026-09-05): inside an `@unbounded` fn or lifecycle
-    /// hook. Every advisory this lint emits ends with "or acknowledge
-    /// an intentional shape with `@unbounded` on the enclosing
-    /// fn/hook" — and the walker never read the flag, so the
-    /// acknowledgement the message promised did nothing and `hale
-    /// verify` stayed red on a param-bounded fan-out loop. The flag
-    /// silences the ADVISORY only; `@hot` still hard-errors (a hot
-    /// fn that allocates unboundedly is a contradiction, not an
-    /// acknowledgement).
-    unbounded: bool,
-}
-
-impl HotPathCx<'_> {
-    /// Advisory warn by default; hard error inside `@hot`; silent
-    /// inside `@unbounded` (unless also `@hot`).
-    fn emit(&mut self, span: Span, msg: String) {
-        if self.hot {
-            self.diags.push(Diag::ty(
-                span,
-                format!("@hot: {}", msg),
-            ));
-        } else if !self.unbounded {
-            self.diags.push(Diag::warn(span, msg));
-        }
-    }
-}
 
 /// A locus literal worth hoisting out of a loop: a user locus (carries
 /// its own arena) or a heap-bearing stdlib builder. Plain struct/type
 /// literals are values and don't allocate, so they're not flagged.
-fn hot_locus_name(path: &QualifiedName, top: &TopScope) -> Option<String> {
-    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-    if segs == ["std", "bytes", "BytesBuilder"] {
-        return Some("std::bytes::BytesBuilder".to_string());
+/// `lit` is the literal's path as written, joined.
+fn hot_locus_name(lit: &str, top: &TopScope) -> Option<String> {
+    if lit == "std::bytes::BytesBuilder" {
+        return Some(lit.to_string());
     }
-    if segs.len() == 1 && matches!(top.lookup(segs[0]), Some(TopSymbol::Locus(_))) {
-        return Some(segs[0].to_string());
+    if !lit.contains("::") && matches!(top.lookup(lit), Some(TopSymbol::Locus(_))) {
+        return Some(lit.to_string());
     }
     None
 }
+
+fn hot_locus_message(name: &str, in_loop: bool) -> String {
+    // GH #815 retired half of what this advisory used to say: a locus
+    // created in a LOOP is now reclaimed when the next iteration
+    // reaches the same instantiation, so residency no longer grows
+    // without bound and a `run()` read loop that never returns is no
+    // longer the worst case. The allocation itself is still
+    // per-iteration, which is what the advisory is for, so say THAT —
+    // the arena create/destroy pair on the hot path — rather than a
+    // reclaim rule that no longer holds. The handler-at-depth-0 half is
+    // unchanged: one instantiation per message, reclaimed at the
+    // handler's return.
+    if in_loop {
+        format!(
+            "hot-path allocation: locus `{}` is instantiated \
+             inside a loop — a fresh instance (its own arena \
+             / heap buffer) is allocated every iteration, and \
+             reclaimed only when the next iteration replaces \
+             it, so an arena create/destroy pair and the \
+             instance's whole lifecycle are on the hot path. \
+             Hoist it to a reused field, `clear()` and refill \
+             one builder, or acknowledge an intentional shape \
+             with `@unbounded` on the enclosing fn/hook.",
+            name
+        )
+    } else {
+        format!(
+            "hot-path allocation: locus `{}` is instantiated \
+             inside a bus handler — a fresh instance (its own \
+             arena / heap buffer) is allocated every message \
+             and, being let-bound or subscription-bearing, is \
+             only reclaimed when the enclosing method \
+             returns. Hoist it to a reused field, `clear()` \
+             and refill one builder, use a bare-statement \
+             per-message child (eagerly dissolved), or \
+             acknowledge an intentional shape with \
+             `@unbounded` on the enclosing fn/hook.",
+            name
+        )
+    }
+}
+
+fn hot_factory_message(fn_disp: &str, locus: &str, in_loop: bool) -> String {
+    let where_ = if in_loop { "every iteration" } else { "every message" };
+    format!(
+        "hot-path allocation: `{}` returns the locus `{}`, so a \
+         fresh instance (its own arena / heap buffer) is \
+         allocated {} and, being let-bound, is only reclaimed \
+         when the enclosing fn returns. Hoist the result to a \
+         reused field and refill it, drop the binding if the \
+         value is only passed on (an unbound factory result is \
+         reclaimed at the statement), or acknowledge an \
+         intentional shape with `@unbounded` on the enclosing \
+         fn/hook.",
+        fn_disp, locus, where_
+    )
+}
+
+fn hot_recv_message(recv: &str) -> String {
+    format!(
+        "hot-path allocation: `{}` in a loop allocates a \
+         fresh result buffer each iteration (it accumulates \
+         in the method scratch until the method returns). \
+         Use `recv_into(fd, buf, max)` with a reused \
+         `std::bytes::BytesBuilder` for a zero-alloc hot \
+         path.",
+        recv
+    )
+}
+
+fn hot_snapshot_message(method: &str) -> String {
+    format!(
+        "hot-path allocation: `.{}()` copies the \
+         builder's full contents into a fresh \
+         buffer each call. On a certified-hot path \
+         prefer `.view()` / `.text_view()` \
+         (zero-copy; valid until the next \
+         overwrite).",
+        method
+    )
+}
+
+const HOT_SELF_REPLACE: &str = "hot-path store: whole-struct replace of a \
+     self-field — every store re-anchors the struct's \
+     heap fields (clone + retire per String field). \
+     On a certified-hot path prefer mutating the \
+     changed scalar fields in place \
+     (`self.field.x = v`), or keep the replace if \
+     most fields genuinely change.";
 
 /// GH #402: does `callee` name a free fn whose return type is a locus?
 /// Returns `(display spelling, locus name)`.
@@ -1884,15 +1934,15 @@ fn hot_locus_name(path: &QualifiedName, top: &TopScope) -> Option<String> {
 /// shape available — which is precisely why the literal-only lint had
 /// a hole here.
 fn hot_factory_locus(
-    callee: &Expr,
+    callee: &crate::alloc_summary::CallSpelling,
     top: &TopScope,
 ) -> Option<(String, String)> {
+    use crate::alloc_summary::CallSpelling;
     let (disp, sym) = match callee {
-        Expr::Ident(id) => (id.name.clone(), top.lookup(&id.name)?),
-        Expr::Path(qn) => {
-            let segs: Vec<&str> =
-                qn.segments.iter().map(|s| s.name.as_str()).collect();
-            let disp = segs.join("::");
+        CallSpelling::Ident(name) => (name.clone(), top.lookup(name)?),
+        CallSpelling::Path(path) => {
+            let segs: Vec<&str> = path.split("::").collect();
+            let disp = path.clone();
             // An imported seed's fn is merged under a MANGLED name
             // (`__lib_<id>_<stem>_<fn>`) while the call site keeps
             // its author spelling (`lb::make`), so neither the
@@ -1959,324 +2009,6 @@ fn hot_factory_locus(
     }
 }
 
-/// An allocating recv (the result Bytes/String lands in the caller's
-/// scratch), as written. `recv_into` is the zero-alloc alternative.
-/// The list is the allocation summary's
-/// (`CallSpelling::allocating_recv`), which `@budget` reads too.
-fn allocating_recv_name(callee: &Expr) -> Option<String> {
-    crate::alloc_summary::CallSpelling::of(callee).allocating_recv()
-}
-
-fn hot_walk_block(b: &Block, cx: &mut HotPathCx) {
-    for s in &b.stmts {
-        hot_walk_stmt(s, cx);
-    }
-    if let Some(t) = &b.tail {
-        hot_walk_expr(t, cx);
-    }
-}
-
-fn hot_walk_if(i: &IfStmt, cx: &mut HotPathCx) {
-    hot_walk_expr(&i.cond, cx);
-    hot_walk_block(&i.then_block, cx);
-    if let Some(eb) = &i.else_block {
-        match eb.as_ref() {
-            ElseBranch::Else(b) => hot_walk_block(b, cx),
-            ElseBranch::ElseIf(i2) => hot_walk_if(i2, cx),
-        }
-    }
-}
-
-fn hot_walk_match(m: &MatchStmt, cx: &mut HotPathCx) {
-    hot_walk_expr(&m.scrutinee, cx);
-    for arm in &m.arms {
-        if let Some(g) = &arm.guard {
-            hot_walk_expr(g, cx);
-        }
-        match &arm.body {
-            MatchArmBody::Expr(e) => hot_walk_expr(e, cx),
-            MatchArmBody::Block(b) => hot_walk_block(b, cx),
-        }
-    }
-}
-
-fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
-    match s {
-        Stmt::While { cond, body, .. } => {
-            hot_walk_expr(cond, cx);
-            cx.loop_depth += 1;
-            hot_walk_block(body, cx);
-            cx.loop_depth -= 1;
-        }
-        Stmt::For { iter, body, .. } => {
-            hot_walk_expr(iter, cx);
-            cx.loop_depth += 1;
-            hot_walk_block(body, cx);
-            cx.loop_depth -= 1;
-        }
-        Stmt::Let { value, span, .. } | Stmt::LetTuple { value, span, .. } => {
-            hot_walk_expr(value, cx);
-            // GH #402: a locus does not have to be spelled as a
-            // LITERAL to be allocated here. `let m = mat::zeros(r, c)`
-            // in a loop body allocates a fresh Matrix — its own arena
-            // — every iteration and, being let-bound, is reclaimed
-            // only when the enclosing fn returns, exactly like the
-            // literal the advisory above already covers. The lint saw
-            // only `Expr::Struct`, so a codebase that factors its
-            // construction behind factory functions (the idiomatic
-            // shape, and the one m90 pushes you toward since a method
-            // cannot return a locus) got no warning at all while
-            // leaking linearly.
-            //
-            // Only the LET form warns. An unbound temporary in
-            // statement position is registered and reclaimed at the
-            // statement since #403, so it is the recommended fix
-            // rather than a finding.
-            if cx.loop_depth > 0 || cx.in_handler {
-                if let Expr::Call { callee, .. } = value {
-                    if let Some((fn_disp, locus)) =
-                        hot_factory_locus(callee, cx.top)
-                    {
-                        let where_ = if cx.loop_depth > 0 {
-                            "every iteration"
-                        } else {
-                            "every message"
-                        };
-                        cx.emit(
-                            *span,
-                            format!(
-                                "hot-path allocation: `{}` returns the locus `{}`, so a \
-                                 fresh instance (its own arena / heap buffer) is \
-                                 allocated {} and, being let-bound, is only reclaimed \
-                                 when the enclosing fn returns. Hoist the result to a \
-                                 reused field and refill it, drop the binding if the \
-                                 value is only passed on (an unbound factory result is \
-                                 reclaimed at the statement), or acknowledge an \
-                                 intentional shape with `@unbounded` on the enclosing \
-                                 fn/hook.",
-                                fn_disp, locus, where_
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-        Stmt::Assign { target, value, span, .. } => {
-            hot_walk_expr(value, cx);
-            // Gap D (@hot only): whole-struct replace of a direct
-            // self-field on a certified-hot path. Since Gap A the
-            // replaced String clones RETIRE (this is no longer a
-            // leak in methods/handlers) — but each store still pays
-            // an anchor-clone + retire per heap field, where
-            // in-place scalar mutation is allocation-free. Perf
-            // hint, so @hot-gated.
-            if cx.hot
-                && (cx.loop_depth > 0 || cx.in_handler)
-                && target.head.name == "self"
-                && target.tail.len() == 1
-                && matches!(target.tail[0], LValueSeg::Field(_))
-                && matches!(value, Expr::Struct { .. })
-            {
-                cx.emit(
-                    *span,
-                    "hot-path store: whole-struct replace of a \
-                     self-field — every store re-anchors the struct's \
-                     heap fields (clone + retire per String field). \
-                     On a certified-hot path prefer mutating the \
-                     changed scalar fields in place \
-                     (`self.field.x = v`), or keep the replace if \
-                     most fields genuinely change."
-                        .to_string(),
-                );
-            }
-        }
-        Stmt::If(i) => hot_walk_if(i, cx),
-        Stmt::Match(m) => hot_walk_match(m, cx),
-        Stmt::Return(Some(e), _) => hot_walk_expr(e, cx),
-        Stmt::Fail { value, .. } => hot_walk_expr(value, cx),
-        Stmt::Expr(e) => {
-            // iris handoff P2.2: a BARE-STATEMENT instantiation of
-            // a subscription-less locus dissolves EAGERLY at the
-            // statement — its arena is destroyed every iteration,
-            // which is the documented per-iteration-child idiom
-            // (and the very fix this advisory's "hoist it"
-            // guidance competes with). Only let-bound and
-            // subscription-bearing instantiations defer to
-            // method exit, so only those keep the warning. The
-            // field inits still walk (a nested builder inside
-            // the child literal is still a finding).
-            if let Expr::Struct { path, inits, .. } = e {
-                let eager = hot_locus_name(path, cx.top)
-                    .map(|n| match cx.top.lookup(&n) {
-                        Some(TopSymbol::Locus(li)) => {
-                            li.bus_subscribes.is_empty()
-                        }
-                        _ => false,
-                    })
-                    .unwrap_or(false);
-                if eager {
-                    for init in inits {
-                        hot_walk_expr(&init.value, cx);
-                    }
-                    return;
-                }
-            }
-            hot_walk_expr(e, cx);
-        }
-        _ => {}
-    }
-}
-
-fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
-    match e {
-        Expr::Struct { path, inits, span, .. } => {
-            for init in inits {
-                hot_walk_expr(&init.value, cx);
-            }
-            // Gap D: a bus handler runs per message — a locus/builder
-            // instantiated ANYWHERE in it is the ~4.5 KB/frame class
-            // (a fresh arena per frame, reclaimed only at handler
-            // return... and its chunk only at locus dissolve), so the
-            // handler context fires at depth 0 too.
-            if cx.loop_depth > 0 || cx.in_handler {
-                if let Some(name) = hot_locus_name(path, cx.top) {
-                    // GH #815 retired half of what this advisory used
-                    // to say: a locus created in a LOOP is now
-                    // reclaimed when the next iteration reaches the
-                    // same instantiation, so residency no longer grows
-                    // without bound and a `run()` read loop that never
-                    // returns is no longer the worst case. The
-                    // allocation itself is still per-iteration, which
-                    // is what the advisory is for, so say THAT — the
-                    // arena create/destroy pair on the hot path —
-                    // rather than a reclaim rule that no longer holds.
-                    // The handler-at-depth-0 half is unchanged: one
-                    // instantiation per message, reclaimed at the
-                    // handler's return.
-                    let message = if cx.loop_depth > 0 {
-                        format!(
-                            "hot-path allocation: locus `{}` is instantiated \
-                             inside a loop — a fresh instance (its own arena \
-                             / heap buffer) is allocated every iteration, and \
-                             reclaimed only when the next iteration replaces \
-                             it, so an arena create/destroy pair and the \
-                             instance's whole lifecycle are on the hot path. \
-                             Hoist it to a reused field, `clear()` and refill \
-                             one builder, or acknowledge an intentional shape \
-                             with `@unbounded` on the enclosing fn/hook.",
-                            name
-                        )
-                    } else {
-                        format!(
-                            "hot-path allocation: locus `{}` is instantiated \
-                             inside a bus handler — a fresh instance (its own \
-                             arena / heap buffer) is allocated every message \
-                             and, being let-bound or subscription-bearing, is \
-                             only reclaimed when the enclosing method \
-                             returns. Hoist it to a reused field, `clear()` \
-                             and refill one builder, use a bare-statement \
-                             per-message child (eagerly dissolved), or \
-                             acknowledge an intentional shape with \
-                             `@unbounded` on the enclosing fn/hook.",
-                            name
-                        )
-                    };
-                    cx.emit(*span, message);
-                }
-            }
-        }
-        Expr::Call { callee, args, span, .. } => {
-            hot_walk_expr(callee, cx);
-            for a in args {
-                hot_walk_expr(a, cx);
-            }
-            // Loop-only (NOT handler-at-depth-0): a single recv per
-            // handler call reclaims at the handler's scratch destroy;
-            // only the in-loop shape accumulates within one
-            // activation.
-            if cx.loop_depth > 0 {
-                if let Some(disp) = allocating_recv_name(callee) {
-                    cx.emit(
-                        *span,
-                        format!(
-                            "hot-path allocation: `{}` in a loop allocates a \
-                             fresh result buffer each iteration (it accumulates \
-                             in the method scratch until the method returns). \
-                             Use `recv_into(fd, buf, max)` with a reused \
-                             `std::bytes::BytesBuilder` for a zero-alloc hot \
-                             path.",
-                            disp
-                        ),
-                    );
-                }
-            }
-            // Gap D (@hot only): `snapshot()` / `finish()` in a loop
-            // or handler materializes a fresh String/Bytes copy of
-            // the builder's contents per call — `.view()` /
-            // `.text_view()` reads the same bytes zero-copy.
-            if cx.hot && (cx.loop_depth > 0 || cx.in_handler) {
-                if let Expr::Field { name, .. } = callee.as_ref() {
-                    if name.name == "snapshot" || name.name == "finish" {
-                        cx.emit(
-                            *span,
-                            format!(
-                                "hot-path allocation: `.{}()` copies the \
-                                 builder's full contents into a fresh \
-                                 buffer each call. On a certified-hot path \
-                                 prefer `.view()` / `.text_view()` \
-                                 (zero-copy; valid until the next \
-                                 overwrite).",
-                                name.name
-                            ),
-                        );
-                    }
-                }
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            hot_walk_expr(left, cx);
-            hot_walk_expr(right, cx);
-        }
-        Expr::Unary { operand, .. } => hot_walk_expr(operand, cx),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
-            hot_walk_expr(receiver, cx)
-        }
-        Expr::Index { receiver, index, .. } => {
-            hot_walk_expr(receiver, cx);
-            hot_walk_expr(index, cx);
-        }
-        Expr::Tuple(es, _) | Expr::Array(es, _) => {
-            for e in es {
-                hot_walk_expr(e, cx);
-            }
-        }
-        Expr::Sum(e, _) | Expr::Prod(e, _) => hot_walk_expr(e, cx),
-        Expr::Approx { left, right, tolerance, .. } => {
-            hot_walk_expr(left, cx);
-            hot_walk_expr(right, cx);
-            hot_walk_expr(tolerance, cx);
-        }
-        Expr::Range { lo, hi, .. } => {
-            hot_walk_expr(lo, cx);
-            hot_walk_expr(hi, cx);
-        }
-        Expr::ArrayRepeat { val, .. } => hot_walk_expr(val, cx),
-        Expr::Block(b) => hot_walk_block(b, cx),
-        Expr::If(i) => hot_walk_if(i, cx),
-        Expr::Match(m) => hot_walk_match(m, cx),
-        Expr::Or { inner, disposition, .. } => {
-            hot_walk_expr(inner, cx);
-            match disposition {
-                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
-                    hot_walk_expr(e, cx)
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Every declaration in `items`, with `module { … }` nesting
 /// flattened: the module itself is yielded, then each of its items,
 /// recursively.
@@ -2303,70 +2035,86 @@ fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
     }
 }
 
-fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Diag>) {
-    fn check_decl(item: &TopDecl, top: &TopScope, diags: &mut Vec<Diag>) {
-        match item {
-            TopDecl::Locus(l) => {
-                // Gap D: fn members bound as bus handlers get the
-                // per-message context (findings fire at depth 0).
-                let handler_names: BTreeSet<&str> = l
-                    .members
-                    .iter()
-                    .filter_map(|m| match m {
-                        LocusMember::Bus(bb) => Some(bb.members.iter()),
-                        _ => None,
-                    })
-                    .flatten()
-                    .filter_map(|bm| match bm {
-                        BusMember::Subscribe { handler, .. } => {
-                            Some(handler.name.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                for m in &l.members {
-                    let (body, in_handler, hot, unbounded) = match m {
-                        LocusMember::Fn(fd) => (
-                            Some(&fd.body),
-                            handler_names
-                                .contains(fd.name.name.as_str()),
-                            fd.hot,
-                            fd.unbounded,
-                        ),
-                        LocusMember::Lifecycle(ld) => {
-                            (Some(&ld.body), false, false, ld.unbounded)
-                        }
-                        _ => (None, false, false, false),
-                    };
-                    if let Some(b) = body {
-                        let mut cx = HotPathCx {
-                            top,
-                            diags: &mut *diags,
-                            loop_depth: 0,
-                            in_handler,
-                            hot,
-                            unbounded,
-                        };
-                        hot_walk_block(b, &mut cx);
+/// The hot-path allocation lint, a law over the allocation summary's
+/// rows (F.40 phase 3, E3a part C): the program's own fns, a mode's
+/// body aside, each with its sites and calls where they are written
+/// (`in_loop`) and its context.
+///
+/// - A BUS HANDLER runs per message (Gap D, 2026-07-17), so a per-call
+///   allocation finding fires at any nesting depth, not just inside
+///   loops (the ~4.5 KB/frame locus-in-handler class). An allocating
+///   receive is a loop finding only: one per handler call reclaims at
+///   the handler's scratch destroy.
+/// - `@hot` (Gap D) makes every finding a hard error and turns on the
+///   stricter perf hints (`snapshot()` / `finish()`, the whole-struct
+///   self-field replace).
+/// - `@unbounded` (GH #526) silences the advisory, which every message
+///   offers as the acknowledgement of an intentional shape; `@hot`
+///   still errors (a hot fn that allocates unboundedly is a
+///   contradiction, not an acknowledgement).
+///
+/// Reported in the order the declarations are written, and within a
+/// body an inner finding before the one that encloses it, left to
+/// right. The rows are the summary's walk, which sees a statement the
+/// lint's own walk skipped (a publish, a bare `{ … }` block, `violate`,
+/// a recovery, `shm_write`): a locus instantiated there in a loop is a
+/// finding now. It does not walk an index expression or a callee that
+/// is an expression of its own, which the lint's walk did, so nothing
+/// written there is.
+fn check_hot_path_alloc(summary: &crate::alloc_summary::AllocSummary, top: &TopScope, diags: &mut Vec<Diag>) {
+    use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
+    let mut rows: Vec<&crate::alloc_summary::FnSummary> =
+        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+    rows.sort_by_key(|f| f.decl_index);
+    for f in rows {
+        let handler = f.entry == Some(EntryKind::BusHandler);
+        let mut found: Vec<(Span, String)> = Vec::new();
+        for s in f.sites.iter().chain(&f.in_place_sites) {
+            let AllocKind::StructLit(lit) = &s.kind else { continue };
+            if !(s.in_loop || handler) {
+                continue;
+            }
+            // A bare-statement instantiation of a subscription-less locus
+            // dissolves eagerly at the statement (iris handoff P2.2).
+            let eager = s.bare_stmt
+                && matches!(top.lookup(lit), Some(TopSymbol::Locus(li)) if li.bus_subscribes.is_empty());
+            if let Some(name) = hot_locus_name(lit, top).filter(|_| !eager) {
+                found.push((s.span, hot_locus_message(&name, s.in_loop)));
+            }
+            if f.hot {
+                if let Some(stmt) = s.self_replace {
+                    found.push((stmt, HOT_SELF_REPLACE.to_string()));
+                }
+            }
+        }
+        for c in &f.calls {
+            if let Some(stmt) = c.let_span.filter(|_| c.in_loop || handler) {
+                if let Some((fn_disp, locus)) = hot_factory_locus(&c.spelling, top) {
+                    found.push((stmt, hot_factory_message(&fn_disp, &locus, c.in_loop)));
+                }
+            }
+            if let Some(recv) = c.allocating_recv.as_ref().filter(|_| c.in_loop) {
+                found.push((c.span, hot_recv_message(recv)));
+            }
+            if f.hot && (c.in_loop || handler) {
+                if let CallSpelling::Method(m) = &c.spelling {
+                    if m == "snapshot" || m == "finish" {
+                        found.push((c.span, hot_snapshot_message(m)));
                     }
                 }
             }
-            TopDecl::Fn(fd) => {
-                let mut cx = HotPathCx {
-                    top,
-                    diags: &mut *diags,
-                    loop_depth: 0,
-                    in_handler: false,
-                    hot: fd.hot,
-                    unbounded: fd.unbounded,
-                };
-                hot_walk_block(&fd.body, &mut cx);
-            }
-            _ => {}
         }
-    }
-    for program in bundle.programs.values() {
-        walk_decls(&program.items, &mut |item| check_decl(item, top, diags));
+        // As written: an inner finding before the one that encloses it,
+        // left to right. A dispatch's alternatives are one call.
+        found.sort_by_key(|(span, _)| (span.end, std::cmp::Reverse(span.start)));
+        found.dedup();
+        for (span, msg) in found {
+            if f.hot {
+                diags.push(Diag::ty(span, format!("@hot: {}", msg)));
+            } else if !summary.unbounded_fns.contains(&f.key) {
+                diags.push(Diag::warn(span, msg));
+            }
+        }
     }
 }
 
