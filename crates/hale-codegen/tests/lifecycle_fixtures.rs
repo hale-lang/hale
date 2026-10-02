@@ -354,6 +354,248 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("jp_late_failure_pool_join.hl", "C36", "domain: Late.FailureDelivery"),
 ];
 
+/// A negative control: a run in which a step is removed or reordered,
+/// held to a plan, and asserted to fail the oracle with the violation
+/// that says why.
+struct Control {
+    name: &'static str,
+    /// The obligation kind the control shows the oracle needs.
+    covers: ObligationKind,
+    fixture: &'static str,
+    /// `LOTUS_LIFECYCLE_SKIP` for the trace build's runtime; empty when
+    /// the reordering is today's own (a rule not yet shipped).
+    skip: &'static str,
+    /// The plan; `None` is the fixture's own in [`PLANS`].
+    plan: Option<&'static str>,
+    /// The violation the oracle reports, as it starts.
+    fails_with: &'static str,
+    /// Also run the fixture without the skip and hold it to the same
+    /// plan, which it must pass: the oracle tells the two apart.
+    baseline_passes: bool,
+}
+
+/// Line 7's rule over a pool that terminates (`l16`'s worker).
+const LINE_7_PLAN: &str = "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
+     edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered";
+
+/// The worker's teardown waits for its run to end: the pool join is
+/// what orders the two across threads.
+const POOL_WORKER_PLAN: &str = "Worker: Birth Run!pool:side Drain Dissolve Reclaim
+     -: PoolJoin@EagerTeardown
+     edge Worker.Run.Ended -> Worker.Drain.Entered
+     edge Worker.Run.Ended -> -.PoolJoin@EagerTeardown.Completed";
+
+const CONTROLS: &[Control] = &[
+    // The first control, the host's own order (inventory decision 7):
+    // quiesce, join, then abort. The trace shows the join entered
+    // before any wait-abort completed.
+    Control {
+        name: "host_joins_before_it_aborts_waits",
+        covers: ObligationKind::WaitAbort,
+        fixture: "l16_eager_spine_pool_join.hl",
+        skip: "",
+        plan: Some(LINE_7_PLAN),
+        fails_with: "edge: -.PoolJoin@EagerTeardown.Entered",
+        baseline_passes: false,
+    },
+    // The deferred-pool-join regression's shape: teardown reaches the
+    // worker's fields with its run() still going.
+    Control {
+        name: "pool_join_removed",
+        covers: ObligationKind::PoolJoin,
+        fixture: "l16_eager_spine_pool_join.hl",
+        skip: "PoolJoin",
+        plan: Some(POOL_WORKER_PLAN),
+        fails_with: "edge: Worker.Drain.Entered",
+        baseline_passes: true,
+    },
+    // No hold: the handler runs in place while the owner's params are
+    // still open, before the settle it must follow.
+    Control {
+        name: "hold_removed_delivers_before_settle",
+        covers: ObligationKind::ConstructionDelivery,
+        fixture: "l01_held_failure_settle.hl",
+        skip: "ConstructionDelivery",
+        plan: None,
+        fails_with: "edge: Boom.FailureDelivery.Completed",
+        baseline_passes: false,
+    },
+    // A required completion omitted: the owner's arena goes with no
+    // child's reclaim seen to complete.
+    Control {
+        name: "reclaim_completion_omitted",
+        covers: ObligationKind::Reclaim,
+        fixture: "l14_reclaim_exactly_once.hl",
+        skip: "Reclaim.Completed",
+        plan: None,
+        fails_with: "edge: App.Reclaim.Entered",
+        baseline_passes: false,
+    },
+    // A child reclaimed with its handler not seen to complete.
+    Control {
+        name: "delivery_completion_omitted",
+        covers: ObligationKind::FailureDelivery,
+        fixture: "l08_birth_failure_kept.hl",
+        skip: "FailureDelivery.Completed",
+        plan: None,
+        fails_with: "edge: Kid.Reclaim.Entered",
+        baseline_passes: false,
+    },
+    Control {
+        name: "settle_completion_omitted",
+        covers: ObligationKind::ParamsSettle,
+        fixture: "l01_held_failure_settle.hl",
+        skip: "ParamsSettle.Completed",
+        plan: None,
+        fails_with: "edge: Boom.FailureDelivery.Completed",
+        baseline_passes: false,
+    },
+    // R20a: without the named terminal the listener's teardown follows
+    // a run that never ended.
+    Control {
+        name: "canceled_run_unnamed",
+        covers: ObligationKind::Run,
+        fixture: "l19_parked_started_coroutine.hl",
+        skip: "Run.Terminal(CanceledAfterStart)",
+        plan: None,
+        fails_with: "edge: __StdIoTcpListener.Drain.Entered",
+        baseline_passes: false,
+    },
+    Control {
+        name: "cancellation_completion_omitted",
+        covers: ObligationKind::Cancellation,
+        fixture: "l19_parked_started_coroutine.hl",
+        skip: "Cancellation.Completed",
+        plan: None,
+        fails_with: "edge: -.PoolJoin@EagerTeardown.Completed",
+        baseline_passes: false,
+    },
+    Control {
+        name: "restart_completion_omitted",
+        covers: ObligationKind::Restart,
+        fixture: "l01_neg_same_pool_held.hl",
+        skip: "Restart.Completed",
+        plan: None,
+        fails_with: "unended: Late.Restart",
+        baseline_passes: false,
+    },
+    Control {
+        name: "wait_abort_removed",
+        covers: ObligationKind::WaitAbort,
+        fixture: "l16_eager_spine_pool_join.hl",
+        skip: "WaitAbort",
+        plan: Some("-: WaitAbort@EagerTeardown WaitAbort@MainFallThrough"),
+        fails_with: "missing: -.WaitAbort@EagerTeardown",
+        baseline_passes: true,
+    },
+    Control {
+        name: "birth_removed",
+        covers: ObligationKind::Birth,
+        fixture: "l05_accept_position.hl",
+        skip: "Birth",
+        plan: None,
+        fails_with: "missing: App.Birth",
+        baseline_passes: false,
+    },
+    Control {
+        name: "run_removed",
+        covers: ObligationKind::Run,
+        fixture: "l09_delivery_at_epoch.hl",
+        skip: "Run",
+        plan: None,
+        fails_with: "missing: App.Run",
+        baseline_passes: false,
+    },
+    Control {
+        name: "accept_removed",
+        covers: ObligationKind::Accept,
+        fixture: "l05_accept_position.hl",
+        skip: "Accept",
+        plan: None,
+        fails_with: "missing: Kid.Accept",
+        baseline_passes: false,
+    },
+    Control {
+        name: "drain_removed",
+        covers: ObligationKind::Drain,
+        fixture: "l14_reclaim_exactly_once.hl",
+        skip: "Drain",
+        plan: None,
+        fails_with: "missing: App.Drain",
+        baseline_passes: false,
+    },
+    Control {
+        name: "dissolve_removed",
+        covers: ObligationKind::Dissolve,
+        fixture: "l14_reclaim_exactly_once.hl",
+        skip: "Dissolve",
+        plan: None,
+        fails_with: "missing: App.Dissolve",
+        baseline_passes: false,
+    },
+    Control {
+        name: "pre_drain_removed",
+        covers: ObligationKind::PreDrain,
+        fixture: "l11_let_bound_drain.hl",
+        skip: "PreDrain",
+        plan: None,
+        fails_with: "missing: -.PreDrain@MainFallThrough",
+        baseline_passes: false,
+    },
+    Control {
+        name: "pinned_join_removed",
+        covers: ObligationKind::PinnedJoin,
+        fixture: "l15_sigint_flag.hl",
+        skip: "PinnedJoin",
+        plan: None,
+        fails_with: "missing: Loop.PinnedJoin",
+        baseline_passes: false,
+    },
+    // The oracle reads order within a domain: the same run, held to a
+    // plan that claims the accept after the birth.
+    Control {
+        name: "order_reversed_in_the_plan",
+        covers: ObligationKind::Accept,
+        fixture: "l05_accept_position.hl",
+        skip: "",
+        plan: Some("Kid: Birth Accept"),
+        fails_with: "order: Kid.Accept before Kid.Birth",
+        baseline_passes: false,
+    },
+];
+
+fn control(name: &str) -> &'static Control {
+    CONTROLS.iter().find(|c| c.name == name).unwrap_or_else(|| panic!("{name} is not in CONTROLS"))
+}
+
+/// The control's run fails the oracle with the violation it names;
+/// with `baseline_passes`, the run without the skip passes the same
+/// plan.
+fn assert_control(name: &str) {
+    let c = control(name);
+    let f = fixture(c.fixture);
+    let text = c.plan.unwrap_or_else(|| PLANS.iter().find(|(p, _)| *p == c.fixture).map(|(_, t)| *t).expect("a plan"));
+    let check = |ran: &Ran| -> Vec<String> {
+        let mut v = trace::laws(&ran.trace, ran.complete());
+        v.extend(plan(text).check(&ran.trace, ran.complete()));
+        v.iter().map(Violation::to_string).collect()
+    };
+    let env: Vec<(&str, &str)> = if c.skip.is_empty() { vec![] } else { vec![("LOTUS_LIFECYCLE_SKIP", c.skip)] };
+    let ran = run_fixture(f, &env).expect("a control runs its fixture");
+    let shown = check(&ran);
+    eprintln!("control {name}: {shown:#?}");
+    assert!(
+        shown.iter().any(|s| s.starts_with(c.fails_with)),
+        "control {name}: the oracle does not report `{}`; it reports {shown:#?}",
+        c.fails_with
+    );
+    if c.baseline_passes {
+        let ran = run_fixture(f, &[]).expect("a control runs its fixture");
+        let shown = check(&ran);
+        assert!(shown.is_empty(), "control {name}: without the skip the plan should hold; the oracle reports {shown:#?}");
+    }
+}
+
 // ------------------------------------------------------------ the plans
 
 /// The kinds owed once per incarnation; the rest once per instance.
@@ -818,6 +1060,35 @@ fn every_fixture_is_listed_and_formatted() {
     }
 }
 
+/// Every obligation kind a plan holds a run to has a negative control,
+/// and a control held to its fixture's own plan starts from a run that
+/// passes it.
+#[test]
+fn every_planned_kind_has_a_negative_control() {
+    let mut planned: Vec<ObligationKind> =
+        PLANS.iter().flat_map(|(_, text)| plan(text).owed.into_iter().map(|o| o.kind)).collect();
+    planned.sort();
+    planned.dedup();
+    for kind in planned {
+        assert!(CONTROLS.iter().any(|c| c.covers == kind), "no negative control covers {}", kind.name());
+    }
+    for c in CONTROLS {
+        fixture(c.fixture);
+        match c.plan {
+            Some(text) => assert!(!plan(text).owed.is_empty(), "control {}: an empty plan", c.name),
+            None => {
+                assert!(PLANS.iter().any(|(p, _)| *p == c.fixture), "control {}: {} has no plan", c.name, c.fixture);
+                assert!(
+                    !TRACE_KNOWN_OPEN.iter().any(|(p, _, _)| *p == c.fixture),
+                    "control {}: {} fails its own plan already",
+                    c.name,
+                    c.fixture
+                );
+            }
+        }
+    }
+}
+
 /// The trace oracle over one run: clean, or, for a known-open trace,
 /// showing the violation its entry names.
 fn assert_trace(file: &str, ran: &Ran) {
@@ -901,4 +1172,36 @@ fixture_tests! {
     rd_restart_during_teardown => "rd_restart_during_teardown.hl",
     jp_late_failure_pinned_join => "jp_late_failure_pinned_join.hl",
     jp_late_failure_pool_join => "jp_late_failure_pool_join.hl",
+}
+
+macro_rules! control_tests {
+    ($($name:ident),* $(,)?) => {
+        mod controls {
+            $(
+                #[test]
+                fn $name() { super::assert_control(stringify!($name)); }
+            )*
+        }
+    };
+}
+
+control_tests! {
+    host_joins_before_it_aborts_waits,
+    pool_join_removed,
+    hold_removed_delivers_before_settle,
+    reclaim_completion_omitted,
+    delivery_completion_omitted,
+    settle_completion_omitted,
+    canceled_run_unnamed,
+    cancellation_completion_omitted,
+    restart_completion_omitted,
+    wait_abort_removed,
+    birth_removed,
+    run_removed,
+    accept_removed,
+    drain_removed,
+    dissolve_removed,
+    pre_drain_removed,
+    pinned_join_removed,
+    order_reversed_in_the_plan,
 }

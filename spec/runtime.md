@@ -1963,7 +1963,15 @@ skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
 place while the params are open); `<Kind>.<Point>` drops that one
 line and nothing else. A build without the knob emits nothing of
-the trace and its IR is the same.
+the trace and its IR is the same. `lifecycle_fixtures.rs`'s
+`CONTROLS` use it so that, for every obligation kind a fixture's plan
+holds a run to, a run with that step removed or reordered fails the
+oracle, and with the violation that says why: a removed pool join
+lets a worker's teardown begin before its `run()` has ended, a
+removed hold delivers a failure before its owner's settle, an omitted
+completion leaves a dependent step entered with its prerequisite
+unreached, and the host's own order (join, then abort the waits)
+fails line 7's edge.
 
 ### Native observation emission (iris P4, 2026-07-27)
 

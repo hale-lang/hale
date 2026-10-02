@@ -24611,6 +24611,14 @@ static void lotus_lc_write(const char *kind, const char *point,
     (void)w;
 }
 
+/* The line, unless LOTUS_LIFECYCLE_SKIP drops `Kind.Point`. */
+static void lotus_lc_emit(const char *kind, const char *point,
+                          lotus_lc_slot_t *s, const char *spine) {
+    char drop[128];
+    snprintf(drop, sizeof drop, "%s.%s", kind, point);
+    if (!lotus_lc_skips(drop)) lotus_lc_write(kind, point, s, spine);
+}
+
 /* A step's entry. 0: LOTUS_LIFECYCLE_SKIP names the kind, and the
  * caller skips the step and its completion. Else the Entered line, 1. */
 int32_t lotus_lc_enter(const char *kind, void *self, const char *spine,
@@ -24628,9 +24636,7 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
     int entered = strcmp(point, "Entered") == 0;
     if (s && entered && strcmp(kind, "Restart") == 0) s->inc++;
     if (s && strcmp(kind, "Run") == 0) s->running = entered;
-    char drop[128];
-    snprintf(drop, sizeof drop, "%s.%s", kind, point);
-    if (!lotus_lc_skips(drop)) lotus_lc_write(kind, point, s, spine);
+    lotus_lc_emit(kind, point, s, spine);
     if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
         __atomic_store_n(&s->key, LOTUS_LC_TOMB, __ATOMIC_RELAXED);
 }
@@ -24641,11 +24647,11 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
  * ends CanceledAfterStart, named here, where its stack is freed. */
 void lotus_lc_parked_abandoned(void *self) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
-    lotus_lc_write("Cancellation", "Entered", s, "PoolRun");
+    lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
     if (s && s->running) {
         s->running = 0;
-        lotus_lc_write("Run", "Terminal(CanceledAfterStart)", s, "PoolRun");
+        lotus_lc_emit("Run", "Terminal(CanceledAfterStart)", s, "PoolRun");
     }
-    lotus_lc_write("Cancellation", "Completed", s, "PoolRun");
+    lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
 }
 #endif /* LOTUS_LIFECYCLE_TRACE */
