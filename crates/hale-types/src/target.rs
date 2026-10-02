@@ -61,6 +61,18 @@ pub enum TargetOs {
     None,
 }
 
+impl TargetOs {
+    /// The OS as a triple spells it (`none` for none).
+    pub fn name(self) -> &'static str {
+        match self {
+            TargetOs::Linux => "linux",
+            TargetOs::MacOs => "darwin",
+            TargetOs::Windows => "windows",
+            TargetOs::None => "none",
+        }
+    }
+}
+
 /// The ABI/CRT flavour. On Windows this is the difference between two
 /// incompatible worlds, so it is part of the target's identity rather
 /// than a linker detail.
@@ -73,6 +85,18 @@ pub enum TargetEnv {
     Musl,
     Msvc,
     None,
+}
+
+impl TargetEnv {
+    /// The environment as a triple spells it (`none` for none).
+    pub fn name(self) -> &'static str {
+        match self {
+            TargetEnv::Gnu => "gnu",
+            TargetEnv::Musl => "musl",
+            TargetEnv::Msvc => "msvc",
+            TargetEnv::None => "none",
+        }
+    }
 }
 
 /// How far the compiler can actually take a target today.

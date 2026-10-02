@@ -43,7 +43,8 @@
 //! Those stay [`TargetSpec`] queries; the Final direction of #1212 does
 //! not count them as decisions.
 
-use hale_syntax::ast::PrimType;
+use hale_syntax::ast::{PrimType, TopDecl};
+use hale_syntax::Span;
 
 use crate::target::{TargetArch, TargetEnv, TargetOs, TargetSpec};
 use crate::ty::Ty;
@@ -663,6 +664,78 @@ impl CapabilityMatrix {
             Premise::All(ps) => ps.iter().all(|p| self.premise_holds(class, p)),
         }
     }
+}
+
+// ----------------------------------------------------- effective target
+
+/// A source `target` declaration: a top-level `target wasm { }` or
+/// `target browser_js { }`, the two names the stdlib gate reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetDeclaration {
+    /// The program that declares it, as the bundle keys it.
+    pub file: String,
+    /// `wasm` or `browser_js`.
+    pub name: String,
+    pub span: Span,
+}
+
+/// Today's precedence, recorded as a fact (design §1.3): which target
+/// each reader acts on. The readers disagree, which is what T1(b)
+/// corrects in P3 2 of 3: one effective target for analysis and
+/// emission alike, an explicit `--target` first, then the declaration,
+/// then the host. `None` is a reader that acts on no class (Windows,
+/// a tier refused before the matrix; or the stdlib gate, off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Precedence {
+    /// The backend: the configured target alone. Codegen ignores a
+    /// source declaration, so `hale build` of a declared program builds
+    /// natively unless `--target` says wasm32.
+    pub backend: Option<TargetClass>,
+    /// The checker's stdlib gate: wasm32 when any program declares
+    /// `target wasm`/`browser_js`, and off otherwise, whatever the
+    /// configured target; `--target wasm32` alone gates nothing.
+    pub stdlib_gate: Option<TargetClass>,
+    /// The checker's `where async_io` gate: the configured target's
+    /// `has_async_io` (GH #970); a declaration does not move it.
+    pub async_io_gate: Option<TargetClass>,
+}
+
+/// The effective-target row of a snapshot (the `target_capability`
+/// family's first row): the configured target, the source declaration,
+/// and the precedence today's readers apply between them. Consulted by
+/// nothing yet; P3 2 of 3 makes it the one target every entry point
+/// reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetRow {
+    /// The configured target's name: `host`, or the triple `--target`
+    /// names.
+    pub configured_name: String,
+    pub configured: TargetSpec,
+    /// The first declaring program's, in the bundle's order.
+    pub declaration: Option<TargetDeclaration>,
+    pub precedence: Precedence,
+}
+
+/// The effective-target row for the programs a snapshot holds, under
+/// its configured target.
+pub fn target_row(bundle: &crate::Bundle<'_>, configured_name: &str, configured: TargetSpec) -> TargetRow {
+    let declaration = bundle.programs.iter().find_map(|(file, p)| {
+        p.items.iter().find_map(|it| match it {
+            TopDecl::Target(t) if matches!(t.name.name.as_str(), "wasm" | "browser_js") => Some(TargetDeclaration {
+                file: file.clone(),
+                name: t.name.name.clone(),
+                span: t.span,
+            }),
+            _ => None,
+        })
+    });
+    let class = TargetClass::of(&configured);
+    let precedence = Precedence {
+        backend: class,
+        stdlib_gate: declaration.as_ref().map(|_| TargetClass::Wasm32),
+        async_io_gate: class,
+    };
+    TargetRow { configured_name: configured_name.to_string(), configured, declaration, precedence }
 }
 
 // ------------------------------------------------------------ known open

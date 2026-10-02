@@ -1088,8 +1088,7 @@ pub fn build_executable_with_options(
             CompileTarget::Native => "host".to_string(),
             _ => spec.triple.to_string(),
         },
-        has_async_io: spec.has_async_io(),
-        label: spec.platform_label(),
+        spec,
     };
     let mut config = Config::harness(target);
     config.api = options.api.clone();
