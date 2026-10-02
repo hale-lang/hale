@@ -1777,28 +1777,15 @@ pub fn render_markdown() -> String {
          `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. \
          The contract this index serves is `spec/model.md` § *The graph registry*.\n\n",
     );
-    let n_can = FAMILIES
-        .iter()
-        .filter(|f| f.state == State::Canonical)
-        .count();
-    let n_mig = FAMILIES
-        .iter()
-        .filter(|f| f.state == State::Migrating)
-        .count();
-    let n_res = FAMILIES
-        .iter()
-        .filter(|f| f.state == State::Reserved)
-        .count();
-    let n_legacy: usize = FAMILIES.iter().map(|f| f.legacy.len()).sum();
-    o.push_str(&format!(
-        "{} families: {n_can} canonical, {n_mig} migrating (with {n_legacy} permitted legacy \
-         producers), {n_res} reserved. {} spec rules with evaluators. {} frozen Debug-string sites, \
-         of which {} decide a fact.\n\n",
-        FAMILIES.len(),
-        RULES.len(),
-        DEBUG_SCANS.len(),
-        DEBUG_SCANS.iter().filter(|d| matches!(d.verdict, ScanVerdict::Decides { .. })).count(),
-    ));
+    // The totals are not rendered: a count line that every change to any family
+    // moves made two unrelated registry changes conflict textually on one line at
+    // every rebase. `registry_is_well_formed` counts the families, their legacy
+    // producers, the rules and the frozen Debug-string sites in code.
+    o.push_str(
+        "The families, their legacy producers, the spec rules and the frozen Debug-string sites \
+         are counted by `registry_is_well_formed`, not here: a rendered total moved with every \
+         change to any family, so two unrelated changes conflicted on one line at every rebase.\n\n",
+    );
     o.push_str("## Families\n\n");
     o.push_str("| family | layer | state | kind | producer | legacy | answers |\n|---|---|---|---|---|---|---|\n");
     for f in FAMILIES {
