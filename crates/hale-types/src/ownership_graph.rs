@@ -40,6 +40,7 @@ use hale_syntax::Span;
 
 use crate::bus_graph::Placement;
 use crate::handler_routing::{child_locus_name, ChildRef, DeclaredNames};
+use crate::placement::{Enclosing, HoleAt, HoleKind, Origin, PlacementTable, SiteRef, SiteUniverse};
 use crate::resolve::TopScope;
 use crate::symbol::Bundle;
 
@@ -224,20 +225,159 @@ impl OwnershipGraph {
     /// an alias, an import path or a generic specialization owns it, and
     /// one naming only its last segment or its template does not.
     ///
+    /// An ancestor owns the birth only if one accepts the child on EVERY
+    /// construction path of the enclosing locus ([`Self::construction_paths`],
+    /// asked for only when the enclosing locus does not accept the child
+    /// itself): a path that reaches a root, a hole of the placement table
+    /// or no construction at all with no acceptor on it makes the site
+    /// `Orphan`, and [`SiteOwnership::unowned`] names that path. A type
+    /// having an accepting parent somewhere is no proof that every
+    /// instance has one.
+    ///
     /// `None` where the graph cannot decide: an open world (no entry
     /// point, so a consumer may complete the tower), or a child the
     /// graph cannot identify. Unknown ownership is not proven absence.
-    pub fn owner_of_site(&self, site: &OwnedSite) -> Option<OwnerResolution> {
+    pub fn owner_of_site<'p>(
+        &self,
+        site: &OwnedSite,
+        paths: impl FnOnce() -> &'p ConstructionPaths,
+    ) -> Option<SiteOwnership> {
         if matches!(site.resolution, OwnerResolution::Unanalyzable(_)) {
             return None;
         }
         let key = site.child_key.as_deref()?;
-        Some(resolve_owner(
-            &site.enclosing_locus,
-            key,
-            &self.accepts,
-            &self.instantiated_by,
-        ))
+        let enclosing = &self.declarations[site.enclosing_decl].name;
+        if self.accepts.get(enclosing).is_some_and(|a| a.contains(key)) {
+            return Some(SiteOwnership { resolution: OwnerResolution::SelfOwned(enclosing.clone()), unowned: None });
+        }
+        let mut climb = PathClimb { graph: self, paths: paths(), child: key, owners: BTreeSet::new(), unowned: None };
+        climb.up(&mut vec![site.enclosing_decl]);
+        let resolution = match (&climb.unowned, climb.owners.len()) {
+            (Some(_), _) | (None, 0) => OwnerResolution::Orphan,
+            (None, 1) => OwnerResolution::Ancestor(climb.owners.into_iter().next().expect("one owner")),
+            (None, _) => OwnerResolution::PerPath(climb.owners.into_iter().collect()),
+        };
+        Some(SiteOwnership { resolution, unowned: climb.unowned })
+    }
+
+    /// Every construction path of each declaration, for
+    /// [`Self::owner_of_site`]: how an instance of it comes to exist.
+    ///
+    /// The placement table supplies the paths the graph's own walk cannot
+    /// see: every instance row (a params field of its owner row's
+    /// declaration; at a template's top, a root: a literal directly in
+    /// `fn main`, the root's construction or the entry's implicit one, an
+    /// adapter of the root's `bindings { }`) and every dynamic site (a
+    /// literal in a locus's bodies, or in a free fn, whose callers the
+    /// climb does not follow). What the table records as a hole is a path
+    /// with no ancestor: a field held from an instance built elsewhere
+    /// that the table does not link, a field whose initializer is no
+    /// literal, a dynamic site whose domains are unknown, an owner row
+    /// whose declaration does not resolve. A held row the table links
+    /// is its source row's projection and adds no path: the source row is
+    /// the construction.
+    ///
+    /// The walk's own edges stay paths too (a literal in a locus's bodies
+    /// or params defaults is built within that locus): the table does not
+    /// enumerate the params subtree of a locus built only dynamically.
+    /// Every path the union adds can only take a proof away, never give
+    /// one.
+    pub fn construction_paths(&self, table: &PlacementTable, bundle: &Bundle<'_>) -> ConstructionPaths {
+        let ids = &bundle.snapshot;
+        let decl_of = |r: &SiteRef| {
+            (r.universe == SiteUniverse::User)
+                .then(|| self.declarations.iter().position(|d| d.id == Some(r.id)))
+                .flatten()
+        };
+        let span_of = |r: Option<SiteRef>, or: usize| {
+            r.filter(|r| r.universe == SiteUniverse::User)
+                .and_then(|r| ids.site(r.id))
+                .map_or(self.declarations[or].span, |s| s.span)
+        };
+        let mut paths = ConstructionPaths { of: vec![Vec::new(); self.declarations.len()] };
+        for s in &self.sites {
+            if let Some(child) = s.child_decl {
+                paths.add(child, ConstructionPath::Within(s.enclosing_decl));
+            }
+        }
+        let entry_literals: BTreeSet<SiteRef> = table.entry_literals.iter().map(|c| c.literal).collect();
+        let hole_at = |at: HoleAt| table.holes.iter().filter(move |h| h.at == at).map(|h| &h.kind);
+        for (key, row) in &table.instances {
+            if row.built_by.is_some() {
+                continue;
+            }
+            let Some(d) = row.realizes.as_ref().and_then(|r| decl_of(&r.site)) else { continue };
+            let at = span_of(row.literal, d);
+            let hole = hole_at(HoleAt::Instance(key.clone())).find_map(|k| match k {
+                HoleKind::Reuse { source } => Some(format!(
+                    "held from `{source}`, an instance built elsewhere that the placement table does not link"
+                )),
+                HoleKind::UnenumerableInitializer => {
+                    Some("as a field whose initializer is no literal the placement table can read".to_string())
+                }
+                _ => None,
+            });
+            let path = match (hole, &row.owner) {
+                (Some(what), _) => ConstructionPath::Hole { what, at },
+                (None, Some(owner)) => {
+                    match table.instances.get(owner).and_then(|o| o.realizes.as_ref()).and_then(|r| decl_of(&r.site)) {
+                        Some(p) => ConstructionPath::Within(p),
+                        None => ConstructionPath::Hole {
+                            what: "as a field of an instance whose declaration the placement table does not resolve"
+                                .to_string(),
+                            at,
+                        },
+                    }
+                }
+                (None, None) => ConstructionPath::Root {
+                    what: match key.origin {
+                        Origin::Construction(l) if entry_literals.contains(&l) => "directly in `fn main`",
+                        Origin::Construction(_) => "as the program's root",
+                        Origin::Entry(_) => "as the program's root, by the entry",
+                        Origin::Binding(_) => "as an adapter of the root's `bindings { }`",
+                    }
+                    .to_string(),
+                    at,
+                },
+            };
+            paths.add(d, path);
+        }
+        let fns = free_fn_names(bundle);
+        for site in &table.dynamic {
+            let Some(d) = site.realizes.as_ref().and_then(|r| decl_of(&r.site)) else { continue };
+            let at = span_of(Some(site.literal), d);
+            let path = match &site.enclosing {
+                Enclosing::Fn(f) => ConstructionPath::Hole {
+                    what: match fns.get(&f.id).filter(|_| f.universe == SiteUniverse::User) {
+                        Some(name) => format!("in the free fn `{name}`, whose callers the ownership graph does not follow"),
+                        None => "in a free fn, whose callers the ownership graph does not follow".to_string(),
+                    },
+                    at,
+                },
+                Enclosing::Locus(p) if site.domains.is_empty() => ConstructionPath::Hole {
+                    what: format!(
+                        "in `{}`, where the placement table knows no domain: {}",
+                        p.lowered,
+                        hole_at(HoleAt::Dynamic(site.literal))
+                            .find_map(|k| match k {
+                                HoleKind::UnknownDomains { reason } => Some(reason.as_str()),
+                                _ => None,
+                            })
+                            .unwrap_or("its domains are unknown")
+                    ),
+                    at,
+                },
+                Enclosing::Locus(p) => match decl_of(&p.site) {
+                    Some(p) => ConstructionPath::Within(p),
+                    None => ConstructionPath::Hole {
+                        what: format!("in `{}`, a declaration the ownership graph does not hold", p.lowered),
+                        at,
+                    },
+                },
+            };
+            paths.add(d, path);
+        }
+        paths
     }
 
     /// Interest-based ownership, artifact #2b — **owner-forwarding sets**.
@@ -376,6 +516,137 @@ pub struct BubblePlans {
     /// locus type → the interest types `I` it carries an
     /// `__owner_for_I` field for.
     pub forwarding: BTreeMap<String, BTreeSet<String>>,
+}
+
+// === Construction paths (type-check rule 20) ======================
+
+/// One way an instance of a locus declaration comes to exist
+/// ([`OwnershipGraph::construction_paths`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstructionPath {
+    /// Built within an instance of this declaration (an index into
+    /// [`OwnershipGraph::declarations`]): a params field of it, or a
+    /// literal in one of its bodies.
+    Within(usize),
+    /// Built where no locus encloses it, so nothing above it can accept
+    /// what it births: `what` says where, `at` is the literal (the
+    /// entry's site for the entry's implicit construction).
+    Root { what: String, at: Span },
+    /// A path the placement table records as a hole: it proves no
+    /// owner, so it counts as a path with none.
+    Hole { what: String, at: Span },
+}
+
+/// Every declaration's construction paths, indexed like
+/// [`OwnershipGraph::declarations`]. A declaration with none is built
+/// nowhere the graph or the placement table sees.
+#[derive(Debug, Clone, Default)]
+pub struct ConstructionPaths {
+    pub of: Vec<Vec<ConstructionPath>>,
+}
+
+impl ConstructionPaths {
+    fn add(&mut self, decl: usize, path: ConstructionPath) {
+        let paths = &mut self.of[decl];
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+}
+
+/// What [`OwnershipGraph::owner_of_site`] decides for a site.
+#[derive(Debug, Clone)]
+pub struct SiteOwnership {
+    pub resolution: OwnerResolution,
+    /// For an `Orphan`, the first construction path found with no
+    /// acceptor on it.
+    pub unowned: Option<UnownedPath>,
+}
+
+/// A construction path of a site's enclosing locus that no ancestor
+/// accepting the child lies on.
+#[derive(Debug, Clone)]
+pub struct UnownedPath {
+    /// The declarations climbed, the enclosing locus first, each built
+    /// within the next.
+    pub through: Vec<usize>,
+    /// How the last of them is built: a `Root` or a `Hole`. `None` when
+    /// it has no construction path, or every one closes a cycle.
+    pub end: Option<ConstructionPath>,
+}
+
+/// The climb up the construction paths from a site's enclosing locus:
+/// the nearest acceptor of `child` on each path, and the first path that
+/// reaches none. Once one is found the site is `Orphan`, so the climb
+/// stops.
+struct PathClimb<'g> {
+    graph: &'g OwnershipGraph,
+    paths: &'g ConstructionPaths,
+    child: &'g str,
+    owners: BTreeSet<String>,
+    unowned: Option<UnownedPath>,
+}
+
+impl PathClimb<'_> {
+    fn accepts(&self, decl: usize) -> bool {
+        self.graph.accepts.get(&self.graph.declarations[decl].name).is_some_and(|a| a.contains(self.child))
+    }
+
+    /// `chain` is the path climbed so far, its last entry the declaration
+    /// whose paths are read; a path back onto `chain` is a cycle, which
+    /// finds no new acceptor.
+    fn up(&mut self, chain: &mut Vec<usize>) {
+        let node = *chain.last().expect("the climb starts at the enclosing locus");
+        let paths = self.paths.of.get(node).map(Vec::as_slice).unwrap_or(&[]);
+        let fresh: Vec<&ConstructionPath> = paths
+            .iter()
+            .filter(|p| !matches!(p, ConstructionPath::Within(d) if chain.contains(d)))
+            .collect();
+        if fresh.is_empty() {
+            self.unowned = Some(UnownedPath { through: chain.clone(), end: None });
+            return;
+        }
+        for path in fresh {
+            if self.unowned.is_some() {
+                return;
+            }
+            match path {
+                ConstructionPath::Within(p) if self.accepts(*p) => {
+                    self.owners.insert(self.graph.declarations[*p].name.clone());
+                }
+                ConstructionPath::Within(p) => {
+                    chain.push(*p);
+                    self.up(chain);
+                    chain.pop();
+                }
+                ConstructionPath::Root { .. } | ConstructionPath::Hole { .. } => {
+                    self.unowned = Some(UnownedPath { through: chain.clone(), end: Some(path.clone()) });
+                }
+            }
+        }
+    }
+}
+
+/// Every free fn's name, by its site: a dynamic site's enclosing fn.
+fn free_fn_names(bundle: &Bundle<'_>) -> BTreeMap<SiteId, String> {
+    fn walk(items: &[TopDecl], ids: &crate::snapshot::Snapshot, out: &mut BTreeMap<SiteId, String>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) => {
+                    if let Some(id) = ids.site_id(f.id) {
+                        out.insert(id, f.name.name.clone());
+                    }
+                }
+                TopDecl::Module(m) => walk(&m.items, ids, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for program in bundle.programs.values() {
+        walk(&program.items, &bundle.snapshot, &mut out);
+    }
+    out
 }
 
 /// DFS upward from `node` toward `owner` via `instantiated_by`, adding

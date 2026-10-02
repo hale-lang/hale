@@ -512,7 +512,9 @@ pub struct CheckInputs<'a> {
     /// a synchronous cycle from one the queue carries.
     pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
     /// The placement table (F.40 phase 3, P1): which domain each instance
-    /// runs in. The F.31 cross-pool check reads it per instance.
+    /// runs in. The F.31 cross-pool check reads it per instance, and the
+    /// unowned-subscriber rule climbs the construction paths it records
+    /// for a handler birth its enclosing locus does not accept itself.
     pub placement: &'a crate::placement::PlacementTable,
 }
 
@@ -831,7 +833,7 @@ pub fn check_bundle_reporting(
     // returns, so its subscription can never fire. Judged over the
     // ownership graph (F.40 phase 3, C4). Hard error unless
     // `--allow-unowned-subscriber` is set.
-    check_unowned_subscriber_locus(inputs.ownership, allow_unowned_subscriber, &mut diags);
+    check_unowned_subscriber_locus(bundle, inputs, allow_unowned_subscriber, &mut diags);
     // GH #18 #4: bus-graph property checks over the typed topic
     // topology. v1 (PR A): orphan topics — declared/used subjects
     // wired to only one end. Gated on a closed-world program (one
@@ -902,16 +904,26 @@ fn locus_accepts(parent: &LocusDecl, child_name: &str) -> bool {
 /// its ancestors are the graph's: an `accept` owns a child it names by
 /// declaration identity, a name shared by two declarations judges the
 /// first, and a birth whose owner the graph cannot decide is not
-/// reported (`OwnershipGraph::owner_of_site`).
+/// reported (`OwnershipGraph::owner_of_site`). An ancestor owns the
+/// birth only if one accepts it on every construction path of the
+/// handler's locus, which the placement table records
+/// (`OwnershipGraph::construction_paths`); the diagnostic names a path
+/// with none.
 fn check_unowned_subscriber_locus(
-    graph: &crate::ownership_graph::OwnershipGraph,
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
     allow: bool,
     diags: &mut Vec<Diag>,
 ) {
-    use crate::ownership_graph::OwnerResolution;
+    use crate::ownership_graph::{ConstructionPath, OwnerResolution};
     if allow {
         return;
     }
+    let graph = inputs.ownership;
+    // The construction paths are derived from the table once, by the
+    // first birth its own locus does not accept.
+    let paths = std::cell::OnceCell::new();
+    let paths = || paths.get_or_init(|| graph.construction_paths(inputs.placement, bundle));
     // In declaration order of the enclosing locus, as the program reads;
     // the graph lists its sites by locus name.
     let mut sites: Vec<&crate::ownership_graph::OwnedSite> = graph.sites.iter().collect();
@@ -927,8 +939,11 @@ fn check_unowned_subscriber_locus(
         if child.bus_handlers.is_empty() {
             continue;
         }
-        if !matches!(graph.owner_of_site(site), Some(OwnerResolution::Orphan)) {
-            continue; // owned, or the graph cannot decide
+        let Some(ownership) = graph.owner_of_site(site, paths) else {
+            continue; // the graph cannot decide
+        };
+        if ownership.resolution != OwnerResolution::Orphan {
+            continue;
         }
         let (name, p_name) = (&child.name, &p.name);
         let mut diag = Diag::ty(
@@ -961,6 +976,35 @@ fn check_unowned_subscriber_locus(
                      {same_name} loci named `{name}`"
                 ),
             );
+        }
+        // The construction path no accepting ancestor lies on: the
+        // enclosing locus may have an accepting parent on another.
+        if let Some(path) = ownership.unowned.filter(|u| u.through.len() > 1 || u.end.is_some()) {
+            let names: Vec<&str> = path.through.iter().map(|d| graph.declarations[*d].name.as_str()).collect();
+            let top = names[names.len() - 1];
+            let within = if names.len() > 1 {
+                format!("`{}` is built within `{}`; ", names[0], names[1..].join("`, within `"))
+            } else {
+                String::new()
+            };
+            let (at, note) = match &path.end {
+                Some(ConstructionPath::Root { what, at }) => (
+                    *at,
+                    format!("{within}`{top}` is built here, {what}, and no ancestor of it accepts `{name}`"),
+                ),
+                Some(ConstructionPath::Hole { what, at }) => (
+                    *at,
+                    format!(
+                        "{within}`{top}` is built here, {what}: the placement table records a hole, which \
+                         proves no ancestor that accepts `{name}`"
+                    ),
+                ),
+                _ => (
+                    graph.declarations[path.through[path.through.len() - 1]].span,
+                    format!("{within}no construction of `{top}` has an ancestor that accepts `{name}`"),
+                ),
+            };
+            diag = diag.with_related(at, note);
         }
         diags.push(diag);
     }

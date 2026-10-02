@@ -1234,7 +1234,8 @@ impl Snapshot {
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
     /// total over a program that does not typecheck. The check's F.31
-    /// rule and sync inference read it (F.40 phase 3, P1).
+    /// rule and sync inference read it (F.40 phase 3, P1), and type-check
+    /// rule 20 climbs the construction paths it records (C4).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {

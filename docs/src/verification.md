@@ -128,10 +128,11 @@ with how the runtime dispatches:
   **error**.
 - **Unowned subscriber locus** — a bus-subscribing locus
   instantiated in another locus's bus handler that no ancestor
-  `accept`s, so it dissolves when the handler returns, before its
-  subscription can fire. Ownership is judged by the declaration the
-  `accept` names, and a birth whose owner can't be decided is not
-  reported — **error**.
+  `accept`s on every path that builds the handler's locus (one built
+  directly in `fn main` has no ancestor), so it dissolves when the
+  handler returns, before its subscription can fire. Ownership is
+  judged by the declaration the `accept` names, and a birth whose
+  owner can't be decided is not reported — **error**.
 
 **Memory-bound proofs** *(on by default).* Every `hale check` /
 `hale build` runs the whole-program survey: the compiler's

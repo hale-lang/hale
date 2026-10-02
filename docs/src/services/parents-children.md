@@ -151,6 +151,15 @@ reads. For a generic subscriber the specialization must match:
 declared `Cell<String>`. If two loci share a name, the compiler judges
 the first one declared and says which it judged.
 
+The ancestor has to be there on *every* path that builds `Hub`. If
+`App` accepts `Watcher` and holds a `Hub` as a field, but `fn main`
+also builds a `Hub { }` of its own, that second `Hub` has no parent to
+collect what it births — so the compiler still refuses the birth, and
+its note points at the `Hub` that `main` builds. The same goes for a
+`Hub` built somewhere the compiler can't follow: inside a plain
+function, or in a locus whose placement it can't work out. An owner it
+can't see is not an owner it can count on.
+
 Where the compiler can't tell who owns the child, it stays quiet
 rather than guess. A library seed with no entry point can't be judged,
 because its consumer may supply the owner. Neither can a generic

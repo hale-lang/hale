@@ -26,6 +26,11 @@
 //! 6. The nearest accepting ancestor owns a birth in a handler as it owns
 //!    any other (the bubble lowering performs), so the birth stops
 //!    erroring.
+//! 7. ... but only when one accepts it on EVERY construction path of the
+//!    handler's locus, which the placement table records: a locus built
+//!    under an accepting parent and also directly in `fn main` is
+//!    refused, and the diagnostic names the `main` path; a path the table
+//!    records as a hole proves no owner either.
 //!
 //! The programs are escaped string literals rather than raw strings:
 //! `hale-corpus` harvests raw-string literals out of test files, and these
@@ -256,4 +261,94 @@ fn a_subscriber_no_ancestor_accepts_is_refused() {
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && !text.contains("instantiated unowned"), "{text}");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `Owner` accepts `Child` and builds a `Disp` as its params field;
+/// `main` builds `extra` beside it.
+fn owner_and_main(extra: &str) -> String {
+    format!(
+        "{}locus Owner {{
+    params {{ d: Disp = Disp {{ }}; }}
+    accept(c: Child) {{ }}
+    run() {{ }}
+}}
+fn main() {{
+    let owner = Owner {{ }};
+{extra}}}
+",
+        handler_birth(CHILD, "", "Child { id: 1 };")
+    )
+}
+
+/// Class 7, the review's program: `Disp` is built under `Owner`, which
+/// accepts `Child`, and also directly in `fn main`, where nothing does.
+/// The ancestor owns only the first path, so the birth is refused by
+/// `hale check` and by `hale build`, and the note names the `main` path.
+/// The walk the graph used to climb skipped free fns, `fn main`
+/// included, and found `Owner` on every path it saw.
+#[test]
+fn an_ancestor_must_accept_on_every_construction_path() {
+    let program = owner_and_main("    let direct = Disp { };\n");
+    let out = assert_unowned("every_path", &program, "Child", "the `main` path has no acceptor");
+    assert!(
+        out.contains("`Disp` is built here, directly in `fn main`, and no ancestor of it accepts `Child`"),
+        "the note names the path with no acceptor:\n{out}"
+    );
+    assert!(out.contains("app/main.hl:21:18"), "the note points at `main`'s literal:\n{out}");
+    let root = scratch("every_path_build");
+    let dir = seed(&root, "app", &program);
+    let built = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("build")
+        .arg(&dir)
+        .arg("-o")
+        .arg(root.join("app.bin"))
+        .current_dir(Path::new("/"))
+        .output()
+        .expect("hale");
+    let text = format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+    assert!(!built.status.success() && text.contains(&unowned("Child")), "the build refuses it too:\n{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Class 7's control: with the `main` construction removed, `Owner` is
+/// on every path and owns the birth.
+#[test]
+fn an_ancestor_on_every_construction_path_owns_it() {
+    assert_owned("every_path_owned", &owner_and_main(""), "`Owner` accepts on the only path");
+}
+
+/// Class 7: a construction path the placement table records as a hole
+/// proves no owner. `Disp` is built in `Mid.run()`, `Mid` as the params
+/// field of a `Shell` that `Owner` builds in its own `run()`. The table
+/// does not enumerate the params subtree of a locus built only
+/// dynamically, so it places no instance of `Mid`, and its literal of
+/// `Disp` is a dynamic site of unknown domain: a hole. `Owner` is the
+/// only acceptor the walk's edges reach, but the hole cannot be proven
+/// to lie under it.
+#[test]
+fn a_hole_in_the_placement_table_proves_no_owner() {
+    let program = format!(
+        "{}locus Mid {{
+    run() {{ Disp {{ }}; }}
+}}
+locus Shell {{
+    params {{ m: Mid = Mid {{ }}; }}
+}}
+locus Owner {{
+    accept(c: Child) {{ }}
+    run() {{ Shell {{ }}; }}
+}}
+fn main() {{ Owner {{ }}; }}
+",
+        handler_birth(CHILD, "", "Child { id: 1 };")
+    );
+    let out = assert_unowned("hole", &program, "Child", "a hole is no proof of an owner");
+    assert!(
+        out.contains(
+            "`Disp` is built here, in `Mid`, where the placement table knows no domain: the enclosing \
+             locus has no instance the table places: the placement table records a hole, which proves \
+             no ancestor that accepts `Child`"
+        ),
+        "the note names the hole:\n{out}"
+    );
 }
