@@ -7,7 +7,9 @@
 //! a root child and a nested child (inline in the instantiation), a
 //! replica (each replica's instantiation), a pinned child (the
 //! registration on the instantiating thread, the rest in its thread
-//! function, with the `birth_check` before `run()`: C38). The release
+//! function, with the `birth_check` before `run()`: C38), and a
+//! cross-pool bubble's child (its create cell's dispatcher on the
+//! owner's thread: the stitch to the owner, then the birth; C2). The release
 //! IR the plan changes is exactly these steps: the readiness window
 //! around a subscriber's birth (`lotus_bus_hold_delivery` before its
 //! first registration, `lotus_bus_ready` after its birth and checks; a
@@ -141,4 +143,39 @@ fn a_pinned_child_checks_its_birth_on_its_thread_before_its_run() {
         ["birth", "check", "ready", "gate", "run"],
         "the thread births, checks, readies, gates, runs"
     );
+}
+
+/// The fifth shape, a cross-pool bubble: the consumer posts a create
+/// cell, and the dispatcher on the owner's thread runs the child's birth
+/// spine there, in the plan's order (line 5): the stitch to its owner
+/// (`accept`, the children's push), then `birth()`. It used to birth the
+/// child first and accept it after. A cross-pool child subscribes to
+/// nothing and runs nothing, so that is the whole spine.
+#[test]
+fn a_crosspool_bubble_accepts_then_births_on_the_owners_thread() {
+    let src = "locus Ship {
+    params { hull: Int = 0; }
+    contract { expose hull: Int; }
+    birth() { println(\"ev ship-birth\"); }
+}
+locus Driver { run() { Ship { hull: 7 }; } }
+main locus World {
+    params { driver: Driver = Driver { }; }
+    placement { driver: cooperative(pool = workers); }
+    contract { consume hull: Int; }
+    accept(s: Ship) { println(\"ev accept\"); }
+    run() { std::time::sleep(50ms); }
+}
+fn main() { World { }; }
+";
+    let ir = ir("crosspool_bubble", src);
+    let dispatch = body(&ir, "__xpool_dispatch_Ship_World");
+    let at = |pat: &str| {
+        dispatch.lines().position(|l| l.contains(pat)).unwrap_or_else(|| panic!("no `{pat}` in the dispatcher:\n{dispatch}"))
+    };
+    let accept = at("call void @World.accept(");
+    let push = at("@lotus_children_push(");
+    let birth = at("call void @Ship.birth(");
+    assert!(accept < push && push < birth, "accept, the push, then birth:\n{dispatch}");
+    assert_eq!(dispatch.matches("\n  br ").count(), 0, "one block: the order is the text's");
 }

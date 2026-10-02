@@ -1777,7 +1777,11 @@ its `KNOWN_OPEN` table.
   `birth()` with its birth-epoch closures and `birth_check`,
   readiness, the run's start) come in the order the plan's rows and
   edges place them for its declaration, on the instantiating thread
-  or, from the birth on, a pinned locus's own thread.
+  or, from the birth on, a pinned locus's own thread. A cross-pool
+  bubble's child (§ "Lifecycle", interest-based ownership) is the
+  same spine on its owner's thread: the create cell's dispatcher
+  stitches it to its owner (`accept`, the children's tracker), then
+  runs its `birth()`.
 - **Line 6, registration before birth, and readiness.** A new
   instance's subscriptions are registered before its `birth()`, so
   `birth()` may publish to them. Shipped. Delivery to the instance
@@ -1798,7 +1802,14 @@ its `KNOWN_OPEN` table.
   into a direct call (`spec/semantics.md` § "Topic declarations →
   Phase 2") does not turn a send in `birth()` to the locus's own
   subscription into one, and a direct publish takes the queue while
-  any window is open.
+  any window is open. Not yet true in two cases (inventory rows C49
+  and R50). A subscribing locus that only stdlib or imported code
+  builds, so that the lifecycle plan holds no template of it, opens
+  no window, and what is published to it during its `birth()` is
+  delivered then. And a `birth()` that publishes to its own
+  subscription without bound parks every cell, since its own thread
+  cannot wait for the window to drain: whether such a birth meets a
+  bound or a refusal is undecided.
 - **Line 7, waits that only teardown ends.** Every teardown spine
   aborts the `or wait`s it would otherwise wait on before it joins
   the workers they block, and an aborted publish is not a success:

@@ -532,7 +532,12 @@ behaviour until it changes:
   `main` drains holds the exit forever;
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
-  parent's handler.
+  parent's handler;
+- a subscribing locus that only stdlib or imported code builds hears
+  what is published to it during its `birth()` at once, not after;
+- a `birth()` that publishes to its own topic without bound keeps
+  every message waiting until memory runs out (whether such a birth
+  meets a bound or a refusal is not decided).
 
 The lifecycle is the skeleton of every long-running Hale program.
 Next, the thing those programs use to talk to each other: [The

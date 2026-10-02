@@ -5460,8 +5460,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// It allocates `I` in `A`'s arena, deserializes the payload into
     /// `I`'s params, gives `I` its own arena (or borrows `A`'s when
     /// `I` is arena-elidable — matching the Fresh-strategy reclaim
-    /// contract), runs `I.birth()`, then stitches `I` to `A`
-    /// (`A.accept(A, I)` + `lotus_children_push`). Because `I` ends up
+    /// contract), then runs `I`'s birth spine in the plan's order: the
+    /// stitch to `A` (`A.accept(A, I)` + `lotus_children_push`), then
+    /// `I.birth()` (line 5). Because `I` ends up
     /// co-located with `A`, teardown is A's existing same-thread reclaim
     /// cascade — no cross-thread reclaim protocol.
     fn synthesize_crosspool_dispatcher(
@@ -5660,70 +5661,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fail_bb,
         )?;
 
-        // birth() on A's thread.
-        let birth_call =
-            child_info.methods.get("birth").copied().filter(|_| !child_info.empty_lifecycle.contains("birth"));
-        self.lc_in_spine("Instantiation", |cx| {
-            cx.lc_step("Birth", Some(child_ptr), Some(child_locus), |cx| {
-                if let Some(birth_fn) = birth_call {
-                    cx.builder
-                        .build_call(birth_fn, &[child_ptr.into()], &format!("{}.xpool.birth", child_locus))
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // The birth spine on A's thread, the fifth shape (L4): its steps
+        // in the order the plan places them for I (line 5: accept after
+        // the params, before the birth). A cross-pool child subscribes to
+        // nothing and runs nothing (`crosspool_child_shape_ok`), so the
+        // stitch to A and the birth are the whole of it.
+        let accepted = owner_info.accept_param.as_ref().is_some_and(|(_, expected)| expected == child_locus);
+        let kinds: Vec<ObligationKind> =
+            if accepted { vec![ObligationKind::Accept, ObligationKind::Birth] } else { vec![ObligationKind::Birth] };
+        for step in self.birth_spine_order(child_locus, &kinds)? {
+            match step {
+                ObligationKind::Accept => self.emit_crosspool_stitch(&owner_info, owner_name, a_self, child_locus, child_ptr)?,
+                ObligationKind::Birth => {
+                    let birth_call = child_info
+                        .methods
+                        .get("birth")
+                        .copied()
+                        .filter(|_| !child_info.empty_lifecycle.contains("birth"));
+                    self.lc_in_spine("Instantiation", |cx| {
+                        cx.lc_step("Birth", Some(child_ptr), Some(child_locus), |cx| {
+                            if let Some(birth_fn) = birth_call {
+                                cx.builder
+                                    .build_call(birth_fn, &[child_ptr.into()], &format!("{}.xpool.birth", child_locus))
+                                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                            }
+                            Ok(())
+                        })
+                    })?;
                 }
-                Ok(())
-            })
-        })?;
-
-        // Stitch to A: accept(A, I) (if non-empty) + children_push.
-        if let Some((_, expected)) = &owner_info.accept_param {
-            if expected == child_locus {
-                let accept_call = owner_info
-                    .methods
-                    .get("accept")
-                    .copied()
-                    .filter(|_| !owner_info.empty_lifecycle.contains("accept"));
-                self.lc_in_spine("Instantiation", |cx| {
-                    cx.lc_step("Accept", Some(child_ptr), Some(child_locus), |cx| {
-                        if let Some(accept_fn) = accept_call {
-                            cx.builder
-                                .build_call(
-                                    accept_fn,
-                                    &[a_self.into(), child_ptr.into()],
-                                    &format!("{}.xpool.accept", owner_name),
-                                )
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                        Ok(())
-                    })
-                })?;
-                if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) = (
-                    owner_info.children_field_idx,
-                    owner_info.child_count_field_idx,
-                    owner_info.child_cap_field_idx,
-                ) {
-                    let arr_ptr = self
-                        .builder
-                        .build_struct_gep(owner_info.struct_ty, a_self, arr_idx, "xpool.children.ptr")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let cnt_ptr = self
-                        .builder
-                        .build_struct_gep(owner_info.struct_ty, a_self, cnt_idx, "xpool.child_count.ptr")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let cap_ptr = self
-                        .builder
-                        .build_struct_gep(owner_info.struct_ty, a_self, cap_idx, "xpool.child_cap.ptr")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let push_fn = self
-                        .module
-                        .get_function("lotus_children_push")
-                        .expect("lotus_children_push declared");
-                    self.builder
-                        .build_call(
-                            push_fn,
-                            &[arr_ptr.into(), cnt_ptr.into(), cap_ptr.into(), child_ptr.into()],
-                            &format!("{}.xpool.children_push", owner_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "cross-pool spawn `{child_locus}`: the plan places {} on its birth spine, which the create cell does not emit",
+                        other.name()
+                    )))
                 }
             }
         }
@@ -5743,5 +5713,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => self.builder.unset_current_debug_location(),
         }
         Ok(dispatch)
+    }
+
+    /// A cross-pool child's Accept step on its owner's thread: the
+    /// stitch to A, `accept(A, I)` (when non-empty) and the children
+    /// tracker's push.
+    fn emit_crosspool_stitch(
+        &mut self,
+        owner_info: &LocusInfo<'ctx>,
+        owner_name: &str,
+        a_self: PointerValue<'ctx>,
+        child_locus: &str,
+        child_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let accept_call =
+            owner_info.methods.get("accept").copied().filter(|_| !owner_info.empty_lifecycle.contains("accept"));
+        self.lc_in_spine("Instantiation", |cx| {
+            cx.lc_step("Accept", Some(child_ptr), Some(child_locus), |cx| {
+                if let Some(accept_fn) = accept_call {
+                    cx.builder
+                        .build_call(accept_fn, &[a_self.into(), child_ptr.into()], &format!("{}.xpool.accept", owner_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Ok(())
+            })
+        })?;
+        if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) =
+            (owner_info.children_field_idx, owner_info.child_count_field_idx, owner_info.child_cap_field_idx)
+        {
+            let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+            let arr_ptr =
+                self.builder.build_struct_gep(owner_info.struct_ty, a_self, arr_idx, "xpool.children.ptr").map_err(e)?;
+            let cnt_ptr =
+                self.builder.build_struct_gep(owner_info.struct_ty, a_self, cnt_idx, "xpool.child_count.ptr").map_err(e)?;
+            let cap_ptr =
+                self.builder.build_struct_gep(owner_info.struct_ty, a_self, cap_idx, "xpool.child_cap.ptr").map_err(e)?;
+            let push_fn = self.module.get_function("lotus_children_push").expect("lotus_children_push declared");
+            self.builder
+                .build_call(
+                    push_fn,
+                    &[arr_ptr.into(), cnt_ptr.into(), cap_ptr.into(), child_ptr.into()],
+                    &format!("{}.xpool.children_push", owner_name),
+                )
+                .map_err(e)?;
+        }
+        Ok(())
     }
 }
