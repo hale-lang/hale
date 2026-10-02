@@ -454,7 +454,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/ownership_graph.rs` · `build_ownership_graph` — which accepting ancestor owns a method-body birth, keyed (enclosing locus, child type) by name, the child type resolved by `child_locus_name`; built once in the resolved program for lowering and once per snapshot over the checked programs for the model (`demand_ownership_graph`). *Removed when:* phase 3, one ownership table with both relations, when the lowering view's graphs fold into the snapshot: the check still runs over the checked programs and the resolved program is built only on build paths (`resolve_program`), so the model's graph and lowering's are two builds over two program forms (at the phase-2 close).
-- `crates/hale-types/src/model_builder.rs` · `Owns` — the model's params-field tree from main, a third ownership account. *Removed when:* projected from the one table.
+- `crates/hale-types/src/model_builder.rs` · `params_spans` — the model's births outside the arrangement (its `RuntimeInheritedPlacement` holes) are the ownership graph's locus-body sites and its own walk of the free fns (`free_fn_birth_sites`), a site counted a params default, and so inside the arrangement, when its span lies inside a `params { }` block of the first locus declared under the enclosing locus's name. *Removed when:* phase 3, as a classified correction: the graph's rows with a params-default column set by its walk, and the free fns' births as rows of the graph. Measured over the corpus, tests/hale and every DNA main: one program moves (tests/hale/api_binding_run_test.hl), where the api binding desugar copies the bindings' expressions into the main locus's params with their original spans, so the span test calls four loci born outside the arrangement and the model's dispatch plan gives their publishers no domain; the check, the topology artifact, the shape hash and the lowering's plan digest do not move.
 - `crates/hale-types/src/ownership.rs` · `extend_fresh_factories` — the carrier-arm fixpoint that widens the factory set. *Removed when:* phase 3, as a judgment migration: the carrier fold widens the set lowering reads and the checker reads the unextended set, so giving the checker the extended set changes which bindings it checks as factory-returned (lowering-only at the phase-2 close; deferred in its exit comment).
 - `crates/hale-types/src/borrow_lifetime.rs` · `accepts` — the borrow-lifetime law rebuilds the accept sets from the AST for itself. *Removed when:* reads `accepts_ancestor`.
 - `crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus` — the unowned-subscriber rule over its own name-keyed locus index; skipped by `--allow-unowned-subscriber` on some verbs and hard-coded off on others. *Removed when:* phase 3, as a judgment migration with spec text: measured on the 2.3 checker branch, reading ownership from the graph changes three shapes (an aliased accept type stops erroring, a false positive today; a module-path accept type and a generic accept type start), and two loci of one name flip with declaration order, since this index keeps the last declaration and the scope the first.
@@ -469,12 +469,13 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - a locus instantiation with no row is a CodegenError (F.39)
 - ids, not names or spans: declarations are cloned and the stdlib's coordinates overlap user files
 - the ownership matrix stays green with an empty KNOWN_OPEN
+- the model's `Owns` edges are the tower's static half, the placement table's `owner` column projected with the arrangement (P1 4 of 6): an arranged instance is owned by the arranged instance its row names as owner, and the builder walks no params-field tree of its own; `owns.push(` has that one writer
 - `fresh_factories` is read by lowering and the checker with the bundle's import renames; a factory's returned name is the declaration the snapshot resolves it to, so a fn whose returned name an inner `let` shadows is a factory of the outer binding (the #1140 shape; its escape walk still reads every binding spelling the name as the returned one, the conservative side). The carrier-arm extension (`extend_fresh_factories`) is folded in for lowering only
 - which declaration a returned or escaping name denotes is read from the snapshot (`Snapshot::declaration_of` over `binding_of`, resolved once by the mint), never resolved again: `returned_bindings` (the binding facts and the pre-pass), `fresh_factories`, borrow_lifetime's `returned_decls` and alloc_summary's escape tags each key a binding by its declaration's SiteId; a `let` or a use the snapshot did not mint answers by name in `returned_bindings` (the conservative side) and resolves to nothing elsewhere, and every entry point mints
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/owner_table.rs; crates/hale-codegen/tests/ownership_matrix.rs; crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding); crates/hale-codegen/tests/ownership_bubble.rs
+**Focused tests.** crates/hale-codegen/tests/owner_table.rs; crates/hale-codegen/tests/ownership_matrix.rs; crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding); crates/hale-codegen/tests/ownership_bubble.rs; crates/hale-types/tests/model_arrangement.rs (the arrangement's Owns edges, from the placement table's owner column)
 
 **Spec.** spec/decisions.md F.39; spec/semantics.md § Dissolve timing rules
 
@@ -486,6 +487,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `resolve_binding_facts(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `returned_bindings(` may be referenced from: `crates/hale-types/src/ownership.rs` ×3
 - `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `owns.push(` may be referenced from: `crates/hale-types/src/model_builder.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 
