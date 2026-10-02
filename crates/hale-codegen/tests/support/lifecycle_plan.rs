@@ -17,9 +17,12 @@
 //! per instance, and across declarations for every instance of the
 //! first. The steps of a line are ordered on the same subjects.
 //!
-//! The lifecycle fixtures (`lifecycle_fixtures.rs`, a plan per decision
-//! line) and the lifecycle matrix (`lifecycle_matrix.rs`, a plan per
-//! cell) both write their plans in it.
+//! The plans the fixtures and the matrix hold their runs to are the
+//! producer's (`hale_types::lifecycle::derive`), and [`render`] writes
+//! one in this notation; the fixtures' negative controls write theirs
+//! by hand and [`plan`] reads them. The fixtures parse and the matrix
+//! renders, so each file leaves the other half dead.
+#![allow(dead_code)]
 
 use hale_types::lifecycle::trace::{Count, Expected, Owed};
 use hale_types::lifecycle::{Event, Multiplicity, ObligationId, ObligationKind, Point, Spine, Terminal};

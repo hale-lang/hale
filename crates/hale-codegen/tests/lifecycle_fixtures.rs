@@ -25,25 +25,19 @@
 //! trace (`BuildOptions::lifecycle_trace`; spec/runtime.md § The
 //! lifecycle trace), and beside the outcome word its trace is checked:
 //! against the laws every trace owes (`lifecycle::trace::laws`), and,
-//! for a line with an adopted rule, against [`PLANS`], the line's
-//! obligations with their entry and completion edges, order-insensitive
-//! across threads and ordered within a domain. A fixture whose trace
+//! for a line with an adopted rule, against the plan the producer
+//! derives for the fixture's program (`hale_types::lifecycle::derive`,
+//! [`derived_plan`]): the obligations with their entry and completion
+//! edges, order-insensitive across threads and ordered within a domain,
+//! rendered for the run by `lifecycle::project` along [`run_path`] (the
+//! failures the run raises and where, how many body literals it builds,
+//! where it ends early, and the lines whose known-open rules it is held
+//! to; facts of the run, not of the program). A fixture whose trace
 //! shows today's departure from the plan is in [`TRACE_KNOWN_OPEN`],
 //! with the inventory row and every violation the defect causes; any
 //! other violation fails the fixture, and when the fix lands the listed
 //! ones go, the assertion fails, and so does the entry. A pending
 //! line's fixture is held to the laws alone.
-//!
-//! **The producer's plan (L1 4 of 5).** Each run is also judged by the
-//! plan `hale_types::lifecycle::derive` derives for the fixture's
-//! program, rendered for the run by `lifecycle::project` along
-//! [`run_path`] (the failures the run raises and where, how many body
-//! literals it builds, where it ends early, and the lines whose
-//! known-open rules it is held to), and the two plans must judge it to
-//! the same violations, word for word. The plans themselves differ: the
-//! producer's states the shipped edges and domain claims the
-//! hand-written ones left implicit; every one of those holds on these
-//! runs.
 //!
 //! [`CONTROLS`] are the negative controls: a step removed or reordered
 //! (`LOTUS_LIFECYCLE_SKIP` in the trace build, or today's own order for
@@ -177,191 +171,15 @@ const PENDING: &[(&str, &str)] = &[
     ("l17_pinned_join_deferred.hl", "final-dropped"),
 ];
 
-/// Each adopted line's plan, as the trace oracle reads it (a fixture on
-/// a pending line, or compiled only, has none), in the notation
-/// `support/lifecycle_plan.rs` parses: one line per declaration, its
-/// steps in the order they hold within one domain, then the edges.
-const PLANS: &[(&str, &str)] = &[
-    (
-        "l01_held_failure_settle.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Boom: Birth Run FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Boom.FailureDelivery.Completed
-         edge Boom.FailureDelivery.Completed -> App.Birth.Entered
-         edge Boom.Reclaim.Completed -> App.Reclaim.Entered",
-    ),
-    (
-        "l01_neg_same_pool_held.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
-         Owner: ParamsSettle!pool:side Birth Run Drain Dissolve Reclaim
-         Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Run*0 Drain Dissolve Reclaim
-         edge Owner.ParamsSettle.Completed -> Late.FailureDelivery.Completed
-         edge Late.FailureDelivery.Completed -> Owner.Birth.Entered
-         edge Late.FailureDelivery.Completed -> Late.Restart.Entered",
-    ),
-    (
-        "l01_neg_it_waits_worker_queue.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Failer: Birth Run!pool:side FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
-         Quick: Birth Run!pool:side Drain Dissolve Reclaim
-         Slow: Birth Run!main Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Failer.FailureDelivery.Completed
-         edge Failer.FailureDelivery.Completed -> App.Birth.Entered",
-    ),
-    (
-        "l04_dissolve_route_reclaim.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Flowing: Accept Birth Run Drain Dissolve FailureDelivery Reclaim
-         edge Flowing.FailureDelivery.Completed -> Flowing.Reclaim.Entered",
-    ),
-    (
-        "l04_dissolve_route_cascade.hl",
-        "App: ParamsSettle Birth Drain Dissolve Reclaim
-         Kid: Birth Drain Dissolve FailureDelivery Reclaim
-         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
-    ),
-    (
-        "l05_accept_position.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Accept Birth Drain Dissolve Reclaim
-         edge Kid.Accept.Completed -> Kid.Birth.Entered",
-    ),
-    // Line 6's readiness has no trace event yet; the plan holds the rest.
-    ("l06_readiness_main.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
-    ("l06_readiness_pool.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
-    (
-        "l07_pool_or_wait_teardown.hl",
-        "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
-         edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered",
-    ),
-    (
-        "l08_birth_failure_kept.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery Drain Dissolve Reclaim
-         edge Kid.Birth.Completed -> Kid.FailureDelivery.Entered
-         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
-    ),
-    (
-        "l09_delivery_at_epoch.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid: Birth Run FailureDelivery Drain Dissolve Reclaim
-         edge Kid.FailureDelivery.Completed -> Kid.Run.Completed",
-    ),
-    // The violation exits the process inside the cascade's Dissolve.
-    (
-        "l10_dissolve_closures_first.hl",
-        "App: ParamsSettle Birth Drain Dissolve
-         Kid: Birth Drain Dissolve
-         edge App.Dissolve.Completed -> Kid.Dissolve.Entered",
-    ),
-    (
-        "l11_let_bound_drain.hl",
-        "Kid: Birth Run Drain@DeferredEntry Dissolve@DeferredEntry Reclaim
-         -: PreDrain@MainFallThrough
-         edge Kid.Run.Completed -> -.PreDrain@MainFallThrough.Entered
-         edge -.PreDrain@MainFallThrough.Completed -> Kid.Drain@DeferredEntry.Entered",
-    ),
-    (
-        "l12_pinned_fields_drain.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Outer: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
-         Inner: Birth Drain Dissolve Reclaim
-         edge Inner.Drain.Completed -> Outer.Drain.Entered
-         edge Outer.Dissolve.Completed -> Outer.PinnedJoin.Completed",
-    ),
-    (
-        "l13_resume_pool_child.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery ConstructionDelivery Run!pool:side Drain Dissolve Reclaim
-         edge App.ParamsSettle.Completed -> Kid.FailureDelivery.Completed
-         edge Kid.FailureDelivery.Completed -> Kid.Run.Entered",
-    ),
-    // Line 14's verification: each child torn down once, by its run
-    // end's reclaim, and before its owner's arena goes.
-    (
-        "l14_reclaim_exactly_once.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         Kid*3: Accept Birth Run Drain@Reclaim Dissolve@Reclaim Reclaim@Reclaim
-         edge Kid.Run.Completed -> Kid.Drain@Reclaim.Entered
-         edge Kid.Reclaim@Reclaim.Completed -> App.Reclaim.Entered",
-    ),
-    (
-        "l15_sigint_flag.hl",
-        "App: Birth Drain Dissolve Reclaim
-         Loop: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
-         edge Loop.Run.Completed -> Loop.Drain.Entered
-         edge Loop.Dissolve.Completed -> Loop.PinnedJoin.Completed",
-    ),
-    (
-        "l18_eager_pre_drain.hl",
-        "Hub: Birth Run Drain Dissolve Reclaim
-         Sub: Birth Drain Dissolve Reclaim
-         -: PreDrain@EagerTeardown
-         edge Hub.Run.Completed -> -.PreDrain@EagerTeardown.Entered
-         edge -.PreDrain@EagerTeardown.Completed -> Sub.Drain.Entered",
-    ),
-    // R20a: the started run parked in accept() is abandoned at the pool
-    // join and named; the worker's quiescence is the join's completion.
-    (
-        "l19_parked_started_coroutine.hl",
-        "App: Birth Run Drain Dissolve Reclaim
-         __StdIoTcpListener: Birth Run=CanceledAfterStart!pool:io Cancellation!pool:io Drain Dissolve Reclaim
-         -: PoolJoin@EagerTeardown
-         edge __StdIoTcpListener.Cancellation.Completed -> -.PoolJoin@EagerTeardown.Completed
-         edge __StdIoTcpListener.Run.Ended -> __StdIoTcpListener.Drain.Entered",
-    ),
-    (
-        "l19_self_post_overflow.hl",
-        "App: Birth Drain Dissolve Reclaim
-         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
-         Kid*20: Birth Run!pool:side Drain Dissolve Reclaim
-         edge Kid.Run.Completed -> Kid.Drain.Entered",
-    ),
-    // R19: each queued run is canceled by the teardown that reclaims its
-    // child, named before that reclaim completes, and never started.
-    (
-        "l19_queued_run_canceled.hl",
-        "Own: Birth Drain Dissolve Reclaim
-         Host: Birth Run Drain Dissolve Reclaim
-         Kid*2: Birth Drain Dissolve Reclaim
-         Kid*2: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side
-         edge Kid.Run.Ended -> Kid.Reclaim.Completed
-         edge Kid.Cancellation.Completed -> Kid.Reclaim.Completed",
-    ),
-    (
-        "l19_resumed_run_at_shutdown.hl",
-        "App: ParamsSettle Birth Drain Dissolve Reclaim
-         Kid: Birth FailureDelivery ConstructionDelivery Run Drain Dissolve Reclaim
-         edge Kid.Run.Ended -> Kid.Dissolve.Entered",
-    ),
-    (
-        "rd_restart_during_teardown.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Kid: Birth Run FailureDelivery Restart*0 Drain Dissolve Reclaim",
-    ),
-    (
-        "jp_late_failure_pinned_join.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Late: Birth!pinned Run!pinned FailureDelivery!main Drain!pinned Dissolve!pinned PinnedJoin Reclaim
-         edge Late.FailureDelivery.Completed -> Late.PinnedJoin.Completed",
-    ),
-    (
-        "jp_late_failure_pool_join.hl",
-        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
-         Late: Birth Run!pool:side FailureDelivery!main Drain Dissolve Reclaim
-         -: PoolJoin@EagerTeardown
-         edge Late.FailureDelivery.Completed -> -.PoolJoin@EagerTeardown.Completed",
-    ),
-];
-
 /// Each adopted line's run, as the producer's plan reads it
 /// (`hale_types::lifecycle::project`): the lines whose known-open rules
 /// the fixture is held to, and the run's path through the plan (which
 /// failures it raises and where, how many instances a body literal
-/// builds, a run a shutdown abandons, where the run ends early). Facts
-/// of the run the producer cannot know from the program.
-fn run_path(file: &str) -> (&'static [&'static str], RunPath) {
+/// builds, a run a shutdown abandons or a teardown cancels, where the
+/// run ends early). Facts
+/// of the run the producer cannot know from the program. A fixture on a
+/// pending line, or compiled only, has none: it is held to the laws.
+fn run_path(file: &str) -> Option<(&'static [&'static str], RunPath)> {
     let fails = |decl: &str, source: FailureSource, held: bool, in_teardown: bool, restarts: u32| PathFailure {
         decl: decl.to_string(),
         source,
@@ -462,20 +280,22 @@ fn run_path(file: &str) -> (&'static [&'static str], RunPath) {
             p.failures.push(fails("Late", FailureSource::Run, false, true, 0));
             &["JP", "L0-1"]
         }
-        other => panic!("{other} has no run path"),
+        // A pending line's fixture, or one compiled only: no plan.
+        _ => return None,
     };
-    (lines, p)
+    Some((lines, p))
 }
 
 /// The plan the producer derives for a fixture's program, on its run's
-/// path.
-fn derived_plan(file: &str) -> Expected {
+/// path: what the trace oracle holds the run to. `None` for a fixture
+/// with no run path.
+fn derived_plan(file: &str) -> Option<Expected> {
+    let (lines, run) = run_path(file)?;
     let path = dir().join(file);
     let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
         .unwrap_or_else(|_| panic!("{file} does not load"));
     let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{file}: the lifecycle plan is blocked"));
-    let (lines, run) = run_path(file);
-    project::expected(plan, Focus::Lines(lines), &run).unwrap_or_else(|e| panic!("{file}: {e}"))
+    Some(project::expected(plan, Focus::Lines(lines), &run).unwrap_or_else(|e| panic!("{file}: {e}")))
 }
 
 /// Fixtures whose trace departs from their plan today: (file,
@@ -571,7 +391,8 @@ struct Control {
     /// `LOTUS_LIFECYCLE_SKIP` for the trace build's runtime; empty when
     /// the reordering is today's own (a rule not yet shipped).
     skip: &'static str,
-    /// The plan; `None` is the fixture's own in [`PLANS`].
+    /// The plan, written by hand; `None` is the fixture's own, the one
+    /// the producer derives ([`derived_plan`]).
     plan: Option<&'static str>,
     /// The violation the oracle reports, as it starts.
     fails_with: &'static str,
@@ -796,10 +617,13 @@ fn control(name: &str) -> &'static Control {
 fn assert_control(name: &str) {
     let c = control(name);
     let f = fixture(c.fixture);
-    let text = c.plan.unwrap_or_else(|| PLANS.iter().find(|(p, _)| *p == c.fixture).map(|(_, t)| *t).expect("a plan"));
+    let held_to = match c.plan {
+        Some(text) => plan(text),
+        None => derived_plan(c.fixture).expect("a plan"),
+    };
     let check = |ran: &Ran| -> Vec<String> {
         let mut v = trace::laws(&ran.trace, ran.complete());
-        v.extend(plan(text).check(&ran.trace, ran.complete()));
+        v.extend(held_to.check(&ran.trace, ran.complete()));
         v.iter().map(Violation::to_string).collect()
     };
     let env: Vec<(&str, &str)> = if c.skip.is_empty() { vec![] } else { vec![("LOTUS_LIFECYCLE_SKIP", c.skip)] };
@@ -819,11 +643,11 @@ fn assert_control(name: &str) {
 }
 
 /// What the trace oracle says about a run of `file`: the laws, then the
-/// plan's violations.
+/// violations of the plan the producer derives for it.
 fn trace_violations(file: &str, ran: &Ran) -> Vec<Violation> {
     let mut v = trace::laws(&ran.trace, ran.complete());
-    if let Some((_, text)) = PLANS.iter().find(|(f, _)| *f == file) {
-        v.extend(plan(text).check(&ran.trace, ran.complete()));
+    if let Some(derived) = derived_plan(file) {
+        v.extend(derived.check(&ran.trace, ran.complete()));
     }
     v
 }
@@ -1185,19 +1009,19 @@ fn every_fixture_is_listed_and_formatted() {
     for f in FIXTURES.iter().filter(|f| f.adopted.is_none()) {
         assert!(PENDING.iter().any(|(p, _)| *p == f.file), "{} has no adopted outcome and no PENDING entry", f.file);
     }
-    // Every adopted line that runs has a plan; a pending or compiled-only
-    // fixture has none; every plan parses and names steps that exist.
+    // Every adopted line that runs has a run path, so the producer's
+    // plan holds it; a pending or compiled-only fixture has none; every
+    // plan owes something.
     for f in FIXTURES {
-        let has_plan = PLANS.iter().any(|(p, _)| *p == f.file);
+        let has_plan = run_path(f.file).is_some();
         let wants_plan = f.adopted.is_some() && f.run != RunMode::CompileOnly;
         assert_eq!(has_plan, wants_plan, "{}: a plan is owed exactly by an adopted line that runs", f.file);
-    }
-    for (file, text) in PLANS {
-        fixture(file);
-        assert!(!plan(text).owed.is_empty(), "{file}: an empty plan");
+        if let Some(derived) = derived_plan(f.file) {
+            assert!(!derived.owed.is_empty(), "{}: an empty plan", f.file);
+        }
     }
     for (file, _, departures) in TRACE_KNOWN_OPEN {
-        assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is TRACE_KNOWN_OPEN but has no plan");
+        assert!(run_path(file).is_some(), "{file} is TRACE_KNOWN_OPEN but has no plan");
         assert!(!departures.is_empty(), "{file} is TRACE_KNOWN_OPEN with no departure");
         for d in *departures {
             assert_eq!(normalized(d), *d, "{file}: a departure names its instance as `_`");
@@ -1210,8 +1034,11 @@ fn every_fixture_is_listed_and_formatted() {
 /// passes it.
 #[test]
 fn every_planned_kind_has_a_negative_control() {
-    let mut planned: Vec<ObligationKind> =
-        PLANS.iter().flat_map(|(_, text)| plan(text).owed.into_iter().map(|o| o.kind)).collect();
+    let mut planned: Vec<ObligationKind> = FIXTURES
+        .iter()
+        .filter_map(|f| derived_plan(f.file))
+        .flat_map(|p| p.owed.into_iter().map(|o| o.kind))
+        .collect();
     planned.sort();
     planned.dedup();
     for kind in planned {
@@ -1222,7 +1049,7 @@ fn every_planned_kind_has_a_negative_control() {
         match c.plan {
             Some(text) => assert!(!plan(text).owed.is_empty(), "control {}: an empty plan", c.name),
             None => {
-                assert!(PLANS.iter().any(|(p, _)| *p == c.fixture), "control {}: {} has no plan", c.name, c.fixture);
+                assert!(run_path(c.fixture).is_some(), "control {}: {} has no plan", c.name, c.fixture);
                 assert!(
                     !TRACE_KNOWN_OPEN.iter().any(|(p, _, _)| *p == c.fixture),
                     "control {}: {} fails its own plan already",
@@ -1257,23 +1084,6 @@ fn assert_trace(file: &str, ran: &Ran) {
     }
 }
 
-/// The producer's plan, on the fixture's run path, judges the run as
-/// its hand-written plan does: the same violations, to the word.
-fn assert_derived_agrees(file: &str, ran: &Ran) {
-    let Some((_, text)) = PLANS.iter().find(|(f, _)| *f == file) else { return };
-    let judged = |e: &Expected| -> std::collections::BTreeSet<String> {
-        e.check(&ran.trace, ran.complete()).iter().map(|v| normalized(&v.to_string())).collect()
-    };
-    let derived = derived_plan(file);
-    let (by_hand, by_producer) = (judged(&plan(text)), judged(&derived));
-    assert_eq!(
-        by_producer,
-        by_hand,
-        "{file}: the producer's plan judges the run otherwise than the hand-written one; it is\n{}",
-        lifecycle_plan::render(&derived)
-    );
-}
-
 fn assert_fixture(file: &str) {
     let f = fixture(file);
     let ran = run_fixture(f, &[]);
@@ -1284,7 +1094,6 @@ fn assert_fixture(file: &str) {
     eprintln!("{file}: outcome {got}");
     if let Some(ran) = &ran {
         assert_trace(file, ran);
-        assert_derived_agrees(file, ran);
     }
     if let Some((_, row, today)) = KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
         assert!(
