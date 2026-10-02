@@ -136,10 +136,6 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     let d = seed("editor", NO_CLAIMS);
     let s = editor(&d.join("app.hl"), NO_CLAIMS);
     assert_clean(&s);
-    // What `check_and_publish` reads beside the check: the advisory over
-    // the snapshot's summary, the one the check built.
-    let summary = s.demand_alloc_summary().expect("the summary the check read");
-    let _ = hale_types::unbounded_alloc_warnings(&s.bundle(), summary, true);
     let builds = s.builds();
     assert_eq!(
         builds["model"], 0,
@@ -150,6 +146,10 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
     assert_eq!(builds["ownership"], 0, "the model's input `ownership` is demanded with it");
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
+    // Both stages ran (the allocation advisory is the editor's typing
+    // stage's), the second with nothing to judge: a program with no law
+    // costs no model however the editor publishes the stages.
+    assert_eq!((builds["typing_stage"], builds["laws_stage"]), (1, 1), "each stage of the check once");
     // The checker's rules read the snapshot's rows: with no model built,
     // the check is the only demand that builds them, so this count is
     // one only when the checker consumed the snapshot's family. The test
@@ -317,6 +317,8 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 "alloc_summary",
                 "effects",
                 "model",
+                "typing_stage",
+                "laws_stage",
             ] {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }

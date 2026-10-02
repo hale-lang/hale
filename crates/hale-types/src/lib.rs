@@ -491,6 +491,17 @@ pub fn denotes_a_model(diags: &[Diag]) -> bool {
 /// The check's last step, over everything it reported: the user's
 /// spelling, and no repeated diagnostic.
 pub fn finish_check_diags(diags: &mut Vec<Diag>) {
+    finish_check_diags_after(&[], diags);
+}
+
+/// The same last step over diagnostics that follow `prior`, a list
+/// this step already finished: `diags` in the user's spelling, with no
+/// diagnostic that repeats one of `prior` or an earlier one of its own.
+/// It leaves `diags` exactly the tail [`finish_check_diags`] leaves
+/// after `prior` in `prior ++ diags`, so a check finished in two stages
+/// (the snapshot's typing, then its laws) reports what one pass over
+/// both would.
+pub fn finish_check_diags_after(prior: &[Diag], diags: &mut Vec<Diag>) {
     // GH #470: diagnostics speak the user's spelling at EVERY
     // consumer — CLI, LSP, library callers, tests — not just the
     // CLI, which used to be the only layer applying the stdlib
@@ -514,15 +525,9 @@ pub fn finish_check_diags(diags: &mut Vec<Diag>) {
     // deliberate: two DIFFERENT problems at one span are both worth
     // saying, and only a byte-identical repeat is noise. Order is
     // preserved so the first report keeps its position.
-    let mut seen = std::collections::HashSet::new();
-    diags.retain(|d| {
-        seen.insert((
-            format!("{:?}", d.kind),
-            d.span.start.as_usize(),
-            d.span.end.as_usize(),
-            d.message.clone(),
-        ))
-    });
+    let key = |d: &Diag| (format!("{:?}", d.kind), d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone());
+    let mut seen: std::collections::HashSet<_> = prior.iter().map(key).collect();
+    diags.retain(|d| seen.insert(key(d)));
 }
 
 #[cfg(test)]

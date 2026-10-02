@@ -157,7 +157,7 @@ pub fn parse_files(
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        let parsed = hale_syntax::parse_source_at_in(&source, base, &mut effects);
+        let parsed = crate::parse_cache::parse_file(src, f, &source, base, &mut effects);
         // A file that did not parse still contributes its text: the
         // renderers resolve a span against the source of the file whose
         // base window holds it, and that file is this one.

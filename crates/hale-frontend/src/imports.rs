@@ -629,8 +629,10 @@ pub fn resolve_imports(
             source: String,
             base: u32,
             /// The file's tokens, parsed again through the load's
-            /// effect-class table once its imports are resolved.
-            tokens: Vec<hale_syntax::Token>,
+            /// effect-class table once its imports are resolved; `None`
+            /// when the provider reuses parses, whose cache parses the
+            /// text again itself (`parse_cache`).
+            tokens: Option<Vec<hale_syntax::Token>>,
             /// The first parse, through a table of its own: its
             /// diagnostics, its imports and its declarations' names.
             program: hale_syntax::ast::Program,
@@ -673,14 +675,19 @@ pub fn resolve_imports(
                 .map(|(b, _, l)| b + l + 1)
                 .unwrap_or(0);
             file_bases.push((base, canon.clone(), source.len() as u32));
-            let parsed = hale_syntax::lex_at(&source, base).and_then(|tokens| {
-                let program = hale_syntax::parser::parse_in(
-                    tokens.clone(),
-                    &source,
-                    &mut EffectClasses::default(),
-                )?;
-                Ok((tokens, program))
-            });
+            let parsed = match src.parses() {
+                Some(cache) => cache
+                    .parse_at(&canon, &source, base, &mut EffectClasses::default())
+                    .map(|program| (None, program)),
+                None => hale_syntax::lex_at(&source, base).and_then(|tokens| {
+                    let program = hale_syntax::parser::parse_in(
+                        tokens.clone(),
+                        &source,
+                        &mut EffectClasses::default(),
+                    )?;
+                    Ok((Some(tokens), program))
+                }),
+            };
             let (tokens, program) = match parsed {
                 Ok(p) => p,
                 Err(diags) => {
@@ -855,7 +862,11 @@ pub fn resolve_imports(
             // The one thing the load's table adds is its size: a class
             // past the effect mask's capacity is refused here, where the
             // seed's own table did not reach it.
-            pf.program = match hale_syntax::parser::parse_in(pf.tokens, &pf.source, effects) {
+            let reparsed = match pf.tokens {
+                Some(tokens) => hale_syntax::parser::parse_in(tokens, &pf.source, effects),
+                None => crate::parse_cache::parse_file(src, &pf.canon, &pf.source, pf.base, effects),
+            };
+            pf.program = match reparsed {
                 Ok(p) => p,
                 Err(diags) => {
                     for d in diags {

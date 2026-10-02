@@ -304,12 +304,19 @@ pub const FAMILIES: &[Family] = &[
             "one loader, one merge order, for every entry point",
             "an unresolved import is a diagnostic, never a silently smaller program",
             "one seed for every entry point: the editor's load (`LoadMode::Editor`) is `hale check <dir>`'s — the open file's directory, every `import` followed through the buffers (`link_checkable`) — and differs only in tolerance: a member that does not parse or will not read is recorded (`Snapshot::unparsed`, `Snapshot::unreadable`) and blocks the scope instead of failing the load, a link the import graph refuses keeps the members as they parsed with the refusal recorded (`Snapshot::unlinked`) and blocks the scope, which every request but the outline reads as the refused load (`Snapshot::linked`), and the LSP publishes an unreadable member as `seed member <name>: <os error>` against the member and the open file, never a clean seed the CLI cannot load",
+            "parse reuse (F.40 phase 3, X1, `hale_frontend::parse_cache`): every file a load parses — a seed's own (`parse_files`, the editor's load), an imported library's two parses (through its own effect-class table, then the load's) — is parsed through the provider's cache when it carries one (`SourceProvider::parses`: the LSP's `Overlay::reusing`, one cache per server; the disk carries none). The cache holds the parser's product alone: the program or the diagnostics `parse_source_at_in` gives for the text at base 0, and the effect-class table the parse left, keyed by the path, the exact text and the table the parse started from (#345: the load's one table is an input of each file's parse). Each load recreates the rest: the file's base in its own source map, the product moved there (`hale_syntax::shift::shift_program`, exhaustive over the AST), then its own shaping and mint. Nothing shaped or minted is kept — shaping reads the whole load and its config, identities are snapshot-local — and the snapshot's key, a whole load's, is never a member's. Nothing invalidates an entry (its product is a function of its key); a path keeps its four most recently used entries",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key)", "crates/hale-cli/tests/source_map.rs", "crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does, lsp_outline_survives_a_link_failure)"],
+        tests: &["crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key)", "crates/hale-cli/tests/source_map.rs", "crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does, lsp_outline_survives_a_link_failure)", "crates/hale-frontend/src/snapshot.rs (a_reused_parse_is_the_parse)", "crates/hale-syntax/src/shift.rs (the oracle over every .hl in the tree)"],
         spec: &["spec/projects.md"],
-        owned: &[],
-        seams: &[],
+        owned: &[site("crates/hale-frontend/src/parse_cache.rs", "ParseCache"), site("crates/hale-syntax/src/shift.rs", "shift_program")],
+        // A load parses through `parse_cache::parse_file` (the cache, or
+        // the parse it stands for); the imported library's parse through
+        // tokens it already lexed is the uncached path's own.
+        seams: &[
+            Seam { symbol: "parse_source_at_in(", allowed: &[("crates/hale-syntax/src/lib.rs", 2), ("crates/hale-syntax/src/shift.rs", 2), ("crates/hale-frontend/src/parse_cache.rs", 2), ("crates/hale-types/src/effect_classes.rs", 2)] },
+            Seam { symbol: "parse_in(", allowed: &[("crates/hale-syntax/src/parser.rs", 2), ("crates/hale-syntax/src/lib.rs", 1), (IMPORTS, 2)] },
+        ],
     },
     Family {
         name: "qualified_names",
@@ -427,7 +434,7 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[],
         owned: &[site("crates/hale-syntax/src/lib.rs", "parse_source_at_in"), site("crates/hale-types/src/effect_classes.rs", "EffectClassTable")],
         consumers: &[
-            consumer_at("the load (own files, the editor's members, every imported seed after its imports)", FRONTEND, "parse_source_at_in"),
+            consumer_at("the load (own files, the editor's members, every imported seed after its imports; through the provider's parse cache when it carries one)", FRONTEND, "parse_file"),
             consumer_at("effects (contracts, phase contracts, the declared manifest)", EFFECTS, "EffectClassTable::of("),
             consumer_at("the effect rows (one table per snapshot, carried on the rows: the model's effect-class rows and atoms, and the inferred manifest's class names, read it there)", EFFECT_ROWS, "EffectClassTable::of("),
             consumer_at("effects (causes)", FRONTIER, "EffectClassTable::of("),
@@ -437,7 +444,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("topology (derived effect sets)", TOPOLOGY, "EffectClassTable::of("),
         ],
         invariants: &[
-            "one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in",
+            "one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`, or a parse the provider's cache made from an equal table, which it keys on: `parse_cache`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in",
             "one expansion: a composed class's mask, its atoms and whether its definition is cyclic are `EffectClassTable`'s; no analysis walks a definition itself or reads a program's table directly",
         ],
         missing: Missing::Error,
@@ -447,8 +454,10 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "EffectClassTable::of(", allowed: &[("crates/hale-types/src/effect_classes.rs", 1), (EFFECTS, 3), (EFFECT_ROWS, 1), (FRONTIER, 1), (ALLOC, 1), ("crates/hale-types/src/quantitative.rs", 1),("crates/hale-types/src/claim_lowering.rs", 1), (TOPOLOGY, 1)] },
             // a program's class definitions are read by the parser that
             // writes them, the load that carries them, and the table
-            // (`resolved.rs` only builds an empty stdlib program)
-            Seam { symbol: "effect_defs", allowed: &[("crates/hale-syntax/src/ast.rs", 1), (PARSER, 9), (FRONTEND, 3), ("crates/hale-types/src/effect_classes.rs", 2), (TY_RESOLVED, 1)] },
+            // (`resolved.rs` only builds an empty stdlib program; the
+            // shifter names the field in its exhaustive pattern and moves
+            // nothing in it)
+            Seam { symbol: "effect_defs", allowed: &[("crates/hale-syntax/src/ast.rs", 1), (PARSER, 9), (FRONTEND, 3), ("crates/hale-types/src/effect_classes.rs", 2), (TY_RESOLVED, 1), ("crates/hale-syntax/src/shift.rs", 1)] },
         ],
     },
     // ---------------------------------------------------- Declarations
@@ -1050,7 +1059,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CHECK, "check_hot_path_alloc", "hot-path allocation lint over a hand-kept receiver list, keyed by name and `__lib_` suffix", "a law over the rows"),
             legacy(ALLOC, "ReclaimScope", "the checker's reclaim model, stale for scratch-local fns since #1208", "one model"),
         ],
-        consumers: &[consumer_at("the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in)", CHECK, "CheckInputs"), consumer_at("effects (the rows walk the snapshot's summary and hold it, shared)", SNAPSHOT, "demand_effects"), consumer_at("check (the unbounded-allocation advisory and `--dump-alloc-summary`: the snapshot's summary)", V_CHECK, "demand_alloc_summary"), consumer_at("lsp (the advisory in the diagnostics, and hale/allocSummary: the snapshot's summary)", LSP, "demand_alloc_summary"), consumer_at("model (its function rows, dispatch sites and holes: the snapshot's summary's own rows)", MODEL_BUILDER, "own_rows"), consumer_at("topology (the artifact's fn sort, labels, derived effects and through-stdlib contraction: the snapshot's summary, handed in)", TOPOLOGY, "dump_topology_over"), consumer("check (hot path)"), consumer_at("claims (@budget: the counting engines over the snapshot's summary's own rows, handed to the evidence)", EVIDENCE, "derive_certificate_evidence_over"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer_at("codegen (a free fn's scratch: the view's non-allocating and scratch-local rows)", CG, "alloc_routing"), consumer_at("codegen (a locus's arena, and its hooks', methods' and modes' scratch: the elision rows, a monomorph's specialized)", CG, "locus_elision"), consumer_at("resource_budget (the fd sites and the fd-leak warnings: the snapshot's summary's own rows)", "crates/hale-types/src/resource_budget.rs", "own_rows"), consumer_at("frontier (the `causes:` engine: the summary's own rows)", FRONTIER, "causes_inner")],
+        consumers: &[consumer_at("the effects certificate engine (the check's `@effects`, `@phase_effects` and placement diagnostics: the snapshot's summary, handed in)", CHECK, "CheckInputs"), consumer_at("effects (the rows walk the snapshot's summary and hold it, shared)", SNAPSHOT, "demand_effects"), consumer_at("check (the unbounded-allocation advisory and `--dump-alloc-summary`: the snapshot's summary)", V_CHECK, "demand_alloc_summary"), consumer_at("the editor's typing stage (the advisory in the diagnostics, `Config::alloc_advisory`: the snapshot's summary)", SNAPSHOT, "typing_stage"), consumer_at("lsp (hale/allocSummary: the snapshot's summary)", LSP, "demand_alloc_summary"),consumer_at("model (its function rows, dispatch sites and holes: the snapshot's summary's own rows)", MODEL_BUILDER, "own_rows"), consumer_at("topology (the artifact's fn sort, labels, derived effects and through-stdlib contraction: the snapshot's summary, handed in)", TOPOLOGY, "dump_topology_over"), consumer("check (hot path)"), consumer_at("claims (@budget: the counting engines over the snapshot's summary's own rows, handed to the evidence)", EVIDENCE, "derive_certificate_evidence_over"), consumer_at("codegen (arena routing at an allocation)", CG, "current_arena_ptr"), consumer_at("codegen (a free fn's scratch: the view's non-allocating and scratch-local rows)", CG, "alloc_routing"), consumer_at("codegen (a locus's arena, and its hooks', methods' and modes' scratch: the elision rows, a monomorph's specialized)", CG, "locus_elision"), consumer_at("resource_budget (the fd sites and the fd-leak warnings: the snapshot's summary's own rows)", "crates/hale-types/src/resource_budget.rs", "own_rows"), consumer_at("frontier (the `causes:` engine: the summary's own rows)", FRONTIER, "causes_inner")],
         invariants: &[
             "one summary per snapshot: `Snapshot::demand_alloc_summary` runs `derive_alloc_summary` once over the checked programs with the stdlib's analysis copy beside them (cross-seed calls resolved through the import renames), counted as `alloc_summary`, blocked with the scope; the check's effects certificate engine reads it (`CheckInputs::alloc_summary`) and the effect rows walk it, so neither builds its own; `summarize_identified` is the one constructor, and `derive_alloc_summary` (which places the stdlib's analysis copy beside the programs itself) its one caller outside tests, so no reader builds a summary variant of its own",
             "the checker's reclaim model and codegen's routing agree; a stale copy is a registry violation, not a comment",
@@ -1073,7 +1082,7 @@ pub const FAMILIES: &[Family] = &[
             Seam { symbol: "own_rows(", allowed: &[(ALLOC, 1), (MODEL_BUILDER, 1), ("crates/hale-types/src/budget_check.rs", 1), ("crates/hale-types/src/quantitative.rs", 1), (FRONTIER, 1), ("crates/hale-types/src/resource_budget.rs", 2)] },
             Seam { symbol: "derive_alloc_routing(", allowed: &[(ALLOC_ROUTING, 1), (TY_RESOLVED, 1)] },
             Seam { symbol: "fn_body_definitely_non_allocating(", allowed: &[(ALLOC_ROUTING, 12)] },
-            Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (LSP, 1)] },
+            Seam { symbol: "unbounded_alloc_warnings(", allowed: &[(TLIB, 1), (V_CHECK, 1), (SNAPSHOT, 1)] },
         ],
     },
     Family {
@@ -1378,7 +1387,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(V_MATRIX, "constitution_identities", "re-runs the loader, the scope and the bus graph to re-derive identities the artifact already carries", "reads the artifact's section"),
             legacy(CLAIMS, "constitution_identities", "the identity derivation the matrix calls", "one derivation, projected"),
         ],
-        consumers: &[consumer("check / verify"), consumer("topology (law section)"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
+        consumers: &[consumer("check / verify"), consumer_at("the check's laws stage (judged over the snapshot's model, after its typing stage)", SNAPSHOT, "demand_laws"), consumer("topology (law section)"), consumer("fleet"), consumer("dna (dna_law.rs wording)"), consumer("model diff")],
         invariants: &[
             "structural compiler laws are evaluated through model_query with shared witness rendering; the judgment path stays for user claims (final direction)",
             "a registered rule without an evaluator fails the compiler's own build",
@@ -1442,11 +1451,11 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Identity,
         state: State::Canonical,
         kind: Kind::Derivation,
-        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
+        answers: "Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check in its two stages with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors.",
         inputs: &["seed_loading", "desugar_sequence", "snapshot_identity", "the config (target, api, api roles, environment, the check's rules)", "editor overlays (LSP)", "a consumer's request"],
         producer: Some(site(SNAPSHOT, "Snapshot")),
         legacy: &[],
-        owned: &[site(SNAPSHOT, "demand_entry"), site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
+        owned: &[site(SNAPSHOT, "demand_entry"), site(SNAPSHOT, "demand_scope"), site(SNAPSHOT, "demand_editor_scope"), site(SNAPSHOT, "demand_bus_graph"), site(SNAPSHOT, "demand_ownership_graph"), site(SNAPSHOT, "demand_handlers"), site(SNAPSHOT, "demand_effects"), site(SNAPSHOT, "demand_effect_certificates"), site(SNAPSHOT, "demand_model"), site(SNAPSHOT, "demand_typing"), site(SNAPSHOT, "demand_laws"), site(SNAPSHOT, "demand_check"), site(SNAPSHOT, "demand_lowering"), site(SNAPSHOT, "from_program"), site(SNAPSHOT, "SnapshotKey")],
         consumers: &[
             consumer_at("check", V_CHECK, "demand_check"),
             consumer_at("the checker's rules (the handler rows: duplicate handlers, `@supervised`; the entry row: rule 1 and rule 9; the placement table: the F.31 rule per instance, the blocking check, pinned-in-a-loop; the bus graph: rules 7, 9 and 10), demanded before the check runs; the effect rows' purity column for a codec binding, demanded only when one reaches the assertion", SNAPSHOT, "CheckInputs"),
@@ -1460,7 +1469,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("replay (the identity admitted before lowering)", V_REPLAY, "demand_lowering"),
             consumer_at("bench (the driver an overlay on the bench file)", V_BENCH, "demand_lowering"),
             consumer_at("the test harness (`Snapshot::from_program`, lowering not gated on a check)", CG, "demand_lowering"),
-            consumer_at("lsp (diagnostics: one snapshot per document event)", LSP, "demand_check"),
+            consumer_at("lsp (the first publication: one snapshot per publish pass, its typing stage)", LSP, "demand_typing"),
+            consumer_at("lsp (the second publication: the whole check, for the files the laws add to)", LSP, "demand_check"),
             consumer_at("lsp (every request loads the snapshot the diagnostics load, `editor_snapshot`, one per request)", LSP, "editor_snapshot"),
             consumer_at("lsp (definition, placement, the allocation survey)", LSP, "demand_scope"),
             consumer_at("lsp (completion, hover, references, enforcement)", LSP, "demand_editor_scope"),
@@ -1474,6 +1484,8 @@ pub const FAMILIES: &[Family] = &[
         ],
         invariants: &[
             "every editor request reads the snapshot: the outline reads the open file's member program (`Snapshot::member`, the file as it parsed, before the merge and the sequence), so it answers while another member does not parse or an import does not resolve (the editor's load keeps the members of a seed whose link it refused, every family blocked) and lists only what the file itself declares; a file that does not parse has no outline",
+            "the check is two stages and their composition (F.40 phase 3, X1): `demand_typing` is everything that needs no model — the scope's and the typing's diagnostics finished (`finish_check_diags`: the user's spelling, no repeat), then the build rules where the config asks (`Config::build_rules`: a build's and the editor's) and the allocation advisory where it asks (`Config::alloc_advisory`: the editor's; `hale check` runs its own beside its reports, under its flag); `demand_laws` is the laws judged over the model when the typing's own diagnostics denote one and the program has a claim surface, finished after the typing's own (`finish_check_diags_after`), and empty otherwise; `demand_check` is the typing stage's diagnostics followed by the laws', so every entry point's set is one pass's over both by construction, and only the position of a build rule or an advisory relative to a law differs from the single pass it replaced (both stages before; the laws last). Each stage is counted once (`Snapshot::builds`, the `STAGES` beside the families)",
+            "the editor publishes the two stages apart (X1, `check_and_publish`): the first publication is every file of the seed with the typing stage, placed as `hale check` places it (each diagnostic spelled, suppressed — `retain_owned_advisories`, a stdlib-origin span — and placed on its own), with every file the seed's last publication covered and this one does not published empty (`State::published`); the second is the whole check (`demand_check`, the laws after the typing), sent only for the files whose list it changes, so a file's final list is its first followed by the laws placed in it, every file's last publication is `hale check`'s for it, and a seed with no broken law gets one publication; a seed the snapshot does not check (a refused load, a hole, the stdlib cache) gets its one. Before each publication, and before the laws are judged, the pass asks whether a document event is queued behind it: if one is, the buffers it read are superseded, what is unsent is discarded with the rest of the pass, `published` keeps only what was sent, and the pass's files join the next pass (`State::pending`)",
             "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: the lowering view's `resolve_rewritten` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)",
             "a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads",
             "the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it",
@@ -1484,7 +1496,7 @@ pub const FAMILIES: &[Family] = &[
             "the bundle is a borrowed view (`Snapshot::bundle`), built per call, never stored",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/demand_gate.rs", "crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, the_editor_scope_covers_the_members_that_parsed_and_names_the_hole, a_member_that_will_not_read_blocks_the_scope, a_program_that_does_not_typecheck_blocks_the_model, a_check_with_errors_blocks_the_lowering_view, the_lowering_view_is_resolved_once_after_the_check)", "crates/hale-lsp/src/lib.rs (a_request_builds_only_the_families_it_reads, a_request_over_a_seed_with_a_hole_answers_from_the_members_that_parsed)"],
+        tests: &["crates/hale-types/tests/demand_gate.rs", "crates/hale-cli/tests/lsp.rs (the_check_is_its_typing_stage_followed_by_its_laws_stage, lsp_and_check_agree_over_a_seed_with_laws, lsp_publishes_the_typing_stage_first_and_the_laws_replace_it)", "crates/hale-cli/tests/lsp_latency.rs (lsp_latency_first_and_final_publication: the editor's latency, first and final publication apart; a measurement, ignored by default)", "crates/hale-frontend/src/snapshot.rs (a_changed_input_is_a_distinct_snapshot_and_shares_no_result, a_file_that_does_not_parse_blocks_the_scope_and_its_dependents, the_editor_scope_covers_the_members_that_parsed_and_names_the_hole, a_member_that_will_not_read_blocks_the_scope, a_program_that_does_not_typecheck_blocks_the_model, a_check_with_errors_blocks_the_lowering_view, the_lowering_view_is_resolved_once_after_the_check)", "crates/hale-lsp/src/lib.rs (a_request_builds_only_the_families_it_reads, a_request_over_a_seed_with_a_hole_answers_from_the_members_that_parsed, the_laws_replace_the_typing_stage_unless_a_newer_event_supersedes_them)"],
         spec: &["spec/decisions.md F.40", "RFC #1212 § phase 2 (demand and readiness)"],
         seams: &[
             Seam { symbol: "Snapshot::load(", allowed: &[(SNAPSHOT, 1), (V_CHECK, 1), (V_BUILD, 1), (V_RUN, 1), (V_TEST, 1), (V_REPLAY, 1), (V_BENCH, 1), (LSP, 1)] },

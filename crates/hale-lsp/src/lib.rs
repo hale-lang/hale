@@ -14,6 +14,13 @@
 //! already queued when the server gets to them is applied in order and
 //! checked ONCE, never past a request (`next_steps`).
 //!
+//! A seed's check is published in two stages (F.40 phase 3, X1): the
+//! snapshot's typing stage first, everything that needs no model, then
+//! the laws judged over the model, which replace the first publication
+//! of every file they add a finding to. A publication the client would
+//! read as the latest while a newer document event is already queued is
+//! discarded, with the rest of its pass (`Superseded`).
+//!
 //! Protocol surface v1:
 //!   - initialize / initialized / shutdown / exit
 //!   - textDocument/didOpen | didChange (full sync) | didSave |
@@ -44,6 +51,7 @@ use std::process::ExitCode;
 use serde_json::{json, Value};
 
 use hale_frontend::frontend::{retain_owned_advisories, seed_dir_of, LoadMode};
+use hale_frontend::parse_cache::ParseCache;
 use hale_frontend::snapshot::{unreadable_message, Config, LoadError, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
@@ -64,6 +72,11 @@ struct State {
     /// left the seed's graph. The snapshot describes the current graph;
     /// clearing needs what the client saw before.
     published: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// The files of a publish pass a newer document event superseded
+    /// before it finished: the next pass checks their seeds too, so a
+    /// closed buffer's seed, found only through the closed file, is not
+    /// left with the publication the discarded pass never sent.
+    pending: Vec<PathBuf>,
     shutdown_requested: bool,
 }
 
@@ -114,7 +127,14 @@ fn serve(reader: impl BufRead + Send + 'static, writer: &mut impl Write) -> Exit
         }
         queue.extend(rx.try_iter());
         for step in next_steps(&mut queue) {
-            if let Some(code) = run_step(step, &mut state, writer) {
+            // Whether a document event has arrived at the front of the
+            // queue since the run being published was applied: the
+            // buffers the pass read are then not the client's any more.
+            let mut superseded = || {
+                queue.extend(rx.try_iter());
+                queue.front().is_some_and(|m| document_event(m).is_some())
+            };
+            if let Some(code) = run_step(step, &mut state, writer, &mut superseded) {
                 return code;
             }
         }
@@ -202,7 +222,14 @@ fn document_event(msg: &Value) -> Option<(PathBuf, Buffer)> {
 }
 
 /// Carry out one step. `Some` ends the session with that exit code.
-fn run_step(step: Step, state: &mut State, writer: &mut impl Write) -> Option<ExitCode> {
+/// `superseded` says whether a newer document event is queued (a
+/// publish pass asks it before each publication).
+fn run_step(
+    step: Step,
+    state: &mut State,
+    writer: &mut impl Write,
+    superseded: &mut dyn FnMut() -> bool,
+) -> Option<ExitCode> {
     match step {
         Step::Apply(path, Buffer::Set(text)) => {
             state.overlays.insert(path, text);
@@ -211,8 +238,13 @@ fn run_step(step: Step, state: &mut State, writer: &mut impl Write) -> Option<Ex
         Step::Apply(path, Buffer::Remove) => {
             state.overlays.remove(&path);
         }
-        Step::Publish(files) => {
-            if let Err(why) = contained(|| check_open_seeds(writer, &files, state)) {
+        Step::Publish(mut files) => {
+            for p in std::mem::take(&mut state.pending) {
+                if !files.contains(&p) {
+                    files.push(p);
+                }
+            }
+            if let Err(why) = contained(|| check_open_seeds(writer, &files, state, superseded)) {
                 publish_internal_error(writer, &files[0], &why);
             }
         }
@@ -632,7 +664,16 @@ fn is_stdlib_cache_path(path: &Path) -> bool {
 /// reverse-dependency index is phase 3's incremental load to build. A
 /// closed buffer's seed is checked through the closed file, since it may
 /// have no open buffer left to be found by.
-fn check_open_seeds(writer: &mut impl Write, changed: &[PathBuf], state: &mut State) {
+///
+/// A pass a newer document event supersedes stops where it is, its
+/// publication discarded and its files left for the next pass
+/// (`State::pending`), which rechecks every open seed anyway.
+fn check_open_seeds(
+    writer: &mut impl Write,
+    changed: &[PathBuf],
+    state: &mut State,
+    superseded: &mut dyn FnMut() -> bool,
+) {
     // Test-only: a check that panics, for the containment test.
     #[cfg(test)]
     if changed.iter().any(|p| state.overlays.get(p).is_some_and(|t| t.contains("hale-lsp-test-panic"))) {
@@ -650,8 +691,20 @@ fn check_open_seeds(writer: &mut impl Write, changed: &[PathBuf], state: &mut St
     }
     let checked: BTreeSet<PathBuf> = seeds.iter().map(|(k, _)| k.clone()).collect();
     for (_, via) in &seeds {
-        check_and_publish(writer, via, &state.overlays, &mut state.published, &checked);
+        if let Pass::Superseded = check_and_publish(writer, via, &state.overlays, &mut state.published, &checked, superseded) {
+            state.pending = changed.to_vec();
+            return;
+        }
     }
+}
+
+/// How a seed's publish pass ended.
+enum Pass {
+    /// Every publication of the seed's check was sent.
+    Done,
+    /// A newer document event was queued before the next publication,
+    /// which was discarded (the first, or the laws').
+    Superseded,
 }
 
 /// Check the seed of `changed` and publish it: every file the check
@@ -668,26 +721,64 @@ fn check_open_seeds(writer: &mut impl Write, changed: &[PathBuf], state: &mut St
 /// nor clears it: the passes of one event would otherwise overwrite
 /// each other's answer for one file — an importer drops a library's
 /// own advisories, and would clear them.
+///
+/// A seed the snapshot checks is published twice (F.40 phase 3, X1).
+/// The first publication is the check's typing stage, everything that
+/// needs no model, with the clearing above. The second is the whole
+/// check, the laws after the typing, sent only for the files whose list
+/// it changes: the laws add a finding, never take one away, so a file's
+/// final list is its first followed by the laws placed in it, and every
+/// file's last publication is what `hale check` reports for it. A seed
+/// with no law, or none broken, gets one publication, as before the
+/// stages. A seed the snapshot does not check (a load the import graph
+/// refused, a refusal, a member that did not parse or read, the stdlib
+/// cache) gets its one publication.
+///
+/// Before each publication, and before the laws are judged, the pass
+/// asks `superseded`: once a newer document event is queued, the
+/// buffers this check read are not the client's any more, so what is
+/// left unsent is discarded (the second publication alone, or both),
+/// `published` keeps what was sent, and the next pass rechecks.
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
     published: &mut BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     checked: &BTreeSet<PathBuf>,
-) {
+    superseded: &mut dyn FnMut() -> bool,
+) -> Pass {
     let own = seed_key(changed);
     let ours = |p: &Path| {
         let key = seed_key(p);
         key == own || !checked.contains(&key)
     };
-    let mut per_file = seed_diagnostics(changed, overlays);
-    per_file.retain(|p, _| ours(p));
-    let covered: BTreeSet<PathBuf> = per_file.keys().cloned().collect();
-    let before = published.insert(own.clone(), covered).unwrap_or_default();
-    for gone in before.into_iter().filter(|p| ours(p)) {
-        per_file.entry(gone).or_default();
+    let (mut first, snap) = match seed_typing(changed, overlays) {
+        SeedCheck::Once(per_file) => (per_file, None),
+        SeedCheck::Staged(snap, per_file) => (per_file, Some(snap)),
+    };
+    first.retain(|p, _| ours(p));
+    if superseded() {
+        return Pass::Superseded;
     }
-    publish_all(writer, per_file);
+    let covered: BTreeSet<PathBuf> = first.keys().cloned().collect();
+    let before = published.insert(own.clone(), covered).unwrap_or_default();
+    let mut sent = first.clone();
+    for gone in before.into_iter().filter(|p| ours(p)) {
+        sent.entry(gone).or_default();
+    }
+    publish_all(writer, sent);
+    let Some(snap) = snap else { return Pass::Done };
+    if superseded() {
+        return Pass::Superseded;
+    }
+    let mut last = seed_laws(&snap);
+    last.retain(|p, diags| ours(p) && first.get(p) != Some(diags));
+    if superseded() {
+        return Pass::Superseded;
+    }
+    published.entry(own).or_default().extend(last.keys().cloned());
+    publish_all(writer, last);
+    Pass::Done
 }
 
 /// A seed's key in the server's memory: its directory, canonical when
@@ -697,18 +788,24 @@ fn seed_key(file: &Path) -> PathBuf {
     dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
 }
 
-/// The seed of `changed`, checked: path → the diagnostics to publish on
-/// it, an EMPTY list for every seed file the check found clean.
-fn seed_diagnostics(
-    changed: &Path,
-    overlays: &BTreeMap<PathBuf, String>,
-) -> BTreeMap<PathBuf, Vec<Value>> {
+/// A seed's check as its publications carry it: path → the diagnostics
+/// to publish on it, an EMPTY list for every seed file found clean.
+enum SeedCheck {
+    /// The one publication of a seed the snapshot does not check.
+    Once(BTreeMap<PathBuf, Vec<Value>>),
+    /// The first publication of a seed it checks, the typing stage's,
+    /// and the snapshot the laws are judged from ([`seed_laws`]).
+    Staged(Snapshot, BTreeMap<PathBuf, Vec<Value>>),
+}
+
+/// The seed of `changed`, through the check's typing stage.
+fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>) -> SeedCheck {
     // A file inside the stdlib cache gets an EMPTY publish — it is
     // a definition-jump target, not a seed member, and clearing
     // (rather than skipping) removes anything a client already
     // showed for it.
     if is_stdlib_cache_path(changed) {
-        return BTreeMap::from([(changed.to_path_buf(), Vec::new())]);
+        return SeedCheck::Once(BTreeMap::from([(changed.to_path_buf(), Vec::new())]));
     }
     // F.40 phase 2.3: the seed as `hale check <dir>` loads it — the
     // file's directory and every seed its imports reach — read through
@@ -718,8 +815,9 @@ fn seed_diagnostics(
     // check` runs beside its check: the snapshot checks only a seed
     // whose every member read and parsed, so it answers `hale check
     // <dir>` exactly — including an identifier that binds nothing, a
-    // typo the editor shows while it is typed. The model is demanded
-    // only by a program that declares a law.
+    // typo the editor shows while it is typed. The first stage needs no
+    // model; the second, `seed_laws`, demands it only for a program
+    // that declares a law.
     // path → published diagnostics (start EMPTY for every file so a
     // clean pass clears old squiggles).
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
@@ -737,30 +835,17 @@ fn seed_diagnostics(
             for io in &f.io {
                 publish_file_level(&mut per_file, &io.path, changed, &io.text);
             }
-            return per_file;
+            return SeedCheck::Once(per_file);
         }
         Err(LoadError::Refused(msg)) => {
             per_file.entry(changed.to_path_buf()).or_default().push(file_level_diag(&msg));
-            return per_file;
+            return SeedCheck::Once(per_file);
         }
     };
-    let (sources, file_bases) = (snap.sources(), snap.file_bases());
-    for f in snap.files() {
-        per_file.insert(f.clone(), Vec::new());
-    }
-    match snap.demand_check() {
-        Ok(checked) => {
-            let mut diags = checked.diags.clone();
-            if let Ok(summary) = snap.demand_alloc_summary() {
-                diags.extend(hale_types::unbounded_alloc_warnings(&snap.bundle(), summary, true));
-            }
-            // What `hale check` does last: every name in the author's
-            // spelling, and an advisory about a seed the target imports
-            // left to that seed's own check.
-            hale_types::stdlib_bodies::demangle_imports(&mut diags, snap.import_renames());
-            retain_owned_advisories(&mut diags, snap.own_files(), file_bases);
-            place_checker_diags(&diags, file_bases, sources, &mut per_file);
-        }
+    let typed = match snap.demand_typing() {
+        // The editor's config carries the build rules and the allocation
+        // advisory in the typing stage.
+        Ok(typed) => placed(&snap, &typed.diags),
         // A seed with a member that did not parse or read is not checked
         // (a hole would cascade phantom errors), as `hale check` checks
         // none. Its parse diagnostics are published against the files
@@ -768,6 +853,10 @@ fn seed_diagnostics(
         // that would not read is a file-level diagnostic against itself
         // and against the file being edited, which is open.
         Err(_) => {
+            let (sources, file_bases) = (snap.sources(), snap.file_bases());
+            for f in snap.files() {
+                per_file.insert(f.clone(), Vec::new());
+            }
             for (f, diags) in snap.unparsed() {
                 let base = file_bases
                     .iter()
@@ -782,16 +871,45 @@ fn seed_diagnostics(
             for (f, os_error) in snap.unreadable() {
                 publish_file_level(&mut per_file, f, changed, &unreadable_message(f, os_error));
             }
+            return SeedCheck::Once(per_file);
         }
+    };
+    SeedCheck::Staged(snap, typed)
+}
+
+/// The seed's whole check, the laws judged after its typing stage: what
+/// `hale check` reports, placed as the first publication was. Every
+/// file's list is its typing-stage list followed by the laws placed in
+/// it, since each diagnostic is spelled, suppressed and placed on its
+/// own. Blocked never: the typing stage it follows was not.
+fn seed_laws(snap: &Snapshot) -> BTreeMap<PathBuf, Vec<Value>> {
+    match snap.demand_check() {
+        Ok(checked) => placed(snap, &checked.diags),
+        Err(_) => BTreeMap::new(),
     }
+}
+
+/// `diags` of a checked snapshot, as a publication carries them: what
+/// `hale check` does last — every name in the author's spelling, and an
+/// advisory about a seed the target imports left to that seed's own
+/// check — then each placed on the file that holds it, over an EMPTY
+/// list for every file of the seed.
+fn placed(snap: &Snapshot, diags: &[hale_syntax::Diag]) -> BTreeMap<PathBuf, Vec<Value>> {
+    let mut per_file: BTreeMap<PathBuf, Vec<Value>> =
+        snap.files().iter().map(|f| (f.clone(), Vec::new())).collect();
+    let mut diags = diags.to_vec();
+    hale_types::stdlib_bodies::demangle_imports(&mut diags, snap.import_renames());
+    retain_owned_advisories(&mut diags, snap.own_files(), snap.file_bases());
+    place_checker_diags(&diags, snap.file_bases(), snap.sources(), &mut per_file);
     per_file
 }
 
 /// The snapshot every document event and every request reads: the seed
 /// of `changed` as `hale check <dir>` loads it, through the buffers over
 /// the disk (`LoadMode::Editor`), under the editor's config. One load
-/// per event or request — the ~10 ms frontend makes a cache pointless,
-/// and the snapshot's key is what would say whether one is sound. A seed
+/// per event or request, no snapshot kept: the snapshot's key names a
+/// whole load, so it is no key for reusing one member. What is reused is
+/// each file's parse, per path and text ([`PARSES`]). A seed
 /// whose imports did not link is refused as `hale check` refuses it
 /// ([`Snapshot::linked`]); only the outline reads its members
 /// ([`editor_load`]).
@@ -809,8 +927,15 @@ fn editor_load(
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<Snapshot, LoadError> {
-    Snapshot::load(changed, LoadMode::Editor, &Overlay::new(overlays), Config::editor())
+    Snapshot::load(changed, LoadMode::Editor, &Overlay::new(overlays).reusing(&PARSES), Config::editor())
 }
+
+/// The server's parse products, one cache across every load it makes
+/// (F.40 phase 3, X1, `hale_frontend::parse_cache`): an edit reparses
+/// the edited file, and the seed's other files and every library it
+/// imports are reused while their text and the effect-class table they
+/// are parsed from stay as they were.
+static PARSES: ParseCache = ParseCache::new();
 
 /// A diagnostic about a whole file (one that would not read has no
 /// position): the range 0:0–0:0, an error.
@@ -3002,6 +3127,107 @@ fn main() { App { }; }\n";
         );
         assert_eq!(reply_to(&replies, 9)["result"], Value::Null, "the server still answers");
         assert_eq!(code, format!("{:?}", ExitCode::SUCCESS));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- two publications ----------------------------------------------
+
+    /// A program that breaks a law, beside a bare fallible call (a build
+    /// rule, in the typing stage) that does not keep it from denoting a
+    /// model.
+    const LAW_SRC: &str = "locus B { params { n: Int = 0; } fn stop() { self.n = self.n + 1; } }\n\
+locus A { params { b: B = B { }; } fn go() { self.b.stop(); } }\n\
+group src = { A };\ngroup dst = { B };\n\
+main locus App {\n    params { a: A = A { }; }\n    claims { isolation: forbid reaches(src, dst); }\n    run() { self.a.go(); save(); }\n}\n\
+fn save() { std::io::fs::write_file(\"/tmp/hale-lsp-two-publications\", \"x\"); }\n\
+fn main() { App { }; }\n";
+
+    /// The publications `out` holds, as URI and messages.
+    fn publications_in(out: &[u8]) -> Vec<(String, Vec<String>)> {
+        let text = std::str::from_utf8(out).expect("utf-8 output");
+        let mut pubs = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("Content-Length: ") {
+            rest = &rest[at + "Content-Length: ".len()..];
+            let (n, after) = rest.split_once("\r\n\r\n").expect("frame header");
+            let n: usize = n.trim().parse().expect("length");
+            let v: Value = serde_json::from_str(&after[..n]).expect("json body");
+            rest = &after[n..];
+            let msgs = v["params"]["diagnostics"]
+                .as_array()
+                .map(|d| d.iter().map(|d| d["message"].as_str().unwrap_or("").to_string()).collect())
+                .unwrap_or_default();
+            pubs.push((v["params"]["uri"].as_str().unwrap_or("").to_string(), msgs));
+        }
+        pubs
+    }
+
+    /// F.40 phase 3, X1: a seed whose law is broken is published twice,
+    /// the typing stage and then the whole check, which replaces the
+    /// first only on the file the law adds a finding to; the first is a
+    /// prefix of the second. A newer document event queued before a
+    /// publication discards it and what follows: before the first, both
+    /// (and `published` is untouched); before the laws are judged, or
+    /// after and before they are sent, the second alone. A superseded
+    /// pass leaves its files for the next (`State::pending`).
+    #[test]
+    fn the_laws_replace_the_typing_stage_unless_a_newer_event_supersedes_them() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_two_pubs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, LAW_SRC).unwrap();
+        let uri = path_to_uri(&file);
+        let checked: BTreeSet<PathBuf> = [seed_key(&file)].into_iter().collect();
+        // `superseded` answers true from its `from`th question on.
+        let pass = |from: usize| {
+            let mut out = Vec::new();
+            let mut published = BTreeMap::new();
+            let mut asked = 0;
+            let mut superseded = || {
+                asked += 1;
+                asked >= from
+            };
+            let ended = check_and_publish(&mut out, &file, &BTreeMap::new(), &mut published, &checked, &mut superseded);
+            (matches!(ended, Pass::Superseded), publications_in(&out), published)
+        };
+
+        let (superseded, pubs, published) = pass(usize::MAX);
+        assert!(!superseded);
+        let [(first_uri, first), (last_uri, last)] = pubs.as_slice() else {
+            panic!("two publications of the one file: {pubs:?}");
+        };
+        assert_eq!((first_uri, last_uri), (&uri, &uri));
+        assert!(first.iter().any(|m| m.contains("can fail (IoError)")), "the build rule is the typing stage's: {first:?}");
+        assert!(first.iter().all(|m| !m.contains("claim `isolation` violated")), "{first:?}");
+        assert_eq!(&last[..first.len()], &first[..], "the first publication is a prefix of the final one");
+        assert!(
+            !last[first.len()..].is_empty() && last[first.len()..].iter().all(|m| m.contains("claim `isolation`")),
+            "the rest is the law's: {last:?}"
+        );
+        assert_eq!(published[&seed_key(&file)], [file.clone()].into_iter().collect());
+
+        let (superseded, pubs, published) = pass(1);
+        assert!(superseded && pubs.is_empty() && published.is_empty(), "nothing sent, nothing recorded: {pubs:?}");
+        for from in [2, 3] {
+            let (superseded, pubs, published) = pass(from);
+            assert!(superseded, "from {from}");
+            assert_eq!(pubs, vec![(uri.clone(), first.clone())], "from {from}: the first publication alone");
+            assert_eq!(published[&seed_key(&file)], [file.clone()].into_iter().collect());
+        }
+
+        // A seed with no law: one publication, the laws asked about and
+        // adding nothing.
+        std::fs::write(&file, "fn main() {\n    let x: Int = \"text\";\n}\n").unwrap();
+        let (_, pubs, _) = pass(usize::MAX);
+        assert_eq!(pubs.len(), 1, "{pubs:?}");
+
+        let mut state = State::default();
+        let mut out = Vec::new();
+        check_open_seeds(&mut out, &[file.clone()], &mut state, &mut || true);
+        assert!(out.is_empty());
+        assert_eq!(state.pending, vec![file.clone()], "the superseded pass's files wait for the next");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
