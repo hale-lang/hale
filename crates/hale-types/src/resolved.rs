@@ -137,6 +137,11 @@ pub struct LoweringView {
     /// Where lowering routes an allocation, over `merged`: which free
     /// fns are scratch-local (`crate::alloc_routing`).
     pub alloc_routing: crate::alloc_routing::AllocRouting,
+    /// The effective target's column of the capability matrix: every
+    /// behaviour and obligation lowering emits or omits per target is
+    /// read here, and lowering refuses options that name a target of
+    /// another class.
+    pub cells: crate::capability::LoweringCells,
 }
 
 /// The name the merged program goes by in its bundle view. Nothing is
@@ -208,7 +213,8 @@ pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
 /// Resolve `program` into the view codegen lowers: the intra-locus
 /// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
 /// snapshot runs the two halves as its `intra_locus` and
-/// `lowering_view` families; this is the bare program's entry.
+/// `lowering_view` families; this is the bare program's entry, and a
+/// bare program is the host's.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
@@ -217,6 +223,8 @@ pub fn resolve_program(
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
 ) -> Result<LoweringView, String> {
+    let host = crate::capability::TargetClass::of(&crate::target::TargetSpec::host())
+        .ok_or_else(|| "the host is a target the capability matrix has no column for".to_string())?;
     resolve_rewritten(
         &rewrite_intra_locus(program),
         sources,
@@ -224,6 +232,7 @@ pub fn resolve_program(
         api,
         api_roles,
         forms,
+        host,
     )
 }
 
@@ -246,7 +255,9 @@ pub fn resolve_program(
 /// with, recorded on the envelope for lowering to hold its options
 /// to. `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
-/// gets its written discipline. The error is the message codegen
+/// gets its written discipline. `class` is the effective target's
+/// column of the capability matrix, the cells the view hands lowering.
+/// The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -256,6 +267,7 @@ pub fn resolve_rewritten(
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
+    class: crate::capability::TargetClass,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
     let mut program_owned = stage.program.clone();
@@ -473,6 +485,7 @@ pub fn resolve_rewritten(
         api_roles: api_roles.map(str::to_string),
         top,
         alloc_routing,
+        cells: crate::capability::LoweringCells::of(class),
     })
 }
 

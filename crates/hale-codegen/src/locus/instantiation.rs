@@ -4605,7 +4605,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // registered, run() not yet entered) is exactly the
             // boot/run boundary the runtime snapshot needs. Runs on
             // the main thread; no-op outside replay/feed.
-            if is_main_locus && !self.is_wasm {
+            if is_main_locus && self.cells.emits(hale_types::capability::Obligation::ReplayIngress) {
                 let start_fn = self
                     .module
                     .get_function("lotus_replay_start_ingress")
@@ -4884,13 +4884,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // while the registry, pools, and subscriber loci
                 // are all still alive (the main locus's run() just
                 // returned; nothing has dissolved yet).
-                if !self.is_wasm {
+                if self.cells.emits(hale_types::capability::Obligation::IngressQuiesce) {
                     self.emit_bus_ingress_quiesce()?;
                 }
                 self.emit_coop_pool_shutdown_all()?;
                 // GH #255: wake `or wait` parked publishers into
                 // the raise path before the pinned joins below.
-                self.emit_bus_wait_abort_all()?;
+                if self.cells.emits(hale_types::capability::Obligation::WaitAbort) {
+                    self.emit_bus_wait_abort_all()?;
+                }
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE

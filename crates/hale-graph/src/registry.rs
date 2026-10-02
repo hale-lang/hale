@@ -1205,7 +1205,8 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("the use rows, on the snapshot: the check's input beside the row", SNAPSHOT, "demand_capability_uses"),
             consumer_at("the admission law: every use's cell for the effective target, in the check of every entry point", CHECK, "admission_diags"),
             consumer_at("hale check and hale build: every link input (--link, each package's [ffi] link) held to LinkLibrary before any tool, located at its manifest line or flag", "crates/hale-cli/src/shared/options.rs", "link_refusals"),
-            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read before lowering and before any tool", CG, "Capability::LinkLibrary"),
+            consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read off the lowering view's column before lowering and before any tool", CG, "Capability::LinkLibrary"),
+            consumer_at("lowering: every behaviour and obligation emitted or omitted per target, read off the lowering view's column (`LoweringView::cells`)", CG, "self.cells."),
         ],
         invariants: &[
             "Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness",
@@ -1243,15 +1244,15 @@ pub const FAMILIES: &[Family] = &[
             Seam {
                 symbol: "derive_capability_matrix(",
                 allowed: &[
-                    (CAPABILITY, 2),
+                    // the definition, the document rendering, and the
+                    // lowering view's column (an obligation, a behaviour)
+                    (CAPABILITY, 4),
                     ("crates/hale-types/src/capability/laws.rs", 12),
                     (CAPABILITY_USES, 2),
                     // the target model's test, holding has_async_io to the cell
                     ("crates/hale-types/src/target.rs", 1),
-                    // LinkLibrary, read before any tool by the CLI and by a
-                    // build handed link libraries
+                    // LinkLibrary, read before any tool by the CLI
                     ("crates/hale-cli/src/shared/options.rs", 1),
-                    (CG, 1),
                 ],
             },
             // the definition, the snapshot's family, and the two checks

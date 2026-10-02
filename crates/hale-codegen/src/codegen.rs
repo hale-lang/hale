@@ -19,6 +19,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, OptimizationLevel};
 
 use hale_syntax::ast::*;
+use hale_types::capability::{Capability, Obligation};
 use hale_types::resolved::LoweringView;
 
 // Trait extensions per `std::*` namespace, lifted out of this file
@@ -1092,15 +1093,17 @@ pub fn build_executable_with_options(
 ) -> Result<(), CodegenError> {
     use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
     let spec = options.target.spec();
-    // A harness build names its target exactly when it asks for one
-    // other than the host; lowering follows `options.target` either way.
+    // A harness build names its target, the host included: the view's
+    // effective target is the one lowering emits for, so its cells are
+    // the ones the build reads (a harness native build of a program
+    // that declares `target wasm` lowers natively, as it always has).
     let target = Target {
         name: match options.target {
             CompileTarget::Native => "host".to_string(),
             _ => spec.triple.to_string(),
         },
         spec,
-        explicit: options.target != CompileTarget::Native,
+        explicit: true,
     };
     let mut config = Config::harness(target);
     config.api = options.api.clone();
@@ -1141,20 +1144,26 @@ pub fn build_resolved(
             options.api, options.api_roles, resolved.api, resolved.api_roles
         )));
     }
+    // The view's cells are its effective target's: lowering for another
+    // class would emit what that target's cells never selected.
+    if hale_types::capability::TargetClass::of(&options.target.spec()) != Some(resolved.cells.class) {
+        return Err(CodegenError::Unsupported(format!(
+            "the build options name target `{}`, but the program was resolved for a {} target",
+            options.target.spec().triple,
+            resolved.cells.class.name()
+        )));
+    }
     // T4 (F.40 P3): a link library is the `LinkLibrary` cell's question,
     // which depends on the program, the configuration and the target
     // only, so it is answered before anything is lowered and before any
     // tool is looked up; a machine without clang meets the refusal, not
     // "is clang installed?". (It used to be asked inside `link_wasm`,
     // after the runtime had been compiled.)
-    if let Some(class) = hale_types::capability::TargetClass::of(&options.target.spec()) {
-        if !options.link_libs.is_empty() {
-            let m = hale_types::capability::derive_capability_matrix();
-            let cell = m.behaviour(class, hale_types::capability::Capability::LinkLibrary).expect("a row");
-            if let Some(r) = cell.refusal() {
-                let libs = hale_types::capability::libs_hole(&options.link_libs);
-                return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
-            }
+    if !options.link_libs.is_empty() {
+        let cell = resolved.cells.behaviour(hale_types::capability::Capability::LinkLibrary);
+        if let Some(r) = cell.refusal() {
+            let libs = hale_types::capability::libs_hole(&options.link_libs);
+            return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
         }
     }
     // #8 (2026-07-02): `BuildOptions::time_phases` (the CLI's
@@ -1197,11 +1206,14 @@ pub fn build_resolved(
         ..
     } = resolved;
 
-    let is_wasm = options.target == CompileTarget::Wasm32;
     // Every platform question below asks the TARGET, not the host. These
     // agree today (Native == host) and the answers are unchanged; the
     // point is that they stop agreeing safely. See GH #445.
     let target_spec = options.target.spec();
+    // An emission choice (the backend, triple, CPU, optimization, LTO,
+    // pass pipeline, DWARF, the link path): a `TargetSpec` query, never
+    // a cell. What a target can do is `resolved.cells`'.
+    let is_wasm = target_spec.is_wasm();
     // GH #970: a foreign native target has no business with the
     // host's backend — initialize the target's own architecture, as
     // wasm always has.
@@ -1417,8 +1429,7 @@ pub fn build_resolved(
         module,
         builder,
         target_data,
-        is_wasm,
-        target: target_spec.clone(),
+        cells: resolved.cells,
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
         ts_call_span: None,
@@ -1991,10 +2002,20 @@ pub fn build_resolved(
     if is_wasm {
         // Compile the self-contained wasm runtime (arena core + bundled
         // libc) and link it into the user object with wasm-ld, producing
-        // a runnable `.wasm`. No native libs / no clang link line.
+        // a runnable `.wasm`. No native libs / no clang link line. The
+        // module's fixed exports are `ExportSurface`'s lowering data.
+        let Some(hale_types::capability::Lowering::Exports(fixed)) =
+            cx.cells.lowering(Capability::ExportSurface)
+        else {
+            return Err(CodegenError::Unsupported(format!(
+                "a {} target's export surface is not a module's export list",
+                cx.cells.class.name()
+            )));
+        };
         link_wasm(
             &obj_path,
             output_path,
+            fixed,
             &cx.wasm_exports,
             &options.csrc_files,
             &options.link_libs,
@@ -2779,6 +2800,9 @@ fn resolve_tool(base: &str) -> String {
 fn link_wasm(
     user_obj: &Path,
     output: &Path,
+    // The module's fixed exports, in order: the `ExportSurface` cell's
+    // lowering data (`hale_types::capability::WASM_FIXED_EXPORTS`).
+    fixed_exports: &[hale_types::capability::Export],
     extra_exports: &[String],
     // #213: a package's `[ffi] csrc` translation units. These never
     // reached the wasm path — `options` was simply not passed — so
@@ -2883,17 +2907,16 @@ fn link_wasm(
     for o in &csrc_objs {
         cmd.arg(o);
     }
-    cmd
-        .arg("--no-entry")
-        .arg("--export-if-defined=main")
-        .arg("--export=__heap_base")
-        .arg("--export-if-defined=memory")
-        // WASM host seam: the JS loader writes an inbound message into wasm
-        // memory via lotus_wasm_alloc, then publishes it with
-        // lotus_wasm_set_inbox; the Hale side reads it with lotus_wasm_inbox
-        // (reached via @ffi("c"), so kept without an explicit export).
-        .arg("--export=lotus_wasm_alloc")
-        .arg("--export=lotus_wasm_set_inbox");
+    cmd.arg("--no-entry");
+    // `main`, `__heap_base`, `memory`, and the WASM host seam: the JS
+    // loader writes an inbound message into wasm memory via
+    // lotus_wasm_alloc, then publishes it with lotus_wasm_set_inbox; the
+    // Hale side reads it with lotus_wasm_inbox (reached via @ffi("c"),
+    // so kept without an explicit export).
+    for e in fixed_exports {
+        let flag = if e.if_defined { "--export-if-defined" } else { "--export" };
+        cmd.arg(format!("{flag}={}", e.name));
+    }
     // Entry-inversion: `@export` fn wrappers + `_hale_start` (collected
     // by synthesize_wasm_export_wrappers).
     for name in extra_exports {
@@ -3163,13 +3186,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// where `Type::size_of()` (a constant-expression) can't be folded to
     /// an integer. E.g. the foreign-ring descriptor's `value_size`.
     pub(crate) target_data: inkwell::targets::TargetData,
-    /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
-    /// `main` startup (transport/pool/thread bring-up) for entry inversion.
-    pub(crate) is_wasm: bool,
-    /// The target being emitted for. `is_wasm` above is one bit of this;
-    /// anything else lowering needs to know about the platform asks here
-    /// rather than asking the host through `cfg!` (GH #445).
-    pub(crate) target: crate::target::TargetSpec,
+    /// The effective target's cells (the lowering view's): every
+    /// behaviour and obligation emitted or omitted per target reads one
+    /// here, and decides nothing itself (F.40 phase 3, P3 3 of 3). An
+    /// emission choice asks the build's `TargetSpec` rather than the
+    /// host through `cfg!` (GH #445).
+    pub(crate) cells: hale_types::capability::LoweringCells,
     /// WASM entry-inversion: names of `@export` free fns whose
     /// arena-less wrappers were emitted; passed to `wasm-ld
     /// --export=`. Empty on native builds.
@@ -5920,7 +5942,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // raise path before the pinned joins below would block on
         // them. Gated on in_main: every other fn's flush must not
         // disable waits program-wide.
-        if self.in_main {
+        if self.in_main && self.cells.emits(Obligation::WaitAbort) {
             self.emit_bus_wait_abort_all()?;
         }
         self.lc_spine = lc_outer;
@@ -6096,10 +6118,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &mut self.lc_spine,
                 if is_main_entry { "DeferredMainEntry" } else { "DeferredEntry" },
             );
-            if is_main_entry && !self.is_wasm {
-                self.emit_bus_ingress_quiesce()?;
-                self.emit_coop_pool_shutdown_all()?;
-                self.emit_bus_wait_abort_all()?;
+            if is_main_entry {
+                if self.cells.emits(Obligation::IngressQuiesce) {
+                    self.emit_bus_ingress_quiesce()?;
+                }
+                // The wait-abort is omitted with the join here, as this
+                // spine always has; it reads its own cell once the
+                // spines' obligations are selected and ordered as one.
+                if self.cells.emits(Obligation::PoolJoin) {
+                    self.emit_coop_pool_shutdown_all()?;
+                    self.emit_bus_wait_abort_all()?;
+                }
             }
             // m28a + m28b: pinned loci — pthread_join blocks until
             // the pinned thread's full lifecycle (birth → run →
@@ -7717,7 +7746,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // fn or locus is lowered at any depth, so the
                 // "this wasm module has entry points of its own"
                 // test has to see the same set.
-                let has_exports = self.is_wasm
+                let has_exports = self
+                    .cells
+                    .behaviour(Capability::EntryInversion(hale_types::capability::Inversion::ExportOnly))
+                    .is_lower()
                     && hale_syntax::ast::flat_decls(&self.program.items).any(
                         |item| {
                             matches!(item, TopDecl::Fn(f) if f.export)
@@ -8318,8 +8350,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // WASM entry-inversion: emit the arena-less export wrappers for
-        // `@export` fns + the `_hale_start` setup entry. No-op on native.
-        if self.is_wasm {
+        // `@export` fns + the `_hale_start` setup entry, where the
+        // target's export surface is a module's export list beside its
+        // fixed exports (`ExportSurface`'s lowering data).
+        if matches!(
+            self.cells.lowering(Capability::ExportSurface),
+            Some(hale_types::capability::Lowering::Exports(_))
+        ) {
             self.synthesize_wasm_export_wrappers(&user_fn_decls)?;
         } else {
             // Crumb batch-2 item 1: native C-ABI export wrappers
@@ -8386,7 +8423,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // WASM plan (entry inversion): skip on wasm — `lotus_io_init`
         // calls `setvbuf` (a host import) to line-buffer stdout, which is
         // a no-op concept in the browser. The host loader owns output.
-        if !self.is_wasm {
+        // It installs SIGPIPE's disposition too: the `SignalInstall`
+        // obligation, omitted where no signal reaches the program.
+        if self.cells.emits(Obligation::SignalInstall) {
             let io_init = self
                 .module
                 .get_function("lotus_io_init")
@@ -8532,7 +8571,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the host, which meant a macOS-hosted build of a Linux
                 // artifact would have silently dropped the enable call.
                 if self.deployment.async_io_pools.contains(name)
-                    && self.target.has_async_io()
+                    && self.cells.behaviour(Capability::AsyncIoPool).is_lower()
                 {
                     self.builder
                         .build_call(
@@ -8615,7 +8654,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // row on the consumer. Cheap: one strdup'd table entry
         // per topic, consulted lazily if/when observation
         // initializes.
-        if !self.is_wasm {
+        if self.cells.emits(Obligation::ObservationIdentity) {
             // #399: subject and shape both come from the SHARED
             // identity implementation (`hale_types::topic_identity`),
             // which the topology artifact also exports — the manifest
@@ -8766,7 +8805,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // identity fields, which the setters have already published.
         // Still before any user code. No-op when neither
         // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
-        if !self.is_wasm {
+        if self.cells.emits(Obligation::ObservationIdentity) {
             let eager_fn = self
                 .module
                 .get_function("lotus_obs_eager_init")
@@ -8791,7 +8830,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // reachable from `main`) would otherwise survive gc-sections and
         // become host imports. The browser bus is in-memory / WebSocket-
         // adapter-driven (a later slice), never cross-process sockets.
-        if !self.is_wasm {
+        // The transport half is the `BindingConfig` obligation, the
+        // drain installer between its two parts `SignalInstall`.
+        if self.cells.emits(Obligation::BindingConfig) {
             // GH #529 prep (DNA F.12): tell the runtime how to derive a
             // keyed topic's key from an inbound payload, so a listen
             // binding delivers to `where key == …` subscribers exactly
@@ -8818,28 +8859,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
-            // GH #1039: SIGINT / SIGTERM begin the whole-process drain
-            // — for a program that reads `draining` anywhere. Which
-            // is known only once every body has lowered, so the
-            // argument is a private global whose initializer the end
-            // of `lower_program` writes.
-            {
-                let i64_t = self.context.i64_type();
-                let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
-                reads.set_linkage(inkwell::module::Linkage::Private);
-                reads.set_initializer(&i64_t.const_zero());
-                let observes = self
-                    .builder
-                    .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let install = self
-                    .module
-                    .get_function("lotus_drain_signals_install")
-                    .expect("lotus_drain_signals_install declared");
-                self.builder
-                    .build_call(install, &[observes.into()], "drain.install")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
+        }
+        // GH #1039: SIGINT / SIGTERM begin the whole-process drain
+        // — for a program that reads `draining` anywhere. Which
+        // is known only once every body has lowered, so the
+        // argument is a private global whose initializer the end
+        // of `lower_program` writes.
+        if self.cells.emits(Obligation::SignalInstall) {
+            let i64_t = self.context.i64_type();
+            let reads = self.module.add_global(i64_t, None, "lotus.reads_draining");
+            reads.set_linkage(inkwell::module::Linkage::Private);
+            reads.set_initializer(&i64_t.const_zero());
+            let observes = self
+                .builder
+                .build_load(i64_t, reads.as_pointer_value(), "drain.observes")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let install = self
+                .module
+                .get_function("lotus_drain_signals_install")
+                .expect("lotus_drain_signals_install declared");
+            self.builder
+                .build_call(install, &[observes.into()], "drain.install")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        if self.cells.emits(Obligation::BindingConfig) {
             let load_cfg_fn = self
                 .module
                 .get_function("lotus_bus_load_config")
@@ -8927,13 +8970,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainFallThrough");
-            if !self.is_wasm {
-                // GH #468: drain kernel-accepted LISTEN ingress
-                // through the intact registry BEFORE pools join and
-                // loci dissolve — the exit half of the delivery
-                // contract (the boot half is the readers' early-
-                // ingress buffer).
+            // GH #468: drain kernel-accepted LISTEN ingress
+            // through the intact registry BEFORE pools join and
+            // loci dissolve — the exit half of the delivery
+            // contract (the boot half is the readers' early-
+            // ingress buffer).
+            if self.cells.emits(Obligation::IngressQuiesce) {
                 self.emit_bus_ingress_quiesce()?;
+            }
+            if self.cells.emits(Obligation::PoolJoin) {
                 self.emit_coop_pool_shutdown_all()?;
             }
             self.flush_dissolve_frame()?;
@@ -8974,8 +9019,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(fail_bb) = self.main_test_fail_bb.take() {
             self.builder.position_at_end(fail_bb);
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainTestFailure");
-            if !self.is_wasm {
+            if self.cells.emits(Obligation::IngressQuiesce) {
                 self.emit_bus_ingress_quiesce()?;
+            }
+            if self.cells.emits(Obligation::PoolJoin) {
                 self.emit_coop_pool_shutdown_all()?;
             }
             let frame = self.main_dissolve_frame.take().unwrap_or_default();
@@ -13301,11 +13348,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (JS `number`) instead of i64 (JS `BigInt`). `@ffi("c")`
         // keeps i64 — on wasm those resolve to linked runtime C
         // symbols that expect i64, not the JS boundary.
-        let ffi_js = f
-            .ffi
-            .as_ref()
-            .map(|a| a.abi == "js")
-            .unwrap_or(false);
+        // The marshalling is `ForeignAbi(js)`'s lowering data on the
+        // target; a target that rejects the ABI never lowers the
+        // declaration (the admission refuses it first).
+        let ffi_js = f.ffi.as_ref().is_some_and(|a| {
+            hale_types::capability::Abi::of(&a.abi) == Some(hale_types::capability::Abi::Js)
+                && self.cells.lowering(Capability::ForeignAbi(hale_types::capability::Abi::Js))
+                    == Some(hale_types::capability::Lowering::IntAsF64)
+        });
         let mut param_tys = Vec::with_capacity(f.params.len());
         let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
             Vec::with_capacity(f.params.len());
@@ -21539,11 +21589,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             let lc_outer = std::mem::replace(&mut self.lc_spine, "MainReturn");
-            if !self.is_wasm {
-                // GH #468: same exit-quiesce as the fallthrough
-                // main-exit path — return-from-main must not lose
-                // kernel-accepted ingress either.
+            // GH #468: same exit-quiesce as the fallthrough
+            // main-exit path — return-from-main must not lose
+            // kernel-accepted ingress either.
+            if self.cells.emits(Obligation::IngressQuiesce) {
                 self.emit_bus_ingress_quiesce()?;
+            }
+            if self.cells.emits(Obligation::PoolJoin) {
                 self.emit_coop_pool_shutdown_all()?;
             }
             // GH #789: emit the teardown for everything main owns at
@@ -32543,7 +32595,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         delta: i64,
     ) -> Result<(), CodegenError> {
-        if self.is_wasm {
+        if !self.cells.emits(Obligation::DrainObserver) {
             return Ok(());
         }
         let i64_t = self.context.i64_type();

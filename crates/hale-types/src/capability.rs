@@ -697,6 +697,40 @@ impl CapabilityMatrix {
     }
 }
 
+/// One column of the matrix, as lowering reads it: the lowering view
+/// carries the effective target's, and every target-dependent emission
+/// that is a behaviour or an obligation asks it (design §1.4: codegen
+/// reads the cells and decides nothing). Emission choices (the triple,
+/// CPU, optimization, the link path) stay [`TargetSpec`] queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoweringCells {
+    pub class: TargetClass,
+}
+
+impl LoweringCells {
+    pub fn of(class: TargetClass) -> LoweringCells {
+        LoweringCells { class }
+    }
+
+    /// Whether a spine or prelude emits the obligation's runtime call.
+    pub fn emits(&self, o: Obligation) -> bool {
+        derive_capability_matrix().obligation(self.class, o).expect("every obligation has a row").emits()
+    }
+
+    pub fn behaviour(&self, c: Capability) -> &'static Behaviour {
+        derive_capability_matrix().behaviour(self.class, c).expect("every capability a lowering reads has a row")
+    }
+
+    /// The behaviour's lowering data, or `None` when the target rejects
+    /// it.
+    pub fn lowering(&self, c: Capability) -> Option<Lowering> {
+        match self.behaviour(c).verdict {
+            BehaviourVerdict::Lower(l) => Some(l),
+            BehaviourVerdict::Reject(_) => None,
+        }
+    }
+}
+
 // ----------------------------------------------------- effective target
 
 /// The target the configuration names: `--target`, or the host when
@@ -1183,7 +1217,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
                 origin: Origin::Source,
                 requires: &[],
                 witness: w(
-                    "crates/hale-codegen/src/codegen.rs::a.abi == \"js\"",
+                    "crates/hale-codegen/src/codegen.rs::Lowering::IntAsF64",
                     "an `@ffi(\"js\")` fn is a loader import; an `Int` crosses as an f64",
                     SPEC_JS,
                 ),

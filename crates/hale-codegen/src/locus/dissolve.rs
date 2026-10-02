@@ -223,8 +223,9 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // the SIGINT / SIGTERM drain raises one runtime flag rather
         // than walking every locus. A plain monotonic load, so a hot
         // handler's `if !self.draining` stays a load, not a call.
-        // wasm has no signals and no such flag.
-        let raw = if self.is_wasm {
+        // Where no signal reaches the program the flag is always 0, and
+        // the term is the `DrainTerm` obligation's omission.
+        let raw = if !self.cells.emits(hale_types::capability::Obligation::DrainTerm) {
             raw
         } else {
             self.reads_draining = true;

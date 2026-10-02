@@ -627,63 +627,95 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
     );
 }
 
-/// What a site that reads the target decides.
+/// What a line of codegen that reads the target's wasm-ness decides.
+/// Since P3 3 of 3 only an emission choice and the link path do: every
+/// behaviour and obligation is a read of the lowering view's cells
+/// ([`CELL_READS`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Reads {
     /// An emission choice: a `TargetSpec` query, never a cell.
     Backend,
-    /// The choice of link path; the refusals inside it are `LinkLibrary`.
+    /// The choice of link path; the export list inside it is
+    /// `ExportSurface`'s lowering data.
     Link,
-    Behaviour(Capability),
-    Obligations(&'static [Obligation]),
 }
 
 const CG: &str = "crates/hale-codegen/src/codegen.rs";
+const INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 
 /// Every line of codegen that reads the target's wasm-ness or its
 /// `has_async_io`, by the line and the first line of code after it.
 const SITES: &[(&str, &str, Reads)] = &[
-    (CG, "let is_wasm = options.target == CompileTarget::Wasm32; ⏎ let target_spec = options.target.spec();", Reads::Backend),
+    (CG, "let is_wasm = target_spec.is_wasm(); ⏎ let is_foreign = options.target.is_foreign();", Reads::Backend),
     (CG, "if is_wasm { ⏎ Target::initialize_webassembly(&InitializationConfig::default());", Reads::Backend),
     (CG, "let triple = if is_wasm { ⏎ TargetTriple::create(\"wasm32-unknown-unknown\")", Reads::Backend),
     (CG, "let (cpu, features): (String, String) = if is_wasm { ⏎ (\"generic\".to_string(), String::new())", Reads::Backend),
     (CG, "let opt_level = if is_wasm { ⏎ OptimizationLevel::Default", Reads::Backend),
-    (CG, "is_wasm, ⏎ target: target_spec.clone(),", Reads::Backend),
     (CG, "lifecycle_trace: options.lifecycle_trace && !is_wasm && !is_foreign, ⏎ lc_spine: \"Instantiation\",", Reads::Backend),
     (CG, "if !is_wasm { ⏎ if let Some(dbg) = &options.debug {", Reads::Backend),
     (CG, "let lto_kind = if is_wasm || is_foreign || sanitized { ⏎ LtoMode::Off", Reads::Backend),
     (CG, "if !is_wasm { ⏎ let cpu_attr = cx.context.create_string_attribute(\"target-cpu\", &cpu);", Reads::Backend),
     (CG, "if !is_wasm { ⏎ let mut f = cx.module.get_first_function();", Reads::Backend),
     (CG, "let pass_pipeline = if is_wasm { ⏎ \"default<O2>\"", Reads::Backend),
-    (CG, "if is_wasm { ⏎ link_wasm(", Reads::Link),
+    (CG, "if is_wasm { ⏎ let Some(hale_types::capability::Lowering::Exports(fixed)) =", Reads::Link),
     (CG, "if !target_spec.is_wasm() && !target_spec.is_macos() { ⏎ match options.target_cpu {", Reads::Backend),
-    (CG, "pub(crate) is_wasm: bool, ⏎ pub(crate) target: crate::target::TargetSpec,", Reads::Backend),
-    (CG, "if is_main_entry && !self.is_wasm { ⏎ self.emit_bus_ingress_quiesce()?;", Reads::Obligations(&[Obligation::IngressQuiesce, Obligation::PoolJoin, Obligation::WaitAbort])),
-    (CG, "let has_exports = self.is_wasm ⏎ && hale_syntax::ast::flat_decls(&self.program.items).any(", Reads::Behaviour(Capability::EntryInversion(Inversion::ExportOnly))),
-    (CG, "if self.is_wasm { ⏎ self.synthesize_wasm_export_wrappers(&user_fn_decls)?;", Reads::Behaviour(Capability::ExportSurface)),
-    (CG, "if !self.is_wasm { ⏎ let io_init = self", Reads::Obligations(&[Obligation::SignalInstall])),
-    (CG, "&& self.target.has_async_io() ⏎ {", Reads::Behaviour(Capability::AsyncIoPool)),
-    (CG, "if !self.is_wasm { ⏎ let shapes: Vec<(String, String)> = self", Reads::Obligations(&[Obligation::ObservationIdentity])),
-    (CG, "if !self.is_wasm { ⏎ let eager_fn = self", Reads::Obligations(&[Obligation::ObservationIdentity])),
-    (CG, "if !self.is_wasm { ⏎ let extractors: Vec<(String, inkwell::values::FunctionValue<'ctx>)> =", Reads::Obligations(&[Obligation::BindingConfig, Obligation::SignalInstall])),
-    (CG, "if !self.is_wasm { ⏎ self.emit_bus_ingress_quiesce()?;", Reads::Obligations(&[Obligation::IngressQuiesce, Obligation::PoolJoin])),
-    (CG, "if self.is_wasm { ⏎ return Ok(());", Reads::Obligations(&[Obligation::DrainObserver])),
-    ("crates/hale-codegen/src/locus/dissolve.rs", "let raw = if self.is_wasm { ⏎ raw", Reads::Obligations(&[Obligation::DrainTerm])),
-    ("crates/hale-codegen/src/locus/restart.rs", "if !self.is_wasm { ⏎ let draining = self.emit_process_draining_load(\"restart.process_draining\")?;", Reads::Obligations(&[Obligation::DrainTerm])),
-    ("crates/hale-codegen/src/stdlib/time.rs", "let entry_draining = if self.is_wasm { ⏎ None", Reads::Obligations(&[Obligation::DrainTerm])),
-    ("crates/hale-codegen/src/locus/instantiation.rs", "if is_main_locus && !self.is_wasm { ⏎ let start_fn = self", Reads::Obligations(&[Obligation::ReplayIngress])),
-    ("crates/hale-codegen/src/locus/instantiation.rs", "if !self.is_wasm { ⏎ self.emit_bus_ingress_quiesce()?;", Reads::Obligations(&[Obligation::IngressQuiesce])),
 ];
 
-/// How many lines share each fingerprint (the fall-through, test-failure
-/// and return exits read the target the same way).
-fn expected_count(file: &str, print: &str) -> usize {
-    match (file, print) {
-        (CG, "if !self.is_wasm { ⏎ self.emit_bus_ingress_quiesce()?;") => 3,
-        _ => 1,
-    }
+/// Every read of the lowering view's cells in codegen: the file, the
+/// behaviour or obligation read, and how many lines read it. A new read
+/// fails here until it is listed.
+const CELL_READS: &[(&str, &str, usize)] = &[
+    (CG, "Capability::LinkLibrary", 1),
+    (CG, "Capability::ExportSurface", 2),
+    (CG, "Capability::EntryInversion(Inversion::ExportOnly)", 1),
+    (CG, "Capability::AsyncIoPool", 1),
+    (CG, "Capability::ForeignAbi(Abi::Js)", 1),
+    (CG, "Obligation::SignalInstall", 2),
+    (CG, "Obligation::ObservationIdentity", 2),
+    (CG, "Obligation::BindingConfig", 2),
+    (CG, "Obligation::DrainObserver", 1),
+    (CG, "Obligation::IngressQuiesce", 4),
+    (CG, "Obligation::PoolJoin", 4),
+    (CG, "Obligation::WaitAbort", 1),
+    (INST, "Obligation::ReplayIngress", 1),
+    (INST, "Obligation::IngressQuiesce", 1),
+    (INST, "Obligation::WaitAbort", 1),
+    ("crates/hale-codegen/src/locus/dissolve.rs", "Obligation::DrainTerm", 1),
+    ("crates/hale-codegen/src/locus/restart.rs", "Obligation::DrainTerm", 1),
+    ("crates/hale-codegen/src/stdlib/time.rs", "Obligation::DrainTerm", 1),
+];
+
+fn expected_count(_file: &str, _print: &str) -> usize {
+    1
 }
 
+/// The behaviour or obligation a line reads off the cells, as
+/// `Capability::…` or `Obligation::…` with the crate path dropped.
+fn cell_read(line: &str) -> Option<String> {
+    let t = line.trim();
+    if t.starts_with("//") {
+        return None;
+    }
+    let reads = ["cells.emits(", "cells.behaviour(", "cells.lowering("].iter().any(|p| t.contains(p))
+        || [".emits(", ".behaviour(", ".lowering("].iter().any(|p| t.starts_with(p));
+    if !reads {
+        return None;
+    }
+    let at = t.find("Obligation::").or_else(|| t.find("Capability::"))?;
+    let mut depth = 0i32;
+    let mut out = String::new();
+    for c in t[at..].chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => break,
+            ')' => depth -= 1,
+            c if c.is_alphanumeric() || c == '_' || c == ':' => {}
+            _ => break,
+        }
+        out.push(c);
+    }
+    Some(out.replace("hale_types::capability::", ""))
+}
 /// The fingerprint of a site: its trimmed line and the first line of
 /// code after it.
 fn fingerprints(path: &Path) -> Vec<String> {
@@ -750,16 +782,24 @@ fn every_site_that_reads_the_target_is_classified() {
         unlisted.join("\n  "),
         missing.join("\n  ")
     );
-    // Every obligation is emitted at a classified site, and every
-    // behaviour a site reads has a row.
-    let m = derive_capability_matrix();
-    let mut reached = BTreeSet::new();
-    for (_, _, r) in SITES {
-        match r {
-            Reads::Obligations(os) => reached.extend(os.iter().copied()),
-            Reads::Behaviour(c) => assert!(m.behaviour(TargetClass::Wasm32, *c).is_some(), "{}", c.label()),
-            Reads::Backend | Reads::Link => {}
+    assert!(SITES.iter().all(|(_, _, r)| matches!(r, Reads::Backend | Reads::Link)));
+    // Every behaviour and obligation is read off the cells, each read
+    // listed; every obligation is read somewhere.
+    let mut reads: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for f in &files {
+        let rel = f.strip_prefix(repo_root()).unwrap().display().to_string().replace("crates/hale-codegen/../../", "");
+        let text = std::fs::read_to_string(f).unwrap();
+        for l in text.lines() {
+            if let Some(r) = cell_read(l) {
+                *reads.entry((rel.clone(), r)).or_default() += 1;
+            }
         }
     }
-    assert_eq!(reached, Obligation::ALL.into_iter().collect(), "an obligation no site emits");
+    let listed: BTreeMap<(String, String), usize> =
+        CELL_READS.iter().map(|(f, r, n)| ((f.to_string(), r.to_string()), *n)).collect();
+    assert_eq!(reads, listed, "the cell reads in codegen and the listed ones differ");
+    let read: BTreeSet<&str> = CELL_READS.iter().map(|(_, r, _)| *r).collect();
+    for o in Obligation::ALL {
+        assert!(read.contains(format!("Obligation::{}", o.name()).as_str()), "no site reads {}", o.name());
+    }
 }
