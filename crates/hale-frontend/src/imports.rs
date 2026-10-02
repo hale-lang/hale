@@ -8,7 +8,8 @@ use super::frontend::collect_target_files;
 use super::diag::diag_file_name;
 use super::diag::display_relative;
 use super::source::SourceProvider;
-use super::workspace::sanitize_identifier;
+use super::workspace::library_basis;
+use super::workspace::library_id;
 use super::workspace::seed_dir_for_entry_file;
 use super::workspace::top_decl_ident;
 /// Per-build path-rename table for cross-seed imports
@@ -32,7 +33,6 @@ pub type ImportRenames = Vec<(Vec<String>, String)>;
 /// resolution, `scope_import_aliases` gives every binder of a
 /// contested alias its own head and re-heads that seed's own
 /// references, so the one table can tell the two apart.
-#[derive(Default)]
 pub struct AliasScopes {
     /// One row per import site: (declaring seed, alias, the lib the
     /// alias names). Seeds and libs are canonical paths — the same
@@ -43,58 +43,46 @@ pub struct AliasScopes {
     /// share one alias namespace (they share one decl namespace), so
     /// the rewrite applies to all of them.
     pub files: BTreeMap<PathBuf, Vec<PathBuf>>,
-    /// Library (canonical path) -> the name its symbols are mangled
-    /// under; see [`AliasScopes::name_library`].
-    lib_names: BTreeMap<PathBuf, String>,
-    /// The names in use, back to the library that holds each, so a
-    /// second library asking for a name another holds is told apart.
-    names_taken: BTreeMap<String, PathBuf>,
+    /// The two anchors a library's name is relative to, canonical:
+    /// the entry's workspace root, and the entry seed's directory.
+    workspace_root: Option<PathBuf>,
+    entry_dir: PathBuf,
 }
 
 impl AliasScopes {
-    /// The name a library's symbols are mangled under: stable,
-    /// sanitized, and one per library for the whole load — the
-    /// mangler's namespace key, so two apps importing the same lib
-    /// produce identical mangled symbols (cross-app DTO contracts
-    /// become symbol-identical without any annotation or config flag).
+    /// The scopes of one load, whose entry seed lives in `entry_dir`
+    /// and whose workspace (if any) is rooted at `workspace_root`.
+    pub fn new(entry_dir: &Path, workspace_root: Option<&Path>) -> Self {
+        // `hale run main.hl` reaches here with the entry's parent, the
+        // empty path, which is the working directory.
+        let canon = |p: &Path| {
+            let p = if p.as_os_str().is_empty() { Path::new(".") } else { p };
+            p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+        };
+        AliasScopes {
+            bindings: Vec::new(),
+            files: BTreeMap::new(),
+            workspace_root: workspace_root.map(canon),
+            entry_dir: canon(entry_dir),
+        }
+    }
+
+    /// The name a library's symbols are mangled under — the mangler's
+    /// namespace key, so two apps importing the same lib produce
+    /// identical mangled symbols (cross-app DTO contracts become
+    /// symbol-identical without any annotation or config flag).
     ///
-    /// The library is its canonical path, the identity `seed_cache`
-    /// and `bindings` key off; its name is that path, relative to the
-    /// workspace root when the library is inside one (two apps in the
-    /// same monorepo see the same relative path, so the same name),
-    /// else its file name, with every non-identifier character
-    /// collapsed to `_` so the result is a valid C / LLVM symbol
-    /// component. A name another library of the load already holds
-    /// (two single-file libraries called `util.hl` in different
-    /// directories, outside a workspace) gets a digest of the
-    /// canonical path appended, so no two libraries share a symbol
-    /// namespace; a library that holds its name alone keeps it.
-    pub fn name_library(&mut self, lib: &Path, workspace_root: Option<&Path>) -> String {
-        if let Some(name) = self.lib_names.get(lib) {
-            return name.clone();
-        }
-        let basis: PathBuf = workspace_root
-            .and_then(|root| {
-                let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-                lib.strip_prefix(&root).ok().map(Path::to_path_buf)
-            })
-            .or_else(|| lib.file_name().map(PathBuf::from))
-            .unwrap_or_else(|| lib.to_path_buf());
-        // Single-file imports keep the `.hl` suffix in the path which
-        // would sanitize to `_ap` — strip it for readability.
-        let basis = basis.to_string_lossy();
-        let basis = basis.strip_suffix(".hl").unwrap_or(&basis);
-        let mut name = sanitize_identifier(basis);
-        if self.names_taken.get(&name).is_some_and(|held| held != lib) {
-            let mut digest: u64 = 0xcbf29ce484222325;
-            for b in lib.to_string_lossy().bytes() {
-                digest = (digest ^ u64::from(b)).wrapping_mul(0x100000001b3);
-            }
-            name = format!("{name}_{:08x}", digest as u32);
-        }
-        self.names_taken.insert(name.clone(), lib.to_path_buf());
-        self.lib_names.insert(lib.to_path_buf(), name.clone());
-        name
+    /// The name is a function of the library alone: its canonical
+    /// path (the identity `seed_cache` and `bindings` key off) taken
+    /// relative to the workspace root, or to the entry seed's
+    /// directory for a library outside the workspace
+    /// ([`library_basis`]), then encoded injectively ([`library_id`]).
+    /// Neither the import order nor the other libraries of the load
+    /// enter into it, two libraries never share a name, and a tree
+    /// moved or cloned as a whole keeps every name.
+    pub fn name_library(&self, lib: &Path, directory: bool) -> String {
+        let basis = library_basis(lib, self.workspace_root.as_deref(), &self.entry_dir);
+        library_id(&basis, directory)
     }
 
     pub fn record_binding(&mut self, seed: &Path, alias: &str, lib: &Path) {
@@ -763,14 +751,15 @@ pub fn resolve_imports(
         if trace {
             eprintln!("[import]     build_seed_renames start (n_files={})", parsed_files.len());
         }
-        // Compute a stable, sanitized identifier for this lib
-        // derived from the canonical path of its directory (or
-        // file). Same lib → same id → same mangled names across
-        // importers. The user-chosen `alias` is still used as
-        // the call-site reference (`alias::Name`) in the path-
-        // rename table below, but the mangled symbols themselves
-        // come from the path identity.
-        let lib_id = alias_scopes.name_library(&lib_key, workspace_root);
+        // Compute a stable identifier for this lib derived from
+        // the canonical path of its directory (or file). Same lib →
+        // same id → same mangled names across importers. The
+        // user-chosen `alias` is still used as the call-site
+        // reference (`alias::Name`) in the path-rename table below,
+        // but the mangled symbols themselves come from the path
+        // identity.
+        let lib_id = alias_scopes
+            .name_library(&lib_key, matches!(target, ImportTarget::Directory(_)));
         let seed_renames =
             hale_types::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
         // GH #714: the names that may head a qualified path in this
@@ -797,6 +786,7 @@ pub fn resolve_imports(
         );
         if trace {
             eprintln!("[import]     build_seed_renames done (n={})", seed_renames.len());
+            eprintln!("[import]     library {} is named {}", lib_key.display(), lib_id);
         }
         // Populate the per-build path-rename table.
         for (name, mangled) in &seed_renames {

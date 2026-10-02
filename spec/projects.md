@@ -258,15 +258,25 @@ The mangled form is:
 __lib_<lib_id>_<file_stem>_<name>
 ```
 
-- **`<lib_id>`** is a stable, sanitized identifier for the lib
-  derived from its canonical path relative to the workspace
-  root (the nearest ancestor directory containing `hale.toml`
-  or `Cargo.toml`). Two consumers importing the same lib
-  produce the same `lib_id` regardless of which alias each
-  consumer chose, and regardless of which of the two spellings
-  of "Resolution order" above each consumer wrote. Non-identifier
-  characters in the path collapse to `_`; runs of underscores
-  collapse to one.
+- **`<lib_id>`** is a function of the library's own path and
+  nothing else: its canonical path relative to the entry's
+  workspace root (the nearest ancestor directory of the entry
+  containing `hale.toml` or `Cargo.toml`) when the library lies
+  inside the workspace, otherwise relative to the entry seed's
+  directory (with leading `..` segments). Two consumers of one
+  workspace importing the same lib produce the same `lib_id`
+  regardless of which alias each consumer chose, which of the two
+  spellings of "Resolution order" above each wrote, the order of
+  their imports, or what else they import; a workspace moved or
+  cloned as a whole keeps every `lib_id`. The path is encoded
+  injectively into identifier characters: segments are joined by
+  `__`; within a segment an ASCII letter or digit is kept, and so
+  is a `_` that does not start the segment and is followed by a
+  letter or digit other than `x`; every other byte is `_xHH`. A
+  single-file library drops its `.hl`, and a directory library's
+  `lib_id` ends in one `_` (a single-file library's never does).
+  So `shared/messages/` is `shared__messages_`, `../one/util.hl`
+  is `_x2e_x2e__one__util`, and `lib-a/` is `lib_x2da_`.
 - **`<file_stem>`** is the basename of the source file the decl
   lives in, sans `.hl`. So two files in the same library can
   share a decl name without colliding.
@@ -274,7 +284,7 @@ __lib_<lib_id>_<file_stem>_<name>
 
 Example: `<repo>/shared/messages/messages.hl` declaring `type
 Order { ... }`, imported by app A as `msgs` and by app B as `m`,
-both produce `__lib_shared_messages_messages_Order` in the
+both produce `__lib_shared__messages__messages_Order` in the
 merged program. The shared identity is the natural shape for
 DTO seeds exchanged on a bus — both apps see Order as
 symbol-identical, and the wire bytes match by construction.
@@ -299,18 +309,29 @@ The `<alias>` is the importer's local namespace choice (used
 only at the call-site reference layer); the `<lib_id>` is the
 lib's canonical identity.
 
-Collision avoidance: two different libs live at different paths,
-get different `<lib_id>`s, never collide regardless of what
-aliases their importers picked. A lib outside any workspace is named
-by its file name; when a second lib of the same build would take a
-name another holds (two `util.hl` in different directories), its
-`<lib_id>` carries a digest of its canonical path as well.
+Collision avoidance: two different libs of one build have
+different paths relative to the same anchors — a path inside the
+workspace never starts with `..` and one outside it always does —
+and the encoding is injective, so they get different `<lib_id>`s
+whatever aliases their importers picked and in whatever order they
+are imported. There is no fallback name and no collision to
+resolve. (Until 2026-10-01 a lib outside any workspace was named by
+its file name alone, and the second of two such libs with one file
+name took a digest of its absolute path: which lib kept the plain
+name depended on import order, and a clone of the tree got other
+names.)
 
-`<lib_id>` fallback when no workspace root is in scope (e.g., a
-one-off `hale build foo.hl` outside any toml-rooted repo):
-the lib's directory base name (or file stem for single-file
-imports), sanitized. Less collision-safe but the only stable
-thing available; rare in practice.
+The compatibility boundary: a single-file library whose path from
+its anchor is its own file name — `import "util"` beside an entry
+outside any workspace, or a `util.hl` at the workspace root — keeps
+the name it had before 2026-10-01 (`util`) whenever its file stem is
+letters, digits and inner single underscores each followed by a
+letter or digit other than `x`. Every other library takes
+the encoded relative path: a workspace library's `/` separators
+became `__` (`shared_messages` is now `shared__messages_`), a
+directory library gained its trailing `_`, and a library outside
+the workspace is named by its path from the entry seed's directory
+rather than by its file name.
 
 The mangling shape mirrors the existing hand-spelled
 `__StdLangMorpheme` / `__MoaBraidId` prefixes the bundled

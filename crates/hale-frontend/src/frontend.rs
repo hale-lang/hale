@@ -498,7 +498,7 @@ pub fn link_checkable(
     // namespace, which is the union of imports resolved just below.
     let target_scope =
         target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
-    let mut alias_scopes = AliasScopes::default();
+    let mut alias_scopes = AliasScopes::new(&importer_dir, workspace_root.as_deref());
     alias_scopes.record_files(&target_scope, own.iter().cloned().collect());
     let resolve_failed = resolve_imports(
         &union_imports,
