@@ -584,6 +584,98 @@ fn a_portable_imported_default_is_admitted() {
     );
 }
 
+const PID: &str = "fn pid() -> Int { return std::process::pid(); }\n\n";
+
+/// The review of #1318, round 2: a call through a local function value
+/// in an imported initializer met nothing, so the construction carried
+/// neither the requirement nor a hole. The local resolves to the fn it
+/// is bound to, and the construction is refused with the witness through
+/// it, as the direct call is; the host admits both.
+#[test]
+fn a_call_through_a_local_fn_value_is_refused_at_the_construction() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_through_a_local_fn_value_is_refused_at_the_construction: no wasm32 clang or wasm-ld");
+        return;
+    }
+    for init in ["{ let f = pid; f() }", "pid()"] {
+        let lib = format!("{PID}locus Kid {{\n    params {{ n: Int = {init}; }}\n    run() {{ println(self.n); }}\n}}\n");
+        seeded_case("fn_value", Some(&lib), "fn main() { lib::Kid { }; }\n", |at, selector| {
+            vec![format!(
+                "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Kid` → \
+                 `params {{ n }}` → `lib::pid` → `std::process::pid`",
+                at + 1
+            )]
+        });
+        let dir = case_dir("fn_value_host");
+        std::fs::create_dir_all(dir.join("kidlib")).unwrap();
+        std::fs::write(dir.join("kidlib/kid.hl"), &lib).unwrap();
+        std::fs::write(dir.join("main.hl"), "import \"kidlib\" as lib;\nfn main() { lib::Kid { }; }\n").unwrap();
+        let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+        assert_eq!(code, 0, "{init}: the host admits it:\n{check}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The same walk serves an imported `on_failure` handler: a call through
+/// a local bound to a seed fn is refused at the construction, through
+/// `on_failure()`.
+#[test]
+fn a_call_through_a_local_fn_value_in_on_failure_is_refused() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_through_a_local_fn_value_in_on_failure_is_refused: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let keeper = format!(
+        "{ONCE}{PID}locus Keeper {{\n    params {{ early: Once = Once {{ }}; seen: Int = 0; }}\n    \
+         on_failure(c: Once, err: ClosureViolation) {{\n        let f = pid;\n        self.seen = f();\n    }}\n}}\n"
+    );
+    seeded_case("fn_value_failure", Some(&keeper), "fn main() { lib::Keeper { }; }\n", |at, selector| {
+        vec![format!(
+            "{}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::Keeper` → \
+             `on_failure()` → `lib::pid` → `std::process::pid`",
+            at + 1
+        )]
+    });
+}
+
+/// A local the walk cannot resolve — here bound to a function-typed
+/// params field — is a hole at the construction, never nothing: wasm32
+/// cannot admit what the call might need.
+#[test]
+fn a_call_through_an_unresolved_fn_value_is_a_hole() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_call_through_an_unresolved_fn_value_is_a_hole: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let lib = format!(
+        "{PID}locus Kid {{\n    params {{ g: fn() -> Int = pid; n: Int = {{ let f = self.g; f() }}; }}\n    \
+         run() {{ println(self.n); }}\n}}\n"
+    );
+    seeded_case("fn_value_hole", Some(&lib), "fn main() { lib::Kid { }; }\n", |at, _| {
+        vec![format!(
+            "{}:13 cannot establish what `lib::Kid` requires on wasm32: the callee is a function value the \
+             summary cannot resolve — witness: `lib::Kid` → `params {{ n }}` → `f()`",
+            at + 1
+        )]
+    });
+}
+
+/// The control: a local bound to a seed fn that asks the target for
+/// nothing is admitted wherever the program is.
+#[test]
+fn a_portable_local_fn_value_is_admitted() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP a_portable_local_fn_value_is_admitted: no wasm32 clang or wasm-ld");
+        return;
+    }
+    admitted_everywhere(
+        "fn_value_portable",
+        "fn width(s: String) -> Int { return len(s); }\n\n\
+         locus Calm {\n    params { n: Int = { let f = width; f(\"abc\") }; }\n    run() { println(self.n); }\n}\n",
+        "fn main() { lib::Calm { }; }\n",
+    );
+}
+
 /// `hale run` executes what it builds, and a declared program builds a
 /// wasm32 module: refused, as `--target wasm32` is.
 #[test]

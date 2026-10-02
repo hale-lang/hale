@@ -35,7 +35,9 @@
 //!
 //! **Holes.** A call the graph cannot resolve — a method on a receiver
 //! whose type the walk cannot name, a call through a function-typed
-//! parameter — leaves the use's requirements unknown. On a target whose
+//! parameter, or (in a member body beyond the horizon) a call through a
+//! local function value whose binding the walk cannot follow to a fn —
+//! leaves the use's requirements unknown. On a target whose
 //! column rejects anything in the stdlib family (wasm32) that is a
 //! refusal; elsewhere it is a recorded hole, counted, never silent.
 //!
@@ -46,7 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
-    MatchStmt, OrDisposition, ParamInit, PlacementConstraint, PlacementSpec, Program, QualifiedName, Stmt,
+    MatchStmt, OrDisposition, ParamInit, Pattern, PlacementConstraint, PlacementSpec, Program, QualifiedName, Stmt,
     TopDecl, TransportSpec, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -218,9 +220,11 @@ impl<'a> Graph<'a> {
     /// The nodes of a locus beyond the horizon that the summary keys no
     /// body for. The walk resolves a method through the declared types
     /// it can name (`self`, a params field, the handler's params, a
-    /// literal); a receiver it cannot type leaves a hole, so a
-    /// requirement it cannot establish stays a refusal on a target that
-    /// rejects one.
+    /// literal), and a call through a local to the fn the local is bound
+    /// to (`let f = pid; f()` calls `pid`); a receiver it cannot type, or
+    /// a function value it cannot resolve (a field, a call's result, a
+    /// reassigned local), leaves a hole, so a requirement it cannot
+    /// establish stays a refusal on a target that rejects one.
     fn member_nodes(&self, l: &LocusDecl) -> Vec<(FnKey, String, Vec<Met>)> {
         let locus = l.name.name.clone();
         let mut fields = BTreeMap::new();
@@ -757,6 +761,22 @@ enum Met {
     Hole(String, &'static str),
 }
 
+/// What a local function value beyond the horizon resolves to: what a
+/// direct call of the bound callee would meet.
+#[derive(Debug, Clone)]
+enum FnValue {
+    /// A fn the summary keys.
+    Fn(FnKey),
+    /// A stdlib primitive: its namespace, with the path.
+    Primitive(Capability, String),
+    /// A builtin, or a merged fn the summary keys no body for: a direct
+    /// call of it meets nothing either.
+    Nothing,
+}
+
+/// Why a call through a local function value is a hole.
+const UNRESOLVED_VALUE: &str = "the callee is a function value the summary cannot resolve";
+
 /// A declared type's name as written (`std::http::Server`, a merged
 /// name), or `None` for a builtin type, which has no methods a target is
 /// asked for.
@@ -779,6 +799,11 @@ struct Walker<'w, 'a> {
     /// handler's params. `None` in the program's own sources, whose
     /// methods are judged in their own bodies.
     receivers: Option<Receivers<'w>>,
+    /// The body's local bindings, innermost scope last, each with the
+    /// function value it holds: `None` for one the walk cannot resolve
+    /// (a field, a call's result, a loop or pattern binding, a handler
+    /// param, a reassigned binding).
+    locals: Vec<BTreeMap<String, Option<FnValue>>>,
     met: Vec<Met>,
 }
 
@@ -790,7 +815,7 @@ struct Receivers<'w> {
 
 impl<'w, 'a> Walker<'w, 'a> {
     fn own(g: &'w Graph<'a>) -> Self {
-        Walker { g, receivers: None, met: Vec::new() }
+        Walker { g, receivers: None, locals: Vec::new(), met: Vec::new() }
     }
 
     fn beyond(
@@ -799,7 +824,55 @@ impl<'w, 'a> Walker<'w, 'a> {
         fields: &'w BTreeMap<String, Option<String>>,
         params: BTreeMap<String, Option<String>>,
     ) -> Self {
-        Walker { g, receivers: Some(Receivers { locus, fields, params }), met: Vec::new() }
+        let locals = vec![params.keys().map(|p| (p.clone(), None)).collect()];
+        Walker { g, receivers: Some(Receivers { locus, fields, params }), locals, met: Vec::new() }
+    }
+
+    fn bind(&mut self, name: &str, value: Option<FnValue>) {
+        if self.locals.is_empty() {
+            self.locals.push(BTreeMap::new());
+        }
+        self.locals.last_mut().expect("a scope").insert(name.to_string(), value);
+    }
+
+    fn local(&self, name: &str) -> Option<&Option<FnValue>> {
+        self.locals.iter().rev().find_map(|scope| scope.get(name))
+    }
+
+    /// The function value an expression evaluates to, or `None` when
+    /// the walk cannot resolve it: a local's binding, a fn the merged
+    /// name keys, a builtin, a stdlib path, an import alias's fn.
+    fn fn_value(&self, e: &Expr) -> Option<FnValue> {
+        match e {
+            Expr::Ident(id) => match self.local(&id.name) {
+                Some(bound) => bound.clone(),
+                None if id.name.starts_with("__") => {
+                    let k = FnKey::free_fn(id.name.clone());
+                    Some(if self.g.summary.fns.contains_key(&k) { FnValue::Fn(k) } else { FnValue::Nothing })
+                }
+                None => crate::check::BARE_BUILTIN_CALLEES.contains(&id.name.as_str()).then_some(FnValue::Nothing),
+            },
+            Expr::Path(qn) => {
+                let path = qualified(qn);
+                if let Some(ns) = std_namespace(self.g.m, &path) {
+                    Some(FnValue::Primitive(Capability::StdNamespace(ns), path))
+                } else {
+                    self.g.renames.get(&path).map(|mangled| FnValue::Fn(FnKey::free_fn(mangled.clone())))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// A call through a function value beyond the horizon: a use of the
+    /// target it resolves to, a hole when it resolves to none.
+    fn call_value(&mut self, value: Option<FnValue>, callee: String, span: Span) {
+        match value {
+            Some(FnValue::Fn(k)) => self.met.push(Met::Calls(k, span)),
+            Some(FnValue::Primitive(cap, path)) => self.met.push(Met::Needs(cap, path, span)),
+            Some(FnValue::Nothing) => {}
+            None => self.met.push(Met::Hole(format!("{callee}()"), UNRESOLVED_VALUE)),
+        }
     }
 
     /// A method call beyond the horizon: the locus's method its
@@ -839,7 +912,7 @@ impl<'w, 'a> Walker<'w, 'a> {
                     self.expr(&i.value);
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, span, .. } => {
                 match callee.as_ref() {
                     Expr::Path(qn) => {
                         let path = qualified(qn);
@@ -848,6 +921,12 @@ impl<'w, 'a> Walker<'w, 'a> {
                         } else if let Some(mangled) = self.g.renames.get(&path) {
                             self.met.push(Met::Calls(FnKey::free_fn(mangled.clone()), qn.span));
                         }
+                    }
+                    // A call through a local beyond the horizon is a use of
+                    // the fn value it holds, or a hole: never nothing.
+                    Expr::Ident(id) if self.receivers.is_some() && self.local(&id.name).is_some() => {
+                        let value = self.local(&id.name).cloned().flatten();
+                        self.call_value(value, id.name.clone(), id.span);
                     }
                     // A bare call beyond the horizon names its seed's own
                     // fn by the merged (unspeakable) name; a builtin's is
@@ -864,7 +943,15 @@ impl<'w, 'a> Walker<'w, 'a> {
                         // runs `i`.
                         self.expr(receiver);
                     }
-                    other => self.expr(other),
+                    // A callee computed by an expression beyond the
+                    // horizon: the walk cannot resolve what it calls.
+                    other @ (Expr::Ident(_) | Expr::KwSelf(_)) => self.expr(other),
+                    other => {
+                        if self.receivers.is_some() {
+                            self.call_value(None, "<expr>".to_string(), *span);
+                        }
+                        self.expr(other)
+                    }
                 }
                 for a in args {
                     self.expr(a);
@@ -909,9 +996,21 @@ impl<'w, 'a> Walker<'w, 'a> {
     }
 
     fn block(&mut self, b: &Block) {
+        self.locals.push(BTreeMap::new());
         for s in &b.stmts {
             match s {
-                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } => self.expr(value),
+                Stmt::Let { name, value, .. } => {
+                    self.expr(value);
+                    let bound = self.fn_value(value);
+                    self.bind(&name.name, bound);
+                }
+                Stmt::LetTuple { names, value, .. } => {
+                    self.expr(value);
+                    for n in names {
+                        self.bind(&n.name, None);
+                    }
+                }
+                Stmt::Fail { value, .. } => self.expr(value),
                 Stmt::Assign { value, target, .. } => {
                     for seg in &target.tail {
                         if let LValueSeg::Index(e) = seg {
@@ -919,12 +1018,21 @@ impl<'w, 'a> Walker<'w, 'a> {
                         }
                     }
                     self.expr(value);
+                    // A reassigned binding holds whichever value the
+                    // run took last: the walk does not follow flow.
+                    if target.tail.is_empty() {
+                        if let Some(scope) = self.locals.iter_mut().rev().find(|s| s.contains_key(&target.head.name)) {
+                            scope.insert(target.head.name.clone(), None);
+                        }
+                    }
                 }
                 Stmt::If(i) => self.if_stmt(i),
                 Stmt::Match(m) => self.match_stmt(m),
-                Stmt::For { iter, body, .. } => {
+                Stmt::For { name, iter, body, .. } => {
                     self.expr(iter);
+                    self.locals.push(BTreeMap::from([(name.name.clone(), None)]));
                     self.block(body);
+                    self.locals.pop();
                 }
                 Stmt::While { cond, body, .. } => {
                     self.expr(cond);
@@ -968,6 +1076,7 @@ impl<'w, 'a> Walker<'w, 'a> {
         if let Some(t) = &b.tail {
             self.expr(t);
         }
+        self.locals.pop();
     }
 
     fn if_stmt(&mut self, i: &IfStmt) {
@@ -983,6 +1092,9 @@ impl<'w, 'a> Walker<'w, 'a> {
     fn match_stmt(&mut self, m: &MatchStmt) {
         self.expr(&m.scrutinee);
         for arm in &m.arms {
+            let mut bound = BTreeMap::new();
+            pattern_bindings(&arm.pattern, &mut bound);
+            self.locals.push(bound);
             if let Some(guard) = &arm.guard {
                 self.expr(guard);
             }
@@ -990,7 +1102,24 @@ impl<'w, 'a> Walker<'w, 'a> {
                 MatchArmBody::Expr(e) => self.expr(e),
                 MatchArmBody::Block(b) => self.block(b),
             }
+            self.locals.pop();
         }
+    }
+}
+
+/// The names a match pattern binds, none of them a value the walk
+/// resolves.
+fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Option<FnValue>>) {
+    match p {
+        Pattern::Binding(id) => {
+            out.insert(id.name.clone(), None);
+        }
+        Pattern::Constructor { args: ps, .. } | Pattern::Tuple(ps, _) => {
+            for p in ps {
+                pattern_bindings(p, out);
+            }
+        }
+        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
 
