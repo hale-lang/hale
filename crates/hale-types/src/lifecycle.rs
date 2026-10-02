@@ -113,7 +113,7 @@
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            KnownOpen R19; Shipped (R20a, named by L2)
+//! 19    RunAdmission Run Cancellation            Shipped (retention, L5); KnownOpen R19 (refused or freed unrun); Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
@@ -477,7 +477,7 @@ impl ObligationKind {
             ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
             ObligationKind::PoolJoin => &["C13", "C19", "C21", "C22", "C23", "R20"],
             ObligationKind::JoinProgress => &["C18", "R20"],
-            ObligationKind::Cancellation => &["R20a", "R21"],
+            ObligationKind::Cancellation => &["R19", "R20a", "R21"],
             ObligationKind::TeardownDelivery => &["C16", "R33", "R35"],
             ObligationKind::Dissolve => &["C31", "C32"],
             ObligationKind::Reclaim => &["C15", "C24", "C25", "C27", "C28", "C29", "C33", "R8", "R10", "R13", "R14", "R47"],
@@ -1021,7 +1021,11 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         title: "a run's admission and its named terminal outcome",
         kinds: &[K::RunAdmission, K::Run, K::Cancellation],
         statuses: &[
-            (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun, is silent"),
+            (
+                Status::Shipped,
+                "a queued run is retained against its child's teardown, which cancels it first: NotStarted(Acknowledged) (L5)",
+            ),
+            (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun at the pools' teardown, is silent"),
             (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
         ],
     },

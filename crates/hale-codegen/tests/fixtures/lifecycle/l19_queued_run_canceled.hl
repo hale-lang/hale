@@ -1,0 +1,45 @@
+// Decision line 19, a run queued behind its child's teardown
+// (RunAdmission, Run, Cancellation).
+//
+// `spawner` runs on pool `side`, and its run() builds `Own` and `Host`
+// as statement literals, so each is torn down on that worker as soon
+// as it is built. Own's field `kid` and the child Host's run() accepts
+// both have their run() posted to the same worker, where each waits
+// behind the teardown that reclaims its child. The teardown cancels
+// each run before it reclaims the child: neither run starts, each ends
+// not started with an acknowledgement, and each child is torn down
+// once.
+//
+// Expected terminal outcome: no queued run started and each child
+// torn down once, with the cancellation named by the trace build,
+// judged by the harness: `named:not-started`.
+
+locus Kid {
+    params { tag: Int = 0; }
+    run() { println("ev kid-run " + to_string(self.tag)); }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+locus Own {
+    params { kid: Kid = Kid { tag: 0 }; }
+}
+
+locus Host {
+    accept(c: Kid) { }
+    release (c: Kid) { }
+    run() { Kid { tag: 1 }; }
+}
+
+locus Spawner {
+    run() {
+        Own { };
+        Host { };
+    }
+}
+
+main locus App {
+    params { spawner: Spawner = Spawner { }; }
+    placement { spawner: cooperative(pool = side); }
+}
+
+fn main() { App { }; }

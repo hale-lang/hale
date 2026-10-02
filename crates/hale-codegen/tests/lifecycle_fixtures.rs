@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
 use hale_types::lifecycle::trace::{self, Trace, Violation};
-use hale_types::lifecycle::{ObligationKind, Point, Spine, Terminal};
+use hale_types::lifecycle::{NotStarted, ObligationKind, Point, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -125,6 +125,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l18_eager_pre_drain.hl", line: "18", adopted: Some("delivered-before-teardown"), run: RunMode::Plain, judge: delivered_before_teardown },
     Fixture { file: "l19_parked_started_coroutine.hl", line: "19", adopted: Some("named:canceled-after-start"), run: RunMode::Plain, judge: parked_cancellation },
     Fixture { file: "l19_self_post_overflow.hl", line: "19", adopted: Some("all-completed"), run: RunMode::Plain, judge: all_completed },
+    Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
@@ -299,6 +300,17 @@ const PLANS: &[(&str, &str)] = &[
          Spawner: Birth Run!pool:side Drain Dissolve Reclaim
          Kid*20: Birth Run!pool:side Drain Dissolve Reclaim
          edge Kid.Run.Completed -> Kid.Drain.Entered",
+    ),
+    // R19: each queued run is canceled by the teardown that reclaims its
+    // child, named before that reclaim completes, and never started.
+    (
+        "l19_queued_run_canceled.hl",
+        "Own: Birth Drain Dissolve Reclaim
+         Host: Birth Run Drain Dissolve Reclaim
+         Kid*2: Birth Drain Dissolve Reclaim
+         Kid*2: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side
+         edge Kid.Run.Ended -> Kid.Reclaim.Completed
+         edge Kid.Cancellation.Completed -> Kid.Reclaim.Completed",
     ),
     (
         "l19_resumed_run_at_shutdown.hl",
@@ -521,6 +533,17 @@ const CONTROLS: &[Control] = &[
         plan: None,
         fails_with: "edge: -.PoolJoin@EagerTeardown.Completed",
         baseline_passes: false,
+    },
+    // R19: a queued run canceled by its child's reclaim and never named
+    // is a run the trace cannot account for.
+    Control {
+        name: "queued_run_cancel_unnamed",
+        covers: ObligationKind::Run,
+        fixture: "l19_queued_run_canceled.hl",
+        skip: "Run.Terminal(NotStarted(Acknowledged))",
+        plan: None,
+        fails_with: "missing: Kid.Run",
+        baseline_passes: true,
     },
     Control {
         name: "restart_completion_omitted",
@@ -940,6 +963,23 @@ fn all_completed(r: &Ran) -> String {
     }
 }
 
+fn queued_run_canceled(r: &Ran) -> String {
+    let ran = (0..2).filter(|i| count(r, &format!("ev kid-run {i}")) > 0).count();
+    let dissolved = (0..2).filter(|i| count(r, &format!("ev kid-dissolve {i}")) == 1).count();
+    let named = r
+        .trace
+        .events
+        .iter()
+        .filter(|e| e.kind == ObligationKind::Run && e.point == Point::Terminal(Terminal::NotStarted(NotStarted::Acknowledged)))
+        .count();
+    match (ran, dissolved, named, r.code) {
+        (0, 2, 2, Some(0)) => "named:not-started".to_string(),
+        (0, 2, 0, Some(0)) => "not-started-unnamed".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        _ => format!("runs {ran}/0, dissolves {dissolved}/2, named {named}/2"),
+    }
+}
+
 fn completed_or_named(r: &Ran) -> String {
     let dissolved_once = count(r, "ev kid-dissolve") == 1;
     let ended = count(r, "ev kid-run-end") == 1 || r.stderr.contains("not-started");
@@ -1131,6 +1171,7 @@ fixture_tests! {
     l18_eager_pre_drain => "l18_eager_pre_drain.hl",
     l19_parked_started_coroutine => "l19_parked_started_coroutine.hl",
     l19_self_post_overflow => "l19_self_post_overflow.hl",
+    l19_queued_run_canceled => "l19_queued_run_canceled.hl",
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
@@ -1159,6 +1200,7 @@ control_tests! {
     settle_completion_omitted,
     canceled_run_unnamed,
     cancellation_completion_omitted,
+    queued_run_cancel_unnamed,
     restart_completion_omitted,
     wait_abort_removed,
     birth_removed,
