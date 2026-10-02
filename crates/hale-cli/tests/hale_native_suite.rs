@@ -50,9 +50,12 @@ fn repo_root() -> PathBuf {
 #[test]
 fn hale_native_suite_passes() {
     let dir = repo_root().join("tests/hale");
+    // A test that runs `hale` as a child runs this one, not whichever
+    // `hale` is on PATH.
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("test")
         .arg(&dir)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .output()
         .expect("invoke hale test tests/hale");
     let stdout = String::from_utf8_lossy(&out.stdout);

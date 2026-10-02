@@ -348,7 +348,11 @@ placement and the locus's shape are known at compile time:
   transport `binding`, a wildcard (`log.**`) covering the subject, a
   cross-seed (`alias::Topic`) reference, or the same locus being both
   ends. Library code (no `main`) isn't checked — its peers live
-  downstream.
+  downstream. A topic is one subject however you spell it: publish
+  it by its name and subscribe its literal `subject:` string, and
+  both ends are wired. A subject the compiler can't resolve (a
+  qualified path no import names) is never called an orphan — it
+  isn't known to be one.
 - **A bus cycle is flagged.** If a handler for one topic publishes
   another in a loop (`a → b → a`), the cell can re-trigger its own
   publish. A cycle *across* loci spins the cooperative queue — a
@@ -356,7 +360,11 @@ placement and the locus's shape are known at compile time:
   are direct synchronous calls, so the loop recurses on the thread
   until the stack overflows — an error. (Only an *unconditional*
   self-republish errors; one guarded by an `if` is a terminating
-  state machine and is left alone.)
+  state machine and is left alone.) "Within one locus" means one
+  declaration: a program that declares one locus name twice is
+  already an error, and the cycle check still reads the two as two
+  loci, so a loop between them is reported as the cross-locus
+  warning, not the error.
 - **An unthrottled publish loop is a warning.** A `while true` loop
   that publishes with no `yield`, `time::sleep`/`tick`, an
   input-pacing blocking call, or `break`/`return` floods the bus —

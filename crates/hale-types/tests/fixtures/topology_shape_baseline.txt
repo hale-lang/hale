@@ -1417,6 +1417,10 @@ crates/hale-types/tests/bus_graph.rs#6 0b5c9b076f8709fc
 crates/hale-types/tests/bus_graph.rs#7 fdfc0c090bc6fb8d
 crates/hale-types/tests/bus_graph_corpus.rs#2 a6d71996017bd9e2
 crates/hale-types/tests/bus_graph_corpus.rs#3 0b5c9b076f8709fc
+crates/hale-types/tests/bus_rules_over_graph.rs#0 3fc63819249fefed
+crates/hale-types/tests/bus_rules_over_graph.rs#1 fe8582432761b713
+crates/hale-types/tests/bus_rules_over_graph.rs#3 772519f0294392d4
+crates/hale-types/tests/bus_rules_over_graph.rs#9 4ae7edeaf25383d9
 crates/hale-types/tests/call_arity.rs#2 b7d8eb3457fbbdd2
 crates/hale-types/tests/call_arity.rs#4 a7b8a9fb4144cb0b
 crates/hale-types/tests/callgraph_witness.rs#0 2c8a176eca798985

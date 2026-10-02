@@ -8,7 +8,7 @@ budget	R-1	-	known-old-bug	11	crates/hale-codegen/tests/fixtures/examples/20d-re
 budget	R-4	-	known-old-bug	56	crates/hale-types/tests/placement.rs
 budget	R-5	-	known-old-bug	2	crates/hale-types/tests/placement.rs
 budget	R-5+R-6	-	spec-disagreement	2	dna/host
-budget	R-6	-	spec-disagreement	26	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+budget	R-6	-	spec-disagreement	27	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
 budget	R-7	-	spec-disagreement	2	crates/hale-codegen/tests/bus_cross_thread_drain.rs
 bus	B-1	Api	known-old-bug	1	dna/api
 bus	B-1	B	known-old-bug	1	crates/hale-types/tests/fixtures/placement/held_override.hl
@@ -113,6 +113,7 @@ bus	B-7	AdB	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_bindi
 bus	B-7	Adapter	known-old-bug	2	crates/hale-codegen/tests/bus_devirt_differential.rs
 bus	B-7	Drop	known-old-bug	1	crates/hale-codegen/tests/adapter_fanout_own_bytes.rs
 bus	B-7	Fwd	known-old-bug	4	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+bus	B-7	Gateway	known-old-bug	1	crates/hale-types/tests/bus_rules_over_graph.rs
 bus	B-7	Keep	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 bus	B-7	Loopback	known-old-bug	4	crates/hale-codegen/tests/bus_adapter_inbound.rs
 bus	B-7	MyAdapter	known-old-bug	5	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
@@ -124,6 +125,7 @@ checker	B-7	AdB	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_b
 checker	B-7	Adapter	known-old-bug	2	crates/hale-codegen/tests/bus_devirt_differential.rs
 checker	B-7	Drop	known-old-bug	1	crates/hale-codegen/tests/adapter_fanout_own_bytes.rs
 checker	B-7	Fwd	known-old-bug	4	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+checker	B-7	Gateway	known-old-bug	1	crates/hale-types/tests/bus_rules_over_graph.rs
 checker	B-7	Keep	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 checker	B-7	Loopback	known-old-bug	4	crates/hale-codegen/tests/bus_adapter_inbound.rs
 checker	B-7	MyAdapter	known-old-bug	5	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
@@ -1511,6 +1513,7 @@ ownership	O-7	AdB	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter
 ownership	O-7	Adapter	known-old-bug	2	crates/hale-codegen/tests/bus_devirt_differential.rs
 ownership	O-7	Drop	known-old-bug	1	crates/hale-codegen/tests/adapter_fanout_own_bytes.rs
 ownership	O-7	Fwd	known-old-bug	4	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+ownership	O-7	Gateway	known-old-bug	1	crates/hale-types/tests/bus_rules_over_graph.rs
 ownership	O-7	Keep	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 ownership	O-7	Loopback	known-old-bug	4	crates/hale-codegen/tests/bus_adapter_inbound.rs
 ownership	O-7	MyAdapter	known-old-bug	5	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs

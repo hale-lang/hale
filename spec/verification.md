@@ -86,8 +86,8 @@ it. (GitHub issue #18 item 4.)
 | Check | Catches | Severity | Enforced by |
 |---|---|---|---|
 | **Orphan topic / subject** | a declared `topic` or literal subject wired to only one end — published with no subscriber, subscribed with no publisher, or used by neither | warning | `check_bus_graph` |
-| **Cross-locus bus cycle** | a publish→subscribe→publish loop spanning ≥2 loci — the cell hops via the cooperative queue and can spin / livelock | warning | `check_bus_cycles` |
-| **Intra-locus re-entrant cycle** | an *unconditional* self-republish loop within one locus — intra-locus self-dispatch is a direct synchronous call, so it recurses on one thread without bound (stack overflow) | error | `check_bus_cycles` |
+| **Queued bus cycle** | a publish→subscribe→publish loop spanning ≥2 loci, or an *unconditional* one within one locus with a send the intra-locus rewrite leaves on the bus — the cell hops via the cooperative queue and can spin / livelock | warning | `check_bus_cycles` |
+| **Intra-locus re-entrant cycle** | an *unconditional* self-republish loop within one locus whose every send the intra-locus rewrite turns into a direct synchronous call — it recurses on one thread without bound (stack overflow) | error | `check_bus_cycles` |
 | **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / an input-pacing blocking call / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
 | **Subject type-mismatch** | two sites on the same literal subject string declaring different `of type` payloads — a subscriber would decode the wrong type | error | `check_bus_subject_types` |
 | **Routing-key fallback rules** | an `on_unmatched: fallback` topic with no `where key == _` subscriber, or a `where key == _` filter on a non-fallback topic | error | `check_phase3_fallback_subscribers` |
@@ -99,8 +99,12 @@ coverage, cross-seed (`alias::Topic`) references, and self-pub/sub —
 so library seeds and external peers aren't falsely flagged. The
 intra-locus cycle error counts only *unconditional* sends as edges: a
 self-republish guarded by `if`/`match`/loop is a terminating state
-machine, not unbounded recursion, and is left alone. See
-`spec/semantics.md` type-check rules 9–10.
+machine, not unbounded recursion, and is left alone. The orphan,
+cycle and dead-receiver checks read one bus graph
+(`build_bus_graph`): its subjects compared by wire subject, its
+edges keyed by the declaration that wrote the handler, and a subject
+it cannot resolve recorded as a hole that no check fires on. See
+`spec/semantics.md` type-check rules 7, 9 and 10.
 
 The backpressure check's "input-pacing blocking call" is the *same*
 leaf set as the pool-blocking lint above — the registry's `block`

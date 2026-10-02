@@ -148,16 +148,15 @@ fn the_editor_path_builds_no_model_for_a_program_with_no_claims() {
     );
     assert_eq!(builds["claims"], 0);
     assert_eq!(builds["effects"], 0, "a program with no claims runs no effects fixpoint on the LSP's path");
-    for family in ["bus_graph", "ownership"] {
-        assert_eq!(builds[family], 0, "the model's input `{family}` is demanded with it");
-    }
+    assert_eq!(builds["ownership"], 0, "the model's input `ownership` is demanded with it");
     assert_eq!(builds["expression_typing"], 1, "the check itself ran");
     // The checker's rules read the snapshot's rows: with no model built,
     // the check is the only demand that builds them, so this count is
     // one only when the checker consumed the snapshot's family. The test
     // entry (`check_bundle_opts_scoped`) builds its own, which no
-    // snapshot counts.
-    for family in ["handler_routing", "entrypoint"] {
+    // snapshot counts. The bus graph is one of them since rules 7, 9 and
+    // 10 read it (F.40 phase 3, C4).
+    for family in ["handler_routing", "entrypoint", "bus_graph"] {
         assert_eq!(builds[family], 1, "the checker reads the snapshot's `{family}`");
     }
     assert_eq!(builds["alloc_summary"], 1, "the check's certificate engine reads the snapshot's summary");

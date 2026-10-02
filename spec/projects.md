@@ -490,6 +490,19 @@ that the library never declared; it carries a did-you-mean when a
 spelling is close and the library's own surface when none is. A
 `bindings { }` entry needs no separate rule: a topic nothing
 declares has always been a located error there, qualified or not.
+A `subscribe` or `publish` subject is the bus position of the same
+mistake, and is worded as the resolver words a local unknown topic,
+naming the alias and the missing topic:
+
+```text
+main.hl:5:19: type error: subscribe references unknown topic `b::Nope` (the library imported as `b` declares no `topic Nope`)
+main.hl:6:19: type error: subscribe references unknown topic `zz::Ping` (`zz` is not an import of this seed, so no `topic Ping` declaration is in scope)
+```
+
+(Until then such a subscription checked clean and failed at `hale
+build`: the path reached lowering as a subject with no topic and no
+payload, and a subscription that spelled its payload with `of type`
+was refused, since a topic reference carries its own.)
 
 Permissive, and for the same reason as above — the declaration is
 genuinely absent, or this is not a whole program: an import the

@@ -18,11 +18,15 @@
 //! a subscriber in the same tree becomes a direct call) and the topic
 //! rewrite (every topic reference becomes its wire literal). They are
 //! not desugars: each erases a written declaration reference that the
-//! checker's laws and the model read, so they run here, after the
-//! check, and each is kept as a relation — `intra_locus` and
-//! `topic_rewrites`, recorded on the bus graph's subjects — so the
-//! program's account still holds what the text no longer does (F.40
-//! phase 2.1b).
+//! checker's laws and the model read, so each runs on lowering's copy
+//! of the program, never the checked one, and each is kept as a
+//! relation — `intra_locus` and `topic_rewrites`, recorded on the bus
+//! graph's subjects — so the program's account still holds what the
+//! text no longer does (F.40 phase 2.1b). The intra-locus rewrite is
+//! its own stage ([`rewrite_intra_locus`], the snapshot's `intra_locus`
+//! family), which the check demands too: rule 10 reads its relation to
+//! tell a cycle lowering makes a direct call from one the queue carries
+//! (F.40 phase 3, C4).
 //!
 //! The envelope also carries the ownership graph over the merged
 //! program (which accepting ancestor owns each method-body birth, and
@@ -160,13 +164,76 @@ impl LoweringView {
     }
 }
 
-/// Resolve `program` into the view codegen lowers: the producer of the
-/// snapshot's `lowering_view` family, run by the snapshot and by
-/// codegen's harness adapter and by nothing else.
+/// The intra-locus rewrite, run on its own (F.40 phase 3, C4): the user
+/// program with its rewritten sends replaced by direct calls, and the
+/// relation that records them.
+/// The snapshot's `intra_locus` family: the check reads the relation
+/// (rule 10 judges a cycle synchronous only where lowering makes it a
+/// direct call), and lowering continues from the program
+/// ([`resolve_rewritten`]), so the two read one rewrite.
+pub struct IntraLocusStage {
+    pub program: Program,
+    pub intra_locus: Vec<IntraLocusRewrite>,
+    /// What the rewrite cost, counted in the view's `resolved_in`.
+    pub rewritten_in: std::time::Duration,
+}
+
+/// Run the intra-locus rewrite over `program`, the one the verb
+/// checked.
+pub fn rewrite_intra_locus(program: &Program) -> IntraLocusStage {
+    // A7 (G16): `BusSubject::QualifiedTopic(alias::Foo)` — cross-seed
+    // topic refs the parser admits — are already the plain
+    // single-segment `BusSubject::Topic(Ident(mangled_name))` the
+    // imported declaration ends up at: the desugar sequence resolved
+    // them before the check (`qualified_subjects`), so the rewrite here
+    // and the Topic→Literal pass in [`resolve_rewritten`] read the
+    // topic's declared wire subject.
+    let t_start = std::time::Instant::now();
+    let mut program_owned = program.clone();
+    // The intra-locus rewrite moves each send's id onto the call that
+    // replaces it and records it in the relation, so the sends have to
+    // be minted before it runs: a caller that did not mint (the
+    // harness adapter, `build_executable_with_options`) would otherwise
+    // get a relation of `NodeId::NONE` sends no call can be joined to.
+    // Idempotent: the ids a bundle already minted are kept, so the
+    // relation names the sends the check's graph holds, and the mint
+    // over the merged program in [`resolve_rewritten`] keeps these and
+    // continues. A numbering, not a mint: nothing reads rows of the user
+    // program on its own, so no snapshot is made of it.
+    crate::snapshot::number([&mut program_owned]);
+    let intra_locus = hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    IntraLocusStage { program: program_owned, intra_locus, rewritten_in: t_start.elapsed() }
+}
+
+/// Resolve `program` into the view codegen lowers: the intra-locus
+/// rewrite ([`rewrite_intra_locus`]), then [`resolve_rewritten`]. The
+/// snapshot runs the two halves as its `intra_locus` and
+/// `lowering_view` families; this is the bare program's entry.
+pub fn resolve_program(
+    program: &Program,
+    sources: &[SourceFile],
+    import_renames: &[(Vec<String>, String)],
+    api: Option<&str>,
+    api_roles: Option<&str>,
+    forms: &crate::form_rows::FormRows,
+) -> Result<LoweringView, String> {
+    resolve_rewritten(
+        &rewrite_intra_locus(program),
+        sources,
+        import_renames,
+        api,
+        api_roles,
+        forms,
+    )
+}
+
+/// Resolve the intra-locus rewrite's program into the view codegen
+/// lowers: the producer of the snapshot's `lowering_view` family, run by
+/// the snapshot and by [`resolve_program`] and by nothing else.
 ///
-/// `program` is the one the verb checked: it has been through
-/// [`crate::desugar_sequence::desugar_before_check`], and nothing here
-/// runs that sequence's passes again.
+/// The stage's program is the one the verb checked, rewritten: it has
+/// been through [`crate::desugar_sequence::desugar_before_check`], and
+/// nothing here runs that sequence's passes again.
 ///
 /// `sources` is the bundle's source map, the one its snapshot was
 /// minted with: the resolved snapshot seeds each user site by the file
@@ -182,45 +249,29 @@ impl LoweringView {
 /// gets its written discipline. The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
-pub fn resolve_program(
-    program: &Program,
+pub fn resolve_rewritten(
+    stage: &IntraLocusStage,
     sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
 ) -> Result<LoweringView, String> {
-    // A7 (G16): `BusSubject::QualifiedTopic(alias::Foo)` — cross-seed
-    // topic refs the parser admits — are already the plain
-    // single-segment `BusSubject::Topic(Ident(mangled_name))` the
-    // imported declaration ends up at: the desugar sequence resolved
-    // them before the check (`qualified_subjects`), so desugar's
-    // Topic→Literal pass below uses the topic's declared wire subject.
     let t_start = std::time::Instant::now();
-    let mut program_owned = program.clone();
+    let mut program_owned = stage.program.clone();
+    let intra_locus = stage.intra_locus.clone();
     // The two lowering rewrites. They are not desugars: each erases a
     // written declaration reference (a topic name) that the checker's
-    // laws and the model read, so they run here, after the check, and
+    // laws and the model read, so they run on lowering's copy, and
     // each returns what it rewrote as a relation the envelope keeps.
     //
-    // The intra-locus optimization runs FIRST while sends still carry
-    // the cheap `Expr::Ident(Topic)` shape; it rewrites optimizable
-    // Send statements into direct `self.handler(...)` method calls.
-    // The topic rewrite then turns every remaining `BusSubject::Topic`
-    // and `Foo <- expr` into its literal wire subject, so lowering sees
-    // only literal subjects, with no topic-specific branching.
-    // The intra-locus rewrite moves each send's id onto the call that
-    // replaces it and records it in the relation, so the sends have to
-    // be minted before it runs: a caller that did not mint (the
-    // harness adapter, `build_executable_with_options`) would otherwise
-    // get a relation of `NodeId::NONE` sends no call can be joined to.
-    // Idempotent: the ids a bundle already minted are kept, and the
-    // mint over the merged program below keeps these and continues. A
-    // numbering, not a mint: nothing reads rows of the user program on
-    // its own, so no snapshot is made of it.
-    crate::snapshot::number([&mut program_owned]);
-    let intra_locus =
-        hale_syntax::desugar::desugar_intra_locus_topics(&mut program_owned);
+    // The intra-locus optimization ran FIRST, in the stage, while sends
+    // still carried the cheap `Expr::Ident(Topic)` shape; it rewrote
+    // optimizable Send statements into direct `self.handler(...)`
+    // method calls. The topic rewrite now turns every remaining
+    // `BusSubject::Topic` and `Foo <- expr` into its literal wire
+    // subject, so lowering sees only literal subjects, with no
+    // topic-specific branching.
     let topic_rewrites = hale_syntax::desugar::desugar_topics(&mut program_owned);
     // The bus-inert verdict, over the user's program before the stdlib
     // merge: whether a bus cell can ever be in flight (`bus_inert`).
@@ -416,7 +467,7 @@ pub fn resolve_program(
         plan,
         intra_locus,
         topic_rewrites,
-        resolved_in: t_start.elapsed(),
+        resolved_in: stage.rewritten_in + t_start.elapsed(),
         import_renames: import_renames.to_vec(),
         api: api.map(str::to_string),
         api_roles: api_roles.map(str::to_string),

@@ -496,14 +496,32 @@ pub struct CheckInputs<'a> {
     /// included. The F.31 cross-pool check, the instance-aliasing rule
     /// and the effects certificate engine read them.
     pub forms: &'a crate::form_rows::FormRows,
+    /// The bus graph over the checked programs: rules 7, 9 and 10 read
+    /// it (F.40 phase 3, C4).
+    pub bus: &'a crate::bus_graph::BusGraph,
+    /// The sends lowering turns into direct calls, by each send's id
+    /// (the snapshot's `intra_locus` family): rule 10 reads it to tell
+    /// a synchronous cycle from one the queue carries.
+    pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
-/// [`crate::form_rows::form_rows`]; the effect rows when a rule asks).
+/// [`crate::form_rows::form_rows`], the bus graph; the effect rows when a
+/// rule asks), over the bundle [`crate::with_identities`] numbers. `top`
+/// is read beside the numbered copy: a scope names declarations, not
+/// sites, so the one built over `bundle` is the copy's.
 pub fn check_bundle(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
+    crate::with_identities(bundle, |bundle| check_numbered_bundle(bundle, top, allow_unowned_subscriber))
+}
+
+fn check_numbered_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
@@ -519,6 +537,8 @@ pub fn check_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
+    let bus = crate::bundle_bus_graph(bundle, top);
+    let intra_locus = crate::bundle_intra_locus(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -526,6 +546,8 @@ pub fn check_bundle(
         entry: &entry,
         alloc_summary: &alloc_summary,
         forms: &forms,
+        bus: &bus,
+        intra_locus: &intra_locus,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -715,7 +737,7 @@ pub fn check_bundle_reporting(
     // discover that by overflowing its own stack in
     // `lower_locus_instantiation`. See `check_self_containing_locus`.
     check_self_containing_locus(bundle, &mut diags);
-    check_cooperative_pool_blocking(bundle, &top.topics, &mut diags);
+    check_cooperative_pool_blocking(bundle, inputs.bus, &mut diags);
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
@@ -810,12 +832,12 @@ pub fn check_bundle_reporting(
     // wired to only one end. Gated on a closed-world program (one
     // with an entry), so library seeds whose consumers are external
     // aren't falsely flagged.
-    check_bus_graph(bundle, top, inputs.entry, &mut diags);
+    check_bus_graph(bundle, top, inputs.entry, inputs.bus, &mut diags);
     // GH #18 #4 (PR B): bus-graph cycles. A cross-locus publish→
     // subscribe→publish loop spins the cooperative queue (warning);
-    // an intra-locus loop is devirtualized synchronous self-dispatch
-    // that recurses without bound (error).
-    check_bus_cycles(bundle, &mut diags);
+    // an intra-locus loop lowering turns into direct calls is
+    // synchronous self-dispatch that recurses without bound (error).
+    check_bus_cycles(inputs.bus, inputs.intra_locus, &mut diags);
     // GH #18 #4: backpressure. An unbounded publish loop with no
     // yield/throttle floods the bus — the producer has no
     // backpressure. Structural heuristic (warning).
@@ -1783,64 +1805,6 @@ fn find_blocking_deep_in_expr(
     }
 }
 
-/// Warn when a locus placed `cooperative(pool = X)` without
-/// `where async_io` calls a known-blocking stdlib op in its `run()`.
-/// Such a call holds the pool's OS thread, starving co-scheduled loci
-/// (this silently bricked a downstream team's metrics server when a
-/// blocking gateway was moved onto a shared pool). A warning, not an
-/// error — a single-purpose blocking server with nothing co-scheduled
-/// is legitimate; the smell is real but situational.
-/// A comparable key for a bus subject — used to tell whether a
-/// subscription is to a topic the locus also publishes. The key is the
-/// wire identity (spec/model.md rule 8): a literal subject is its own
-/// wire subject, a topic reference its row's; a qualified path, which
-/// no row of this bundle names by its written segments, is the path.
-fn bus_subject_key(s: &BusSubject, topics: &crate::topic_identity::TopicRows) -> String {
-    match s {
-        BusSubject::Literal { subject, .. } => subject.clone(),
-        BusSubject::Topic(id) => topics
-            .named(&id.name)
-            .map_or_else(|| id.name.clone(), |t| t.wire.clone()),
-        BusSubject::QualifiedTopic(qn) => qn
-            .segments
-            .iter()
-            .map(|s| s.name.as_str())
-            .collect::<Vec<_>>()
-            .join("::"),
-    }
-}
-
-/// Handler names for the locus's `subscribe` entries on topics it
-/// does NOT itself publish — i.e. genuine cross-context receives. A
-/// self-publish→self-subscribe is devirtualized to a direct
-/// `self.handler(...)` call (same instance, same thread), not a bus
-/// receive, so it's excluded.
-fn external_subscription_handlers(
-    decl: &LocusDecl,
-    topics: &crate::topic_identity::TopicRows,
-) -> Vec<String> {
-    let mut published: BTreeSet<String> = BTreeSet::new();
-    let mut handlers: Vec<(String, String)> = Vec::new(); // (subject_key, handler)
-    for m in &decl.members {
-        let LocusMember::Bus(b) = m else { continue };
-        for bm in &b.members {
-            match bm {
-                BusMember::Publish { subject, .. } => {
-                    published.insert(bus_subject_key(subject, topics));
-                }
-                BusMember::Subscribe { subject, handler, .. } => {
-                    handlers.push((bus_subject_key(subject, topics), handler.name.clone()));
-                }
-            }
-        }
-    }
-    handlers
-        .into_iter()
-        .filter(|(subj, _)| !published.contains(subj))
-        .map(|(_, h)| h)
-        .collect()
-}
-
 // ===================================================================
 // Perf lint (downstream handoff 2026-07-16): hot-path allocation
 // anti-patterns. Steer the naive shape toward the allocation-free one
@@ -2682,7 +2646,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 /// loop, or `where async_io`) is flagged by neither: it receives fine.
 fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
-    topics: &crate::topic_identity::TopicRows,
+    bus: &crate::bus_graph::BusGraph,
     diags: &mut Vec<Diag>,
 ) {
     // GH #825: all three passes flatten `module { … }`. The index of
@@ -2811,8 +2775,12 @@ fn check_cooperative_pool_blocking(
                     pool.as_ref().map(|i| i.name.as_str()).unwrap_or("main");
                 // Handlers for topics this locus does NOT itself publish
                 // (a self-publish→subscribe is a devirtualized direct
-                // call, not a bus receive).
-                let dead = external_subscription_handlers(decl, topics);
+                // call, not a bus receive), read off the declaration's
+                // row of the bus graph (F.40 phase 3, C4).
+                let dead = bus
+                    .decl_row(bundle, decl)
+                    .map(|row| row.external_handlers())
+                    .unwrap_or_default();
                 if pool_name != "main" && !dead.is_empty() && direct.is_some() {
                     let (call, span) = direct.expect("is_some checked");
                     errored_pools.insert(pool_name.to_string());
@@ -6809,18 +6777,19 @@ fn collect_topic_pub_sub(
 // whose publishers/subscribers live in downstream consumers must not
 // be flagged, since the other half is out of this bundle.
 //
-// Subjects are keyed by `BusSubject::canonical()` (literal string /
-// topic name / qualified last segment), which is exactly the key a
-// declared topic's name matches. False-positive guards: transport
-// bindings (external peer), trailing-`**` wildcard coverage, and
+// Judged over the bus graph (F.40 phase 3, C4): subjects are the
+// graph's wire rows, keyed by the canonical subject (spec/model.md rule
+// 8), so a topic published by name and subscribed by its literal
+// subject is one subject. False-positive guards are the rows' columns:
+// transport bindings (external peer), `**` wildcard coverage, and
 // cross-seed (`alias::Foo`) references (the other seed owns the other
-// half). A declared topic is matched by both its name and its
-// `wire_subject` (a literal site may address it by the wire form).
+// half). A site the graph cannot resolve is a hole, judged by no rule.
 
 fn check_bus_graph(
     bundle: &Bundle<'_>,
     top: &TopScope,
     entry: &crate::entry::EntryRow,
+    bus: &crate::bus_graph::BusGraph,
     diags: &mut Vec<Diag>,
 ) {
     // Closed-world gate: only a complete program (one with an entry,
@@ -6830,18 +6799,6 @@ fn check_bus_graph(
     if entry.entry().is_none() {
         return;
     }
-
-    // The publisher/subscriber/bound/cross-seed walk is shared with
-    // `bus_graph::build_bus_graph` (the static-devirt analysis) — one
-    // walk, two consumers. The orphan diagnostics below use only the
-    // ends + bound + cross_seed; the per-site detail is ignored here.
-    let crate::bus_graph::BusWalk {
-        publishers,
-        subscribers,
-        bound,
-        cross_seed,
-        ..
-    } = crate::bus_graph::collect_bus_walk(bundle);
 
     // A subject has a publisher if some locus publishes it (exactly
     // or via wildcard), it is bound to a transport (external peer),
@@ -6864,21 +6821,21 @@ fn check_bus_graph(
         });
         found
     });
-    let has_pub = |aliases: &[&str]| {
+    let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
-            || aliases.iter().any(|a| {
-                publishers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            || row.is_some_and(|r| {
+                r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
             })
     };
-    let has_sub = |aliases: &[&str]| {
+    let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
         api_bound
-            || aliases.iter().any(|a| {
-                subscribers.covers(a) || bound.contains(*a) || cross_seed.contains(*a)
+            || row.is_some_and(|r| {
+                r.subscribed.is_some() || r.subscribed_by_pattern || r.bound || r.cross_seed
             })
     };
 
-    // 1) Declared topics — matched by name and wire_subject.
-    let mut declared_keys: BTreeSet<String> = BTreeSet::new();
+    // 1) Declared topics — the row of their wire subject.
+    let mut declared_wires: BTreeSet<&str> = BTreeSet::new();
     for (name, sym) in &top.symbols {
         let TopSymbol::Topic(info) = sym else { continue };
         // Topics that failed parent resolution carry an empty wire
@@ -6886,22 +6843,12 @@ fn check_bus_graph(
         if info.wire_subject.is_empty() {
             continue;
         }
-        declared_keys.insert(name.clone());
-        declared_keys.insert(info.wire_subject.clone());
-        let aliases: Vec<&str> = if info.wire_subject == *name {
-            vec![name.as_str()]
-        } else {
-            vec![name.as_str(), info.wire_subject.as_str()]
-        };
-        let p = has_pub(&aliases);
-        let s = has_sub(&aliases);
+        declared_wires.insert(info.wire_subject.as_str());
+        let row = bus.wires.get(&info.wire_subject);
+        let p = has_pub(row);
+        let s = has_sub(row);
         if p && !s {
-            let span = publishers
-                .concrete
-                .get(name)
-                .or_else(|| publishers.concrete.get(&info.wire_subject))
-                .copied()
-                .unwrap_or(info.span);
+            let span = row.and_then(|r| r.published).unwrap_or(info.span);
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6912,12 +6859,7 @@ fn check_bus_graph(
                 ),
             ));
         } else if s && !p {
-            let span = subscribers
-                .concrete
-                .get(name)
-                .or_else(|| subscribers.concrete.get(&info.wire_subject))
-                .copied()
-                .unwrap_or(info.span);
+            let span = row.and_then(|r| r.subscribed).unwrap_or(info.span);
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6939,19 +6881,16 @@ fn check_bus_graph(
         }
     }
 
-    // 2) Literal subjects (not a declared topic's name or wire form).
-    let mut literal_keys: BTreeSet<String> = BTreeSet::new();
-    for k in publishers.concrete.keys().chain(subscribers.concrete.keys()) {
-        if !declared_keys.contains(k) {
-            literal_keys.insert(k.clone());
+    // 2) Literal subjects: a row some site names that no declared topic
+    //    carries.
+    for (k, row) in &bus.wires {
+        if declared_wires.contains(k.as_str()) {
+            continue;
         }
-    }
-    for k in literal_keys {
-        let aliases = [k.as_str()];
-        let p = has_pub(&aliases);
-        let s = has_sub(&aliases);
+        let p = has_pub(Some(row));
+        let s = has_sub(Some(row));
         if p && !s {
-            let span = publishers.concrete.get(&k).copied().unwrap();
+            let Some(span) = row.published else { continue };
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -6962,7 +6901,7 @@ fn check_bus_graph(
                 ),
             ));
         } else if s && !p {
-            let span = subscribers.concrete.get(&k).copied().unwrap();
+            let Some(span) = row.subscribed else { continue };
             diags.push(Diag::warn(
                 span,
                 format!(
@@ -7100,302 +7039,148 @@ fn check_wildcard_publish_payloads(
 // graph is a publish→subscribe→publish loop.
 //
 // The dispatch model splits the two outcomes:
-//   - A **cross-locus** cycle (edges from ≥2 loci) hops between loci
-//     via the cooperative *queue* (drained at yield) — it spins the
-//     queue / livelocks → WARNING.
-//   - An **intra-locus** cycle (all edges in one locus) is
-//     intra-locus self-dispatch, which is **devirtualized to a direct
-//     synchronous call** (spec/semantics.md), so it recurses on one
-//     thread without bound → stack overflow → ERROR.
-// The error stays on the provably-synchronous intra-locus case only,
-// matching the error-precision discipline used elsewhere.
+//   - A cycle that hops through the cooperative *queue* (drained at
+//     yield) spins the queue / livelocks → WARNING. Every cross-locus
+//     cycle (edges from ≥2 loci) does, and so does an intra-locus one
+//     with a hop lowering leaves on the bus.
+//   - An **intra-locus** cycle whose every send the intra-locus rewrite
+//     **turns into a direct synchronous call** (spec/semantics.md)
+//     recurses on one thread without bound → stack overflow → ERROR.
+// The error stays on the provably-synchronous case only, matching the
+// error-precision discipline used elsewhere: the rewrite's relation,
+// not the subjects' spelling, says which hop is a call.
 
-/// The subject a `Topic <- v` send addresses, as a canonical key
-/// (matching `BusSubject::canonical`): a string literal, a bare topic
-/// name, or a qualified path's last segment. None for computed
-/// subjects (not statically traceable).
-fn send_subject_key(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Literal(Literal::String(s), _) => Some(s.clone()),
-        Expr::Ident(id) => Some(id.name.clone()),
-        Expr::Path(qn) => qn.segments.last().map(|s| s.name.clone()),
-        _ => None,
-    }
+/// The subjects a cycle passes through, as the graph's subscriptions
+/// spell them: `a → b → a`.
+fn cycle_path(cycle: &[&crate::bus_graph::BusEdge]) -> String {
+    let mut nodes: Vec<&str> = cycle.iter().map(|e| e.from_written.as_str()).collect();
+    nodes.extend(cycle.first().map(|e| e.from_written.as_str()));
+    nodes.join(" → ")
 }
 
-/// Collect the subjects a handler/`run()` body sends to (the targets
-/// of `Topic <- value`). When `descend_cond` is false, sends nested
-/// inside `if`/`match`/`for`/`while` are skipped — leaving only the
-/// **unconditional** sends that fire on every execution. The
-/// intra-locus error uses the unconditional set (a guarded
-/// self-republish is a terminating state machine, not unbounded
-/// recursion); the cross-locus warning uses all sends.
-fn collect_sends_in_block(
-    b: &Block,
-    descend_cond: bool,
-    out: &mut Vec<(String, Span)>,
+/// Rule 10, over the graph's edges (F.40 phase 3, C4): an edge belongs
+/// to the declaration that wrote its handler, so the intra-locus check
+/// reads one declaration's edges and a cross-locus cycle counts
+/// declarations, not names. Whether a hop is a direct call is the
+/// intra-locus rewrite's relation (`intra_locus`, by the send's id),
+/// never re-derived here.
+fn check_bus_cycles(
+    bus: &crate::bus_graph::BusGraph,
+    intra_locus: &[hale_syntax::desugar::IntraLocusRewrite],
+    diags: &mut Vec<Diag>,
 ) {
-    for s in &b.stmts {
-        collect_sends_in_stmt(s, descend_cond, out);
-    }
-}
+    use crate::bus_graph::BusEdge;
+    let roots = |keep: &dyn Fn(&BusEdge) -> bool| -> BTreeSet<&str> {
+        bus.edges.iter().filter(|e| keep(e)).map(|e| e.from.as_str()).collect()
+    };
+    let first_cycle = |keep: &dyn Fn(&BusEdge) -> bool| {
+        roots(keep).into_iter().find_map(|root| bus.cycle_from(root, keep))
+    };
+    let direct: BTreeSet<u32> =
+        intra_locus.iter().filter(|r| !r.send.is_none()).map(|r| r.send.0).collect();
 
-fn collect_sends_in_stmt(
-    stmt: &Stmt,
-    descend_cond: bool,
-    out: &mut Vec<(String, Span)>,
-) {
-    match stmt {
-        Stmt::Send { subject, span, .. } => {
-            if let Some(k) = send_subject_key(subject) {
-                out.push((k, *span));
-            }
-        }
-        Stmt::If(i) if descend_cond => collect_sends_in_if(i, out),
-        Stmt::Match(m) if descend_cond => {
-            for arm in &m.arms {
-                if let MatchArmBody::Block(b) = &arm.body {
-                    collect_sends_in_block(b, descend_cond, out);
-                }
-            }
-        }
-        Stmt::For { body, .. } | Stmt::While { body, .. }
-            if descend_cond =>
-        {
-            collect_sends_in_block(body, descend_cond, out)
-        }
-        // A plain `{ ... }` block always executes — its sends stay
-        // unconditional regardless of `descend_cond`.
-        Stmt::Block(b) => collect_sends_in_block(b, descend_cond, out),
-        _ => {}
-    }
-}
-
-fn collect_sends_in_if(i: &IfStmt, out: &mut Vec<(String, Span)>) {
-    collect_sends_in_block(&i.then_block, true, out);
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => collect_sends_in_block(b, true, out),
-        Some(ElseBranch::ElseIf(n)) => collect_sends_in_if(n, out),
-        None => {}
-    }
-}
-
-/// One directed edge `from → to`, tagged with the producing locus and
-/// the send-site span for diagnostics.
-#[derive(Clone)]
-struct BusEdge {
-    to: String,
-    locus: String,
-    span: Span,
-}
-
-type BusAdj = BTreeMap<String, Vec<BusEdge>>;
-
-/// DFS for a cycle; returns the node sequence `[a, …, a]` of the first
-/// cycle found, or None. Colors: 0 white, 1 gray (on stack), 2 black.
-fn dfs_bus_cycle(
-    node: &str,
-    adj: &BusAdj,
-    color: &mut BTreeMap<String, u8>,
-    path: &mut Vec<String>,
-) -> Option<Vec<String>> {
-    color.insert(node.to_string(), 1);
-    path.push(node.to_string());
-    if let Some(edges) = adj.get(node) {
-        for e in edges {
-            match color.get(&e.to).copied().unwrap_or(0) {
-                1 => {
-                    let start =
-                        path.iter().position(|n| n == &e.to).unwrap_or(0);
-                    let mut cyc = path[start..].to_vec();
-                    cyc.push(e.to.clone());
-                    return Some(cyc);
-                }
-                0 => {
-                    if let Some(c) = dfs_bus_cycle(&e.to, adj, color, path) {
-                        return Some(c);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    path.pop();
-    color.insert(node.to_string(), 2);
-    None
-}
-
-/// The set of loci whose edges realize `cyc`, plus a representative
-/// send span (the first edge's).
-fn cycle_loci(cyc: &[String], adj: &BusAdj) -> (BTreeSet<String>, Span) {
-    let mut loci = BTreeSet::new();
-    let mut span = Span::new(0, 0);
-    let mut first = true;
-    for w in cyc.windows(2) {
-        if let Some(edges) = adj.get(&w[0]) {
-            if let Some(e) = edges.iter().find(|e| e.to == w[1]) {
-                loci.insert(e.locus.clone());
-                if first {
-                    span = e.span;
-                    first = false;
-                }
-            }
-        }
-    }
-    (loci, span)
-}
-
-fn check_bus_cycles(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
-    // Build the edge set. For each locus, map its subscribe handlers
-    // by name, then for each subscribed subject add edges to whatever
-    // the handler body sends.
-    let mut global: BusAdj = BTreeMap::new();
-    // Per-locus adjacency (only that locus's edges) for the intra
-    // (synchronous) cycle check.
-    let mut per_locus: BTreeMap<String, BusAdj> = BTreeMap::new();
-
-    fn walk_loci<'a>(
-        items: &'a [TopDecl],
-        global: &mut BusAdj,
-        per_locus: &mut BTreeMap<String, BusAdj>,
-    ) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    // handler name -> body
-                    let mut handler_bodies: BTreeMap<&str, &Block> =
-                        BTreeMap::new();
-                    let mut subs: Vec<(String, String)> = Vec::new(); // (subject, handler)
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Fn(f) => {
-                                handler_bodies.insert(f.name.name.as_str(), &f.body);
-                            }
-                            LocusMember::Bus(bb) => {
-                                for bm in &bb.members {
-                                    if let BusMember::Subscribe {
-                                        subject, handler, ..
-                                    } = bm
-                                    {
-                                        subs.push((
-                                            subject.canonical().to_string(),
-                                            handler.name.clone(),
-                                        ));
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    let lname = l.name.name.clone();
-                    for (subject, handler) in subs {
-                        let Some(body) = handler_bodies.get(handler.as_str())
-                        else {
-                            continue;
-                        };
-                        // Cross-locus warning: every send (incl. guarded).
-                        let mut sends_all = Vec::new();
-                        collect_sends_in_block(body, true, &mut sends_all);
-                        for (to, span) in sends_all {
-                            global.entry(subject.clone()).or_default().push(
-                                BusEdge { to, locus: lname.clone(), span },
-                            );
-                        }
-                        // Intra-locus error: only unconditional sends —
-                        // a guarded self-republish terminates.
-                        let mut sends_uncond = Vec::new();
-                        collect_sends_in_block(body, false, &mut sends_uncond);
-                        for (to, span) in sends_uncond {
-                            per_locus
-                                .entry(lname.clone())
-                                .or_default()
-                                .entry(subject.clone())
-                                .or_default()
-                                .push(BusEdge { to, locus: lname.clone(), span });
-                        }
-                    }
-                }
-                TopDecl::Module(md) => walk_loci(&md.items, global, per_locus),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk_loci(&program.items, &mut global, &mut per_locus);
-    }
-
-    // 1) Intra-locus cycles → error (one per locus). Sound because
-    //    intra-locus self-dispatch is devirtualized synchronous.
-    let mut intra_loci: BTreeSet<String> = BTreeSet::new();
-    for (lname, adj) in &per_locus {
-        let roots: Vec<String> = adj.keys().cloned().collect();
-        for root in roots {
-            let mut color = BTreeMap::new();
-            let mut path = Vec::new();
-            if let Some(cyc) = dfs_bus_cycle(&root, adj, &mut color, &mut path) {
-                let (_, span) = cycle_loci(&cyc, adj);
-                diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "locus `{}` has a re-entrant synchronous bus cycle \
-                         `{}`: each publish onto a topic the locus also \
-                         subscribes is a direct in-thread call (intra-locus \
-                         self-dispatch), so this recurses without bound and \
-                         overflows the stack. Break the cycle, or route one \
-                         hop through a different pool (an async enqueue).",
-                        lname,
-                        cyc.join(" → "),
-                    ),
-                ));
-                intra_loci.insert(lname.clone());
-                break;
-            }
-        }
-    }
-
-    // 2) Cross-locus cycles → warning. Exclude edges from loci that
-    //    already have an intra-locus error so those don't shadow a
-    //    genuine cross-locus loop.
-    let mut cross_adj: BusAdj = BTreeMap::new();
-    for (from, edges) in &global {
-        for e in edges {
-            if !intra_loci.contains(&e.locus) {
-                cross_adj
-                    .entry(from.clone())
-                    .or_default()
-                    .push(e.clone());
-            }
-        }
-    }
-    let mut reported: BTreeSet<String> = BTreeSet::new();
-    let roots: Vec<String> = cross_adj.keys().cloned().collect();
-    for root in roots {
-        let mut color = BTreeMap::new();
-        let mut path = Vec::new();
-        if let Some(cyc) = dfs_bus_cycle(&root, &cross_adj, &mut color, &mut path)
-        {
-            let (loci, span) = cycle_loci(&cyc, &cross_adj);
-            if loci.len() < 2 {
-                continue;
-            }
-            let mut nodes: Vec<String> = cyc.clone();
-            nodes.sort();
-            nodes.dedup();
-            let key = nodes.join("|");
-            if !reported.insert(key) {
-                continue;
-            }
-            diags.push(Diag::warn(
-                span,
+    // 1) Intra-locus cycles (one diagnostic per declaration, in name
+    //    order); only unconditional sends are edges. A cycle whose every
+    //    send lowering turns into a direct call recurses on one thread →
+    //    error. Otherwise a hop goes through the queue, which a cell can
+    //    spin but not overflow → the queue's warning.
+    let mut order: Vec<usize> = (0..bus.decls.len()).collect();
+    order.sort_by(|a, b| bus.decls[*a].name.cmp(&bus.decls[*b].name));
+    let mut intra: BTreeSet<usize> = BTreeSet::new();
+    for d in order {
+        let keep = |e: &BusEdge| e.decl == d && e.unconditional;
+        let called = |e: &BusEdge| keep(e) && direct.contains(&e.send.0);
+        let Some(queued) = first_cycle(&keep) else { continue };
+        // The join reads each send's identity, and a send with none
+        // matches no row: that is a bundle nobody numbered, not a send
+        // the queue carries, so it is refused here rather than judged.
+        // Every entry numbers before it checks; this is the invariant.
+        if let Some(e) = bus.edges.iter().find(|e| keep(e) && e.send.is_none()) {
+            diags.push(Diag::ty(
+                e.span,
                 format!(
-                    "bus cycle `{}` across loci ({}): a cell can re-trigger \
-                     its own publish, spinning the cooperative queue. Break \
-                     the loop or add a terminating condition.",
-                    cyc.join(" → "),
-                    loci.into_iter().collect::<Vec<_>>().join(", "),
+                    "internal: the send to `{}` in handler `{}` of locus `{}` \
+                     carries no identity, so the bus cycle `{}` cannot be \
+                     joined to the intra-locus rewrite's relation to tell a \
+                     direct call from a queued send. The check was handed a \
+                     bundle whose programs were never numbered.",
+                    e.to,
+                    e.handler,
+                    bus.decls[d].name,
+                    cycle_path(&queued),
                 ),
             ));
+            intra.insert(d);
+        } else if let Some(cycle) = first_cycle(&called) {
+            diags.push(Diag::ty(
+                cycle[0].span,
+                format!(
+                    "locus `{}` has a re-entrant synchronous bus cycle \
+                     `{}`: each publish onto a topic the locus also \
+                     subscribes is a direct in-thread call (intra-locus \
+                     self-dispatch), so this recurses without bound and \
+                     overflows the stack. Break the cycle, or route one \
+                     hop through a different pool (an async enqueue).",
+                    bus.decls[d].name,
+                    cycle_path(&cycle),
+                ),
+            ));
+            intra.insert(d);
+        } else {
+            diags.push(Diag::warn(
+                queued[0].span,
+                format!(
+                    "bus cycle `{}` in locus `{}`: a cell can re-trigger \
+                     its own publish, spinning the cooperative queue. Break \
+                     the loop or add a terminating condition.",
+                    cycle_path(&queued),
+                    bus.decls[d].name,
+                ),
+            ));
+            intra.insert(d);
         }
+    }
+
+    // 2) Cross-locus cycles → warning: every send, guarded or not.
+    //    Exclude the edges of declarations that already have an
+    //    intra-locus diagnostic so those don't shadow a genuine
+    //    cross-locus loop.
+    let keep = |e: &BusEdge| !intra.contains(&e.decl);
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    for root in roots(&keep) {
+        let Some(cycle) = bus.cycle_from(root, &keep) else { continue };
+        let decls: BTreeSet<usize> = cycle.iter().map(|e| e.decl).collect();
+        if decls.len() < 2 {
+            continue;
+        }
+        let nodes: BTreeSet<&str> = cycle.iter().map(|e| e.from.as_str()).collect();
+        if !reported.insert(nodes.into_iter().collect::<Vec<_>>().join("|")) {
+            continue;
+        }
+        // Each declaration by its name; two of one name by their module
+        // paths, so the list says which two.
+        let mut loci: Vec<String> = decls
+            .iter()
+            .map(|d| {
+                let row = &bus.decls[*d];
+                if decls.iter().filter(|o| bus.decls[**o].name == row.name).count() > 1 {
+                    row.modules.iter().chain([&row.name]).cloned().collect::<Vec<_>>().join("::")
+                } else {
+                    row.name.clone()
+                }
+            })
+            .collect();
+        loci.sort();
+        diags.push(Diag::warn(
+            cycle[0].span,
+            format!(
+                "bus cycle `{}` across loci ({}): a cell can re-trigger \
+                 its own publish, spinning the cooperative queue. Break \
+                 the loop or add a terminating condition.",
+                cycle_path(&cycle),
+                loci.join(", "),
+            ),
+        ));
     }
 }
 
@@ -11504,6 +11289,19 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // A qualified subject names a topic by its import:
+                // one that names no declaration is the cross-seed
+                // twin of the resolver's "unknown topic".
+                for bm in &bb.members {
+                    let (verb, subject) = match bm {
+                        BusMember::Subscribe { subject, .. } => ("subscribe", subject),
+                        BusMember::Publish { subject, .. } => ("publish", subject),
+                    };
+                    let BusSubject::QualifiedTopic(qn) = subject else { continue };
+                    if let Some(msg) = self.unresolved_bus_subject(verb, qn) {
+                        self.diags.push(Diag::ty(qn.span, msg));
+                    }
+                }
             }
             LocusMember::Contract(_) => {
                 // Already lowered by the resolver.
@@ -14477,6 +14275,51 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         }
+    }
+
+    /// A `subscribe` or `publish` of `alias::Topic` that no
+    /// declaration answers: what to say about it, or nothing.
+    ///
+    /// The import mangler collapses a resolvable path to the imported
+    /// topic before the check, and the build resolves what is left
+    /// through [`crate::resolved::lookup_qualified_path`]; a path that
+    /// lookup cannot answer reaches lowering as a subject with no
+    /// topic and no payload, which the build refuses without a span.
+    /// So in a whole program it is the located error a local unknown
+    /// topic gets, worded alike. The tolerance is
+    /// [`Self::unresolved_qualified`]'s: one file of a multi-file seed,
+    /// and an import this bundle never resolved (GH #724), where the
+    /// path stays a hole of the bus graph and rule 9 stays silent.
+    fn unresolved_bus_subject(&self, verb: &str, path: &QualifiedName) -> Option<String> {
+        if !self.strict_idents || path.segments.len() < 2 {
+            return None;
+        }
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let head = segs[0];
+        if self.unresolved_import_aliases.contains(head)
+            || crate::resolved::lookup_qualified_path(&segs, self.import_renames).is_some()
+        {
+            return None;
+        }
+        let alias = unscoped_alias(head);
+        let written: Vec<&str> = std::iter::once(alias).chain(segs[1..].iter().copied()).collect();
+        let written = written.join("::");
+        let topic = segs[segs.len() - 1];
+        let imported = self
+            .import_renames
+            .iter()
+            .any(|(key, _)| key.first().map(String::as_str) == Some(head));
+        Some(if imported {
+            format!(
+                "{verb} references unknown topic `{written}` (the library imported as \
+                 `{alias}` declares no `topic {topic}`)"
+            )
+        } else {
+            format!(
+                "{verb} references unknown topic `{written}` (`{alias}` is not an import \
+                 of this seed, so no `topic {topic}` declaration is in scope)"
+            )
+        })
     }
 
     fn check_qualified_path(&mut self, path: &QualifiedName) {

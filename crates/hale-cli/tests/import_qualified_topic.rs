@@ -80,9 +80,9 @@ fn a_qualified_topic_carries_the_declarations_payload() {
 /// A qualified topic that resolves to nothing — a name the library
 /// does not declare, or a head that is no import — keeps the spelling
 /// the author wrote through the sequence, and the build refuses it in
-/// that spelling. (The checker accepts such a path with an Unknown
-/// payload and leaves the refusal to lowering, `resolve_bus_subject`'s
-/// qualified arm, so it is the build that is pinned here.)
+/// that spelling: the check it runs first reports the resolver's
+/// unknown-topic error, located at the path (`unresolved_bus_subject`),
+/// so the refusal never reaches lowering.
 #[test]
 fn an_unresolved_qualified_topic_is_refused_in_its_own_spelling() {
     for (tag, path) in [("missing_name", "source::Missing"), ("missing_head", "nowhere::Heartbeat")] {
@@ -91,7 +91,10 @@ fn an_unresolved_qualified_topic_is_refused_in_its_own_spelling() {
         let bin = d.join("bin");
         let (ok, out) = hale(&app, &["build", ".", "-o", bin.to_str().unwrap()]);
         assert!(!ok, "`{path}` names no topic, so the build must refuse it:\n{out}");
-        assert!(out.contains(&format!("subscribe `{path}`")), "the refusal cites `{path}` as written:\n{out}");
+        assert!(
+            out.contains(&format!("subscribe references unknown topic `{path}`")),
+            "the refusal cites `{path}` as written:\n{out}"
+        );
         assert!(!out.contains("__lib_"), "no mangled name leaks:\n{out}");
         let _ = std::fs::remove_dir_all(&d);
     }

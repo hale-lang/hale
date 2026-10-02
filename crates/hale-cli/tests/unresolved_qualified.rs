@@ -23,6 +23,10 @@
 //! at all (an enum, an alias of one), every qualified path that DOES
 //! resolve, and one file of a multi-file seed — whose `import` line
 //! may live in a sibling — keep the tolerance they have always had.
+//!
+//! A `subscribe` or `publish` subject is the same mistake in a bus
+//! position, and gets the resolver's "unknown topic" wording with the
+//! alias and the missing topic named.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -197,6 +201,47 @@ const RESOLVES: &str = concat!(
     "\n",
     "fn main() {\n",
     "    App { };\n",
+    "}\n",
+);
+
+/// The bus positions: `subscribe` and `publish` of a qualified topic
+/// path that names no declaration, through an import that lacks the
+/// name and through a head no seed declares.
+const UNKNOWN_SUBJECTS: &str = concat!(
+    "import \"../lib\" as b;\n",               // 1
+    "\n",                                      // 2
+    "locus Relay {\n",                         // 3
+    "    bus {\n",                             // 4
+    "        subscribe b::Nope as on_nope;\n", // 5  name, subscribe
+    "        subscribe zz::Ping as on_ping;\n", // 6 head, subscribe
+    "        publish b::Pong;\n",              // 7  name, publish
+    "    }\n",                                 // 8
+    "\n",                                      // 9
+    "    fn on_nope(t: b::Tick) { }\n",        // 10
+    "    fn on_ping(t: b::Tick) { }\n",        // 11
+    "}\n",                                     // 12
+    "\n",                                      // 13
+    "main locus App {\n",                      // 14
+    "    params {\n",                          // 15
+    "        r: Relay = Relay { };\n",         // 16
+    "    }\n",                                 // 17
+    "}\n",                                     // 18
+    "\n",                                      // 19
+    "fn main() {\n",                           // 20
+    "    App { };\n",                          // 21
+    "}\n",                                     // 22
+);
+
+/// The seed `bus_rules_over_graph.rs`'s `COLUMNS` program imports as
+/// `other`: it declares the topic the program subscribes to.
+const OTHER: &str = concat!(
+    "type Tick {\n",
+    "    n: Int;\n",
+    "}\n",
+    "\n",
+    "topic Shared {\n",
+    "    payload: Tick;\n",
+    "    subject: \"other.shared\";\n",
     "}\n",
 );
 
@@ -395,6 +440,95 @@ fn a_name_the_imported_library_lacks_is_refused_in_every_position() {
     }
 
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
+/// A `subscribe` or `publish` of a qualified path that names no
+/// declaration is the resolver's "unknown topic", located at the path.
+/// It used to check clean and then fail the build without a span: the
+/// path reached lowering as a subject with no topic and no payload.
+#[test]
+fn a_bus_subject_that_names_no_declaration_is_refused() {
+    let app = app_seed("bus", UNKNOWN_SUBJECTS);
+
+    let (ok, out) = hale(&app, &["check", "."]);
+    assert!(!ok, "check must refuse the unknown subjects:\n{out}");
+    for (line, msg) in [
+        (
+            5,
+            "subscribe references unknown topic `b::Nope` (the library imported as `b` \
+             declares no `topic Nope`)",
+        ),
+        (
+            6,
+            "subscribe references unknown topic `zz::Ping` (`zz` is not an import of this \
+             seed, so no `topic Ping` declaration is in scope)",
+        ),
+        (
+            7,
+            "publish references unknown topic `b::Pong` (the library imported as `b` \
+             declares no `topic Pong`)",
+        ),
+    ] {
+        assert!(
+            located_at(&out, &format!("main.hl:{line}:"), msg),
+            "expected {msg:?} at main.hl:{line} in:\n{out}"
+        );
+    }
+    assert_eq!(out.matches("references unknown topic").count(), 3, "one finding per path:\n{out}");
+
+    let (ok, out) = hale(&app, &["build", "."]);
+    assert!(!ok, "build must refuse it too:\n{out}");
+    assert!(
+        out.contains("subscribe references unknown topic `b::Nope`"),
+        "build reports the same finding:\n{out}"
+    );
+
+    // One file of a seed keeps the tolerance every qualified path has
+    // there; the build of that file refuses it with the finding.
+    let (ok, out) = hale(&app, &["check", "main.hl"]);
+    assert!(ok && !out.contains("unknown topic"), "a single file stays permissive:\n{out}");
+    let (ok, out) = hale(&app, &["build", "main.hl"]);
+    assert!(!ok && out.contains("references unknown topic `zz::Ping`"), "{out}");
+
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
+
+/// `bus_rules_over_graph.rs`'s `COLUMNS` program, read from its source
+/// so the two cannot drift, beside the seed it imports: its cross-seed
+/// subscription names a real topic, so the workspace checks clean and
+/// builds.
+#[test]
+fn the_cross_seed_columns_program_checks_and_builds_whole() {
+    let source = std::fs::read_to_string(
+        repo_root().join("crates/hale-types/tests/bus_rules_over_graph.rs"),
+    )
+    .expect("read bus_rules_over_graph.rs");
+    let start = "const COLUMNS: &str = r#\"";
+    let program = source
+        .split_once(start)
+        .and_then(|(_, rest)| rest.split_once("\"#;"))
+        .map(|(program, _)| program)
+        .expect("the COLUMNS program");
+    assert!(program.contains("subscribe other::Shared as on_shared;"), "{program}");
+
+    let d: PathBuf = std::env::temp_dir().join(format!(
+        "hale_unresolved_qualified_{}_columns",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    for (name, src) in [("other/main.hl", OTHER), ("app/main.hl", program)] {
+        let p = d.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).expect("mkdir");
+        std::fs::write(&p, src).expect("write");
+    }
+    let app = d.join("app");
+
+    let (ok, out) = hale(&app, &["check", "."]);
+    assert!(ok && !out.contains("error"), "the whole workspace checks clean:\n{out}");
+    let (ok, out) = hale(&app, &["build", "."]);
+    assert!(ok, "and builds:\n{out}");
+
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// A did-you-mean when a spelling IS close: the substring rule first
@@ -601,6 +735,8 @@ fn the_repos_own_seeds_never_trip_the_rule() {
         for needle in [
             "is not an import or a type of this seed",
             "is not declared by the library imported as",
+            "is not an import of this seed, so no `topic",
+            "declares no `topic",
         ] {
             assert!(
                 !out.contains(needle),
