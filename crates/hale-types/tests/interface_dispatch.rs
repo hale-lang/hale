@@ -283,14 +283,15 @@ fn a_certificate_sees_a_carrier_through_the_stdlib_router() {
     );
 }
 
-/// The same chain with a clean handler: the empty middleware list
-/// (`Middleware` has no conformer here) is dead, not fail-closed, and
-/// clean fan-out targets add nothing — but the router's fn-route
-/// dispatch (`let __route_fn = e.handler_fn; __route_fn(cur)`) is an
-/// indirect call, so the assertion cannot hold (F.40 E5, a classified
-/// correction: that call reached nothing, and the chain certified).
+/// CONTROL — the same chain with a clean handler certifies: the
+/// empty middleware list (`Middleware` has no conformer here) is
+/// dead, not fail-closed, and clean fan-out targets add nothing. The
+/// router's fn-route dispatch (`let __route_fn = e.handler_fn;
+/// __route_fn(cur)`) is an indirect call (F.40 E5) that resolves to the
+/// program's function values of the field's type: here only the
+/// router's own `__http_fn_unset` sentinel, which is clean.
 #[test]
-fn a_clean_handler_through_the_stdlib_router_meets_the_indirect_fn_route() {
+fn a_clean_handler_through_the_stdlib_router_still_certifies() {
     let src = r#"
         effect money;
         locus Hello {
@@ -320,9 +321,57 @@ fn a_clean_handler_through_the_stdlib_router_meets_the_indirect_fn_route() {
     "#;
     let ds = diags(src);
     assert!(
-        ds.iter().any(|m| m.contains("effect assertion violated")
-            && m.contains("`__route_fn` — an indirect call through a function value")),
-        "the router's fn-route dispatch is indirect: {:?}",
+        !ds.iter().any(|m| m.contains("effect assertion violated")),
+        "a clean handler through the router must certify: {:?}",
+        ds
+    );
+}
+
+/// The router dispatches exactly the functions registered on it with
+/// `add_fn` (F.40 E5): a registered handler that performs an effect is
+/// reached through the fn-route dispatch, and the assertion names it.
+/// Before, the dispatch reached nothing and the chain certified.
+#[test]
+fn a_registered_fn_handler_is_reached_through_the_stdlib_router() {
+    let src = r#"
+        effect money;
+        @effects(is: {money})
+        fn charge() -> Int { return 1; }
+        fn hello(ctx: std::http::Context) -> std::http::Response {
+            let n = charge();
+            return std::http::Response {
+                status: 200,
+                content_type: "text/plain",
+                body: "hi"
+            };
+        }
+        locus Gate {
+            @effects(none: {money})
+            fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+                let resp = r.dispatch(req);
+                return resp.status;
+            }
+        }
+        fn main() {
+            let r = std::http::Router { };
+            r.add_fn("GET", "/", hello);
+            let req = std::http::Request {
+                method: "GET", path: "/", body: ""
+            };
+            println(Gate { }.probe(r, req));
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("effect assertion violated") && m.contains("hello")),
+        "the registered handler's effect is reached through the router: {:?}",
+        ds
+    );
+    // The control: the same registered handler without the effect.
+    let ds = diags(&src.replace("let n = charge();", ""));
+    assert!(
+        !ds.iter().any(|m| m.contains("effect assertion violated")),
+        "a clean registered handler certifies: {:?}",
         ds
     );
 }

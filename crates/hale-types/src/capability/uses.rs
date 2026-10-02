@@ -164,11 +164,13 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
         // not unknown (`CallEdge::via_interface`).
         return None;
     }
-    if e.through_param {
+    // An indirect call the summary resolved to the program's function
+    // values is its alternatives (`CallEdge::via_value`), never a hole.
+    if e.indirect && e.through_param {
         return Some("it is called through a function-typed parameter, whose target is not known here");
     }
     // A computed callee (`pick()(x)`), worded as the member walk words it.
-    if e.spelling == CallSpelling::Expr {
+    if e.indirect && e.spelling == CallSpelling::Expr {
         return Some(UNRESOLVED_VALUE);
     }
     if e.opaque_method_call() {
@@ -346,7 +348,7 @@ impl<'a> Graph<'a> {
     /// takes for the call to nothing it always was.
     fn own_edge(&self, e: &CallEdge) -> Edge {
         match (self.edge(e), &e.callee) {
-            (Edge::Nothing, Callee::Unresolved(name)) if e.unresolved_local => {
+            (Edge::Nothing, Callee::Unresolved(name)) if e.indirect && e.unresolved_local => {
                 Edge::Hole(format!("{name}()"), UNRESOLVED_VALUE)
             }
             (edge, _) => edge,

@@ -65,6 +65,21 @@ use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::handler_routing::ChildRef;
 use crate::symbol::Bundle;
 
+/// The dispatch group a call row shares its site with. The model has no
+/// function-value dispatch kind (its one shared-site dispatch is an
+/// interface's, and its laws hold a shared site to one interface and
+/// method), so each alternative of a function-value dispatch (E5,
+/// `CallEdge::via_value`) is a direct call at a site of its own: the
+/// calls stay exact, and a counting claim over them sums where the
+/// `@budget` engines take the max.
+fn model_group(edge: &alloc_summary::CallEdge) -> Option<u32> {
+    if edge.via_value.is_some() {
+        None
+    } else {
+        edge.dispatch_group
+    }
+}
+
 /// A named TypeExpr's raw path (joined `::`), `"?"` otherwise.
 fn te_name_of(t: &TypeExpr) -> String {
     match t {
@@ -1101,7 +1116,7 @@ pub fn derive_application_model_over(
         for edge in &fs.calls {
             match &edge.callee {
                 Callee::Resolved(next) => {
-                    let site = site_of(edge.dispatch_group);
+                    let site = site_of(model_group(edge));
                     if !user_key(next) {
                         continue;
                     }
@@ -1123,7 +1138,7 @@ pub fn derive_application_model_over(
                     );
                 }
                 Callee::Unresolved(n) => {
-                    let site = site_of(edge.dispatch_group);
+                    let site = site_of(model_group(edge));
                     let anchor = EntityRef::Function(from);
                     let pid = intern_span(&mut records, edge.span);
                     if edge.indirect
@@ -2611,8 +2626,26 @@ pub fn derive_application_model_over(
                 }
             }
         };
+        // A function-value dispatch numbers its sites as the program's
+        // own rows hold it (`AllocSummary::own_rows`): an alternative
+        // only the analysis copy supplies is not one of them, and a
+        // dispatch with none of the program's own is its one indirect
+        // call as written.
+        let kept = merged.value_groups_kept(fs);
+        let mut restored: BTreeSet<u32> = BTreeSet::new();
         for edge in &fs.calls {
-            let site = site_of(edge.dispatch_group);
+            if let (Some(_), Some(g)) = (&edge.via_value, edge.dispatch_group) {
+                if !kept.contains(&g) {
+                    if restored.insert(g) {
+                        site_of(None);
+                    }
+                    continue;
+                }
+                if merged.copy_alternative(edge) {
+                    continue;
+                }
+            }
+            let site = site_of(model_group(edge));
             let Callee::Resolved(next) = &edge.callee else {
                 continue;
             };
@@ -2643,7 +2676,7 @@ pub fn derive_application_model_over(
                     (shown, next.fn_name.clone())
                 });
             let entry_in_loop = edge.loop_depth > 0;
-            let entry_group = edge.dispatch_group;
+            let entry_group = model_group(edge);
             let entry_provenance =
                 intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
@@ -2727,7 +2760,7 @@ pub fn derive_application_model_over(
                                         target,
                                         dispatch: dsp,
                                         in_loop: e2.loop_depth > 0,
-                                        group: e2.dispatch_group,
+                                        group: model_group(e2),
                                     },
                                 );
                             }

@@ -222,15 +222,17 @@ fn a_call_through_a_let_bound_path_is_refused_through_the_local() {
 }
 
 /// A call in the program's own code through a local the bindings do not
-/// follow to a fn — or through a computed callee — is a hole: wasm32
-/// cannot admit what it might need, and the host admits it.
+/// follow to a fn — or through a computed callee — reaches the
+/// program's function values of its arity (F.40 E5, a classified
+/// correction: it was a hole). Each is the program's own fn, judged where
+/// it is written, and these ask nothing. In a params initializer (the
+/// admission's own walk, which does not resolve function values) it is
+/// still a hole: wasm32 cannot admit what it might need, and the host
+/// admits it.
 #[test]
 fn a_call_through_an_unresolved_local_is_a_hole_in_the_programs_own_code() {
     let fns = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n";
-    refused_on_wasm32(
-        &format!("{fns}fn main() {{\n    let f = if len(\"ab\") == 2 {{ one }} else {{ two }};\n    println(f());\n}}\n"),
-        &[(6, 13, &format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}"))],
-    );
+    admitted(&format!("{fns}fn main() {{\n    let f = if len(\"ab\") == 2 {{ one }} else {{ two }};\n    println(f());\n}}\n"));
     refused_on_wasm32(
         &format!(
             "{fns}locus Holder {{\n    params {{ n: Int = {{ let f = if len(\"ab\") == 2 {{ one }} else {{ two }}; f() }}; }}\n    \
@@ -238,32 +240,28 @@ fn a_call_through_an_unresolved_local_is_a_hole_in_the_programs_own_code() {
         ),
         &[(5, 73, &format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}"))],
     );
-    refused_on_wasm32(
-        &format!("{fns}fn main() {{\n    let fs = [one, two];\n    println(fs[0]());\n}}\n"),
-        &[(6, 13, &format!("cannot establish what `<expr>()` requires on wasm32: {UNRESOLVED}"))],
-    );
+    admitted(&format!("{fns}fn main() {{\n    let fs = [one, two];\n    println(fs[0]());\n}}\n"));
     // A local bound to a fn of the program's own is followed: its body is
     // judged where it is written, and asks nothing here.
     admitted(&format!("{fns}fn main() {{\n    let f = one;\n    println(f());\n}}\n"));
 }
 
 /// The review of #1318, round 3 (loops): a loop is walked once, so a
-/// local the loop reassigns is a hole where it is called ahead of the
-/// assignment — on a later iteration it runs the value the assignment
-/// stored — in a fn's body (the summary's walk) and in a params
-/// initializer (the admission's own walk) alike. A local the loop only
-/// reads is still followed to what it names.
+/// local the loop reassigns is not followed where it is called ahead of
+/// the assignment — on a later iteration it runs the value the
+/// assignment stored. In a fn's body (the summary's walk) the call
+/// reaches the program's function values of its arity (F.40 E5, a
+/// classified correction: it was a hole); in a params initializer (the
+/// admission's own walk) it is a hole. A local the loop only reads is
+/// still followed to what it names.
 #[test]
 fn a_call_through_a_local_a_loop_reassigns_is_a_hole() {
     let fns = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n";
     let hole = format!("cannot establish what `f()` requires on wasm32: {UNRESOLVED}");
-    refused_on_wasm32(
-        &format!(
-            "{fns}fn main() {{\n    let mut f = one;\n    let mut i = 0;\n    while i < 2 {{\n        println(f());\n        \
-             f = two;\n        i = i + 1;\n    }}\n}}\n"
-        ),
-        &[(8, 17, &hole)],
-    );
+    admitted(&format!(
+        "{fns}fn main() {{\n    let mut f = one;\n    let mut i = 0;\n    while i < 2 {{\n        println(f());\n        \
+         f = two;\n        i = i + 1;\n    }}\n}}\n"
+    ));
     refused_on_wasm32(
         &format!(
             "{fns}locus Holder {{\n    params {{\n        n: Int = {{\n            let mut f = one;\n            \

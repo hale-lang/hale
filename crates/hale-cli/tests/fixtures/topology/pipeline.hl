@@ -1,6 +1,8 @@
 // The pinned renderer fixture: two loci, two topics, a keyed
-// subscription, a cross-locus call, one indirect call (the model
-// hole), a group, and two claims — every view has something to show.
+// subscription, a cross-locus call, an indirect call the program's one
+// function value of its type resolves, one no function value can be
+// (`call_any`: the model hole), a group, and two claims — every view
+// has something to show.
 type Reading { sensor: Int = 0; v: Int = 0; }
 type Cmd { op: Int = 0; }
 topic Readings { payload: Reading; subject: "sense.reading"; keyed_by sensor; }
@@ -10,6 +12,10 @@ fn double(v: Int) -> Int { return v * 2; }
 
 fn call_it(f: fn (Int) -> Int, v: Int) -> Int {
     return f(v);
+}
+
+fn call_any(f: fn (Bool) -> Int) -> Int {
+    return f(true);
 }
 
 locus Worker {

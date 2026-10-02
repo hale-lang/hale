@@ -25,6 +25,12 @@
 //! function value in the corpus is a literal name at its binding site
 //! — but a conservative certificate is wrong in the safe direction and
 //! an optimistic one is not.
+//!
+//! F.40 E5 resolves it where the program states it: an indirect call
+//! reaches the program's function values (the functions some expression
+//! reads as a value) of its arity, narrowed by the parameter's declared
+//! type, so the certificate names the function the call can reach. A
+//! call no such value can be stays the "may do anything" call.
 
 use hale_syntax::parse_source;
 
@@ -36,6 +42,9 @@ fn errs(src: &str) -> Vec<String> {
         .collect()
 }
 
+/// F.40 E5, a classified correction: the call through `f` reaches the
+/// program's one function value of its type, `does_syscall`, and the
+/// violation names it (it named the indirect call).
 #[test]
 fn an_effect_certificate_cannot_pass_through_an_indirect_call() {
     let ds = errs(
@@ -50,8 +59,25 @@ fn an_effect_certificate_cannot_pass_through_an_indirect_call() {
         .unwrap_or_else(|| {
             panic!("`@no_syscall` must not hold over an indirect call: {:?}", ds)
         });
+    assert!(d.contains("apply -> does_syscall"), "the witness is the function the call reaches: {}", d);
+}
+
+/// No function value of the parameter's type: the call stays the one
+/// whose target is unknowable, and the diagnostic says so.
+#[test]
+fn an_indirect_call_no_value_can_be_stays_unknowable() {
+    let ds = errs(
+        "fn does_syscall(x: Int) -> Int { println(\"side effect\"); return x; }\n\
+         @no_syscall\n\
+         fn apply(f: fn(String) -> Int, v: String) -> Int { return f(v); }\n\
+         fn main() { println(does_syscall(1)); }",
+    );
+    let d = ds
+        .iter()
+        .find(|m| m.contains("effect assertion violated"))
+        .unwrap_or_else(|| panic!("`@no_syscall` must not hold over an indirect call: {:?}", ds));
     assert!(
-        d.contains("indirect call"),
+        d.contains("indirect call through a function-typed parameter"),
         "the diagnostic must say WHY it cannot certify — the reader has \
          to know the target is unknowable, not that a syscall was \
          found: {}",
@@ -149,7 +175,8 @@ fn a_certificate_sees_a_call_through_a_let_bound_fn() {
 /// `@no_syscall` certified both of the #1318 review's programs while
 /// each performed the syscall: a binding chosen by a branch, and a
 /// binding a loop reassigns after the call (the second iteration calls
-/// what the first assigned).
+/// what the first assigned). With the call resolved to the program's
+/// function values (E5), the violation names `pid`.
 #[test]
 fn a_certificate_cannot_pass_through_an_unresolved_function_value() {
     const FNS: &str = "fn pure() -> Int { return 1; }\n\
@@ -166,7 +193,7 @@ fn a_certificate_cannot_pass_through_an_unresolved_function_value() {
             .iter()
             .find(|m| m.contains("effect assertion violated"))
             .unwrap_or_else(|| panic!("`f()` may call `pid`, so `via` may syscall: {body}\n{:?}", ds));
-        assert!(d.contains("indirect call through a function value"), "{d}");
+        assert!(d.contains("via -> pid"), "{d}");
     }
     // The control: a binding nothing reassigns is followed to its fn,
     // and a syscall-free one still certifies.

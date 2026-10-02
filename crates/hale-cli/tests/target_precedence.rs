@@ -716,28 +716,21 @@ fn a_call_through_a_let_bound_fn_is_refused_in_every_body() {
 }
 
 /// A call in the program's own code through a local the bindings cannot
-/// follow to a fn (here an `if` value) is a hole, refused on wasm32 with
-/// the member walk's wording; the host admits it.
+/// follow to a fn (here an `if` value) reaches the program's function
+/// values of its arity (F.40 E5, a classified correction: it was a hole,
+/// refused on wasm32): here `one` and `two`, which ask the target for
+/// nothing, so it is admitted everywhere.
 #[test]
 fn a_call_through_an_unresolved_local_in_own_code_is_a_hole() {
     if !wasm_toolchain() {
         eprintln!("SKIP a_call_through_an_unresolved_local_in_own_code_is_a_hole: no wasm32 clang or wasm-ld");
         return;
     }
-    let main = "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n\n\
-                fn main() {\n    let f = if len(\"ab\") == 2 { one } else { two };\n    println(f());\n}\n";
-    seeded_case("let_unresolved", None, main, |at, _| {
-        vec![format!(
-            "{}:13 cannot establish what `f()` requires on wasm32: the callee is a function value the summary \
-             cannot resolve",
-            at + 6
-        )]
-    });
-    let dir = case_dir("let_unresolved_host");
-    std::fs::write(dir.join("main.hl"), main).unwrap();
-    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
-    assert_eq!(code, 0, "the host admits it:\n{check}");
-    let _ = std::fs::remove_dir_all(&dir);
+    admitted_everywhere(
+        "let_unresolved",
+        "fn one() -> Int { return 1; }\nfn two() -> Int { return 2; }\n",
+        "fn main() {\n    let f = if len(\"ab\") == 2 { lib::one } else { lib::two };\n    println(f());\n}\n",
+    );
 }
 
 const WIDTH: &str = "fn width() -> Int { return 1; }\n";
@@ -835,7 +828,10 @@ fn a_call_ahead_of_a_loops_reassignment_in_on_failure_is_refused() {
 }
 
 /// The same loop in the program's own code, where the summary walks the
-/// body: the call ahead of the reassignment is a hole, located at it.
+/// body: the call ahead of the reassignment is not followed, and
+/// reaches the program's function values of its arity (F.40 E5, a
+/// classified correction: it was a hole), `lib::pid` among them: refused
+/// at the call with the witness through the local.
 #[test]
 fn a_call_ahead_of_a_loops_reassignment_in_own_code_is_a_hole() {
     if !wasm_toolchain() {
@@ -845,14 +841,43 @@ fn a_call_ahead_of_a_loops_reassignment_in_own_code_is_a_hole() {
     let lib = format!("{WIDTH}{PID}");
     let main = "fn main() {\n    let mut f = lib::width;\n    let mut i = 0;\n    while i < 2 {\n        println(f());\n        \
                 f = lib::pid;\n        i = i + 1;\n    }\n}\n";
-    seeded_case("loop_own", Some(&lib), main, |at, _| {
+    seeded_case("loop_own", Some(&lib), main, |at, selector| {
         vec![format!(
-            "{}:17 cannot establish what `f()` requires on wasm32: the callee is a function value the summary \
-             cannot resolve",
+            "{}:17 `std::process` is unavailable under {selector}: {PROCESS} — witness: `f` → `lib::pid` → \
+             `std::process::pid`",
             at + 5
         )]
     });
     host_admits("loop_own", &lib, main);
+}
+
+/// The review of #1318, round 4: an imported fn's call through a local
+/// the walk does not follow (`let f = if … { pid } else { pure }`) was a
+/// call to nothing, and `lib::via()` was admitted under wasm32 while it
+/// reaches `pid`. The call reaches the program's function values of its
+/// arity (F.40 E5): refused at the crossing call with the witness
+/// through the local. The host admits it.
+#[test]
+fn an_imported_call_through_an_unresolved_local_is_refused_at_the_crossing() {
+    if !wasm_toolchain() {
+        eprintln!(
+            "SKIP an_imported_call_through_an_unresolved_local_is_refused_at_the_crossing: no wasm32 clang or wasm-ld"
+        );
+        return;
+    }
+    let lib = format!(
+        "fn pure() -> Int {{ return 1; }}\n{PID}fn via() -> Int {{\n    let f = if len(\"ab\") == 2 {{ pid }} else {{ pure }};\n    \
+         return f();\n}}\n"
+    );
+    let main = "fn main() { println(lib::via()); }\n";
+    seeded_case("via_unresolved", Some(&lib), main, |at, selector| {
+        vec![format!(
+            "{}:21 `std::process` is unavailable under {selector}: {PROCESS} — witness: `lib::via` → `f` → \
+             `lib::pid` → `std::process::pid`",
+            at + 1
+        )]
+    });
+    host_admits("via_unresolved", &lib, main);
 }
 
 /// `hale run` executes what it builds, and a declared program builds a

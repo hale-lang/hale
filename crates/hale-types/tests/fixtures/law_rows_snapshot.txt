@@ -91,6 +91,7 @@ crates/hale-types/tests/claims_edges.rs#23	iso	forbid reaches(a_side, b_side)	Un
 crates/hale-types/tests/claims_edges.rs#24	no_sms	forbid reaches(callers, texting)	Violated	None
 crates/hale-types/tests/claims_edges.rs#25	iso	forbid reaches(srcs, sinks)	Violated	None
 crates/hale-types/tests/claims_edges.rs#26	boundary	only edges ops -> core { publish Allowed }	Violated	None
+crates/hale-types/tests/claims_edges.rs#28	one	bound llm <= 1 on paths from planners	Violated	None
 crates/hale-types/tests/claims_edges.rs#3	g	forbid reaches(a_side, b_side) avoiding gate	Invalid	None
 crates/hale-types/tests/claims_edges.rs#4	no_spend	forbid reaches(api, effects(money))	Violated	None
 crates/hale-types/tests/claims_edges.rs#5	q	forbid reaches(a_side, b_side) via { calls } during birth avoiding gate	Holds	None
@@ -123,11 +124,11 @@ crates/hale-types/tests/constitutions.rs#6	one	count publishers(topic Settled) =
 crates/hale-types/tests/constitutions.rs#6	two	count subscribers(topic Settled) == 0	Invalid	Some("B")
 crates/hale-types/tests/constitutions.rs#8	two	count subscribers(topic Settled) == 0	Invalid	Some("Core")
 crates/hale-types/tests/demand_gate.rs#1	one_writer	count publishers(topic Placed) == 1	Holds	None
-crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Violated	None
+crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Holds	None
+crates/hale-types/tests/interface_dispatch.rs#11	one_call	bound llm <= 1 on paths from planners	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#6	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-types/tests/interface_dispatch.rs#9	one_call	bound llm <= 1 on paths from planners	Holds	None
 crates/hale-types/tests/interface_slot_override.rs#1	gated	forbid reaches(organism, effects(apply_it))	Holds	None
 crates/hale-types/tests/judgment_reachability.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/judgment_reachability.rs#1	iso	forbid reaches(a_side, b_side)	Uncertified	None
@@ -168,5 +169,5 @@ crates/hale-types/tests/judgment_reachability.rs#8	cap	bound money <= 1 on paths
 crates/hale-types/tests/library_claims.rs#1	single	count subscribers(topic T) <= 1	Violated	None
 crates/hale-types/tests/library_claims.rs#2	single	count subscribers(topic T) <= 1	Holds	None
 crates/hale-types/tests/model_provenance.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
-crates/hale-types/tests/model_provenance.rs#2	iso	forbid reaches(gates, handlers)	Uncertified	None
+crates/hale-types/tests/model_provenance.rs#2	iso	forbid reaches(gates, handlers)	Violated	None
 crates/hale-types/tests/model_provenance.rs#3	iso	forbid reaches(a_side, b_side) during PHASE	Invalid	None

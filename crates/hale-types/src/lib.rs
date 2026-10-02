@@ -68,6 +68,7 @@ mod qualified_subjects;
 pub mod snapshot;
 pub mod resource_budget;
 pub mod flows;
+mod fn_values;
 pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;

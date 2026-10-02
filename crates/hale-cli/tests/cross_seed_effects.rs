@@ -63,14 +63,15 @@ fn no_syscall_bites_across_a_seed_boundary() {
 
 /// F.40 E5: one seed away, behind a function value the summary cannot
 /// resolve to one fn (`let f = if … { far_pid } else { far_pure };
-/// f()`), the call is indirect. It was a call to nothing, and the
-/// certificate held while `far_pid` performed the syscall.
+/// f()`), the call reaches the seed's function values of its arity. It
+/// was a call to nothing, and the certificate held while `far_pid`
+/// performed the syscall.
 #[test]
 fn no_syscall_bites_through_a_function_value_one_seed_away() {
     let out = check();
     assert!(
         out.contains("`certified_through_a_value` must not reach `syscall`")
-            && out.contains("indirect call through a function value"),
+            && out.contains("p::far_value -> p::far_pid"),
         "a syscall behind an unresolved function value one seed away must violate @no_syscall:\n{}",
         out
     );

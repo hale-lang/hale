@@ -195,6 +195,9 @@ Claim [340..349] claim `boundary`: this call crosses the boundary. A call cannot
 Claim [723..731] claim `boundary` violated: un-granted edge `Ops::act` -(publishes "Sneaky")-> `Core::on_sneaky`. Granted: `Allowed`. If this edge is intended, name it in the grant list — a grant is a reviewable line
 Claim [293..305] claim `boundary`: the un-granted publish happens here
 Claim [442..472] claim `boundary`: received here. Grant this edge with `publish Sneaky;` if it is intended
+--- crates/hale-types/tests/claims_edges.rs#28 ---
+Claim [335..338] claim `one` violated: paths from `planners` carry an unbounded number of `llm` sites (limit 1) — `thru` makes a call the walk cannot follow, so the contribution beyond it is unknown
+Claim [127..131] claim `one`: this is the call the walk cannot follow
 --- crates/hale-types/tests/claims_phases.rs#1 ---
 Claim [330..334] claim `gate` violated: un-granted edge `A::go` -> `B::work` — call edges are not grantable; the boundary between `a_side` and `b_side` must be a bus edge named in the grant list
 Claim [159..173] claim `gate`: this call crosses the boundary. A call cannot be granted — route it through a topic named in the grant list, or move the callee out of `b_side`
@@ -208,18 +211,18 @@ Claim [394..400] declared causal set violated: `Api::handle` can transitively ca
 Claim [478..481] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
 Claim [289..306] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
 Claim [70..75] claim `iso`: the forbidden destination `Email` is declared here
---- crates/hale-types/tests/interface_dispatch.rs#10 ---
-Claim [688..696] claim `one_call` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::plan` -> `Deep::ask` -> `model_call`
 --- crates/hale-types/tests/interface_dispatch.rs#11 ---
+Claim [688..696] claim `one_call` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::plan` -> `Deep::ask` -> `model_call`
+--- crates/hale-types/tests/interface_dispatch.rs#12 ---
 Claim [116..120] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts an unbounded number of arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [151..162] counts against `zero`'s alloc budget: an array literal
 Claim [152..161] counts against `zero`'s alloc budget: a `Maker` instantiation
 Claim [176..189] counts against `zero`'s alloc budget: `make` is a method call on a receiver the compiler cannot type — its target, and so its allocation count, is not knowable here
---- crates/hale-types/tests/interface_dispatch.rs#12 ---
+--- crates/hale-types/tests/interface_dispatch.rs#13 ---
 Claim [158..162] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [110..120] counts against `zero`'s alloc budget: a `P` instantiation
 --- crates/hale-types/tests/judgment_causes.rs#0 ---
-Claim [416..420] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+Claim [416..420] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#1 ---
 Claim [314..318] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Orders` -> `Sink::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#2 ---
@@ -235,7 +238,7 @@ Claim [318..322] declared causal set violated: `Source::fire` can transitively c
 --- crates/hale-types/tests/judgment_causes.rs#9 ---
 Claim [421..425] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#10 ---
-Claim [372..376] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+Claim [451..455] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#12 ---
 Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#13 ---
@@ -253,7 +256,7 @@ Claim [166..170] declared causal set cannot be certified: `Source::fire` publish
 --- crates/hale-types/tests/judgment_causes.rs#20 ---
 Claim [281..285] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#21 ---
-Claim [552..556] declared causal set cannot be certified: `App::fire` publishes into a closure this model does not fully know — the effects of `Ledger::on_settled` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+Claim [732..736] declared causal set cannot be certified: `App::fire` publishes into a closure this model does not fully know — the effects of `Ledger::on_settled` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_certificates.rs#4 ---
 Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [84..94] counts against `hot`'s alloc budget: a `T` instantiation
@@ -263,7 +266,7 @@ Claim [37..45] `transfer` budgets effect class `monye`, which is never declared.
 Claim [305..312] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
 --- crates/hale-types/tests/judgment_depends.rs#3 ---
 Claim [99..106] declared dependency set cannot be certified: `Carry` is reached from a closure this model does not fully know — `Recalled` can be published into from outside this application (an inbound route or an opaque boundary). The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
---- crates/hale-types/tests/judgment_depends.rs#11 ---
+--- crates/hale-types/tests/judgment_depends.rs#12 ---
 Claim [261..268] declared dependency set cannot be certified: `Target` is reached from a closure this model does not fully know — a publish whose subject the compiler could not name may address a wire this locus subscribes to. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/judgment_reachability.rs#0 ---
 Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `leak`
@@ -336,7 +339,8 @@ Claim [137..153] claim `iso`: the crossing publish happens here
 Claim [237..257] claim `iso`: delivered at this subscription
 Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/model_provenance.rs#2 ---
-Claim [654..657] claim `iso` cannot be certified: `__http_run_chain` (reachable from `gates`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
+Claim [654..657] claim `iso` violated: `gates` reaches `handlers` — witness: `Gate::probe` -> `std::http::Router::dispatch` -> `__http_run_chain` -(dispatches std::http::RouteHandler.handle)-> `Hello::handle`
+Claim [15..20] claim `iso`: the forbidden destination `Hello` is declared here
 --- crates/hale-types/tests/model_provenance.rs#3 ---
 Claim [422..427] claim `iso`: phase `PHASE` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
 --- crates/hale-types/tests/quantitative_budgets.rs#1 ---
