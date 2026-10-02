@@ -77,6 +77,26 @@ fn a_qualified_topic_carries_the_declarations_payload() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A qualified topic that resolves to nothing — a name the library
+/// does not declare, or a head that is no import — keeps the spelling
+/// the author wrote through the sequence, and the build refuses it in
+/// that spelling. (The checker accepts such a path with an Unknown
+/// payload and leaves the refusal to lowering, `resolve_bus_subject`'s
+/// qualified arm, so it is the build that is pinned here.)
+#[test]
+fn an_unresolved_qualified_topic_is_refused_in_its_own_spelling() {
+    for (tag, path) in [("missing_name", "source::Missing"), ("missing_head", "nowhere::Heartbeat")] {
+        let d = tree(tag, &[("lib/topics.hl", LIB), ("app/main.hl", &app("source::Beat { n: 42 }").replace("source::Heartbeat", path))]);
+        let app = d.join("app");
+        let bin = d.join("bin");
+        let (ok, out) = hale(&app, &["build", ".", "-o", bin.to_str().unwrap()]);
+        assert!(!ok, "`{path}` names no topic, so the build must refuse it:\n{out}");
+        assert!(out.contains(&format!("subscribe `{path}`")), "the refusal cites `{path}` as written:\n{out}");
+        assert!(!out.contains("__lib_"), "no mangled name leaks:\n{out}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 /// A send whose value is not the declared payload is refused at
 /// `check`, naming the payload.
 #[test]

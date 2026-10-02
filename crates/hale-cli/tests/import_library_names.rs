@@ -4,10 +4,18 @@
 //! (`AliasScopes::name_library`). Outside a workspace the name was the
 //! library's file name, so two single-file libraries called `util.hl` in
 //! different directories shared one symbol namespace: the second one's
-//! declarations were merged under the first's mangled names. The load
-//! now tells them apart, and a library that holds its name alone keeps
-//! the name it always had.
+//! declarations were merged under the first's mangled names. A
+//! first-claim allocator then told them apart by import order, which
+//! made a library's symbols depend on the rest of the build. The name is
+//! now a function of the library's own path alone — relative to the
+//! workspace root, or to the entry seed's directory for a library
+//! outside the workspace — encoded injectively, so no two libraries share
+//! one and no build gives one library two.
+//!
+//! The symbols are read where the load records them: the rename table,
+//! `alias::Name` -> the mangled name, as `collect_checkable` returns it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -34,6 +42,46 @@ fn hale(cwd: &Path, args: &[&str]) -> (bool, String) {
     )
 }
 
+/// `alias::Name` -> the symbol it is mangled under, for the load of
+/// `target`.
+fn symbols(target: &Path) -> BTreeMap<String, String> {
+    let loaded = hale_frontend::frontend::collect_checkable(target, &hale_frontend::source::Disk);
+    let Ok((_, _, _, renames, _, _)) = loaded else {
+        panic!("{} must load", target.display());
+    };
+    renames.into_iter().map(|(segs, mangled)| (segs.join("::"), mangled)).collect()
+}
+
+/// A library declaring `Tag` and `who()`, answering `who`.
+fn lib(who: &str) -> String {
+    format!("type Tag {{\n    text: String;\n}}\n\nfn who() -> String {{\n    return \"{who}\";\n}}\n")
+}
+
+/// An app importing `(path, alias)` in order, printing each alias's
+/// `who()` through its own `Tag`, joined by `/`.
+fn app(imports: &[(&str, &str)]) -> String {
+    let mut s = String::new();
+    for (path, alias) in imports {
+        s.push_str(&format!("import \"{path}\" as {alias};\n"));
+    }
+    s.push_str("\nfn main() {\n    let mut out = \"\";\n");
+    for (i, (_, alias)) in imports.iter().enumerate() {
+        let sep = if i == 0 { "" } else { "/" };
+        s.push_str(&format!("    let t{i} = {alias}::Tag {{ text: {alias}::who() }};\n"));
+        s.push_str(&format!("    out = out + \"{sep}\" + t{i}.text;\n"));
+    }
+    s.push_str("    println(out);\n}\n");
+    s
+}
+
+fn check_and_run(dir: &Path, want: &str) {
+    let (ok, out) = hale(dir, &["check", "."]);
+    assert!(ok, "check must pass in {}:\n{out}", dir.display());
+    let (ok, out) = hale(dir, &["run", "."]);
+    assert!(ok, "run must pass in {}:\n{out}", dir.display());
+    assert_eq!(out.trim(), want, "each alias reaches its own library");
+}
+
 /// Two single-file libraries with one file name, declaring the same
 /// names, and an app that imports both: each alias answers with its own
 /// library's value, and a type of one is not the other's.
@@ -42,32 +90,226 @@ fn two_single_file_libraries_sharing_a_name_stay_apart() {
     let d = tree(
         "same_file_name",
         &[
+            ("one/util.hl", &lib("one")),
+            ("two/util.hl", &lib("two")),
+            ("app/main.hl", &app(&[("../one/util", "a"), ("../two/util", "b")])),
+        ],
+    );
+    check_and_run(&d.join("app"), "one/two");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The name the first-claim allocator would have given `two/util.hl` —
+/// its stem and a digest of its canonical path — for the fixture that
+/// held that name already.
+fn first_claim_fallback(lib: &Path) -> String {
+    let mut digest: u64 = 0xcbf29ce484222325;
+    for b in lib.canonicalize().unwrap().to_string_lossy().bytes() {
+        digest = (digest ^ u64::from(b)).wrapping_mul(0x100000001b3);
+    }
+    format!("util_{:08x}", digest as u32)
+}
+
+/// Review finding 1: a third library, a DIRECTORY named exactly what
+/// the old fallback generated for `two/util.hl`, beside two single-file
+/// `util.hl` libraries. The allocator inserted its generated name
+/// unchecked, so `c`'s declarations collided with `b`'s
+/// (`duplicate top-level name c::Tag`). Each library's name is now its
+/// own path, so all three check, run, and answer for themselves.
+#[test]
+fn a_directory_named_like_a_generated_fallback_stays_apart() {
+    let d = tree("fallback_named_dir", &[("one/util.hl", &lib("one")), ("two/util.hl", &lib("two"))]);
+    let third = first_claim_fallback(&d.join("two/util.hl"));
+    let files = [
+        (format!("three/{third}/lib.hl"), lib("three")),
+        (
+            "app/main.hl".to_string(),
+            app(&[("../one/util", "a"), ("../two/util", "b"), (&format!("../three/{third}"), "c")]),
+        ),
+    ];
+    for (name, src) in &files {
+        let p = d.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, src).unwrap();
+    }
+    let app = d.join("app");
+    check_and_run(&app, "one/two/three");
+    let s = symbols(&app);
+    assert_eq!(s["a::who"], "__lib__x2e_x2e__one__util_util_who");
+    assert_eq!(s["b::who"], "__lib__x2e_x2e__two__util_util_who");
+    assert_eq!(s["c::who"], format!("__lib__x2e_x2e__three__{third}__lib_who"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review finding 2: import order decided which library kept the plain
+/// name. The same two libraries imported in either order now have the
+/// same symbols.
+#[test]
+fn import_order_does_not_change_a_librarys_symbols() {
+    let d = tree(
+        "import_order",
+        &[
+            ("one/util.hl", &lib("one")),
+            ("two/util.hl", &lib("two")),
+            ("ab/main.hl", &app(&[("../one/util", "a"), ("../two/util", "b")])),
+            ("ba/main.hl", &app(&[("../two/util", "b"), ("../one/util", "a")])),
+        ],
+    );
+    check_and_run(&d.join("ab"), "one/two");
+    check_and_run(&d.join("ba"), "two/one");
+    let (ab, ba) = (symbols(&d.join("ab")), symbols(&d.join("ba")));
+    assert_eq!(ab, ba, "the same libraries, the same symbols, whatever the order");
+    assert_ne!(ab["a::who"], ab["b::who"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Review finding 2: two applications of one workspace, at different
+/// depths and with different dependency sets, importing one shared
+/// library: its symbols are the same in both, so a DTO crossing between
+/// them is symbol-identical.
+#[test]
+fn two_applications_with_different_dependencies_share_a_librarys_symbols() {
+    let d = tree(
+        "two_apps",
+        &[
+            ("hale.toml", "[project]\nname = \"ws\"\n"),
+            ("shared/messages/messages.hl", &lib("shared")),
+            ("one/util.hl", &lib("one")),
+            ("apps/x/main.hl", &app(&[("../../shared/messages", "m")])),
+            ("deep/er/y/main.hl", &app(&[("../../../one/util", "u"), ("../../../shared/messages", "msgs")])),
+        ],
+    );
+    check_and_run(&d.join("apps/x"), "shared");
+    check_and_run(&d.join("deep/er/y"), "one/shared");
+    let (x, y) = (symbols(&d.join("apps/x")), symbols(&d.join("deep/er/y")));
+    assert_eq!(x["m::who"], "__lib_shared__messages__messages_who");
+    assert_eq!(x["m::who"], y["msgs::who"]);
+    assert_eq!(x["m::Tag"], y["msgs::Tag"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Two workspace libraries whose paths differ only by a hyphen against
+/// an underscore collapsed to one name (`lib_a`) under the old
+/// sanitizer. The encoding keeps them apart.
+#[test]
+fn workspace_libraries_that_sanitized_alike_stay_apart() {
+    let d = tree(
+        "hyphen_underscore",
+        &[
+            ("hale.toml", "[project]\nname = \"ws\"\n"),
+            ("lib-a/lib.hl", &lib("hyphen")),
+            ("lib_a/lib.hl", &lib("underscore")),
+            ("app/main.hl", &app(&[("../lib-a", "h"), ("../lib_a", "u")])),
+        ],
+    );
+    let app = d.join("app");
+    check_and_run(&app, "hyphen/underscore");
+    let s = symbols(&app);
+    assert_eq!(s["h::who"], "__lib_lib_x2da__lib_who");
+    assert_eq!(s["u::who"], "__lib_lib_a__lib_who");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The same tree at two absolute directories has the same symbols: a
+/// workspace library is named relative to the workspace root, and a
+/// library outside the workspace relative to the entry seed's
+/// directory, so a tree moved or cloned as a whole keeps every name.
+#[test]
+fn a_copied_tree_keeps_its_symbols() {
+    let files = [
+        ("ext/util.hl", lib("ext")),
+        ("ws/hale.toml", "[project]\nname = \"ws\"\n".to_string()),
+        ("ws/shared/messages/messages.hl", lib("shared")),
+        ("ws/app/main.hl", app(&[("../shared/messages", "m"), ("../../ext/util", "e")])),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(n, s)| (*n, s.as_str())).collect();
+    let here = tree("copy_here", &files);
+    let there = tree("copy_there/nested/deeper", &files);
+    let (a, b) = (symbols(&here.join("ws/app")), symbols(&there.join("ws/app")));
+    assert_eq!(a, b, "a copied tree keeps its symbols");
+    assert_eq!(a["e::who"], "__lib__x2e_x2e___x2e_x2e__ext__util_util_who");
+    check_and_run(&there.join("ws/app"), "shared/ext");
+    let _ = std::fs::remove_dir_all(&here);
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!(
+        "hale_library_names_{}_copy_there",
+        std::process::id()
+    )));
+}
+
+/// Two aliases for one canonical library, spelled two ways: one copy,
+/// one identity.
+#[test]
+fn two_aliases_for_one_library_share_its_identity() {
+    let d = tree(
+        "two_aliases",
+        &[
+            ("one/util.hl", &lib("one")),
+            ("app/main.hl", &app(&[("../one/util", "a"), ("../one/../one/util", "b")])),
+        ],
+    );
+    let app = d.join("app");
+    check_and_run(&app, "one/one");
+    let s = symbols(&app);
+    assert_eq!(s["a::who"], s["b::who"]);
+    assert_eq!(s["a::Tag"], s["b::Tag"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A library the app imports directly and that another library imports
+/// too keeps one name: both aliases resolve to the one copy.
+#[test]
+fn a_library_reached_directly_and_through_another_keeps_one_name() {
+    let d = tree(
+        "direct_and_through",
+        &[
+            ("one/util.hl", &lib("one")),
             (
-                "one/util.hl",
-                "type Tag {\n    text: String;\n}\n\nfn who() -> String {\n    return \"one\";\n}\n",
-            ),
-            (
-                "two/util.hl",
-                "type Tag {\n    text: String;\n}\n\nfn who() -> String {\n    return \"two\";\n}\n",
+                "mid/mid.hl",
+                "import \"../one/util\" as u;\n\nfn via() -> String {\n    return u::who();\n}\n",
             ),
             (
                 "app/main.hl",
-                "import \"../one/util\" as a;\n\
-                 import \"../two/util\" as b;\n\
-                 \n\
-                 fn main() {\n\
-                 \x20   let x = a::Tag { text: a::who() };\n\
-                 \x20   let y = b::Tag { text: b::who() };\n\
-                 \x20   println(x.text + \"/\" + y.text);\n\
-                 }\n",
+                "import \"../one/util\" as a;\nimport \"../mid\" as m;\n\n\
+                 fn main() {\n    println(a::who() + \"/\" + m::via());\n}\n",
             ),
         ],
     );
     let app = d.join("app");
-    let (ok, out) = hale(&app, &["check", "."]);
-    assert!(ok, "check must pass:\n{out}");
-    let (ok, out) = hale(&app, &["run", "."]);
+    check_and_run(&app, "one/one");
+    let s = symbols(&app);
+    assert_eq!(s["a::who"], "__lib__x2e_x2e__one__util_util_who");
+    assert_eq!(s["u::who"], s["a::who"], "the library's one name, through either importer");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The compatibility boundary: a single-file library beside the entry
+/// keeps the name it always had.
+#[test]
+fn a_library_beside_the_entry_keeps_its_name() {
+    let d = tree(
+        "beside",
+        &[("app/util.hl", &lib("util")), ("app/main.hl", &app(&[("util", "u")]))],
+    );
+    let s = symbols(&d.join("app/main.hl"));
+    assert_eq!(s["u::who"], "__lib_util_util_who");
+    let (ok, out) = hale(&d.join("app"), &["run", "main.hl"]);
     assert!(ok, "run must pass:\n{out}");
-    assert_eq!(out.trim(), "one/two", "each alias reaches its own library");
+    assert_eq!(out.trim(), "util");
+    // Named from inside the entry's directory, the entry's parent is
+    // the empty path: the name is the same. (The import trace says
+    // which name the load gave; an optimized binary may have inlined
+    // `who` away.)
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["check", "main.hl"])
+        .current_dir(d.join("app"))
+        .env("HALE_IMPORT_DEBUG", "1")
+        .output()
+        .expect("hale");
+    let trace = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "check must pass:\n{trace}");
+    assert!(
+        trace.lines().any(|l| l.contains("util.hl is named util")),
+        "the library beside the entry is named `util`:\n{trace}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
