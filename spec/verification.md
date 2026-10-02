@@ -1662,6 +1662,36 @@ assume the others in a build:
   param fields — not inferred ones.) Zero corpus false positives. Type-aware
   String-concat sites and untyped-receiver collection inserts remain
   deferred. See `notes/memory-bound-proofs.md`.
+
+  **The reclaim boundary.** Each site carries the boundary at which its
+  memory is reclaimed (the dump's `reclaim@…` column): a bus payload at
+  its dispatch (`reclaim@bus-dispatch`); a non-escaping (`local`)
+  allocation in a **scratch-local** free fn at that fn's return
+  (`reclaim@fn-return`); everything else when its locus dissolves
+  (`reclaim@locus-dissolve`), a method's or handler's local at its
+  per-call scratch destroy aside, as above. Scratch-local is the class
+  lowering gives a subregion of its own, freed at return after the
+  return value is copied out: `String` and scalar params and return, no
+  struct or locus literal, no method call, no publish, no `self`, calls
+  only within the class; the check reads the classification lowering
+  reads, over the same declarations, so the two never disagree. The
+  boundary is judged **relative to the loop analyzed**: a fn's return
+  falls inside each iteration of a loop that calls the fn and outside
+  every iteration of a loop in the fn's own body, so a function return
+  is not an iteration's reclamation. A scratch-local fn called once per
+  iteration does not accumulate its temporaries across the loop, and the
+  temporaries of its own loop are bounded by one call, as a method's
+  are. **`local` is not scratch**: a local allocation in any other free
+  fn lands in its caller's arena, so when that fn runs once per
+  iteration of an unbounded loop in a long-lived frame (`main`, `run`, or
+  a free fn they call) it accumulates across the loop and is reported
+  (it "lands in its caller's arena"). A value that escapes the fn — its
+  return value, a store to `self`, a bus payload — keeps its own
+  boundary; a recursive scratch-local fn keeps the locus boundary (its
+  activations' subregions are alive at once, to an unbounded depth); a
+  locus instantiation is not a value in its caller's arena (the
+  instance's arena is its own). `--dump-alloc-summary` tags a
+  scratch-local fn `[scratch-local]`, or `[scratch-local, recursive]`.
 - **Hot-path allocation contract — `@budget(alloc_per_call = N)`** (2026-07-16).
   The dual of `@unbounded`: where `@unbounded` acknowledges intentional
   unbounded allocation, `@budget` declares an *opt-in per-call ceiling* and

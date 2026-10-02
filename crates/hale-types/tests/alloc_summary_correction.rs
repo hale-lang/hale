@@ -108,6 +108,21 @@ fn verdict(line: &str) -> &str {
         .unwrap_or_else(|| panic!("a site line with no verdict: {line}"))
 }
 
+/// `summary` with the reclaim boundary's correction (E3b) cleared: no
+/// fn's frame classified, and no site reclaimed at its fn's return.
+fn without_frames(summary: &AllocSummary) -> AllocSummary {
+    let mut s = summary.clone();
+    for f in s.fns.values_mut() {
+        f.frame = None;
+        for site in &mut f.sites {
+            if site.reclaim == hale_types::alloc_summary::ReclaimScope::FnReturn {
+                site.reclaim = hale_types::alloc_summary::ReclaimScope::EnclosingLocus;
+            }
+        }
+    }
+    s
+}
+
 /// The target loaded as `hale check <target>` loads it, the snapshot's
 /// summary beside the old one. On a thread of its own: a whole DNA
 /// seed's walk is deep.
@@ -127,7 +142,10 @@ fn change(target: &str) -> Change {
                 // The old answer: the stdlib bodies and the renames cleared.
                 let identified: Vec<(&Program, &hale_types::snapshot::Snapshot)> =
                     programs.iter().map(|p| (*p, &bundle.snapshot)).collect();
-                let before: AllocSummary = summarize_identified(&identified, &[]);
+                let before: AllocSummary = without_frames(&summarize_identified(&identified, &[]));
+                // This correction alone: the reclaim boundary's (E3b)
+                // cleared on both sides.
+                let now = &without_frames(now);
                 let mut c = Change::default();
                 let (old, new) = (blocks(&before.render()), blocks(&now.render()));
                 assert_eq!(old.len(), new.len(), "{target}: the dump lists the same fns and loci");

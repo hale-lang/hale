@@ -152,6 +152,21 @@ fn over_target<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -
     })
 }
 
+/// `summary` with the reclaim boundary's correction (E3b) cleared: no
+/// fn's frame classified, and no site reclaimed at its fn's return.
+fn without_frames(summary: &AllocSummary) -> AllocSummary {
+    let mut s = summary.clone();
+    for f in s.fns.values_mut() {
+        f.frame = None;
+        for site in &mut f.sites {
+            if site.reclaim == hale_types::alloc_summary::ReclaimScope::FnReturn {
+                site.reclaim = hale_types::alloc_summary::ReclaimScope::EnclosingLocus;
+            }
+        }
+    }
+    s
+}
+
 /// The fns of the stdlib's analysis copy.
 fn stdlib_fns() -> BTreeSet<FnKey> {
     let program = hale_types::stdlib_bodies::program().expect("the stdlib parses");
@@ -222,7 +237,7 @@ fn own_scope_let_block_scope_test() {
     over_target("tests/hale/let_block_scope_test.hl", |snap, now| {
         // This correction alone: the later ones cleared on both sides,
         // and the whole summary's rows rendered.
-        let mut now = now.clone();
+        let mut now = without_frames(now);
         now.reached = None;
         now.analysis_copy.clear();
         now.analysis_copy_loci.clear();
