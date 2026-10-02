@@ -323,6 +323,7 @@ fn every_family_runs_at_most_once_per_snapshot_on_every_switched_consumer() {
                 assert_eq!(builds[family], 1, "{consumer}: `{family}`");
             }
             assert_eq!(builds["lowering_view"], u32::from(*lowers), "{consumer}: `lowering_view`");
+            assert_eq!(builds["typed_bodies"], 0, "{consumer}: nothing reads the typed-body table yet");
             assert_at_most_once(s, consumer);
         }
         let _ = std::fs::remove_dir_all(&d);

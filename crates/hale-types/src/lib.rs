@@ -74,6 +74,7 @@ pub mod symbol;
 pub mod sync_inference;
 pub mod form_rows;
 pub mod target;
+pub mod typed_bodies;
 pub mod ty;
 pub mod working_set;
 

@@ -268,20 +268,25 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-codegen/src/codegen.rs` · `infer_accumulator_inner_type` — codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across. *Removed when:* the resolved program carries the checker's types.
 
-**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`
+**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`
 
-**Consumers.** every layer
+**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); every layer
 
 **Invariants.**
 
 - expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)
 - codegen types a value only where the checker's type is not yet carried across (the accumulator case); that residue is deleted when the resolved program carries types
+- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/codegen_fixtures_typecheck.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs
+**Focused tests.** crates/hale-types/tests/typed_bodies.rs; crates/hale-types/tests/codegen_fixtures_typecheck.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs
 
 **Spec.** spec/types.md
+
+**Guarded seams.**
+
+- `typed_bodies(` may be referenced from: `crates/hale-types/src/typed_bodies.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `generics` — Migrating · derivation
 

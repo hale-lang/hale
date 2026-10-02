@@ -241,6 +241,7 @@ const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
 const CLAIMS: &str = "crates/hale-types/src/claims.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
 const FORM_ROWS: &str = "crates/hale-types/src/form_rows.rs";
+const TYPED_BODIES: &str = "crates/hale-types/src/typed_bodies.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
@@ -495,16 +496,17 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CG, "infer_accumulator_inner_type", "codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across", "the resolved program carries the checker's types"),
         ],
-        consumers: &[consumer("every layer"), ],
+        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
             "codegen types a value only where the checker's type is not yet carried across (the accumulator case); that residue is deleted when the resolved program carries types",
+            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
+        tests: &["crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
         spec: &["spec/types.md"],
-        owned: &[site(RESOLVE, "infer_literal_ty")],
-        seams: &[],
+        owned: &[site(RESOLVE, "infer_literal_ty"), site(TYPED_BODIES, "typed_bodies")],
+        seams: &[Seam { symbol: "typed_bodies(", allowed: &[(TYPED_BODIES, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "generics",

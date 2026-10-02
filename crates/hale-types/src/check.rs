@@ -610,10 +610,28 @@ pub fn check_bundle_reporting(
     strict_callees: bool,
     strict_idents: bool,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
+    let (diags, certificates, _) =
+        check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
+    (diags, certificates)
+}
+
+/// [`check_bundle_reporting`], with what the checker typed beside it
+/// (F.40 phase 3, E4): the record the snapshot's typed-body table is
+/// packaged from (`crate::typed_bodies`). The checker records its own
+/// answers as it walks, so the table costs no second walk.
+pub fn check_bundle_typing(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+) -> (Vec<Diag>, crate::effects::EffectCertificates, crate::typed_bodies::TypingRecord) {
     let top = inputs.top;
     let mut diags = Vec::new();
     let certificates;
     let known = &top.names;
+    let mut typed = crate::typed_bodies::TypingRecord::default();
+    written_monomorphs(bundle, known, &mut typed.monomorphs);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
     let wasm_target = bundle.programs.values().any(|p| {
@@ -682,6 +700,9 @@ pub fn check_bundle_reporting(
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
+            typed: &mut typed,
+            body: NodeId::NONE,
+            expr_types: None,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -866,7 +887,172 @@ pub fn check_bundle_reporting(
     // within the statement, and a `@secret` parameter held to the same.
     diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames, &bundle.sources));
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    (diags, certificates)
+    (diags, certificates, typed)
+}
+
+/// The monomorph table's type and locus rows: every generic type or
+/// locus instantiation a type expression of `bundle` writes, keyed by
+/// its template's site and its arguments as the checker resolves them,
+/// named as the checker's resolution names it (`Box<Int>` is
+/// `Box_Int`). A nested instantiation is a row of its own. One table
+/// for the bundle, whichever program declares the template.
+fn written_monomorphs(
+    bundle: &Bundle<'_>,
+    known: &KnownNames,
+    out: &mut crate::typed_bodies::Monomorphs,
+) {
+    use crate::typed_bodies::{Monomorph, TemplateKind};
+    let mut templates: BTreeMap<&str, (NodeId, TemplateKind)> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            match item {
+                TopDecl::Type(t) if !t.generics.is_empty() => {
+                    templates.entry(t.name.name.as_str()).or_insert((t.id, TemplateKind::Type));
+                }
+                TopDecl::Locus(l) if !l.generics.is_empty() => {
+                    templates.entry(l.name.name.as_str()).or_insert((l.id, TemplateKind::Locus));
+                }
+                _ => {}
+            }
+        }
+    }
+    if templates.is_empty() {
+        return;
+    }
+    fn visit(
+        te: &TypeExpr,
+        known: &KnownNames,
+        templates: &BTreeMap<&str, (NodeId, TemplateKind)>,
+        out: &mut crate::typed_bodies::Monomorphs,
+    ) {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                for a in generic_args {
+                    visit(a, known, templates, out);
+                }
+                if path.segments.len() != 1 || generic_args.is_empty() {
+                    return;
+                }
+                let Some(&(template, kind)) = templates.get(path.segments[0].name.as_str()) else {
+                    return;
+                };
+                if template.is_none() {
+                    return;
+                }
+                if let Ty::Named(name) = resolve_type_expr(te, known) {
+                    let args = generic_args.iter().map(|a| resolve_type_expr(a, known)).collect();
+                    out.insert(Monomorph { template, kind, args, name });
+                }
+            }
+            TypeExpr::Projection { inner, .. } => visit(inner, known, templates, out),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                visit(elem, known, templates, out)
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    visit(p, known, templates, out);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    visit(p, known, templates, out);
+                }
+                if let Some(r) = ret {
+                    visit(r, known, templates, out);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+    for program in bundle.programs.values() {
+        crate::typed_bodies::for_each_type_expr(&program.items, &mut |te| {
+            visit(te, known, &templates, out)
+        });
+    }
+}
+
+/// Whether the locus named `locus_name` satisfies the interface named
+/// `iface_name` under `top`: every interface method present with its
+/// arity, parameter, return and error types (F.20, GH #732). `Ok` when
+/// `iface_name` names no interface; the message is the witness.
+pub(crate) fn conformance(top: &TopScope, locus_name: &str, iface_name: &str) -> Result<(), String> {
+    let iface = match top.lookup(iface_name) {
+        Some(TopSymbol::Interface(i)) => i,
+        _ => return Ok(()),
+    };
+    let locus = match top.lookup(locus_name) {
+        Some(TopSymbol::Locus(l)) => l,
+        _ => {
+            return Err(format!(
+                "type `{}` cannot satisfy interface `{}` — only loci satisfy interfaces",
+                locus_name, iface_name
+            ));
+        }
+    };
+    for im in &iface.methods {
+        let lm = locus.methods.iter().find(|lm| lm.name == im.name);
+        let lm = match lm {
+            Some(m) => m,
+            None => {
+                return Err(format!(
+                    "locus `{}` does not satisfy interface `{}`: missing method `{}`",
+                    locus_name, iface_name, im.name
+                ));
+            }
+        };
+        if lm.params.len() != im.params.len() {
+            return Err(format!(
+                "locus `{}` method `{}` arity does not match interface `{}`: expected {} arg(s), locus has {}",
+                locus_name,
+                im.name,
+                iface_name,
+                im.params.len(),
+                lm.params.len()
+            ));
+        }
+        for (i, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
+            let want = &ip.1;
+            if !want.assignable_from(lp) {
+                return Err(format!(
+                    "locus `{}` method `{}` arg #{} type mismatch: interface `{}` requires `{}`, locus has `{}`",
+                    locus_name,
+                    im.name,
+                    i,
+                    iface_name,
+                    want.display(),
+                    lp.display()
+                ));
+            }
+        }
+        if !im.ret.assignable_from(&lm.ret) {
+            return Err(format!(
+                "locus `{}` method `{}` return type mismatch: interface `{}` requires `{}`, locus returns `{}`",
+                locus_name,
+                im.name,
+                iface_name,
+                im.ret.display(),
+                lm.ret.display()
+            ));
+        }
+        // GH #732: an infallible method satisfies a fallible
+        // interface method; a fallible one never satisfies an
+        // infallible one, and the error types must be the same
+        // type (no subtyping of error payloads).
+        let clash = match (&im.fallible, &lm.fallible) {
+            (None, Some(_)) => Some("is fallible where the interface's is not"),
+            (Some(ie), Some(le)) if ie != le => Some("declares a different error type"),
+            _ => None,
+        };
+        if let Some(why) = clash {
+            let iface_sig = sig_text(&im.name, im.params.iter().map(|(_, t)| t), &im.ret, im.fallible.as_ref());
+            let locus_sig = sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref());
+            return Err(format!(
+                "locus `{}` method `{}` {}: interface `{}` declares `{}`, locus declares `{}`",
+                locus_name, im.name, why, iface_name, iface_sig, locus_sig
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// True if `parent` declares `accept(c: <child_name>)` — i.e. it
@@ -7484,6 +7670,17 @@ struct Checker<'a> {
     /// such an alias gets the same tolerance, so the editor does not
     /// squiggle a program `hale check` accepts.
     unresolved_import_aliases: &'a std::collections::BTreeSet<String>,
+    /// F.40 phase 3, E4: what this walk typed, recorded for the
+    /// snapshot's typed-body table (`crate::typed_bodies`).
+    typed: &'a mut crate::typed_bodies::TypingRecord,
+    /// The declaration whose body is being walked: a fn, a lifecycle
+    /// hook, a mode, an `on_failure`, a closure; else the enclosing
+    /// locus or top-level declaration. The table's rows are its.
+    body: NodeId,
+    /// While a closure assertion is walked: the type the checker gave
+    /// each expression, by node, so its accumulators read the types of
+    /// the very expressions they accumulate.
+    expr_types: Option<Vec<(*const Expr, Ty)>>,
 }
 
 #[derive(Default)]
@@ -7570,7 +7767,26 @@ enum SealedAccess {
 }
 
 impl<'a> Checker<'a> {
+    /// The declaration a top-level item's rows belong to.
+    fn top_decl_body(decl: &TopDecl) -> Option<NodeId> {
+        match decl {
+            TopDecl::Locus(l) => Some(l.id),
+            TopDecl::Fn(f) => Some(f.id),
+            TopDecl::Const(c) => Some(c.id),
+            _ => None,
+        }
+    }
+
     fn check_top_decl(&mut self, decl: &'a TopDecl) {
+        let prev_body = self.body;
+        if let Some(id) = Self::top_decl_body(decl) {
+            self.body = id;
+        }
+        self.check_top_decl_at(decl);
+        self.body = prev_body;
+    }
+
+    fn check_top_decl_at(&mut self, decl: &'a TopDecl) {
         match decl {
             TopDecl::Locus(l) => self.check_locus(l),
             TopDecl::Fn(f) => self.check_fn(f, None),
@@ -10626,6 +10842,20 @@ impl<'a> Checker<'a> {
     }
 
     fn check_locus_member(&mut self, member: &'a LocusMember) {
+        let prev_body = self.body;
+        match member {
+            LocusMember::Lifecycle(lc) => self.body = lc.id,
+            LocusMember::Mode(md) => self.body = md.id,
+            LocusMember::Failure(fd) => self.body = fd.id,
+            LocusMember::Closure(cd) => self.body = cd.id,
+            LocusMember::Fn(f) => self.body = f.id,
+            _ => {}
+        }
+        self.check_locus_member_at(member);
+        self.body = prev_body;
+    }
+
+    fn check_locus_member_at(&mut self, member: &'a LocusMember) {
         match member {
             LocusMember::Params(pb) => {
                 // Param defaults ARE typechecked. The Milestone-2
@@ -11080,6 +11310,7 @@ impl<'a> Checker<'a> {
                 // Original assertion checks for assertion-bearing
                 // closures.
                 if let Some(assertion) = &cd.assertion {
+                    self.expr_types = Some(Vec::new());
                     let lt = self.check_expr(&assertion.left);
                     let rt = self.check_expr(&assertion.right);
                     if !lt.assignable_from(&rt) && !rt.assignable_from(&lt) {
@@ -11108,6 +11339,8 @@ impl<'a> Checker<'a> {
                         ));
                     }
                     let _ = self.check_expr(&assertion.tolerance);
+                    let seen = self.expr_types.take().unwrap_or_default();
+                    self.record_accumulators(assertion, &seen);
                 }
                 self.in_lifecycle = false;
                 self.in_closure = false;
@@ -11346,6 +11579,12 @@ impl<'a> Checker<'a> {
     }
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
+        let prev_body = std::mem::replace(&mut self.body, decl.id);
+        self.check_fn_at(decl, locus);
+        self.body = prev_body;
+    }
+
+    fn check_fn_at(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_locus = self.current_locus;
         if locus.is_some() {
             self.current_locus = locus;
@@ -12984,93 +13223,34 @@ impl<'a> Checker<'a> {
         locus_name: &str,
         iface_name: &str,
     ) -> Result<(), String> {
-        let iface = match self.top.lookup(iface_name) {
-            Some(TopSymbol::Interface(i)) => i,
-            _ => return Ok(()),
-        };
-        let locus = match self.top.lookup(locus_name) {
-            Some(TopSymbol::Locus(l)) => l,
-            _ => {
-                return Err(format!(
-                    "type `{}` cannot satisfy interface `{}` — only loci satisfy interfaces",
-                    locus_name, iface_name
-                ));
-            }
-        };
-        for im in &iface.methods {
-            let lm = locus.methods.iter().find(|lm| lm.name == im.name);
-            let lm = match lm {
-                Some(m) => m,
-                None => {
-                    return Err(format!(
-                        "locus `{}` does not satisfy interface `{}`: missing method `{}`",
-                        locus_name, iface_name, im.name
-                    ));
-                }
-            };
-            if lm.params.len() != im.params.len() {
-                return Err(format!(
-                    "locus `{}` method `{}` arity does not match interface `{}`: expected {} arg(s), locus has {}",
-                    locus_name,
-                    im.name,
-                    iface_name,
-                    im.params.len(),
-                    lm.params.len()
-                ));
-            }
-            for (i, (lp, ip)) in
-                lm.params.iter().zip(im.params.iter()).enumerate()
-            {
-                let want = &ip.1;
-                if !want.assignable_from(lp) {
-                    return Err(format!(
-                        "locus `{}` method `{}` arg #{} type mismatch: interface `{}` requires `{}`, locus has `{}`",
-                        locus_name,
-                        im.name,
-                        i,
-                        iface_name,
-                        want.display(),
-                        lp.display()
-                    ));
-                }
-            }
-            if !im.ret.assignable_from(&lm.ret) {
-                return Err(format!(
-                    "locus `{}` method `{}` return type mismatch: interface `{}` requires `{}`, locus returns `{}`",
-                    locus_name,
-                    im.name,
-                    iface_name,
-                    im.ret.display(),
-                    lm.ret.display()
-                ));
-            }
-            // GH #732: an infallible method satisfies a fallible
-            // interface method; a fallible one never satisfies an
-            // infallible one, and the error types must be the same
-            // type (no subtyping of error payloads).
-            let clash = match (&im.fallible, &lm.fallible) {
-                (None, Some(_)) => Some("is fallible where the interface's is not"),
-                (Some(ie), Some(le)) if ie != le => {
-                    Some("declares a different error type")
-                }
-                _ => None,
-            };
-            if let Some(why) = clash {
-                let iface_sig = sig_text(
-                    &im.name,
-                    im.params.iter().map(|(_, t)| t),
-                    &im.ret,
-                    im.fallible.as_ref(),
-                );
-                let locus_sig =
-                    sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref());
-                return Err(format!(
-                    "locus `{}` method `{}` {}: interface `{}` declares `{}`, locus declares `{}`",
-                    locus_name, im.name, why, iface_name, iface_sig, locus_sig
-                ));
-            }
+        conformance(self.top, locus_name, iface_name)
+    }
+
+    /// The closure's accumulator rows (F.40 phase 3, E4): each
+    /// accumulator of `assertion`, with the type this walk gave the
+    /// expression it accumulates (`seen`, by node). An accumulated
+    /// expression the walk did not type, or typed `Unknown`, is a hole.
+    fn record_accumulators(&mut self, assertion: &ClosureAssertion, seen: &[(*const Expr, Ty)]) {
+        use crate::typed_bodies::{AccumulatorRow, Hole, Typed};
+        let rows: Vec<AccumulatorRow> = crate::typed_bodies::accumulator_sites(assertion)
+            .into_iter()
+            .map(|site| {
+                let elem = site.inner.map(|inner| {
+                    let at = inner as *const Expr;
+                    match seen.iter().find(|(e, _)| *e == at).map(|(_, t)| t) {
+                        Some(Ty::Unknown) | None => Typed::Hole(Hole {
+                            span: inner.span(),
+                            reason: "the checker gave the accumulated expression no type".to_string(),
+                        }),
+                        Some(t) => Typed::Known(t.clone()),
+                    }
+                });
+                AccumulatorRow { kind: site.kind, span: site.span, elem }
+            })
+            .collect();
+        if !rows.is_empty() {
+            self.typed.body(self.body).accumulators = rows;
         }
-        Ok(())
     }
 
     /// GH #436: `@sealed` — a sealed locus's `params` are reachable
@@ -14038,6 +14218,27 @@ impl<'a> Checker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
+        let ty = self.check_expr_at(expr);
+        if let Some(seen) = &mut self.expr_types {
+            seen.push((expr as *const Expr, ty.clone()));
+        }
+        // The fallible column (F.40 phase 3, E4): a call this walk
+        // typed `Fallible`.
+        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }) = (expr, &ty) {
+            self.typed.fallible_call(
+                self.body,
+                *id,
+                crate::typed_bodies::FallibleCall {
+                    span: *span,
+                    kind: crate::typed_bodies::CalleeKind::Typed,
+                    payload: (**payload).clone(),
+                },
+            );
+        }
+        ty
+    }
+
+    fn check_expr_at(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
                 // GH #607: a Time literal is an instant, parsed here so
@@ -14124,7 +14325,7 @@ impl<'a> Checker<'a> {
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, id: call_id, .. } => {
                 // WASM plan — stdlib target-gating. Under `target wasm`
                 // the browser sandbox has no syscalls, so reject a
                 // POSIX-only `std::` call at compile time with guidance
@@ -14255,6 +14456,19 @@ impl<'a> Checker<'a> {
                         if let Some(sig) =
                             crate::stdlib_surface::signature_for(&segs)
                         {
+                            // The fallible column (F.40 phase 3, E4):
+                            // the table's mark, read at the call.
+                            if let Some((_, payload)) = sig.or_types() {
+                                self.typed.fallible_call(
+                                    self.body,
+                                    *call_id,
+                                    crate::typed_bodies::FallibleCall {
+                                        span: expr.span(),
+                                        kind: crate::typed_bodies::CalleeKind::Stdlib,
+                                        payload,
+                                    },
+                                );
+                            }
                             // (bounded-intrinsic block is below —
                             // stdlib paths never collide with it.)
                             if args.len() != sig.params.len() {
@@ -14600,6 +14814,7 @@ impl<'a> Checker<'a> {
                             .collect();
                         let mut bindings: BTreeMap<String, Ty> =
                             BTreeMap::new();
+                        let mut conflicted = false;
                         for (p, at) in
                             template.params.iter().zip(arg_tys.iter())
                         {
@@ -14611,6 +14826,7 @@ impl<'a> Checker<'a> {
                                     &mut bindings,
                                 )
                             {
+                                conflicted = true;
                                 self.diags.push(Diag::ty(
                                     callee.span(),
                                     format!(
@@ -14650,6 +14866,71 @@ impl<'a> Checker<'a> {
                                 }
                             }
                         }
+                        // The call's row (F.40 phase 3, E4): the
+                        // bindings this unification made, by the
+                        // template's parameter order, and the params
+                        // they substitute into. An unpinned or
+                        // conflicting parameter, or a wrong arity,
+                        // leaves the call a hole.
+                        let row = {
+                            use crate::typed_bodies::{GenericCall, Hole, Typed};
+                            let unpinned = template
+                                .generics
+                                .iter()
+                                .find(|g| !bindings.contains_key(&g.name.name));
+                            if args.len() != template.params.len() {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}` takes {} argument(s), this call passes {}",
+                                        id.name,
+                                        template.params.len(),
+                                        args.len()
+                                    ),
+                                })
+                            } else if let Some(g) = unpinned {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}`: no argument of this call pins `{}`",
+                                        id.name, g.name.name
+                                    ),
+                                })
+                            } else if conflicted {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}`: this call's arguments bind a parameter twice",
+                                        id.name
+                                    ),
+                                })
+                            } else {
+                                let type_args: Vec<Ty> = template
+                                    .generics
+                                    .iter()
+                                    .map(|g| bindings[&g.name.name].clone())
+                                    .collect();
+                                let params: Vec<Ty> = template
+                                    .params
+                                    .iter()
+                                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
+                                    .collect();
+                                Typed::Known(GenericCall { template: template.id, type_args, params })
+                            }
+                        };
+                        if let crate::typed_bodies::Typed::Known(call) = &row {
+                            let tokens: Option<Vec<String>> =
+                                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
+                            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
+                                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
+                                    template: template.id,
+                                    kind: crate::typed_bodies::TemplateKind::Fn,
+                                    args: call.type_args.clone(),
+                                    name: format!("{}_{}", id.name, tokens.join("_")),
+                                });
+                            }
+                        }
+                        self.typed.generic_call(self.body, *call_id, row);
                         // Args vs substituted params.
                         for ((p, at), a) in template
                             .params
