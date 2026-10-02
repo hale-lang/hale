@@ -230,6 +230,19 @@ fn the_reader_orders_each_spine_by_the_plans_edges() {
     assert_eq!(p.birth_order("NoSuchLocus", &[K::Run, K::Birth]).expect("ordered by every template"), [K::Birth, K::Run]);
     // No template of this plan subscribes: the producer's order.
     assert_eq!(p.birth_order("NoSuchLocus", &[K::Readiness, K::Birth]).expect("ordered"), [K::Birth, K::Readiness]);
+    // A run queued on the worker that tears its owner down: the path no
+    // failure takes owes no cancellation; the one a shutdown takes owes it
+    // inside the child's reclaim, after the reclaim's entry.
+    let s = snapshot(include_str!("../../hale-codegen/tests/fixtures/lifecycle/l19_queued_run_canceled.hl"));
+    let p = plan(&s);
+    let site = p
+        .templates("Kid")
+        .find(|site| p.shutdown_spine(site, Spine::Cascade).iter().any(|s| s.kind == K::Cancellation))
+        .expect("a Kid template whose reclaim cancels its queued run");
+    let normal: Vec<&str> = p.spine(site, Spine::Cascade).iter().map(|s| s.kind.name()).collect();
+    let shutdown: Vec<&str> = p.shutdown_spine(site, Spine::Cascade).iter().map(|s| s.kind.name()).collect();
+    assert_eq!(normal, ["Drain", "Dissolve", "Reclaim"]);
+    assert_eq!(shutdown, ["Drain", "Dissolve", "Reclaim", "Cancellation"]);
 }
 
 /// Line 1: a child failing while its owner's params are open has its

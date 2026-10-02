@@ -532,8 +532,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             }
             // Inner's arena_destroy. Even when inner allocates
             // nothing in its arena, the slot was created at birth
-            // and must be destroyed for symmetry.
-            self.emit_locus_arena_destroy(&inner_info, inner_ptr, &inner_name)?;
+            // and must be destroyed for symmetry. Its Reclaim is the
+            // cascade's step, as the plan holds it, whatever frame the
+            // cascade runs in.
+            self.lc_in_spine("Cascade", |cx| cx.emit_locus_arena_destroy(&inner_info, inner_ptr, &inner_name))?;
             self.builder
                 .build_unconditional_branch(skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

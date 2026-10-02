@@ -24933,6 +24933,12 @@ static pthread_t g_lc_main;
 static char g_lc_skip[256];
 static __thread uint32_t t_lc_thread = 0;
 static __thread int t_lc_pinned = 0;
+/* The spines of the Reclaims this thread has entered and not completed,
+ * innermost last: a queued run's cancellation is a step of its child's
+ * Reclaim (decision line 19), so it carries that Reclaim's spine. */
+#define LOTUS_LC_RECLAIM_DEPTH 64
+static __thread const char *t_lc_reclaim[LOTUS_LC_RECLAIM_DEPTH];
+static __thread int t_lc_reclaim_n = 0;
 
 /* A pinned locus's thread names itself at its start (the emitted
  * thread function calls this in a trace build). */
@@ -25048,8 +25054,24 @@ void lotus_lc_ev(const char *kind, const char *point, void *self,
     if (s && entered && strcmp(kind, "Restart") == 0) s->inc++;
     if (s && strcmp(kind, "Run") == 0) s->running = entered;
     lotus_lc_emit(kind, point, s, spine);
+    if (strcmp(kind, "Reclaim") == 0) {
+        if (entered) {
+            if (t_lc_reclaim_n < LOTUS_LC_RECLAIM_DEPTH) t_lc_reclaim[t_lc_reclaim_n] = spine;
+            t_lc_reclaim_n++;
+        } else if (strcmp(point, "Completed") == 0 && t_lc_reclaim_n > 0) {
+            t_lc_reclaim_n--;
+        }
+    }
     if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
         __atomic_store_n(&s->key, LOTUS_LC_TOMB, __ATOMIC_RELAXED);
+}
+
+/* The spine of the Reclaim this thread is inside, or `outside` when it
+ * is inside none. */
+static const char *lotus_lc_reclaim_spine(const char *outside) {
+    int n = t_lc_reclaim_n;
+    if (n <= 0 || n > LOTUS_LC_RECLAIM_DEPTH) return outside;
+    return t_lc_reclaim[n - 1];
 }
 
 /* R20a: a parked coroutine the worker abandons at shutdown. Its
@@ -25069,11 +25091,14 @@ void lotus_lc_parked_abandoned(void *self) {
 /* Decision line 19: a run admitted to a pool's queue whose child is
  * reclaimed before the worker starts it is canceled by that reclaim
  * (`lotus_run_cancel_queued`) and ends NotStarted(Acknowledged), named
- * here while the child is still live. */
+ * here while the child is still live. The cancellation is a step of
+ * that reclaim and carries its spine; the run's end is the posted
+ * run's. */
 void lotus_lc_run_canceled(void *self) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
-    lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
+    const char *spine = lotus_lc_reclaim_spine("PoolRun");
+    lotus_lc_emit("Cancellation", "Entered", s, spine);
     lotus_lc_emit("Run", "Terminal(NotStarted(Acknowledged))", s, "PoolRun");
-    lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
+    lotus_lc_emit("Cancellation", "Completed", s, spine);
 }
 #endif /* LOTUS_LIFECYCLE_TRACE */

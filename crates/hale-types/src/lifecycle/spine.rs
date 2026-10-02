@@ -17,6 +17,10 @@
 //! instance's domain performs them in ([`super::derive`]). Only the
 //! path no failure takes is read ([`PathGuard::Normal`]): a failure's
 //! rows are the settle's, the queue drain's or the restart's.
+//! [`LifecyclePlan::shutdown_spine`] reads the same rows with the ones a
+//! shutdown adds ([`PathGuard::DrainInFlight`]: a queued run's
+//! cancellation inside its child's reclaim, a parked run abandoned at
+//! the pool join), so a run that took that path is compared too.
 //!
 //! **The law.** The steps an emitter emits for a spine are exactly the
 //! plan's ordered obligations for it: the trace build (L2) records each
@@ -59,14 +63,25 @@ impl LifecyclePlan {
     /// The obligations `site` owes on `spine` on the path no failure
     /// takes, in the order the plan places them.
     pub fn spine(&self, site: &SourceSite, spine: Spine) -> Vec<SpineStep> {
-        self.ordered(|o| o.holder.spine == spine && o.site.as_ref() == Some(site))
+        self.ordered(&[PathGuard::Normal], |o| o.holder.spine == spine && o.site.as_ref() == Some(site))
+    }
+
+    /// The obligations `site` owes on `spine` on the path a shutdown
+    /// takes: [`LifecyclePlan::spine`]'s, with the rows only that path
+    /// owes (a run still queued when its child is reclaimed, a parked run
+    /// the pool join abandons), in the order the plan places them. Which
+    /// of the two paths a run takes is the scheduler's.
+    pub fn shutdown_spine(&self, site: &SourceSite, spine: Spine) -> Vec<SpineStep> {
+        self.ordered(&[PathGuard::Normal, PathGuard::DrainInFlight], |o| {
+            o.holder.spine == spine && o.site.as_ref() == Some(site)
+        })
     }
 
     /// The template's birth spine: its rows of [`BIRTH_KINDS`] on the path
     /// no failure takes, whichever spine holds each (the instantiation,
     /// a pinned locus's thread, the posted run), in the plan's order.
     pub fn birth_spine(&self, site: &SourceSite) -> Vec<SpineStep> {
-        self.ordered(|o| BIRTH_KINDS.contains(&o.kind) && o.site.as_ref() == Some(site))
+        self.ordered(&[PathGuard::Normal], |o| BIRTH_KINDS.contains(&o.kind) && o.site.as_ref() == Some(site))
     }
 
     /// The order the plan places `kinds` in on the birth spine of the
@@ -133,12 +148,13 @@ impl LifecyclePlan {
         Ok(out)
     }
 
-    /// The rows `keep` selects on the path no failure takes, each after
-    /// every row its entry edges reach, ties in the producer's order.
-    fn ordered(&self, keep: impl Fn(&super::Obligation) -> bool) -> Vec<SpineStep> {
+    /// The rows `keep` selects on the paths `guards` names (no failure
+    /// on any), each after every row its entry edges reach, ties in the
+    /// producer's order.
+    fn ordered(&self, guards: &[PathGuard], keep: impl Fn(&super::Obligation) -> bool) -> Vec<SpineStep> {
         let chosen: Vec<ObligationId> = self
             .iter()
-            .filter(|(_, o)| o.guard == PathGuard::Normal && o.source.is_none() && keep(o))
+            .filter(|(_, o)| guards.contains(&o.guard) && o.source.is_none() && keep(o))
             .map(|(id, _)| id)
             .collect();
         // What each chosen row's entry edges reach, transitively.

@@ -1131,26 +1131,39 @@ fn assert_fixture(file: &str) {
 
 // ------------------------------------------------------------ spines
 
-/// The spines the law below reads (L4): the five an instance's own steps
-/// are emitted on and the trace names as the plan's holder does.
-const SPINES: &[Spine] = &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown];
+/// The spines the law below reads whole (L4): the six an instance's own
+/// steps are emitted on and the trace names as the plan's holder does.
+const SPINES: &[Spine] =
+    &[Spine::Instantiation, Spine::PinnedMain, Spine::PoolRun, Spine::Cascade, Spine::EagerTeardown, Spine::Reclaim];
 
-/// Kinds the law leaves to their own spine's reading. The reclaim's
-/// events carry the spine of the frame whose chokepoint runs it (a field's
-/// under its owner's entry, `lc_in_spine_event`), not the reclaim's
-/// holder: the reclaim spine reads the plan in its own L4 commit. A
-/// cancellation exists only on the path a shutdown takes (line 19), not
-/// the one the law reads.
-const NOT_READ: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+/// Kinds the law reads on every spine: the reclaim, whose events carry
+/// the spine that holds it in the plan (a field's the cascade's, a frame
+/// entry's the frame's, an accepted child's the reclaim spine's), and the
+/// cancellation of a run still queued when its child is reclaimed, which
+/// carries its reclaim's. A cancellation exists only on the path a
+/// shutdown takes (line 19), so a run is held to the plan's sequence on
+/// either path ([`LifecyclePlan::shutdown_spine`]).
+const EVERY_SPINE: &[ObligationKind] = &[ObligationKind::Reclaim, ObligationKind::Cancellation];
+
+fn read(spine: Spine, kind: ObligationKind) -> bool {
+    SPINES.contains(&spine) || EVERY_SPINE.contains(&kind)
+}
 
 /// Spines whose emitted steps depart from the plan today, each classified
 /// with the spine whose L4 commit reads it: (file, the departure, why).
 /// Asserted to show, so the entry goes when that spine reads the plan.
-const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[(
-    "l17_pinned_join_deferred.hl",
-    "App@EagerTeardown: emitted [], the plan owes [Drain Dissolve]",
-    "a statement literal that subscribes is deferred to fn main's flush (inventory C14) and torn down on the deferred main entry's spine; the plan puts it on the eager spine, which the deferred entry teardown's commit corrects",
-)];
+const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
+    (
+        "l17_pinned_join_deferred.hl",
+        "App@EagerTeardown: emitted [], the plan owes [Drain Dissolve Reclaim]",
+        "a statement literal that subscribes is deferred to fn main's flush (inventory C14) and torn down on the deferred main entry's spine; the plan puts it on the eager spine, which the deferred entry teardown's commit corrects",
+    ),
+    (
+        "l17_pinned_join_deferred.hl",
+        "App@DeferredMainEntry: emitted [Reclaim], the plan owes []",
+        "the same literal's reclaim, on the deferred main entry's spine (inventory C14)",
+    ),
+];
 
 /// The emitted step sequence of every instance a run of `file` built, per
 /// spine, against the plan's ordered obligations for that spine
@@ -1168,33 +1181,41 @@ fn spine_departures(file: &str) -> Vec<String> {
     let mut emitted: BTreeMap<(String, u64, Spine), Vec<ObligationKind>> = BTreeMap::new();
     for e in &ran.trace.events {
         let (Some(decl), Some(subject), Some(spine)) = (&e.decl, e.subject, e.spine) else { continue };
-        // Every instance the run shows owes each of the five spines a
-        // sequence, empty where the plan owes nothing on it.
-        for s in SPINES {
+        // Every instance the run shows owes each spine a sequence, empty
+        // where the plan owes nothing on it.
+        for s in Spine::ALL {
             emitted.entry((decl.clone(), subject.instance.raw(), *s)).or_default();
         }
         let step = e.point == Point::Entered || matches!(e.point, Point::Terminal(Terminal::NotStarted(_)));
         // A step owed per incarnation is read in the first; one owed per
         // instance in whichever incarnation reaches it.
         let first = subject.incarnation.raw() == 0 || project::trace_multiplicity(e.kind) != Multiplicity::OncePerIncarnation;
-        if !step || !first || !SPINES.contains(&spine) || NOT_READ.contains(&e.kind) {
+        if !step || !first || !read(spine, e.kind) {
             continue;
         }
         emitted.entry((decl.clone(), subject.instance.raw(), spine)).or_default().push(e.kind);
     }
     // The plan's: per template of the declaration, its rows on the spine
-    // the trace records, the known-open ones left to their fixtures.
+    // the trace records, on the path no failure takes and on the one a
+    // shutdown takes, the known-open ones left to their fixtures.
     let owed = |decl: &str, spine: Spine| -> Vec<Vec<ObligationKind>> {
-        plan.templates(decl)
-            .map(|site| {
-                plan.spine(site, spine)
-                    .into_iter()
-                    .filter(|s| project::TRACED.contains(&s.kind) && !NOT_READ.contains(&s.kind))
-                    .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
-                    .map(|s| s.kind)
-                    .collect()
-            })
-            .collect()
+        let kinds = |steps: Vec<hale_types::lifecycle::spine::SpineStep>| -> Vec<ObligationKind> {
+            steps
+                .into_iter()
+                .filter(|s| project::TRACED.contains(&s.kind) && read(spine, s.kind))
+                .filter(|s| !matches!(plan.obligations[s.obligation.0 as usize].status, Status::KnownOpen { .. }))
+                .map(|s| s.kind)
+                .collect()
+        };
+        let mut out: Vec<Vec<ObligationKind>> = Vec::new();
+        for site in plan.templates(decl) {
+            for seq in [kinds(plan.spine(site, spine)), kinds(plan.shutdown_spine(site, spine))] {
+                if !out.contains(&seq) {
+                    out.push(seq);
+                }
+            }
+        }
+        out
     };
     let names = |ks: &[ObligationKind]| ks.iter().map(|k| k.name()).collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
