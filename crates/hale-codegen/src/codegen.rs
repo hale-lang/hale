@@ -13676,8 +13676,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // gate: over-matching only costs one call.
         //
         // GH #522: over-matching costs one call PER CALL, not one
-        // call. The syntactic half below is a substring search over
-        // `{:?}` of the body, so ANY call at all arms it — including
+        // call. The syntactic half is a search of the body for a call
+        // or a struct literal, so ANY call at all arms it — including
         // a call through a function pointer in a two-deep helper
         // chain, where the publish lands in a 10M-iteration loop and
         // measured +29% on `fn_modular` from v0.14.0 onward.
@@ -13695,10 +13695,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `lotus_arena_alloc` — reached only from an allocation.
         // `caller_arena_tls_unwind.rs` is the standing reproducer
         // and stays green.
-        let body_can_read_tls = !sig.non_allocating && {
-            let dbg = format!("{:?}", f.body);
-            dbg.contains("Call {") || dbg.contains("Struct {")
-        };
+        //
+        // The decision is the fn's row (`alloc_routing.caller_arena_publish`,
+        // a structural walk for a call or a struct literal anywhere in the
+        // body); a generic fn's monomorph, which the view does not hold,
+        // takes the same producer over its synthesized declaration.
+        let body_can_read_tls = self
+            .alloc_routing
+            .caller_arena_publish
+            .get(&f.name.name)
+            .copied()
+            .unwrap_or_else(|| self.alloc_routing.specialize_fn(f));
         if body_can_read_tls {
             let ptr_t2 = self.context.ptr_type(AddressSpace::default());
             let ca = self

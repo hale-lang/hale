@@ -17,8 +17,12 @@
 //!   hook, `fn` method and mode, whether it lowers without its per-call
 //!   scratch ([`LocusElision`]).
 //!
-//! A generic locus's monomorph is synthesized by lowering, so the view
-//! has no row for it: lowering asks [`AllocRouting::specialize`], the
+//! - `caller_arena_publish`: per free fn, whether its entry publishes
+//!   the caller's arena to the caller-arena TLS.
+//!
+//! A generic locus's or fn's monomorph is synthesized by lowering, so
+//! the view has no row for it: lowering asks
+//! [`AllocRouting::specialize`] / [`AllocRouting::specialize_fn`], the
 //! same producer over the synthesized declaration.
 //!
 //! The rows are the classifications codegen computed while it lowered,
@@ -60,6 +64,10 @@ pub struct AllocRouting {
     pub elidable_methods: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
     /// Per non-generic locus of the program, by name.
     pub loci: BTreeMap<String, LocusElision>,
+    /// Per free fn of the program, by name: whether its entry publishes
+    /// the caller's arena to the caller-arena TLS
+    /// ([`publishes_caller_arena`]).
+    pub caller_arena_publish: BTreeMap<String, bool>,
     /// What [`AllocRouting::specialize`] reads beside the rows.
     types: TypeFacts,
 }
@@ -96,6 +104,166 @@ impl AllocRouting {
     /// conservative, as it always has.
     pub fn specialize(&self, l: &LocusDecl) -> LocusElision {
         locus_elision(l, self, &self.types)
+    }
+
+    /// The caller-arena publish row of a free fn the view does not
+    /// hold: a generic fn's monomorph, which lowering synthesizes. The
+    /// same producer over the synthesized declaration.
+    pub fn specialize_fn(&self, f: &FnDecl) -> bool {
+        publishes_caller_arena(f, &self.nonalloc)
+    }
+}
+
+/// Whether the free fn `f` publishes its caller's arena to the
+/// caller-arena TLS at entry (GH #375, #522): its body can reach a
+/// TLS-reading lowering, which every one is a call or a struct
+/// literal under, and it is not proven non-allocating (a body that
+/// never allocates has no TLS reader to heal).
+fn publishes_caller_arena(f: &FnDecl, nonalloc: &BTreeSet<String>) -> bool {
+    !nonalloc.contains(&f.name.name) && block_names_call_or_struct(&f.body)
+}
+
+/// Whether a body names a call or a struct literal anywhere in it, at
+/// any depth, a type ascription's array size included. Moved from a
+/// substring test over the body's Debug rendering (`Call {`,
+/// `Struct {`), and it answers as that test did: a string, decimal or
+/// time literal whose text spells either counts too. Over-matching
+/// costs one publish; under-matching would leave a TLS reader stale.
+fn block_names_call_or_struct(b: &Block) -> bool {
+    b.stmts.iter().any(stmt_names_call_or_struct)
+        || b.tail.as_deref().is_some_and(expr_names_call_or_struct)
+}
+
+fn stmt_names_call_or_struct(s: &Stmt) -> bool {
+    let e = |x: &Expr| expr_names_call_or_struct(x);
+    let t = |x: &Option<TypeExpr>| x.as_ref().is_some_and(type_names_call_or_struct);
+    match s {
+        Stmt::Let { ty, value, .. } | Stmt::LetTuple { ty, value, .. } => t(ty) || e(value),
+        Stmt::Assign { target, value, .. } => {
+            target.tail.iter().any(|seg| match seg {
+                LValueSeg::Index(i) => e(i),
+                LValueSeg::Field(_) => false,
+            }) || e(value)
+        }
+        Stmt::If(i) => if_names_call_or_struct(i),
+        Stmt::Match(m) => match_names_call_or_struct(m),
+        Stmt::For { iter, body, .. } => e(iter) || block_names_call_or_struct(body),
+        Stmt::While { cond, body, .. } => e(cond) || block_names_call_or_struct(body),
+        Stmt::Return(v, _) => v.as_ref().is_some_and(e),
+        Stmt::Break(_)
+        | Stmt::Continue(_)
+        | Stmt::Yield(_)
+        | Stmt::Terminate(_)
+        | Stmt::Reperspective { .. } => false,
+        Stmt::Fail { value, .. } => e(value),
+        Stmt::Block(b) => block_names_call_or_struct(b),
+        Stmt::Recovery { args, modifier, .. } => {
+            args.iter().any(e)
+                || modifier.as_ref().is_some_and(|m| match m {
+                    RecoveryModifier::For(x) | RecoveryModifier::Until(x) => e(x),
+                })
+        }
+        Stmt::Violate { payload, .. } => payload.as_ref().is_some_and(e),
+        Stmt::Send { subject, value, or_disposition, .. } => {
+            e(subject)
+                || e(value)
+                || or_disposition.as_ref().is_some_and(or_names_call_or_struct)
+        }
+        Stmt::ShmWrite { max, body, .. } => e(max) || block_names_call_or_struct(body),
+        Stmt::Expr(x) => e(x),
+    }
+}
+
+fn if_names_call_or_struct(i: &IfStmt) -> bool {
+    expr_names_call_or_struct(&i.cond)
+        || block_names_call_or_struct(&i.then_block)
+        || i.else_block.as_deref().is_some_and(|b| match b {
+            ElseBranch::Else(b) => block_names_call_or_struct(b),
+            ElseBranch::ElseIf(inner) => if_names_call_or_struct(inner),
+        })
+}
+
+fn match_names_call_or_struct(m: &MatchStmt) -> bool {
+    expr_names_call_or_struct(&m.scrutinee)
+        || m.arms.iter().any(|arm| {
+            pattern_names_call_or_struct(&arm.pattern)
+                || arm.guard.as_ref().is_some_and(expr_names_call_or_struct)
+                || match &arm.body {
+                    MatchArmBody::Expr(x) => expr_names_call_or_struct(x),
+                    MatchArmBody::Block(b) => block_names_call_or_struct(b),
+                }
+        })
+}
+
+fn pattern_names_call_or_struct(p: &Pattern) -> bool {
+    match p {
+        Pattern::Literal(l, _) => literal_spells_call_or_struct(l),
+        Pattern::Wildcard(_) | Pattern::Binding(_) => false,
+        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+            args.iter().any(pattern_names_call_or_struct)
+        }
+    }
+}
+
+fn or_names_call_or_struct(d: &OrDisposition) -> bool {
+    match d {
+        OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => false,
+        OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) => expr_names_call_or_struct(x),
+    }
+}
+
+fn type_names_call_or_struct(t: &TypeExpr) -> bool {
+    match t {
+        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+        TypeExpr::Named { generic_args, .. } => generic_args.iter().any(type_names_call_or_struct),
+        TypeExpr::Projection { inner, .. } => type_names_call_or_struct(inner),
+        TypeExpr::Array { elem, size, .. } => {
+            type_names_call_or_struct(elem) || size.as_ref().is_some_and(expr_names_call_or_struct)
+        }
+        TypeExpr::Bounded { elem, .. } => type_names_call_or_struct(elem),
+        TypeExpr::Tuple(parts, _) => parts.iter().any(type_names_call_or_struct),
+        TypeExpr::Function { params, ret, .. } => {
+            params.iter().any(type_names_call_or_struct)
+                || ret.as_deref().is_some_and(type_names_call_or_struct)
+        }
+    }
+}
+
+/// A literal whose Debug rendering spells `Call {` or `Struct {`: a
+/// string, decimal or time literal whose text does.
+fn literal_spells_call_or_struct(l: &Literal) -> bool {
+    match l {
+        Literal::String(s) | Literal::Decimal(s) | Literal::Time(s) => {
+            s.contains("Call {") || s.contains("Struct {")
+        }
+        Literal::Int(_)
+        | Literal::Float(_)
+        | Literal::Bool(_)
+        | Literal::Nil
+        | Literal::Duration(_)
+        | Literal::Bytes(_) => false,
+    }
+}
+
+fn expr_names_call_or_struct(x: &Expr) -> bool {
+    let e = |y: &Expr| expr_names_call_or_struct(y);
+    match x {
+        Expr::Call { .. } | Expr::Struct { .. } => true,
+        Expr::Literal(l, _) => literal_spells_call_or_struct(l),
+        Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => false,
+        Expr::Binary { left, right, .. } => e(left) || e(right),
+        Expr::Unary { operand, .. } => e(operand),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => e(receiver),
+        Expr::Index { receiver, index, .. } => e(receiver) || e(index),
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => parts.iter().any(e),
+        Expr::Block(b) => block_names_call_or_struct(b),
+        Expr::If(i) => if_names_call_or_struct(i),
+        Expr::Match(m) => match_names_call_or_struct(m),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => e(inner),
+        Expr::Approx { left, right, tolerance, .. } => e(left) || e(right) || e(tolerance),
+        Expr::Range { lo, hi, .. } => e(lo) || e(hi),
+        Expr::ArrayRepeat { val, .. } => e(val),
+        Expr::Or { inner, disposition, .. } => e(inner) || or_names_call_or_struct(disposition),
     }
 }
 
@@ -345,8 +513,15 @@ pub fn derive_alloc_routing(
         nonalloc_numeric_ret,
         elidable_methods: elidable,
         loci: BTreeMap::new(),
+        caller_arena_publish: BTreeMap::new(),
         types,
     };
+    rows.caller_arena_publish = hale_syntax::ast::flat_decls(&program.items)
+        .filter_map(|item| match item {
+            TopDecl::Fn(f) => Some((f.name.name.clone(), publishes_caller_arena(f, &rows.nonalloc))),
+            _ => None,
+        })
+        .collect();
     let loci: BTreeMap<String, LocusElision> = hale_syntax::ast::flat_decls(&program.items)
         .filter_map(|item| match item {
             TopDecl::Locus(l) if l.generics.is_empty() => {
