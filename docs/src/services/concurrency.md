@@ -228,6 +228,30 @@ is a property of the *deployment*, not the code. The same
 test, with no edit to `Gateway` itself. Library authors say what
 a locus *is*; the binary author says *where it runs*.
 
+## Counting the threads
+
+The compiler resolves placement per instance, into one table that
+both the checks and the build read: each instance of `main`'s tower
+gets a thread domain, nested instances share their owner's, and the
+binary spawns exactly what the table says. So the thread count is
+something you can read before you run:
+
+- a `pinned` field is one thread, and `replicas = K` is K;
+- each construction of `main` that can be live at once spawns its own
+  pinned threads, so a `main` built at two sites, or by a function
+  called twice, counts its pinned fields twice;
+- an adapter in `bindings { }` is one thread, built once, however
+  often `main` is constructed;
+- a cooperative pool is one worker, however many loci run on it; the
+  main thread is the program's own, not a pool.
+
+`hale check --dump-resource-budget` prints the count, and
+`--check-resource-budget` gates it in CI. A `main` built in a loop
+has no static bound, so its count is *uncertain*, with the reason,
+and a thread ceiling refuses it. A binding's reader thread and the
+serve thread a stdlib transport starts are not placement, and the
+dump names them as not counted.
+
 ## Nested loci inherit their pool
 
 Placement entries apply only to top-level `main` loci. A locus
