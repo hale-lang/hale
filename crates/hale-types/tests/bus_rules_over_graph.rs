@@ -505,6 +505,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
     let bus = build_bus_graph(&bundle, &top);
     let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog).intra_locus;
     assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
+    let target = hale_types::capability::target_row(&bundle);
     let inputs = CheckInputs {
         top: &top,
         handlers: &handlers,
@@ -514,6 +515,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         forms: &forms,
         bus: &bus,
         intra_locus: &intra_locus,
+        target: &target,
     };
     let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
     let cycles: Vec<(bool, &str)> = diags

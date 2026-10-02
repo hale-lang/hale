@@ -213,7 +213,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     // The snapshot `hale run` loads (parse → check → model hash), so a
     // recording is admitted against exactly what runs. `replay` binds
     // no environment and has no `--allow-unowned-subscriber`.
-    let mut config = build_config(&build_options, &None);
+    let mut config = build_config(&build_options, &None, false);
     config.allow_unowned_subscriber = false;
     let snap = match Snapshot::load(&prog, LoadMode::WholeSeed, &Disk, config) {
         Ok(s) => s,
@@ -226,6 +226,10 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if let Some(msg) = crate::shared::options::refuse_unexecutable("replay", &snap) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,

@@ -1083,12 +1083,15 @@ pub fn build_executable_with_options(
 ) -> Result<(), CodegenError> {
     use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
     let spec = options.target.spec();
+    // A harness build names its target exactly when it asks for one
+    // other than the host; lowering follows `options.target` either way.
     let target = Target {
         name: match options.target {
             CompileTarget::Native => "host".to_string(),
             _ => spec.triple.to_string(),
         },
         spec,
+        explicit: options.target != CompileTarget::Native,
     };
     let mut config = Config::harness(target);
     config.api = options.api.clone();

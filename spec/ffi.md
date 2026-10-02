@@ -338,7 +338,7 @@ Codegen errors:
 
 ## WASM host interface
 
-On the `wasm32` target (`hale build --target wasm32`; the program
+On the `wasm32` target (`hale build --target wasm32`, or a program that
 declares `target wasm { }`) the foreign boundary is the JavaScript
 host rather than a C library. The same `@ffi` machinery serves the
 inbound direction, and a dual annotation `@export` serves the
@@ -393,11 +393,32 @@ declared at depth used to be accepted and then ignored — the same
 program that this section gates reported `ok` with its `target wasm
 { }` one brace deeper.
 
+**The effective target.** `hale check`, `hale build` and the editor
+act on one target, for analysis and for the artifact alike:
+
+- an explicit `--target` (on `hale build`, and on `hale check`, which
+  takes the same flag) is the effective target;
+- with no `--target`, a written `target wasm { }` / `target browser_js
+  { }` selects **wasm32**: `hale build` of such a program emits the
+  wasm module and its loader, exactly as `--target wasm32` does;
+- with neither, the host.
+
+An explicit `--target` of another class than a written declaration's
+is refused at the declaration, on `hale check` and `hale build` alike:
+``this program declares `target wasm`, and is being checked for
+`<triple>`: build it with `--target wasm32`, or drop the declaration``.
+The editor takes no `--target`, so it shows what `hale check` and `hale
+build` without one compute. `hale run` and `hale replay` execute what
+they build, and a declared program builds a module this host cannot
+execute, so they refuse it, as they refuse `--target wasm32`.
+
 The portable stdlib (`std::str`, `std::bytes`, `std::json`,
 `std::math`, `std::text`, …) works unchanged. The **POSIX-backed
 namespaces are rejected at typecheck** under this target — the browser
 sandbox has no syscalls — with the diagnostic ``error: `std::...` is
-unavailable under `target wasm`: <reason>``. The gated set
+unavailable under `target wasm`: <reason>`` (``under `--target
+wasm32` `` when the configuration, not a declaration, put the program
+under wasm32). The gated set
 (`wasm_unavailable_stdlib`) is exactly the table below, rendered from
 the compiler's capability matrix (`hale_types::capability`):
 
@@ -506,8 +527,11 @@ through the `_hale_start` path) and injects a `target wasm { }` gate if
 absent. Because it operates on the AST — not the source text — every
 diagnostic keeps the user's original line/col (no offset) and a `{`/`}`
 inside a string or comment can't mis-wrap it. It is **wasm-only and
-opt-in**: a hard error without `--target wasm32` (there is no native
-entry-inversion to wrap), never implied by the target (a wasm program
+opt-in**: a hard error unless the effective target of the written
+sources is wasm32 — `--target` in any wasm32 spelling, or a written
+declaration; the declaration the flag injects never selects the target
+— since there is no native entry-inversion to wrap. It is never implied
+by the target (a wasm program
 may legitimately keep a bare `fn main` exported as `main`), and a no-op
 when an explicit `@export` entry already exists (prefer-explicit).
 

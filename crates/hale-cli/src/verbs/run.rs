@@ -14,6 +14,7 @@ use crate::shared::options::note_unmapped_roles;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
+use crate::shared::options::refuse_unexecutable;
 use crate::shared::options::resolve_build_env;
 use crate::shared::process::wait_passing_signals;
 use hale_frontend::snapshot::{LoadError, Snapshot};
@@ -130,7 +131,7 @@ pub(crate) fn run_program(
     // files as one seed and resolves the union of their imports (WS3.3:
     // `run` and `build` produce the same merged-and-resolved program;
     // `run` execs it instead of writing a binary).
-    let config = build_config(&options, &env_spec);
+    let config = build_config(&options, &env_spec, false);
     let snap = match Snapshot::load(target, LoadMode::WholeSeed, &Disk, config) {
         Ok(s) => s,
         // `run` has no machine-readable channel: the located text.
@@ -143,6 +144,10 @@ pub(crate) fn run_program(
             return ExitCode::from(2);
         }
     };
+    if let Some(msg) = refuse_unexecutable("run", &snap) {
+        eprintln!("{}", msg);
+        return ExitCode::from(2);
+    }
     note_unmapped_roles(snap.api_surface(), &options);
     let (sources, file_bases) = (snap.sources(), snap.file_bases());
     // The check, with the build's rules: the rename table reaches the

@@ -29,7 +29,8 @@ fn hale(sub: &str, dir: &str) -> (bool, String) {
 }
 
 /// Seeds that must `hale check` clean. (`examples/wasm-flower` targets
-/// wasm32 and is covered by the wasm example tests, not here.)
+/// wasm32: `target_precedence.rs` checks and builds it, with and
+/// without `--target`, against the editor.)
 const CHECKED: &[&str] = &[
     "consumer/fuse-hl",
     "examples/claims-demo/app",
