@@ -1,0 +1,41 @@
+// Join progress, a late failure during a pinned join (JoinProgress,
+// FailureDelivery). Known open at inventory row C18 for the domain the
+// handler runs on, which is L5's assertion; the outcome is pinned
+// here.
+//
+// `p` is pinned and fails 200ms into its run(), after App's run() has
+// returned and the frame flush is joining it. The owner keeps
+// completing the failure decisions its children wait for until they
+// have quiesced, so the join cannot wait on a child that waits on the
+// owner.
+//
+// Expected terminal outcome: the handler ran once, the join returned,
+// and App's dissolve() saw it: `outcome: delivered-once`.
+
+locus Late {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() {
+        std::time::sleep(200ms);
+        violate fuse;
+    }
+}
+
+main locus App {
+    params {
+        p: Late = Late { };
+        fired: Int = 0;
+    }
+    placement { p: pinned; }
+    on_failure(c: Late, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() { std::time::sleep(20ms); }
+    dissolve() {
+        if self.fired == 1 {
+            println("outcome: delivered-once");
+        } else {
+            println("outcome: fired=" + to_string(self.fired));
+        }
+    }
+}
+
+fn main() { App { }; }

@@ -1154,18 +1154,23 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 - `crates/hale-codegen/src/locus/restart.rs` · `define_restart_fns` — restart and resume. *Removed when:* same.
 - `crates/hale-codegen/runtime/lotus_arena.c` · `lotus_failure_hold` — the hold/settle/defer/await protocol in the C runtime; verified against the table by a debug-build oracle before the table is trusted. *Removed when:* the oracle holds.
 
+**Also owned.** `crates/hale-types/src/lifecycle.rs` · `LifecyclePlan`
+
 **Consumers.** codegen (emission reads the order); closures (the event alphabet); transitions (reserved); deployment (reserved)
 
 **Invariants.**
 
 - handlers run only on the queue owner's thread, so cross-thread failure delivery follows spec/runtime.md (a typed bus message): the first named decision, with its own regression test
 - a spec/implementation disagreement is settled as a named decision, never by extraction picking a side
+- an obligation is keyed by its source site (the declaration and P1's construction template); the runtime mints the instance and its incarnation, the table never does
+- every obligation ends in exactly one of its named terminal alternatives; lifetime (what stays alive until which event) and progress (what makes it reach a terminal) are separate fields
+- each rule says whether it is shipped, adopted, known open at an inventory row, or pending on a named condition
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs; crates/hale-codegen/tests/reclamation_spine.rs; crates/hale-codegen/tests/main_locus_deferred_pool_join.rs; crates/hale-codegen/tests/teardown_pinned_join_order.rs
+**Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs; crates/hale-codegen/tests/reclamation_spine.rs; crates/hale-codegen/tests/main_locus_deferred_pool_join.rs; crates/hale-codegen/tests/teardown_pinned_join_order.rs; crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data); crates/hale-codegen/tests/lifecycle_fixtures.rs (a fixture per decision line under tests/fixtures/lifecycle/; KNOWN_OPEN pins today's outcome where it differs from the adopted one)
 
-**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/semantics.md § lifecycle
+**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart); spec/semantics.md § lifecycle
 
 ### `bus_inert` — Canonical · derivation
 

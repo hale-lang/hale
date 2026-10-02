@@ -1,0 +1,43 @@
+// Decision line 6, registration before birth and readiness (Subscribe,
+// Readiness), for a subscriber placed on a cooperative pool.
+//
+// As `l06_readiness_main.hl`, with `Sub` on pool `side`: its birth()
+// runs on the instantiating thread, and its handlers on the worker,
+// which drains its queue concurrently with that birth().
+//
+// Expected terminal outcome: delivered once, after birth() completed,
+// `outcome: delivered-after-birth`.
+
+type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "lifecycle.l06.pool"; }
+
+locus Sub {
+    params { born: Int = 0; early: Int = 0; heard: Int = 0; }
+    bus { subscribe Pings as on_ping; publish Pings; }
+    fn on_ping(p: Ping) {
+        self.heard = self.heard + 1;
+        if self.born == 0 { self.early = self.early + 1; }
+    }
+    birth() {
+        Pings <- Ping { n: 1 };
+        std::time::sleep(30ms);
+        self.born = 1;
+    }
+}
+
+main locus App {
+    params { s: Sub = Sub { }; }
+    placement { s: cooperative(pool = side); }
+    run() {
+        std::time::sleep(100ms);
+        if self.s.heard == 1 && self.s.early == 0 {
+            println("outcome: delivered-after-birth");
+        } else if self.s.early > 0 {
+            println("outcome: delivered-during-birth");
+        } else {
+            println("outcome: heard=" + to_string(self.s.heard));
+        }
+    }
+}
+
+fn main() { App { }; }

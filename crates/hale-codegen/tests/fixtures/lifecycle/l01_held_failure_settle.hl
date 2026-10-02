@@ -1,0 +1,40 @@
+// Decision line 1, construction-time delivery (ConstructionDelivery,
+// ParamsSettle). Shipped.
+//
+// A child that fails while its owner's params are open has its failure
+// held, and the owner's handler runs once the last param is stored and
+// before the owner's birth(). `Boom` runs inline in App's params loop
+// and fails in its run(); `tag` is stored after it.
+//
+// Expected terminal outcome: the failure is delivered exactly once, at
+// settle: `outcome: delivered-at-settle`.
+
+locus Boom {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() { violate fuse; }
+}
+
+main locus App {
+    params {
+        c: Boom = Boom { name: "c" };
+        tag: String = "stored";
+        seen: String = "";
+        fired: Int = 0;
+        at_birth: Int = 0;
+    }
+    on_failure(c: Boom, err: ClosureViolation) {
+        self.seen = self.tag;
+        self.fired = self.fired + 1;
+    }
+    birth() { self.at_birth = self.fired; }
+    run() {
+        if self.fired == 1 && self.at_birth == 1 && self.seen == "stored" {
+            println("outcome: delivered-at-settle");
+        } else {
+            println("outcome: fired=" + to_string(self.fired) + " at_birth=" + to_string(self.at_birth) + " seen=" + self.seen);
+        }
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,36 @@
+// Decision line 4, the failure route bound at birth in every spine
+// (FailureDelivery, Reclaim). Known open at inventory row C25.
+//
+// `Flowing` is a flow (App declares `release(c: Flowing)`), accepted by
+// App, and built in App's run(). Its run() completing reclaims it
+// through the reclaim spine, and its dissolve-epoch closure fails
+// there. The route bound at its birth names App's handler. The reclaim
+// spine resolves the route with the child itself as the parent, finds
+// no handler, and takes the bare report and exit.
+//
+// Expected terminal outcome: App's handler hears the violation exactly
+// once, `outcome: owner-handled-once`. Today: the structural exit.
+
+locus Flowing {
+    params { left: Int = 1; }
+    closure clean { self.left ~~ 0 within 0; epoch dissolve; }
+    run() { }
+}
+
+main locus App {
+    params { fired: Int = 0; }
+    accept(c: Flowing) { }
+    release (c: Flowing) { }
+    on_failure(c: Flowing, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() {
+        Flowing { };
+        std::time::sleep(50ms);
+        if self.fired == 1 {
+            println("outcome: owner-handled-once");
+        } else {
+            println("outcome: fired=" + to_string(self.fired));
+        }
+    }
+}
+
+fn main() { App { }; }

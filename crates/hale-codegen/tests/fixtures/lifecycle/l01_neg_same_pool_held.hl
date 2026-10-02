@@ -1,0 +1,52 @@
+// Decision line 1, negative case: a held failure with the child and its
+// owner on the same pool (ConstructionDelivery, JoinProgress).
+//
+// `Spawner` runs on pool `side`; its run() builds `Owner` there, so
+// Owner's params loop runs on the pool's worker, and Owner's child
+// `Late` is born on that same worker. Late's birth closure fails on its
+// first birth while Owner's params are open: the failure is held, the
+// child's run() waits for the decision, and the decision can only be
+// made by the worker that is itself inside Owner's params loop. The
+// handler restarts the child, whose second birth passes.
+//
+// Whatever mechanism carries construction-time delivery, this shape
+// must not wait on itself.
+//
+// Expected terminal outcome: one delivery and one restart, and Owner
+// reaches its run(): `outcome: delivered-once-resumed`.
+
+locus Late {
+    params { births: Int = 0; }
+    closure second { self.births ~~ 2 within 0; epoch birth; }
+    birth() { self.births = self.births + 1; }
+}
+
+locus Owner {
+    params {
+        c: Late = Late { };
+        fired: Int = 0;
+    }
+    on_failure(c: Late, err: ClosureViolation) {
+        self.fired = self.fired + 1;
+        restart (c) for 1;
+    }
+    run() {
+        if self.fired == 1 && self.c.births == 2 {
+            println("outcome: delivered-once-resumed");
+        } else {
+            println("outcome: fired=" + to_string(self.fired) + " births=" + to_string(self.c.births));
+        }
+    }
+}
+
+locus Spawner {
+    run() { Owner { }; }
+}
+
+main locus App {
+    params { s: Spawner = Spawner { }; }
+    placement { s: cooperative(pool = side); }
+    run() { std::time::sleep(100ms); }
+}
+
+fn main() { App { }; }

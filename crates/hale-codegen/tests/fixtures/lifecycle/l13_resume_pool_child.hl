@@ -1,0 +1,44 @@
+// Decision line 13, resume through placement and admission (Resume,
+// RunAdmission). Known open at inventory row C43.
+//
+// `Kid` is placed on pool `side`; its birth closure fails while App's
+// params are open, so the failure is held and its run() waits. App's
+// handler absorbs it at settle, and the resume starts run(). Resume
+// must post run() to Kid's pool as a first run is posted. Kid's run()
+// takes 100ms; App's birth() reads whether it has finished.
+//
+// Expected terminal outcome: run() is posted and App's birth() does not
+// wait for it, `outcome: resumed-posted`. Today run() is called inline
+// on the settling thread, before App's birth(): `resumed-inline`.
+
+locus Kid {
+    params { n: Int = 0; done: Int = 0; }
+    closure ready { self.n ~~ 1 within 0; epoch birth; }
+    run() {
+        std::time::sleep(100ms);
+        self.done = 1;
+    }
+}
+
+main locus App {
+    params {
+        k: Kid = Kid { };
+        fired: Int = 0;
+        at_birth: Int = 0;
+    }
+    placement { k: cooperative(pool = side); }
+    on_failure(c: Kid, err: ClosureViolation) { self.fired = self.fired + 1; }
+    birth() { self.at_birth = self.k.done; }
+    run() {
+        if self.fired != 1 {
+            println("outcome: fired=" + to_string(self.fired));
+        } else if self.at_birth == 1 {
+            println("outcome: resumed-inline");
+        } else {
+            println("outcome: resumed-posted");
+        }
+        std::time::sleep(150ms);
+    }
+}
+
+fn main() { App { }; }

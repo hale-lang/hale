@@ -1,0 +1,42 @@
+// Decision line 19, a full ring at shutdown (RunAdmission). Known open
+// at inventory row R19. Compiled, not run: the order needs a runtime
+// handshake (L5).
+//
+// `blocker` holds pool `side`'s worker inside its run() while App
+// replaces its placed field `k` many times, each replacement posting a
+// run to the same pool, until the ring is full. If the pool's shutdown
+// is set while the ring is full, the post is discarded and the caller
+// is not told.
+//
+// Expected terminal outcome: each replacement's run is either admitted
+// and completed, or rejected before admission with a shutdown reason
+// (`not-started: shutdown`); none is silent, and each child is torn
+// down once. Today a run refused at shutdown is silent. Driving the
+// ring to full at the moment shutdown is set needs the handshake L5
+// adds, so the harness only compiles this program.
+
+locus Blocker {
+    run() { std::time::sleep(200ms); }
+}
+
+locus Kid {
+    params { tag: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        blocker: Blocker = Blocker { };
+        k: Kid = Kid { };
+    }
+    placement { blocker: cooperative(pool = side); k: cooperative(pool = side); }
+    run() {
+        let mut i = 0;
+        while i < 2000 {
+            self.k = Kid { tag: i };
+            i = i + 1;
+        }
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,39 @@
+// Join progress, a late failure during the pool join (JoinProgress,
+// FailureDelivery). Known open at inventory row R20 for the domain the
+// handler runs on, which is L5's assertion; the outcome is pinned
+// here.
+//
+// `p` runs on pool `side` and fails 200ms into its run(), while fn
+// main's exit is joining the pool workers. The join waits for the
+// worker; the worker's failure needs the owner's decision.
+//
+// Expected terminal outcome: the handler ran once, the join returned,
+// and App's dissolve() saw it: `outcome: delivered-once`.
+
+locus Late {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() {
+        std::time::sleep(200ms);
+        violate fuse;
+    }
+}
+
+main locus App {
+    params {
+        p: Late = Late { };
+        fired: Int = 0;
+    }
+    placement { p: cooperative(pool = side); }
+    on_failure(c: Late, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() { std::time::sleep(20ms); }
+    dissolve() {
+        if self.fired == 1 {
+            println("outcome: delivered-once");
+        } else {
+            println("outcome: fired=" + to_string(self.fired));
+        }
+    }
+}
+
+fn main() { App { }; }

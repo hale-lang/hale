@@ -1,0 +1,38 @@
+// Decision line 17, the pinned join set and order (PinnedJoin,
+// TeardownDelivery), eager half. Pending: the deferred spine's rule is
+// the baseline only if GH #253's final-publish guarantees hold across
+// the eager, deferred and declaration permutations.
+//
+// App is a statement-position literal with no subscriptions (the eager
+// spine). `sink` is pinned and subscribes to `Finals`; `src` is a
+// cooperative field whose dissolve() publishes one. The eager spine
+// joins every own pinned child, subscribers included, before the
+// cooperative fields' teardown, so the final publish finds no
+// subscriber. `l17_pinned_join_deferred.hl` is the same tree under the
+// deferred spine.
+//
+// Expected terminal outcome today: `final-dropped`.
+
+type Fin { n: Int; }
+topic Finals { payload: Fin; subject: "lifecycle.l17.eager"; }
+
+locus Sink {
+    bus { subscribe Finals as on_final; }
+    fn on_final(f: Fin) { println("ev sink-heard-final"); }
+}
+
+locus Src {
+    bus { publish Finals; }
+    dissolve() { Finals <- Fin { n: 1 }; }
+}
+
+main locus App {
+    params {
+        sink: Sink = Sink { };
+        src: Src = Src { };
+    }
+    placement { sink: pinned; }
+    run() { std::time::sleep(20ms); }
+}
+
+fn main() { App { }; }

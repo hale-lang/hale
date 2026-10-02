@@ -1,0 +1,30 @@
+// Decision line 12, owned fields drain before their parent, in the
+// child's domain (Drain). Known open at inventory row C9.
+//
+// `Outer` is pinned and owns `Inner`. A locus's owned fields drain
+// before it does; for a pinned locus, on its own thread, never as an
+// unconditional call on the parent's.
+//
+// Expected terminal outcome: `ev inner-drain` before `ev outer-drain`,
+// judged by the harness: `fields-drained-first`. Today the pinned
+// thread runs Outer's drain() with no field drains, and Inner is
+// dissolved without one: `inner-not-drained`.
+
+locus Inner {
+    drain() { println("ev inner-drain"); }
+    dissolve() { println("ev inner-dissolve"); }
+}
+
+locus Outer {
+    params { inner: Inner = Inner { }; }
+    drain() { println("ev outer-drain"); }
+    dissolve() { println("ev outer-dissolve"); }
+}
+
+main locus App {
+    params { p: Outer = Outer { }; }
+    placement { p: pinned; }
+    run() { std::time::sleep(20ms); }
+}
+
+fn main() { App { }; }

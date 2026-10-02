@@ -1,0 +1,35 @@
+// Decision line 19, self-post overflow (RunAdmission, Run).
+//
+// `spawner` runs on pool `side`, and its run() builds twenty accepted
+// children: their runs are posted by the worker to its own pool, onto
+// the worker's overflow list. App's run() returns at once, so the pool
+// join's shutdown is set while the cells wait. An admitted run is
+// owed its completion: the worker runs every cell it has admitted
+// before its last empty-and-shutdown check.
+//
+// Expected terminal outcome: every child's run() completed and every
+// child torn down once, judged by the harness: `all-completed`.
+
+locus Kid {
+    params { tag: Int = 0; }
+    run() { println("ev kid-run " + to_string(self.tag)); }
+    dissolve() { println("ev kid-dissolve " + to_string(self.tag)); }
+}
+
+locus Spawner {
+    accept(c: Kid) { }
+    run() {
+        let mut i = 0;
+        while i < 20 {
+            Kid { tag: i };
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params { spawner: Spawner = Spawner { }; }
+    placement { spawner: cooperative(pool = side); }
+}
+
+fn main() { App { }; }

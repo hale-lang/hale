@@ -187,9 +187,9 @@ because it's how Hale frees resources without a `defer` or a
   there and tears down at the end of the statement.
   Fire-and-forget.
 - **`let`-bound** (`let t = Ticker { };`): it's born and runs,
-  but **dissolve is deferred to the end of the enclosing
-  function's scope**. The binding stays usable for method calls
-  until then.
+  but **drain and dissolve are deferred to the end of the
+  enclosing function's scope**. The binding stays usable for
+  method calls until then.
 - **A literal you *use*** — as a method receiver
   (`Ticker { }.tick()`), as an argument (`serve(Ticker { })`),
   for a field read (`Ticker { }.every_ms`): the expression that
@@ -480,6 +480,50 @@ loop is still going, the process keeps running until that loop ends
 — which is how a server stays up — and SIGTERM is how you end it. A
 child on an `async_io` pool is different: when `main`'s `run()` ends,
 its pool shuts down and a `run()` parked there is abandoned.
+
+## The order, rule by rule
+
+The runtime keeps the order without a state machine: the compiler
+emits each step where it belongs, and a torn-down locus is marked
+so nothing tears it down twice. The rules that order gives you:
+
+- **`accept` sees the params, not the birth.** A parent's
+  `accept(c)` runs once the child's params are built and before the
+  child's `birth()`. It admits the child; it cannot turn it away.
+- **Subscriptions come before `birth()`.** A locus can publish to
+  its own topics from `birth()` and hear it.
+- **A failure is a `ClosureViolation`, delivered when it happens.**
+  A failing birth closure, `birth_check`, `violate` or closure
+  reaches the parent's `on_failure` at that moment, not at the
+  child's dissolve. While the parent is still building its own
+  params the failure is held and delivered once they are all set,
+  before the parent's `birth()`. The failed child stays readable in
+  the handler, and `restart` reuses it.
+- **Dissolve-epoch closures run before `dissolve()`.** A violation
+  there reaches the parent before your cleanup runs.
+- **Ctrl-C raises a flag.** The signal calls none of your methods;
+  the `run()`s that watch `self.draining` return, and the ordinary
+  teardown follows.
+- **No restart during a drain.** A handler that asks for `restart`
+  while the process drains gets no restart: the child ends as if
+  the handler had returned without asking.
+
+A few rules are decided and not yet true of every program;
+`spec/runtime.md` § "Lifecycle obligations" names each one, and
+the compiler's test suite carries a program that shows today's
+behaviour until it changes:
+
+- a handler that runs because a locus published to itself from
+  `birth()` can run before that `birth()` has returned;
+- a pinned locus's own locus fields are not drained, only
+  dissolved;
+- a restart asked for while `main`'s exit is already joining the
+  pools still runs;
+- a pool-placed publisher waiting in `or wait` on a queue only
+  `main` drains holds the exit forever;
+- a dissolve-epoch violation of a flow child, or of a field torn
+  down from `fn main`, ends the process instead of reaching the
+  parent's handler.
 
 The lifecycle is the skeleton of every long-running Hale program.
 Next, the thing those programs use to talk to each other: [The

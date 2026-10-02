@@ -1,0 +1,27 @@
+// Decision line 14, order by construction with latches (Reclaim).
+// Shipped; the trace build's verification of the table is adopted (L2).
+//
+// Three flow children are reclaimed by their run ends; App's own
+// teardown then walks its accepted children, and the `__arena` latch
+// keeps that second walk from tearing any of them down again.
+//
+// Expected terminal outcome: each child's dissolve() runs exactly once,
+// judged by the harness: `torn-down-once`.
+
+locus Kid {
+    params { tag: String = ""; }
+    run() { }
+    dissolve() { println("ev kid-dissolve " + self.tag); }
+}
+
+main locus App {
+    accept(c: Kid) { }
+    release (c: Kid) { }
+    run() {
+        Kid { tag: "a" };
+        Kid { tag: "b" };
+        Kid { tag: "c" };
+    }
+}
+
+fn main() { App { }; }

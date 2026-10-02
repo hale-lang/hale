@@ -1,0 +1,50 @@
+// Decision line 1, construction-time delivery for an owner placed on a
+// cooperative pool (ConstructionDelivery). Pending: decision L0-1 names
+// the pool's worker as the owner's domain, spec/semantics.md names the
+// thread settling the parent, and the construction-time decision has
+// not chosen between them.
+//
+// `Owner` is placed on pool `side`; its child `Boom` fails while
+// Owner's params are open. Today Owner is instantiated, and its params
+// settled, on the instantiating thread (main), which runs the handler.
+// The fixture pins what is observable from the program: one delivery,
+// at settle, before Owner's birth(). The thread it ran on is L5's
+// assertion (`failure_delivery_domain`).
+//
+// Expected terminal outcome today: `outcome: delivered-at-settle`.
+
+locus Boom {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() { violate fuse; }
+}
+
+locus Owner {
+    params {
+        c: Boom = Boom { name: "c" };
+        tag: String = "stored";
+        seen: String = "";
+        fired: Int = 0;
+        at_birth: Int = 0;
+    }
+    on_failure(c: Boom, err: ClosureViolation) {
+        self.seen = self.tag;
+        self.fired = self.fired + 1;
+    }
+    birth() { self.at_birth = self.fired; }
+}
+
+main locus App {
+    params { o: Owner = Owner { }; }
+    placement { o: cooperative(pool = side); }
+    run() {
+        std::time::sleep(50ms);
+        if self.o.fired == 1 && self.o.at_birth == 1 && self.o.seen == "stored" {
+            println("outcome: delivered-at-settle");
+        } else {
+            println("outcome: fired=" + to_string(self.o.fired) + " at_birth=" + to_string(self.o.at_birth));
+        }
+    }
+}
+
+fn main() { App { }; }

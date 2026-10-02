@@ -1,0 +1,40 @@
+// Restart during drain (RecoveryDecision, Restart). Known open at
+// inventory row C42 for an owner's teardown; shipped for the process
+// drain.
+//
+// `kid` runs on pool `side` and fails 200ms into its run(), long after
+// App's run() has returned and fn main's exit has begun App's teardown
+// (the pool join waits for the worker). App's handler asks for a
+// restart. A restart asked for once the owner has entered teardown is
+// not performed: the recovery decision is recorded apart from its
+// execution, and the child ends as if the handler had returned without
+// asking.
+//
+// Expected terminal outcome: one birth, the handler once, one
+// dissolve, judged by the harness: `restart-not-performed`. Today the
+// restart runs: `restarted-during-teardown`.
+
+locus Kid {
+    params { births: Int = 0; name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    birth() { self.births = self.births + 1; }
+    run() {
+        if self.births == 1 {
+            std::time::sleep(200ms);
+            violate fuse;
+        }
+    }
+    dissolve() { println("ev kid-dissolve births=" + to_string(self.births)); }
+}
+
+main locus App {
+    params { kid: Kid = Kid { }; }
+    placement { kid: cooperative(pool = side); }
+    on_failure(c: Kid, err: ClosureViolation) {
+        println("ev handler");
+        restart (c) for 1;
+    }
+    run() { std::time::sleep(20ms); }
+}
+
+fn main() { App { }; }

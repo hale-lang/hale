@@ -138,15 +138,20 @@ the model: runtime is automatic; stdlib is explicit.
   reclaimed by the owner's same-thread cascade, so a cross-pool
   `I{}` is **fire-and-forget** — it may only be a bare statement;
   using the instance as a value is rejected at compile time.
-- **State machine enforcement.** A locus can't accept after
-  drain has begun, can't run before birth completed, etc. The
-  runtime tracks state; transitions are rejected if they
-  violate ordering.
+- **Order by construction, with latches.** A locus can't run
+  before its birth completed, can't be torn down twice, etc.
+  There is no runtime state machine: the order is the order the
+  compiler emits, and the latches (`__arena` NULL,
+  `__drain_requested`, `__quarantined`, the held-failure node's
+  state) keep a step from running twice (§ "Lifecycle
+  obligations", line 14).
 - **`drain()` cascades depth-first.** Calling `drain()` on a
   locus first recursively drains all its children (depth-first),
-  waits for them, then drains itself. SIGINT triggers `drain()`
-  on the runtime root, cascading through the whole process
-  tree. No separate cascade syntax — `drain()` is always
+  waits for them, then drains itself. SIGINT and SIGTERM raise
+  the process's draining flag and call no `drain()`: the `run()`s
+  that read `self.draining` return, and the ordinary teardown
+  follows (§ "Process control", § "Lifecycle obligations",
+  line 15). No separate cascade syntax — `drain()` is always
   cascading. For locus-typed param fields specifically
   (F.29), the codegen walks `LocusRef` fields in declaration
   order at the cascade-teardown sites (ephemeral scope-exit
@@ -1436,7 +1441,8 @@ zero_copy binding produces.
   can subscribe to via bus.
 - **Collapse vs. explosion.** A closure-pass at any epoch is
   silent. A closure-fail flips an "exploded" flag on the locus.
-  At dissolve, if exploded, the parent's
+  At the failing epoch (held while the parent's params are
+  open; § "Lifecycle obligations", line 9), the parent's
   `on_failure(self, ClosureViolation { ... })` is invoked with
   a typed event carrying closure name, epoch, left/right
   values, tolerance, diff. Distinct from hard substrate
@@ -1661,6 +1667,233 @@ zero_copy binding produces.
   - the child was torn down exactly once.
 
   The test runs under ASan with heap-backed child fields.
+
+### Lifecycle obligations
+
+The lifecycle is a table of obligations (F.40 phase 3, L1): each
+action the compiler emits or the runtime performs is owed by a
+domain to an instance, is placed in order by the events it waits
+for, and ends in one of its named terminal outcomes. The rows are
+`hale_types::lifecycle` (`crates/hale-types/src/lifecycle.rs`). An
+obligation is keyed by its source site, the declaration built and
+the construction template that builds it (P1's instance key); the
+runtime numbers the live instance and its incarnation, one per
+`birth()`, and the table never does. A restart begins the next
+incarnation; a restart asked for and not performed begins none.
+
+This section holds the decisions the lifecycle inventory
+(`notes/f40-lifecycle-inventory.md`, Decisions 1–19) asked for,
+one paragraph per line, and the two requirements adopted beside
+them. It sits apart from § "Failure handling" because most of the
+lines are about order and teardown, not failure; decision L0-1
+stays there. Each paragraph states the rule and whether it is
+shipped. Where the adopted rule is not yet what the code does, the
+paragraph names the inventory row where they differ, and the
+fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
+pins today's outcome; `lifecycle_fixtures.rs` lists it in its
+`KNOWN_OPEN` table and fails once the outcome changes, so the
+entry has to go with the fix. A line still waiting on a condition
+says so and records today's behaviour.
+
+- **Line 1, construction-time delivery.** Construction, readiness
+  and failure delivery are one protocol, and its settlement is
+  defined by events: the owner's last param is stored, a held
+  failure is admitted to delivery, its handler completes, the child
+  resumes. A failure raised while the owner's params are open is
+  held; at settle the held failures are delivered in the order they
+  arrived, before the owner's `birth()`, and each child waits for
+  its decision. The child and the copied violation are retained
+  until the handler completes. Shipped for an owner whose params
+  settle on its own domain (`l01_held_failure_settle.hl`). No
+  mechanism carrying this protocol may wait on itself: a held
+  failure whose child and owner share a pool's worker
+  (`l01_neg_same_pool_held.hl`), and an instantiating thread that
+  settles while the worker holding the failed child needs its
+  queue for a sibling's run (`l01_neg_it_waits_worker_queue.hl`),
+  both complete today. **Pending:** an owner placed on a
+  cooperative pool. Decision L0-1 names the pool's worker as that
+  owner's domain, `spec/semantics.md` § "on_failure(c, err)" names
+  the thread settling the parent, and today that is the
+  instantiating thread (`l01_pool_owner_settle.hl` pins the
+  delivery, not its thread).
+- **Line 2, the tick closures after a posted `run()`.** **Pending:**
+  the decisions choose no option. Today the tick and duration
+  closures of a locus whose `run()` is posted to a pool run on the
+  instantiating thread right after the post, while `run()` is still
+  running on the worker (inventory row C12,
+  `l02_tick_after_posted_run.hl`). The options stand: run them in
+  the posted wrapper after `run()` returns, or drop the post-run
+  tick for a posted `run()`.
+- **Line 3, where lifecycle methods run on a pool.** **Pending:**
+  the decisions choose no option. Today a pool-placed locus's
+  `accept` and `birth()` run on the instantiating thread, its
+  `run()` on the pool's worker, and its `dissolve()` on the
+  teardown thread (`l03_pool_birth_domain.hl`); § "Placement
+  classes", Phase 4 v1 limit, says otherwise.
+- **Line 4, the failure route bound at birth, in every spine.**
+  Every spine that evaluates a child's closures reads the failure
+  route the child bound at its birth, so one instance has one
+  route, and the owner and the payload are retained until the
+  delivery completes. Not yet shipped in two places. The reclaim
+  spine resolves the route with the reclaimed child as the parent
+  (inventory row C25, `l04_dissolve_route_reclaim.hl`), and a
+  dissolve cascade lowered in `fn main`, where no locus is `self`,
+  resolves none (row C31, `l04_dissolve_route_cascade.hl`); in both,
+  a dissolve-epoch violation takes the report and the structural
+  exit, and the owner's handler is never selected.
+- **Line 5, `accept`'s position.** `accept(c)` runs once the
+  child's region exists and its params are built, and before its
+  subscriptions and its `birth()`. Its result is not read: it
+  admits, and cannot reject. An admission interface is separate
+  work. Shipped (`l05_accept_position.hl`).
+- **Line 6, registration before birth, and readiness.** A new
+  instance's subscriptions are registered before its `birth()`, so
+  `birth()` may publish to them. Shipped. Delivery to the instance
+  becomes eligible once its `birth()` has completed; a cell that
+  arrives earlier is retained in its queue until then, never
+  dropped. Not yet shipped (inventory row C8): a subscriber on the
+  main pool whose `birth()` yields runs its own handler inside its
+  `birth()` (`l06_readiness_main.hl`), and a pool-placed
+  subscriber's worker delivers while its `birth()` is still
+  running on the instantiating thread (`l06_readiness_pool.hl`).
+- **Line 7, waits that only teardown ends.** Every teardown spine
+  aborts the `or wait`s it would otherwise wait on before it joins
+  the workers they block, and an aborted publish is not a success:
+  it raises `BusWaitAborted`. Not yet shipped (inventory row R34):
+  every spine raises the wait-abort after the pool join, so a
+  pool-placed publisher waiting for space on a queue only `main`
+  drains holds the join forever (`l07_pool_or_wait_teardown.hl`).
+- **Line 8, a birth failure's shape.** A failure in `birth()` (a
+  birth-epoch closure, `birth_check`) or in `run()` (`violate`, a
+  closure) is a `ClosureViolation`, and the failing child is kept
+  for its owner's supervision: its region stays, the handler reads
+  it, and a restart reuses it. There is no `StructuralFailure`.
+  Shipped (`l08_birth_failure_kept.hl`).
+- **Line 9, when a violation reaches the owner.** At the failing
+  epoch, not at dissolve; held while the owner's params are open
+  (line 1). Shipped (`l09_delivery_at_epoch.hl`).
+- **Line 10, dissolve-epoch closures, then `dissolve()`.** In every
+  spine a locus's dissolve-epoch closures run before its
+  `dissolve()`, so a violation there is delivered while the user's
+  cleanup has not yet run. Shipped (`l10_dissolve_closures_first.hl`;
+  today its violation also shows line 4's cascade route).
+- **Line 11, a let-bound literal.** `birth()` and `run()` happen at
+  the construction site; `drain()` and `dissolve()` happen together
+  at the enclosing scope's exit. Shipped (`l11_let_bound_drain.hl`).
+- **Line 12, owned fields drain before their parent.** A locus's
+  owned locus fields drain before it does, each in its own domain:
+  a pinned locus's fields drain on its thread before its own
+  `drain()`, and nothing is called unconditionally on a parent's
+  pinned thread from outside it. A field the locus was handed and
+  does not own acquires no drain obligation. Not yet shipped
+  (inventory rows C9, C18): a pinned locus's thread runs its
+  `drain()` with no field drains, and its fields are dissolved after
+  the join without one (`l12_pinned_fields_drain.hl`).
+- **Line 13, resume.** A child resumed after a held handler goes
+  through the same placement and admission as a first run, so a
+  pool-placed child's `run()` is posted to its pool; under shutdown
+  the resumed run may end in line 19's not-started outcome. Not yet
+  shipped (inventory row C43): the resume calls `run()` inline on
+  the settling thread (`l13_resume_pool_child.hl`).
+- **Line 14, order.** There is no runtime state machine: order is
+  the order the compiler emits, and latches keep a step from
+  running twice (§ "Lifecycle", "Order by construction"). Shipped
+  (`l14_reclaim_exactly_once.hl`). The obligation table becomes the
+  state the trace build checks each run against (F.40 phase 3, L2);
+  adopted, not yet built.
+- **Line 15, signals.** SIGINT and SIGTERM raise the process's
+  draining flag, from a watcher thread; nothing on the signal path
+  calls a lifecycle method. The `run()`s that read `self.draining`
+  return, and the ordinary teardown follows, `drain()` and
+  `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+- **Line 16, a target without threads.** **Pending:** P3's
+  capability matrix is the authority for which lifecycle
+  obligations a target owes; gating the eager spine is an interim
+  correction, not the rule. Today the eager spine emits the pool
+  join and the wait-abort on wasm, where the other four spines emit
+  neither; it does no harm only because no pool is registered on
+  wasm (`l16_eager_spine_pool_join.hl` pins the native half).
+- **Line 17, the pinned join set and order.** **Pending,
+  conditionally:** the deferred spine's rule (subscription-less
+  pinned children first, pinned subscribers in their slots) is the
+  baseline for every spine, with the eager spine's change pinned,
+  provided GH #253's final-publish guarantees (§ "Lifecycle",
+  Teardown delivery contract) hold across the eager, deferred and declaration
+  permutations; a conflict is resolved before the line is settled.
+  The fixtures add one fact the condition has to meet: a main
+  locus's own pinned subscriber field is joined before a
+  cooperative sibling field's `dissolve()` publishes to it under
+  both spines, because a locus's own pinned entries are moved after
+  its frame entry (`l17_pinned_join_eager.hl`,
+  `l17_pinned_join_deferred.hl`).
+- **Line 18, the pre-drain.** Every teardown spine drains the bus
+  before its first step. The pre-drain is a delivery point, not a
+  witness that anything has quiesced. Not yet emitted by the eager
+  spine (inventory row C13). No program shows the difference
+  today: a body that may have published drains at its own exit,
+  and a main locus's ingress quiesce ends in a drain
+  (`l18_eager_pre_drain.hl` guards the outcome); the missing step
+  is the trace build's to show.
+- **Line 19, a run's admission and its terminal outcome.** A run
+  posted to a pool is attempted by the caller and then admitted or
+  rejected; "attempted" is what the caller knows, not a third
+  outcome. An admitted run is executed or canceled. Each ends in
+  one named outcome:
+
+  | path | terminal outcome |
+  |---|---|
+  | rejected before admission | not started, with the shutdown reason |
+  | admitted, canceled before start | not started, with an acknowledgement |
+  | started, returned | completed |
+  | started, abandoned by an asynchronous shutdown | canceled after start; the worker's quiescence is witnessed separately, by the pool join |
+
+  Admission and the worker's closure are linearized on the pool's
+  queue: a post enqueued before the worker's last
+  empty-and-shutdown check is admitted, and a post after it is
+  rejected. Run admission is separate from the admission of a
+  failure decision, which shutdown never refuses while its child
+  waits (join progress, below). Whatever the outcome, the child is
+  torn down exactly once. Not yet shipped: the post's ABI is
+  `void`, a run refused at shutdown or freed unrun is silent
+  (inventory row R19), and an abandoned parked run has no named
+  outcome (row R20a, `l19_parked_started_coroutine.hl`). The
+  regressions: a full ring and an empty ring after the last check
+  (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
+  only until L5's handshake can drive them), self-post overflow
+  (`l19_self_post_overflow.hl`, every admitted run completes
+  today), a resumed run (`l19_resumed_run_at_shutdown.hl`), and the
+  parked started coroutine.
+- **Restart during drain.** A restart the handler asks for after
+  its owner has entered teardown, or while the process drains, is
+  not performed. The recovery decision (what the handler asked
+  for) and its execution outcome (performed, or not started for a
+  shutdown reason) are recorded separately. The owner's entry into
+  teardown and the permission to restart are ordered: a restart
+  executed after that entry is refused. The child ends as if the
+  handler had returned without asking: it reaches its ordinary run
+  end, which keeps a failed child its owner holds (§ "Lifecycle",
+  Per-child reclamation; GH #1069), so the cancellation is never an
+  unconditional reclaim. Shipped for the process drain
+  (`emit_restart_requested` refuses a restart while
+  `lotus_process_draining_flag` is up). Not yet shipped for an
+  owner's teardown (inventory row C42): a pool-placed child that
+  fails while `fn main`'s exit joins the pools is restarted
+  (`rd_restart_during_teardown.hl`).
+- **Join progress.** An owner keeps completing the outstanding
+  failure decisions of its children until the children it waits
+  for have quiesced, and a pool worker that supervises children
+  on another pool owes the same. Shutdown never silently discards a
+  failure cell whose child awaits it. The joins do not acquire a
+  general queue drain beside `pthread_join`: whatever the joining
+  thread runs while it waits has its own reentrancy and admission
+  rules. Today a late failure during a pinned join or during the
+  pool join completes (`jp_late_failure_pinned_join.hl`,
+  `jp_late_failure_pool_join.hl`), but only because its handler
+  runs in place on the child's thread, outside decision L0-1; once
+  delivery follows L0-1, the joins, which pump no queue (inventory
+  rows C18, R20), are the wait cycle this rule rules out. A late
+  failure whose destination queue is full has no regression yet
+  (L5).
 
 ### Native observation emission (iris P4, 2026-07-27)
 

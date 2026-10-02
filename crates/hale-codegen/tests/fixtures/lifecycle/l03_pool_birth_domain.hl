@@ -1,0 +1,41 @@
+// Decision line 3, where lifecycle methods run for a pool-placed locus
+// (Accept, Birth, Run, Dissolve). Pending: no option is chosen for the
+// line.
+//
+// `Slowborn` is placed on pool `side`, and its birth() takes 50ms. The
+// next param's default reads what birth() wrote. Today birth() runs on
+// the instantiating thread inside App's params loop, so the read sees
+// it; run() alone goes to the worker.
+//
+// Expected terminal outcome today: `outcome: birth-inline-run-posted`.
+
+locus Slowborn {
+    params { born: Int = 0; ran: Int = 0; }
+    birth() {
+        std::time::sleep(50ms);
+        self.born = 1;
+    }
+    run() { self.ran = 1; }
+}
+
+main locus App {
+    params {
+        s: Slowborn = Slowborn { };
+        seen: Int = self.s.born;
+    }
+    placement { s: cooperative(pool = side); }
+    run() {
+        let mut i = 0;
+        while self.s.ran == 0 && i < 100 {
+            std::time::sleep(5ms);
+            i = i + 1;
+        }
+        if self.seen == 1 && self.s.ran == 1 {
+            println("outcome: birth-inline-run-posted");
+        } else {
+            println("outcome: seen=" + to_string(self.seen) + " ran=" + to_string(self.s.ran));
+        }
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,31 @@
+// Decision line 9, delivery at the failing epoch (FailureDelivery,
+// Closures). Shipped.
+//
+// A violation reaches the owner when it happens, not at the child's
+// dissolve. App is settled; `Kid` is let-bound in App's run(), so its
+// dissolve is deferred to the end of run(). Its run() fails; App reads
+// its own handler count while the child is still alive.
+//
+// Expected terminal outcome: `outcome: delivered-at-epoch`.
+
+locus Kid {
+    params { name: String = ""; }
+    closure fuse { captures: name; epoch inline; }
+    run() { violate fuse; }
+}
+
+main locus App {
+    params { fired: Int = 0; }
+    on_failure(c: Kid, err: ClosureViolation) { self.fired = self.fired + 1; }
+    run() {
+        let k = Kid { name: "k" };
+        if self.fired == 1 {
+            println("outcome: delivered-at-epoch");
+        } else {
+            println("outcome: fired=" + to_string(self.fired));
+        }
+        println(k.name);
+    }
+}
+
+fn main() { App { }; }
