@@ -1683,8 +1683,7 @@ incarnation; a restart asked for and not performed begins none.
 
 This section holds the decisions the lifecycle inventory
 (`notes/f40-lifecycle-inventory.md`, Decisions 1–19) asked for,
-one paragraph per line, and the two requirements adopted beside
-them. It sits apart from § "Failure handling" because most of the
+one paragraph per line, and the requirements adopted beside them. It sits apart from § "Failure handling" because most of the
 lines are about order and teardown, not failure; decision L0-1
 stays there. Each paragraph states the rule and whether it is
 shipped. Where the adopted rule is not yet what the code does, the
@@ -1778,7 +1777,10 @@ that fail today, and the inventory row each fails at, in its
   closure) is a `ClosureViolation`, and the failing child is kept
   for its owner's supervision: its region stays, the handler reads
   it, and a restart reuses it. There is no `StructuralFailure`.
-  Shipped (`l08_birth_failure_kept.hl`).
+  Shipped (`l08_birth_failure_kept.hl`), except for a pinned locus's
+  `birth_check`, which is never evaluated: the pinned thread runs only
+  `birth()`. The check is owed on the pinned thread before `run()`
+  (inventory row C38; the lifecycle matrix's pinned birth cells).
 - **Line 9, when a violation reaches the owner.** At the failing
   epoch, not at dissolve; held while the owner's params are open
   (line 1). Shipped (`l09_delivery_at_epoch.hl`).
@@ -1811,8 +1813,9 @@ that fail today, and the inventory row each fails at, in its
   (`l14_reclaim_exactly_once.hl`), and verified: the trace build
   (§ "The lifecycle trace") checks every fixture's run, and every
   runnable example's, against laws that hold whatever the plan (an
-  instance is reclaimed once, and only after it was born; every step
-  entered ends), and each adopted line's fixture against its plan.
+  instance is reclaimed once, and only after it was born; no step is
+  taken on an instance nothing built; every step entered ends), and
+  each adopted line's fixture against its plan.
 - **Line 15, signals.** SIGINT and SIGTERM raise the process's
   draining flag, from a watcher thread; nothing on the signal path
   calls a lifecycle method. The `run()`s that read `self.draining`
@@ -1873,8 +1876,18 @@ that fail today, and the inventory row each fails at, in its
   records both (inventory row R20a, `l19_parked_started_coroutine.hl`).
   No release build observes a run's terminal, so the name lives
   there. Not yet shipped: the post's ABI is `void`, and a run refused
-  at shutdown or freed unrun is silent (inventory row R19). The
-  regressions: a full ring and an empty ring after the last check
+  at shutdown or freed unrun is silent (inventory row R19). An
+  admitted run is also not retained against its child's teardown, and
+  that is an open memory-safety defect: when an owner is torn down on
+  a pool worker, a child's `run()` posted to that same worker starts
+  after the teardown has reclaimed the child, on the freed struct (a
+  heap-use-after-free under AddressSanitizer; an accepted child is
+  torn down twice). The adopted rule: a teardown on a worker cancels
+  the runs queued on it for the dying child before reclaiming it, each
+  ending not started with an acknowledgement, and the child is
+  retained until each of its queued runs is admitted or canceled. The
+  lifecycle matrix's pool cells pin the defect until F.40 phase 3's L5
+  fixes it. The regressions: a full ring and an empty ring after the last check
   (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
   only until L5's handshake can drive them), self-post overflow
   (`l19_self_post_overflow.hl`, every admitted run completes
@@ -1913,6 +1926,13 @@ that fail today, and the inventory row each fails at, in its
   rows C18, R20), are the wait cycle this rule rules out. A late
   failure whose destination queue is full has no regression yet
   (L5).
+- **Bubble climbs the tree.** `bubble(err)` passes the failure to
+  the grandparent's `on_failure`, and on up until a handler absorbs
+  it; only past the root is it the report and the non-zero exit
+  (`spec/semantics.md` § "bubble(err)"). Not yet shipped (inventory
+  row C47): every `bubble` is lowered as the root's report and exit,
+  wherever it is raised, and no grandparent's handler is called.
+  F.40 phase 3's L4 corrects it with the failure-delivery spine.
 
 #### The lifecycle trace
 

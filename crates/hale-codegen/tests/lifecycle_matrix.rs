@@ -23,7 +23,11 @@
 //!     `violate` in `drain()` (line 4's route in every spine); and
 //!     `none`. (`bubble` from an `on_failure` is not a phase: it is
 //!     lowered as the report and the structural exit, never as a
-//!     delivery to the grandparent.)
+//!     delivery to the grandparent, where `spec/semantics.md` has it
+//!     climb the tree until a handler absorbs it. Inventory row C47
+//!     records the difference, corrected by L4's failure-delivery
+//!     spine; until then the `handler` phase raises with a bus
+//!     handler's `violate`, not a bubble.)
 //!   * **position**: where the subject sits in its owner's tree. A
 //!     field of the root (`root_child`); a field of a field
 //!     (`grandchild`, whose owner is the middle locus); a statement
@@ -67,10 +71,9 @@
 //!   1. **outcome**: the owner's handler heard each subject's failure
 //!      once, each subject dissolved once, and `fn main` reached its
 //!      end (`delivered-once`; `clean` for phase `none`).
-//!   2. **trace**: the laws every trace owes (`trace::laws`), the
-//!      matrix's own law that nothing is done to an instance nothing
-//!      built ([`never_born`]: a step on a reclaimed struct), and the
-//!      cell's plan.
+//!   2. **trace**: the laws every trace owes (`trace::laws`, among them
+//!      that nothing is done to an instance nothing built: a step on a
+//!      reclaimed struct), and the cell's plan.
 //!   3. **ASan**, on the cells of the default sample:
 //!      `harness::build_asan`, chunk pooling off (GH #816), and the
 //!      instrumented build must give the same outcome.
@@ -369,7 +372,8 @@ const KNOWN_OPEN: &[(&str, &str, &str, &str)] = &[
     ("none/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
     ("birth/root_child/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
     ("birth/replica/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
-    // A child's run() posted to the worker that tears its owner down.
+    // A child's run() posted to the worker that tears its owner down: a
+    // use-after-free today, fixed by L5's first part (inventory R19).
     ("birth/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
     ("run/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
     ("run/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
@@ -399,6 +403,9 @@ const SHOWS_DOMAIN: &str = "trace: domain: Subj.FailureDelivery";
 const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
 const SHOWS_UNDRAINED: &str = "trace: missing: Subj.Drain";
 
+// Inventory C38 said the check agrees; it is never evaluated on a pinned
+// locus. The checker does not refuse it: L4's birth spine runs the check
+// on the pinned thread before run().
 const NO_BIRTH_CHECK: &str = "the pinned thread function runs birth() without the locus's birth_check, so the check never fires and the owner hears nothing";
 const SHOWS_UNDELIVERED: &str = "trace: missing: Subj.FailureDelivery";
 
@@ -485,6 +492,9 @@ fn subj_decl(c: Cell) -> String {
         .into(),
     );
     if c.phase == Phase::Handler {
+        // A bus handler's `violate`, not a `bubble` from a handler:
+        // `bubble` is lowered as the report and the exit, never climbing
+        // the tree (inventory C47, until L4's failure-delivery spine).
         body.push("    fn on_ping(p: Ping) { violate fuse; }\n".into());
     }
     if c.phase == Phase::Drain {
@@ -939,7 +949,6 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
 
     // --- 2: the trace ----------------------------------------------
     let mut v: Vec<Violation> = trace::laws(&ran.trace, ran.complete());
-    v.extend(never_born(&ran.trace));
     v.extend(lifecycle_plan::plan(&p.plan).check(&ran.trace, ran.complete()));
     failures.extend(v.iter().map(|v| format!("trace: {v}")));
 
@@ -982,38 +991,6 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
         failures.push(format!("(the program is kept at {})", bin.with_extension("hl").display()));
     }
     failures
-}
-
-/// The matrix's law beside `trace::laws`: no instance's obligation is
-/// entered before the instance was constructed. The runtime retires an
-/// instance's number at its reclaim, so a step taken on a reclaimed
-/// struct shows as a step of a number nothing built (the laws say the
-/// same of a reclaim alone). A pinned join may come first: the frame
-/// that instantiated the locus enters it while the pinned thread has
-/// not yet begun the birth.
-fn never_born(t: &Trace) -> Vec<Violation> {
-    let mut built: BTreeSet<u64> = BTreeSet::new();
-    let mut out = Vec::new();
-    for e in &t.events {
-        let Some(s) = e.subject else { continue };
-        let inst = s.instance.raw();
-        if matches!(
-            e.kind,
-            ObligationKind::ParamsSettle | ObligationKind::Accept | ObligationKind::Birth | ObligationKind::PinnedJoin
-        ) {
-            built.insert(inst);
-        } else if e.point == hale_types::lifecycle::Point::Entered && built.insert(inst) {
-            out.push(Violation::Law {
-                what: format!(
-                    "{} of a subject never built: {} (inst {inst}) on {} (a step on a reclaimed struct?)",
-                    e.kind.name(),
-                    e.decl.as_deref().unwrap_or("-"),
-                    e.domain
-                ),
-            });
-        }
-    }
-    out
 }
 
 /// `HALE_MATRIX_CELL=<substrings of cell ids, comma-separated>` prints

@@ -29,7 +29,7 @@
 //! execution, not a proof of the edge. Progress (a join that returns, a
 //! wakeup that is not lost) stays with the deadline and matrix oracles.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::{Event, Multiplicity, ObligationId, ObligationKind, Point, RuntimeSubject, Spine};
@@ -422,8 +422,11 @@ fn subject_key(s: Option<RuntimeSubject>, per_incarnation: bool) -> SubjectKey {
 /// ended normally, every entry has an end; a subject is reclaimed at
 /// most once, and only after it was born (a second teardown of a
 /// reclaimed struct shows as a reclaim of a subject never born, since
-/// the runtime retires a number at its reclaim); and birth happens once
-/// per incarnation.
+/// the runtime retires a number at its reclaim); birth happens once
+/// per incarnation; and no other step is entered on an instance nothing
+/// built, which is how a step on a reclaimed struct shows (a pinned join
+/// may come first: the frame that instantiated the locus enters it
+/// while the pinned thread has not yet begun the birth).
 pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
     let mut out = Vec::new();
     let mut open: BTreeMap<(ObligationKind, u64, u32), u32> = BTreeMap::new();
@@ -431,12 +434,38 @@ pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
     let mut born: BTreeMap<u64, u32> = BTreeMap::new();
     let mut births: BTreeMap<(u64, u32), u32> = BTreeMap::new();
     let mut reclaims: BTreeMap<u64, u32> = BTreeMap::new();
+    let mut built: BTreeSet<u64> = BTreeSet::new();
     for e in &trace.events {
         let what = |w: &str| Violation::Law {
             what: format!("{w}: {} {} {} on {}", e.decl.as_deref().unwrap_or("-"), e.kind.name(), subject_label(e.subject), e.domain),
         };
         match e.subject {
             Some(s) => {
+                let inst = s.instance.raw();
+                match e.kind {
+                    ObligationKind::ParamsSettle
+                    | ObligationKind::Accept
+                    | ObligationKind::Birth
+                    | ObligationKind::PinnedJoin => {
+                        built.insert(inst);
+                    }
+                    // A reclaim of a number nothing built is the law below.
+                    ObligationKind::Reclaim => {
+                        built.insert(inst);
+                    }
+                    _ => {
+                        if e.point == Point::Entered && built.insert(inst) {
+                            out.push(Violation::Law {
+                                what: format!(
+                                    "{} of a subject never built: {} (inst {inst}) on {} (a step on a reclaimed struct?)",
+                                    e.kind.name(),
+                                    e.decl.as_deref().unwrap_or("-"),
+                                    e.domain
+                                ),
+                            });
+                        }
+                    }
+                }
                 let key = (e.kind, s.instance.raw(), s.incarnation.raw());
                 let n = open.entry(key).or_insert(0);
                 if e.point == Point::Entered {
@@ -685,5 +714,22 @@ mod tests {
         assert!(v.iter().any(|l| l.contains("reclaimed, never born")), "{v:?}");
         assert!(v.iter().any(|l| l.contains("never ended: Run")), "{v:?}");
         assert!(laws(&t, false).iter().all(|l| !l.to_string().contains("never ended")));
+    }
+
+    /// A step on a struct whose number the runtime retired at its
+    /// reclaim is a step on a number nothing built; a pinned join may
+    /// precede the birth it waits for.
+    #[test]
+    fn a_step_on_a_number_nothing_built_breaks_the_laws() {
+        let t = trace(&[
+            "lc 1 PinnedJoin Entered spine=DeferredEntry dom=main type=P inst=1 inc=0",
+            "lc 2 Birth Entered spine=PinnedMain dom=pinned:1 type=P inst=1 inc=0",
+            "lc 3 Birth Completed spine=PinnedMain dom=pinned:1 type=P inst=1 inc=0",
+            "lc 4 Run Entered spine=PoolRun dom=pool:side type=K inst=2 inc=0",
+            "lc 5 Run Completed spine=PoolRun dom=pool:side type=K inst=2 inc=0",
+        ]);
+        let v: Vec<String> = laws(&t, false).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].contains("Run of a subject never built"), "{v:?}");
     }
 }
