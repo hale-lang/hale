@@ -366,7 +366,15 @@ Two constraints follow from the wasm build being **freestanding**:
   library, and wasm has neither a dynamic linker nor system
   libraries. Dropping it silently would reproduce the same failure one
   level up, so it is an error that points at `csrc` as the
-  alternative.
+  alternative. It is a property of the program, the configuration and
+  the target, never of the machine: `hale build` reports it before any
+  tool is looked up (a machine without clang meets this refusal, not a
+  missing compiler), and `hale check --target wasm32` reports it too,
+  as a record against the package manifest's `link` line
+  (``lib/glue/hale.toml:5:1: error: `[ffi] link = ["m"]` cannot be
+  satisfied on wasm32 — …``). A `--link <lib>` flag, which `hale check`
+  takes as `hale build` does, is the same input, refused naming the
+  flag.
 
 One sharp edge worth stating, because linking the C is what exposes
 it: **Hale's `Int` is 64-bit, so a C declaration must use `long long`,

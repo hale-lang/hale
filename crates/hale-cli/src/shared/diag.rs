@@ -40,7 +40,7 @@ pub(crate) fn render_codegen_error(
         hale_codegen::CodegenError::MissingTsShim(msg, Some(span)) => {
             Some((msg.clone(), *span))
         }
-        hale_codegen::CodegenError::CapabilityRefused(msg, span) => {
+        hale_codegen::CodegenError::CapabilityRefused(msg, Some(span)) => {
             Some((msg.clone(), *span))
         }
         _ => None,

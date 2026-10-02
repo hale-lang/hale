@@ -543,8 +543,10 @@ pub enum CodegenError {
     /// build's target, refused before lowering. A build through the CLI
     /// meets it as the check's located diagnostic; a harness build,
     /// which lowers without the check, meets it here, with the same
-    /// sentence (the cell's witness and the use's chain) and its span.
-    CapabilityRefused(String, hale_syntax::Span),
+    /// sentence (the cell's witness and the use's chain) and its span;
+    /// `None` for an input with no place in the program's sources (a
+    /// `[ffi] link` the build was handed).
+    CapabilityRefused(String, Option<hale_syntax::Span>),
 }
 
 impl std::fmt::Display for CodegenError {
@@ -1110,7 +1112,7 @@ pub fn build_executable_with_options(
         Err(LoadError::Load(f)) => return Err(CodegenError::Unsupported(f.text())),
     };
     let view = snap.demand_lowering().map_err(|b| match (b.family, b.because.first()) {
-        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), d.span),
+        ("target_capability", Some(d)) => CodegenError::CapabilityRefused(d.message.clone(), Some(d.span)),
         _ => CodegenError::Unsupported(b.refused.clone().unwrap_or_else(|| {
             b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
         })),
@@ -1138,6 +1140,22 @@ pub fn build_resolved(
              resolved with api {:?} and roles {:?}",
             options.api, options.api_roles, resolved.api, resolved.api_roles
         )));
+    }
+    // T4 (F.40 P3): a link library is the `LinkLibrary` cell's question,
+    // which depends on the program, the configuration and the target
+    // only, so it is answered before anything is lowered and before any
+    // tool is looked up; a machine without clang meets the refusal, not
+    // "is clang installed?". (It used to be asked inside `link_wasm`,
+    // after the runtime had been compiled.)
+    if let Some(class) = hale_types::capability::TargetClass::of(&options.target.spec()) {
+        if !options.link_libs.is_empty() {
+            let m = hale_types::capability::derive_capability_matrix();
+            let cell = m.behaviour(class, hale_types::capability::Capability::LinkLibrary).expect("a row");
+            if let Some(r) = cell.refusal() {
+                let libs = hale_types::capability::libs_hole(&options.link_libs);
+                return Err(CodegenError::CapabilityRefused(r.render(&cell.witness, &[("libs", &libs)]), None));
+            }
+        }
     }
     // #8 (2026-07-02): `BuildOptions::time_phases` (the CLI's
     // `HALE_TIME`) prints per-phase wall times to stderr — the
@@ -2831,19 +2849,11 @@ fn link_wasm(
     // (println -> printf/puts) as host imports the JS loader provides.
     // (A richer export policy — @export, plus the _hale_start/_hale_tick
     // entry inversion for run()-driven programs — is the next slice.)
-    // #213: `link = [...]` is a system-dylib reference. wasm has no
-    // dynamic linker and no system libraries, so silently dropping it
-    // would reproduce exactly the failure this fixes one level up:
-    // a build that looks fine and is missing its symbols.
-    if !link_libs.is_empty() {
-        return Err(mkerr(format!(
-            "`[ffi] link = {:?}` cannot be satisfied on wasm32 — there \
-             are no system dynamic libraries to link against. Provide \
-             the code as `[ffi] csrc` so it can be compiled into the \
-             module, or gate the dependency out of the wasm build.",
-            link_libs
-        )));
-    }
+    // #213: `link = [...]` is a system-dylib reference, which wasm has no
+    // dynamic linker for: the `LinkLibrary` cell refuses it, and
+    // `build_resolved` asks before any tool is looked up, so none
+    // reaches here.
+    debug_assert!(link_libs.is_empty(), "the LinkLibrary cell refuses a link library on wasm32 first");
 
     // Compile each package csrc translation unit with the same
     // freestanding wasm toolchain used for the runtime. No sysroot and

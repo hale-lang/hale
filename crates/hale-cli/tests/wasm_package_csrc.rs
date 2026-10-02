@@ -115,18 +115,73 @@ fn a_broken_package_csrc_fails_the_wasm_build() {
 fn a_system_link_dependency_is_refused_on_wasm() {
     let root = workspace("link", GOOD_C, "link = [\"m\"]\n");
     let (ok, out) = build_wasm(&root);
-    let _ = std::fs::remove_dir_all(&root);
     assert!(
         !ok,
         "`[ffi] link` cannot be satisfied on wasm32 and must be an \
          error, not a silent drop:\n{}",
         out
     );
-    assert!(
-        out.contains("no system dynamic libraries")
-            || out.contains("cannot be satisfied"),
-        "the diagnostic must say why, and point at csrc as the \
-         alternative:\n{}",
-        out
+    // T4 (F.40 P3): the refusal is the `LinkLibrary` cell's, located at
+    // the package manifest's `link` line, and `hale check` gives the same
+    // record for the same target; the host links `m`.
+    let manifest = root.join("lib/glue/hale.toml");
+    let want = format!(
+        "{}:5:1: error: `[ffi] link = [\"m\"]` cannot be satisfied on wasm32 — there are no system dynamic \
+         libraries to link against. Provide the code as `[ffi] csrc` so it can be compiled into the module, \
+         or gate the dependency out of the wasm build.",
+        manifest.display()
     );
+    assert!(out.lines().any(|l| l == want), "build:\n{out}");
+    let (code, check) = hale(&["check", root.join("app/main.hl").to_str().unwrap(), "--target", "wasm32"]);
+    assert_eq!(code, 1, "{check}");
+    assert!(check.lines().any(|l| l == want), "check:\n{check}");
+    let (code, check) = hale(&["check", root.join("app/main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "the host links it:\n{check}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `--link` is the same input as a manifest's `[ffi] link`: `hale check`
+/// takes it and refuses it under wasm32 as the build does, named as the
+/// flag (T4).
+#[test]
+fn a_link_flag_is_refused_on_wasm_by_check_and_build_alike() {
+    let root = workspace("linkflag", GOOD_C, "");
+    let main = root.join("app/main.hl");
+    let want = "error: --link m: `[ffi] link = [\"m\"]` cannot be satisfied on wasm32";
+    let (code, check) = hale(&["check", main.to_str().unwrap(), "--target", "wasm32", "--link", "m"]);
+    assert_eq!(code, 1, "{check}");
+    assert!(check.lines().any(|l| l.starts_with(want)), "check:\n{check}");
+    let (code, build) = hale(&["build", main.to_str().unwrap(), "--target", "wasm32", "--link", "m"]);
+    assert_ne!(code, 0, "{build}");
+    assert!(build.lines().any(|l| l.starts_with(want)), "build:\n{build}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A capability refusal is not a toolchain failure (design §1.5): with
+/// no clang and no wasm-ld on PATH, the build of the `link = ["m"]` app
+/// reports the `[ffi] link` refusal, not "is clang installed?" — the
+/// cell is asked before any tool is looked up.
+#[test]
+fn the_link_refusal_comes_before_any_tool_is_probed() {
+    let root = workspace("nopath", GOOD_C, "link = [\"m\"]\n");
+    let empty = root.join("empty-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["build", root.join("app/main.hl").to_str().unwrap(), "--target", "wasm32"])
+        .env("PATH", &empty)
+        .output()
+        .expect("run hale build");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success(), "{text}");
+    assert!(text.contains("cannot be satisfied on wasm32"), "{text}");
+    assert!(!text.contains("is clang installed"), "{text}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn hale(args: &[&str]) -> (i32, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).output().expect("run hale");
+    (
+        out.status.code().unwrap_or(-1),
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
+    )
 }

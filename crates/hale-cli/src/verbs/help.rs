@@ -447,6 +447,10 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 Without it, a `target wasm {{ }}`");
     println!("                                 declaration selects wasm32, else");
     println!("                                 the host.");
+    println!("  --link <lib>                    a library the build would link, held");
+    println!("                                 to the target as `hale build` holds it");
+    println!("                                 (wasm32 links none); so is every");
+    println!("                                 imported package's `[ffi] link`.");
     println!();
     println!("Claims and topology (spec/verification.md):");
     println!("  --dump-topology[=<path>]        emit the topology artifact");

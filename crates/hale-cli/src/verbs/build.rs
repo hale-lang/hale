@@ -148,6 +148,30 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
+    // T4: the link libraries the build would take — `--link`, and each
+    // imported package's `[ffi] link` — held to the `LinkLibrary` cell
+    // before any tool is looked up, each refusal located at its input,
+    // as `hale check` locates it.
+    let entry_dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    if let Ok(row) = snap.demand_target() {
+        let inputs = crate::shared::options::link_inputs(
+            &options.link_libs,
+            snap.entry_imports(),
+            &entry_dir,
+            find_workspace_root(target).as_deref(),
+        );
+        let refused = crate::shared::options::link_refusals(row, &inputs);
+        if !refused.is_empty() {
+            for r in refused {
+                eprintln!("{r}");
+            }
+            return ExitCode::from(1);
+        }
+    }
     // hello-world.hl → hello-world. myapp/ → myapp; output lands next to
     // target. When the user passes `.` (or any path without a useful
     // trailing component — `./`, `..`), `Path::file_name` returns None;
@@ -305,12 +329,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // tolerated — clang's `-lX -lX` is harmless, and the linker
     // dedupes csrc translation-unit contents at symbol level.
     // The imports are the target's own, resolved against the
-    // directory they were written in.
-    let entry_dir = if target.is_dir() {
-        target.to_path_buf()
-    } else {
-        target.parent().unwrap_or(Path::new(".")).to_path_buf()
-    };
+    // directory they were written in (`entry_dir`, above).
     let toml_opts = collect_ffi_from_imports(
         snap.entry_imports(),
         &entry_dir,
