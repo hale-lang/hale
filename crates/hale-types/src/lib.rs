@@ -148,19 +148,21 @@ pub fn check_bundle(bundle: &Bundle<'_>) -> Vec<Diag> {
 /// body" hard error to allowed — the `--allow-unowned-subscriber`
 /// escape hatch for code that manages the subscriber's lifetime
 /// some other way.
-/// Render the per-method allocation summary + call graph for a bundle
-/// (GH #18 item 1). Drives `--dump-alloc-summary`.
-pub fn dump_alloc_summary(bundle: &Bundle<'_>) -> String {
-    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    alloc_summary::summarize_programs(&progs, &bundle.snapshot).render()
+/// Render the per-method allocation summary + call graph (GH #18 item
+/// 1): the bundle's own fns and loci, judged over the snapshot's summary
+/// (`summary`, with the stdlib's analysis copy and the import renames).
+/// Drives `--dump-alloc-summary` and the editor's `hale/allocSummary`.
+pub fn dump_alloc_summary(summary: &alloc_summary::AllocSummary) -> String {
+    summary.render()
 }
 
 /// Render the per-program resource budget — pinned threads, cooperative
 /// pools, bus subjects (GH #18 item 5, count slice). Drives
-/// `--dump-resource-budget`.
-pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
+/// `--dump-resource-budget`. `summary` is the bundle's snapshot's
+/// (`demand_alloc_summary`).
+pub fn dump_resource_budget(bundle: &Bundle<'_>, summary: &alloc_summary::AllocSummary) -> String {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::budget_for_programs(&progs, &bundle.snapshot).render()
+    resource_budget::budget_for_programs(&progs, summary).render()
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
@@ -168,29 +170,35 @@ pub fn dump_resource_budget(bundle: &Bundle<'_>) -> String {
 /// `@bounded` locus (the always-on in-source opt-in); `true` is the
 /// whole-program survey behind `--warn-unbounded-alloc`. `@unbounded`-fn
 /// sites are suppressed in both modes, and so is a site with no author
-/// position (`alloc_summary::AuthorPositions`).
-pub fn unbounded_alloc_warnings(bundle: &Bundle<'_>, include_all: bool) -> Vec<Diag> {
+/// position (`alloc_summary::AuthorPositions`). `summary` is the
+/// bundle's snapshot's (`demand_alloc_summary`).
+pub fn unbounded_alloc_warnings(
+    bundle: &Bundle<'_>,
+    summary: &alloc_summary::AllocSummary,
+    include_all: bool,
+) -> Vec<Diag> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    alloc_summary::unbounded_alloc_diags(&progs, &bundle.snapshot, &bundle.sources, include_all)
+    alloc_summary::unbounded_alloc_diags(summary, &progs, &bundle.snapshot, &bundle.sources, include_all)
 }
 
 /// Resource-leak warnings: an fd-acquiring call whose result is stored
 /// resident in an unbounded context (GH #18 item 5, leak stage). Opt-in
-/// via `--warn-resource-leak`.
-pub fn resource_leak_warnings(bundle: &Bundle<'_>) -> Vec<Diag> {
-    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::resource_leak_diags(&progs, &bundle.snapshot)
+/// via `--warn-resource-leak`. `summary` is the bundle's snapshot's.
+pub fn resource_leak_warnings(summary: &alloc_summary::AllocSummary) -> Vec<Diag> {
+    resource_budget::resource_leak_diags(summary)
 }
 
 /// Check a bundle's resource counts against declared ceilings (GH #18 item
 /// 5, the CI gate). Returns one violation message per over-budget resource
-/// (empty = within budget). Drives `--check-resource-budget`.
+/// (empty = within budget). Drives `--check-resource-budget`. `summary`
+/// is the bundle's snapshot's.
 pub fn check_resource_ceiling(
     bundle: &Bundle<'_>,
+    summary: &alloc_summary::AllocSummary,
     ceiling: &resource_budget::ResourceCeiling,
 ) -> Vec<String> {
     let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let budget = resource_budget::budget_for_programs(&progs, &bundle.snapshot);
+    let budget = resource_budget::budget_for_programs(&progs, summary);
     resource_budget::check_ceiling(&budget, ceiling)
 }
 
@@ -320,7 +328,7 @@ pub fn check_bundle_opts_scoped(
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
         let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
-        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
+        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
     diags

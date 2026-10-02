@@ -639,6 +639,21 @@ pub struct AllocSummary {
     /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
     /// projection cap. Keyed by locus name.
     pub locus_shapes: BTreeMap<String, LocusShape>,
+    /// The fns the program reaches, when the summary holds the stdlib's
+    /// analysis copy beside the program: the program's own fns, what
+    /// their calls reach, and the hooks and bus handlers of every locus
+    /// they start (an instantiation, or a param field of a started
+    /// locus). A copy's fn the program never reaches is not run, so it
+    /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
+    /// every fn is the program's.
+    pub reached: Option<BTreeSet<FnKey>>,
+    /// The fns of the stdlib's analysis copy summarized beside the
+    /// program; empty when every fn is the program's.
+    pub analysis_copy: BTreeSet<FnKey>,
+    /// The loci of the stdlib's analysis copy, likewise.
+    pub analysis_copy_loci: BTreeSet<String>,
+    /// The interfaces of the stdlib's analysis copy, likewise.
+    pub analysis_copy_interfaces: BTreeSet<String>,
 }
 
 impl AllocSummary {
@@ -649,6 +664,100 @@ impl AllocSummary {
             .locus
             .as_ref()
             .is_some_and(|l| self.bounded_loci.contains(l))
+    }
+
+    /// Whether the fn `key` is the program's own, not the stdlib's
+    /// analysis copy's.
+    pub fn is_own(&self, key: &FnKey) -> bool {
+        !self.analysis_copy.contains(key)
+    }
+
+    /// Whether the locus `name` is the program's own.
+    pub fn is_own_locus(&self, name: &str) -> bool {
+        !self.analysis_copy_loci.contains(name)
+    }
+
+    /// The program's own rows, as the user-program readers (the model,
+    /// the `@budget` engines, the artifact's rows) project them: the
+    /// program's fns and loci only, and a call into the stdlib's
+    /// analysis copy is the unresolved call it is when the program is
+    /// summarized alone — the method's bare name, the receiver kept. A
+    /// dispatch through an interface keeps its alternatives among the
+    /// program's own loci, renumbered in key order; through the copy's
+    /// interface it is no dispatch at all, and through the program's
+    /// own with no conformer of its own left it is the dead site. The
+    /// model is a user-program model and its `shape_hash` is the build
+    /// and replay identity, so it reads these rows and the program
+    /// alone decides it.
+    pub fn own_rows(&self) -> AllocSummary {
+        let copy = |k: &FnKey| self.analysis_copy.contains(k);
+        // A group whose every alternative is the copy's, or whose
+        // interface is the copy's, collapses to its written call.
+        let mut collapsed: BTreeSet<u32> = BTreeSet::new();
+        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+            let mut own_alt: BTreeMap<u32, bool> = BTreeMap::new();
+            for c in &f.calls {
+                if let (Some(g), Callee::Resolved(k)) = (c.dispatch_group, &c.callee) {
+                    let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                    *own_alt.entry(g).or_default() |= !copy(k) && !through_copy;
+                }
+            }
+            collapsed.extend(own_alt.into_iter().filter(|(_, own)| !own).map(|(g, _)| g));
+        }
+        let mut renumber: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut emitted: BTreeSet<u32> = BTreeSet::new();
+        let mut fns: BTreeMap<FnKey, FnSummary> = BTreeMap::new();
+        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+            let mut calls: Vec<CallEdge> = Vec::with_capacity(f.calls.len());
+            for c in &f.calls {
+                let mut e = c.clone();
+                match (c.dispatch_group, &c.callee) {
+                    (Some(g), Callee::Resolved(k)) if collapsed.contains(&g) => {
+                        if !emitted.insert(g) {
+                            continue;
+                        }
+                        let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                        e.callee = Callee::Unresolved(k.fn_name.clone());
+                        e.dispatch_group = None;
+                        if through_copy {
+                            e.via_interface = None;
+                        }
+                    }
+                    (Some(_), Callee::Resolved(k)) if copy(k) => continue,
+                    (Some(g), Callee::Resolved(_)) => {
+                        let next = renumber.len() as u32;
+                        e.dispatch_group = Some(*renumber.entry(g).or_insert(next));
+                    }
+                    (None, Callee::Resolved(k)) if copy(k) => {
+                        e.callee = Callee::Unresolved(k.fn_name.clone());
+                    }
+                    (_, Callee::Unresolved(_)) => {
+                        if c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i)) {
+                            e.via_interface = None;
+                        }
+                    }
+                    _ => {}
+                }
+                calls.push(e);
+            }
+            fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
+        }
+        let own_locus = |l: &String| self.is_own_locus(l);
+        let own_key = |k: &FnKey| self.is_own(k);
+        AllocSummary {
+            eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            fns,
+            bounded_loci: self.bounded_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            sync_holding_loci: self.sync_holding_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            sync_forms: self.sync_forms.iter().filter(|l| own_locus(l)).cloned().collect(),
+            carries: self.carries.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), *v)).collect(),
+            unbounded_fns: self.unbounded_fns.iter().filter(|k| own_key(k)).cloned().collect(),
+            locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
+            reached: None,
+            analysis_copy: BTreeSet::new(),
+            analysis_copy_loci: BTreeSet::new(),
+            analysis_copy_interfaces: BTreeSet::new(),
+        }
     }
 }
 
@@ -677,17 +786,21 @@ impl AllocSummary {
     /// Fns reached under an unbounded-multiplicity context — the call-graph
     /// half of the bound solver. Seeded with bus handlers (per-message),
     /// then a fixed point: a resolved callee is invoked unboundedly if its
-    /// caller is, or the call edge is inside an unbounded loop.
+    /// caller is, or the call edge is inside an unbounded loop. Only the
+    /// fns the program reaches ([`AllocSummary::reached`]) seed it or
+    /// call: a stdlib loop the program never starts invokes nothing.
     pub fn unbounded_invoked(&self) -> BTreeSet<FnKey> {
+        let runs = |f: &&FnSummary| self.reached.as_ref().is_none_or(|r| r.contains(&f.key));
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
+            .filter(runs)
             .filter(|f| f.entry == Some(EntryKind::BusHandler))
             .map(|f| f.key.clone())
             .collect();
         loop {
             let mut changed = false;
-            for f in self.fns.values() {
+            for f in self.fns.values().filter(runs) {
                 let caller_unbounded = set.contains(&f.key);
                 for c in &f.calls {
                     if let Callee::Resolved(callee) = &c.callee {
@@ -896,16 +1009,17 @@ impl AllocSummary {
         // would otherwise never surface the lib's real leaks
         // (pond/websocket's per-message stores were the case in
         // point).
-        let has_long_lived_entry = self.fns.values().any(|f| {
+        // The program's own entries, never the stdlib's analysis copy's:
+        // the copy always carries `run` hooks, so counting them would
+        // switch the rule off for every program.
+        let own = || self.fns.values().filter(|f| self.is_own(&f.key));
+        let has_long_lived_entry = own().any(|f| {
             matches!(
                 f.entry,
                 Some(EntryKind::Run) | Some(EntryKind::BusHandler)
             )
         });
-        let has_main = self
-            .fns
-            .values()
-            .any(|f| matches!(f.entry, Some(EntryKind::Main)));
+        let has_main = own().any(|f| matches!(f.entry, Some(EntryKind::Main)));
         if has_main && !has_long_lived_entry {
             return Vec::new();
         }
@@ -950,7 +1064,9 @@ impl AllocSummary {
         out
     }
 
-    /// Human-readable dump for `--dump-alloc-summary`.
+    /// Human-readable dump for `--dump-alloc-summary`: the program's own
+    /// fns and loci, judged over the whole summary (the stdlib's analysis
+    /// copy beside them included).
     pub fn render(&self) -> String {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
@@ -967,16 +1083,18 @@ impl AllocSummary {
         }
         let mut out = String::new();
         out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
-        let entries: Vec<&FnSummary> = self.fns.values().filter(|f| f.entry.is_some()).collect();
+        let own_fns: Vec<&FnSummary> = self.fns.values().filter(|f| self.is_own(&f.key)).collect();
         out.push_str(&format!(
             "# {} fns, {} entry points, {} invoked-unboundedly\n\n",
-            self.fns.len(),
-            entries.len(),
-            unbounded.len()
+            own_fns.len(),
+            own_fns.iter().filter(|f| f.entry.is_some()).count(),
+            unbounded.iter().filter(|k| self.is_own(k)).count()
         ));
+        let own_shapes: Vec<&LocusShape> =
+            self.locus_shapes.values().filter(|s| self.is_own_locus(&s.name)).collect();
         // D1: per-locus storage shape — the capacity slots, `@form`, and
         // projection cap the bound solver (D2) will read.
-        for shape in self.locus_shapes.values() {
+        for shape in own_shapes.iter().copied() {
             if shape.capacity_slots.is_empty()
                 && shape.form.is_none()
                 && shape.recognition_cap.is_none()
@@ -999,12 +1117,12 @@ impl AllocSummary {
                 out.push_str(&format!("    proj  recognition(cap={})\n", cap));
             }
         }
-        if !self.locus_shapes.values().all(|s| {
+        if !own_shapes.iter().all(|s| {
             s.capacity_slots.is_empty() && s.form.is_none() && s.recognition_cap.is_none()
         }) {
             out.push('\n');
         }
-        for f in self.fns.values() {
+        for f in own_fns {
             let mut tags = Vec::new();
             if let Some(e) = f.entry {
                 tags.push(format!(
@@ -1104,37 +1222,16 @@ fn carried_by(
 /// (`hale_frontend::snapshot::Snapshot::demand_alloc_summary`); a
 /// bundle no snapshot holds runs it once for itself.
 pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary {
-    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-    crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    )
-}
-
-/// The summary of `programs`, all minted with `ids` (the identities a
-/// body's escape tags read which declaration a use names from).
-pub fn summarize_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> AllocSummary {
-    summarize_programs_with_renames(programs, ids, &[])
-}
-
-/// Same, with the bundle's cross-seed import renames.
-///
-/// A call written `alias::name` reaches the callgraph as a qualified
-/// path, while the imported decl was merged under a MANGLED symbol.
-/// Without the table the two never meet, so every cross-seed call was
-/// an unresolved edge — which is why effect assertions, budgets and
-/// taint all stopped dead at a seed boundary while still reporting
-/// success. Codegen has always had this table; the analysis phases
-/// did not.
-pub fn summarize_programs_with_renames(
-    programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> AllocSummary {
-    let identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
-        programs.iter().map(|p| (*p, ids)).collect();
-    summarize_identified(&identified, import_renames)
+    let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
+        bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+    // The stdlib's analysis copy, with its own identities: a call through
+    // a stdlib handle has a body to walk (`stdlib_bodies`).
+    if let (Some(program), Some(ids)) =
+        (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities())
+    {
+        identified.push((program, ids));
+    }
+    summarize_identified(&identified, &bundle.import_renames)
 }
 
 /// Every top-level locus of `programs` with a param whose type is one of
@@ -1210,13 +1307,84 @@ impl AllocSummary {
 
 /// The summary of programs minted by different snapshots — a bundle's
 /// programs beside the stdlib's (`stdlib_bodies`), each with its own
-/// identities.
+/// identities — with the bundle's cross-seed import renames.
+///
+/// A call written `alias::name` reaches the callgraph as a qualified
+/// path, while the imported decl was merged under a MANGLED symbol.
+/// Without the table the two never meet, so every cross-seed call was
+/// an unresolved edge — which is why effect assertions, budgets and
+/// taint all stopped dead at a seed boundary while still reporting
+/// success. Codegen has always had this table; the analysis phases
+/// did not.
 pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
 ) -> AllocSummary {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
+    // Each seed's names resolve in its own scope. The programs minted
+    // with one set of identities are one scope (a bundle's programs; the
+    // stdlib's analysis copy beside them is another): a body's bare
+    // free-fn name names a fn of its own scope, so a stdlib body's
+    // builtin `count(...)` is the builtin, never a user fn that happens
+    // to be called `count`. The import renames are the bundle's names;
+    // the stdlib's copy imports nothing.
+    let mut scopes: Vec<&crate::snapshot::Snapshot> = Vec::new();
+    for (_, ids) in identified {
+        if !scopes.iter().any(|s| std::ptr::eq(*s, *ids)) {
+            scopes.push(ids);
+        }
+    }
+    let scope_index = |ids: &crate::snapshot::Snapshot| {
+        scopes.iter().position(|s| std::ptr::eq(*s, ids)).expect("every program's identities are a scope")
+    };
+    let mut scope_fns: Vec<BTreeSet<String>> = vec![BTreeSet::new(); scopes.len()];
+    {
+        fn collect_fns(items: &[TopDecl], out: &mut BTreeSet<String>) {
+            for item in items {
+                match item {
+                    TopDecl::Fn(f) => {
+                        out.insert(f.name.name.clone());
+                    }
+                    TopDecl::Module(m) => collect_fns(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        for (program, ids) in identified {
+            collect_fns(&program.items, &mut scope_fns[scope_index(ids)]);
+        }
+    }
+    let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
+        crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
+    };
+    // What the checked programs declare at their top level. A program
+    // that is stdlib source itself (`hale check` over a stdlib file)
+    // declares what the analysis copy beside it declares; the program's
+    // declaration is the row, and the copy's of the same name stays out.
+    let mut declared_by_program: BTreeSet<String> = BTreeSet::new();
+    for (program, ids) in identified {
+        if is_stdlib_copy(ids) {
+            continue;
+        }
+        for item in &program.items {
+            match item {
+                TopDecl::Fn(f) => declared_by_program.insert(f.name.name.clone()),
+                TopDecl::Locus(l) => declared_by_program.insert(l.name.name.clone()),
+                TopDecl::Interface(i) => declared_by_program.insert(i.name.name.clone()),
+                _ => false,
+            };
+        }
+    }
+    let shadowed = |ids: &crate::snapshot::Snapshot, item: &TopDecl| {
+        is_stdlib_copy(ids)
+            && match item {
+                TopDecl::Fn(f) => declared_by_program.contains(&f.name.name),
+                TopDecl::Locus(l) => declared_by_program.contains(&l.name.name),
+                TopDecl::Interface(i) => declared_by_program.contains(&i.name.name),
+                _ => false,
+            }
+    };
     // #345: what each `@effects(is: {…})` declares, through the bundle's
     // one class table.
     let classes = crate::effect_classes::EffectClassTable::of(programs);
@@ -1254,6 +1422,7 @@ pub fn summarize_identified(
     let mut sync_forms: BTreeSet<String> = BTreeSet::new();
     let mut carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet> = BTreeMap::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
+    let mut analysis_copy_loci: BTreeSet<String> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
     // Phase D / D2 — per-locus param field → declared type name.
@@ -1431,7 +1600,7 @@ pub fn summarize_identified(
 
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
-        for item in &program.items {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
                     {
@@ -1476,6 +1645,9 @@ pub fn summarize_identified(
                 }
                 TopDecl::Locus(l) => {
                     let locus = l.name.name.clone();
+                    if is_stdlib_copy(ids) {
+                        analysis_copy_loci.insert(locus.clone());
+                    }
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
@@ -1599,6 +1771,7 @@ pub fn summarize_identified(
         .iter()
         .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
         .collect();
+    let no_renames: BTreeMap<String, String> = BTreeMap::new();
 
     // #382 receiver-typing: struct TYPE field -> type-name map (a
     // chained receiver may pass through a plain struct: `route.
@@ -1763,6 +1936,10 @@ pub fn summarize_identified(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
+    summary.analysis_copy_loci = analysis_copy_loci;
+    // What each body starts, and whose it is, for `reached`.
+    let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
+    let mut own: BTreeSet<FnKey> = BTreeSet::new();
     for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids) in &bodies {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
@@ -1783,7 +1960,9 @@ pub fn summarize_identified(
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
-            rename_map: &rename_map,
+            starts: BTreeSet::new(),
+            scope_fns: &scope_fns[scope_index(ids)],
+            rename_map: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
             fn_body: body,
@@ -1801,6 +1980,12 @@ pub fn summarize_identified(
             retirable_structs: &retirable_structs,
         };
         w.walk_block(body, 0, Escape::Local);
+        starts_of.insert(key.clone(), std::mem::take(&mut w.starts));
+        if is_stdlib_copy(ids) {
+            summary.analysis_copy.insert(key.clone());
+        } else {
+            own.insert(key.clone());
+        }
         summary.fns.insert(
             key.clone(),
             FnSummary {
@@ -1845,10 +2030,13 @@ pub fn summarize_identified(
         BTreeMap::new();
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
-    for program in programs {
-        for item in &program.items {
+    for (program, ids) in identified {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
+                    if is_stdlib_copy(ids) {
+                        summary.analysis_copy_interfaces.insert(i.name.name.clone());
+                    }
                     ifaces.insert(
                         i.name.name.clone(),
                         i.methods
@@ -1927,6 +2115,68 @@ pub fn summarize_identified(
             }
         }
         fs.calls = rewritten;
+    }
+    // What the program reaches, when the stdlib's analysis copy is
+    // beside it: its own fns, what their calls reach (the interface
+    // fan-out included), and what they start. Starting a locus runs its
+    // hooks and bus handlers, and starts the loci its param fields hold
+    // (by declared type, or a default's literal). Every locus of the
+    // program's own is started.
+    if identified.iter().any(|(_, ids)| is_stdlib_copy(ids)) {
+        let mut param_starts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut started: BTreeSet<String> = BTreeSet::new();
+        let mut pending: Vec<String> = Vec::new();
+        for (program, ids) in identified {
+            for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
+                let TopDecl::Locus(l) = item else { continue };
+                let held = param_starts.entry(l.name.name.clone()).or_default();
+                for m in &l.members {
+                    let LocusMember::Params(pb) = m else { continue };
+                    for p in &pb.params {
+                        if let Some(t) = p.ty.as_ref().and_then(type_expr_name) {
+                            if locus_type_names.contains(&t) {
+                                held.insert(t);
+                            }
+                        }
+                        if let ParamInit::Value(e) = &p.init {
+                            literal_loci(e, &locus_type_names, held);
+                        }
+                    }
+                }
+                if !is_stdlib_copy(ids) {
+                    pending.push(l.name.name.clone());
+                }
+            }
+        }
+        let mut reached: BTreeSet<FnKey> = BTreeSet::new();
+        let mut work: Vec<FnKey> = own.into_iter().collect();
+        loop {
+            while let Some(l) = pending.pop() {
+                if !started.insert(l.clone()) {
+                    continue;
+                }
+                work.extend(
+                    summary
+                        .fns
+                        .values()
+                        .filter(|f| f.key.locus.as_ref() == Some(&l) && f.entry.is_some())
+                        .map(|f| f.key.clone()),
+                );
+                pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
+            }
+            let Some(k) = work.pop() else { break };
+            if !reached.insert(k.clone()) {
+                continue;
+            }
+            let Some(f) = summary.fns.get(&k) else { continue };
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    work.push(callee.clone());
+                }
+            }
+            pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
+        }
+        summary.reached = Some(reached);
     }
     summary
 }
@@ -2102,6 +2352,25 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
     }
 }
 
+/// The unbounded-allocation advisory's sites: every leak site of the
+/// program's own fns ([`AllocSummary::leak_sites`], [`AllocSummary::is_own`])
+/// with an author position ([`AuthorPositions`]). The one entry the
+/// check's warnings, the editor's diagnostics and the editor's
+/// `hale/allocSummary` read.
+pub fn advisory_leak_sites(
+    summary: &AllocSummary,
+    programs: &[&Program],
+    ids: &crate::snapshot::Snapshot,
+    sources: &[crate::symbol::SourceFile],
+) -> Vec<LeakSite> {
+    let positions = AuthorPositions::of(programs, ids, sources);
+    summary
+        .leak_sites()
+        .into_iter()
+        .filter(|ls| summary.is_own(&ls.owner) && positions.has(ls))
+        .collect()
+}
+
 /// Bound-solver diagnostics: a warning per unbounded-accumulation site.
 ///
 /// `include_all` selects the scope (GH #18 item 1, Phase B):
@@ -2111,20 +2380,20 @@ fn locus_shape_of(l: &LocusDecl) -> LocusShape {
 ///   survey.
 ///
 /// Either way, `@unbounded`-fn sites are already dropped at `leak_sites()`,
-/// and a site with no author position is dropped here
-/// ([`AuthorPositions`]); `sources` is the bundle's file table.
+/// and a site of the stdlib's analysis copy or with no author position is
+/// dropped here ([`advisory_leak_sites`]). `summary` is the bundle's
+/// ([`derive_alloc_summary`], a snapshot's `demand_alloc_summary`);
+/// `programs`, `ids` and `sources` are the bundle's programs, identities
+/// and file table.
 pub fn unbounded_alloc_diags(
+    summary: &AllocSummary,
     programs: &[&Program],
     ids: &crate::snapshot::Snapshot,
     sources: &[crate::symbol::SourceFile],
     include_all: bool,
 ) -> Vec<Diag> {
-    let summary = summarize_programs(programs, ids);
-    let positions = AuthorPositions::of(programs, ids, sources);
-    summary
-        .leak_sites()
+    advisory_leak_sites(summary, programs, ids, sources)
         .iter()
-        .filter(|ls| positions.has(ls))
         .filter(|ls| include_all || summary.owner_is_bounded_scope(&ls.owner))
         .map(|ls| {
             let where_ = match ls.reason {
@@ -2240,6 +2509,31 @@ fn lifecycle_key(kind: LifecycleKind) -> (String, EntryKind) {
     }
 }
 
+/// The locus a struct literal's path instantiates, by its declared name:
+/// a stdlib locus written by its public path (`std::http::Server`) is
+/// the mangled name its declaration carries. `None` for a plain struct.
+fn struct_locus(path: &hale_syntax::ast::QualifiedName,locus_types: &BTreeSet<String>) -> Option<String> {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    let name = match segs.as_slice() {
+        [one] => one.to_string(),
+        _ => crate::stdlib_bodies::mangled_locus_name(&segs)?.to_string(),
+    };
+    locus_types.contains(&name).then_some(name)
+}
+
+/// The loci a struct-literal expression instantiates, nested literals
+/// included (a param field's default).
+fn literal_loci(e: &Expr, locus_types: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    if let Expr::Struct { path, inits, .. } = e {
+        if let Some(l) = struct_locus(path, locus_types) {
+            out.insert(l);
+        }
+        for si in inits {
+            literal_loci(&si.value, locus_types, out);
+        }
+    }
+}
+
 /// The set of method names a locus subscribes as bus handlers.
 fn bus_handler_names(l: &LocusDecl) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -2309,7 +2603,13 @@ struct Walker<'a> {
     escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
-    /// `alias::name` -> mangled symbol (cross-seed imports).
+    /// The loci this body instantiates, by their declared names.
+    starts: BTreeSet<String>,
+    /// The free fns of the body's own scope (its seed's programs,
+    /// modules included): the only fns a bare name resolves to.
+    scope_fns: &'a BTreeSet<String>,
+    /// `alias::name` -> mangled symbol (cross-seed imports), empty for
+    /// the stdlib's analysis copy.
     rename_map: &'a BTreeMap<String, String>,
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
@@ -2502,7 +2802,7 @@ impl<'a> Walker<'a> {
                     })
             }
             Expr::Call { callee, .. } => match callee.as_ref() {
-                Expr::Ident(f) => {
+                Expr::Ident(f) if self.scope_fns.contains(&f.name) => {
                     self.fn_ret_types.get(&f.name).cloned()
                 }
                 // `entries.get(j)` on a collection locus with ONE
@@ -2532,6 +2832,9 @@ impl<'a> Walker<'a> {
                         .get(&path)
                         .cloned()
                         .unwrap_or(path);
+                    if !self.scope_fns.contains(&name) {
+                        return None;
+                    }
                     self.fn_ret_types.get(&name).cloned()
                 }
                 _ => None,
@@ -2887,6 +3190,9 @@ impl<'a> Walker<'a> {
                 // the site — that's the TP-3 anchor-clone class.
                 let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
                     && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
+                if let Some(l) = struct_locus(path, self.locus_types) {
+                    self.starts.insert(l);
+                }
                 if self.locus_types.contains(&name) {
                     // GH #265: locus instantiation — an effect in its
                     // own right (arena create, possibly a thread or
@@ -3028,7 +3334,7 @@ impl<'a> Walker<'a> {
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
-                if self.known.contains(&key) {
+                if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
                     Callee::Resolved(key)
                 } else {
                     Callee::Unresolved(id.name.clone())
@@ -3048,7 +3354,7 @@ impl<'a> Walker<'a> {
                 match self.rename_map.get(&path) {
                     Some(mangled) => {
                         let key = FnKey::free_fn(mangled.clone());
-                        if self.known.contains(&key) {
+                        if self.known.contains(&key) && self.scope_fns.contains(mangled) {
                             Callee::Resolved(key)
                         } else {
                             Callee::Unresolved(path)
@@ -3527,7 +3833,20 @@ mod tests {
 
     fn summarize(src: &str) -> AllocSummary {
         let (program, ids) = minted(src);
-        summarize_programs(&[&program], &ids)
+        summarize_identified(&[(&program, &ids)], &[])
+    }
+
+    /// The advisory over `programs` alone, every one minted with `ids`:
+    /// no stdlib copy beside them, no renames.
+    fn plain_advisory(
+        programs: &[&Program],
+        ids: &crate::snapshot::Snapshot,
+        sources: &[crate::symbol::SourceFile],
+        include_all: bool,
+    ) -> Vec<Diag> {
+        let identified: Vec<_> = programs.iter().map(|p| (*p, ids)).collect();
+        let summary = summarize_identified(&identified, &[]);
+        unbounded_alloc_diags(&summary, programs, ids, sources, include_all)
     }
 
     fn fns(s: &AllocSummary, key: &FnKey) -> FnSummary {
@@ -4101,7 +4420,7 @@ mod tests {
         let (program, ids) = minted(src);
         // Survey mode (`--warn-unbounded-alloc`) reports the leak even
         // though locus `C` carries no `@bounded` opt-in.
-        let diags = unbounded_alloc_diags(&[&program], &ids, &[], true);
+        let diags = plain_advisory(&[&program], &ids, &[], true);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("unbounded allocation"));
     }
@@ -4116,7 +4435,7 @@ mod tests {
             fn main() { }
         "#;
         let (program, ids) = minted(src);
-        let scoped = unbounded_alloc_diags(&[&program], &ids, &[], false);
+        let scoped = plain_advisory(&[&program], &ids, &[], false);
         assert_eq!(scoped.len(), 1, "@bounded locus reports by default");
         assert!(scoped[0].message.contains("unbounded allocation"));
     }
@@ -4134,11 +4453,11 @@ mod tests {
         "#;
         let (program, ids) = minted(src);
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, &[], true).is_empty(),
+            plain_advisory(&[&program], &ids, &[], true).is_empty(),
             "@unbounded suppresses the site under the survey flag"
         );
         assert!(
-            unbounded_alloc_diags(&[&program], &ids, &[], false).is_empty(),
+            plain_advisory(&[&program], &ids, &[], false).is_empty(),
             "@unbounded suppresses the site in @bounded scope too"
         );
     }
@@ -4167,7 +4486,7 @@ mod tests {
         };
         let all = summarize(src).leak_sites();
         assert_eq!(all.len(), 2, "both loops leak before the rule: {all:?}");
-        let diags = unbounded_alloc_diags(&[&program], &ids, &[file], true);
+        let diags = plain_advisory(&[&program], &ids, &[file], true);
         assert_eq!(diags.len(), 1, "only the author's site reports: {diags:?}");
         assert!(diags[0].message.contains("`author_fn`"), "{}", diags[0].message);
 
@@ -4178,7 +4497,7 @@ mod tests {
         let harness = crate::snapshot::Snapshot::default();
         let reported = |base: u32| {
             let generated = hale_syntax::parse_source_at(synth, base).expect("parse");
-            unbounded_alloc_diags(&[&program, &generated], &harness, &[], true).len()
+            plain_advisory(&[&program, &generated], &harness, &[], true).len()
         };
         assert_eq!(reported(1 << 20), 3, "at an author offset, S's site reports");
         assert_eq!(
@@ -4192,7 +4511,7 @@ mod tests {
 
     fn leak_msgs(src: &str) -> Vec<String> {
         let (program, ids) = minted(src);
-        unbounded_alloc_diags(&[&program], &ids, &[], true)
+        plain_advisory(&[&program], &ids, &[], true)
             .into_iter()
             .map(|d| d.message)
             .collect()

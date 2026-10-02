@@ -215,14 +215,14 @@ pub fn derive_application_model_over(
     // GH #1159: the rename table once per derivation, not per string.
     let rename_table = crate::stdlib_bodies::demangle_table(&bundle.import_renames);
     let graph = inputs.bus_graph;
-    let summary = alloc_summary::summarize_programs_with_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
     // The summary the effect rows' walk read: the checked programs with
     // the stdlib's analysis copy beside them, cross-seed calls resolved.
     let merged: &alloc_summary::AllocSummary = &inputs.effects.summary;
+    // The model is a user-program model: its rows are the summary's own,
+    // and a call into the stdlib's analysis copy is the unresolved call
+    // (the same site, row and hole) the program alone decides, so the
+    // copy never moves `shape_hash`, the build and replay identity.
+    let summary = merged.own_rows();
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);
     let effect_classes = &inputs.effects.classes;

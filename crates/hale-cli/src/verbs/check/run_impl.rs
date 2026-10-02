@@ -37,12 +37,16 @@ fn topology_artifact<'c>(
     doing: &str,
 ) -> Result<&'c str, u8> {
     if cell.get().is_none() {
-        match snap.demand_model().and_then(|model| Ok((model, snap.demand_effect_certificates()?))) {
-            Ok((model, effects)) => {
+        match snap
+            .demand_model()
+            .and_then(|model| Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?)))
+        {
+            Ok((model, effects, summary)) => {
                 // The artifact's environment label is the snapshot's own
                 // (outside review of #1283, finding 1). Its law evidence
-                // reads the check's effects certificate report.
-                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects));
+                // reads the check's effects certificate report and the
+                // allocation summary the check read.
+                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary));
                 let _ = cell.set(art);
             }
             Err(b) => return Err(refuse_without_model(target, doing, b)),
@@ -136,7 +140,15 @@ pub(crate) fn run_check_impl_labelled(
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.
     if std::env::args().any(|a| a == "--dump-alloc-summary") {
-        print!("{}", hale_types::dump_alloc_summary(&bundle));
+        match snap.demand_alloc_summary() {
+            Ok(summary) => print!("{}", hale_types::dump_alloc_summary(summary)),
+            Err(b) => {
+                for d in &b.because {
+                    eprintln!("{}", d.message);
+                }
+                return 1;
+            }
+        }
         return 0;
     }
     // GH #18 item 5: dump the per-program resource budget (pinned threads,
@@ -190,7 +202,15 @@ pub(crate) fn run_check_impl_labelled(
         }
     }
     if std::env::args().any(|a| a == "--dump-resource-budget") {
-        print!("{}", hale_types::dump_resource_budget(&bundle));
+        match snap.demand_alloc_summary() {
+            Ok(summary) => print!("{}", hale_types::dump_resource_budget(&bundle, summary)),
+            Err(b) => {
+                for d in &b.because {
+                    eprintln!("{}", d.message);
+                }
+                return 1;
+            }
+        }
         return 0;
     }
     // GH #382 phase 2: the topology artifact — the serialized model
@@ -580,7 +600,16 @@ pub(crate) fn run_check_impl_labelled(
                 bus_subjects: ct.bus_subjects,
                 fd_open_sites: ct.fd_open_sites,
             };
-            let violations = hale_types::check_resource_ceiling(&bundle, &ceiling);
+            let summary = match snap.demand_alloc_summary() {
+                Ok(summary) => summary,
+                Err(b) => {
+                    for d in &b.because {
+                        eprintln!("{}", d.message);
+                    }
+                    return 1;
+                }
+            };
+            let violations = hale_types::check_resource_ceiling(&bundle, summary, &ceiling);
             if violations.is_empty() {
                 println!("resource budget OK (within `{}`)", path);
                 return 0;
@@ -630,10 +659,16 @@ pub(crate) fn run_check_impl_labelled(
     // Warnings print but never fail the build (only errors do).
     let survey_all =
         !std::env::args().any(|a| a == "--no-warn-unbounded-alloc");
-    diags.extend(hale_types::unbounded_alloc_warnings(&bundle, survey_all));
+    // Over the snapshot's summary: the one the check's certificate
+    // engine read, blocked only with the scope.
+    if let Ok(summary) = snap.demand_alloc_summary() {
+        diags.extend(hale_types::unbounded_alloc_warnings(&bundle, summary, survey_all));
+    }
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
-        diags.extend(hale_types::resource_leak_warnings(&bundle));
+        if let Ok(summary) = snap.demand_alloc_summary() {
+            diags.extend(hale_types::resource_leak_warnings(summary));
+        }
     }
     // GH #436: opt-in fail-closed `@secret` containment. The default
     // `@secret` pass is a LINT (warnings, narrow traversal). This one

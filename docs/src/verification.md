@@ -129,8 +129,12 @@ with how the runtime dispatches:
 escape/loop dataflow flags allocations that escape a per-message
 handler or unbounded loop and **accumulate until the locus
 dissolves** — with loop-ranking that *proves* a `while v < N`
-counter bounded. Run-to-exit programs (a `main` with no `run` loop
-and no bus handler) warn nothing — a script owes no bound proof.
+counter bounded. The survey follows calls into imported seeds and
+into the stdlib's own Hale bodies: a handler the stdlib's HTTP loop
+dispatches to is invoked once per request when your program starts
+that loop, and not otherwise. Run-to-exit programs (a `main` with no
+`run` loop and no bus handler of their own) warn nothing — a script
+owes no bound proof.
 `@unbounded fn` is the in-source carve-out for an acknowledged
 site; `--no-warn-unbounded-alloc` opts a run out. A site in code
 the compiler generated (the api binding, a `json:` parser) has no

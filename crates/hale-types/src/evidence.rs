@@ -826,12 +826,27 @@ pub fn model_fanout<'a>(
 /// certificates are the report the caller holds (`effects`: the
 /// check's run on a snapshot, [`crate::effects::effect_certificates`]
 /// for a bundle no check ran over), never a second run of the engine;
-/// the counting engines (`@budget`) measure here.
+/// the counting engines (`@budget`) measure here, over the bundle's
+/// allocation summary, derived here for a bundle no snapshot holds.
 pub fn derive_certificate_evidence(
     bundle: &Bundle<'_>,
     table: &ClaimIrTable,
     model: &ApplicationModel,
     effects: &crate::effects::EffectCertificates,
+) -> EvidenceTable {
+    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
+    derive_certificate_evidence_over(bundle, table, model, effects, &summary)
+}
+
+/// [`derive_certificate_evidence`] over `summary`, the `alloc_summary`
+/// family's the caller holds (a snapshot's `demand_alloc_summary`): the
+/// counting engines read its own rows.
+pub fn derive_certificate_evidence_over(
+    bundle: &Bundle<'_>,
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    effects: &crate::effects::EffectCertificates,
+    summary: &crate::alloc_summary::AllocSummary,
 ) -> EvidenceTable {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
@@ -849,7 +864,7 @@ pub fn derive_certificate_evidence(
     groups.extend(
         crate::budget_check::certificate_groups(
             &programs,
-            &bundle.snapshot,
+            summary,
             &bundle.import_renames,
         )
         .into_iter()
@@ -861,8 +876,7 @@ pub fn derive_certificate_evidence(
     groups.extend(
         crate::quantitative::certificate_groups(
             &programs,
-            &bundle.snapshot,
-            &bundle.import_renames,
+            summary,
             &fanout_of,
         )
         .into_iter()

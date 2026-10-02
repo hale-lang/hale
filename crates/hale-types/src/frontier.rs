@@ -339,28 +339,30 @@ pub struct CausesReport {
 /// joins one law to one law by.
 pub fn causes_reports(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
+    summary: &crate::alloc_summary::AllocSummary,
     graph: &BusGraph,
 ) -> Vec<CausesReport> {
-    causes_inner(programs, ids, graph)
+    causes_inner(programs, summary, graph)
 }
 
 /// `@effects(causes: {…})` — check the declared causal set against
 /// what the fn can actually cause through bus edges.
 pub fn causes_diags(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
+    summary: &crate::alloc_summary::AllocSummary,
     graph: &BusGraph,
 ) -> Vec<Diag> {
-    causes_inner(programs, ids, graph)
+    causes_inner(programs, summary, graph)
         .into_iter()
         .filter_map(|r| r.diag)
         .collect()
 }
 
+/// `summary` is the `alloc_summary` family's; the walk reads its own
+/// rows.
 fn causes_inner(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
+    summary: &crate::alloc_summary::AllocSummary,
     graph: &BusGraph,
 ) -> Vec<CausesReport> {
     // The bundle's user effect-class table, so an excess class renders
@@ -411,7 +413,7 @@ fn causes_inner(
     if roots.is_empty() {
         return Vec::new();
     }
-    let summary = alloc_summary::summarize_programs(programs, ids);
+    let summary = summary.own_rows();
     let ffi: BTreeSet<String> = programs
         .iter()
         .flat_map(|p| p.items.iter())

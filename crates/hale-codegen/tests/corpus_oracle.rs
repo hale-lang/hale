@@ -239,14 +239,22 @@ fn runnable_fixtures() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Is this run the instrumented pass? `build_executable` reads
-/// `LOTUS_ASAN` at codegen time to decide the runtime cflags + link
-/// flags, so the same variable is what tells the harness whether the
-/// binary it just built is an ASan binary.
+/// Is this run the instrumented pass? `LOTUS_ASAN` opts the run in.
+/// Codegen reads no environment variable, so the harness turns the
+/// answer into the build's `asan` option ([`fixture_build_options`]),
+/// which picks the sanitizer cflags and link flags; the same answer
+/// tells the harness the binary it just built is an ASan binary.
 fn asan_enabled() -> bool {
     std::env::var("LOTUS_ASAN")
         .map(|v| v == "1" || v == "true" || v == "TRUE")
         .unwrap_or(false)
+}
+
+/// The options a fixture is built with: the test default, with the
+/// sanitizer on in the instrumented pass (its cflags default the arena's
+/// chunk recycling off, `LOTUS_NO_CHUNK_POOL`, GH #816).
+fn fixture_build_options() -> hale_codegen::BuildOptions {
+    hale_codegen::BuildOptions { asan: asan_enabled(), ..build_opts::options() }
 }
 
 enum RunResult {
@@ -419,7 +427,7 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -
         Err(d) => return Outcome::Fail(format!("parse: {d:?}")),
     };
     let bin = harness::unique_bin(&format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
-    let opts = hale_codegen::BuildOptions { lifecycle_trace: traced, ..build_opts::options() };
+    let opts = hale_codegen::BuildOptions { lifecycle_trace: traced, ..fixture_build_options() };
     if let Err(e) = build_executable_with_options(&program, &bin, &[], &opts) {
         let msg = format!("{e:?}");
         // A codegen feature gap is ACKNOWLEDGED only when the fixture
