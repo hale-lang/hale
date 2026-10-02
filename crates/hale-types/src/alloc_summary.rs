@@ -3464,8 +3464,13 @@ impl<'a> Walker<'a> {
                     self.walk_expr(a, depth, Escape::Local);
                 }
             }
-            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
+            Expr::Field { receiver, .. } => self.walk_expr(receiver, depth, Escape::Local),
+            // The subscript is evaluated as any operand is: what it
+            // allocates or calls is the row's, `@hot`'s hard rejection
+            // included (E3a part C, review finding).
+            Expr::Index { receiver, index, .. } => {
                 self.walk_expr(receiver, depth, Escape::Local);
+                self.walk_expr(index, depth, Escape::Local);
             }
             Expr::Path2 { receiver, .. } => self.walk_expr(receiver, depth, Escape::Local),
             Expr::Tuple(xs, _) => {

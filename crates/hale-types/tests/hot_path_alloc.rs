@@ -802,7 +802,8 @@ fn main() { }
 //
 // The lint reads the allocation summary's rows, so it sees what the
 // summary's walk sees. That walk reaches statements the lint's own
-// walk skipped, and skips one expression the lint's walk reached.
+// walk skipped, and an index expression's subscript as the lint's
+// walk did.
 
 /// A locus instantiated in a loop inside a publish, or inside a bare
 /// `{ … }` block, is a finding: the lint's own walk never entered either
@@ -836,12 +837,11 @@ fn main() { App { }; }
     }
 }
 
-/// An index expression is not walked by the summary, so a locus
-/// instantiated in one is no finding, where the lint's own walk found
-/// it. A call or an allocation written there is in no row; this pin
-/// moves with the summary.
+/// A subscript is evaluated like any operand, so the summary walks it:
+/// a locus instantiated in one, in a loop, is the loop finding. The
+/// rows once stopped at the index, and the advisory went quiet.
 #[test]
-fn an_index_expression_is_not_in_the_rows() {
+fn an_index_expression_is_in_the_rows() {
     let src = r#"
 locus Child { params { n: Int = 0; } fn get() -> Int { return self.n; } }
 main locus App {
@@ -849,5 +849,57 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    assert_eq!(warnings(src), Vec::<String>::new());
+    let ws = warnings(src);
+    assert!(
+        ws.len() == 1 && ws[0].contains("locus `Child`") && ws[0].contains("inside a loop"),
+        "expected the loop finding, got: {:?}",
+        ws
+    );
+}
+
+/// The `@hot` rejection of the lint's own walk, word for word.
+const HOT_CHILD_IN_LOOP: &str = "@hot: hot-path allocation: locus `Child` is instantiated \
+    inside a loop — a fresh instance (its own arena / heap buffer) is allocated every \
+    iteration, and reclaimed only when the next iteration replaces it, so an arena \
+    create/destroy pair and the instance's whole lifecycle are on the hot path. Hoist it \
+    to a reused field, `clear()` and refill one builder, or acknowledge an intentional \
+    shape with `@unbounded` on the enclosing fn/hook.";
+
+/// Review finding on the rows switch: a locus built inside an index
+/// expression in a `@hot` loop checked clean once the lint read rows
+/// that stopped at the index, where the lint's own walk refused it.
+/// It is refused again, with the same error at the same span as the
+/// control that builds it outside the index.
+#[test]
+fn hot_refuses_a_locus_built_inside_an_index_expression() {
+    let program = |value: &str| {
+        format!(
+            r#"
+locus Child {{
+    params {{ n: Int = 0; }}
+    fn get() -> Int {{ return self.n; }}
+}}
+@hot
+fn pump() {{
+    let xs = [1, 2, 3];
+    let mut i = 0;
+    while i < 3 {{
+        println({value});
+        i = i + 1;
+    }}
+}}
+fn main() {{ pump(); }}
+"#
+        )
+    };
+    let hot_errors = |src: &str| -> Vec<(String, String)> {
+        diags_with_span_text(src)
+            .into_iter()
+            .filter(|(is_err, m, _)| *is_err && m.contains("hot-path allocation"))
+            .map(|(_, m, text)| (m, text))
+            .collect()
+    };
+    let expected = vec![(HOT_CHILD_IN_LOOP.to_string(), "Child { n: 0 }".to_string())];
+    assert_eq!(hot_errors(&program("xs[Child { n: 0 }.get()]")), expected, "inside the index");
+    assert_eq!(hot_errors(&program("Child { n: 0 }.get()")), expected, "the control");
 }

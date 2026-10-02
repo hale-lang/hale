@@ -2280,8 +2280,8 @@ assume the others in a build:
   `@unbounded`), and the allocating `recv` family is the one list
   `@budget` reads. So it sees what the summary sees — a locus
   instantiated in a loop inside a publish's value or a bare `{ … }`
-  block is a finding — and nothing written inside an index expression
-  is, since the summary does not walk one.
+  block is a finding, and so is one inside an index expression's
+  subscript, which the summary walks as it walks any operand.
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)
