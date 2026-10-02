@@ -127,9 +127,11 @@ with how the runtime dispatches:
   is hoisting it to a `main` sibling with its own placement —
   **error**.
 - **Unowned subscriber locus** — a bus-subscribing locus
-  instantiated *non-owned* in another locus's method body, so it
-  dissolves at scope exit before its subscription can fire —
-  **error**.
+  instantiated in another locus's bus handler that no ancestor
+  `accept`s, so it dissolves when the handler returns, before its
+  subscription can fire. Ownership is judged by the declaration the
+  `accept` names, and a birth whose owner can't be decided is not
+  reported — **error**.
 
 **Memory-bound proofs** *(on by default).* Every `hale check` /
 `hale build` runs the whole-program survey: the compiler's
