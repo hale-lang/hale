@@ -7,7 +7,8 @@
 //! effect rows; the dump, the advisory, the model, the budgets and the
 //! frontier move onto it after these corrections. Each correction is
 //! pinned here per target, on what those readers answer, against the old
-//! answer reproduced from the corrected summary.
+//! answer reproduced from the corrected summary, and alone: the later
+//! corrections' fields are cleared on both sides of an earlier one's pin.
 //!
 //! **Each seed's names resolve in its own scope.** The summary used to
 //! resolve a bare free-fn name against every program it held, so a
@@ -21,6 +22,22 @@
 //! effect class moves, and it holds no certificate. The old answer is
 //! the corrected summary with each stdlib body's bare call re-resolved
 //! against every program, as the shared scope did.
+//!
+//! **The unbounded-invocation fixpoint seeds from what the program
+//! reaches.** Every fn of the summary used to seed it, so every loop of
+//! the stdlib's analysis copy counted whether or not the program ever
+//! ran it: `__http_handle_one_conn`'s and `__http_run_chain`'s loops
+//! reach any user `handle` through the interface fan-out, and made it
+//! invoked unboundedly in programs that never start the HTTP loop. Now
+//! only the fns the program reaches (`AllocSummary::reached`: its own,
+//! what their calls reach, and the hooks and handlers of the loci they
+//! start) seed it or call. Six targets' own fns move, two leak sites go,
+//! and a program that starts the loop (`dna/api`, `dna/ui`) or runs the
+//! router's chain (`69-http-router`, `router_middleware_test`) keeps its
+//! facts; every other target's change is the stdlib copy's own fns
+//! alone (no longer invoked unboundedly by loops nothing starts). No
+//! effect row, manifest row or certificate reads the fixpoint. The old
+//! answer is the corrected summary with `reached` cleared.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -149,6 +166,10 @@ fn own_scope_no_other_target_changes() {
 fn own_scope_let_block_scope_test() {
     let stdlib = stdlib_fns();
     over_target("tests/hale/let_block_scope_test.hl", |snap, now| {
+        // This correction alone: the later ones cleared on both sides.
+        let mut now = now.clone();
+        now.reached = None;
+        let now = &now;
         let (old, edges) = shared_scope(now, &stdlib);
         assert_eq!(
             edges,
@@ -207,4 +228,257 @@ fn own_scope_let_block_scope_test() {
         assert!(snap.demand_effect_certificates().expect("the certificates").is_empty());
     })
     .expect("let_block_scope_test loads");
+}
+
+/// The dump lines of the program's own fns that differ, old then now:
+/// a fn's block runs from its `fn` line to the next.
+fn own_changed_lines(old: &str, now: &str, stdlib: &BTreeSet<String>) -> Vec<String> {
+    assert_eq!(old.lines().count(), now.lines().count(), "the dump keeps its shape");
+    let mut own = false;
+    let mut out = Vec::new();
+    for (o, n) in old.lines().zip(now.lines()) {
+        if let Some(rest) = o.strip_prefix("fn ") {
+            own = !stdlib.contains(rest.split_whitespace().next().unwrap_or(""));
+        }
+        if own && o != n {
+            out.push(format!("- {}", o.trim()));
+            out.push(format!("+ {}", n.trim()));
+        }
+    }
+    out
+}
+
+/// What the reached correction moves in one target: the program's own
+/// fns no longer invoked unboundedly, the leak sites that go, how many
+/// fns the fixpoint holds before and after, and the program's own dump
+/// lines that change. Panics if it invokes a fn or adds a leak site, or
+/// leaves one of the program's own fns unreached.
+#[derive(Debug, Default)]
+struct Unreached {
+    own: Vec<String>,
+    leaks: Vec<String>,
+    invoked: (usize, usize),
+    lines: Vec<String>,
+}
+
+fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
+    let names: BTreeSet<String> = stdlib.iter().map(FnKey::display).collect();
+    over_target(target, |_, now| {
+        let mut old = now.clone();
+        old.reached = None;
+        let reached = now.reached.as_ref().expect("the summary holds the stdlib's copy");
+        for k in now.fns.keys().filter(|k| !stdlib.contains(k)) {
+            assert!(reached.contains(k), "{target}: {} is the program's own and unreached", k.display());
+        }
+        let (was, is) = (old.unbounded_invoked(), now.unbounded_invoked());
+        assert!(is.is_subset(&was), "{target}: the correction invoked a fn unboundedly");
+        let leaks = |s: &AllocSummary| -> BTreeSet<String> {
+            s.leak_sites()
+                .iter()
+                .map(|l| format!("{} {:?} @{}..{} {:?}", l.owner.display(), l.kind, l.span.start.0, l.span.end.0, l.reason))
+                .collect()
+        };
+        let (lw, li) = (leaks(&old), leaks(now));
+        assert!(li.is_subset(&lw), "{target}: the correction added a leak site");
+        Unreached {
+            own: was.difference(&is).filter(|k| !stdlib.contains(k)).map(FnKey::display).collect(),
+            leaks: lw.difference(&li).cloned().collect(),
+            invoked: (was.len(), is.len()),
+            lines: own_changed_lines(&old.render(), &now.render(), &names),
+        }
+    })
+}
+
+/// The six targets pinned below are the only ones whose own fns or leak
+/// sites the reached correction moves.
+#[test]
+fn reached_no_other_target_changes() {
+    let stdlib = stdlib_fns();
+    let mut corrected = Vec::new();
+    for t in targets() {
+        let Some(u) = unreached(&t, &stdlib) else { continue };
+        if !u.own.is_empty() || !u.leaks.is_empty() || !u.lines.is_empty() {
+            corrected.push(t);
+        }
+    }
+    assert_eq!(
+        corrected,
+        [
+            "crates/hale-codegen/tests/fixtures/examples/60-perspective-slot",
+            "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
+            "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
+            "dna/oidc",
+            "tests/hale/is_route_test.hl",
+            "tests/hale/perspective_ctor_override_test.hl",
+        ]
+    );
+}
+
+fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
+    let u = unreached(target, &stdlib_fns()).expect("the target loads");
+    let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+    assert_eq!(
+        (u.own, u.leaks, u.lines, u.invoked),
+        (strs(own), strs(leaks), strs(lines), invoked),
+        "{target}: what the reached correction moves is pinned; a difference is classified before the pin moves"
+    );
+}
+
+/// The two perspective fixtures and their `tests/hale` twin implement the
+/// HTTP handler interface and never start the HTTP loop.
+#[test]
+fn reached_perspective_examples() {
+    let lines = [
+        "- fn Gateway::handle   [invoked-unboundedly]",
+        "+ fn Gateway::handle",
+        "- fn RouterV1::route   [invoked-unboundedly]",
+        "+ fn RouterV1::route",
+    ];
+    for t in [
+        "crates/hale-codegen/tests/fixtures/examples/60-perspective-slot",
+        "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
+        "tests/hale/perspective_ctor_override_test.hl",
+    ] {
+        pinned_unreached(t, (115, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+    }
+}
+
+/// 90-unowned-literal-positions declares its own `Server` with a
+/// `handle`, and never starts the stdlib's.
+#[test]
+fn reached_unowned_literal_positions() {
+    pinned_unreached(
+        "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
+        (115, 0),
+        &["Provider::submit", "Server::handle"],
+        &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
+        &[
+            "- fn Provider::submit   [invoked-unboundedly]",
+            "+ fn Provider::submit",
+            "- alloc vec-insert       escaping=self-store  ACCUMULATES-UNBOUNDED  reclaim@locus-dissolve @1292..1320  <-- LEAK",
+            "+ alloc vec-insert       escaping=self-store  once-per-invocation    reclaim@locus-dissolve @1292..1320",
+            "- fn Server::handle   [invoked-unboundedly]",
+            "+ fn Server::handle",
+        ],
+    );
+}
+
+/// dna/oidc is the issuer's library seed: `oidc/serve` starts the HTTP
+/// loop over its `StubIssuer` in a program of its own.
+#[test]
+fn reached_oidc() {
+    pinned_unreached(
+        "dna/oidc",
+        (137, 2),
+        &[
+            "b64",
+            "decode",
+            "form_field",
+            "signed_id_token",
+            "StubIssuer::handle",
+            "StubIssuer::json",
+            "StubIssuer::service_token",
+            "StubIssuer::token_answer",
+        ],
+        &[],
+        &[
+            "- fn b64   [invoked-unboundedly]",
+            "+ fn b64",
+            "- fn decode   [invoked-unboundedly]",
+            "+ fn decode",
+            "- fn form_field   [invoked-unboundedly]",
+            "+ fn form_field",
+            "- fn signed_id_token   [invoked-unboundedly]",
+            "+ fn signed_id_token",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5079..5128",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5079..5128",
+            "- fn StubIssuer::handle   [invoked-unboundedly]",
+            "+ fn StubIssuer::handle",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7454..7693",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7454..7693",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7529..7691",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7529..7691",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8394..8471",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8394..8471",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8701..8787",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8701..8787",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9063..9208",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9063..9208",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9135..9196",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9135..9196",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9908..10017",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9908..10017",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10297..10407",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10297..10407",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11144..11252",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11144..11252",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11279..11333",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11279..11333",
+            "- fn StubIssuer::json   [invoked-unboundedly]",
+            "+ fn StubIssuer::json",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6360..6447",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6360..6447",
+            "- fn StubIssuer::service_token   [invoked-unboundedly]",
+            "+ fn StubIssuer::service_token",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12119..12228",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12119..12228",
+            "- fn StubIssuer::token_answer   [invoked-unboundedly]",
+            "+ fn StubIssuer::token_answer",
+        ],
+    );
+}
+
+/// is_route_test calls its `Api` directly and never starts the loop.
+#[test]
+fn reached_is_route_test() {
+    pinned_unreached(
+        "tests/hale/is_route_test.hl",
+        (117, 0),
+        &["Api::handle", "Api::list", "Api::rename", "Api::show"],
+        &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
+        &[
+            "- fn Api::handle   [invoked-unboundedly]",
+            "+ fn Api::handle",
+            "- alloc struct std::http::Response escaping=return      ACCUMULATES-UNBOUNDED  reclaim@locus-dissolve @1449..1496  <-- LEAK",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @1449..1496",
+            "- fn Api::list   [invoked-unboundedly]",
+            "+ fn Api::list",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1677..1731",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @1677..1731",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1718..1729",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @1718..1729",
+            "- fn Api::rename   [invoked-unboundedly]",
+            "+ fn Api::rename",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @2146..2224",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @2146..2224",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @2187..2222",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @2187..2222",
+            "- fn Api::show   [invoked-unboundedly]",
+            "+ fn Api::show",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1910..1965",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @1910..1965",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1951..1963",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @1951..1963",
+        ],
+    );
+}
+
+/// A program that starts the HTTP loop, or runs the router's chain,
+/// keeps its handlers invoked unboundedly.
+#[test]
+fn reached_a_started_loop_keeps_its_facts() {
+    for (t, kept) in [
+        ("dna/api", &["Api::handle"][..]),
+        ("dna/ui", &["Ui::handle"][..]),
+        ("crates/hale-codegen/tests/fixtures/examples/69-http-router", &["Count::handle", "Hello::handle", "Stamp::after", "Stamp::before"][..]),
+        ("tests/hale/router_middleware_test.hl", &["Hello::handle", "Stamp::after", "Stamp::before"][..]),
+    ] {
+        over_target(t, |_, now| {
+            let is = now.unbounded_invoked();
+            for k in kept {
+                assert!(is.iter().any(|f| f.display() == *k), "{t}: {k} is no longer invoked unboundedly");
+            }
+        })
+        .expect("the target loads");
+    }
 }

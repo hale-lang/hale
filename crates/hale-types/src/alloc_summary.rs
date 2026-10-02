@@ -639,6 +639,14 @@ pub struct AllocSummary {
     /// Per-locus storage shape (Phase D / D1) — capacity slots, `@form`,
     /// projection cap. Keyed by locus name.
     pub locus_shapes: BTreeMap<String, LocusShape>,
+    /// The fns the program reaches, when the summary holds the stdlib's
+    /// analysis copy beside the program: the program's own fns, what
+    /// their calls reach, and the hooks and bus handlers of every locus
+    /// they start (an instantiation, or a param field of a started
+    /// locus). A copy's fn the program never reaches is not run, so it
+    /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
+    /// every fn is the program's.
+    pub reached: Option<BTreeSet<FnKey>>,
 }
 
 impl AllocSummary {
@@ -677,17 +685,21 @@ impl AllocSummary {
     /// Fns reached under an unbounded-multiplicity context — the call-graph
     /// half of the bound solver. Seeded with bus handlers (per-message),
     /// then a fixed point: a resolved callee is invoked unboundedly if its
-    /// caller is, or the call edge is inside an unbounded loop.
+    /// caller is, or the call edge is inside an unbounded loop. Only the
+    /// fns the program reaches ([`AllocSummary::reached`]) seed it or
+    /// call: a stdlib loop the program never starts invokes nothing.
     pub fn unbounded_invoked(&self) -> BTreeSet<FnKey> {
+        let runs = |f: &&FnSummary| self.reached.as_ref().is_none_or(|r| r.contains(&f.key));
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
+            .filter(runs)
             .filter(|f| f.entry == Some(EntryKind::BusHandler))
             .map(|f| f.key.clone())
             .collect();
         loop {
             let mut changed = false;
-            for f in self.fns.values() {
+            for f in self.fns.values().filter(runs) {
                 let caller_unbounded = set.contains(&f.key);
                 for c in &f.calls {
                     if let Callee::Resolved(callee) = &c.callee {
@@ -1800,6 +1812,9 @@ pub fn summarize_identified(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
+    // What each body starts, and whose it is, for `reached`.
+    let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
+    let mut own: BTreeSet<FnKey> = BTreeSet::new();
     for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids) in &bodies {
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids) };
         let field_types = enclosing_locus
@@ -1820,6 +1835,7 @@ pub fn summarize_identified(
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
+            starts: BTreeSet::new(),
             scope_fns: &scope_fns[scope_index(ids)],
             rename_map: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
             loop_stack: Vec::new(),
@@ -1839,6 +1855,10 @@ pub fn summarize_identified(
             retirable_structs: &retirable_structs,
         };
         w.walk_block(body, 0, Escape::Local);
+        starts_of.insert(key.clone(), std::mem::take(&mut w.starts));
+        if !is_stdlib_copy(ids) {
+            own.insert(key.clone());
+        }
         summary.fns.insert(
             key.clone(),
             FnSummary {
@@ -1965,6 +1985,68 @@ pub fn summarize_identified(
             }
         }
         fs.calls = rewritten;
+    }
+    // What the program reaches, when the stdlib's analysis copy is
+    // beside it: its own fns, what their calls reach (the interface
+    // fan-out included), and what they start. Starting a locus runs its
+    // hooks and bus handlers, and starts the loci its param fields hold
+    // (by declared type, or a default's literal). Every locus of the
+    // program's own is started.
+    if identified.iter().any(|(_, ids)| is_stdlib_copy(ids)) {
+        let mut param_starts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut started: BTreeSet<String> = BTreeSet::new();
+        let mut pending: Vec<String> = Vec::new();
+        for (program, ids) in identified {
+            for item in &program.items {
+                let TopDecl::Locus(l) = item else { continue };
+                let held = param_starts.entry(l.name.name.clone()).or_default();
+                for m in &l.members {
+                    let LocusMember::Params(pb) = m else { continue };
+                    for p in &pb.params {
+                        if let Some(t) = p.ty.as_ref().and_then(type_expr_name) {
+                            if locus_type_names.contains(&t) {
+                                held.insert(t);
+                            }
+                        }
+                        if let ParamInit::Value(e) = &p.init {
+                            literal_loci(e, &locus_type_names, held);
+                        }
+                    }
+                }
+                if !is_stdlib_copy(ids) {
+                    pending.push(l.name.name.clone());
+                }
+            }
+        }
+        let mut reached: BTreeSet<FnKey> = BTreeSet::new();
+        let mut work: Vec<FnKey> = own.into_iter().collect();
+        loop {
+            while let Some(l) = pending.pop() {
+                if !started.insert(l.clone()) {
+                    continue;
+                }
+                work.extend(
+                    summary
+                        .fns
+                        .values()
+                        .filter(|f| f.key.locus.as_ref() == Some(&l) && f.entry.is_some())
+                        .map(|f| f.key.clone()),
+                );
+                pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
+            }
+            let Some(k) = work.pop() else { break };
+            if !reached.insert(k.clone()) {
+                continue;
+            }
+            let Some(f) = summary.fns.get(&k) else { continue };
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    work.push(callee.clone());
+                }
+            }
+            pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
+        }
+        summary.reached = Some(reached);
     }
     summary
 }
@@ -2278,6 +2360,31 @@ fn lifecycle_key(kind: LifecycleKind) -> (String, EntryKind) {
     }
 }
 
+/// The locus a struct literal's path instantiates, by its declared name:
+/// a stdlib locus written by its public path (`std::http::Server`) is
+/// the mangled name its declaration carries. `None` for a plain struct.
+fn struct_locus(path: &hale_syntax::ast::QualifiedName,locus_types: &BTreeSet<String>) -> Option<String> {
+    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+    let name = match segs.as_slice() {
+        [one] => one.to_string(),
+        _ => crate::stdlib_bodies::mangled_locus_name(&segs)?.to_string(),
+    };
+    locus_types.contains(&name).then_some(name)
+}
+
+/// The loci a struct-literal expression instantiates, nested literals
+/// included (a param field's default).
+fn literal_loci(e: &Expr, locus_types: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    if let Expr::Struct { path, inits, .. } = e {
+        if let Some(l) = struct_locus(path, locus_types) {
+            out.insert(l);
+        }
+        for si in inits {
+            literal_loci(&si.value, locus_types, out);
+        }
+    }
+}
+
 /// The set of method names a locus subscribes as bus handlers.
 fn bus_handler_names(l: &LocusDecl) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -2347,6 +2454,8 @@ struct Walker<'a> {
     escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
+    /// The loci this body instantiates, by their declared names.
+    starts: BTreeSet<String>,
     /// The free fns of the body's own scope (its seed's programs,
     /// modules included): the only fns a bare name resolves to.
     scope_fns: &'a BTreeSet<String>,
@@ -2932,6 +3041,9 @@ impl<'a> Walker<'a> {
                 // the site — that's the TP-3 anchor-clone class.
                 let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
                     && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
+                if let Some(l) = struct_locus(path, self.locus_types) {
+                    self.starts.insert(l);
+                }
                 if self.locus_types.contains(&name) {
                     // GH #265: locus instantiation — an effect in its
                     // own right (arena create, possibly a thread or
