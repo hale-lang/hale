@@ -39,8 +39,9 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, LocusMember, MatchArmBody,
-    NodeId, PerspectiveMember, Stmt, TopDecl, TypeDeclBody, TypeExpr,
+    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, IfStmt, LValueSeg, LocusMember,
+    MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, PerspectiveMember, QualifiedName,
+    RecoveryModifier, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::Span;
 
@@ -193,6 +194,10 @@ pub struct TypedBody {
     pub specialized_accumulators: Vec<(Vec<Ty>, Vec<AccumulatorRow>)>,
     /// By call site.
     pub generic_calls: BTreeMap<u32, Typed<GenericCall>>,
+    /// A generic fn's body: its generic calls for each of the fn's
+    /// monomorphs, by the monomorph's type arguments, typed with the
+    /// template's parameters bound to them.
+    pub specialized_generic_calls: Vec<(Vec<Ty>, BTreeMap<u32, Typed<GenericCall>>)>,
     /// By call site.
     pub fallible_calls: BTreeMap<u32, FallibleCall>,
 }
@@ -301,6 +306,21 @@ impl TypingRecord {
         self.body(body).generic_calls.insert(call.0, row);
     }
 
+    pub fn specialized_generic_call(&mut self, body: NodeId, args: Vec<Ty>, call: NodeId, row: Typed<GenericCall>) {
+        if call.is_none() {
+            return;
+        }
+        let rows = &mut self.body(body).specialized_generic_calls;
+        let at = match rows.iter().position(|(a, _)| *a == args) {
+            Some(i) => i,
+            None => {
+                rows.push((args, BTreeMap::new()));
+                rows.len() - 1
+            }
+        };
+        rows[at].1.insert(call.0, row);
+    }
+
     pub fn fallible_call(&mut self, body: NodeId, call: NodeId, row: FallibleCall) {
         if call.is_none() {
             return;
@@ -349,6 +369,17 @@ impl TypedBodies {
     pub fn generic_call(&self, call: NodeId) -> Option<&Typed<GenericCall>> {
         let body = self.sites.get(&call.0)?;
         self.bodies.get(body)?.generic_calls.get(&call.0)
+    }
+
+    /// The row of the generic call at `call` inside the generic fn
+    /// declared at `template`, in its monomorph at `args`.
+    pub fn specialized_generic_call(&self, template: NodeId, args: &[Ty], call: NodeId) -> Option<&Typed<GenericCall>> {
+        self.body(template)?
+            .specialized_generic_calls
+            .iter()
+            .find(|(a, _)| a == args)?
+            .1
+            .get(&call.0)
     }
 
     /// The row of the fallible call at `call`; `None` for a call whose
@@ -406,11 +437,24 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
     }
 }
 
-/// Every type expression `items` writes, outermost only (a reader
-/// recurses into generic arguments itself): every declaration's
-/// signature, field, parameter, payload, slot and alias, and every
-/// `let` ascription at any depth of every body.
-pub fn for_each_type_expr<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(&'a TypeExpr)) {
+
+/// A place a program spells a type.
+#[derive(Debug, Clone, Copy)]
+pub enum TypeSpelling<'a> {
+    /// A type expression, outermost only (a reader recurses into its
+    /// generic arguments itself).
+    Annotation(&'a TypeExpr),
+    /// A struct or locus literal's path.
+    Literal(&'a QualifiedName),
+}
+
+type Visit<'v, 'a> = dyn FnMut(TypeSpelling<'a>) + 'v;
+
+/// Every place `items` spells a type: every declaration's signature,
+/// field, parameter, payload, slot and alias, every `let` ascription,
+/// and every struct or locus literal's path, at any depth of every body
+/// and default.
+pub fn for_each_type_spelling<'a>(items: &'a [TopDecl], f: &mut Visit<'_, 'a>) {
     for item in hale_syntax::ast::flat_decls(items) {
         match item {
             TopDecl::Type(t) => type_body(&t.body, f),
@@ -421,35 +465,29 @@ pub fn for_each_type_expr<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(&'a TypeEx
                 }
             }
             TopDecl::Const(c) => {
-                f(&c.ty);
+                ann(&c.ty, f);
                 expr(&c.value, f);
             }
-            TopDecl::Topic(t) => f(&t.payload),
+            TopDecl::Topic(t) => ann(&t.payload, f),
             TopDecl::Interface(i) => {
                 for m in &i.methods {
                     for p in &m.params {
-                        f(&p.ty);
+                        ann(&p.ty, f);
                     }
                     if let Some(r) = &m.ret {
-                        f(r);
+                        ann(r, f);
                     }
                     if let Some(e) = &m.fallible {
-                        f(e);
+                        ann(e, f);
                     }
                 }
             }
             TopDecl::Perspective(p) => {
                 for m in &p.members {
                     match m {
-                        PerspectiveMember::Params(pb) => {
-                            for pd in &pb.params {
-                                if let Some(t) = &pd.ty {
-                                    f(t);
-                                }
-                            }
-                        }
+                        PerspectiveMember::Params(pb) => params(pb, f),
                         PerspectiveMember::StableWhen(b) => block(b, f),
-                        PerspectiveMember::SerializeAs(t) => f(t),
+                        PerspectiveMember::SerializeAs(t) => ann(t, f),
                         PerspectiveMember::Fn(fd) => fn_decl(fd, f),
                         PerspectiveMember::Bus(bb) => bus(bb, f),
                     }
@@ -460,101 +498,121 @@ pub fn for_each_type_expr<'a>(items: &'a [TopDecl], f: &mut dyn FnMut(&'a TypeEx
     }
 }
 
-fn type_body<'a>(body: &'a TypeDeclBody, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn ann<'a>(t: &'a TypeExpr, f: &mut Visit<'_, 'a>) {
+    f(TypeSpelling::Annotation(t));
+}
+
+fn type_body<'a>(body: &'a TypeDeclBody, f: &mut Visit<'_, 'a>) {
     match body {
         TypeDeclBody::Struct(fields) => {
             for fl in fields {
-                f(&fl.ty);
+                ann(&fl.ty, f);
+                if let Some(d) = &fl.default {
+                    expr(d, f);
+                }
             }
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
                 for t in &v.fields {
-                    f(t);
+                    ann(t, f);
                 }
             }
         }
-        TypeDeclBody::Alias(t) => f(t),
+        TypeDeclBody::Alias(t) => ann(t, f),
     }
 }
 
-fn fn_decl<'a>(fd: &'a hale_syntax::ast::FnDecl, f: &mut dyn FnMut(&'a TypeExpr)) {
-    for g in &fd.generics {
-        if let Some(b) = &g.bound {
-            f(b);
+fn params<'a>(pb: &'a hale_syntax::ast::ParamsBlock, f: &mut Visit<'_, 'a>) {
+    for pd in &pb.params {
+        if let Some(t) = &pd.ty {
+            ann(t, f);
+        }
+        if let ParamInit::Value(e) = &pd.init {
+            expr(e, f);
         }
     }
-    for p in &fd.params {
-        f(&p.ty);
+}
+
+fn fn_params<'a>(ps: &'a [hale_syntax::ast::Param], f: &mut Visit<'_, 'a>) {
+    for p in ps {
+        ann(&p.ty, f);
+        if let Some(d) = &p.default {
+            expr(d, f);
+        }
     }
+}
+
+fn fn_decl<'a>(fd: &'a hale_syntax::ast::FnDecl, f: &mut Visit<'_, 'a>) {
+    for g in &fd.generics {
+        if let Some(b) = &g.bound {
+            ann(b, f);
+        }
+    }
+    fn_params(&fd.params, f);
     if let Some(r) = &fd.ret {
-        f(r);
+        ann(r, f);
     }
     if let Some(e) = &fd.fallible {
-        f(e);
+        ann(e, f);
     }
     block(&fd.body, f);
 }
 
-fn bus<'a>(bb: &'a hale_syntax::ast::BusBlock, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn bus<'a>(bb: &'a hale_syntax::ast::BusBlock, f: &mut Visit<'_, 'a>) {
     for bm in &bb.members {
         match bm {
-            BusMember::Subscribe { ty: Some(t), .. } | BusMember::Publish { ty: Some(t), .. } => f(t),
+            BusMember::Subscribe { ty: Some(t), .. } | BusMember::Publish { ty: Some(t), .. } => ann(t, f),
             _ => {}
         }
     }
 }
 
-fn locus_member<'a>(m: &'a LocusMember, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
     match m {
-        LocusMember::Params(pb) => {
-            for pd in &pb.params {
-                if let Some(t) = &pd.ty {
-                    f(t);
-                }
-                if let hale_syntax::ast::ParamInit::Value(e) = &pd.init {
-                    expr(e, f);
-                }
-            }
-        }
+        LocusMember::Params(pb) => params(pb, f),
         LocusMember::Bus(bb) => bus(bb, f),
         LocusMember::Lifecycle(lc) => {
-            for p in &lc.params {
-                f(&p.ty);
-            }
+            fn_params(&lc.params, f);
             if let Some(r) = &lc.ret {
-                f(r);
+                ann(r, f);
             }
             block(&lc.body, f);
         }
         LocusMember::Mode(md) => {
-            for p in &md.params {
-                f(&p.ty);
-            }
+            fn_params(&md.params, f);
             if let Some(r) = &md.ret {
-                f(r);
+                ann(r, f);
             }
             block(&md.body, f);
         }
         LocusMember::Failure(fd) => {
-            for p in &fd.params {
-                f(&p.ty);
-            }
+            fn_params(&fd.params, f);
             block(&fd.body, f);
         }
+        LocusMember::Closure(cd) => {
+            if let Some(a) = &cd.assertion {
+                expr(&a.left, f);
+                expr(&a.right, f);
+                expr(&a.tolerance, f);
+            }
+        }
         LocusMember::Fn(fd) => fn_decl(fd, f),
-        LocusMember::Const(c) => f(&c.ty),
+        LocusMember::Const(c) => {
+            ann(&c.ty, f);
+            expr(&c.value, f);
+        }
         LocusMember::Type(t) => type_body(&t.body, f),
         LocusMember::Capacity(cb) => {
             for s in &cb.slots {
-                f(&s.elem_ty);
+                ann(&s.elem_ty, f);
             }
         }
         LocusMember::Contract(cb) => {
             if let ContractKind::Members(ms) = &cb.kind {
                 for cm in ms {
                     if let Some(t) = &cm.ty {
-                        f(t);
+                        ann(t, f);
                     }
                 }
             }
@@ -563,7 +621,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut dyn FnMut(&'a TypeExpr)) {
     }
 }
 
-fn block<'a>(b: &'a Block, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn block<'a>(b: &'a Block, f: &mut Visit<'_, 'a>) {
     for s in &b.stmts {
         stmt(s, f);
     }
@@ -572,7 +630,7 @@ fn block<'a>(b: &'a Block, f: &mut dyn FnMut(&'a TypeExpr)) {
     }
 }
 
-fn if_stmt<'a>(i: &'a hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn if_stmt<'a>(i: &'a IfStmt, f: &mut Visit<'_, 'a>) {
     expr(&i.cond, f);
     block(&i.then_block, f);
     match i.else_block.as_deref() {
@@ -582,7 +640,7 @@ fn if_stmt<'a>(i: &'a hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&'a TypeExpr))
     }
 }
 
-fn match_stmt<'a>(m: &'a hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn match_stmt<'a>(m: &'a MatchStmt, f: &mut Visit<'_, 'a>) {
     expr(&m.scrutinee, f);
     for arm in &m.arms {
         if let Some(g) = &arm.guard {
@@ -595,15 +653,22 @@ fn match_stmt<'a>(m: &'a hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&'a Type
     }
 }
 
-fn stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn stmt<'a>(s: &'a Stmt, f: &mut Visit<'_, 'a>) {
     match s {
         Stmt::Let { ty, value, .. } | Stmt::LetTuple { ty, value, .. } => {
             if let Some(t) = ty {
-                f(t);
+                ann(t, f);
             }
             expr(value, f);
         }
-        Stmt::Assign { value, .. } => expr(value, f),
+        Stmt::Assign { target, value, .. } => {
+            for seg in &target.tail {
+                if let LValueSeg::Index(ix) = seg {
+                    expr(ix, f);
+                }
+            }
+            expr(value, f);
+        }
         Stmt::If(i) => if_stmt(i, f),
         Stmt::Match(m) => match_stmt(m, f),
         Stmt::For { iter, body, .. } => {
@@ -616,14 +681,38 @@ fn stmt<'a>(s: &'a Stmt, f: &mut dyn FnMut(&'a TypeExpr)) {
         }
         Stmt::Return(Some(e), _) | Stmt::Fail { value: e, .. } | Stmt::Expr(e) => expr(e, f),
         Stmt::Block(b) => block(b, f),
-        Stmt::Send { value, .. } => expr(value, f),
-        Stmt::ShmWrite { body, .. } => block(body, f),
+        Stmt::Recovery { args, modifier, .. } => {
+            for a in args {
+                expr(a, f);
+            }
+            if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                expr(e, f);
+            }
+        }
+        Stmt::Violate { payload: Some(e), .. } => expr(e, f),
+        Stmt::Send { subject, value, or_disposition, .. } => {
+            expr(subject, f);
+            expr(value, f);
+            if let Some(OrDisposition::Substitute(sub)) = or_disposition {
+                expr(sub, f);
+            }
+        }
+        Stmt::ShmWrite { max, body, .. } => {
+            expr(max, f);
+            block(body, f);
+        }
         _ => {}
     }
 }
 
-fn expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a TypeExpr)) {
+fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
     match e {
+        Expr::Struct { path, inits, .. } => {
+            f(TypeSpelling::Literal(path));
+            for i in inits {
+                expr(&i.value, f);
+            }
+        }
         Expr::Block(b) => block(b, f),
         Expr::If(i) => if_stmt(i, f),
         Expr::Match(m) => match_stmt(m, f),
@@ -638,22 +727,33 @@ fn expr<'a>(e: &'a Expr, f: &mut dyn FnMut(&'a TypeExpr)) {
             expr(right, f);
         }
         Expr::Unary { operand, .. } => expr(operand, f),
-        Expr::Or { inner, disposition, .. } => {
-            expr(inner, f);
-            if let hale_syntax::ast::OrDisposition::Substitute(sub) = disposition {
-                expr(sub, f);
-            }
-        }
-        Expr::Struct { inits, .. } => {
-            for i in inits {
-                expr(&i.value, f);
-            }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => expr(receiver, f),
+        Expr::Index { receiver, index, .. } => {
+            expr(receiver, f);
+            expr(index, f);
         }
         Expr::Tuple(es, _) | Expr::Array(es, _) => {
             for x in es {
                 expr(x, f);
             }
         }
-        _ => {}
+        Expr::Sum(x, _) | Expr::Prod(x, _) => expr(x, f),
+        Expr::Approx { left, right, tolerance, .. } => {
+            expr(left, f);
+            expr(right, f);
+            expr(tolerance, f);
+        }
+        Expr::Range { lo, hi, .. } => {
+            expr(lo, f);
+            expr(hi, f);
+        }
+        Expr::ArrayRepeat { val, .. } => expr(val, f),
+        Expr::Or { inner, disposition, .. } => {
+            expr(inner, f);
+            if let OrDisposition::Substitute(sub) = disposition {
+                expr(sub, f);
+            }
+        }
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
     }
 }

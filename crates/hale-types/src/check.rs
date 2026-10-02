@@ -631,7 +631,8 @@ pub fn check_bundle_typing(
     let certificates;
     let known = &top.names;
     let mut typed = crate::typed_bodies::TypingRecord::default();
-    written_monomorphs(bundle, known, &mut typed.monomorphs);
+    let templates = GenericTemplates::of(bundle);
+    monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
     let wasm_target = bundle.programs.values().any(|p| {
@@ -704,10 +705,14 @@ pub fn check_bundle_typing(
             body: NodeId::NONE,
             expr_types: None,
             locus_decl: None,
+            templates: &templates,
+            generic_bindings: BTreeMap::new(),
+            specializing: None,
         };
         for item in &program.items {
             cx.check_top_decl(item);
         }
+        cx.specialize_generic_fns();
     }
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
@@ -891,84 +896,150 @@ pub fn check_bundle_typing(
     (diags, certificates, typed)
 }
 
-/// The monomorph table's type and locus rows: every generic type or
-/// locus instantiation a type expression of `bundle` writes, keyed by
-/// its template's site and its arguments as the checker resolves them,
-/// named as the checker's resolution names it (`Box<Int>` is
-/// `Box_Int`). A nested instantiation is a row of its own. One table
-/// for the bundle, whichever program declares the template.
-fn written_monomorphs(
-    bundle: &Bundle<'_>,
-    known: &KnownNames,
-    out: &mut crate::typed_bodies::Monomorphs,
-) {
-    use crate::typed_bodies::{Monomorph, TemplateKind};
-    let mut templates: BTreeMap<&str, (NodeId, TemplateKind)> = BTreeMap::new();
-    for program in bundle.programs.values() {
-        for item in hale_syntax::ast::flat_decls(&program.items) {
-            match item {
-                TopDecl::Type(t) if !t.generics.is_empty() => {
-                    templates.entry(t.name.name.as_str()).or_insert((t.id, TemplateKind::Type));
+/// The bundle's generic type and locus templates, by identity: the
+/// site the snapshot minted, or, for a bundle nothing minted (a test's
+/// check of a parsed program), the check's own ordinal in bundle order,
+/// counted down from the top of the id space; such a bundle is never
+/// lowered. By name too, in the order a mangled name is matched against
+/// them: the types, then the loci, each by name, the last declaration
+/// of a name winning.
+struct GenericTemplates<'a> {
+    by_key: BTreeMap<u32, GenericTemplate<'a>>,
+    types: BTreeMap<&'a str, u32>,
+    loci: BTreeMap<&'a str, u32>,
+}
+
+impl<'a> GenericTemplates<'a> {
+    fn of(bundle: &'a Bundle<'_>) -> Self {
+        let mut out = GenericTemplates { by_key: BTreeMap::new(), types: BTreeMap::new(), loci: BTreeMap::new() };
+        let mut unminted: u32 = 0;
+        let mut key = |id: NodeId| {
+            if id.is_none() {
+                unminted += 1;
+                NodeId::NONE.0 - unminted
+            } else {
+                id.0
+            }
+        };
+        for program in bundle.programs.values() {
+            for item in hale_syntax::ast::flat_decls(&program.items) {
+                match item {
+                    TopDecl::Type(t) if !t.generics.is_empty() => {
+                        let k = key(t.id);
+                        out.by_key.insert(k, GenericTemplate::Type(t));
+                        out.types.insert(t.name.name.as_str(), k);
+                    }
+                    TopDecl::Locus(l) if !l.generics.is_empty() => {
+                        let k = key(l.id);
+                        out.by_key.insert(k, GenericTemplate::Locus(l));
+                        out.loci.insert(l.name.name.as_str(), k);
+                    }
+                    _ => {}
                 }
-                TopDecl::Locus(l) if !l.generics.is_empty() => {
-                    templates.entry(l.name.name.as_str()).or_insert((l.id, TemplateKind::Locus));
-                }
-                _ => {}
             }
         }
+        out
     }
-    if templates.is_empty() {
+
+    fn get(&self, key: NodeId) -> Option<GenericTemplate<'a>> {
+        self.by_key.get(&key.0).copied()
+    }
+
+    /// The monomorph a mangled name spells (`Box_Int`,
+    /// `Cache_Int_String`): the template whose name and `_` prefix it,
+    /// with exactly as many `_`-joined tokens as the template has
+    /// parameters, each token a primitive, a known name, or else
+    /// `Unknown`. The mangle joins tokens with `_`, so a nested
+    /// instantiation's name is no template's. The monomorph table's
+    /// producer runs it once per name the program spells.
+    fn parse(&self, name: &str, known: &KnownNames) -> Option<(NodeId, crate::typed_bodies::TemplateKind, Vec<Ty>)> {
+        use crate::typed_bodies::TemplateKind;
+        let candidates = self
+            .types
+            .iter()
+            .map(|(base, k)| (*base, *k, TemplateKind::Type))
+            .chain(self.loci.iter().map(|(base, k)| (*base, *k, TemplateKind::Locus)));
+        for (base, key, kind) in candidates {
+            let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('_')) else {
+                continue;
+            };
+            let toks: Vec<&str> = rest.split('_').collect();
+            let template = self.by_key[&key];
+            if toks.len() != template.generics().len() {
+                continue;
+            }
+            let args = toks.iter().map(|tok| mangle_token_to_ty(tok, known)).collect();
+            return Some((NodeId(key), kind, args));
+        }
+        None
+    }
+}
+
+/// The monomorph table's type and locus rows (F.40 phase 3, E4), one
+/// table per snapshot: a row for every name the program spells that
+/// names a monomorph — each generic instantiation a type expression
+/// writes (`Box<Int>`, named as the checker resolves it, `Box_Int`),
+/// each name an annotation or a struct literal spells (`Box_Int { }`) —
+/// keyed by its template's site and its type arguments. The mangled
+/// name is parsed here, once per name; every lookup reads the row.
+fn monomorph_table(
+    bundle: &Bundle<'_>,
+    known: &KnownNames,
+    templates: &GenericTemplates<'_>,
+    out: &mut crate::typed_bodies::Monomorphs,
+) {
+    use crate::typed_bodies::{Monomorph, TypeSpelling};
+    if templates.by_key.is_empty() {
         return;
     }
-    fn visit(
-        te: &TypeExpr,
-        known: &KnownNames,
-        templates: &BTreeMap<&str, (NodeId, TemplateKind)>,
-        out: &mut crate::typed_bodies::Monomorphs,
-    ) {
+    fn spelled(te: &TypeExpr, known: &KnownNames, names: &mut std::collections::BTreeSet<String>) {
         match te {
             TypeExpr::Named { path, generic_args, .. } => {
                 for a in generic_args {
-                    visit(a, known, templates, out);
+                    spelled(a, known, names);
                 }
-                if path.segments.len() != 1 || generic_args.is_empty() {
+                if path.segments.len() != 1 {
                     return;
                 }
-                let Some(&(template, kind)) = templates.get(path.segments[0].name.as_str()) else {
-                    return;
-                };
-                if template.is_none() {
-                    return;
-                }
-                if let Ty::Named(name) = resolve_type_expr(te, known) {
-                    let args = generic_args.iter().map(|a| resolve_type_expr(a, known)).collect();
-                    out.insert(Monomorph { template, kind, args, name });
+                if generic_args.is_empty() {
+                    names.insert(path.segments[0].name.clone());
+                } else if let Ty::Named(n) = resolve_type_expr(te, known) {
+                    names.insert(n);
                 }
             }
-            TypeExpr::Projection { inner, .. } => visit(inner, known, templates, out),
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
-                visit(elem, known, templates, out)
-            }
+            TypeExpr::Projection { inner, .. } => spelled(inner, known, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, names),
             TypeExpr::Tuple(parts, _) => {
                 for p in parts {
-                    visit(p, known, templates, out);
+                    spelled(p, known, names);
                 }
             }
             TypeExpr::Function { params, ret, .. } => {
                 for p in params {
-                    visit(p, known, templates, out);
+                    spelled(p, known, names);
                 }
                 if let Some(r) = ret {
-                    visit(r, known, templates, out);
+                    spelled(r, known, names);
                 }
             }
             TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
         }
     }
+    let mut names = std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        crate::typed_bodies::for_each_type_expr(&program.items, &mut |te| {
-            visit(te, known, &templates, out)
+        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s| match s {
+            TypeSpelling::Annotation(te) => spelled(te, known, &mut names),
+            TypeSpelling::Literal(path) => {
+                if path.segments.len() == 1 {
+                    names.insert(path.segments[0].name.clone());
+                }
+            }
         });
+    }
+    for name in names {
+        if let Some((template, kind, args)) = templates.parse(&name, known) {
+            out.insert(Monomorph { template, kind, args, name });
+        }
     }
 }
 
@@ -7685,6 +7756,16 @@ struct Checker<'a> {
     /// The locus declaration being walked, if any: a generic one's
     /// accumulator rows are specialized per monomorph.
     locus_decl: Option<&'a LocusDecl>,
+    /// The bundle's generic type and locus templates by identity: what
+    /// a monomorph row's template site names.
+    templates: &'a GenericTemplates<'a>,
+    /// While a generic fn's body is walked for one of its monomorphs:
+    /// the template's parameters bound to the monomorph's arguments
+    /// (every annotation the walk resolves substitutes them), and the
+    /// arguments the walk's call rows are recorded under. Empty / `None`
+    /// on the ordinary walk.
+    generic_bindings: BTreeMap<String, Ty>,
+    specializing: Option<Vec<Ty>>,
 }
 
 #[derive(Default)]
@@ -7803,7 +7884,7 @@ impl<'a> Checker<'a> {
                 // GH #877: the ascription is an annotation like any
                 // other.
                 self.check_type_annotation(&c.ty);
-                let want = resolve_type_expr(&c.ty, self.known);
+                let want = self.resolve_te(&c.ty);
                 let got = self.check_expr(&c.value);
                 if !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
@@ -9235,7 +9316,7 @@ impl<'a> Checker<'a> {
             if !row.is_row_of(fd) {
                 continue;
             }
-            let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
+            let err_ty = self.resolve_te(&fd.params[1].ty);
             let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
             if !is_violation && !matches!(err_ty, Ty::Unknown) {
                 continue;
@@ -9881,7 +9962,7 @@ impl<'a> Checker<'a> {
         ty_expr: &'a TypeExpr,
         slot_label: &str,
     ) {
-        let resolved = resolve_type_expr(ty_expr, self.known);
+        let resolved = self.resolve_te(ty_expr);
         let Ty::Named(name) = &resolved else { return };
         if !matches!(self.top.lookup(name), Some(TopSymbol::Locus(_))) {
             return;
@@ -10925,7 +11006,7 @@ impl<'a> Checker<'a> {
                     }
                     let got = self.check_expr(init);
                     let Some(te) = &p.ty else { continue };
-                    let want = resolve_type_expr(te, self.known);
+                    let want = self.resolve_te(te);
                     // `Unknown` on either side is an unresolved
                     // type, already diagnosed (or deliberately
                     // opaque, as multi-segment stdlib handles are).
@@ -11095,7 +11176,7 @@ impl<'a> Checker<'a> {
                     // locus; an undeclared name is the same typo in
                     // the same position.
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -11107,7 +11188,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &md.params {
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&md.body);
@@ -11140,7 +11221,7 @@ impl<'a> Checker<'a> {
                     ));
                 } else {
                     let err_ty =
-                        resolve_type_expr(&fd.params[1].ty, self.known);
+                        self.resolve_te(&fd.params[1].ty);
                     let is_violation = matches!(
                         &err_ty,
                         Ty::Named(n) if n == "ClosureViolation"
@@ -11161,7 +11242,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &fd.params {
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&fd.body);
@@ -11423,7 +11504,7 @@ impl<'a> Checker<'a> {
                     }
                     // GH #877: the cell type is an annotation too.
                     self.check_type_annotation(&slot.elem_ty);
-                    let elem_ty = resolve_type_expr(&slot.elem_ty, self.known);
+                    let elem_ty = self.resolve_te(&slot.elem_ty);
                     let kind_word = match slot.kind {
                         CapacitySlotKind::Pool => "pool",
                         CapacitySlotKind::Heap => "heap",
@@ -11633,7 +11714,7 @@ impl<'a> Checker<'a> {
         // C arity).
         if decl.export && locus.is_none() {
             for p in &decl.params {
-                let ty = resolve_type_expr(&p.ty, self.known);
+                let ty = self.resolve_te(&p.ty);
                 if let Some(reason) = ffi_type_unportable(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
@@ -11660,7 +11741,7 @@ impl<'a> Checker<'a> {
                 }
             }
             if let Some(ret_te) = &decl.ret {
-                let ret_ty = resolve_type_expr(ret_te, self.known);
+                let ret_ty = self.resolve_te(ret_te);
                 if let Some(reason) = ffi_type_unportable(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
@@ -11694,7 +11775,7 @@ impl<'a> Checker<'a> {
                 ));
             }
             for p in &decl.params {
-                let ty = resolve_type_expr(&p.ty, self.known);
+                let ty = self.resolve_te(&p.ty);
                 if let Some(reason) = ffi_type_unportable(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
@@ -11709,7 +11790,7 @@ impl<'a> Checker<'a> {
                 }
             }
             if let Some(ret_te) = &decl.ret {
-                let ret_ty = resolve_type_expr(ret_te, self.known);
+                let ret_ty = self.resolve_te(ret_te);
                 if let Some(reason) = ffi_type_unportable(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
@@ -11733,18 +11814,18 @@ impl<'a> Checker<'a> {
         self.return_ctx = decl
             .ret
             .as_ref()
-            .map(|te| resolve_type_expr(te, self.known));
+            .map(|te| self.resolve_te(te));
         if let Some(payload_te) = &decl.fallible {
             let success_ret = match &decl.ret {
-                Some(te) => resolve_type_expr(te, self.known),
+                Some(te) => self.resolve_te(te),
                 None => Ty::Unit,
             };
-            let payload = resolve_type_expr(payload_te, self.known);
+            let payload = self.resolve_te(payload_te);
             self.fallible_ctx = Some((success_ret, payload));
         }
         self.locals.push();
         for p in &decl.params {
-            let ty = resolve_type_expr(&p.ty, self.known);
+            let ty = self.resolve_te(&p.ty);
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_block(&decl.body);
@@ -11914,7 +11995,7 @@ impl<'a> Checker<'a> {
                         // GH #877: the one annotation that lives in a
                         // body.
                         self.check_type_annotation(te);
-                        let want = resolve_type_expr(te, self.known);
+                        let want = self.resolve_te(te);
                         // GH #911 B5: `let h: Holder<Int> = Holder { };`
                         // — the annotation resolves to the mangled
                         // monomorph `Holder_Int` while the literal
@@ -13235,6 +13316,54 @@ impl<'a> Checker<'a> {
         conformance(self.top, locus_name, iface_name)
     }
 
+    /// A type expression the walk resolves: through the scope's names,
+    /// and, while a generic fn's body is walked for one of its
+    /// monomorphs, with the template's parameters substituted.
+    fn resolve_te(&self, te: &TypeExpr) -> Ty {
+        if self.generic_bindings.is_empty() {
+            resolve_type_expr(te, self.known)
+        } else {
+            substitute_generic_ty(te, &self.generic_bindings, self.known)
+        }
+    }
+
+    /// The generic fns' monomorphs, typed (F.40 phase 3, E4): a generic
+    /// fn's body types a use of its parameter `T` as `Unknown`, so a
+    /// generic call inside it pins nothing. Each fn monomorph the table
+    /// names is walked again with the template's parameters bound to its
+    /// arguments, as lowering lowers that specialization, and the walk's
+    /// generic call rows are recorded under the monomorph's arguments;
+    /// a specialization a walk instantiates is walked in turn. The walk
+    /// reports nothing: its diagnostics are the template's, reported by
+    /// the ordinary walk, and are dropped.
+    fn specialize_generic_fns(&mut self) {
+        const LIMIT: usize = 1024;
+        let mut next = 0;
+        let mut walked = 0;
+        while next < self.typed.monomorphs.rows().len() && walked < LIMIT {
+            let m = self.typed.monomorphs.rows()[next].clone();
+            next += 1;
+            if m.kind != crate::typed_bodies::TemplateKind::Fn {
+                continue;
+            }
+            let Some(template) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
+                continue;
+            };
+            walked += 1;
+            let bindings: BTreeMap<String, Ty> =
+                template.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+            let mark = self.diags.len();
+            let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
+            let prev_specializing = self.specializing.replace(m.args.clone());
+            let prev_locus = self.current_locus.take();
+            self.check_fn(template, None);
+            self.current_locus = prev_locus;
+            self.specializing = prev_specializing;
+            self.generic_bindings = prev_bindings;
+            self.diags.truncate(mark);
+        }
+    }
+
     /// The closure's accumulator rows (F.40 phase 3, E4): each
     /// accumulator of `assertion`, with the type this walk gave the
     /// expression it accumulates (`seen`, by node). An accumulated
@@ -13267,7 +13396,7 @@ impl<'a> Checker<'a> {
         let mut specialized: Vec<(Vec<Ty>, Vec<AccumulatorRow>)> = Vec::new();
         if let Some(l) = self.locus_decl.filter(|l| !l.generics.is_empty() && !l.id.is_none()) {
             let sites = crate::typed_bodies::accumulator_sites(assertion);
-            for m in self.typed.monomorphs.rows().iter().filter(|m| m.template == l.id) {
+            for m in self.typed.monomorphs.rows().iter().filter(|m| m.template.0 == l.id.0) {
                 let bindings: BTreeMap<String, Ty> =
                     l.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
                 let rows: Vec<AccumulatorRow> = rows
@@ -14271,8 +14400,9 @@ impl<'a> Checker<'a> {
             seen.push((expr as *const Expr, ty.clone()));
         }
         // The fallible column (F.40 phase 3, E4): a call this walk
-        // typed `Fallible`.
-        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }) = (expr, &ty) {
+        // typed `Fallible` (the ordinary walk's; a specialization's walk
+        // records its generic calls only).
+        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }, None) = (expr, &ty, &self.specializing) {
             self.typed.fallible_call(
                 self.body,
                 *id,
@@ -14506,7 +14636,7 @@ impl<'a> Checker<'a> {
                         {
                             // The fallible column (F.40 phase 3, E4):
                             // the table's mark, read at the call.
-                            if let Some((_, payload)) = sig.or_types() {
+                            if let (Some((_, payload)), None) = (sig.or_types(), &self.specializing) {
                                 self.typed.fallible_call(
                                     self.body,
                                     *call_id,
@@ -14978,7 +15108,13 @@ impl<'a> Checker<'a> {
                                 });
                             }
                         }
-                        self.typed.generic_call(self.body, *call_id, row);
+                        match &self.specializing {
+                            Some(args) => {
+                                let args = args.clone();
+                                self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                            }
+                            None => self.typed.generic_call(self.body, *call_id, row),
+                        }
                         // Args vs substituted params.
                         for ((p, at), a) in template
                             .params
@@ -16622,14 +16758,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// M3 stage 3 tranche 2: match a mangled monomorph name
-    /// (`Box_Int`, `Pair_Int_String`) against a generic
-    /// template, producing the generic→Ty bindings. The mangle
-    /// joins single tokens with `_`; template base names
-    /// containing `_` are handled by prefix match. None when no
-    /// template matches or the token count disagrees.
+    /// M3 stage 3 tranche 2: the monomorph a mangled name (`Box_Int`,
+    /// `Pair_Int_String`) names, with the generic→Ty bindings: the
+    /// snapshot's monomorph table row the name is (F.40 phase 3, E4),
+    /// keyed by its template's site and its arguments, and the template
+    /// that site declares. None for a name the table holds no row for:
+    /// one no template prefixes, whose token count disagrees, or that
+    /// the program never spells.
     ///
-    /// GH #911 B5: generic LOCI are searched too (`Cache_Int_String`
+    /// GH #911 B5: generic LOCI are rows too (`Cache_Int_String`
     /// against `locus Cache<K, V>`). The answer says which kind of
     /// declaration it found, because a caller's site decides whether
     /// a locus may appear there — see
@@ -16638,34 +16775,11 @@ impl<'a> Checker<'a> {
         &self,
         name: &str,
     ) -> Option<(GenericTemplate<'a>, BTreeMap<String, Ty>)> {
-        let templates = self
-            .generic_types
-            .iter()
-            .map(|(base, t)| (base, GenericTemplate::Type(*t)))
-            .chain(
-                self.generic_loci
-                    .iter()
-                    .map(|(base, l)| (base, GenericTemplate::Locus(*l))),
-            );
-        for (base, template) in templates {
-            let prefix = format!("{}_", base);
-            let Some(rest) = name.strip_prefix(&prefix) else {
-                continue;
-            };
-            let toks: Vec<&str> = rest.split('_').collect();
-            if toks.len() != template.generics().len() {
-                continue;
-            }
-            let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
-            for (g, tok) in template.generics().iter().zip(toks.iter()) {
-                bindings.insert(
-                    g.name.name.clone(),
-                    mangle_token_to_ty(tok, self.known),
-                );
-            }
-            return Some((template, bindings));
-        }
-        None
+        let m = self.typed.monomorphs.named(name)?;
+        let template = self.templates.get(m.template)?;
+        let bindings: BTreeMap<String, Ty> =
+            template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+        Some((template, bindings))
     }
 
     /// GH #911 B5: are `want` and `got` the two spellings of ONE

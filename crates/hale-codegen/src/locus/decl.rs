@@ -687,7 +687,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 .typed
                 .monomorphs()
                 .named(&l.name.name)
-                .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus && m.template == l.id)
+                .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus && m.template.0 == l.id.0)
             {
                 Some(m) => self.typed.specialized_accumulators(c.id, m),
                 None => self.typed.accumulators(c.id),

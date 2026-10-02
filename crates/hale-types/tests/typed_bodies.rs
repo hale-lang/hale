@@ -143,7 +143,7 @@ fn each_column_holds_the_checker_s_answer_by_identity() {
     let Some(Typed::Known(call)) = table.generic_call(calls[0]) else {
         panic!("`first(42)` is typed: {:?}", table.generic_call(calls[0]))
     };
-    assert_eq!(call.template, first);
+    assert_eq!(call.template.0, first.0);
     assert_eq!(call.type_args, vec![Ty::Prim(hale_syntax::ast::PrimType::Int)]);
     assert_eq!(call.params, vec![Ty::Prim(hale_syntax::ast::PrimType::Int)]);
     let mono = table.monomorphs().of(first, &call.type_args).expect("the specialization");
@@ -203,10 +203,40 @@ fn a_generic_locus_s_accumulators_are_specialized_per_monomorph() {
     );
     for (name, want) in [("Acc_Int", hale_syntax::ast::PrimType::Int), ("Acc_Float", hale_syntax::ast::PrimType::Float)] {
         let mono = table.monomorphs().named(name).expect("written");
-        assert_eq!(mono.template, acc.id);
+        assert_eq!(mono.template.0, acc.id.0);
         let rows = table.specialized_accumulators(total, mono);
         assert_eq!(rows.len(), 1, "{name}");
         assert_eq!(rows[0].elem, Some(Typed::Known(Ty::Prim(want))), "{name}");
+    }
+}
+
+/// A generic fn's body: the call `first(x)` inside `twice<T>` pins
+/// nothing in the template (`x` is a `T`), and each of `twice`'s
+/// monomorphs gets its rows with `T` bound, the inner specialization
+/// named in the monomorph table.
+#[test]
+fn a_generic_fn_s_calls_are_specialized_per_monomorph() {
+    let src = "fn first<T>(x: T) -> T { return x; }\n\
+               fn twice<T>(x: T) -> T { return first(x); }\n\
+               fn main() { let n = twice(3); let s = twice(\"ok\"); println(n, s); }\n";
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::check(true, false)) else {
+        panic!("not refused")
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = s.program().unwrap();
+    let TopDecl::Fn(twice) = decl(p, "twice") else { unreachable!() };
+    let Some(Stmt::Return(Some(hale_syntax::ast::Expr::Call { id: inner, .. }), _)) = twice.body.stmts.first() else {
+        panic!("`return first(x);`")
+    };
+    assert!(matches!(table.generic_call(*inner), Some(Typed::Hole(_))), "{:?}", table.generic_call(*inner));
+    let first = id_of(decl(p, "first"));
+    for want in [Ty::Prim(hale_syntax::ast::PrimType::Int), Ty::Prim(hale_syntax::ast::PrimType::String)] {
+        let Some(Typed::Known(call)) = table.specialized_generic_call(twice.id, std::slice::from_ref(&want), *inner) else {
+            panic!("twice<{want:?}>: {:?}", table.body(twice.id))
+        };
+        assert_eq!((call.template.0, &call.type_args), (first.0, &vec![want.clone()]));
+        assert!(table.monomorphs().of(first, &[want]).is_some());
     }
 }
 
