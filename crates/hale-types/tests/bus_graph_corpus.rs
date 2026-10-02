@@ -85,7 +85,7 @@ fn graph_for_project(project: &Path) -> Option<(String, BusGraph)> {
     // graph off the same resolved scope.
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
-    let graph = build_bus_graph(&bundle, &top);
+    let graph = build_bus_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top));
 
     if graph.subjects.is_empty() {
         return None;
@@ -103,6 +103,7 @@ fn placement_str(p: &Placement) -> String {
         Placement::SameThread => "same-thread".to_string(),
         Placement::CrossPool(pool) => format!("cross-pool({pool})"),
         Placement::Pinned => "pinned".to_string(),
+        Placement::Unknown => "unknown".to_string(),
     }
 }
 
@@ -379,7 +380,7 @@ fn build_synthetic(src: &str) -> BusGraph {
     let bundle = Bundle::new(programs);
     let _ = check_bundle(&bundle);
     let (top, _) = build_top_scope(&bundle);
-    build_bus_graph(&bundle, &top)
+    build_bus_graph(&bundle, &top, &hale_types::placement::bundle_placement(&bundle, &top))
 }
 
 /// Sanity: `is_main` detection used by the gate matches the AST

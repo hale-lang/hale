@@ -204,7 +204,9 @@ rejects arrivals. A consumer bound below the topic bound sheds
 quietly before the publisher ever sees refusal. Pool- and
 pinned-placed subscribers don't take these bounds — their queues
 are already fixed-size rings that push back on producers
-directly.
+directly. That includes a subscriber nested inside a pool- or
+pinned-placed locus, which runs on its owner's thread and receives
+through its owner's ring.
 
 ## Why this doesn't break the tower
 

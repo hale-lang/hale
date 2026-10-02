@@ -651,7 +651,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1)] }],
+        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1), (PLACEMENT, 2)] }],
     },
     Family {
         name: "ownership",
@@ -696,7 +696,7 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Derivation,
         answers: "The message graph: subjects, publishers, subscribers, handlers, and the per-subject devirtualization gates.",
-        inputs: &["topics", "bus blocks", "sends", "bindings", "placement (for gates)"],
+        inputs: &["topics", "bus blocks", "sends", "bindings", "placement (the table: every label, and so the direct-call gate)"],
         producer: Some(site(BUS_GRAPH, "build_bus_graph")),
         legacy: &[
             legacy(TLIB, "bundle_bus_graph", "the check and the model of a bundle no snapshot holds (the test entries: `check_bundle`, `check_bundle_opts_scoped`, `claim_law_diags`, the hale-types tests, the artifact's bundle entry) build the bus graph here, once per entry, beside the ownership graph and the handler rows, and the check's intra-locus relation beside it (`bundle_intra_locus`, the stage over the bundle's programs merged); every verb reads its snapshot's", "those callers hold a snapshot"),
@@ -721,9 +721,10 @@ pub const FAMILIES: &[Family] = &[
             "the intra-locus rewrite is a relation on the graph, never an erased publisher (boundary 7)",
             "lowering reads the relation (`LoweringView::intra_locus`) by the call's id, which the call that replaces a send keeps (`IntraLocusRewrite::send`); it never classifies a call as a rewritten publish from the call's shape",
             "rule 10 calls a cycle synchronous only where the relation holds every send of it (`BusEdge::send`, the snapshot's `intra_locus` stage, the one lowering continues from); a same-declaration cycle with a send the relation does not hold is carried by the queue, and the subjects' spelling never decides which",
+            "a placement label is the placement table's answer for the type, by the name lowering keys on: `SameThread` only when every instance runs on main (a nested instance inherits its owner's domain, an adapter is pinned, an instance the table cannot place is `Unknown` and never main); the graph reads no `placement { }` block itself",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/bus_graph.rs", "crates/hale-types/tests/bus_rules_over_graph.rs", "crates/hale-types/tests/bus_payload_handler.rs", "crates/hale-codegen/tests/bus_devirt_differential.rs"],
+        tests: &["crates/hale-types/tests/bus_graph.rs (the B rows: nested, imported root, qualified field, last-segment collision, two domains, adapter)", "crates/hale-types/tests/bus_rules_over_graph.rs", "crates/hale-types/tests/bus_payload_handler.rs", "crates/hale-codegen/tests/bus_devirt_differential.rs", "crates/hale-codegen/tests/nested_offthread_delivery.rs (the dispatch-plan flavor of a nested subscriber, a nested publisher and an adapter's publication)"],
         spec: &["spec/semantics.md rules 7, 9-12, 19", "spec/verification.md § Bus-graph property checks"],
         owned: &[site(BUS_GRAPH, "dispatch_gates"), site(BUS_GRAPH, "cycle_from"), site(BUS_GRAPH, "external_handlers")],
         seams: &[
@@ -1148,7 +1149,6 @@ pub const FAMILIES: &[Family] = &[
         legacy: &[
             legacy(CHECK, "compute_pool_of_locus_type", "the checker's per-type map, first wins, seeded from the lowering root's tower alone and blind past a qualified, contract-typed or generic field (K-1 to K-7); sync inference builds it again per program before the mint (K-5)", "the table: the checker reads it in P1's checker-switch PR, and sync inference after the mint in C1"),
             legacy(CHECK, "enclosing_field_placement", "owner-relative placement, one of four in-checker derivations (two more inline in the blocking and single-thread checks)", "one placement table per snapshot (phase: placement lane)"),
-            legacy(BUS_GRAPH, "collect_subscriber_placements", "per type, first wins", "same"),
             legacy(OWNERSHIP_GRAPH, "collect_placements", "a verbatim copy of the previous", "same"),
             legacy(MODEL_BUILDER, "PlacedIn", "the model's arrangement, per instance with replicas", "projected from the table"),
             legacy("crates/hale-types/src/resource_budget.rs", "budget_for_programs", "counts placement entries, ignores replicas", "reads the table"),
@@ -1156,7 +1156,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "collect_main_placement", "codegen's DeploymentPlan, keyed by field name and locus type name", "codegen reads the table"),
             legacy(CG_DEPLOY, "DeploymentPlan", "the plan type lowering reads today", "becomes the layer-5 table"),
         ],
-        consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer_at("codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to)", TY_RESOLVED, "route_anchors"), consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
+        consumers: &[consumer("check (rules 2-5, 13-18; F.31)"), consumer("sync_inference"), consumer("dispatch (domains)"), consumer("model (placed_in, affined_to)"), consumer("codegen (pools, mailboxes, affinity)"), consumer_at("codegen (the registration route: the pinned anchors whose tree holds a subscriber, by lowered name, each given a mailbox its descendants' subscriptions route to)", TY_RESOLVED, "route_anchors"), consumer_at("bus_graph (every placement label and the direct-call gate: the set of each type's instances' domains)", BUS_GRAPH, "type_placements"), consumer_at("check (a subscriber's `bounded(N, …)`, legal only where every instance runs on main: B-2, read only when a subscriber is bounded)", CHECK, "check_bounded_bus"),consumer("lsp (hale/placement)"), consumer("deployment (reserved)")],
         invariants: &[
             "placement is keyed by instance, never by type: one row per static instance of each construction template (a key is its origin, its field path, its replica), and a type's answer is the set of its instances' domains",
             "the entry is a construction scope: a root no literal builds is the entry's implicit template (`Origin::Entry`, bound `Once`), and `fn main`'s own literals are templates bound by their statement's loop context; an adapter is an origin of its own, built once",
@@ -1171,11 +1171,12 @@ pub const FAMILIES: &[Family] = &[
             "placement is a choice point: v1's declared placement is the single candidate",
         ],
         missing: Missing::Hole,
-        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table)", "crates/hale-types/tests/shadow_placement.rs (two shadows: compute_pool_of_locus_type against collect_subscriber_placements over the corpus, 21 classified divergences; and the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)", "crates/hale-codegen/tests/nested_offthread_delivery.rs (the receiving thread of a nested subscriber, recorded inside its handler, in both devirtualization arms; the route's IR and its teardown under ASan)"],
+        tests: &["crates/hale-types/tests/placement.rs", "crates/hale-types/tests/placement_pairings.rs", "crates/hale-codegen/tests/pool_affinity.rs", "crates/hale-codegen/tests/placement_where_async_io.rs", "crates/hale-types/tests/placement_table.rs (the table through the frontend's load: the correspondence's coverage cases 1 to 16, the two universes joined into lowering's mint, the table's laws over every clean fixture, and a check that builds no table)", "crates/hale-types/tests/shadow_placement.rs (the table against every legacy producer the snapshot reaches, over the corpus, tests/hale, the DNA seeds and the coverage fixtures, every divergence classified under the correspondence's rows and pinned per producer, rows and declaration)", "crates/hale-codegen/tests/nested_offthread_delivery.rs (the receiving thread of a nested subscriber, recorded inside its handler, in both devirtualization arms; the route's IR and its teardown under ASan)"],
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38", "spec/runtime.md § Placement classes (m28b: subscriptions follow the tower)"],
         owned: &[],
         seams: &[
-            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 1), (SNAPSHOT, 1)] },
+            Seam { symbol: "derive_placement(", allowed: &[(PLACEMENT, 3), (SNAPSHOT, 1)] },
+            Seam { symbol: "bundle_placement(", allowed: &[(PLACEMENT, 1), (TLIB, 2), (CHECK, 1)] },
             Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
             Seam { symbol: "route_anchors(", allowed: &[(TY_RESOLVED, 2)] },
@@ -1425,7 +1426,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-codegen/tests/ownership_reclaim.rs (shadow_return_binding)", "crates/hale-codegen/tests/owner_table.rs", "crates/hale-types/tests/snapshot.rs (each_use_resolves_to_the_declaration_in_scope)", "crates/hale-types/tests/demand_gate.rs (each_snapshot_resolves_its_uses_once)", "crates/hale-syntax/tests/sites.rs"],
         spec: &["spec/decisions.md F.39, F.40"],
         owned: &[site(SITES, "SiteKind"), site(TY_SNAPSHOT, "resolve_uses"), site(TY_SNAPSHOT, "declaration_of"), site(TY_SNAPSHOT, "number")],
-        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1)] }],
+        seams: &[Seam { symbol: "mint(", allowed: &[(TY_RESOLVED, 1), (SNAPSHOT, 1), (TLIB, 2), (STDLIB_BODIES, 1), (ALLOC, 1), (PLACEMENT, 1)] }],
     },
     Family {
         name: "demand",

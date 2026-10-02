@@ -503,16 +503,24 @@ pub struct CheckInputs<'a> {
     /// (the snapshot's `intra_locus` family): rule 10 reads it to tell
     /// a synchronous cycle from one the queue carries.
     pub intra_locus: &'a [hale_syntax::desugar::IntraLocusRewrite],
+    /// The placement table, demanded only when a rule reads it: a
+    /// subscriber's `bounded(N, …)` is legal only where every instance
+    /// of its locus runs on main. (The bus graph above is labelled from
+    /// the same table, so its builder has already demanded it.) `None`
+    /// only if the table is blocked, which it never is once the scope
+    /// the check reads exists.
+    pub placement: &'a dyn Fn() -> Option<&'a crate::placement::PlacementTable>,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
-/// [`crate::form_rows::form_rows`], the bus graph; the effect rows when a
-/// rule asks), over the bundle [`crate::with_identities`] numbers. `top`
-/// is read beside the numbered copy: a scope names declarations, not
-/// sites, so the one built over `bundle` is the copy's.
+/// [`crate::form_rows::form_rows`], the placement table and the bus graph
+/// it labels; the effect rows when a rule asks), over the bundle
+/// [`crate::with_identities`] numbers. `top` is read beside the numbered
+/// copy: a scope names declarations, not sites, so the one built over
+/// `bundle` is the copy's.
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -537,7 +545,9 @@ fn check_numbered_bundle(
     };
     let entry = crate::entry::entry_row(bundle);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
-    let bus = crate::bundle_bus_graph(bundle, top);
+    let table = crate::placement::bundle_placement(bundle, top);
+    let placement = || Some(&table);
+    let bus = crate::bundle_bus_graph(bundle, top, &table);
     let intra_locus = crate::bundle_intra_locus(bundle);
     let inputs = CheckInputs {
         top,
@@ -548,6 +558,7 @@ fn check_numbered_bundle(
         forms: &forms,
         bus: &bus,
         intra_locus: &intra_locus,
+        placement: &placement,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -696,7 +707,7 @@ pub fn check_bundle_reporting(
     check_phase3_fallback_subscribers(bundle, &top.topics, &mut diags);
     // GH #255 phase 2: bounded-topic pairing + subscriber-bound
     // placement rules.
-    check_bounded_bus(bundle, &mut diags);
+    check_bounded_bus(bundle, inputs.placement, &mut diags);
     // F.31 Phase 5: single-threaded-method invariant. Walks
     // method bodies looking for cross-pool `self.X.foo()` calls
     // where X's locus type is placed on a different pool than
@@ -5511,11 +5522,19 @@ fn transport_satisfies(
 ///   MAIN-queue subscriber: pool queues and pinned mailboxes are
 ///   already bounded MPSC rings with producer-blocking
 ///   backpressure (GH #125), so shed bounds there would
-///   misdescribe the actual contract.
-fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+///   misdescribe the actual contract. Which subscribers those are is
+///   the placement table's answer per instance (F.40 phase 3, P1,
+///   row B-2): a locus nested under a field placed off main runs off
+///   main as surely as the field does, and so does an adapter. A
+///   locus some instance of which runs where the table cannot say is
+///   not refused: the rule compares known domains only.
+fn check_bounded_bus<'a>(
+    bundle: &Bundle<'_>,
+    placement: &dyn Fn() -> Option<&'a crate::placement::PlacementTable>,
+    diags: &mut Vec<Diag>,
+) {
     // GH #825: a `topic` and a subscriber inside a `module { … }` are
-    // ordinary bundle members — `collect_subscriber_placements`
-    // already reads them, so only these two walks were short.
+    // ordinary bundle members, so both walks descend into modules.
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
@@ -5539,7 +5558,8 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             }
         });
     }
-    let placements = crate::bus_graph::collect_subscriber_placements(bundle);
+    // The table is read only when a subscriber is bounded.
+    let mut placements: Option<BTreeMap<String, crate::bus_graph::Placement>> = None;
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(l) = item else { return };
@@ -5552,11 +5572,17 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     else {
                         continue;
                     };
+                    let placements = placements.get_or_insert_with(|| {
+                        placement().map(crate::bus_graph::type_placements).unwrap_or_default()
+                    });
                     let placed = placements
                         .get(&l.name.name)
                         .cloned()
                         .unwrap_or(crate::bus_graph::Placement::SameThread);
-                    if placed != crate::bus_graph::Placement::SameThread {
+                    if matches!(
+                        placed,
+                        crate::bus_graph::Placement::CrossPool(_) | crate::bus_graph::Placement::Pinned
+                    ) {
                         diags.push(Diag::ty(
                             b.span,
                             format!(

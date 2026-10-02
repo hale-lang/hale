@@ -1022,6 +1022,9 @@ impl Snapshot {
                 // The effect rows on request: a codec binding's purity
                 // assertion demands them, nothing else in the check does.
                 let effects = || self.demand_effects().ok();
+                // The placement table on request: a bounded subscriber's
+                // rule reads it (the bus graph below is labelled from it).
+                let placement = || self.demand_placement().ok();
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
@@ -1031,6 +1034,7 @@ impl Snapshot {
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     bus: self.demand_bus_graph().map_err(Clone::clone)?,
                     intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
+                    placement: &placement,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1057,13 +1061,15 @@ impl Snapshot {
     }
 
     /// The bus graph over the checked programs, with the scope's topic
-    /// rows: the model's subjects, endpoints and dispatch gates.
+    /// rows: the model's subjects, endpoints and dispatch gates. Its
+    /// placement labels read the snapshot's placement table.
     pub fn demand_bus_graph(&self) -> Result<&BusGraph, &Blocked> {
         self.bus_graph
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top))
+                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, placement))
             })
             .as_ref()
     }
@@ -1152,8 +1158,9 @@ impl Snapshot {
     /// from the entry row's lowering root, after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
     /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. No consumer reads it
-    /// yet (F.40 phase 3, P1).
+    /// total over a program that does not typecheck. The bus graph reads
+    /// it, and the check's bounded-subscriber rule when a subscriber is
+    /// bounded (F.40 phase 3, P1).
     pub fn demand_placement(&self) -> Result<&PlacementTable, &Blocked> {
         self.placement
             .get_or_init(|| {

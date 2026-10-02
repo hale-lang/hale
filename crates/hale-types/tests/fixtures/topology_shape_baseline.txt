@@ -965,7 +965,7 @@ crates/hale-codegen/tests/nested_long_lived_child.rs#1 a79d0bb96c962178
 crates/hale-codegen/tests/nested_long_lived_child.rs#2 e700cea2b0470259
 crates/hale-codegen/tests/nested_long_running_child.rs#2 1e551372d2bca719
 crates/hale-codegen/tests/nested_long_running_child.rs#3 97f5fab961ae8fb0
-crates/hale-codegen/tests/nested_offthread_delivery.rs#10 50280f6fdd8b81f3
+crates/hale-codegen/tests/nested_offthread_delivery.rs#8 50280f6fdd8b81f3
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#0 03313d72623aa0d5
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#1 9829a98896fec443
 crates/hale-codegen/tests/no_chunk_pool_knob.rs#0 4707eb603fd26fa8
@@ -1413,6 +1413,10 @@ crates/hale-types/tests/bus_graph.rs#18 46b94d56a5a94fcf
 crates/hale-types/tests/bus_graph.rs#19 96cddb6a7bae345f
 crates/hale-types/tests/bus_graph.rs#2 a5b806976b754c77
 crates/hale-types/tests/bus_graph.rs#20 c5f2312e3d13f331
+crates/hale-types/tests/bus_graph.rs#22 f6996036277e3dc6
+crates/hale-types/tests/bus_graph.rs#23 281d80ed07f0b426
+crates/hale-types/tests/bus_graph.rs#24 b3eb1f6426125e12
+crates/hale-types/tests/bus_graph.rs#25 cda5aadb3cb74996
 crates/hale-types/tests/bus_graph.rs#3 69161ab43c42fd49
 crates/hale-types/tests/bus_graph.rs#4 759965f77f282f63
 crates/hale-types/tests/bus_graph.rs#5 b67c7512d736b6ec

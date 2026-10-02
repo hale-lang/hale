@@ -229,12 +229,13 @@ fn two_universes_one_numeric_id_stay_two_identities() {
 
 // ---------------------------------------------------- the producer
 
-/// The table is a family of the snapshot: demanded, it runs once, and
-/// a check demands it not at all (no consumer reads it yet).
+/// The table is a family of the snapshot: demanded, it runs once. The
+/// check demands it through the bus graph it reads, whose labels the
+/// table answers, and a later demand is that same table.
 #[test]
 fn the_table_is_demanded_once_per_snapshot() {
     let s = clean("two_instances.hl");
-    assert_eq!(s.builds()["placement"], 0, "the check reads no placement table");
+    assert_eq!(s.builds()["placement"], 1, "the check's bus graph reads the table");
     let first: *const PlacementTable = table(&s);
     let again: *const PlacementTable = table(&s);
     assert_eq!(first, again);

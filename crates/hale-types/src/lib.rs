@@ -339,7 +339,9 @@ fn check_numbered_bundle(
     };
     let entry = entry::entry_row(bundle);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
-    let bus = bundle_bus_graph(bundle, &top);
+    let table = placement::bundle_placement(bundle, &top);
+    let placement = || Some(&table);
+    let bus = bundle_bus_graph(bundle, &top, &table);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -351,6 +353,7 @@ fn check_numbered_bundle(
             forms: &forms,
             bus: &bus,
             intra_locus: &bundle_intra_locus(bundle),
+            placement: &placement,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -405,16 +408,22 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationM
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
     let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
-    let bus = bundle_bus_graph(bundle, &top);
+    let table = placement::bundle_placement(bundle, &top);
+    let bus = bundle_bus_graph(bundle, &top, &table);
     model_over_scope(bundle, &top, &handlers, summary, &forms, &bus)
 }
 
-/// The bus graph of a bundle no snapshot holds, over its scope: what
-/// the test entries' check and model read ([`check_bundle_opts_scoped`],
+/// The bus graph of a bundle no snapshot holds, over its scope and its
+/// placement table ([`placement::bundle_placement`]): what the test
+/// entries' check and model read ([`check_bundle_opts_scoped`],
 /// [`check::check_bundle`], [`derive_application_model`]). Every verb
 /// reads its snapshot's (`Snapshot::demand_bus_graph`).
-pub(crate) fn bundle_bus_graph(bundle: &Bundle<'_>, top: &resolve::TopScope) -> bus_graph::BusGraph {
-    bus_graph::build_bus_graph(bundle, top)
+pub(crate) fn bundle_bus_graph(
+    bundle: &Bundle<'_>,
+    top: &resolve::TopScope,
+    table: &placement::PlacementTable,
+) -> bus_graph::BusGraph {
+    bus_graph::build_bus_graph(bundle, top, table)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds

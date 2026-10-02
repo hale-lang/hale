@@ -557,25 +557,62 @@ fn wire_rows(walk: &BusWalk, topics: &TopicRows) -> (BTreeMap<String, WireRow>, 
 
 // === Public graph =================================================
 
-/// Where a subscriber's handler runs relative to the publisher's
-/// thread — mirrors the placement classification computed in
-/// `hale-syntax::desugar` (`collect_off_owner_thread_fields`).
+/// Where a locus type's handlers run relative to the main thread, read
+/// from the placement table: the label of the set of domains its
+/// instances run in ([`crate::placement::PlacementTable::domains_by_type`]).
 ///
-/// `CrossPool`/`Pinned` mean the handler runs on a *different* OS
-/// thread, so any later devirtualization must still route through
-/// the mailbox/queue rather than a same-thread direct call;
-/// `SameThread` is the placement where an intra-thread direct call
+/// `CrossPool`/`Pinned`/`Unknown` mean some instance's handler may run
+/// on a *different* OS thread, so any later devirtualization must still
+/// route through the mailbox/queue rather than a same-thread direct
+/// call; `SameThread` is the placement where an intra-thread direct call
 /// is the lowering #1b would pick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Placement {
-    /// Cooperative on the owner's (main) thread — `cooperative`,
-    /// `cooperative(pool = main)`, or no placement entry at all.
+    /// Every instance runs on main: a root field with no entry or
+    /// `cooperative(pool = main)`, anything nested under one, a literal
+    /// main runs; or no instance is built at all.
     SameThread,
-    /// A named cooperative pool other than `main` — its own OS
-    /// thread shared with co-placed loci.
+    /// An instance runs on a named cooperative pool other than `main`
+    /// (and none on a pinned thread): placed there, or nested under a
+    /// field placed there.
     CrossPool(String),
-    /// `pinned` — the locus owns a dedicated OS thread.
+    /// An instance runs on a pinned thread: a field placed `pinned`,
+    /// anything nested under one, or an adapter in `bindings { }`.
     Pinned,
+    /// An instance runs where the table cannot say (a dynamic site of
+    /// unknown domain), and none on a known thread off main. Never main.
+    Unknown,
+}
+
+impl Placement {
+    /// The label of a type whose instances run in `domains`: `Pinned` if
+    /// any runs pinned, else `CrossPool` of the first pool one runs on,
+    /// else `Unknown` if any runs where the table cannot say, else
+    /// `SameThread`.
+    pub fn of(domains: &crate::placement::TypeDomains, table: &crate::placement::PlacementTable) -> Placement {
+        use crate::placement::DomainKind;
+        let kinds: Vec<&DomainKind> = domains.known.iter().map(|d| &table.domain(*d).kind).collect();
+        if kinds.iter().any(|k| matches!(k, DomainKind::Pinned { .. })) {
+            return Placement::Pinned;
+        }
+        if let Some(name) = kinds.iter().find_map(|k| match k {
+            DomainKind::Pool { name, .. } => Some(name.clone()),
+            _ => None,
+        }) {
+            return Placement::CrossPool(name);
+        }
+        if domains.unknown {
+            return Placement::Unknown;
+        }
+        Placement::SameThread
+    }
+}
+
+/// Every type's [`Placement`], by the name lowering keys on: the bus
+/// graph's labels and `check_bounded_bus`'s. A type the table has no
+/// instance of runs nowhere and is absent (`SameThread` to a reader).
+pub fn type_placements(table: &crate::placement::PlacementTable) -> BTreeMap<String, Placement> {
+    table.domains_by_type().iter().map(|(name, d)| (name.clone(), Placement::of(d, table))).collect()
 }
 
 /// A resolved publish site on a subject.
@@ -654,9 +691,10 @@ pub struct SubjectInfo {
     /// loss of observable meaning. Strictly STRONGER than `eligible`:
     /// it additionally requires that
     ///   (a) the subject has ≥1 subscriber, every one of which is
-    ///       `Placement::SameThread` (a CrossPool / Pinned subscriber
-    ///       runs on another OS thread and CANNOT be direct-called —
-    ///       it must enqueue), and
+    ///       `Placement::SameThread`, and so is every publisher (a
+    ///       CrossPool / Pinned / Unknown one runs, or may run, on
+    ///       another OS thread and CANNOT be direct-called — it must
+    ///       enqueue), and
     ///   (b) every subscriber handler is provably **QUIET** by the
     ///       syntactic effect-walk in [`handler_is_quiet`] — it
     ///       mutates ONLY its own `self` fields with pure expressions
@@ -805,7 +843,15 @@ impl BusGraph {
 /// Reads the one walk, [`collect_bus_walk`]: joins per-site detail
 /// (locus, handler, payload, placement), applies the eligibility gate,
 /// and builds the canonical subjects the checker's bus rules read.
-pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
+/// `placement` is the snapshot's table (`Snapshot::demand_placement`;
+/// a bundle no snapshot holds reads
+/// [`crate::placement::bundle_placement`]): every placement label, and
+/// so the direct-call gate, reads it, by the name lowering keys on.
+pub fn build_bus_graph(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    placement: &crate::placement::PlacementTable,
+) -> BusGraph {
     let walk = collect_bus_walk(bundle, &top.topics);
     let (wires, holes) = wire_rows(&walk, &top.topics);
 
@@ -830,7 +876,7 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
         })
     });
 
-    let placements = collect_subscriber_placements(bundle);
+    let placements = type_placements(placement);
 
     // Gather every subject that appears on either end.
     let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -999,70 +1045,6 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
     "?".to_string()
 }
 
-/// Map each locus *type* name to the [`Placement`] it receives
-/// where instantiated as a placed field. Mirrors
-/// `desugar::collect_off_owner_thread_fields`: a `placement { }`
-/// entry keys on the owner's `params` field name, and that field's
-/// declared type names the placed child locus.
-///
-/// First-placement-wins when a type is placed in multiple fields
-/// (the multi-instance case); placement is informational for the
-/// gate, so a conservative single label suffices.
-/// `pub` for the F.40 placement shadow (`tests/shadow_placement.rs`),
-/// which runs this beside `check::compute_pool_of_locus_type` over the
-/// corpus; not an API. Both are legacy producers of the `placement`
-/// family in the registry.
-pub fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
-    let mut out: BTreeMap<String, Placement> = BTreeMap::new();
-
-    fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Placement>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) => {
-                    // field name → declared locus-type name.
-                    let mut field_ty: BTreeMap<String, String> = BTreeMap::new();
-                    for member in &l.members {
-                        if let LocusMember::Params(pb) = member {
-                            for p in &pb.params {
-                                if let Some(ty) = &p.ty {
-                                    if let Some(name) = single_named_type(ty) {
-                                        field_ty.insert(p.name.name.clone(), name);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    for member in &l.members {
-                        if let LocusMember::Placement(pb) = member {
-                            for e in &pb.entries {
-                                let Some(child_ty) = field_ty.get(&e.field.name) else {
-                                    continue;
-                                };
-                                let placement = match &e.spec {
-                                    PlacementSpec::Cooperative { pool, .. } => match pool {
-                                        Some(p) if p.name != "main" => {
-                                            Placement::CrossPool(p.name.clone())
-                                        }
-                                        _ => Placement::SameThread,
-                                    },
-                                    PlacementSpec::Pinned { .. } => Placement::Pinned,
-                                };
-                                out.entry(child_ty.clone()).or_insert(placement);
-                            }
-                        }
-                    }
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, &mut out);
-    }
-    out
-}
-
 /// Whole-program off-thread-placement probe for static-devirt #3
 /// (static-pinned). Returns `true` iff ANY `placement { }` entry in
 /// the bundle places a locus off its owner's thread — a `pinned`
@@ -1078,10 +1060,9 @@ pub fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Pl
 /// is invisible to this probe). Only when the FULL predicate is false
 /// may codegen emit the no-acquire-load static enqueue
 /// (`lotus_bus_queue_enqueue_st`) — this probe alone is NOT
-/// sufficient. Unlike the per-subject placement labels on
-/// `SubscriberSite` (subscribers only, first-placement-wins), this
-/// scans every placement entry so a pinned *publisher* (or any
-/// non-subscriber off-thread locus) is still caught.
+/// sufficient. It scans every placement entry, so a pinned
+/// *publisher* (or any non-subscriber off-thread locus) is still
+/// caught.
 pub fn has_offthread_placement(bundle: &Bundle<'_>) -> bool {
     fn walk(items: &[TopDecl]) -> bool {
         for item in items {

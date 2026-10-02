@@ -2630,3 +2630,55 @@ fn main() { App { }; }
         msgs
     );
 }
+
+/// B-2 (F.40 phase 3, P1 3 of 6): a subscriber's `bounded(N, …)` is
+/// legal only on a main-queue registration (spec/decisions.md F.37, its
+/// scope facts), and a locus nested under a root field placed off main
+/// registers on that field's thread. The rule read the legacy label,
+/// which called the nested locus same-thread and accepted the bound; it
+/// reads the placement table now, and refuses it with the message a
+/// placed field always got.
+fn bounded_nested_under(placement: &str) -> String {
+    format!(
+        r#"
+type P {{ n: Int; }}
+topic T {{ payload: P; }}
+
+locus Kid {{
+    params {{ got: Int = 0; }}
+    bus {{ subscribe T as on_t bounded(4, drop_old); }}
+    fn on_t(p: P) {{ self.got = self.got + 1; }}
+}}
+
+locus Owner {{
+    params {{ k: Kid = Kid {{ }}; }}
+}}
+
+main locus App {{
+    params {{ o: Owner = Owner {{ }}; }}
+    placement {{ o: {placement}; }}
+    bus {{ publish T; }}
+    run() {{ T <- P {{ n: 1 }}; }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn a_bounded_subscriber_nested_off_main_is_refused() {
+    const REFUSED: &str = "subscriber `bounded(N, ...)` is only supported on main-queue subscribers at v1, and \
+                           `Kid` is placed off-main — its pool/mailbox ring is already bounded with \
+                           producer-blocking backpressure (GH #125)";
+    for placement in ["pinned", "cooperative(pool = io)"] {
+        let msgs = check(&bounded_nested_under(placement));
+        assert_eq!(
+            msgs.iter().filter(|m| m.as_str() == REFUSED).count(),
+            1,
+            "under `{placement}`: {msgs:?}"
+        );
+    }
+    let msgs = check(&bounded_nested_under("cooperative(pool = main)"));
+    assert!(!msgs.iter().any(|m| m.contains("bounded(N, ...)")), "on main the bound is legal: {msgs:?}");
+}

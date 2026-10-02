@@ -452,7 +452,10 @@ pub fn resolve_rewritten(
         let (top, _diags) = crate::resolve::build_top_scope(&bundle);
         let graph = crate::ownership_graph::build_ownership_graph(&bundle, &top);
         let bubble = graph.bubble_plans();
-        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top);
+        // Every placement label reads the snapshot's table, by the name
+        // lowering keys on: the merged program declares each locus under
+        // the name the table's `lowered` column holds.
+        let mut bus = crate::bus_graph::build_bus_graph(&bundle, &top, placement);
         // Boundary 7: the sends the intra-locus rewrite replaced are
         // gone from `merged`, but not from the graph. Each is recorded
         // on its subject, which the rewrite named by topic and the
