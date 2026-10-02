@@ -4966,7 +4966,7 @@ fn receiver_field_locus_type(
 /// pool. (F.31: a field instance's pool is owner-relative, not a
 /// type-global property — the same locus type used as a field in two
 /// loci on two pools yields two instances, one per owner.)
-fn enclosing_field_placement(
+pub(crate) fn enclosing_field_placement(
     enclosing_locus: &LocusDecl,
     field_name: &str,
 ) -> Option<PoolId> {

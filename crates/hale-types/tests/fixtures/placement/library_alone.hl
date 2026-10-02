@@ -1,0 +1,20 @@
+// Case 14: a library seed checked alone. Its only `main locus` is the
+// root lowering deploys, and no literal builds it: with no `fn main`,
+// the root is its own entry, constructed once.
+locus K { }
+
+locus Worker {
+    params {
+        k: K = K { };
+    }
+}
+
+main locus Lib {
+    params {
+        w: Worker = Worker { };
+        idle: K = K { };
+    }
+    placement {
+        w: pinned;
+    }
+}

@@ -30,8 +30,9 @@
 //!
 //! ## Templates, occurrences, incarnations
 //!
-//! An [`InstanceKey`] names a template: a construction literal of the
-//! root (or an adapter's binding entry), the fields from its top, a
+//! An [`InstanceKey`] names a template: a construction literal (the
+//! root's, or one `fn main` builds), the entry's implicit construction of
+//! the root, or an adapter's binding entry; the fields from its top; a
 //! replica. An occurrence is one execution of the template's literal; the
 //! table counts them ([`Construction::bound`], [`DynamicSite::bound`]) and
 //! never keys them. An incarnation is the runtime's, and the table never
@@ -50,9 +51,40 @@
 //! literal outside the tower as a dynamic site, with the domains its
 //! enclosing scope runs in and how many occurrences can be live.
 //!
+//! **The entry is a construction scope.** A root no literal builds (a
+//! `main locus` that only carries claims, a library seed checked alone, a
+//! `fn main` that builds other loci by verb) is the entry's implicit
+//! template, [`Origin::Entry`], bound `Once`, its tower enumerated from the
+//! declaration's defaults exactly as under a literal. The literals directly
+//! in `fn main`'s body are templates too ([`PlacementTable::entry_literals`]),
+//! not dynamic sites: `fn main` runs once, on main, so each is bound by its
+//! statement's loop context alone.
+//!
 //! The pre-mint pool map sync inference reads
 //! ([`crate::check::compute_pool_of_locus_type`], run per program before the
 //! sequence and the mint) is untouched and never converted into rows.
+//!
+//! ## Where the schema departs from the design's § 1
+//!
+//! The tree forced these, and they are accepted:
+//!
+//! - [`Decision::Entry`] carries `{ decl, entry }`, not `{ block, entry }`:
+//!   a `placement { }` block is not a minted site, so the declaration that
+//!   holds it stands in.
+//! - [`InstanceRow::realizes`] is an `Option`: invariant 6 needs a hole
+//!   there, and `None` is that hole.
+//! - An adapter's [`InstanceRow::literal`] is its binding entry's site, since
+//!   the adapter literal has no site of its own; the entry's implicit
+//!   template's top likewise carries the entry's site.
+//! - [`Origin::Entry`] and [`PlacementTable::entry_literals`] (the entry as a
+//!   construction scope), and [`HoleKind::Reuse`] (a field that holds an
+//!   instance built elsewhere claims none) are the driver's rulings on what
+//!   the shadow found, not in the design's text.
+//!
+//! The design's case 6 (a generic locus as a params field) never reaches
+//! the producer's consumers: the checker refuses the shape, so G-2 is a
+//! checker gap, not a correction. The table still keys the two
+//! specializations apart over the refused program.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -129,14 +161,23 @@ pub struct InstanceKey {
 /// The scope that constructs a static tower.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Origin {
-    /// A root literal (`App { … }`): one template per literal site, the
-    /// root at `[]`.
+    /// A literal: one of the root's (`App { … }`), one template per
+    /// literal site with the root at `[]`, or one the entry `fn main`
+    /// builds directly ([`PlacementTable::entry_literals`]), its locus at
+    /// `[]`.
     Construction(SiteRef),
     /// An adapter literal in the root's `bindings { }`, by its binding
     /// entry's site (the adapter literal has no site of its own): built
     /// once, in the bindings prelude, however often the root is
     /// constructed.
     Binding(SiteRef),
+    /// The entry itself, constructing a root no literal builds: the
+    /// root's implicit template, by the entry's site (the top-level user
+    /// `fn main`'s when there is one, else the root declaration's). Its
+    /// tower is enumerated exactly as under a literal, from the
+    /// declaration's defaults, and its bound is `Once`: the entry runs
+    /// once per process.
+    Entry(SiteRef),
 }
 
 /// One field of a key's path.
@@ -267,7 +308,7 @@ pub enum Decision {
     Binding { entry: SiteRef },
     /// Nested: the owner's domain.
     Inherited { from: InstanceKey },
-    /// A root field with no entry, and the root itself: pool main.
+    /// A root field with no entry, and a template's top: pool main.
     Default,
 }
 
@@ -306,7 +347,9 @@ pub struct RootRow {
     pub realizes: DeclRef,
     /// False when lowering deploys a module-nested `main`.
     pub is_entry: bool,
-    /// Every literal of the root declaration, each a template.
+    /// Every literal of the root declaration, each a template. Empty when
+    /// no literal builds the root: its one template is then the entry's
+    /// ([`Origin::Entry`]).
     pub constructions: Vec<Construction>,
 }
 
@@ -322,7 +365,9 @@ pub enum Enclosing {
 /// A locus literal outside the static tower: in a method or fn body,
 /// let-bound, an `accept`ed child, or a root literal's own nested
 /// literal. Its domains are the domains its enclosing scope runs in;
-/// empty is unknown, never defaulted to main.
+/// empty is unknown, never defaulted to main. Its declaration's params
+/// subtree is not enumerated: a locus built only here has no rows, and
+/// what its fields run on is the site's domains, under the same policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynamicSite {
     pub literal: SiteRef,
@@ -349,8 +394,12 @@ pub enum HoleKind {
     /// written type or literal path.
     UnresolvedDeclaration { written: String },
     /// The field's initializer is not a literal, nor a choice among
-    /// literals (a call, a name): its literal is unknown.
+    /// literals, nor a name (a call): its literal is unknown.
     UnenumerableInitializer,
+    /// The field is initialized from an existing instance (`self.roles`,
+    /// a local name), the source expression as written: the row is the
+    /// field's hold on an instance built elsewhere, not a new one.
+    Reuse { source: String },
     /// A generic declaration realized with no substitution the producer
     /// could read.
     UnresolvedArguments,
@@ -379,6 +428,11 @@ impl HoleKind {
                 "the row keeps its domain; its literal is unknown, so nothing below it is enumerated, and a \
                  count over the subtree is an uncertainty"
             }
+            HoleKind::Reuse { .. } => {
+                "no new instance: the row claims none and anchors no domain of its own (it keeps its owner's, \
+                 an entry naming the field decides nothing), nothing below it is enumerated, and a count over \
+                 the table skips it"
+            }
             HoleKind::EntryDecidesNothing { .. } => {
                 "the entry is kept as a hole, never dropped: it names no field family a template builds"
             }
@@ -400,6 +454,12 @@ pub struct PlacementTable {
     /// Indexed by [`DomainId`]. `domains[0]` is always main.
     pub domains: Vec<Domain>,
     pub instances: BTreeMap<InstanceKey, InstanceRow>,
+    /// The templates the entry builds besides the root: every literal
+    /// directly in the top-level user `fn main`'s body that names a locus
+    /// other than the root and is no field of another literal there. Each
+    /// is `Origin::Construction` of the keys under it, its locus at `[]`
+    /// on main, and its bound is its statement's loop context.
+    pub entry_literals: Vec<Construction>,
     /// Loci instantiated outside the static tower.
     pub dynamic: Vec<DynamicSite>,
     /// What the producer could not decide, each with its policy.
@@ -447,6 +507,7 @@ fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> Pla
     if let Some(root) = entry.lowering_root.as_ref() {
         b.root(bundle, entry, root, &scopes);
     }
+    b.entry_literals(&scopes);
     b.dynamic_sites(&scopes);
     b.table
 }
@@ -710,6 +771,17 @@ fn alternatives(e: &Expr) -> Option<Vec<&Expr>> {
     Some(out)
 }
 
+/// The existing instance an initializer names, as written: a name or a
+/// field chain on one (`self.roles`, `r`). `None` for anything else.
+fn reused_source(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Ident(i) => Some(i.name.clone()),
+        Expr::KwSelf(_) => Some("self".to_string()),
+        Expr::Field { receiver, name, .. } => Some(format!("{}.{}", reused_source(receiver)?, name.name)),
+        _ => None,
+    }
+}
+
 /// A resolved CPU set for an affinity, against the root's topology.
 fn core_set(affinity: &PinAffinity, topology: Option<&TopologyBlock>) -> Option<CoreSet> {
     let cores = match affinity {
@@ -837,29 +909,29 @@ impl<'d, 'a> Builder<'d, 'a> {
                 .map(|(literal, _, bound)| Construction { literal: *literal, bound: bound.clone() })
                 .collect(),
         });
-        for (literal, inits, _) in &constructions {
-            self.static_literals.insert(*literal);
-            let key = InstanceKey { origin: Origin::Construction(*literal), path: Vec::new(), replica: None };
-            self.table.instances.insert(
-                key.clone(),
-                InstanceRow {
-                    realizes: Some(realizes.clone()),
-                    literal: Some(*literal),
-                    owner: None,
-                    domain: PlacementTable::MAIN,
-                    decided_by: Decision::Default,
-                    owner_relative: OwnerRelative::SameAsOwner,
-                    guarded: false,
-                },
-            );
-            let owner = Owner { key: &key, domain: PlacementTable::MAIN, guarded: false };
-            let mut stack = vec![site];
-            self.fields(decl, inits, &BTreeMap::new(), &owner, Some(&entries), &mut stack);
+        // A root no literal builds is the entry's implicit template, from
+        // the declaration's defaults; its top's literal is the entry's
+        // site, as an adapter's is its binding entry's.
+        let templates: Vec<(Origin, SiteRef, &'a [StructInit])> = if constructions.is_empty() {
+            let entry_site = scopes.entry_fn().unwrap_or(site);
+            vec![(Origin::Entry(entry_site), entry_site, &[])]
+        } else {
+            constructions.iter().map(|(literal, inits, _)| (Origin::Construction(*literal), *literal, *inits)).collect()
+        };
+        for (origin, literal, inits) in templates {
+            if matches!(origin, Origin::Construction(_)) {
+                self.static_literals.insert(literal);
+            }
+            let key = InstanceKey { origin, path: Vec::new(), replica: None };
+            self.top(&key, decl, realizes.clone(), literal, inits, Some(&entries));
             // Invariant 5: every entry decides a field family in this
             // template, or it is a hole.
             for (field, (_, entry_site)) in &entries.entries {
-                let decided = self.table.instances.keys().any(|k| {
-                    k.origin == Origin::Construction(*literal) && k.path.len() == 1 && k.path[0].field == *field
+                let decided = self.table.instances.iter().any(|(k, r)| {
+                    k.origin == origin
+                        && k.path.len() == 1
+                        && k.path[0].field == *field
+                        && matches!(r.decided_by, Decision::Entry { .. })
                 });
                 if !decided && !self.table.holes.iter().any(|h| h.at == HoleAt::Entry(*entry_site)) {
                     self.hole(HoleAt::Entry(*entry_site), HoleKind::EntryDecidesNothing { field: field.to_string() });
@@ -906,6 +978,59 @@ impl<'d, 'a> Builder<'d, 'a> {
         }
     }
 
+    /// A template's top row on main, and its tower below it. `root` is set
+    /// for the root's templates, whose fields a `placement { }` entry
+    /// decides.
+    fn top(
+        &mut self,
+        key: &InstanceKey,
+        decl: &'d DeclEntry<'a>,
+        realizes: DeclRef,
+        literal: SiteRef,
+        inits: &'a [StructInit],
+        root: Option<&RootEntries<'a>>,
+    ) {
+        self.table.instances.insert(
+            key.clone(),
+            InstanceRow {
+                realizes: Some(realizes),
+                literal: Some(literal),
+                owner: None,
+                domain: PlacementTable::MAIN,
+                decided_by: Decision::Default,
+                owner_relative: OwnerRelative::SameAsOwner,
+                guarded: false,
+            },
+        );
+        let owner = Owner { key, domain: PlacementTable::MAIN, guarded: false };
+        let mut stack = vec![decl.site];
+        self.fields(decl, inits, &BTreeMap::new(), &owner, root, &mut stack);
+    }
+
+    /// The templates the entry builds besides the root: each locus
+    /// literal directly in the top-level user `fn main`'s body that no
+    /// template has visited already (the root's literals, a field of an
+    /// earlier literal there), bound by its statement's loop context.
+    fn entry_literals(&mut self, scopes: &Scopes<'a>) {
+        let Some(main) = scopes.scopes.iter().find(|s| matches!(s.kind, ScopeKind::Fn { is_main: true, .. })) else {
+            return;
+        };
+        for lit in &main.literals {
+            if self.static_literals.contains(&lit.site) {
+                continue;
+            }
+            let Some(d) = lit.decl.and_then(|d| scopes.decl_entry(self.decls, d)) else { continue };
+            self.static_literals.insert(lit.site);
+            let key = InstanceKey { origin: Origin::Construction(lit.site), path: Vec::new(), replica: None };
+            let (realizes, args_known) = self.decl_ref(d, None);
+            if !args_known {
+                self.hole(HoleAt::Instance(key.clone()), HoleKind::UnresolvedArguments);
+            }
+            self.top(&key, d, realizes, lit.site, lit.inits, None);
+            self.table.entry_literals.push(Construction { literal: lit.site, bound: scopes.bound(main, lit.in_loop) });
+        }
+    }
+
     /// The params fields of `decl` as a literal with `inits` builds it,
     /// each a row under `owner`, and their fields below them. `root` is
     /// set when `decl` is the root and `owner` a construction's top: its
@@ -942,6 +1067,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                 };
                 let declared_is_slot = matches!(declared_named, Named::Locus(_) | Named::Contract);
                 let alts = init.and_then(alternatives);
+                let reused = if alts.is_none() { init.and_then(reused_source) } else { None };
                 // Each alternative: (its literal's site, the declaration
                 // it names, its inits, the path as written).
                 let mut built: Vec<(Option<SiteRef>, Option<&'d DeclEntry<'a>>, &'a [StructInit], String)> = Vec::new();
@@ -986,6 +1112,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                     // The field's family: one row, or one per replica.
                     let mut family: Vec<(Option<u32>, DomainId, Decision)> = Vec::new();
                     match entry {
+                        // A held instance anchors nothing: it keeps its
+                        // owner's domain whatever an entry says.
+                        _ if reused.is_some() => {
+                            family.push((owner.key.replica, owner.domain, Decision::Inherited { from: owner.key.clone() }))
+                        }
                         Some((r, e, entry_site)) => {
                             let decision = Decision::Entry { decl: r.decl, entry: entry_site };
                             match &e.spec {
@@ -1039,7 +1170,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                             None => (None, true),
                         };
                         if literal.is_none() {
-                            self.hole(HoleAt::Instance(key.clone()), HoleKind::UnenumerableInitializer);
+                            let kind = match &reused {
+                                Some(source) => HoleKind::Reuse { source: source.clone() },
+                                None => HoleKind::UnenumerableInitializer,
+                            };
+                            self.hole(HoleAt::Instance(key.clone()), kind);
                         }
                         // A literal naming nothing resolvable, or no literal at
                         // all: the declared type is what is left to read.
@@ -1366,6 +1501,14 @@ impl<'a> Scopes<'a> {
         }
     }
 
+    /// The top-level user `fn main`'s site, when there is one.
+    fn entry_fn(&self) -> Option<SiteRef> {
+        self.scopes.iter().find_map(|s| match s.kind {
+            ScopeKind::Fn { is_main: true, site, .. } => Some(site),
+            _ => None,
+        })
+    }
+
     fn fn_named(&self, universe: SiteUniverse, name: &str) -> Option<usize> {
         self.fns.get(&(universe, name.to_string())).copied()
     }
@@ -1666,6 +1809,30 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 
     fn decls_has_fn(&self, name: &str) -> bool {
         self.decls.fns.contains(&(self.universe, name.to_string()))
+    }
+}
+
+/// Legacy producers of the family that nothing outside their modules
+/// calls, reachable for the placement shadow (`tests/shadow_placement.rs`)
+/// alone: test support, not an API.
+#[doc(hidden)]
+pub mod legacy {
+    use std::collections::BTreeMap;
+
+    use hale_syntax::ast::LocusDecl;
+
+    use crate::bus_graph::Placement;
+    use crate::check::PoolId;
+    use crate::symbol::Bundle;
+
+    /// F.31's owner-relative answer at `self.f`.
+    pub fn enclosing_field_placement(enclosing_locus: &LocusDecl, field_name: &str) -> Option<PoolId> {
+        crate::check::enclosing_field_placement(enclosing_locus, field_name)
+    }
+
+    /// The ownership graph's per-type labels.
+    pub fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
+        crate::ownership_graph::collect_placements(bundle)
     }
 }
 

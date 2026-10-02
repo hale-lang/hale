@@ -1,0 +1,25 @@
+// A field initialized from an existing instance: the row is the
+// field's hold on an instance built elsewhere, a `Reuse` hole naming
+// the source, with its owner's domain and no literal.
+locus Roles {
+    params {
+        memory: Bool = true;
+    }
+}
+
+locus Holder {
+    params {
+        roles: Roles = Roles { };
+    }
+}
+
+main locus App {
+    params {
+        h: Holder = Holder { };
+    }
+}
+
+fn main() {
+    let r = Roles { };
+    App { h: Holder { roles: r } };
+}

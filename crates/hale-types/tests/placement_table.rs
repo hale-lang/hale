@@ -14,8 +14,8 @@ use hale_frontend::source::Disk;
 use hale_syntax::ast::{flat_decls, Expr, LocusDecl, LocusMember, ParamInit, Program, TopDecl};
 use hale_syntax::sites::SiteKind;
 use hale_types::placement::{
-    join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, InstanceKey, InstanceRow,
-    LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
+    join_lowering, provenance, Bound, Decision, DeclRef, DomainId, DomainKind, Enclosing, HoleAt, HoleKind,
+    InstanceKey, InstanceRow, LoweringRef, Origin, OwnerRelative, PlacementTable, SiteRef, SiteUniverse,
 };
 use hale_types::snapshot::STDLIB_SEED;
 
@@ -382,7 +382,11 @@ fn a_module_nested_main_is_the_root_and_not_the_entry() {
 fn an_imported_main_is_never_the_root() {
     let s = clean("imported/no_own_main");
     let t = table(&s);
-    assert!(t.root.is_none() && t.instances.is_empty(), "the only `main` is the import's");
+    assert!(t.root.is_none(), "the only `main` is the import's");
+    let (k, w) = one(t, "");
+    assert!(lowered(w).ends_with("_Worker") && w.domain == PlacementTable::MAIN, "`fn main`'s own literal, on main");
+    assert_eq!(t.entry_literals.len(), 1);
+    assert_eq!(k.origin, Origin::Construction(t.entry_literals[0].literal));
     assert_eq!(t.domains.len(), 1, "no pinned domain from the library's entry");
 
     let s = clean("imported/own_main");
@@ -485,6 +489,102 @@ fn a_choice_at_a_placed_field_is_refused() {
     assert!(e.iter().any(|m| m.contains("mismatched types")), "{e:?}");
 }
 
+/// The site of the seed's top-level `fn main`.
+fn fn_main_site(s: &Snapshot) -> SiteRef {
+    let id = s
+        .programs()
+        .values()
+        .flat_map(|p| p.items.iter())
+        .find_map(|i| match i {
+            TopDecl::Fn(f) if f.name.name == "main" => Some(f.id),
+            _ => None,
+        })
+        .expect("a `fn main`");
+    SiteRef::user(s.identities().site_id(id).expect("minted"))
+}
+
+/// The root's site.
+fn root_site(t: &PlacementTable) -> SiteRef {
+    t.root.as_ref().expect("a root").realizes.site
+}
+
+/// Case 13: a claims-only `main locus`, which no literal builds, is the
+/// entry's implicit template: `Origin::Entry` at `fn main`'s site, its
+/// tower enumerated under it on main.
+#[test]
+fn a_claims_only_main_is_the_entrys_construction() {
+    let s = clean("claims_only.hl");
+    let t = table(&s);
+    let root = t.root.as_ref().unwrap();
+    assert!(root.constructions.is_empty(), "no literal builds the root");
+    let entry = Origin::Entry(fn_main_site(&s));
+    let (k, top) = one(t, "");
+    assert_eq!(k.origin, entry);
+    assert_eq!((lowered(top), top.domain, top.literal), ("App", PlacementTable::MAIN, Some(fn_main_site(&s))));
+    for p in ["a", "a.k"] {
+        let (k, r) = one(t, p);
+        assert_eq!(k.origin, entry, "`{p}` is under the entry");
+        assert_eq!(r.domain, PlacementTable::MAIN);
+    }
+}
+
+/// Case 14: a library seed checked alone roots at its lowering root; with
+/// no `fn main`, the entry is the root's own site, and its entries place
+/// the tower under it.
+#[test]
+fn a_library_seed_alone_roots_at_its_lowering_root() {
+    let s = clean("library_alone.hl");
+    let t = table(&s);
+    let entry = Origin::Entry(root_site(t));
+    let (_, w) = one(t, "w");
+    assert!(is_pinned(t, w.domain));
+    assert!(matches!(&t.domain(w.domain).kind, DomainKind::Pinned { anchor, .. } if anchor.origin == entry));
+    assert!(matches!(w.decided_by, Decision::Entry { .. }));
+    assert_eq!(one(t, "w.k").1.domain, w.domain);
+    assert_eq!(one(t, "idle").1.domain, PlacementTable::MAIN);
+    assert!(t.instances.keys().all(|k| k.origin == entry));
+    assert!(t.entry_literals.is_empty());
+}
+
+/// Case 15: a `fn main` building loci by verb. The root is the entry's;
+/// each literal in `fn main` is a template on main bound by its
+/// statement's loop context, with its fields as rows, and no dynamic site.
+#[test]
+fn a_fn_main_building_loci_by_verb_constructs_each() {
+    let s = clean("verbs.hl");
+    let t = table(&s);
+    assert!(t.root.as_ref().unwrap().constructions.is_empty());
+    assert_eq!(one(t, "l").0.origin, Origin::Entry(fn_main_site(&s)));
+    let tops: BTreeMap<&str, &InstanceKey> = rows(t, "").into_iter().map(|(k, r)| (lowered(r), k)).collect();
+    assert_eq!(tops.keys().copied().collect::<Vec<_>>(), ["App", "Listener", "Sender"]);
+    let bound = |name: &str| {
+        let Origin::Construction(lit) = tops[name].origin else { panic!("`{name}` is a literal's template") };
+        t.entry_literals.iter().find(|c| c.literal == lit).map(|c| c.bound.clone()).expect("an entry literal")
+    };
+    assert_eq!(bound("Listener"), Bound::Once);
+    assert!(matches!(bound("Sender"), Bound::Unbounded(why) if why == "built in a loop"));
+    let (k, leaf) = one(t, "leaf");
+    assert_eq!(k.origin, tops["Listener"].origin, "a field of the literal's locus is a row under it");
+    assert_eq!((lowered(leaf), leaf.domain), ("Leaf", PlacementTable::MAIN));
+    let user = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).count();
+    assert_eq!(user, 0, "`fn main`'s literals are templates, not dynamic sites");
+}
+
+/// A field initialized from an existing instance claims none: a `Reuse`
+/// hole naming the source, with its owner's domain and no literal.
+#[test]
+fn a_field_from_an_existing_instance_is_a_reuse_hole() {
+    let s = clean("reuse.hl");
+    let t = table(&s);
+    let (_, h) = one(t, "h");
+    let (k, roles) = one(t, "h.roles");
+    assert_eq!((lowered(roles), roles.literal), ("Roles", None));
+    assert_eq!(roles.domain, h.domain, "no domain of its own");
+    assert!(matches!(&roles.decided_by, Decision::Inherited { from } if from.path.len() == 1));
+    let reuse = HoleKind::Reuse { source: "r".into() };
+    assert!(t.holes.iter().any(|x| x.at == HoleAt::Instance(k.clone()) && x.kind == reuse));
+}
+
 /// Checkpoint 4: an alternative one step under a replicated field. Every
 /// row under replica `i` carries `Some(i)`, every row on or under the
 /// choice is guarded, and the replicas stay three domains.
@@ -547,7 +647,10 @@ fn the_table_names_each_universe_and_joins_lowering_once() {
 }
 
 /// The fixtures every law test walks: those that check clean.
-const CLEAN: [&str; 14] = [
+const CLEAN: [&str; 17] = [
+    "claims_only.hl",
+    "library_alone.hl",
+    "verbs.hl",
     "two_instances.hl",
     "nested_inheritance.hl",
     "overrides.hl",
@@ -604,7 +707,7 @@ fn the_table_keeps_its_laws_over_every_fixture() {
                     let owner = t.instances.get(o).unwrap_or_else(|| panic!("{name}: `{}`'s owner is a row", path(k)));
                     match &r.decided_by {
                         Decision::Entry { .. } => assert!(
-                            k.path.len() == 1 && matches!(k.origin, Origin::Construction(_)),
+                            k.path.len() == 1 && !matches!(k.origin, Origin::Binding(_)),
                             "{name}: entries decide root fields only"
                         ),
                         Decision::Inherited { from } => {

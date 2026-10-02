@@ -1,0 +1,36 @@
+// Case 15: a `fn main` that builds loci by verb. The root, built by no
+// literal, is the entry's; each literal directly in `fn main` is a
+// template of its own on main (the one in a loop unbounded), its
+// locus's fields are rows under it, and none of them is a dynamic site.
+locus Leaf { }
+
+locus Listener {
+    params {
+        leaf: Leaf = Leaf { };
+    }
+    run() { }
+}
+
+locus Sender {
+    run() { }
+}
+
+main locus App {
+    params {
+        l: Leaf = Leaf { };
+    }
+    run() { }
+}
+
+fn main() {
+    let verb = std::env::arg_or(1, "");
+    if verb == "listen" {
+        Listener { };
+        return;
+    }
+    let mut i = 0;
+    while i < 2 {
+        Sender { };
+        i = i + 1;
+    }
+}

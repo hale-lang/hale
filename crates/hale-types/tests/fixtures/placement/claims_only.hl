@@ -1,0 +1,27 @@
+// Case 13: a `main locus` that only carries claims, built by no
+// literal. The entry (`fn main`) constructs it implicitly, once, and
+// its tower enumerates under the entry.
+locus K { }
+
+locus A {
+    params {
+        k: K = K { };
+    }
+}
+
+locus Gate {
+    fn probe(n: Int) -> Int { return n + 1; }
+}
+
+group gates = { Gate };
+
+main locus App {
+    params {
+        a: A = A { };
+    }
+    claims {
+        quiet: forbid reaches(gates, effects(alloc));
+    }
+}
+
+fn main() { println("claims only"); }
