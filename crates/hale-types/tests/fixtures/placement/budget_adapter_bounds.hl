@@ -1,0 +1,61 @@
+// The resource budget's partition by construction scope (R-5, R-6):
+// two constructions of the root, one in a fn called three times
+// (`AtMost(3)`) and one in `fn main` (`Once`), each with one pinned
+// field, and one adapter in `bindings { }`, built once by the bindings
+// prelude: 3 + 1 + 1 threads, never (3 + 1) × 2.
+type Note {
+    n: Int = 0;
+}
+
+type Wire {
+    subject: String = "";
+    data: Bytes = b"";
+}
+
+topic Lost {
+    payload: Note;
+    subject: "lost";
+}
+
+topic Q {
+    payload: Wire;
+    subject: "q";
+}
+
+locus Fwd {
+    bus {
+        publish Q;
+    }
+    fn send(subject: String, bytes: Bytes) { Q <- Wire { subject: subject, data: bytes }; }
+}
+
+locus Worker {
+    run() { }
+}
+
+main locus App {
+    params {
+        p: Worker = Worker { };
+    }
+    placement {
+        p: pinned;
+    }
+    bindings {
+        Lost: Fwd { };
+    }
+    bus {
+        publish Lost;
+    }
+    run() { Lost <- Note { n: 1 }; }
+}
+
+fn again() {
+    App { };
+}
+
+fn main() {
+    App { };
+    again();
+    again();
+    again();
+}

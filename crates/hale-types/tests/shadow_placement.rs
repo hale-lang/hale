@@ -22,8 +22,10 @@
 //!   (`enclosing_field_placement`, else the caller's pool), per
 //!   `Owner.field`;
 //! - `model`: the arrangement's `PlacedIn`, per instance path;
-//! - `desugar`: `collect_off_owner_thread_fields`, per `Owner.field`;
-//! - `budget`: `budget_for_programs`' threads and pools.
+//! - `desugar`: `collect_off_owner_thread_fields`, per `Owner.field`.
+//!
+//! The resource budget reads the table (P1 5 of 6), so its threads and
+//! pools have no column.
 //!
 //! The seeds are the corpus (each program a bare snapshot), every
 //! `*_test.hl` under `tests/hale` and `dna/`, every directory under `dna/`
@@ -57,7 +59,7 @@ use hale_syntax::ast::{flat_decls, LocusDecl, LocusMember, TopDecl, TypeExpr};
 use hale_types::check::{compute_pool_of_locus_type, PoolId};
 use hale_types::placement::legacy::enclosing_field_placement;
 use hale_types::placement::{
-    Bound, DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
+    DeclRef, DomainId, DomainKind, HoleAt, HoleKind, InstanceKey, InstanceRow, Origin, OwnerRelative,
     PlacementTable, SiteUniverse,
 };
 use hale_types::resolve::TopScope;
@@ -626,71 +628,8 @@ fn shadow_seed(seed: &Seed) -> Option<Shadowed> {
         decl: field_decls,
     });
 
-    // budget: threads and pools.
-    let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let summary = s.demand_alloc_summary().ok()?;
-    let legacy = hale_types::resource_budget::budget_for_programs(&programs, summary);
-    let mut threads: Result<u64, String> = Ok(0);
-    let mut budget_why = global.clone();
-    for d in &t.domains {
-        let DomainKind::Pinned { anchor, .. } = &d.kind else { continue };
-        let times = match anchor.origin {
-            Origin::Binding(_) => {
-                budget_why.push(format!("cause: an adapter anchor `{}`", paths.path(anchor)));
-                Ok(1)
-            }
-            // The entry's implicit template runs once.
-            Origin::Entry(_) => Ok(1),
-            Origin::Construction(c) => {
-                if anchor.replica.is_some() {
-                    budget_why.push(format!("cause: a replica anchor `{}`", paths.path(anchor)));
-                }
-                let mut built = t.root.iter().flat_map(|r| r.constructions.iter()).chain(t.entry_literals.iter());
-                match built.find(|x| x.literal == c).map(|x| &x.bound) {
-                    Some(Bound::Once) => Ok(1),
-                    Some(Bound::AtMost(n)) => Ok(*n as u64),
-                    Some(Bound::Unbounded(why)) => Err(why.clone()),
-                    None => Err("no construction".to_string()),
-                }
-            }
-        };
-        threads = match (threads, times) {
-            (Ok(a), Ok(b)) => Ok(a + b),
-            (Err(e), _) | (_, Err(e)) => Err(e),
-        };
-    }
-    if let Some(r) = &t.root {
-        if r.constructions.len() > 1 || r.constructions.iter().any(|c| c.bound != Bound::Once) {
-            budget_why.push(format!("cause: {} constructions of the root", r.constructions.len()));
-        }
-    }
-    if legacy.cooperative_pools.contains("main") {
-        budget_why.push("cause: `main` spelled as a pool".into());
-    }
-    let pools: BTreeSet<String> = t
-        .domains
-        .iter()
-        .filter_map(|d| match &d.kind {
-            DomainKind::Pool { name, .. } => Some(name.clone()),
-            _ => None,
-        })
-        .collect();
-    columns.push(Column {
-        name: "budget",
-        old: vec![
-            ("threads".into(), legacy.pinned_threads.to_string()),
-            ("pools".into(), joined(&legacy.cooperative_pools)),
-        ],
-        new: vec![
-            ("threads".into(), threads.map(|n| n.to_string()).unwrap_or_else(|why| format!("uncertain ({why})"))),
-            ("pools".into(), joined(&pools)),
-        ],
-        map_old: BTreeMap::new(),
-        witness: [("threads".to_string(), budget_why.clone()), ("pools".to_string(), budget_why)].into_iter().collect(),
-        global: Vec::new(),
-        slice: "--dump-resource-budget, --check-resource-budget",
-        decl: [("threads".to_string(), "-".to_string()), ("pools".to_string(), "-".to_string())].into_iter().collect(),
-    });
+    // (The resource budget reads the table since P1 5 of 6: it has no
+    // column.)
     let unknown_dynamic = t
         .holes
         .iter()
@@ -882,11 +821,6 @@ const DESIGN_ROWS: &[(&str, Class, &str)] = &[
         "contract 3: one arrangement path, several construction templates or alternatives that disagree; the \
          projection makes it a model hole naming them. § 2.4",
     ),
-    ("R-1", Class::KnownOldBug, "`replicas = K` is K threads. § 2.8"),
-    ("R-4", Class::KnownOldBug, "a non-root main's entries are counted. § 2.8"),
-    ("R-5", Class::KnownOldBug, "the root's constructions times their bounds. § 2.8"),
-    ("R-6", Class::SpecDisagreement, "an adapter anchor is a thread (U-3, pending the owner). § 2.8"),
-    ("R-7", Class::SpecDisagreement, "`main` is counted as a pool when spelled (U-2, pending the owner). § 2.8"),
 ];
 
 fn design_row(id: &str) -> (Class, &'static str) {
@@ -1004,30 +938,8 @@ fn classify(col: &str, d: &Divergence) -> Option<Vec<&'static str>> {
                 return None;
             }
         }
-        ("budget", _) => {
-            let mut ids = BTreeSet::new();
-            for c in &causes {
-                if c.starts_with("an adapter anchor") {
-                    ids.insert("R-6");
-                }
-                if c.starts_with("a replica anchor") {
-                    ids.insert("R-1");
-                }
-                if c.contains("constructions of the root") {
-                    ids.insert("R-5");
-                }
-                if c.ends_with("), with entries") {
-                    ids.insert("R-4");
-                }
-                if c.contains("`main` spelled") {
-                    ids.insert("R-7");
-                }
-            }
-            if ids.is_empty() {
-                return None;
-            }
-            ids.into_iter().collect()
-        }
+        // The budget's column went when it read the table (P1 5 of 6):
+        // its R rows are corrections made, pinned in `resource_budget.rs`.
         _ => return None,
     };
     Some(ids)

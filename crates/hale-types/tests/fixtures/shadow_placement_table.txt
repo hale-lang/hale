@@ -4,17 +4,11 @@
 # classification is the test's (`classify`, against the design rows it cites), and a
 # divergence no design row explains fails in either mode. Columns:
 # producer <TAB> design rows <TAB> declaration <TAB> class <TAB> divergences <TAB> witness seed
-budget	R-1	-	known-old-bug	11	crates/hale-codegen/tests/fixtures/examples/20d-replicas/main.hl
-budget	R-4	-	known-old-bug	57	crates/hale-types/tests/placement.rs
-budget	R-5	-	known-old-bug	2	crates/hale-types/tests/placement.rs
-budget	R-5+R-6	-	spec-disagreement	2	dna/host
-budget	R-6	-	spec-disagreement	29	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
-budget	R-7	-	spec-disagreement	2	crates/hale-codegen/tests/bus_cross_thread_drain.rs
 checker	B-7	AdA	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 checker	B-7	AdB	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 checker	B-7	Adapter	known-old-bug	2	crates/hale-codegen/tests/bus_devirt_differential.rs
 checker	B-7	Drop	known-old-bug	1	crates/hale-codegen/tests/adapter_fanout_own_bytes.rs
-checker	B-7	Fwd	known-old-bug	4	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
+checker	B-7	Fwd	known-old-bug	5	crates/hale-codegen/tests/fixtures/examples/75-collapsed-child-adapter-hop/main.hl
 checker	B-7	Gateway	known-old-bug	1	crates/hale-types/tests/bus_rules_over_graph.rs
 checker	B-7	Keep	known-old-bug	1	crates/hale-codegen/tests/topic_phase2_adapter_binding.rs
 checker	B-7	Loopback	known-old-bug	4	crates/hale-codegen/tests/bus_adapter_inbound.rs
@@ -66,7 +60,7 @@ checker	K-3	PushSlots	known-old-bug	1	dna/api/project_service
 checker	K-3	Registry	known-old-bug	1	crates/hale-types/tests/placement.rs
 checker	K-3	S	known-old-bug	1	crates/hale-types/tests/fixtures/placement/nested_inheritance.hl
 checker	K-3	W	known-old-bug	2	crates/hale-types/tests/fixtures/placement/two_instances.hl
-checker	K-3	Worker	known-old-bug	5	crates/hale-codegen/tests/dump_pool_residency.rs
+checker	K-3	Worker	known-old-bug	6	crates/hale-codegen/tests/dump_pool_residency.rs
 checker	K-3	__StdBytesBytesBuilder	known-old-bug	3	dna/api/practice_review/tests/body
 checker	K-3	__StdSecretCredential	known-old-bug	1	dna/reflexes
 checker	K-3	__lib_dna__core___journal__Authors	known-old-bug	2	dna/api

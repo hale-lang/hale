@@ -202,8 +202,8 @@ pub(crate) fn run_check_impl_labelled(
         }
     }
     if std::env::args().any(|a| a == "--dump-resource-budget") {
-        match snap.demand_alloc_summary() {
-            Ok(summary) => print!("{}", hale_types::dump_resource_budget(&bundle, summary)),
+        match snap.demand_placement().and_then(|table| Ok((table, snap.demand_alloc_summary()?))) {
+            Ok((table, summary)) => print!("{}", hale_types::dump_resource_budget(&bundle, table, summary)),
             Err(b) => {
                 for d in &b.because {
                     eprintln!("{}", d.message);
@@ -600,16 +600,17 @@ pub(crate) fn run_check_impl_labelled(
                 bus_subjects: ct.bus_subjects,
                 fd_open_sites: ct.fd_open_sites,
             };
-            let summary = match snap.demand_alloc_summary() {
-                Ok(summary) => summary,
-                Err(b) => {
-                    for d in &b.because {
-                        eprintln!("{}", d.message);
+            let (table, summary) =
+                match snap.demand_placement().and_then(|table| Ok((table, snap.demand_alloc_summary()?))) {
+                    Ok(both) => both,
+                    Err(b) => {
+                        for d in &b.because {
+                            eprintln!("{}", d.message);
+                        }
+                        return 1;
                     }
-                    return 1;
-                }
-            };
-            let violations = hale_types::check_resource_ceiling(&bundle, summary, &ceiling);
+                };
+            let violations = hale_types::check_resource_ceiling(&bundle, table, summary, &ceiling);
             if violations.is_empty() {
                 println!("resource budget OK (within `{}`)", path);
                 return 0;

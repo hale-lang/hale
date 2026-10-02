@@ -160,13 +160,16 @@ pub fn dump_alloc_summary(summary: &alloc_summary::AllocSummary) -> String {
     summary.render()
 }
 
-/// Render the per-program resource budget — pinned threads, cooperative
-/// pools, bus subjects (GH #18 item 5, count slice). Drives
-/// `--dump-resource-budget`. `summary` is the bundle's snapshot's
-/// (`demand_alloc_summary`).
-pub fn dump_resource_budget(bundle: &Bundle<'_>, summary: &alloc_summary::AllocSummary) -> String {
-    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    resource_budget::budget_for_programs(&progs, summary).render()
+/// Render the per-program resource budget — the placement table's
+/// threads and worker pools, bus subjects, fd sites (GH #18 item 5, count
+/// slice). Drives `--dump-resource-budget`. `table` and `summary` are the
+/// bundle's snapshot's (`demand_placement`, `demand_alloc_summary`).
+pub fn dump_resource_budget(
+    bundle: &Bundle<'_>,
+    table: &placement::PlacementTable,
+    summary: &alloc_summary::AllocSummary,
+) -> String {
+    resource_budget::budget_for_programs(bundle, table, summary).render()
 }
 
 /// Bound-solver warnings: one per unbounded-accumulation allocation site
@@ -194,15 +197,15 @@ pub fn resource_leak_warnings(summary: &alloc_summary::AllocSummary) -> Vec<Diag
 
 /// Check a bundle's resource counts against declared ceilings (GH #18 item
 /// 5, the CI gate). Returns one violation message per over-budget resource
-/// (empty = within budget). Drives `--check-resource-budget`. `summary`
-/// is the bundle's snapshot's.
+/// (empty = within budget). Drives `--check-resource-budget`. `table` and
+/// `summary` are the bundle's snapshot's.
 pub fn check_resource_ceiling(
     bundle: &Bundle<'_>,
+    table: &placement::PlacementTable,
     summary: &alloc_summary::AllocSummary,
     ceiling: &resource_budget::ResourceCeiling,
 ) -> Vec<String> {
-    let progs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    let budget = resource_budget::budget_for_programs(&progs, summary);
+    let budget = resource_budget::budget_for_programs(bundle, table, summary);
     resource_budget::check_ceiling(&budget, ceiling)
 }
 
