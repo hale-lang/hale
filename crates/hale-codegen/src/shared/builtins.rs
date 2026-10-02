@@ -2583,6 +2583,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             child_struct_release_ty,
             None,
         );
+        // declare void @lotus_run_cancel_queued(ptr child)
+        // (decision line 19: the Reclaim bracket's first call, before
+        //  the child's arena or struct is released, cancels the runs
+        //  still queued for it on any pool.)
+        let run_cancel_queued_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_run_cancel_queued",
+            run_cancel_queued_ty,
+            None,
+        );
 
         // m70: lazy global payload arena for cross-process String
         // byte storage. The synthesized __deserialize_T body calls

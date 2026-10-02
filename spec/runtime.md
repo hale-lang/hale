@@ -1878,17 +1878,26 @@ its `KNOWN_OPEN` table.
   No release build observes a run's terminal, so the name lives
   there. An admitted run is retained against its child's teardown:
   from admission until the worker starts it or a teardown cancels it,
-  the run holds its child. A teardown on a worker cancels the runs
-  queued on it for the dying child before reclaiming it, each ending
-  not started with an acknowledgement, so a child torn down by its
-  owner on the worker its `run()` was posted to is reclaimed without
-  that run starting, and is torn down once; a run that started before
-  the teardown began is ordered against it by the join, as before.
-  Shipped (F.40 phase 3, L5): the cancellation is named in the trace
-  build where the reclaim makes it, before the child's struct is
-  released, and the release build runs the same path
-  (`l19_queued_run_canceled.hl`, and the lifecycle matrix's pool
-  cells, which assert the named terminal). Before it, the run started
+  the run holds its child. The child's Reclaim begins by canceling
+  the runs still queued for it, on whatever pool, each ending not
+  started with an acknowledgement, before its arena (or an elided
+  arena's struct) is released: every reclaim path makes the call,
+  past its latch, so a queued run finds the child whole or finds its
+  run canceled, never a released arena. The ticket's lock
+  linearizes the cancellation against admission: a worker that
+  takes the run first holds the child for it, and a reclaim that
+  cancels first wins. A child torn down by its owner on the worker
+  its `run()` was posted to is reclaimed without that run starting,
+  and so is one whose run waits on another pool's worker; each is
+  torn down once. A run that started before the teardown began is
+  ordered against it by the join, as before. Shipped (F.40 phase 3,
+  L5): the cancellation is named in the trace build on the thread
+  that reclaims, inside the Reclaim's bracket, and the release build
+  runs the same path (`l19_queued_run_canceled.hl`;
+  `l19_cross_pool_queued_run_canceled.hl`, a run queued on pool
+  `side` for a child its owner replaces on main, also run under
+  AddressSanitizer; the lifecycle matrix's pool cells, which assert
+  the named terminal). Before it, the run started
   on the freed struct (a heap-use-after-free under AddressSanitizer;
   an accepted child was torn down twice), or, for a subscriber, was
   freed unrun with no terminal named. Not yet shipped: the post's ABI

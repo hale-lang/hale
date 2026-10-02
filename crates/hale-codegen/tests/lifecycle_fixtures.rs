@@ -126,6 +126,7 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "l19_parked_started_coroutine.hl", line: "19", adopted: Some("named:canceled-after-start"), run: RunMode::Plain, judge: parked_cancellation },
     Fixture { file: "l19_self_post_overflow.hl", line: "19", adopted: Some("all-completed"), run: RunMode::Plain, judge: all_completed },
     Fixture { file: "l19_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: queued_run_canceled },
+    Fixture { file: "l19_cross_pool_queued_run_canceled.hl", line: "19", adopted: Some("named:not-started"), run: RunMode::Plain, judge: cross_pool_run_canceled },
     Fixture { file: "l19_resumed_run_at_shutdown.hl", line: "19", adopted: Some("completed-or-named"), run: RunMode::Plain, judge: completed_or_named },
     Fixture { file: "l19_full_ring.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
     Fixture { file: "l19_empty_ring_last_check.hl", line: "19", adopted: Some("admitted-or-named"), run: RunMode::CompileOnly, judge: outcome_line },
@@ -302,7 +303,7 @@ const PLANS: &[(&str, &str)] = &[
          edge Kid.Run.Completed -> Kid.Drain.Entered",
     ),
     // R19: each queued run is canceled by the teardown that reclaims its
-    // child, named before that reclaim completes, and never started.
+    // child, named inside that reclaim's bracket, and never started.
     (
         "l19_queued_run_canceled.hl",
         "Own: Birth Drain Dissolve Reclaim
@@ -310,7 +311,20 @@ const PLANS: &[(&str, &str)] = &[
          Kid*2: Birth Drain Dissolve Reclaim
          Kid*2: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side
          edge Kid.Run.Ended -> Kid.Reclaim.Completed
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
          edge Kid.Cancellation.Completed -> Kid.Reclaim.Completed",
+    ),
+    // R19 across pools: the run queued on `side` is canceled by the
+    // reclaim on main, inside its bracket. The replacement's run is the
+    // judge's, since one plan step cannot owe two ends.
+    (
+        "l19_cross_pool_queued_run_canceled.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Holder: Birth Run!pool:side Drain Dissolve Reclaim
+         Kid*2: Birth Drain Dissolve Reclaim
+         Kid: Cancellation!main
+         edge Kid.Reclaim.Entered -> Kid.Cancellation.Entered
+         edge Holder.Run.Ended -> Holder.Drain.Entered",
     ),
     (
         "l19_resumed_run_at_shutdown.hl",
@@ -980,6 +994,33 @@ fn queued_run_canceled(r: &Ran) -> String {
     }
 }
 
+/// What the cross-pool fixture printed: the first child's run never
+/// started, the replacement's ran, each child dissolved once.
+fn cross_pool_printed(r: &Ran) -> bool {
+    count(r, "ev kid-run 0") == 0
+        && count(r, "ev kid-run 1") == 1
+        && count(r, "ev kid-dissolve 0") == 1
+        && count(r, "ev kid-dissolve 1") == 1
+}
+
+/// The run queued on `side` is canceled by the reclaim on main and
+/// named there.
+fn cross_pool_run_canceled(r: &Ran) -> String {
+    let named: Vec<&str> = r
+        .trace
+        .events
+        .iter()
+        .filter(|e| e.kind == ObligationKind::Run && e.point == Point::Terminal(Terminal::NotStarted(NotStarted::Acknowledged)))
+        .map(|e| e.domain.as_str())
+        .collect();
+    match (cross_pool_printed(r), named.as_slice(), r.code) {
+        (true, ["main"], Some(0)) => "named:not-started".to_string(),
+        (true, [], Some(0)) => "not-started-unnamed".to_string(),
+        _ if r.code != Some(0) => exit_word(r),
+        (printed, named, _) => format!("printed as owed: {printed}, named on {named:?}"),
+    }
+}
+
 fn completed_or_named(r: &Ran) -> String {
     let dissolved_once = count(r, "ev kid-dissolve") == 1;
     let ended = count(r, "ev kid-run-end") == 1 || r.stderr.contains("not-started");
@@ -1172,12 +1213,39 @@ fixture_tests! {
     l19_parked_started_coroutine => "l19_parked_started_coroutine.hl",
     l19_self_post_overflow => "l19_self_post_overflow.hl",
     l19_queued_run_canceled => "l19_queued_run_canceled.hl",
+    l19_cross_pool_queued_run_canceled => "l19_cross_pool_queued_run_canceled.hl",
     l19_resumed_run_at_shutdown => "l19_resumed_run_at_shutdown.hl",
     l19_full_ring => "l19_full_ring.hl",
     l19_empty_ring_last_check => "l19_empty_ring_last_check.hl",
     rd_restart_during_teardown => "rd_restart_during_teardown.hl",
     jp_late_failure_pinned_join => "jp_late_failure_pinned_join.hl",
     jp_late_failure_pool_join => "jp_late_failure_pool_join.hl",
+}
+
+const SANITIZER_MARKERS: &[&str] = &[
+    "ERROR: AddressSanitizer",
+    "ERROR: LeakSanitizer",
+    "heap-use-after-free",
+    "double-free",
+    "heap-buffer-overflow",
+    "SEGV on unknown address",
+];
+
+/// Decision line 19 across pools, under AddressSanitizer with chunk
+/// pooling off (GH #816): the worker on `side` dequeues the cell whose
+/// child main reclaimed and drops it without a step on the struct.
+#[test]
+fn l19_cross_pool_queued_run_canceled_under_asan() {
+    let file = "l19_cross_pool_queued_run_canceled.hl";
+    let program = hale_syntax::parse_source(&source(file)).unwrap_or_else(|e| panic!("{file}: parse: {e:?}"));
+    let bin = harness::unique_bin("hale_lifecycle_asan_l19_cross_pool");
+    harness::build_asan(&program, &bin);
+    let ran = run_bin(&bin, RunMode::Plain, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+    let _ = std::fs::remove_file(&bin);
+    let report = [ran.stdout.as_str(), ran.stderr.as_str()].concat();
+    let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
+    assert!(hits.is_empty(), "{file} under ASan: {hits:?}\n{report}");
+    assert!(cross_pool_printed(&ran) && ran.code == Some(0), "{file} under ASan, {}:\n{report}", exit_word(&ran));
 }
 
 macro_rules! control_tests {

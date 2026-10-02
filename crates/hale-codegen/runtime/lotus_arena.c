@@ -1896,11 +1896,6 @@ void lotus_lc_parked_abandoned(void *self);
 void lotus_lc_run_canceled(void *self);
 #endif
 
-/* Run retention (decision line 19), defined with the cooperative pool:
- * a reclaim cancels the child's runs still queued before it frees the
- * child. */
-static void lotus_run_cancel_queued(void *child);
-
 /* One held failure. A node stays linked until its handler has
  * returned (state DONE), so a failing child can find it — to defer its
  * reclaim behind the handler (#1067), or to learn what the handler
@@ -2262,13 +2257,12 @@ void *lotus_child_struct_alloc(lotus_arena_t *owner, uint64_t size,
  * latch, and leaving it NULL keeps any stale teardown path a
  * no-op.
  *
- * Every reclaim of a locus ends here, once (past its `__arena` latch),
- * so this is where a run still queued for the child is canceled
- * (decision line 19): before the struct is listed for reuse, or left
- * in the owner's arena to be freed with it. */
+ * A run still queued for the child was canceled at the start of this
+ * reclaim, before its arena was released (`lotus_run_cancel_queued`,
+ * decision line 19), so nothing queued can reach the struct once it is
+ * listed for reuse. */
 void lotus_child_struct_release(void *owner_self, void *child,
                                 uint64_t size) {
-    if (child) lotus_run_cancel_queued(child);
     if (!owner_self || !child || size < LOTUS_CHILD_STRUCT_MIN) return;
     lotus_arena_t *owner = *(lotus_arena_t **)owner_self;
     if (!owner) return;
@@ -8238,15 +8232,20 @@ typedef struct lotus_coop_overflow {
  * enqueued. From then until the worker starts it or a teardown cancels
  * it, the cell holds a retention on the child: a ticket, linked here
  * under the child's address. The worker starts the run only by
- * unlinking its ticket (`lotus_run_admit`). A reclaim of the child
- * first cancels every ticket still linked (`lotus_run_cancel_queued`,
- * from `lotus_child_struct_release`), and names each run's terminal,
- * not started with an acknowledgement; the cell, dequeued later, is
- * dropped unrun. Without it, an owner torn down on the worker its
- * child's run was posted to reclaimed the child while the run sat in
- * the queue behind the teardown, and the run then started on the freed
- * struct (a heap-use-after-free, and a second teardown of an accepted
- * child at its run end).
+ * unlinking its ticket (`lotus_run_admit`). The Reclaim of the child
+ * begins by canceling every ticket still linked
+ * (`lotus_run_cancel_queued`, the compiler's first call past the
+ * reclaim latch on every reclaim path, before the arena or the struct
+ * is released), and names each run's terminal, not started with an
+ * acknowledgement; the cell, dequeued later, is dropped unrun. Without
+ * it, an owner torn down on the worker its child's run was posted to
+ * reclaimed the child while the run sat in the queue behind the
+ * teardown, and the run then started on the freed struct (a
+ * heap-use-after-free, and a second teardown of an accepted child at
+ * its run end). A run queued on another pool's worker finds the child
+ * whole or its ticket canceled, never a released arena: the ticket's
+ * lock linearizes the two, so a worker that unlinks the ticket first
+ * holds the child for its run, and a reclaim that cancels first wins.
  *
  * A run already started is not canceled: its ticket is gone, and the
  * teardown's ordering against it is the join's, as before. The ticket
@@ -8353,7 +8352,11 @@ static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell) {
     return 1;
 }
 
-static void lotus_run_cancel_queued(void *child) {
+/* The first step of the Reclaim bracket, on every reclaim path: the
+ * compiled teardown calls it past the child's `__arena` latch, before
+ * the arena (or, for an elided arena, the struct) is released. */
+void lotus_run_cancel_queued(void *child) {
+    if (!child) return;
     if (__atomic_load_n(&g_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
     int canceled = 0;
     pthread_mutex_lock(&g_run_tickets_lock);

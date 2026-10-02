@@ -1378,6 +1378,8 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             self.builder
                 .build_store(arena_field_ptr, ptr_t.const_null())
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
+            self.emit_run_cancel_queued(self_ptr, locus_name)?;
             let owner_self_slot = self
                 .builder
                 .build_struct_gep(
@@ -1414,7 +1416,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.child_struct.release.elide", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
             self.lc_in_spine_event("Reclaim", "Completed", self_ptr, locus_name)?;
             self.builder
                 .build_unconditional_branch(after_bb)
@@ -1846,8 +1847,11 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // observer fewer.
         self.emit_drain_observer_count(locus_name, -1)?;
         // The trace's Reclaim is the arena's release past the latch:
-        // exactly once per instance (decision line 14).
+        // exactly once per instance (decision line 14). It begins by
+        // canceling the runs still queued for this instance (decision
+        // line 19), before anything of it is released.
         self.lc_in_spine_event("Reclaim", "Entered", self_ptr, locus_name)?;
+        self.emit_run_cancel_queued(self_ptr, locus_name)?;
 
         let is_zero = self
             .builder
@@ -1997,6 +2001,26 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Decision line 19: the Reclaim bracket begins by canceling the
+    /// runs still queued for the instance, on whatever pool, before its
+    /// arena or struct is released, so a queued run finds the child
+    /// whole or its ticket canceled. One call per reclaim path, past
+    /// the `__arena` latch.
+    fn emit_run_cancel_queued(
+        &mut self,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let cancel_fn = self
+            .module
+            .get_function("lotus_run_cancel_queued")
+            .expect("lotus_run_cancel_queued declared");
+        self.builder
+            .build_call(cancel_fn, &[self_ptr.into()], &format!("{}.runs.cancel", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// GH #750: does any locus strictly BELOW `name` in the
     /// parent-owned param-field tree declare a non-empty `drain()`?
     ///
