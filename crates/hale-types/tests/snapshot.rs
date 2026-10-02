@@ -89,7 +89,7 @@ fn the_resolved_snapshot_seeds_by_the_bundle_and_names_the_stdlib() {
         len: src.len() as u32,
     }];
     let bundle_snap = mint([("main.hl", &mut p)], &sources);
-    let resolved = hale_types::resolved::resolve_program(&p, &sources, &[], None, None)
+    let resolved = hale_types::resolved::resolve_program(&p, &sources, &[], None, None, &hale_types::form_rows::FormRows::default())
         .expect("resolve");
     let snap = &resolved.snapshot;
     assert_eq!(
@@ -211,7 +211,6 @@ fn main() {
     programs.insert(path.clone(), parse(src));
     for prog in programs.values_mut() {
         hale_syntax::json_gen::generate_json_parsers(prog);
-        let _ = hale_types::apply_sync_inference(prog);
     }
     {
         let mut refs: Vec<&mut hale_syntax::ast::Program> = programs.values_mut().collect();

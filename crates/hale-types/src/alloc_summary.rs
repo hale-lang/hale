@@ -624,7 +624,8 @@ pub struct AllocSummary {
     pub sync_holding_loci: BTreeSet<String>,
     /// #341: form loci carrying a `sync` discipline — the forms
     /// themselves, not the loci that hold them. A direct call into one
-    /// takes its lock.
+    /// takes its lock. The summary reads a written argument; the
+    /// effects engine adds the form rows' ([`AllocSummary::add_sync_forms`]).
     pub sync_forms: BTreeSet<String>,
     /// #345: classes a fn/locus DECLARES it carries, via
     /// `@effects(is: {…})`. The classification half of a user effect:
@@ -1134,6 +1135,77 @@ pub fn summarize_programs_with_renames(
     let identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
         programs.iter().map(|p| (*p, ids)).collect();
     summarize_identified(&identified, import_renames)
+}
+
+/// Every top-level locus of `programs` with a param whose type is one of
+/// `sync_forms`: it holds that form, so a call into it can take the
+/// form's lock.
+fn collect_sync_holding_loci(
+    programs: &[&Program],
+    sync_forms: &BTreeSet<String>,
+    out: &mut BTreeSet<String>,
+) {
+    for program in programs {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            for m in &l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for prm in &pb.params {
+                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
+                        continue;
+                    };
+                    if path
+                        .segments
+                        .last()
+                        .is_some_and(|s| sync_forms.contains(&s.name))
+                    {
+                        out.insert(l.name.name.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl AllocSummary {
+    /// The forms of `programs` their form rows say carry a `sync`
+    /// discipline (F.40 phase 3, C1: [`crate::form_rows::FormRows::carries_sync`],
+    /// inference's pick included), added to the ones the summary read off
+    /// a written argument, and the loci holding them. The effects
+    /// certificate engine reads both: the written argument alone misses a
+    /// discipline sync inference gave the form.
+    pub fn add_sync_forms(&mut self, programs: &[&Program], forms: &crate::form_rows::FormRows) {
+        for program in programs {
+            for item in &program.items {
+                if let TopDecl::Locus(l) = item {
+                    if forms.carries_sync(l) {
+                        self.sync_forms.insert(l.name.name.clone());
+                    }
+                }
+            }
+        }
+        collect_sync_holding_loci(programs, &self.sync_forms, &mut self.sync_holding_loci);
+    }
+
+    /// [`AllocSummary::add_sync_forms`] over a shared summary (the
+    /// `alloc_summary` family's): the summary itself when the rows add
+    /// no form it does not already hold, else a copy with them added.
+    pub fn with_sync_forms(
+        &self,
+        programs: &[&Program],
+        forms: &crate::form_rows::FormRows,
+    ) -> std::borrow::Cow<'_, AllocSummary> {
+        let adds = programs.iter().flat_map(|p| p.items.iter()).any(|item| {
+            matches!(item, TopDecl::Locus(l)
+                if forms.carries_sync(l) && !self.sync_forms.contains(&l.name.name))
+        });
+        if !adds {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut summary = self.clone();
+        summary.add_sync_forms(programs, forms);
+        std::borrow::Cow::Owned(summary)
+    }
 }
 
 /// The summary of programs minted by different snapshots — a bundle's
@@ -1742,26 +1814,7 @@ pub fn summarize_identified(
     summary.bounded_loci = bounded_loci;
     // Second pass: a locus holding a sync-bearing form can take that
     // form's lock, so calls into it are potentially blocking.
-    for program in programs {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
-            for m in &l.members {
-                let LocusMember::Params(pb) = m else { continue };
-                for prm in &pb.params {
-                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
-                        continue;
-                    };
-                    if path
-                        .segments
-                        .last()
-                        .is_some_and(|s| sync_forms.contains(&s.name))
-                    {
-                        sync_holding_loci.insert(l.name.name.clone());
-                    }
-                }
-            }
-        }
-    }
+    collect_sync_holding_loci(programs, &sync_forms, &mut sync_holding_loci);
     summary.sync_holding_loci = sync_holding_loci;
     summary.sync_forms = sync_forms;
     summary.carries = carries;

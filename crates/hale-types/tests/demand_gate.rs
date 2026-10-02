@@ -383,10 +383,13 @@ fn the_harness_snapshot_lowers_without_a_check() {
     };
     assert!(s.demand_lowering().is_ok(), "the harness lowers what it is handed");
     let builds = s.builds();
-    for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "lowering_view"] {
+    // Lowering reads the form rows (F.40 phase 3, C1), which read the
+    // scope: both are demanded once, where the load's sync inference
+    // pre-pass used to build a scope of its own outside the counts.
+    for family in ["seed_loading", "desugar_sequence", "snapshot_identity", "top_scope", "sync_inference", "lowering_view"] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["top_scope", "expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
+    for family in ["expression_typing", "bus_graph", "ownership", "handler_routing", "effects", "model", "claims"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");

@@ -11,6 +11,7 @@ use hale_syntax::ast::{
     ParamInit, ProjectionClass, ScheduleClass,
     TypeExpr,
 };
+use hale_types::form_rows::Discipline;
 use hale_types::handler_routing::ChildRef;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
@@ -1006,26 +1007,19 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 } else {
                     None
                 };
-                // F.32-1α (2026-05-24): read the @form(hashmap)
-                // `sync = X` kwarg if present. Typecheck has
-                // already validated the value shape; codegen
-                // just maps the recognized identifier to its
-                // SyncMode variant. Unrecognized / absent →
-                // SyncMode::None (single-pool, no runtime sync).
+                // F.32-1α (2026-05-24): the @form(hashmap)'s
+                // discipline is its form row's effective one
+                // (F.40 phase 3, C1): the written `sync = X`, else
+                // sync inference's pick, else none (single-pool, no
+                // runtime sync). Typecheck has already validated a
+                // written value; an argument naming no discipline
+                // gets none.
                 let sync_mode = if matches!(form, Some(SlotForm::Hashmap)) {
-                    let sync_name = l.form
-                        .as_ref()
-                        .and_then(|f| {
-                            f.args.iter().find(|a| a.name.name == "sync")
-                        })
-                        .and_then(|a| match &a.value {
-                            Expr::Ident(i) => Some(i.name.as_str().to_string()),
-                            _ => None,
-                        });
-                    match sync_name.as_deref() {
-                        Some("serialized") => SyncMode::Serialized,
-                        Some("striped") => SyncMode::Striped,
-                        Some("lockfree") => {
+                    match self.forms.effective(l) {
+                        Discipline::None => SyncMode::None,
+                        Discipline::Serialized => SyncMode::Serialized,
+                        Discipline::Striped => SyncMode::Striped,
+                        Discipline::Lockfree => {
                             // F.32-1γ-v1: lockfree requires
                             // `cap = N` (validated by typecheck;
                             // codegen reads the int literal).
@@ -1043,7 +1037,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 .unwrap_or(0);
                             SyncMode::Lockfree { fixed_cap: cap }
                         }
-                        _ => SyncMode::None,
                     }
                 } else {
                     SyncMode::None

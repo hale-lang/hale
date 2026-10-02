@@ -702,6 +702,8 @@ pub fn certificate_rows(
     effect_report_inner(programs, ids, import_renames).1
 }
 
+/// Programs no snapshot holds: each form carries the discipline its
+/// written argument gives it.
 fn effect_report_inner(
     programs: &[&Program],
     ids: &Snapshot,
@@ -709,8 +711,15 @@ fn effect_report_inner(
 ) -> (Vec<Diag>, Vec<LoweredCertificate>) {
     let summary =
         crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, ids, import_renames);
-    let (d, certs) = effect_report_grouped(programs, &summary);
+    let forms = written_forms(programs);
+    let (d, certs) = effect_report_grouped(programs, &summary, &forms);
     (d, certs.into_iter().map(|(row, _)| row).collect())
+}
+
+/// The form rows of programs no snapshot holds and no scope was built
+/// for: each declaration's written configuration, nothing inferred.
+fn written_forms(programs: &[&Program]) -> crate::form_rows::FormRows {
+    crate::form_rows::FormRows::configured(programs.iter().flat_map(|p| p.items.iter()))
 }
 
 /// The effects certificate engine's report: every fn-grained effect
@@ -724,12 +733,15 @@ pub type EffectCertificates = Vec<(LoweredCertificate, Vec<(Diag, bool)>)>;
 
 /// The certificate report of a bundle no snapshot holds and no check
 /// ran over (the tests', `claim_law_diags`, the artifact's bundle
-/// entry): the engine's one run for that caller. A snapshot's comes
-/// from its check (`Snapshot::demand_effect_certificates`).
+/// entry): the engine's one run for that caller, over the form rows
+/// built here. A snapshot's comes from its check
+/// (`Snapshot::demand_effect_certificates`).
 pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertificates {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let summary = crate::alloc_summary::derive_alloc_summary(bundle);
-    effect_report_grouped(&programs, &summary).1
+    let (top, diags) = crate::resolve::build_top_scope(bundle);
+    let forms = crate::form_rows::form_rows(bundle, &top, &crate::entry::entry_row(bundle), diags.is_empty());
+    effect_report_grouped(&programs, &summary, &forms).1
 }
 
 /// GH #476 Change 5e: the same report with each certificate's own
@@ -738,11 +750,14 @@ pub fn effect_certificates(bundle: &crate::symbol::Bundle<'_>) -> EffectCertific
 /// (`effect_diags_with_renames` reassembles the flat stream from
 /// this, so the two can never disagree). `summary` is the
 /// `alloc_summary` family's: the check hands in its snapshot's.
+/// `forms` says which forms carry a `sync` discipline (the check's
+/// form rows).
 pub(crate) fn effect_report_grouped(
     programs: &[&Program],
     summary: &AllocSummary,
+    forms: &crate::form_rows::FormRows,
 ) -> (Vec<Diag>, EffectCertificates) {
-    let (pre, p1, tail, groups) = effect_report_three_way(programs, summary);
+    let (pre, p1, tail, groups) = effect_report_three_way_over(programs, summary, forms);
     let mut flat = pre;
     flat.extend(p1);
     flat.extend(tail);
@@ -759,6 +774,19 @@ pub(crate) fn effect_report_grouped(
 pub fn effect_report_three_way(
     programs: &[&Program],
     summary: &AllocSummary,
+) -> (
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<(LoweredCertificate, Vec<(Diag, bool)>)>,
+) {
+    effect_report_three_way_over(programs, summary, &written_forms(programs))
+}
+
+fn effect_report_three_way_over(
+    programs: &[&Program],
+    summary: &AllocSummary,
+    forms: &crate::form_rows::FormRows,
 ) -> (
     Vec<Diag>,
     Vec<Diag>,
@@ -798,6 +826,8 @@ pub fn effect_report_three_way(
             }
         }
     }
+    let summary = summary.with_sync_forms(programs, forms);
+    let summary: &AllocSummary = &summary;
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut sink = DiagSink::new();

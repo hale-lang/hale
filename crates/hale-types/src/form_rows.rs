@@ -23,9 +23,11 @@
 //!
 //! The rows are the `sync_inference` family's: the snapshot demands
 //! them after the mint (`Snapshot::demand_forms`), over its scope and
-//! its entry row, and hands them to the checker and to lowering. A
-//! bundle no snapshot holds (the checker's test entries) builds them
-//! once, with [`form_rows`].
+//! its entry row, and hands them to the checker (with its effects
+//! certificate engine), to the model and to lowering, which lays each
+//! map out by its effective discipline. Nothing writes the discipline
+//! into the program. A bundle no snapshot holds (the checker's and the
+//! model's test entries) builds them once, with [`form_rows`].
 
 use std::collections::BTreeMap;
 
@@ -159,6 +161,37 @@ impl FormRows {
         self.named(&l.name.name)
     }
 
+    /// The discipline declaration `l` gets: its row's effective one. A
+    /// declaration with no row (one no snapshot inferred over: the
+    /// stdlib's, merged into the program lowering walks) gets its
+    /// written configuration's.
+    pub fn effective(&self, l: &LocusDecl) -> Discipline {
+        match self.of(l) {
+            Some(row) => row.effective,
+            None => match l.form.as_ref().map(sync_config) {
+                Some(SyncConfig::Explicit(d)) => d,
+                _ => Discipline::None,
+            },
+        }
+    }
+
+    /// Whether `l`'s form carries a `sync` discipline, for the readers
+    /// that ask it as one question: the model's `sync_form` (the
+    /// `depends` law), the effects certificate engine (a call into the
+    /// form, or into a locus holding it, can take its lock) and the
+    /// checker's instance-aliasing rule. Each asks
+    /// [`FormRow::explicitly_configured`] or
+    /// [`FormRow::safe_for_cross_domain_access`] — an explicit
+    /// `sync = none` counts, as the written argument always did. A
+    /// declaration with no row reads its written argument.
+    pub fn carries_sync(&self, l: &LocusDecl) -> bool {
+        let Some(form) = &l.form else { return false };
+        match self.of(l) {
+            Some(row) => row.explicitly_configured() || row.safe_for_cross_domain_access(),
+            None => sync_config(form) != SyncConfig::Omitted,
+        }
+    }
+
     fn push(&mut self, row: FormRow) {
         let i = self.rows.len();
         self.by_name.entry(row.locus.clone()).or_insert(i);
@@ -204,11 +237,19 @@ impl FormRows {
         rows
     }
 
-    /// These rows and `more`'s, these first: a declaration both name
-    /// keeps this side's row.
+    /// These rows and `more`'s, these first: a declaration both hold
+    /// (by identity, or by name where `more`'s row has none) keeps this
+    /// side's row.
     pub fn extended(mut self, more: FormRows) -> FormRows {
         for row in more.rows {
-            self.push(row);
+            let held = if row.id.is_none() {
+                self.by_name.contains_key(&row.locus)
+            } else {
+                self.by_id.contains_key(&row.id.0)
+            };
+            if !held {
+                self.push(row);
+            }
         }
         self
     }
@@ -243,7 +284,9 @@ pub fn form_rows(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow, resolved
     let pool_map = crate::check::compute_pool_of_locus_type(bundle, top, entry);
     let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, &pool_map);
     for row in &mut rows.rows {
-        if row.config != SyncConfig::Omitted {
+        // Inference keys its candidates by name over the top level: a
+        // module's form of the same name is not one of them.
+        if row.config != SyncConfig::Omitted || row.module_nested {
             continue;
         }
         let Some(inf) = inferred.get(&row.locus) else { continue };

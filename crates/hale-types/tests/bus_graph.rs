@@ -736,7 +736,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let prog = parse_source(src).expect("parse failed");
-    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None)
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None, &hale_types::form_rows::FormRows::default())
         .expect("resolves");
     assert_eq!(resolved.intra_locus.len(), 1, "{:?}", resolved.intra_locus);
     let rw = &resolved.intra_locus[0];
@@ -807,7 +807,7 @@ fn main() { App { }; }
     )
     .expect("no --api to refuse");
     hale_types::snapshot::mint([("app.hl", &mut prog)], &[]);
-    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None)
+    let resolved = hale_types::resolved::resolve_program(&prog, &[], &[], None, None, &hale_types::form_rows::FormRows::default())
         .expect("resolves");
     assert!(resolved.intra_locus.is_empty(), "{:?}", resolved.intra_locus);
 

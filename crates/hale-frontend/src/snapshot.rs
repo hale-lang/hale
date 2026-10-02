@@ -602,13 +602,9 @@ impl Snapshot {
         if snap.has_hole() {
             return Ok(snap);
         }
-        for prog in snap.programs.values_mut() {
-            // FUv0.8.2 #4: the post-inference shape the build sees.
-            // The pre-pass's resolver diagnostics are discarded: the
-            // check raises them again through its own reporting path
-            // (downstream handoff, 2026-08-11).
-            let _ = hale_types::apply_sync_inference(prog);
-        }
+        // Sync inference writes nothing into the program: its pick is
+        // the form rows' effective discipline (`demand_forms`), which
+        // the check, the model and lowering read.
         let sequenced = {
             // F.40 phase 2.1b: the desugar sequence, the one every
             // entry point runs before its check: JSON Tier 2's parsers,
@@ -979,6 +975,7 @@ impl Snapshot {
                     effects: &effects,
                     entry: self.demand_entry().map_err(Clone::clone)?,
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
+                    forms: self.demand_forms().map_err(Clone::clone)?,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1117,6 +1114,7 @@ impl Snapshot {
                     ownership: self.demand_ownership_graph().map_err(Clone::clone)?,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
                     effects: self.demand_effects().map_err(Clone::clone)?,
+                    forms: self.demand_forms().map_err(Clone::clone)?,
                 };
                 self.count("model");
                 Ok(hale_types::model_builder::derive_application_model_over(
@@ -1185,6 +1183,7 @@ impl Snapshot {
                         &merged
                     }
                 };
+                let forms = self.demand_forms().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_program(
                     program,
@@ -1192,6 +1191,7 @@ impl Snapshot {
                     &self.import_renames,
                     self.config.api.as_deref(),
                     self.config.api_roles.as_deref(),
+                    forms,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })
@@ -1806,7 +1806,7 @@ mod tests {
             "type Entry { k: Int; v: Int; }\n\
              type Tick { n: Int; }\n\
              @form(hashmap)\nlocus Registry { capacity { pool entries of Entry indexed_by k; } }\n\
-             @form(vec)\nlocus Log { capacity { pool lines of Entry; } }\n\
+             @form(vec)\nlocus Log { capacity { heap lines of Entry; } }\n\
              locus IoWorker { params { reg: Registry = Registry { }; }\n\
                  bus { subscribe \"tick\" as on_tick of type Tick; }\n\
                  fn on_tick(t: Tick) { self.reg.set(Entry { k: t.n, v: 1 }); } }\n\
@@ -1845,6 +1845,24 @@ mod tests {
         assert_eq!(reg.effective, Discipline::Striped, "two writer pools on a hot path");
         assert!(reg.safe_for_cross_domain_access());
         assert_eq!(rows.named("Log").unwrap().effective, Discipline::None);
+        // Nothing is written into the program on the author's behalf,
+        // and lowering lays the map out by the row.
+        let registry = |items: &[TopDecl]| {
+            items
+                .iter()
+                .find_map(|i| match i {
+                    TopDecl::Locus(l) if l.name.name == "Registry" => Some(l.clone()),
+                    _ => None,
+                })
+                .expect("the map")
+        };
+        let written = bundle.programs.values().find_map(|p| {
+            p.items.iter().any(|i| matches!(i, TopDecl::Locus(l) if l.name.name == "Registry")).then(|| registry(&p.items))
+        });
+        assert!(written.unwrap().form.unwrap().args.iter().all(|a| a.name.name != "sync"), "no injected argument");
+        let view = s.demand_lowering().expect("the lowering view");
+        assert_eq!(view.forms.effective(&registry(&view.merged.items)), Discipline::Striped);
+        assert_eq!(s.builds()["sync_inference"], 1, "lowering reads the snapshot's rows");
         let _ = std::fs::remove_dir_all(&d);
     }
 

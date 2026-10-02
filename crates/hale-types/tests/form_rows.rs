@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{Expr, Program, TopDecl};
+use hale_syntax::ast::{Program, TopDecl};
 use hale_types::form_rows::{form_rows, Discipline, FormRows, SyncConfig};
 use hale_types::Bundle;
 
@@ -125,7 +125,7 @@ type Entry { k: Int; v: Int; }
 @form(hashmap)
 locus Registry { capacity { pool entries of Entry indexed_by k; } }
 @form(vec)
-locus Log { capacity { pool lines of Entry; } }
+locus Log { capacity { heap lines of Entry; } }
 main locus App {
     params { reg: Registry = Registry { }; }
     placement { reg: cooperative(pool = io); }
@@ -154,53 +154,119 @@ fn a_module_nested_form_has_a_row_and_no_inference() {
     assert_eq!(row.effective, Discipline::None, "inference reads the top level, as it always has");
 }
 
-/// The value the load's pre-pass (`apply_sync_inference`) wrote as a
-/// `sync` argument on `l`'s form, if it wrote one.
-fn written_sync(program: &Program, locus: &str) -> Option<String> {
-    program.items.iter().find_map(|i| match i {
-        TopDecl::Locus(l) if l.name.name == locus => l.form.as_ref()?.args.iter().find_map(|a| {
-            match (&a.value, a.name.name == "sync") {
-                (Expr::Ident(i), true) => Some(i.name.clone()),
-                _ => None,
-            }
-        }),
-        _ => None,
-    })
+/// `App` reads a `Registry` placed on another pool, and a `Writer` on
+/// a third pool writes one: one writer pool and two reader pools, which
+/// inference answers `serialized`. `SYNC` is the registry's `sync`
+/// argument.
+fn cross_pool(sync: &str) -> String {
+    format!(
+        r#"
+type Entry {{ k: Int; v: Int; }}
+type Tick {{ n: Int; }}
+
+@form(hashmap{sync})
+locus Registry {{
+    capacity {{ pool entries of Entry indexed_by k; }}
+}}
+
+locus Writer {{
+    params {{ reg: Registry = Registry {{ }}; }}
+    bus {{ subscribe "tick" as on_tick of type Tick; }}
+    fn on_tick(t: Tick) {{ self.reg.set(Entry {{ k: t.n, v: 1 }}); }}
+}}
+
+main locus App {{
+    params {{
+        reg: Registry = Registry {{ }};
+        w: Writer = Writer {{ }};
+    }}
+    placement {{
+        reg: cooperative(pool = io);
+        w: cooperative(pool = compute);
+    }}
+    bus {{ publish "tick" of type Tick; }}
+    run() {{ let _ = self.reg.has(1); }}
+}}
+
+fn main() {{ App {{ }}; }}
+"#
+    )
 }
 
-/// Each form of `program` its author left unconfigured gets the
-/// discipline the load's pre-pass injects, or none where it injects
-/// nothing. Returns the forms seen and how many the pre-pass inferred.
-fn agree_with_the_pre_pass(program: &Program, origin: &str) -> (usize, usize) {
-    let r = rows_of(program);
-    let mut injected = program.clone();
-    let _ = hale_types::apply_sync_inference(&mut injected);
-    let (mut forms, mut inferred) = (0, 0);
-    for row in r.rows() {
-        forms += 1;
-        if row.config != SyncConfig::Omitted || row.module_nested {
-            continue;
-        }
-        let pre_pass = written_sync(&injected, &row.locus);
-        assert_eq!(row.effective.label(), pre_pass.as_deref().unwrap_or("none"), "{origin}: `{}`", row.locus);
-        inferred += usize::from(pre_pass.is_some());
-    }
-    (forms, inferred)
+fn cross_pool_errors(sync: &str) -> Vec<String> {
+    let program = hale_syntax::parse_source(&cross_pool(sync)).expect("parse");
+    hale_types::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error() && d.message.contains("cross-pool method call"))
+        .map(|d| d.message)
+        .collect()
 }
 
-/// The rows say what the pre-pass wrote, over every corpus program and
-/// over the pinned program inference answers.
+/// The F.31 cross-pool check admits a call into a map whose discipline
+/// sync inference gave it, as it admitted the `sync =` argument the load
+/// used to write into the program for it.
 #[test]
-fn the_rows_agree_with_the_injected_argument() {
-    let (mut forms, mut inferred) = (0, 0);
-    for p in hale_corpus::fixtures() {
-        let Ok(program) = hale_syntax::parse_source(&p.source) else { continue };
-        let (f, i) = agree_with_the_pre_pass(&program, &p.origin);
-        forms += f;
-        inferred += i;
-    }
-    assert!(forms > 0, "the corpus declares forms");
-    eprintln!("form rows over the corpus: {forms} forms, {inferred} inferred");
-    let pinned = hale_syntax::parse_source(&two_writers("")).expect("parse");
-    assert_eq!(agree_with_the_pre_pass(&pinned, "two writers"), (1, 1), "the pre-pass infers the pinned form");
+fn an_inferred_discipline_admits_a_cross_pool_call() {
+    let r = rows(&cross_pool(""));
+    assert_eq!(r.named("Registry").unwrap().effective, Discipline::Serialized);
+    assert_eq!(cross_pool_errors(""), Vec::<String>::new());
+    assert_eq!(cross_pool_errors(", sync = serialized"), Vec::<String>::new());
 }
+
+fn decl<'a>(program: &'a Program, locus: &str) -> &'a hale_syntax::ast::LocusDecl {
+    program
+        .items
+        .iter()
+        .find_map(|i| match i {
+            TopDecl::Locus(l) if l.name.name == locus => Some(l),
+            _ => None,
+        })
+        .expect("the declaration")
+}
+
+/// The readers that ask whether a form carries a `sync` discipline as
+/// one question (the model's `sync_form`, the effects certificate
+/// engine, the instance-aliasing rule) count a written argument, `none`
+/// included, and inference's pick; a map inference left unsynchronized
+/// does not count.
+#[test]
+fn carries_sync_is_configured_or_safe() {
+    for arg in ["", ", sync = none", ", sync = serialized", ", sync = lockfree, cap = 64", ", sync = fast"] {
+        let program = hale_syntax::parse_source(&two_writers(arg)).expect("parse");
+        let r = rows_of(&program);
+        assert!(r.carries_sync(decl(&program, "Registry")), "{arg}");
+    }
+    let one_pool = hale_syntax::parse_source(&two_writers("").replace("pool = compute", "pool = io")).expect("parse");
+    let r = rows_of(&one_pool);
+    assert_eq!(r.named("Registry").unwrap().effective, Discipline::None, "one pool");
+    assert!(!r.carries_sync(decl(&one_pool, "Registry")));
+    assert!(!r.carries_sync(decl(&one_pool, "App")), "not a form");
+}
+
+/// A declaration the rows do not hold (the stdlib's, merged into the
+/// program lowering walks) reads its written argument; one they hold
+/// keeps its row when the written rows are added beside them.
+#[test]
+fn a_declaration_without_a_row_reads_its_written_argument() {
+    let program = hale_syntax::parse_source(
+        r#"
+type Entry { k: Int; v: Int; }
+@form(hashmap, sync = serialized)
+locus Store { capacity { pool entries of Entry indexed_by k; } }
+@form(hashmap)
+locus Plain { capacity { pool entries of Entry indexed_by k; } }
+"#,
+    )
+    .expect("parse");
+    let none = FormRows::default();
+    assert_eq!(none.effective(decl(&program, "Store")), Discipline::Serialized);
+    assert!(none.carries_sync(decl(&program, "Store")));
+    assert_eq!(none.effective(decl(&program, "Plain")), Discipline::None);
+    assert!(!none.carries_sync(decl(&program, "Plain")));
+
+    let pinned = hale_syntax::parse_source(&two_writers("")).expect("parse");
+    let merged = rows_of(&pinned).extended(FormRows::configured(&pinned.items));
+    assert_eq!(merged.rows().len(), 1, "the written row of a held declaration is not added");
+    assert_eq!(merged.effective(decl(&pinned, "Registry")), Discipline::Striped, "the held row wins");
+}
+

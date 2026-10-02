@@ -35,15 +35,11 @@
 //! generic "choose one of serialized / striped". Users still
 //! add the kwarg by hand.
 //!
-//! v0.2 (deferred): AST mutation pass that injects the
-//! inferred kwarg, so codegen honors the inference without
-//! requiring the user-side annotation. Plan doc § F.32-1∞
-//! describes the integration: new phase between
-//! `check_bundle` and codegen that walks the inference map +
-//! adds `FormArg { name: "sync", value: Ident(<picked>) }`
-//! to each affected locus's `@form(...)`. Skipped here to
-//! keep the v0.1 surface inert until the friction signal
-//! demands it.
+//! Codegen honors the inference without the user-side annotation:
+//! the pick is the effective discipline of the form's row
+//! (`crate::form_rows`, F.40 phase 3, C1), which the checker, the
+//! model and lowering read. Nothing is written into the program
+//! (FUv0.8.2 #4 injected a `sync =` argument until C1).
 
 use std::collections::{BTreeMap, BTreeSet};
 

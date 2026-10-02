@@ -1392,6 +1392,7 @@ pub fn build_resolved(
         program: merged,
         topics: &resolved.top.topics,
         flows: &resolved.flows,
+        forms: &resolved.forms,
         specialized_flows: Vec::new(),
         specialized_elision: BTreeMap::new(),
         intra_locus: &resolved.intra_locus,
@@ -3180,6 +3181,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// flow, reclaimed when its `run()` completes, when a `release(c: T)`
     /// clause's `T` denotes it. Lowering asks [`Cx::is_flow`].
     pub(crate) flows: &'p hale_types::flows::FlowRows,
+    /// The form rows (the lowering view's, F.40 phase 3, C1): a
+    /// `@form(hashmap)` slot is laid out by its row's effective `sync`
+    /// discipline, inference's included.
+    pub(crate) forms: &'p hale_types::form_rows::FormRows,
     /// The loci the specializations lowering created make flows: each
     /// generic owner's template clause, specialized by the row with the
     /// instantiation queue's own substitution (`(owner, child)`, the
