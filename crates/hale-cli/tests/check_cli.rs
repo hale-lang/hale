@@ -27,6 +27,8 @@ mod check_strict_fallible;
 mod check_unbound_callee;
 #[path = "check_unknown_identifier.rs"]
 mod check_unknown_identifier;
+#[path = "form_sync_none_readers.rs"]
+mod form_sync_none_readers;
 #[path = "nested_main_transition.rs"]
 mod nested_main_transition;
 #[path = "sibling_file_topic_check.rs"]

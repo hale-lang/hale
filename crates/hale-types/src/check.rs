@@ -526,13 +526,18 @@ pub struct CheckInputs<'a> {
     /// The allocation summary the effects certificate engine walks: the
     /// `alloc_summary` family's, the one the effect rows read.
     pub alloc_summary: &'a crate::alloc_summary::AllocSummary,
+    /// The form rows (F.40 phase 3, C1): each `@form` declaration's
+    /// `sync` configuration and the discipline it gets, inference's
+    /// included. The F.31 cross-pool check, the instance-aliasing rule
+    /// and the effects certificate engine read them.
+    pub forms: &'a crate::form_rows::FormRows,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
 /// entry): the families the check reads beside the scope are built here,
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
-/// [`crate::alloc_summary::derive_alloc_summary`]; the effect rows when a
-/// rule asks).
+/// [`crate::alloc_summary::derive_alloc_summary`],
+/// [`crate::form_rows::form_rows`]; the effect rows when a rule asks).
 pub fn check_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -548,12 +553,14 @@ pub fn check_bundle(
         }))
     };
     let entry = crate::entry::entry_row(bundle);
+    let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
         effects: &effects,
         entry: &entry,
         alloc_summary: &alloc_summary,
+        forms: &forms,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -709,7 +716,7 @@ pub fn check_bundle_reporting(
     // self's. Cross-pool coordination must go through the bus,
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
-    check_placement_single_thread(bundle, top, inputs.entry, &mut diags);
+    check_placement_single_thread(bundle, top, inputs.entry, inputs.forms, &mut diags);
     // GH #826: a `pinned` placement entry gives its field an OS
     // thread whose join record is one alloca per instantiation SITE,
     // so instantiating the placing locus inside a loop orphans every
@@ -728,7 +735,7 @@ pub fn check_bundle_reporting(
     check_pool_affinity(bundle, &mut diags);
     // #334 / #333: F.31 above reasons per field DECLARATION, so it
     // cannot see one instance aliased into two towers.
-    check_instance_aliasing(bundle, &mut diags);
+    check_instance_aliasing(bundle, inputs.forms, &mut diags);
     // F.31-followup (2026-05-28): the nested-long-running-child
     // antipattern. A non-main locus whose `run()` body has work
     // to do, holding a params field of a locus type whose own
@@ -784,8 +791,11 @@ pub fn check_bundle_reporting(
         // @budget, over the shared callgraph witness engine. The flat
         // stream is `effect_diags_with_renames`'s; the grouped report
         // is kept for the certificate evidence.
-        let (mut flat, groups) =
-            crate::effects::effect_report_grouped(&programs_vec, inputs.alloc_summary);
+        let (mut flat, groups) = crate::effects::effect_report_grouped(
+            &programs_vec,
+            inputs.alloc_summary,
+            inputs.forms,
+        );
         crate::stdlib_bodies::demangle_imports(&mut flat, &bundle.import_renames);
         diags.extend(flat);
         certificates = groups;
@@ -3698,9 +3708,9 @@ impl PoolId {
 /// receiver resolves to a field of a locus type with a different
 /// pool than the enclosing method's locus.
 /// FUv0.8.2 #4 (2026-05-25): F.31 pool propagation extracted
-/// as a pub helper so callers outside this module (the
-/// `apply_sync_inference` finalization pass that runs before
-/// codegen) can re-derive the map without re-running typecheck.
+/// as a pub helper so callers outside this module (the form rows'
+/// sync inference, `crate::form_rows::form_rows`) can re-derive the
+/// map without re-running typecheck.
 ///
 /// Seeds from the main locus's `placement { }` block, then
 /// propagates the pool to each nested locus-typed param field.
@@ -3861,6 +3871,7 @@ fn check_placement_single_thread(
     bundle: &Bundle<'_>,
     top: &TopScope,
     entry: &crate::entry::EntryRow,
+    forms: &crate::form_rows::FormRows,
     diags: &mut Vec<Diag>,
 ) {
     let pool_of_locus_type = compute_pool_of_locus_type(bundle, top, entry);
@@ -3877,9 +3888,12 @@ fn check_placement_single_thread(
     //    fall back to OK (they need richer flow analysis we
     //    defer to v1.x).
     // F.32-0 (2026-05-24): collect locus types whose state is
-    // held in `@form(...)` cells AND that carry an explicit
-    // `sync = X` kwarg with X != `none`. The cross-pool
-    // diagnostic is skipped only for these.
+    // held in `@form(...)` cells AND whose discipline synchronizes
+    // cross-domain access. The cross-pool diagnostic is skipped
+    // only for these. F.40 phase 3, C1: one predicate, the form
+    // row's `safe_for_cross_domain_access` — `serialized`,
+    // `striped` or `lockfree`, written or inferred; an explicit
+    // `sync = none` is configured, not safe.
     //
     // History: 3ec6391 (2026-05-24, first cut) admitted any
     // `@form(...)` locus into this set on the assumption that
@@ -3899,9 +3913,9 @@ fn check_placement_single_thread(
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                if let Some(form) = &l.form {
+                if l.form.is_some() {
                     form_bearing_loci.insert(l.name.name.clone());
-                    if form_has_explicit_sync_discipline(form) {
+                    if forms.of(l).is_some_and(|r| r.safe_for_cross_domain_access()) {
                         cross_pool_safe_loci.insert(l.name.name.clone());
                     }
                 }
@@ -3909,16 +3923,16 @@ fn check_placement_single_thread(
         });
     }
 
-    // F.32-1∞ (2026-05-25): pre-compute sync inference for
-    // every `@form(hashmap)` locus without explicit `sync = `.
-    // The F.32-0 diagnostic below consults this map to name
-    // the specific discipline the rule would pick, instead of
-    // suggesting a generic "choose one of serialized/striped".
-    let inferred_sync = crate::sync_inference::infer_sync_for_bundle(
-        bundle,
-        top,
-        &pool_of_locus_type,
-    );
+    // F.32-1∞ (2026-05-25): sync inference's reasoning for every
+    // `@form(hashmap)` locus its author did not configure, from
+    // the form rows. The F.32-0 diagnostic below consults it to
+    // name the specific discipline the rule would pick, instead
+    // of suggesting a generic "choose one of serialized/striped".
+    let inferred_sync: BTreeMap<String, crate::sync_inference::InferredSync> = forms
+        .rows()
+        .iter()
+        .filter_map(|r| Some((r.locus.clone(), r.inferred.clone()?)))
+        .collect();
 
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
@@ -4619,54 +4633,25 @@ fn locus_member_body(member: &LocusMember) -> Option<&Block> {
     }
 }
 
-/// F.32-0 (2026-05-24): true when a form annotation carries an
-/// explicit `sync = X` kwarg where X names a recognized sync
-/// discipline (`serialized`, `striped`, or `lockfree`). The
-/// cross-pool exemption applies only to such loci — the
-/// substrate's runtime gives no thread-safety to plain
-/// `@form(...)` cells (the 3ec6391 commit's "form ABI
-/// serializes" claim was aspirational; see
-/// `notes/f32-cache-aware-delivery-plan.md` § F.32-0).
-///
-/// Unknown / malformed `sync = X` values return false here
-/// (so the cross-pool diagnostic still fires). F.32-1α/β2
-/// validates the recognized values; `lockfree` (γ) is in the
-/// accept set syntactically but the per-locus check rejects
-/// it as deferred. This helper only gates the cross-pool
-/// exemption — codegen does its own mapping to SyncMode.
-fn form_has_explicit_sync_discipline(form: &FormAnnotation) -> bool {
-    form.args.iter().any(|arg| {
-        if arg.name.name != "sync" {
-            return false;
-        }
-        match &arg.value {
-            Expr::Ident(i) => matches!(
-                i.name.as_str(),
-                "serialized" | "striped" | "lockfree"
-            ),
-            _ => false,
-        }
-    })
-}
-
 /// Visitor context for the cross-pool call walk. Carried by
 /// reference so the recursive Stmt/Expr traversal doesn't pay
 /// a closure-capture allocation per node.
 struct PoolCheckCx<'a> {
     enclosing_locus: &'a LocusDecl,
     caller_pool: Option<&'a PoolId>,
-    /// F.32-0 (2026-05-24): locus type names that opt in to
-    /// cross-pool access by declaring `@form(<name>, sync = X)`
-    /// where X is a recognized discipline (`serialized` /
-    /// `striped` / `lockfree`; F.32-1α/β/γ). Cross-pool method
-    /// calls into receivers landing in this set skip the
-    /// diagnostic — the chosen sync discipline carries the
+    /// F.32-0 (2026-05-24): locus type names whose form row is
+    /// safe for cross-domain access: a discipline of `serialized`
+    /// / `striped` / `lockfree` (F.32-1α/β/γ), written or inferred.
+    /// Cross-pool method calls into receivers landing in this set
+    /// skip the diagnostic — the sync discipline carries the
     /// substrate's safety contract.
     ///
-    /// Plain `@form(hashmap)` / `@form(vec)` / `@form(ring_buffer)`
-    /// (no sync kwarg) does NOT land in this set: the runtime
-    /// has no synchronization on those paths and concurrent
-    /// writers corrupt the structure (`lotus_arena.c:1869+` —
+    /// A form left unsynchronized — `sync = none`, an argument
+    /// naming no discipline, or a plain `@form(hashmap)` /
+    /// `@form(vec)` / `@form(ring_buffer)` inference did not
+    /// synchronize — does NOT land in this set: the runtime has no
+    /// synchronization on those paths and concurrent writers
+    /// corrupt the structure (`lotus_arena.c:1869+` —
     /// `lotus_hashmap_set` / `_grow` are non-atomic single-
     /// threaded code).
     cross_pool_safe_loci: &'a BTreeSet<String>,
@@ -4677,8 +4662,8 @@ struct PoolCheckCx<'a> {
     /// "declare `sync = ...` to opt in" upgrade hint.
     form_bearing_loci: &'a BTreeSet<String>,
     /// F.32-1∞ (2026-05-25): sync-inference results keyed by
-    /// locus type name. Present only for `@form(hashmap)`
-    /// loci without explicit `sync = `. The cross-pool
+    /// locus type name, the form rows' `inferred` column. Present
+    /// only for `@form(hashmap)` loci not explicitly configured. The cross-pool
     /// diagnostic reads this to name the specific discipline
     /// the rule picks (so the upgrade hint is actionable, not
     /// generic).
@@ -17696,6 +17681,7 @@ fn lit_ty(lit: &Literal) -> Ty {
 /// creator's pool, so they are not the shape this protects.
 fn check_instance_aliasing(
     bundle: &Bundle,
+    forms: &crate::form_rows::FormRows,
     diags: &mut Vec<Diag>,
 ) {
     // GH #825: the main locus, and the aliased locus type whose
@@ -17780,7 +17766,7 @@ fn check_instance_aliasing(
             });
         let Some(why) = aliased_ty
             .as_deref()
-            .and_then(|ty| locus_has_unsynchronized_state(bundle, ty))
+            .and_then(|ty| locus_has_unsynchronized_state(bundle, forms, ty))
         else {
             // Every mutable field is behind a `sync` discipline, so
             // the form orders the accesses and the alias is safe.
@@ -17898,13 +17884,15 @@ fn collect_self_assign_in_stmt(s: &Stmt, f: &mut impl FnMut(Span)) {
 ///
 ///   - a method assigning `self.<field> = ...` mutates a plain field
 ///     with nothing ordering it
-///   - a field whose type is a form WITHOUT a `sync` kwarg is mutable
-///     through its synthesized methods with nothing ordering it
+///   - a field whose type is a form WITHOUT a `sync` discipline (its
+///     form row's [`crate::form_rows::FormRows::synchronizes`]) is
+///     mutable through its synthesized methods with nothing ordering it
 ///
 /// Either makes the alias a race. Neither makes it safe by
 /// declaration, which is why this needs no annotation.
 fn locus_has_unsynchronized_state(
     bundle: &Bundle,
+    rows: &crate::form_rows::FormRows,
     locus_ty: &str,
 ) -> Option<String> {
     // GH #825: `forms` decides whether each field of the aliased
@@ -17920,10 +17908,8 @@ fn locus_has_unsynchronized_state(
             if l.name.name == locus_ty {
                 decl = Some(l);
             }
-            if let Some(f) = &l.form {
-                let synced =
-                    f.args.iter().any(|a| a.name.name == "sync");
-                forms.insert(l.name.name.clone(), synced);
+            if l.form.is_some() {
+                forms.insert(l.name.name.clone(), rows.synchronizes(l));
             }
         });
     }

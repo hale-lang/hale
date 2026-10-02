@@ -798,12 +798,18 @@ Rules verified at typecheck:
 By default, `@form(hashmap)` is **single-pool only** — the
 runtime has no synchronization on the hashmap entry points
 (`lotus_hashmap_set` / `_grow` / etc), and cross-pool calls
-into a plain `@form(hashmap)` receiver are typecheck-rejected
-(F.32-0). The opt-in path is the `sync = ` kwarg:
+into a `@form(hashmap)` receiver whose discipline does not
+synchronize are typecheck-rejected (F.32-0). The opt-in path is
+the `sync = ` kwarg. A top-level map with no `sync =` argument
+gets the discipline sync inference picks from the pools its
+methods are called from (F.32-1∞), and `sync = none` keeps a map
+unsynchronized whatever inference would pick; see `semantics.md`
+§ "A form's sync discipline" for the rule both follow.
 
 | Annotation | Discipline | Status |
 |---|---|---|
-| `@form(hashmap)` | single-pool only | shipped |
+| `@form(hashmap)` | inferred: none (single-pool only) unless its methods are called from several pools | shipped |
+| `@form(hashmap, sync = none)` | single-pool only; inference does not run | shipped |
 | `@form(hashmap, sync = serialized)` | per-map `pthread_mutex_t` (F.32-1α) | shipped |
 | `@form(hashmap, sync = striped)` | cell-level CAS + per-map `pthread_rwlock_t` for grow + cache-padded cells (F.32-1β2-v2) | shipped |
 | `@form(hashmap, sync = lockfree)` (optional `cap = N` initial-size hint) | cell-level CAS, no rwlock or mutex on the steady-state path (F.32-1γ-v1); + `remove` via tombstones (F.32-1γ-v2 session 1); + lazy grow with brief writer/reader stall during migration (F.32-1γ-v2 session 3) | shipped |
@@ -925,8 +931,10 @@ brief migration-window peak (OLD + NEW both alive for the
 ~ms duration of `lf_migrate`).
 
 Cross-pool method calls into a `@form(hashmap, sync = ...)`
-receiver are accepted without diagnostic — the chosen
-discipline carries the substrate's safety contract. Inside a
+receiver whose discipline is `serialized`, `striped` or
+`lockfree`, written or inferred, are accepted without diagnostic
+— the discipline carries the substrate's safety contract; one
+into a `sync = none` receiver is rejected. Inside a
 single pool, all three sync modes pay only their respective
 uncontended-fastpath costs (~30 ns for serialized,
 ~10 ns for lockfree's CAS).

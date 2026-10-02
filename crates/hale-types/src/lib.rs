@@ -68,6 +68,7 @@ pub mod flows;
 pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;
+pub mod form_rows;
 pub mod ty;
 pub mod working_set;
 
@@ -285,6 +286,7 @@ pub fn check_bundle_opts_scoped(
         }))
     };
     let entry = entry::entry_row(bundle);
+    let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -293,6 +295,7 @@ pub fn check_bundle_opts_scoped(
             effects: &effects,
             entry: &entry,
             alloc_summary: &alloc_summary,
+            forms: &forms,
         },
         allow_unowned_subscriber,
         strict_callees,
@@ -316,7 +319,7 @@ pub fn check_bundle_opts_scoped(
     // model is derived over the scope and the rows the check read, and
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
-        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone());
+        let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
         diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
     }
     finish_check_diags(&mut diags);
@@ -342,27 +345,36 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 /// ([`model_builder::derive_application_model_over`]). Every verb reads
 /// its snapshot's model instead (`Snapshot::demand_model`).
 pub fn derive_application_model(bundle: &Bundle<'_>) -> hale_model::ApplicationModel {
-    let (top, _diags) = resolve::build_top_scope(bundle);
+    let (top, diags) = resolve::build_top_scope(bundle);
     let handlers = bundle_handler_rows(bundle);
     let summary = std::sync::Arc::new(alloc_summary::derive_alloc_summary(bundle));
-    model_over_scope(bundle, &top, &handlers, summary)
+    let forms = form_rows::form_rows(bundle, &top, &entry::entry_row(bundle), diags.is_empty());
+    model_over_scope(bundle, &top, &handlers, summary, &forms)
 }
 
-/// [`derive_application_model`] over the scope, the rows and the
-/// allocation summary its caller already built: the graphs the model
-/// reads beside them are built here.
+/// [`derive_application_model`] over the scope, the rows, the
+/// allocation summary and the form rows its caller already built: the
+/// graphs the model reads beside them are built here.
 fn model_over_scope(
     bundle: &Bundle<'_>,
     top: &resolve::TopScope,
     handlers: &handler_routing::HandlerRouting,
     alloc_summary: std::sync::Arc<alloc_summary::AllocSummary>,
+    forms: &form_rows::FormRows,
 ) -> hale_model::ApplicationModel {
     let bus_graph = bus_graph::build_bus_graph(bundle, top);
     let ownership = ownership_graph::build_ownership_graph(bundle, top);
     let effects = effect_rows::derive_effect_rows(bundle, top, alloc_summary);
     model_builder::derive_application_model_over(
         bundle,
-        &model_builder::ModelInputs { top, bus_graph: &bus_graph, ownership: &ownership, handlers, effects: &effects },
+        &model_builder::ModelInputs {
+            top,
+            bus_graph: &bus_graph,
+            ownership: &ownership,
+            handlers,
+            effects: &effects,
+            forms,
+        },
     )
 }
 
@@ -410,109 +422,6 @@ pub fn finish_check_diags(diags: &mut Vec<Diag>) {
             d.message.clone(),
         ))
     });
-}
-
-/// FUv0.8.2 #4 (2026-05-25): auto-apply sync inference.
-///
-/// Walks the program for every `@form(hashmap)` locus that
-/// carries no explicit `sync = ` kwarg, runs the F.32-1∞
-/// inference, and injects the picked discipline as a
-/// synthetic `FormArg` on the locus's annotation when the
-/// rule produces a non-None pick.
-///
-/// Designed to run BEFORE [`check_bundle`]:
-///
-///   apply_sync_inference(&mut program);
-///   let diags = check_bundle(&bundle);  // sees the synced AST
-///
-/// Net behavior: a user who writes
-///
-///   @form(hashmap)
-///   locus Registry { capacity { pool entries of E indexed_by k; } }
-///
-/// and accesses it cross-pool gets the inference's
-/// discipline applied automatically — `sync = serialized` /
-/// `sync = striped` per the rule. The cross-pool diagnostic
-/// (F.32-0) sees an explicit sync and stays quiet.
-///
-/// Loci with an existing `sync = X` arg are left alone.
-/// Inference returning `SyncDiscipline::None` (single-pool
-/// use) also leaves the locus alone — no annotation injected
-/// because none is needed.
-///
-/// Returns any diagnostics raised during the resolver pass
-/// (typically empty). Codegen errors surface later in
-/// `check_bundle` / `build_executable` as usual.
-pub fn apply_sync_inference(
-    program: &mut hale_syntax::ast::Program,
-) -> Vec<Diag> {
-    use hale_syntax::ast::{Expr, FormArg, Ident, TopDecl};
-
-    // Build a temporary single-program bundle for the
-    // resolver. The bundle borrows the program immutably; we
-    // drop it before mutating.
-    let inferred = {
-        let mut programs = BTreeMap::new();
-        programs.insert(String::new(), &*program);
-        let bundle = Bundle::new(programs);
-        let (top, diags) = resolve::build_top_scope(&bundle);
-        if !diags.is_empty() {
-            // Resolver errors will be re-raised by
-            // `check_bundle`; auto-apply skips work in that
-            // case (the program won't compile anyway).
-            return diags;
-        }
-        // The single-program bundle's own entry row: sync inference
-        // runs before the snapshot's sequence, outside its families.
-        let entry = entry::entry_row(&bundle);
-        let pool_map = check::compute_pool_of_locus_type(&bundle, &top, &entry);
-        sync_inference::infer_sync_for_bundle(&bundle, &top, &pool_map)
-    };
-
-    // Mutate: inject `sync = <picked>` for each candidate
-    // that has a non-None inferred discipline. The candidate
-    // set (no existing sync kwarg) was already filtered by
-    // `infer_sync_for_bundle`; here we re-check defensively
-    // and pick the rendering shape.
-    for item in &mut program.items {
-        if let TopDecl::Locus(l) = item {
-            let Some(form) = &mut l.form else { continue };
-            if form.name.name != "hashmap" {
-                continue;
-            }
-            if form
-                .args
-                .iter()
-                .any(|a| a.name.name == "sync")
-            {
-                continue;
-            }
-            let Some(inf) = inferred.get(&l.name.name) else {
-                continue;
-            };
-            let label = match inf.discipline {
-                sync_inference::SyncDiscipline::None => continue,
-                sync_inference::SyncDiscipline::Serialized => "serialized",
-                sync_inference::SyncDiscipline::Striped => "striped",
-            };
-            // Build a synthetic FormArg `sync = <label>`. Span
-            // pinned to the form's own span so a downstream
-            // error (e.g. a future "striped requires cap = N"
-            // would point at the form decl rather than a
-            // location-less zero-span). Ident has no canonical
-            // synthetic span, so reuse the form's.
-            let span = form.span;
-            let arg_name = Ident::new("sync", span);
-            let arg_value = Expr::Ident(Ident::new(label, span));
-            form.args.push(FormArg {
-                name: arg_name,
-                value: arg_value,
-                span,
-            });
-        }
-    }
-
-    Vec::new()
 }
 
 #[cfg(test)]
@@ -3005,180 +2914,6 @@ mod tests {
             "user-declared ParseError in a form-free program \
              should typecheck clean; got: {:?}",
             diags
-        );
-    }
-
-    // === FUv0.8.2 #4 auto-applied sync inference =========
-
-    #[test]
-    fn apply_sync_inference_injects_striped_on_two_writer_pools() {
-        // Two pools (io + compute) each fire `self.reg.set` in
-        // on_tick handlers — inference picks striped. The
-        // pre-pass should inject `sync = striped` into the
-        // @form(hashmap) annotation.
-        let src = r#"
-            type Entry { k: Int; v: Int; }
-            type Tick { n: Int; }
-
-            @form(hashmap)
-            locus Registry {
-                capacity { pool entries of Entry indexed_by k; }
-            }
-
-            locus IoWorker {
-                params { reg: Registry = Registry { }; }
-                bus { subscribe "tick" as on_tick of type Tick; }
-                fn on_tick(t: Tick) {
-                    self.reg.set(Entry { k: t.n, v: 1 });
-                }
-            }
-
-            locus CompWorker {
-                params { reg: Registry = Registry { }; }
-                bus { subscribe "tick" as on_tick of type Tick; }
-                fn on_tick(t: Tick) {
-                    self.reg.set(Entry { k: t.n, v: 2 });
-                }
-            }
-
-            main locus App {
-                params {
-                    io: IoWorker = IoWorker { };
-                    cpu: CompWorker = CompWorker { };
-                }
-                placement {
-                    io: cooperative(pool = io);
-                    cpu: cooperative(pool = compute);
-                }
-                bus { publish "tick" of type Tick; }
-                run() { }
-            }
-
-            fn main() { App { }; }
-        "#;
-        let mut prog = parse_source(src).expect("parse");
-        let diags = apply_sync_inference(&mut prog);
-        assert!(diags.is_empty(), "got: {:?}", diags);
-
-        // Find Registry locus + inspect its form args.
-        let registry = prog
-            .items
-            .iter()
-            .find_map(|item| match item {
-                hale_syntax::ast::TopDecl::Locus(l)
-                    if l.name.name == "Registry" =>
-                {
-                    Some(l)
-                }
-                _ => None,
-            })
-            .expect("Registry not found");
-        let form = registry
-            .form
-            .as_ref()
-            .expect("Registry has @form annotation");
-        let sync_arg = form
-            .args
-            .iter()
-            .find(|a| a.name.name == "sync")
-            .expect("auto-apply should have injected sync arg");
-        match &sync_arg.value {
-            hale_syntax::ast::Expr::Ident(i) => {
-                assert_eq!(
-                    i.name, "striped",
-                    "expected striped, got: {}",
-                    i.name
-                );
-            }
-            other => panic!("expected Ident value, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn apply_sync_inference_leaves_existing_sync_alone() {
-        // Locus already has `sync = serialized` written by
-        // hand. Auto-apply must not touch it (even if the
-        // inference would have picked something else).
-        let src = r#"
-            type Entry { k: Int; v: Int; }
-            @form(hashmap, sync = serialized)
-            locus Registry {
-                capacity { pool entries of Entry indexed_by k; }
-            }
-            fn main() { Registry { }; }
-        "#;
-        let mut prog = parse_source(src).expect("parse");
-        apply_sync_inference(&mut prog);
-
-        let registry = prog
-            .items
-            .iter()
-            .find_map(|item| match item {
-                hale_syntax::ast::TopDecl::Locus(l)
-                    if l.name.name == "Registry" =>
-                {
-                    Some(l)
-                }
-                _ => None,
-            })
-            .expect("Registry not found");
-        let form = registry.form.as_ref().unwrap();
-        let sync_args: Vec<_> = form
-            .args
-            .iter()
-            .filter(|a| a.name.name == "sync")
-            .collect();
-        assert_eq!(
-            sync_args.len(),
-            1,
-            "should still have exactly 1 sync arg"
-        );
-        match &sync_args[0].value {
-            hale_syntax::ast::Expr::Ident(i) => {
-                assert_eq!(i.name, "serialized");
-            }
-            other => panic!("expected serialized, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn apply_sync_inference_skips_single_pool_use() {
-        // Registry used only from one pool — inference returns
-        // None; no annotation injected.
-        let src = r#"
-            type Entry { k: Int; v: Int; }
-            @form(hashmap)
-            locus Registry {
-                capacity { pool entries of Entry indexed_by k; }
-            }
-            main locus App {
-                params { reg: Registry = Registry { }; }
-                run() {
-                    self.reg.set(Entry { k: 1, v: 1 });
-                }
-            }
-            fn main() { App { }; }
-        "#;
-        let mut prog = parse_source(src).expect("parse");
-        apply_sync_inference(&mut prog);
-
-        let registry = prog
-            .items
-            .iter()
-            .find_map(|item| match item {
-                hale_syntax::ast::TopDecl::Locus(l)
-                    if l.name.name == "Registry" =>
-                {
-                    Some(l)
-                }
-                _ => None,
-            })
-            .unwrap();
-        let form = registry.form.as_ref().unwrap();
-        assert!(
-            !form.args.iter().any(|a| a.name.name == "sync"),
-            "single-pool use should not inject sync; got args: {:?}",
-            form.args
         );
     }
 

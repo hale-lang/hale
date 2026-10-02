@@ -236,6 +236,7 @@ const TOPOLOGY: &str = "crates/hale-types/src/topology.rs";
 const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
 const CLAIMS: &str = "crates/hale-types/src/claims.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
+const FORM_ROWS: &str = "crates/hale-types/src/form_rows.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
@@ -336,11 +337,10 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Desugar,
-        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, sync inference, unit returns, construction aliases, the omitted `run`, repr accessors). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
+        answers: "Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check.",
         inputs: &["the merged program", "--api / --env (roles)", "the cross-seed rename table"],
         producer: Some(site(DESUGAR_SEQ, "desugar_before_check")),
         legacy: &[
-            legacy(SNAPSHOT, "apply_sync_inference", "every verb and the LSP, through the snapshot's load: sync inference per program, outside the sequence, before it", "phase 3, when sync inference is a pass of the sequence: plan 2.1b put it in the one order, but the load still runs it per program before the sequence (`Snapshot::load`), each file over a single-program top scope and pool map of its own (`apply_sync_inference`), so moving it into the sequence makes it read the bundle's scope (at the phase-2 close)"),
             legacy(CG, "build_executable_with_options", "codegen's adapter for a bare program is the test harness's snapshot, not a second pipeline: it builds `Snapshot::from_program` (shaped by the one load, with no source map and no check before lowering, `Config::harness`) and demands the lowering view; its seam allows only the definition, so no non-test caller bypasses the verbs' snapshot (tests are not scanned by the seam guard)", "the harness builds from a loaded seed, as the verbs do"),
         ],
         consumers: &[consumer("check"), consumer("build"), consumer("run"), consumer("test"), consumer("replay"), consumer("bench"), consumer("lsp"), consumer_at("codegen", CG, "build_resolved")],
@@ -371,21 +371,41 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Parse,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "Which sync discipline each `@form(hashmap)` slot gets when the author declared none, from the pools its methods are called from.",
-        inputs: &["placement (the pool map)", "top_scope", "form declarations", "method call sites"],
-        producer: Some(site(SYNC, "infer_sync_for_bundle")),
+        answers: "Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access.",
+        inputs: &["placement (the entry row's pool map)", "top_scope", "form declarations", "method call sites"],
+        producer: Some(site(FORM_ROWS, "form_rows")),
         legacy: &[
-            legacy(TLIB, "apply_sync_inference", "injects the inferred `sync =` FormArg into the AST — the only analysis result codegen receives: every verb, the LSP and the test harness run it through the snapshot's load", "the inferred discipline is a row lowering reads; no AST mutation"),
-            legacy(CHECK, "form_has_explicit_sync_discipline", "the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check)", "one predicate over the form rows"),
-            legacy(SYNC, "form_has_explicit_sync", "sync inference's own predicate, which counts `sync = none` where the checker's does not", "one predicate over the form rows"),
+            legacy(ALLOC, "summarize_identified", "the allocation summary reads a written `sync =` argument for `sync_forms`, the only answer for the stdlib's analysis copy, which no snapshot's rows hold; the effects engine adds the rows' (`add_sync_forms`)", "the stdlib's forms are rows of the snapshot (the stdlib merged once)"),
         ],
-        consumers: &[consumer("check (F.31 cross-pool verdicts)"), consumer_at("codegen", CG_DECL, "sync_mode"), consumer("lsp")],
-        invariants: &["every entry point sees the same discipline for the same program"],
+        consumers: &[
+            consumer_at("the snapshot (one row set per snapshot, after the mint, over its scope and entry row)", SNAPSHOT, "demand_forms"),
+            consumer_at("check (F.31 cross-pool verdicts: the one predicate, safe for cross-domain access)", CHECK, "check_placement_single_thread"),
+            consumer_at("check (instance aliasing: a field behind a sync discipline)", CHECK, "locus_has_unsynchronized_state"),
+            consumer_at("the effects certificate engine (a call into a sync-bearing form or its holder can take its lock)", ALLOC, "add_sync_forms"),
+            consumer_at("sync inference (its candidates: the forms not explicitly configured)", SYNC, "infer_sync_for_bundle"),
+            consumer_at("model (`sync_form`, read by the `depends` law)", MODEL_BUILDER, "derive_application_model_over"),
+            consumer_at("the lowering view (the snapshot's rows, and the merged stdlib's as written)", TY_RESOLVED, "resolve_program"),
+            consumer_at("codegen (the slot layout)", CG_DECL, "sync_mode"),
+            consumer("lsp"),
+        ],
+        invariants: &[
+            "every entry point sees the same discipline for the same program",
+            "one row per `@form` declaration, found by the identity the load minted (a monomorph by its template's) or by name: the configuration and the effective discipline are separate columns",
+            "an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access",
+            "one predicate per question: inference's candidates are the forms not explicitly configured, and the F.31 cross-pool exemption is safe for cross-domain access; sync inference runs once per snapshot, and the cross-pool diagnostic's hint reads its reasoning from the rows",
+            "nothing writes the discipline into the program: the check, the effects engine, the model and lowering read the row, and a declaration with no row (the stdlib's, merged for lowering) reads its written argument",
+            "the readers that ask whether a form synchronizes as one question (the model's `sync_form`, the effects engine, instance aliasing) ask safe for cross-domain access alone (`FormRows::synchronizes`): an explicit `sync = none` takes no lock and is not one",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/placement.rs"],
-        spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
-        owned: &[],
-        seams: &[Seam { symbol: "apply_sync_inference(", allowed: &[(TLIB, 4), (SNAPSHOT, 1)] }],
+        tests: &["crates/hale-types/tests/form_rows.rs", "crates/hale-frontend/src/snapshot.rs (the_form_rows_are_one_family_by_identity)", "crates/hale-types/tests/placement.rs"],
+        spec: &["spec/forms.md § Cross-pool sync disciplines", "spec/semantics.md § A form's sync discipline"],
+        owned: &[site(SYNC, "infer_sync_for_bundle")],
+        seams: &[
+            // The snapshot's, and the entries of a bundle no snapshot
+            // holds: `check_bundle`, `check_bundle_opts_scoped` and
+            // `derive_application_model`, `effect_certificates`.
+            Seam { symbol: "form_rows(", allowed: &[(FORM_ROWS, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1)] },
+        ],
     },
     Family {
         name: "effect_class_table",
@@ -432,7 +452,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program", "import renames"],
         producer: Some(site(RESOLVE, "build_top_scope")),
         legacy: &[
-            legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), sync inference and the lowering view (once, for the ownership graph and the bus graph) rebuild it; every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "every consumer demands the scope from a snapshot (2.3)"),
+            legacy(TLIB, "check_bundle_opts_scoped", "`check_program` (the test entry): built here, once, for its checker and the model its laws are judged over. Beside it the model of a bundle no snapshot holds (`derive_application_model`: `claim_law_diags`, the hale-types tests, and the artifact and model-hash entries over a bare bundle; since 2.3 no verb reaches it), the certificate report of such a bundle (`effect_certificates`, for its form rows) and the lowering view (once, for the ownership graph and the bus graph) rebuild it; every verb and the LSP (its diagnostics and every request) build one per snapshot (`demand_scope`) and pass it to the checker, the model and the model's graphs", "every consumer demands the scope from a snapshot (2.3)"),
         ],
         consumers: &[consumer_at("check", CHECK, "check_bundle_scoped"), consumer_at("check (type expressions: the scope's name table)", CHECK, "&top.names"),consumer_at("demand (every verb, the LSP's diagnostics and its requests: one scope per snapshot)", SNAPSHOT, "build_top_scope"), consumer_at("model (the snapshot's scope, handed in)", MODEL_BUILDER, "ModelInputs"), consumer_at("resolved program (lowering)", TY_RESOLVED, "build_top_scope"), consumer_at("lsp (definition, placement, the allocation survey: the snapshot's scope)", LSP, "demand_scope"), consumer_at("lsp (completion, hover, references, enforcement: the editor's scope, over the members that parsed while one does not)", LSP, "demand_editor_scope")],
         invariants: &[
@@ -444,7 +464,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-types/tests/checks_inside_modules.rs", "crates/hale-cli/tests/check_unknown_identifier.rs", "crates/hale-types/tests/type_alias.rs"],
         spec: &["spec/semantics.md"],
         owned: &[],
-        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 4), (SYNC, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1)] }],
+        seams: &[Seam { symbol: "build_top_scope(", allowed: &[(RESOLVE, 1), (TLIB, 3), (SYNC, 1), (EFFECTS, 1), (TY_RESOLVED, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "expression_typing",
@@ -515,10 +535,10 @@ pub const FAMILIES: &[Family] = &[
         state: State::Migrating,
         kind: Kind::Law,
         answers: "Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot.",
-        inputs: &["@form arguments", "capacity declarations", "indexed_by", "sync discipline"],
+        inputs: &["@form arguments", "capacity declarations", "indexed_by", "sync discipline (the `sync_inference` form rows)"],
         producer: Some(site(CHECK, "check_form_shape")),
         legacy: &[
-            legacy(CG_DECL, "sync_mode", "codegen reads the form's arguments again to choose the slot layout", "codegen reads the form rows"),
+            legacy(CG_DECL, "ring_buffer_cap", "codegen reads the form's `cap =` argument again for the slot layout (a ring buffer's or LRU cache's capacity, a lockfree map's fixed capacity); the `sync` discipline it reads from the form row", "codegen reads the form rows"),
         ],
         consumers: &[consumer("check"), consumer("codegen (slot layout)"), consumer("sync_inference")],
         invariants: &["the operation set a form closes over a slot is a row: it is what a storage binding (F.44) will need"],
@@ -605,7 +625,7 @@ pub const FAMILIES: &[Family] = &[
         consumers: &[
             consumer_at("check (rule 1's count reads the witness: the seed's own mains, module-nested ones included)", CHECK, "check_main_and_bindings"),
             consumer_at("check (the pinned-in-a-loop rule reads the lowering root)", CHECK, "check_pinned_locus_in_loop"),
-            consumer_at("check (the F.31 pool map is seeded from the lowering root; sync inference builds its own row over its single-program bundle)", CHECK, "compute_pool_of_locus_type"),
+            consumer_at("check (the F.31 pool map is seeded from the lowering root; the form rows' sync inference reads the same map over the snapshot's entry row)", CHECK, "compute_pool_of_locus_type"),
             consumer_at("check (rule 9's closed world is a program with an entry)", CHECK, "check_bus_graph"),
             consumer_at("check --matrix (a seed is an entrypoint when its row has an entry; the row is built over the seed's own files, since no import holds the entry, so a seed whose import does not resolve is still counted and its pair reports the import)", V_MATRIX, "seed_entry_kind"),
             consumer_at("--env on check and the build paths (the load refuses an environment for a seed with no entry, after the mint, before the sequence's own refusal)", SNAPSHOT, "demand_entry"),
@@ -614,7 +634,7 @@ pub const FAMILIES: &[Family] = &[
             consumer("codegen"),
         ],
         invariants: &[
-            "the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, sync inference, which runs per file before the sequence, builds one over its single-program bundle, and the check matrix builds one over each seed's own files (no import holds the entry, and a seed whose import does not resolve is still an entrypoint)",
+            "the checker builds no row: the snapshot demands it before the check and hands it in (`CheckInputs::entry`); a bundle no snapshot holds (the test entries) builds it once, the form rows read the snapshot's (`demand_forms`), and the check matrix builds one over each seed's own files (no import holds the entry, and a seed whose import does not resolve is still an entrypoint)",
             "one row per snapshot (`Snapshot::demand_entry`, the `entrypoint` count): the entry by its minted site, and every `main locus` the bundle declares as the witness, each with whether it is imported and whether it is module-nested; it reads declarations only, so no diagnostic blocks it, and a seed with a hole (no identities) blocks it with its scope",
             "an imported `main` is not the entry (decision 1, E0): a library's `main locus` is a declaration the importing seed does not run, and the entry is the importing seed's own; a seed whose only `main` is imported has no entry (`NoEntry::OnlyImported`). Imported is one definition, the rename pass's mark (`imported`, GH #1104 piece 5); the `__lib_` name the same pass gives is spelling, not a second test of the entry (the provisional lowering root copies lowering's name test, until L4)",
             "a module-nested `main` is not the entry (decision 2, E0): the entry is a top-level `main locus` of the seed's own files, so rule 9's closed world is the top-level one; a seed whose only `main` is module-nested has no entry (`NoEntry::OnlyModuleNested`), and a seed with both keeps the top-level one. Rule 1 still counts a module-nested `main` (GH #825): the count reads the witness, not the entry",
@@ -627,7 +647,7 @@ pub const FAMILIES: &[Family] = &[
         tests: &["crates/hale-frontend/src/snapshot.rs (the_entry_row_is_the_seeds_own_top_level_main_locus)", "crates/hale-cli/tests/check_entry_decisions.rs", "crates/hale-cli/tests/nested_main_transition.rs (the nested-main transition end to end: refused, and deployed, as a top-level main)", "crates/hale-cli/tests/entry_point_placement.rs", "crates/hale-types/tests/bus_graph.rs"],
         spec: &["spec/semantics.md § Bundle-wide rules"],
         owned: &[],
-        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (V_MATRIX, 1)] }],
+        seams: &[Seam { symbol: "entry_row(", allowed: &[(ENTRY, 1), (SNAPSHOT, 1), (CHECK, 1), (TLIB, 2), (EFFECTS, 1), (V_MATRIX, 1)] }],
     },
     Family {
         name: "ownership",
@@ -1118,7 +1138,7 @@ pub const FAMILIES: &[Family] = &[
         spec: &["spec/semantics.md § Placement block (F.31)", "spec/decisions.md F.31, F.35, F.38"],
         owned: &[],
         seams: &[
-            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (TLIB, 1)] },
+            Seam { symbol: "compute_pool_of_locus_type(", allowed: &[(CHECK, 2), (FORM_ROWS, 1)] },
             Seam { symbol: "collect_main_placement(", allowed: &[(CG, 2)] },
         ],
     },
@@ -1378,7 +1398,7 @@ pub const FAMILIES: &[Family] = &[
         ],
         invariants: &[
             "every editor request reads the snapshot: the outline reads the open file's member program (`Snapshot::member`, the file as it parsed, before the merge and the sequence), so it answers while another member does not parse or an import does not resolve (the editor's load keeps the members of a seed whose link it refused, every family blocked) and lists only what the file itself declares; a file that does not parse has no outline",
-            "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: sync inference builds a single-program top scope per file before the sequence, and the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `apply_sync_inference` (sync_inference, desugar_sequence), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)",
+            "a prerequisite runs once: every family is a `OnceCell` of its snapshot, and a family that reads another demands it rather than building its own; `Snapshot::builds` counts each family's demands on the snapshot (its producer's runs in the snapshot's own cell), and no count exceeds one on any consumer on the snapshot. It does not count what is rebuilt outside those cells: the lowering view's `resolve_program` builds its own top scope, ownership graph, bus graph and handler rows, so on a build path `build_top_scope` runs more often than `builds()` says. Those rebuilds are the legacy rows `check_bundle_opts_scoped` (top_scope), `build_ownership_graph` (ownership) and the resolved program's `build_bus_graph` (bus_graph), and the resolved program's reference in the `handler_rows(` seam (handler_routing)",
             "a family nobody requested is not computed: the no-claims editor path builds no model (GH #476 criterion 1), nor the graphs it reads",
             "the model's inputs are families (2.3): `demand_model` demands the scope, the bus graph, the ownership graph, the handler rows and the effect rows over the checked programs (the `bus_graph`, `ownership`, `handler_routing` and `effects` counts), each once; lowering's graphs are the lowering view's own, over the resolved program, until the check runs over it",
             "the checker's inputs are families (2.3): the typing demands the handler rows and the entry row before the checker runs and hands them in (`CheckInputs`), so a check with a law builds the handler rows once for the checker and the model together; both producers read declarations, not types, so they are total over a program that does not typecheck",

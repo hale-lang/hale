@@ -356,7 +356,8 @@ given, not by which command it is.
 
 Every command that compiles checks what it compiles the same way,
 from one load: the seed and its imports, shaped by one sequence (the
-`--env` constitutions, sync inference, the desugars) and checked with
+`--env` constitutions, the desugars), with one set of form rows (each
+`@form`'s `sync` discipline, sync inference's included), and checked with
 the build's rules, and a check that reports an error is the command's
 failure before anything is lowered (2026-09-30, F.40 phase 2.2b).
 Before it each command had its own copy of that pipeline, and they

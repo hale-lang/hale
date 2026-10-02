@@ -196,6 +196,9 @@ pub struct ModelInputs<'a> {
     /// lower bound, and the stdlib-merged summary their walk read, which
     /// the model's attribution and absorbed-path walks read too.
     pub effects: &'a crate::effect_rows::EffectRows,
+    /// The form rows (F.40 phase 3, C1): which forms carry a `sync`
+    /// discipline, inference's included, for each locus's `sync_form`.
+    pub forms: &'a crate::form_rows::FormRows,
 }
 
 /// The application model of `bundle`, over the families `inputs` holds.
@@ -477,13 +480,11 @@ pub fn derive_application_model_over(
     }
     let mut locus_rows: BTreeMap<String, LocusRow> = BTreeMap::new();
     for l in &ast.loci {
-        // #340: the `sync` discipline is read off the form's own
-        // declaration. There is no annotation for it, and there
-        // should not be — it is a property of how the form is
+        // #340: the `sync` discipline is the form's own, its row's
+        // (written or inferred). There is no annotation for it, and
+        // there should not be — it is a property of how the form is
         // shared, not a claim about it.
-        let sync_form = l.form.as_ref().is_some_and(|f| {
-            f.args.iter().any(|a| a.name.name == "sync")
-        });
+        let sync_form = inputs.forms.synchronizes(l);
         let mut params = Vec::new();
         for m in &l.members {
             let LocusMember::Params(pb) = m else { continue };

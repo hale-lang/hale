@@ -91,6 +91,11 @@ pub struct LoweringView {
     /// generic owner's clause as its template, which lowering
     /// specializes with its own substitution.
     pub flows: crate::flows::FlowRows,
+    /// The form rows (F.40 phase 3, C1): the snapshot's, one per user
+    /// `@form` declaration with the discipline it gets, inference's
+    /// included, and the merged stdlib's as written. Lowering lays each
+    /// map out by its row's effective discipline.
+    pub forms: crate::form_rows::FormRows,
     /// Whether the program can ever have a bus cell in flight, so
     /// lowering can elide every drain (`crate::bus_inert`).
     pub bus_inert: bool,
@@ -172,15 +177,18 @@ impl LoweringView {
 /// and `api_roles` are the build's `--api` path and the roles its
 /// environment binds, the ones the sequence shaped the api surface
 /// with, recorded on the envelope for lowering to hold its options
-/// to. The error is the message codegen reports as
-/// `CodegenError::Unsupported`: a bundled stdlib that does not parse,
-/// or a locus-producing node the mint left unnumbered.
+/// to. `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
+/// a caller with none passes `&FormRows::default()`, and every form then
+/// gets its written discipline. The error is the message codegen
+/// reports as `CodegenError::Unsupported`: a bundled stdlib that does
+/// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_program(
     program: &Program,
     sources: &[SourceFile],
     import_renames: &[(Vec<String>, String)],
     api: Option<&str>,
     api_roles: Option<&str>,
+    forms: &crate::form_rows::FormRows,
 ) -> Result<LoweringView, String> {
     // A7 (G16): resolve `BusSubject::QualifiedTopic(alias::Foo)`
     // — cross-seed topic refs the parser admits — to plain
@@ -394,6 +402,10 @@ pub fn resolve_program(
     // The allocation-routing rows over the same merged program, cross-seed
     // calls resolved through the same renames: lowering reads them.
     let alloc_routing = crate::alloc_routing::derive_alloc_routing(&merged, import_renames);
+    // The snapshot's form rows, found by the identities the merge kept,
+    // and a written-configuration row for every declaration they do not
+    // hold (the stdlib's).
+    let forms = forms.clone().extended(crate::form_rows::FormRows::configured(&merged.items));
 
     Ok(LoweringView {
         merged,
@@ -404,6 +416,7 @@ pub fn resolve_program(
         bubble,
         handlers,
         flows,
+        forms,
         bus_inert,
         bus,
         plan,
