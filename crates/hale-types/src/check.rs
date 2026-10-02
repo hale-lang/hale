@@ -510,8 +510,18 @@ pub struct CheckInputs<'a> {
 /// once each ([`crate::bundle_handler_rows`], [`crate::entry::entry_row`],
 /// [`crate::alloc_summary::derive_alloc_summary`],
 /// [`crate::form_rows::form_rows`], the bus graph; the effect rows when a
-/// rule asks).
+/// rule asks), over the bundle [`crate::with_identities`] numbers. `top`
+/// is read beside the numbered copy: a scope names declarations, not
+/// sites, so the one built over `bundle` is the copy's.
 pub fn check_bundle(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
+    crate::with_identities(bundle, |bundle| check_numbered_bundle(bundle, top, allow_unowned_subscriber))
+}
+
+fn check_numbered_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
@@ -7080,7 +7090,28 @@ fn check_bus_cycles(
     for d in order {
         let keep = |e: &BusEdge| e.decl == d && e.unconditional;
         let called = |e: &BusEdge| keep(e) && direct.contains(&e.send.0);
-        if let Some(cycle) = first_cycle(&called) {
+        let Some(queued) = first_cycle(&keep) else { continue };
+        // The join reads each send's identity, and a send with none
+        // matches no row: that is a bundle nobody numbered, not a send
+        // the queue carries, so it is refused here rather than judged.
+        // Every entry numbers before it checks; this is the invariant.
+        if let Some(e) = bus.edges.iter().find(|e| keep(e) && e.send.is_none()) {
+            diags.push(Diag::ty(
+                e.span,
+                format!(
+                    "internal: the send to `{}` in handler `{}` of locus `{}` \
+                     carries no identity, so the bus cycle `{}` cannot be \
+                     joined to the intra-locus rewrite's relation to tell a \
+                     direct call from a queued send. The check was handed a \
+                     bundle whose programs were never numbered.",
+                    e.to,
+                    e.handler,
+                    bus.decls[d].name,
+                    cycle_path(&queued),
+                ),
+            ));
+            intra.insert(d);
+        } else if let Some(cycle) = first_cycle(&called) {
             diags.push(Diag::ty(
                 cycle[0].span,
                 format!(
@@ -7095,14 +7126,14 @@ fn check_bus_cycles(
                 ),
             ));
             intra.insert(d);
-        } else if let Some(cycle) = first_cycle(&keep) {
+        } else {
             diags.push(Diag::warn(
-                cycle[0].span,
+                queued[0].span,
                 format!(
                     "bus cycle `{}` in locus `{}`: a cell can re-trigger \
                      its own publish, spinning the cooperative queue. Break \
                      the loop or add a terminating condition.",
-                    cycle_path(&cycle),
+                    cycle_path(&queued),
                     bus.decls[d].name,
                 ),
             ));

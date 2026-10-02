@@ -545,7 +545,7 @@ fn own_entries_run_to_exit_programs() {
         assert_eq!(copy, 21, "{t}: the copy's leak sites");
         own.extend(mine.into_iter().map(|s| format!("{t}: {s}")));
     }
-    assert_eq!(moved, 77, "the run-to-exit programs among the targets");
+    assert_eq!(moved, 78, "the run-to-exit programs among the targets");
     assert_eq!(
         own,
         [

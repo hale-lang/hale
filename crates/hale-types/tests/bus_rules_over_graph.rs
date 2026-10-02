@@ -378,6 +378,110 @@ fn a_send_by_name_meets_a_subscription_by_literal_subject() {
     );
 }
 
+/// The check of a bundle of parsed programs no entry minted
+/// (`Bundle::new` + `check_bundle`), as a library caller makes one.
+fn check_unminted(src: &str) -> Vec<String> {
+    let prog = parse_source(src).expect("parse failed");
+    let bundle = Bundle::new(BTreeMap::from([("main.hl".to_string(), &prog)]));
+    hale_types::check_bundle(&bundle).into_iter().map(|d| d.message).collect()
+}
+
+const SELF_RECURSION_BY_NAME: &str = r#"
+type Tick { n: Int; }
+topic T { payload: Tick; subject: "t"; }
+locus Echo {
+    bus { publish T; subscribe T as on_t; }
+    fn on_t(t: Tick) { T <- Tick { n: t.n + 1 }; }
+    run() { T <- Tick { n: 0 }; }
+}
+main locus App { params { e: Echo = Echo { }; } }
+fn main() { App { }; }
+"#;
+
+/// A locus subscribing its own topic by name is rewritten to a direct
+/// call, so the self-republish is the re-entrant error on the bundle
+/// entry too, as it is through `check_program` and the snapshot. That
+/// entry once built the bus graph over the parsed programs, whose sends
+/// had no ids, and the relation over a copy it numbered on its own: the
+/// join matched nothing and the recursion read as the queue's warning.
+/// The bundle is now numbered once, and both are derived from it.
+#[test]
+fn a_bundle_no_entry_minted_joins_the_graph_to_the_rewrite() {
+    let error = "locus `Echo` has a re-entrant synchronous bus cycle `T → T`: each publish onto \
+                 a topic the locus also subscribes is a direct in-thread call (intra-locus \
+                 self-dispatch), so this recurses without bound and overflows the stack. Break \
+                 the cycle, or route one hop through a different pool (an async enqueue).";
+    for msgs in [check(SELF_RECURSION_BY_NAME), check_unminted(SELF_RECURSION_BY_NAME)] {
+        assert_eq!(cycles(&msgs), [error], "{msgs:?}");
+        assert!(!msgs.iter().any(|m| m.starts_with("internal:")), "{msgs:?}");
+    }
+
+    // The send the rewrite leaves on the queue is still the warning on
+    // the same entry.
+    let msgs = check_unminted(NAME_SENT_LITERAL_SUBSCRIBED);
+    assert_eq!(
+        cycles(&msgs),
+        ["bus cycle `t → t` in locus `Echo`: a cell can re-trigger its own publish, spinning \
+          the cooperative queue. Break the loop or add a terminating condition."],
+        "{msgs:?}"
+    );
+    assert!(!msgs.iter().any(|m| m.contains("re-entrant") || m.starts_with("internal:")), "{msgs:?}");
+}
+
+/// Rule 10's join of a send to the intra-locus rewrite's relation needs
+/// the send's id, and a relation holding no row for a send is what a
+/// queued send looks like. Handed the inputs the bundle entry used to
+/// build (the graph over the parsed programs, the relation over a copy
+/// numbered on its own), the check refuses the cycle as an internal
+/// failure naming the send rather than judging it queued.
+#[test]
+fn an_unnumbered_send_is_refused_at_the_join() {
+    use hale_types::check::{check_bundle_scoped, CheckInputs};
+
+    let prog = parse_source(SELF_RECURSION_BY_NAME).expect("parse failed");
+    let bundle = Bundle::new(BTreeMap::from([(String::new(), &prog)]));
+    let (top, _) = build_top_scope(&bundle);
+    let handlers = hale_types::handler_routing::handler_rows(&[&prog], &[], &bundle.snapshot);
+    let alloc_summary = std::sync::Arc::new(hale_types::alloc_summary::derive_alloc_summary(&bundle));
+    let rows = std::cell::OnceCell::new();
+    let effects = || {
+        Some(rows.get_or_init(|| {
+            hale_types::effect_rows::derive_effect_rows(&bundle, &top, alloc_summary.clone())
+        }))
+    };
+    let entry = hale_types::entry::entry_row(&bundle);
+    let forms = hale_types::form_rows::form_rows(&bundle, &top, &entry, true);
+    let bus = build_bus_graph(&bundle, &top);
+    let intra_locus = hale_types::resolved::rewrite_intra_locus(&prog).intra_locus;
+    assert!(!intra_locus.is_empty(), "the rewrite makes the self-send a direct call");
+    let inputs = CheckInputs {
+        top: &top,
+        handlers: &handlers,
+        effects: &effects,
+        entry: &entry,
+        alloc_summary: &alloc_summary,
+        forms: &forms,
+        bus: &bus,
+        intra_locus: &intra_locus,
+    };
+    let diags = check_bundle_scoped(&bundle, &inputs, false, false, false);
+    let cycles: Vec<(bool, &str)> = diags
+        .iter()
+        .filter(|d| d.message.contains("bus cycle"))
+        .map(|d| (d.is_error(), d.message.as_str()))
+        .collect();
+    assert_eq!(
+        cycles,
+        [(
+            true,
+            "internal: the send to `t` in handler `on_t` of locus `Echo` carries no identity, so \
+             the bus cycle `T → T` cannot be joined to the intra-locus rewrite's relation to tell \
+             a direct call from a queued send. The check was handed a bundle whose programs were \
+             never numbered."
+        )]
+    );
+}
+
 const UNRESOLVED_CYCLE: &str = r#"
 type Tick { n: Int; }
 locus Echo {

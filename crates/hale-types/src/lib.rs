@@ -285,6 +285,46 @@ pub fn check_bundle_opts_scoped(
     strict_callees: bool,
     strict_idents: bool,
 ) -> Vec<Diag> {
+    with_identities(bundle, |bundle| {
+        check_numbered_bundle(bundle, allow_unowned_subscriber, strict_callees, strict_idents)
+    })
+}
+
+/// A bundle no snapshot holds, with identities: `bundle` itself when an
+/// entry already minted it (`check_program`, every verb's snapshot), and
+/// otherwise its programs copied and minted once, together, with its
+/// source map — what `Bundle::new` over parsed programs hands the test
+/// entries. Every family the check reads is then derived from the one
+/// numbered program, as the snapshot's are: the bus graph's sends and
+/// the intra-locus rewrite's relation ([`bundle_intra_locus`], whose own
+/// numbering keeps these ids) name a send by the same id, so rule 10's
+/// join of the two answers (F.40 phase 3, C4).
+pub(crate) fn with_identities<R>(bundle: &Bundle<'_>, f: impl FnOnce(&Bundle<'_>) -> R) -> R {
+    if !bundle.snapshot.is_empty() {
+        return f(bundle);
+    }
+    let mut programs: Vec<(String, hale_syntax::ast::Program)> =
+        bundle.programs.iter().map(|(name, p)| (name.clone(), (*p).clone())).collect();
+    let snapshot =
+        snapshot::mint(programs.iter_mut().map(|(name, p)| (name.as_str(), p)), &bundle.sources);
+    f(&Bundle {
+        programs: programs.iter().map(|(name, p)| (name.clone(), p)).collect(),
+        import_renames: bundle.import_renames.clone(),
+        sources: bundle.sources.clone(),
+        target_has_async_io: bundle.target_has_async_io,
+        target_label: bundle.target_label,
+        snapshot,
+    })
+}
+
+/// [`check_bundle_opts_scoped`] over a bundle [`with_identities`]
+/// numbered.
+fn check_numbered_bundle(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+) -> Vec<Diag> {
     // A bundle no snapshot holds: the scope and the families the check
     // reads are built here, once each, and the model below reads the
     // same ones.
@@ -379,7 +419,10 @@ pub(crate) fn bundle_bus_graph(bundle: &Bundle<'_>, top: &resolve::TopScope) -> 
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds
 /// (the test entries), over its programs merged as a build merges them:
-/// what the snapshot's `intra_locus` family holds for a verb.
+/// what the snapshot's `intra_locus` family holds for a verb. The
+/// bundle is one [`with_identities`] numbered, so the rewrite's
+/// numbering of the merge keeps every send's id and the relation names
+/// the sends the bundle's bus graph holds.
 pub(crate) fn bundle_intra_locus(bundle: &Bundle<'_>) -> Vec<hale_syntax::desugar::IntraLocusRewrite> {
     let mut programs = bundle.programs.values();
     let Some(first) = programs.next() else { return Vec::new() };
