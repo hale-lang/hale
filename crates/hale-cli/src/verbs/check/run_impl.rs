@@ -785,6 +785,37 @@ pub(crate) fn run_check_impl_labelled(
             return 1;
         }
     }
+    // T4: the link libraries a build of this program would take —
+    // `--link`, and each imported package's `[ffi] link` — held to the
+    // `LinkLibrary` cell, as `hale build` holds them before any tool is
+    // looked up: a record against the manifest's line, or the flag.
+    if let Ok(row) = snap.demand_target() {
+        let args: Vec<String> = std::env::args().collect();
+        let links: Vec<String> =
+            args.windows(2).filter(|w| w[0] == "--link").map(|w| w[1].clone()).collect();
+        let entry_dir = if target.is_dir() {
+            target.to_path_buf()
+        } else {
+            target.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
+        let inputs = crate::shared::options::link_inputs(
+            &links,
+            snap.entry_imports(),
+            &entry_dir,
+            crate::shared::workspace::find_workspace_root(target).as_deref(),
+        );
+        let refused = crate::shared::options::link_refusals(row, &inputs);
+        if !refused.is_empty() {
+            for r in &refused {
+                if json_mode {
+                    println!("{}", serde_json::json!({ "severity": "error", "kind": "capability", "message": r }));
+                } else {
+                    eprintln!("{r}");
+                }
+            }
+            return 1;
+        }
+    }
     if !json_mode {
         // Count the target's own files, not `programs` entries — a
         // multi-file seed merges into one program before checking.

@@ -1080,7 +1080,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
                      or gate the dependency out of the wasm build.",
                 ),
                 w(
-                    "crates/hale-codegen/src/codegen.rs::link_wasm",
+                    "crates/hale-cli/src/shared/options.rs::link_refusals",
                     "there are no system dynamic libraries to link against",
                     SPEC_WASM_FFI,
                 ),
@@ -1401,6 +1401,12 @@ pub const WASM_LD_WORDING: &str = "wasm-ld failed: exit status: 1";
 const ADAPTER_NATIVE: &str = "a user adapter locus on its own thread, its `send` handed to the bus runtime";
 const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
 const CHECK_ASYNC_IO: &str = ADMISSION;
+/// The `{libs}` hole of the `LinkLibrary` refusal: the libraries as the
+/// manifest writes them, `["m", "z"]`.
+pub fn libs_hole(libs: &[String]) -> String {
+    format!("[{}]", libs.iter().map(|l| format!("\"{l}\"")).collect::<Vec<_>>().join(", "))
+}
+
 /// The admission law, which refuses every use whose cell is `Reject`.
 const ADMISSION: &str = "crates/hale-types/src/capability/uses.rs::admission_diags";
 const RT_WAIT_SPACE: &str = "crates/hale-codegen/runtime/lotus_arena.c::lotus_bus_subject_wait_space";
