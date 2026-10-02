@@ -45,13 +45,17 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
-use hale_types::lifecycle::trace::{self, Count, Expected, Owed, Trace, Violation};
-use hale_types::lifecycle::{Event, Multiplicity, ObligationId, ObligationKind, Point, Spine, Terminal};
+use hale_types::lifecycle::trace::{self, Trace, Violation};
+use hale_types::lifecycle::{ObligationKind, Point, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "support/lifecycle_plan.rs"]
+mod lifecycle_plan;
+
+use lifecycle_plan::plan;
 
 /// Every fixture finishes in well under a second; a hang is a known-open
 /// outcome of its own (`timeout`), not a stalled suite.
@@ -156,23 +160,9 @@ const PENDING: &[(&str, &str)] = &[
 ];
 
 /// Each adopted line's plan, as the trace oracle reads it (a fixture on
-/// a pending line, or compiled only, has none). One line per
-/// declaration, its steps in the order they hold within one domain:
-///
-/// ```text
-/// <Decl>[*N|*+]: <Kind>[@Spine][*N][=Terminal][!domain] ...
-/// edge <Decl>.<Kind>[@Spine].<Point> -> <Decl>.<Kind>[@Spine].<Point>
-/// ```
-///
-/// `Decl` is the lowered declaration name, `-` for a process-level
-/// obligation. A step is owed once by each of `N` subjects (default 1;
-/// `*+` at least one): instances, or incarnations for `Birth` and
-/// `Run`. `=Terminal` names the end it reaches (default `Completed`);
-/// `!domain` claims the thread it runs on. An edge's `Point` is
-/// `Entered`, `Completed` or `Ended`; within one declaration it holds
-/// per incarnation between two steps owed per incarnation, otherwise
-/// per instance, and across declarations for every instance of the
-/// first. The steps of a line are ordered on the same subjects.
+/// a pending line, or compiled only, has none), in the notation
+/// `support/lifecycle_plan.rs` parses: one line per declaration, its
+/// steps in the order they hold within one domain, then the edges.
 const PLANS: &[(&str, &str)] = &[
     (
         "l01_held_failure_settle.hl",
@@ -656,104 +646,6 @@ fn assert_control(name: &str) {
         let shown = check(&ran);
         assert!(shown.is_empty(), "control {name}: without the skip the plan should hold; the oracle reports {shown:#?}");
     }
-}
-
-// ------------------------------------------------------------ the plans
-
-/// The kinds owed once per incarnation; the rest once per instance.
-fn multiplicity(kind: ObligationKind) -> Multiplicity {
-    match kind {
-        ObligationKind::Birth | ObligationKind::Run | ObligationKind::RunEnd | ObligationKind::Closures => {
-            Multiplicity::OncePerIncarnation
-        }
-        _ => Multiplicity::OncePerInstance,
-    }
-}
-
-fn parse_count(s: &str) -> Count {
-    match s {
-        "+" => Count::AtLeast(1),
-        n => Count::Exactly(n.parse().unwrap_or_else(|_| panic!("plan: bad count {n:?}"))),
-    }
-}
-
-/// `Kind[@Spine]` into its parts.
-fn kind_spine(s: &str) -> (ObligationKind, Option<Spine>) {
-    let (k, sp) = match s.split_once('@') {
-        Some((k, sp)) => (k, Some(Spine::from_name(sp).unwrap_or_else(|| panic!("plan: unknown spine {sp}")))),
-        None => (s, None),
-    };
-    (ObligationKind::from_name(k).unwrap_or_else(|| panic!("plan: unknown kind {k}")), sp)
-}
-
-fn decl_of(s: &str) -> Option<String> {
-    (s != "-").then(|| s.to_string())
-}
-
-/// A plan in [`PLANS`]' notation.
-fn plan(text: &str) -> Expected {
-    let mut exp = Expected::default();
-    let mut edges: Vec<(&str, &str)> = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if let Some(edge) = line.strip_prefix("edge ") {
-            let (a, b) = edge.split_once(" -> ").unwrap_or_else(|| panic!("plan: bad edge {line:?}"));
-            edges.push((a, b));
-            continue;
-        }
-        let (head, steps) = line.split_once(':').unwrap_or_else(|| panic!("plan: bad line {line:?}"));
-        let (decl, line_count) = match head.split_once('*') {
-            Some((d, c)) => (d, parse_count(c)),
-            None => (head, Count::Exactly(1)),
-        };
-        let mut seq = Vec::new();
-        for step in steps.split_whitespace() {
-            let (step, domain) = match step.split_once('!') {
-                Some((s, d)) => (s, Some(d.to_string())),
-                None => (step, None),
-            };
-            let (step, ends) = match step.split_once('=') {
-                Some((s, t)) => {
-                    (s, Point::Terminal(Terminal::from_name(t).unwrap_or_else(|| panic!("plan: unknown terminal {t}"))))
-                }
-                None => (step, Point::Completed),
-            };
-            let (step, count) = match step.split_once('*') {
-                Some((s, c)) => (s, parse_count(c)),
-                None => (step, line_count),
-            };
-            let (kind, spine) = kind_spine(step);
-            seq.push(ObligationId(exp.owed.len() as u32));
-            exp.owed.push(Owed {
-                decl: decl_of(decl),
-                kind,
-                spine,
-                multiplicity: multiplicity(kind),
-                count,
-                ends,
-                domain,
-            });
-        }
-        exp.sequences.push(seq);
-    }
-    for (a, b) in edges {
-        let ev = |r: &str| -> Event {
-            let parts: Vec<&str> = r.split('.').collect();
-            let [decl, ks, point] = parts[..] else { panic!("plan: bad edge end {r:?}") };
-            let (kind, spine) = kind_spine(ks);
-            let decl = decl_of(decl);
-            let i = exp
-                .owed
-                .iter()
-                .position(|o| o.decl == decl && o.kind == kind && o.spine == spine)
-                .unwrap_or_else(|| panic!("plan: edge names {r:?}, which no line owes"));
-            Event {
-                obligation: ObligationId(i as u32),
-                point: Point::from_name(point).unwrap_or_else(|| panic!("plan: bad point {point}")),
-            }
-        };
-        exp.edges.push((ev(a), ev(b)));
-    }
-    exp
 }
 
 /// What the trace oracle says about a run of `file`: the laws, then the

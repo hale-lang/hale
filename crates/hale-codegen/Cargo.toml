@@ -114,6 +114,12 @@ path = "tests/lifecycle_flow.rs"
 name = "lifecycle_locus"
 path = "tests/lifecycle_locus.rs"
 
+# Its own binary, as the ownership matrix is: the nightly job names it
+# to run every cell under HALE_MATRIX=full.
+[[test]]
+name = "lifecycle_matrix"
+path = "tests/lifecycle_matrix.rs"
+
 [[test]]
 name = "main_locus_deferred_pool_join"
 path = "tests/main_locus_deferred_pool_join.rs"
