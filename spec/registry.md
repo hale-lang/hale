@@ -49,7 +49,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
-| `snapshot_identity` | Identity | Migrating | derivation | `mint` | 3 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (numbered over the user program before the intra-locus rewrite, so the sends it records are numbered on every path, and minted over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance; and which declaration each use names (`binding_of`), resolved once by the mint. |
+| `snapshot_identity` | Identity | Migrating | derivation | `mint` | 2 | The identity of every semantic site in a snapshot: `(seed, index)`, minted after the entry point's desugars with the bundle's source map, and again in the resolved-program step (numbered over the user program before the intra-locus rewrite, so the sends it records are numbered on every path, and minted over the merged program with the bundle's seeds and a named seed for the bundled stdlib), idempotently (one numbering; a later mint numbers only what an earlier one did not see), with reliable provenance; and which declaration each use names (`binding_of`), resolved once by the mint. |
 | `demand` | Identity | Canonical | derivation | `Snapshot` | 0 | Which families a consumer's request computes, and in which order: a snapshot owns one load (the programs and their keys, each member's own program beside the merged one, the source map, the import renames, the config that shaped them, the sequence already run, the mint) and derives each family on request (`Snapshot::demand_*`: the scope, the checked programs' bus graph, ownership graph and handler rows, the effect rows, the model, the check in its two stages with the effects certificate report its typing produced, the lowering view), each at most once, blocking a family whose prerequisite reported errors. |
 | `digests` | Identity | Migrating | digest | `model_shape_hash` | 9 | Every identity a build or an artifact carries, and what each covers: shape_hash, artifact_digest, model_hash, exec_digest, the toolchain and cache keys, source digests, and the snapshot key they were derived under. |
 
@@ -1359,7 +1359,6 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `crates/hale-model/src/ids.rs` · `FunctionId` — model ids are ranks in a sorted string order (`L::f`, `(name, kind)`, path strings). *Removed when:* same.
 - `crates/hale-types/src/effects.rs` · `FnKey` — analysis keys are (locus name, fn name). *Removed when:* same.
-- `crates/hale-types/src/check.rs` · `type_expr_key` — rule 12 compares stringified TypeExprs. *Removed when:* same.
 
 **Also owned.** `crates/hale-syntax/src/sites.rs` · `SiteKind`; `crates/hale-types/src/snapshot.rs` · `resolve_uses`; `crates/hale-types/src/snapshot.rs` · `declaration_of`; `crates/hale-types/src/snapshot.rs` · `number`
 
@@ -1384,6 +1383,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `mint(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/stdlib_bodies.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/sync_inference.rs` ×1
+- `type_expr_identity(` may be referenced from: `crates/hale-types/src/check.rs` ×7
 
 ### `demand` — Canonical · derivation
 
@@ -1507,8 +1507,9 @@ Every Debug rendering with no prose around it (a `?}` placeholder in a formattin
 | `crates/hale-syntax/src/json_gen.rs` | `format!("{:?}", f)` | 1 | renders |
 | `crates/hale-syntax/src/parser.rs` | `format!("{:?}", err)` | 21 | renders |
 | `crates/hale-types/src/check.rs` | `format!("{:?}", kind)` | 1 | decides (`blocking`) |
-| `crates/hale-types/src/check.rs` | `format!("{:?}", p)` | 1 | decides (`snapshot_identity`) |
-| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_key(inner))` | 1 | decides (`snapshot_identity`) |
+| `crates/hale-types/src/check.rs` | `format!("{:?}", p)` | 2 | decides (`snapshot_identity`) |
+| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_text(inner))` | 1 | renders |
+| `crates/hale-types/src/check.rs` | `format!("{:?}({})", class, type_expr_identity(inner, known))` | 1 | decides (`snapshot_identity`) |
 | `crates/hale-types/src/lib.rs` | `format!("{:?}", d.kind)` | 1 | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!("{:?}:{}", d.kind, d.display)` | 1 | renders |
 | `crates/hale-types/src/model_builder.rs` | `format!( "projection:{:?}({})", class, type_descriptor(inner) )` | 1 | decides (`snapshot_identity`) |
