@@ -194,11 +194,14 @@ impl Owed {
 pub struct Expected {
     pub owed: Vec<Owed>,
     /// Per-subject program order: within one domain, each obligation's
-    /// entry comes after the one before it in the list.
+    /// entry comes after the one before it in the list. The subject is
+    /// the incarnation when both neighbours are owed per incarnation,
+    /// otherwise the instance.
     pub sequences: Vec<Vec<ObligationId>>,
     /// `(a, b)`: event a happens before event b. For two obligations of
-    /// one declaration, of the same instance; otherwise every subject
-    /// owing a reaches it before any b.
+    /// one declaration, of the same subject (the incarnation when both
+    /// are owed per incarnation, otherwise the instance); otherwise every
+    /// subject owing a reaches it before any b.
     pub edges: Vec<(Event, Event)>,
 }
 
@@ -336,13 +339,15 @@ impl Expected {
                 }
             }
         }
-        // Within one domain, per instance: each obligation's first entry
-        // after the first entry of the one before it.
-        let first_entries = |gs: &[Group<'_>]| -> BTreeMap<Option<u64>, (u64, String, Option<RuntimeSubject>)> {
-            let mut m: BTreeMap<Option<u64>, (u64, String, Option<RuntimeSubject>)> = BTreeMap::new();
+        // Within one domain, per subject: each obligation's first entry
+        // after the first entry of the one before it. Two obligations
+        // owed per incarnation are matched incarnation by incarnation;
+        // otherwise per instance.
+        let first_entries = |gs: &[Group<'_>], per_incarnation: bool| {
+            let mut m: BTreeMap<SubjectKey, (u64, String, Option<RuntimeSubject>)> = BTreeMap::new();
             for g in gs {
                 let Some(e) = g.entered.first() else { continue };
-                let key = g.subject.map(|s| s.instance.raw());
+                let key = subject_key(g.subject, per_incarnation);
                 if m.get(&key).is_none_or(|(seq, _, _)| e.seq < *seq) {
                     m.insert(key, (e.seq, e.domain.clone(), g.subject));
                 }
@@ -352,8 +357,9 @@ impl Expected {
         for seq in &self.sequences {
             for pair in seq.windows(2) {
                 let (a, b) = (pair[0].0 as usize, pair[1].0 as usize);
-                let firsts_a = first_entries(&all[a]);
-                for (key, (seq_b, dom_b, subject)) in first_entries(&all[b]) {
+                let per_incarnation = self.per_incarnation(a, b);
+                let firsts_a = first_entries(&all[a], per_incarnation);
+                for (key, (seq_b, dom_b, subject)) in first_entries(&all[b], per_incarnation) {
                     if let Some((seq_a, dom_a, _)) = firsts_a.get(&key) {
                         if *dom_a == dom_b && *seq_a > seq_b {
                             out.push(Violation::Order {
@@ -372,6 +378,7 @@ impl Expected {
             let a_label = format!("{}.{}", oa.label(), before.point.name());
             let b_label = format!("{}.{}", ob.label(), after.point.name());
             let same_decl = oa.decl.is_some() && oa.decl == ob.decl;
+            let per_incarnation = self.per_incarnation(a, b);
             for gb in &all[b] {
                 let Some(eb) = gb.entered.iter().chain(&gb.ends).find(|e| e.point.satisfies(after.point)) else {
                     continue;
@@ -380,10 +387,8 @@ impl Expected {
                     ga.entered.iter().chain(&ga.ends).any(|e| e.point.satisfies(before.point) && e.seq < eb.seq)
                 };
                 let ok = if same_decl {
-                    all[a]
-                        .iter()
-                        .filter(|ga| ga.subject.map(|s| s.instance) == gb.subject.map(|s| s.instance))
-                        .any(|ga| reached(ga))
+                    let key = subject_key(gb.subject, per_incarnation);
+                    all[a].iter().filter(|ga| subject_key(ga.subject, per_incarnation) == key).any(|ga| reached(ga))
                 } else {
                     !all[a].is_empty() && all[a].iter().all(|ga| reached(ga))
                 };
@@ -394,6 +399,22 @@ impl Expected {
         }
         out
     }
+
+    /// Whether obligations `a` and `b` are both owed per incarnation, so
+    /// a relation between them holds within each incarnation rather than
+    /// across an instance's.
+    fn per_incarnation(&self, a: usize, b: usize) -> bool {
+        [a, b].iter().all(|&i| self.owed[i].multiplicity == Multiplicity::OncePerIncarnation)
+    }
+}
+
+/// Which subjects a relation between two obligations matches: the
+/// instance, and the incarnation too when both are owed per
+/// incarnation; `None` for a process-level one.
+type SubjectKey = Option<(u64, Option<u32>)>;
+
+fn subject_key(s: Option<RuntimeSubject>, per_incarnation: bool) -> SubjectKey {
+    s.map(|s| (s.instance.raw(), per_incarnation.then(|| s.incarnation.raw())))
 }
 
 /// What every trace owes, whatever the plan: an end has an entry; a
@@ -557,6 +578,95 @@ mod tests {
             [
                 "missing: -.WaitAbort@EagerTeardown",
                 "edge: -.PoolJoin@EagerTeardown.Entered (process) with -.WaitAbort@EagerTeardown.Completed not reached"
+            ]
+        );
+    }
+
+    /// `K`'s Birth and Run, owed per incarnation over two incarnations.
+    fn birth_run(sequences: Vec<Vec<ObligationId>>, edges: Vec<(Event, Event)>) -> Expected {
+        let per_incarnation = |kind| Owed {
+            multiplicity: Multiplicity::OncePerIncarnation,
+            count: Count::Exactly(2),
+            ..owed(Some("K"), kind, None)
+        };
+        Expected { owed: vec![per_incarnation(ObligationKind::Birth), per_incarnation(ObligationKind::Run)], sequences, edges }
+    }
+
+    /// Incarnation 0 born then run; incarnation 1 restarted and run, its
+    /// birth `late` after its run or not.
+    fn restarted(late: bool) -> Trace {
+        let birth = ["Birth Entered", "Birth Completed"];
+        let mut inc1 = vec!["Restart Entered", "Restart Completed", "Run Entered", "Run Completed"];
+        if late {
+            inc1.extend(birth);
+        } else {
+            inc1.splice(2..2, birth);
+        }
+        let lines: Vec<String> = ["Birth Entered", "Birth Completed", "Run Entered", "Run Completed"]
+            .iter()
+            .map(|e| (e, 0))
+            .chain(inc1.iter().map(|e| (e, 1)))
+            .enumerate()
+            .map(|(i, (e, inc))| format!("lc {} {e} spine=- dom=main type=K inst=1 inc={inc}", i + 1))
+            .collect();
+        parse(&lines.join("\n")).expect("parses")
+    }
+
+    /// A restarted incarnation's run before its own birth breaks the
+    /// sequence, though incarnation 0 was born before any run.
+    #[test]
+    fn a_sequence_holds_within_each_incarnation() {
+        let exp = birth_run(vec![vec![ObligationId(0), ObligationId(1)]], vec![]);
+        assert_eq!(exp.check(&restarted(false), true), vec![]);
+        let v: Vec<String> = exp.check(&restarted(true), true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v, ["order: K.Run before K.Birth (inst 1 inc 1)"]);
+        assert_eq!(laws(&restarted(true), true), vec![]);
+    }
+
+    /// The same, held by an edge alone.
+    #[test]
+    fn an_edge_between_per_incarnation_obligations_holds_within_each_incarnation() {
+        let exp = birth_run(vec![], vec![(ev(0, Point::Completed), ev(1, Point::Entered))]);
+        assert_eq!(exp.check(&restarted(false), true), vec![]);
+        let v: Vec<String> = exp.check(&restarted(true), true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v, ["edge: K.Run.Entered (inst 1 inc 1) with K.Birth.Completed not reached"]);
+    }
+
+    /// An obligation owed once per instance (params settlement) stays
+    /// related to every incarnation of the instance: one settlement
+    /// before incarnation 0 holds for the restarted birth too.
+    #[test]
+    fn a_per_instance_obligation_relates_to_every_incarnation() {
+        let mut exp = birth_run(vec![], vec![]);
+        exp.owed.truncate(1);
+        exp.owed.insert(0, owed(Some("K"), ObligationKind::ParamsSettle, None));
+        exp.sequences = vec![vec![ObligationId(0), ObligationId(1)]];
+        exp.edges = vec![(ev(0, Point::Completed), ev(1, Point::Entered))];
+        let settled = |first: bool| {
+            let settle = ["ParamsSettle Entered 0", "ParamsSettle Completed 0"];
+            let births = ["Birth Entered 0", "Birth Completed 0", "Birth Entered 1", "Birth Completed 1"];
+            let order: Vec<&str> = if first {
+                settle.iter().chain(&births).copied().collect()
+            } else {
+                births[..2].iter().chain(&settle).chain(&births[2..]).copied().collect()
+            };
+            let lines: Vec<String> = order
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let (e, inc) = e.rsplit_once(' ').unwrap();
+                    format!("lc {} {e} spine=- dom=main type=K inst=1 inc={inc}", i + 1)
+                })
+                .collect();
+            parse(&lines.join("\n")).expect("parses")
+        };
+        assert_eq!(exp.check(&settled(true), true), vec![]);
+        let v: Vec<String> = exp.check(&settled(false), true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(
+            v,
+            [
+                "order: K.Birth before K.ParamsSettle (inst 1 inc 0)",
+                "edge: K.Birth.Entered (inst 1 inc 0) with K.ParamsSettle.Completed not reached"
             ]
         );
     }

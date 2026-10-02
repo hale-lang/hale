@@ -169,7 +169,9 @@ const PENDING: &[(&str, &str)] = &[
 /// `Run`. `=Terminal` names the end it reaches (default `Completed`);
 /// `!domain` claims the thread it runs on. An edge's `Point` is
 /// `Entered`, `Completed` or `Ended`; within one declaration it holds
-/// per instance, across declarations for every instance of the first.
+/// per incarnation between two steps owed per incarnation, otherwise
+/// per instance, and across declarations for every instance of the
+/// first. The steps of a line are ordered on the same subjects.
 const PLANS: &[(&str, &str)] = &[
     (
         "l01_held_failure_settle.hl",
