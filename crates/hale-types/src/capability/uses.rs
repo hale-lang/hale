@@ -622,30 +622,39 @@ fn initializer(uses: &mut Vec<CapabilityUse>, g: &Graph<'_>, req: &BTreeMap<&FnK
             }
         }
         Expr::Call { callee, args, .. } => {
-            if let Expr::Path(qn) = callee.as_ref() {
-                let path = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                if let Some(ns) = std_namespace(g.m, &path) {
-                    uses.push(CapabilityUse {
-                        need: Need::Capability(Capability::StdNamespace(ns)),
-                        kind: UseKind::Call,
-                        span: qn.span,
-                        chain: vec![path],
-                        holes: Vec::new(),
-                    });
-                } else if let Some(mangled) = g.renames.get(&path) {
-                    let k = FnKey::free_fn(mangled.clone());
-                    if !g.own(&k) {
-                        crossing(uses, req, &k, UseKind::Crossing, qn.span, vec![k.display()], None);
+            match callee.as_ref() {
+                Expr::Path(qn) => {
+                    let path = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                    if let Some(ns) = std_namespace(g.m, &path) {
+                        uses.push(CapabilityUse {
+                            need: Need::Capability(Capability::StdNamespace(ns)),
+                            kind: UseKind::Call,
+                            span: qn.span,
+                            chain: vec![path],
+                            holes: Vec::new(),
+                        });
+                    } else if let Some(mangled) = g.renames.get(&path) {
+                        let k = FnKey::free_fn(mangled.clone());
+                        if !g.own(&k) {
+                            crossing(uses, req, &k, UseKind::Crossing, qn.span, vec![k.display()], None);
+                        }
                     }
                 }
+                // A method's receiver is evaluated: `xs[i].m()` runs `i`.
+                other => initializer(uses, g, req, other),
             }
             for a in args {
                 initializer(uses, g, req, a);
             }
         }
-        Expr::Binary { left, right, .. } | Expr::Approx { left, right, .. } => {
+        Expr::Binary { left, right, .. } => {
             initializer(uses, g, req, left);
             initializer(uses, g, req, right);
+        }
+        Expr::Approx { left, right, tolerance, .. } => {
+            initializer(uses, g, req, left);
+            initializer(uses, g, req, right);
+            initializer(uses, g, req, tolerance);
         }
         Expr::Range { lo, hi, .. } => {
             initializer(uses, g, req, lo);

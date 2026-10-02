@@ -64,7 +64,18 @@ fn cli_refusals(text: &str, file: &Path) -> BTreeSet<String> {
 
 /// The editor's errors located in `file`, as `line:col message`.
 fn editor_refusals(file: &Path) -> BTreeSet<String> {
-    let snap = match Snapshot::load(file, LoadMode::Editor, &Disk, Config::editor()) {
+    editor_refusals_with(file, Config::editor())
+}
+
+/// The editor's, configured for `--target wasm32`.
+fn editor_refusals_on_wasm32(file: &Path) -> BTreeSet<String> {
+    let spec = hale_types::target::TargetSpec::parse("wasm32").unwrap();
+    let target = hale_frontend::snapshot::Target { name: spec.triple.to_string(), spec, explicit: true };
+    editor_refusals_with(file, Config { target, ..Config::editor() })
+}
+
+fn editor_refusals_with(file: &Path, config: Config) -> BTreeSet<String> {
+    let snap = match Snapshot::load(file, LoadMode::Editor, &Disk, config) {
         Ok(s) => s,
         Err(_) => panic!("the editor could not load {}", file.display()),
     };
@@ -305,7 +316,6 @@ fn an_import_alias_is_refused_at_the_crossing_call() {
         eprintln!("SKIP an_import_alias_is_refused_at_the_crossing_call: no wasm32 clang or wasm-ld");
         return;
     }
-    const PROCESS: &str = "OS process control (`std::process`) isn't available in the browser";
     let body = "fn main() {\n    let t = c::stamp();\n    println(t);\n}\n";
     for (decl, cli, selector) in
         [("", Some("wasm32"), "`--target wasm32`"), ("target wasm { }\n", None, "`target wasm`")]
@@ -342,6 +352,90 @@ fn an_import_alias_is_refused_at_the_crossing_call() {
     let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
     assert_eq!(code, 0, "the host admits it:\n{check}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+const PROCESS: &str = "OS process control (`std::process`) isn't available in the browser";
+
+/// The selections a wasm32 refusal is held to: no declaration and
+/// `--target wasm32`, or a written `target wasm { }` and no flag.
+const SELECTIONS: [(&str, Option<&str>, &str); 2] =
+    [("", Some("wasm32"), "`--target wasm32`"), ("target wasm { }\n", None, "`target wasm`")];
+
+/// `hale check`, `hale build` and the editor's `demand_check`, each
+/// configured as `cli` names, refuse `file` with exactly `want`; the
+/// seed's own files print nothing.
+fn refused_at_every_entry_point(file: &Path, cli: Option<&str>, want: &BTreeSet<String>, seed_file: Option<&str>) {
+    let mut tail = vec![file.to_str().unwrap()];
+    tail.extend(cli.map(|t| ["--target", t]).iter().flatten());
+    let (check, code) = hale(&[&["check"], tail.as_slice()].concat());
+    assert_eq!(code, 1, "{check}");
+    assert_eq!(&cli_refusals(&check, file), want, "check:\n{check}");
+    if let Some(seed) = seed_file {
+        assert!(!check.contains(&format!("{seed}:")), "the seed's own body is beyond the horizon:\n{check}");
+    }
+    let (build, code) = hale(&[&["build"], tail.as_slice()].concat());
+    assert_eq!(code, 1, "{build}");
+    assert_eq!(&cli_refusals(&build, file), want, "build:\n{build}");
+    let editor = match cli {
+        Some(_) => editor_refusals_on_wasm32(file),
+        None => editor_refusals(file),
+    };
+    assert_eq!(&editor, want, "editor");
+}
+
+/// The review of #1318: a call in an index operand reached neither a use
+/// row nor a hole, so the program passed under wasm32. Refused at the
+/// call through every entry point, declared and flagged; the host
+/// admits it.
+#[test]
+fn an_index_operand_is_refused_at_every_entry_point() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP an_index_operand_is_refused_at_every_entry_point: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let body = "fn main() {\n    let xs = [0];\n    let _ = xs[std::process::pid()];\n}\n";
+    for (decl, cli, selector) in SELECTIONS {
+        let dir = case_dir("index");
+        let file = dir.join("main.hl");
+        std::fs::write(&file, format!("{decl}{body}")).unwrap();
+        let line = 3 + decl.lines().count();
+        let want = [format!("{line}:16 `std::process::pid` is unavailable under {selector}: {PROCESS}")].into();
+        refused_at_every_entry_point(&file, cli, &want, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let dir = case_dir("index_host");
+    std::fs::write(dir.join("main.hl"), body).unwrap();
+    let (check, code) = hale(&["check", dir.join("main.hl").to_str().unwrap()]);
+    assert_eq!(code, 0, "the host admits it:\n{check}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An imported wrapper whose index operand calls an unavailable
+/// operation: the seed's body is beyond the horizon, so the call that
+/// crosses into it is refused, with the chain through the subscript.
+#[test]
+fn an_imported_wrappers_index_operand_is_refused_at_the_crossing_call() {
+    if !wasm_toolchain() {
+        eprintln!("SKIP an_imported_wrappers_index_operand_is_refused_at_the_crossing_call: no wasm32 clang or wasm-ld");
+        return;
+    }
+    let lib = "fn pick() -> Int {\n    let xs = [0];\n    return xs[std::process::pid()];\n}\n";
+    let body = "fn main() {\n    println(p::pick());\n}\n";
+    for (decl, cli, selector) in SELECTIONS {
+        let dir = case_dir("index_alias");
+        std::fs::create_dir_all(dir.join("picklib")).unwrap();
+        std::fs::write(dir.join("picklib/pick.hl"), lib).unwrap();
+        let file = dir.join("main.hl");
+        std::fs::write(&file, format!("import \"picklib\" as p;\n{decl}{body}")).unwrap();
+        let line = 3 + decl.lines().count();
+        let want = [format!(
+            "{line}:13 `std::process` is unavailable under {selector}: {PROCESS} — witness: `p::pick` → \
+             `std::process::pid`"
+        )]
+        .into();
+        refused_at_every_entry_point(&file, cli, &want, Some("pick.hl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// `hale run` executes what it builds, and a declared program builds a
