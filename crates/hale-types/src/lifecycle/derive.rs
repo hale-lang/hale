@@ -1037,8 +1037,13 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
             let mut o = self.row(i, K::Run, run_holder);
             o.multiplicity = Multiplicity::OncePerIncarnation;
-            o.runs_on = if self.under_pinned(i) || self.inline_off_its_pool(i) {
+            // A field nested under a pool-placed field owes its run() to
+            // the pool the table gives it, and runs it inline on the
+            // instantiating thread today (line 3, inventory C12).
+            o.runs_on = if self.under_pinned(i) {
                 None
+            } else if self.inline_off_its_pool(i) {
+                Self::on(own, open("3", "C12"))
             } else {
                 Self::on(own, Rule::SHIPPED)
             };
@@ -1431,6 +1436,19 @@ impl<'b, 'a> Builder<'b, 'a> {
         o.edges.entry.push(after(decision, Point::Completed, Rule::SHIPPED));
         o.edges.entry.push(after(delivery, Point::Completed, shipped("1")));
         self.push(o);
+        // A locus that declares no run() owes none in its next
+        // incarnation (line 13); the resume enters one (inventory C48).
+        if !self.facts[i].run && !self.is_pinned(i) {
+            let mut o = self.row(i, K::Run, Holder { spine, domain: DomainRole::Own });
+            o.source = Some(source);
+            o.guard = PathGuard::Restart;
+            o.line = Some("13");
+            o.status = Status::KnownOpen { inventory_row: "C48" };
+            o.multiplicity = Multiplicity::AtMostOncePerInstance;
+            o.terminals = vec![Terminal::NotStarted(NotStarted::NoRun)];
+            o.edges.entry.push(after(decision, Point::Completed, Rule::SHIPPED));
+            self.push(o);
+        }
         // Refused under teardown: no incarnation begins.
         let mut o = self.row(i, K::Restart, Holder { spine, domain: DomainRole::Own });
         o.source = Some(source);
@@ -1470,18 +1488,19 @@ impl<'b, 'a> Builder<'b, 'a> {
                 self.get(cd).edges.entry.push(after(pd, Point::Completed, shipped("10")));
             }
         }
-        if field && self.subjects[i].contract {
-            // A contract-typed field is torn down through its recorded
-            // reclaim, its whole spine after the owner's dissolve
-            // (inventory C32): line 12's order is not what it gets.
-            if let (Some(cd), Some(pd)) = (child.drain, parent.dissolve) {
-                self.get(cd).edges.entry.push(after(pd, Point::Completed, Rule::SHIPPED));
-            }
-        } else if field {
+        if field {
             // Owned fields drain before their owner, in their own domain
-            // (line 12; a pinned locus's are never drained, C9).
+            // (line 12). A pinned locus's are never drained (C9), and a
+            // contract-typed field is torn down through its recorded
+            // reclaim, its whole spine after the owner's dissolve (C32).
             if let (Some(cd), Some(pd)) = (child.drain, parent.drain) {
-                let rule = if parent_pinned { open("12", "C9") } else { shipped("12") };
+                let rule = if parent_pinned {
+                    open("12", "C9")
+                } else if self.subjects[i].contract {
+                    open("12", "C32")
+                } else {
+                    shipped("12")
+                };
                 self.get(pd).edges.entry.push(after(cd, Point::Completed, rule));
             }
         }

@@ -120,6 +120,55 @@ pub fn plan(text: &str) -> Expected {
     exp
 }
 
+/// A plan in the notation [`plan`] reads, one line per sequence, then
+/// the edges: what a plan the producer derived says, written the way a
+/// hand-written one is.
+pub fn render(exp: &Expected) -> String {
+    let step = |o: &Owed| -> String {
+        let mut s = o.kind.name().to_string();
+        if let Some(sp) = o.spine {
+            s.push('@');
+            s.push_str(sp.name());
+        }
+        match o.count {
+            Count::Exactly(1) => {}
+            Count::Exactly(n) => s.push_str(&format!("*{n}")),
+            Count::AtLeast(1) => s.push_str("*+"),
+            Count::AtLeast(n) => s.push_str(&format!("*>={n}")),
+        }
+        if o.ends != Point::Completed {
+            if let Point::Terminal(t) = o.ends {
+                s.push('=');
+                s.push_str(&t.name());
+            }
+        }
+        if let Some(d) = &o.domain {
+            s.push('!');
+            s.push_str(d);
+        }
+        s
+    };
+    let label = |e: &Event| -> String {
+        let o = &exp.owed[e.obligation.0 as usize];
+        let ks = match o.spine {
+            Some(sp) => format!("{}@{}", o.kind.name(), sp.name()),
+            None => o.kind.name().to_string(),
+        };
+        format!("{}.{ks}.{}", o.decl.as_deref().unwrap_or("-"), e.point.name())
+    };
+    let mut out = Vec::new();
+    for seq in &exp.sequences {
+        let Some(first) = seq.first() else { continue };
+        let decl = exp.owed[first.0 as usize].decl.as_deref().unwrap_or("-");
+        let steps: Vec<String> = seq.iter().map(|i| step(&exp.owed[i.0 as usize])).collect();
+        out.push(format!("{decl}: {}", steps.join(" ")));
+    }
+    for (a, b) in &exp.edges {
+        out.push(format!("edge {} -> {}", label(a), label(b)));
+    }
+    out.join("\n")
+}
+
 /// A violation with its instance numbers written `_`: `(inst 3 inc 0)`
 /// is `(inst _ inc 0)`. The runtime mints the number, so a known-open
 /// departure is written, and matched, in this form.

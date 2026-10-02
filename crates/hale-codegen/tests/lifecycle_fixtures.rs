@@ -34,6 +34,18 @@
 //! ones go, the assertion fails, and so does the entry. A pending
 //! line's fixture is held to the laws alone.
 //!
+//! **The producer's plan (L1 4 of 5).** Each run is also judged by the
+//! plan `hale_types::lifecycle::derive` derives for the fixture's
+//! program, rendered for the run by `lifecycle::project` along
+//! [`run_path`] (the failures the run raises and where, how many body
+//! literals it builds, where it ends early, and the lines whose
+//! known-open rules it is held to), and the two plans must judge it to
+//! the same violations, word for word. The plans themselves differ: the
+//! producer's states the shipped edges and domain claims the
+//! hand-written ones left implicit; every one of those holds on these
+//! runs. The fixtures in [`UNDERIVED`] have no derived plan yet and are
+//! held to their hand-written one alone.
+//!
 //! [`CONTROLS`] are the negative controls: a step removed or reordered
 //! (`LOTUS_LIFECYCLE_SKIP` in the trace build, or today's own order for
 //! a rule not yet shipped), each asserted to make the oracle fail, and
@@ -44,9 +56,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use std::collections::BTreeMap;
+
 use hale_codegen::build_executable_with_options;
-use hale_types::lifecycle::trace::{self, Trace, Violation};
-use hale_types::lifecycle::{NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
+use hale_frontend::frontend::LoadMode;
+use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::source::Disk;
+use hale_types::lifecycle::project::{self, Focus, Inside, PathFailure, RunPath};
+use hale_types::lifecycle::trace::{self, Expected, Trace, Violation};
+use hale_types::lifecycle::{FailureSource, NotStarted, ObligationKind, Point, ShutdownCause, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -181,7 +199,7 @@ const PLANS: &[(&str, &str)] = &[
         "App: Birth Run Drain Dissolve Reclaim
          Spawner: Birth Run!pool:side Drain Dissolve Reclaim
          Owner: ParamsSettle!pool:side Birth Run Drain Dissolve Reclaim
-         Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Run Drain Dissolve Reclaim
+         Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Run*0 Drain Dissolve Reclaim
          edge Owner.ParamsSettle.Completed -> Late.FailureDelivery.Completed
          edge Late.FailureDelivery.Completed -> Owner.Birth.Entered
          edge Late.FailureDelivery.Completed -> Late.Restart.Entered",
@@ -372,6 +390,149 @@ const PLANS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Each adopted line's run, as the producer's plan reads it
+/// (`hale_types::lifecycle::project`): the lines whose known-open rules
+/// the fixture is held to, and the run's path through the plan (which
+/// failures it raises and where, how many instances a body literal
+/// builds, a run a shutdown abandons, where the run ends early). Facts
+/// of the run the producer cannot know from the program.
+fn run_path(file: &str) -> (&'static [&'static str], RunPath) {
+    let fails = |decl: &str, source: FailureSource, held: bool, in_teardown: bool, restarts: u32| PathFailure {
+        decl: decl.to_string(),
+        source,
+        held,
+        in_teardown,
+        restarts,
+    };
+    let count = |pairs: &[(&str, u32)]| -> BTreeMap<String, u32> { pairs.iter().map(|(d, n)| (d.to_string(), *n)).collect() };
+    let mut p = RunPath::default();
+    let lines: &'static [&'static str] = match file {
+        "l01_held_failure_settle.hl" => {
+            p.failures.push(fails("Boom", FailureSource::Run, true, false, 0));
+            &["1"]
+        }
+        "l01_neg_same_pool_held.hl" => {
+            p.failures.push(fails("Late", FailureSource::BirthClosure, true, false, 1));
+            p.occurrences = count(&[("Owner", 1), ("Late", 1)]);
+            // Line 13: the resumed Late declares no run() (C48).
+            &["1", "13"]
+        }
+        "l01_neg_it_waits_worker_queue.hl" => {
+            p.failures.push(fails("Failer", FailureSource::Run, true, false, 0));
+            &["1"]
+        }
+        "l04_dissolve_route_reclaim.hl" => {
+            p.failures.push(fails("Flowing", FailureSource::Dissolve, false, false, 0));
+            p.occurrences = count(&[("Flowing", 1)]);
+            &["4"]
+        }
+        "l04_dissolve_route_cascade.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
+            &["4"]
+        }
+        "l05_accept_position.hl" => {
+            p.occurrences = count(&[("Kid", 1)]);
+            &["5"]
+        }
+        "l06_readiness_main.hl" | "l06_readiness_pool.hl" => &["6"],
+        // Line 7 today: the pool join never returns.
+        "l07_pool_or_wait_teardown.hl" => {
+            p.ends_inside = Some(Inside { decl: None, kind: ObligationKind::PoolJoin, spine: Some(Spine::EagerTeardown) });
+            &["7"]
+        }
+        "l08_birth_failure_kept.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, false, false, 0));
+            p.occurrences = count(&[("Kid", 1)]);
+            &["8"]
+        }
+        "l09_delivery_at_epoch.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Run, false, false, 0));
+            p.occurrences = count(&[("Kid", 1)]);
+            &["9"]
+        }
+        // Line 10's fixture runs on line 4's open path (C31): the
+        // violation takes the structural exit inside the cascade's
+        // dissolve of Kid.
+        "l10_dissolve_closures_first.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Dissolve, false, false, 0));
+            p.ends_inside = Some(Inside { decl: Some("Kid".into()), kind: ObligationKind::Dissolve, spine: None });
+            &["10"]
+        }
+        "l11_let_bound_drain.hl" => &["11"],
+        "l12_pinned_fields_drain.hl" => &["12"],
+        "l13_resume_pool_child.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["13"]
+        }
+        "l14_reclaim_exactly_once.hl" => {
+            p.occurrences = count(&[("Kid", 3)]);
+            &["14"]
+        }
+        "l15_sigint_flag.hl" => &["15"],
+        "l18_eager_pre_drain.hl" => &["18"],
+        "l19_parked_started_coroutine.hl" => {
+            p.abandoned.insert("__StdIoTcpListener".to_string());
+            &["19"]
+        }
+        "l19_self_post_overflow.hl" => {
+            p.occurrences = count(&[("Kid", 20)]);
+            &["19"]
+        }
+        // R19's retention: each Kid's run, queued behind the teardown
+        // that reclaims it, is canceled before it starts.
+        "l19_queued_run_canceled.hl" => {
+            p.occurrences = count(&[("Own", 1), ("Host", 1), ("Kid", 2)]);
+            p.canceled.insert("Kid".to_string());
+            &["19"]
+        }
+        "l19_resumed_run_at_shutdown.hl" => {
+            p.failures.push(fails("Kid", FailureSource::BirthClosure, true, false, 0));
+            &["19"]
+        }
+        "rd_restart_during_teardown.hl" => {
+            p.failures.push(fails("Kid", FailureSource::Run, false, true, 0));
+            &["RD"]
+        }
+        "jp_late_failure_pinned_join.hl" | "jp_late_failure_pool_join.hl" => {
+            p.failures.push(fails("Late", FailureSource::Run, false, true, 0));
+            &["JP", "L0-1"]
+        }
+        other => panic!("{other} has no run path"),
+    };
+    (lines, p)
+}
+
+/// Fixtures with a plan the producer does not derive yet, held to their
+/// hand-written one alone: (file, what the producer does not state).
+/// L5's second part wrote them after the producer. Each needs a fact a
+/// run path cannot carry or a row the producer does not emit: R19a's
+/// cancellation at a reclaim off the run's pool, the instances of one
+/// declaration whose runs end differently in one run (the trace names
+/// an instance by its declaration), and a main locus built more than
+/// once, each literal with its own teardown.
+const UNDERIVED: &[(&str, &str)] = &[
+    (
+        "l19_cross_pool_queued_run_canceled.hl",
+        "the old Kid's run is canceled by its reclaim on main, the replacement's runs: one declaration, two ends",
+    ),
+    (
+        "l19_full_ring.hl",
+        "200 App literals, each torn down where it stands; Kid's runs complete once, then are canceled on main or refused",
+    ),
+    ("l19_empty_ring_last_check.hl", "two App literals; the first Kid's run completes, the second's is canceled on main"),
+];
+
+/// The plan the producer derives for a fixture's program, on its run's
+/// path.
+fn derived_plan(file: &str) -> Expected {
+    let path = dir().join(file);
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
+        .unwrap_or_else(|_| panic!("{file} does not load"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{file}: the lifecycle plan is blocked"));
+    let (lines, run) = run_path(file);
+    project::expected(plan, Focus::Lines(lines), &run).unwrap_or_else(|e| panic!("{file}: {e}"))
+}
+
 /// Fixtures whose trace departs from their plan today: (file,
 /// inventory row, the departures the trace shows). The departures are
 /// the row's defect and its documented consequences, whole violations
@@ -410,6 +571,8 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
             "missing: -.WaitAbort@EagerTeardown",
         ],
     ),
+    // Late declares no run(), and its resumed incarnation enters one.
+    ("l01_neg_same_pool_held.hl", "C48", &["count: Late.Run has 1 subjects, owes 0"]),
     // Inner is never drained, so Outer's drain starts without it.
     (
         "l12_pinned_fields_drain.hl",
@@ -475,6 +638,11 @@ struct Control {
 /// Line 7's rule over a pool that terminates (`l16`'s worker).
 const LINE_7_PLAN: &str = "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
      edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered";
+
+/// The held failure's restart, without line 13's resumed run (C48,
+/// which the fixture's own plan pins).
+const RESTART_PLAN: &str = "Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Drain Dissolve Reclaim
+     edge Late.FailureDelivery.Completed -> Late.Restart.Entered";
 
 /// The worker's teardown waits for its run to end: the pool join is
 /// what orders the two across threads.
@@ -584,7 +752,7 @@ const CONTROLS: &[Control] = &[
         covers: ObligationKind::Restart,
         fixture: "l01_neg_same_pool_held.hl",
         skip: "Restart.Completed",
-        plan: None,
+        plan: Some(RESTART_PLAN),
         fails_with: "unended: Late.Restart",
         baseline_passes: false,
     },
@@ -1143,6 +1311,9 @@ fn every_fixture_is_listed_and_formatted() {
         fixture(file);
         assert!(!plan(text).owed.is_empty(), "{file}: an empty plan");
     }
+    for (file, _) in UNDERIVED {
+        assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is UNDERIVED but has no plan");
+    }
     for (file, _, departures) in TRACE_KNOWN_OPEN {
         assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is TRACE_KNOWN_OPEN but has no plan");
         assert!(!departures.is_empty(), "{file} is TRACE_KNOWN_OPEN with no departure");
@@ -1204,12 +1375,33 @@ fn assert_trace(file: &str, ran: &Ran) {
     }
 }
 
+/// The producer's plan, on the fixture's run path, judges the run as
+/// its hand-written plan does: the same violations, to the word.
+fn assert_derived_agrees(file: &str, ran: &Ran) {
+    let Some((_, text)) = PLANS.iter().find(|(f, _)| *f == file) else { return };
+    if UNDERIVED.iter().any(|(f, _)| *f == file) {
+        return;
+    }
+    let judged = |e: &Expected| -> std::collections::BTreeSet<String> {
+        e.check(&ran.trace, ran.complete()).iter().map(|v| normalized(&v.to_string())).collect()
+    };
+    let derived = derived_plan(file);
+    let (by_hand, by_producer) = (judged(&plan(text)), judged(&derived));
+    assert_eq!(
+        by_producer,
+        by_hand,
+        "{file}: the producer's plan judges the run otherwise than the hand-written one; it is\n{}",
+        lifecycle_plan::render(&derived)
+    );
+}
+
 fn assert_fixture(file: &str) {
     let f = fixture(file);
     let ran = run_fixture(f, &[]);
     let got = (f.judge)(&ran);
     eprintln!("{file}: outcome {got}");
     assert_trace(file, &ran);
+    assert_derived_agrees(file, &ran);
     if let Some((_, row, today)) = KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
         assert!(
             Some(got.as_str()) != f.adopted,

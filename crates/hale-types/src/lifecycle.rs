@@ -6,7 +6,8 @@
 //! shape. The producer is [`derive::derive_lifecycle`], one plan per
 //! snapshot (`Snapshot::demand_lifecycle`), over P1's placement table,
 //! whose identities this schema shares, the handler rows, the flow rows
-//! and the bus graph.
+//! and the bus graph. [`project::expected`] renders a plan as what one
+//! run owes, the form the trace oracle ([`trace::Expected`]) checks.
 //!
 //! An obligation is something the compiler emits or the runtime
 //! performs that some domain owes some instance: params settle, a held
@@ -15,7 +16,7 @@
 //! recovery decision and its execution, drain, the pre-drain, the
 //! wait-abort, a join and the progress it owes, a cancellation,
 //! teardown delivery, dissolve, the reclaim. The inventory
-//! (`notes/f40-lifecycle-inventory.md`, rows C1–C47, R1–R49, R19a and R20a)
+//! (`notes/f40-lifecycle-inventory.md`, rows C1–C48, R1–R49, R19a and R20a)
 //! is the list of those actions as the code performs them;
 //! [`ObligationKind`] names each one once, and [`ObligationKind::rows`]
 //! points back at the rows it stands for.
@@ -101,7 +102,7 @@
 //! line  kinds                                    status
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
 //! 2     Closures Run                             Pending (no option chosen)
-//! 3     Accept Birth Run Dissolve                Pending (no option chosen)
+//! 3     Accept Birth Run Dissolve                Pending (no option chosen); KnownOpen C12
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; KnownOpen C8
@@ -110,8 +111,8 @@
 //! 9     FailureDelivery Closures                 Shipped
 //! 10    Closures Dissolve                        Shipped
 //! 11    Drain                                    Shipped
-//! 12    Drain                                    KnownOpen C9
-//! 13    Resume RunAdmission                      KnownOpen C43
+//! 12    Drain                                    KnownOpen C9; KnownOpen C32
+//! 13    Resume RunAdmission Run                  KnownOpen C43; KnownOpen C48
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
@@ -139,6 +140,7 @@
 //! pool, so their rows record the shipped domains and wait.
 
 pub mod derive;
+pub mod project;
 pub mod trace;
 
 // ------------------------------------------------------------ identity
@@ -518,14 +520,14 @@ impl ObligationKind {
             ObligationKind::Readiness => &["C8", "C10"],
             ObligationKind::Birth => &["C1", "C9", "C10", "C38", "R9", "R11", "R12", "R46"],
             ObligationKind::RunAdmission => &["C12", "R17", "R18", "R19"],
-            ObligationKind::Run => &["C9", "C12", "R24", "R25"],
+            ObligationKind::Run => &["C9", "C12", "C48", "R24", "R25"],
             ObligationKind::RunEnd => &["C26", "R7"],
             ObligationKind::Closures => &["C37", "C40"],
             ObligationKind::FailureDelivery => &["C6", "C34", "C35", "C36", "C38", "C39", "C46", "R36"],
             ObligationKind::RecoveryDecision => &["C45", "C47"],
             ObligationKind::Restart => &["C41", "C42", "R38", "R48"],
-            ObligationKind::Resume => &["C43"],
-            ObligationKind::Drain => &["C14", "C30", "R44"],
+            ObligationKind::Resume => &["C43", "C48"],
+            ObligationKind::Drain => &["C9", "C14", "C30", "C32", "R44"],
             ObligationKind::PreDrain => &["C16", "R29"],
             ObligationKind::WaitAbort => &["C17", "R34"],
             ObligationKind::PinnedJoin => &["C13", "C16", "C18", "R26", "R27"],
@@ -758,6 +760,7 @@ impl Terminal {
         match self {
             Terminal::Completed => "Completed".into(),
             Terminal::NotStarted(NotStarted::Acknowledged) => "NotStarted(Acknowledged)".into(),
+            Terminal::NotStarted(NotStarted::NoRun) => "NotStarted(NoRun)".into(),
             Terminal::NotStarted(NotStarted::Shutdown(c)) => format!("NotStarted(Shutdown({}))", c.name()),
             Terminal::CanceledAfterStart => "CanceledAfterStart".into(),
             Terminal::FailureDelivered => "FailureDelivered".into(),
@@ -770,6 +773,7 @@ impl Terminal {
         const ALL: &[Terminal] = &[
             Terminal::Completed,
             Terminal::NotStarted(NotStarted::Acknowledged),
+            Terminal::NotStarted(NotStarted::NoRun),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
             Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::ProcessDrain)),
@@ -827,6 +831,9 @@ pub enum NotStarted {
     /// Admitted, then canceled before start, with an acknowledgement
     /// the caller can read.
     Acknowledged,
+    /// Nothing to start: the locus declares no `run()`, and a resumed
+    /// incarnation owes none (line 13; inventory C48 enters one today).
+    NoRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -977,7 +984,13 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "3",
         title: "where lifecycle methods run on a pool",
         kinds: &[K::Accept, K::Birth, K::Run, K::Dissolve],
-        statuses: &[(Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus")],
+        statuses: &[
+            (Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus"),
+            (
+                Status::KnownOpen { inventory_row: "C12" },
+                "a field nested under a pool-placed field runs its run() inline on the instantiating thread, off the pool the placement table gives it",
+            ),
+        ],
     },
     DecisionLine {
         line: "4",
@@ -1037,13 +1050,22 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         line: "12",
         title: "owned fields drain before their parent, in the child's domain",
         kinds: &[K::Drain],
-        statuses: &[(Status::KnownOpen { inventory_row: "C9" }, "a pinned locus's owned fields are never drained")],
+        statuses: &[
+            (Status::KnownOpen { inventory_row: "C9" }, "a pinned locus's owned fields are never drained"),
+            (
+                Status::KnownOpen { inventory_row: "C32" },
+                "an interface- or perspective-typed field is drained after its owner's dissolve",
+            ),
+        ],
     },
     DecisionLine {
         line: "13",
         title: "resume through placement and admission",
-        kinds: &[K::Resume, K::RunAdmission],
-        statuses: &[(Status::KnownOpen { inventory_row: "C43" }, "a pool-placed child's resumed run() runs inline")],
+        kinds: &[K::Resume, K::RunAdmission, K::Run],
+        statuses: &[
+            (Status::KnownOpen { inventory_row: "C43" }, "a pool-placed child's resumed run() runs inline"),
+            (Status::KnownOpen { inventory_row: "C48" }, "a resumed locus with no run() still enters Run"),
+        ],
     },
     DecisionLine {
         line: "14",

@@ -517,6 +517,10 @@ behaviour until it changes:
   `birth()` can run before that `birth()` has returned;
 - a pinned locus's own locus fields are not drained, only
   dissolved;
+- a field typed by an interface or a perspective is drained after
+  its owner's `dissolve()`, not before its owner's `drain()`;
+- a locus field inside a field placed on a pool runs its `run()` on
+  the thread that built it, not on that pool;
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
 - a pool-placed publisher waiting in `or wait` on a queue only
