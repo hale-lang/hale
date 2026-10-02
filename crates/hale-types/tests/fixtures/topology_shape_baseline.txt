@@ -1045,6 +1045,12 @@ crates/hale-codegen/tests/placement_where_async_io.rs#0 db2eab2d602c2ba9
 crates/hale-codegen/tests/placement_where_async_io.rs#5 4b07bc335925856d
 crates/hale-codegen/tests/placement_where_async_io.rs#6 c14feb1fdd6ff7cc
 crates/hale-codegen/tests/pool_affinity.rs#0 35643ce677393024
+crates/hale-codegen/tests/portable_subset.rs#0 cee899a36c15eda8
+crates/hale-codegen/tests/portable_subset.rs#1 d3700f11332caa2b
+crates/hale-codegen/tests/portable_subset.rs#2 865d341109268295
+crates/hale-codegen/tests/portable_subset.rs#3 f2c1228edb650960
+crates/hale-codegen/tests/portable_subset.rs#4 f2c1228edb650960
+crates/hale-codegen/tests/portable_subset.rs#6 f2c1228edb650960
 crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_child.rs#2 865d341109268295

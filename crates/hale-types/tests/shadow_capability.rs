@@ -430,9 +430,12 @@ impl Shadow {
         self.compare("TargetSpec::has_async_io", class, id, old, new);
     }
 
-    /// `ffi_type_unportable` against `FfiType`, per signature position.
-    /// The predicate reads no target, so the host's check is its answer
-    /// on every column; each column's own cell is held to it.
+    /// The checker's FFI type diagnostics against `FfiType`, per
+    /// signature position (the row keeps the name of the predicate it
+    /// replaced, `ffi_type_unportable`, which P3 3 of 3 deleted: the
+    /// checker now reads these cells). The answer reads no target, so
+    /// the host's check is its answer on every column; each column's own
+    /// cell is held to it.
     fn ffi(&mut self, id: &str, host: &Checked) {
         let mut old = Vec::new();
         let mut new: Vec<(String, FfiTypeClass, Abi)> = Vec::new();

@@ -25,19 +25,18 @@
 //! target is a new field of [`Columns`], which every row then has to
 //! write.
 //!
-//! **Today's verdicts.** This table states what the compiler does
-//! today, spread across `check.rs`'s stdlib table and `async_io` gate,
-//! `link_wasm`, the `is_wasm` sites in codegen and the CLI's
-//! `run`/`replay` refusal; `crates/hale-types/tests/shadow_capability.rs`
+//! **The one authority.** The check, the build and the editor admit a
+//! program by these cells ([`uses::admission_diags`]); lowering emits or
+//! omits every target-dependent behaviour and obligation by reading its
+//! effective target's column off the lowering view ([`LoweringCells`]),
+//! the teardown spines included (the matrix selects their obligations,
+//! `crate::lifecycle::TEARDOWN_EDGES` orders them); the checker holds
+//! `@ffi` and `@export` signatures to the `FfiType` cells
+//! ([`ffi_type_refusal`]). `crates/hale-types/tests/shadow_capability.rs`
 //! and `crates/hale-codegen/tests/shadow_capability_lowering.rs` hold
-//! each of those legacy answers to its cell. Cells the design flips (T2:
-//! pool threads, `async_io` and transport bindings on wasm32; T3: the
-//! known stubs; T5: `@ffi("js")` on a native target) are written as they
-//! are today and named in [`KNOWN_OPEN`], which the laws assert is still
-//! today's answer; so are the two wasm32 refusals that exist today only
-//! as a link failure (a `pinned` placement and an adapter binding, T2
-//! locates them), and the three wasm32 obligations whose `Omit` is
-//! today's but whose premise only holds once T2 lands.
+//! the compiler's observable answers to the cells. A cell a decision
+//! will change is written as it is today and named in [`KNOWN_OPEN`],
+//! which the laws assert is still today's answer; none is open.
 //!
 //! What is not a cell: target-specific emission choices (the triple,
 //! CPU, optimization level, LTO, pass pipeline, DWARF, pointer width),
@@ -695,6 +694,16 @@ impl CapabilityMatrix {
             Premise::All(ps) => ps.iter().all(|p| self.premise_holds(class, p)),
         }
     }
+}
+
+/// The `FfiType` column's answer for a value of type `ty` crossing an
+/// `abi` boundary on a target (an `@ffi` or `@export` parameter or
+/// return): `None` when it crosses, else the reason the checker frames
+/// at the parameter or the return. Every target's cell is the same
+/// (design § 2.6); the checker asks its effective target's.
+pub fn ffi_type_refusal(class: TargetClass, ty: &Ty, abi: Abi) -> Option<&'static str> {
+    let cell = derive_capability_matrix().behaviour(class, Capability::FfiType(FfiTypeClass::of(ty), abi))?;
+    cell.refusal().map(|_| cell.witness.reason)
 }
 
 /// One column of the matrix, as lowering reads it: the lowering view
@@ -1494,7 +1503,7 @@ const fn ffi_row(class: FfiTypeClass, abi: Abi, cell: Behaviour) -> BehaviourRow
 /// An FFI type's refusal is its reason; the checker frames it at the
 /// declaration's parameter or return.
 const FFI_WORDING: &str = "{reason}";
-const CHECK_FFI: &str = "crates/hale-types/src/check.rs::ffi_type_unportable";
+const CHECK_FFI: &str = "crates/hale-types/src/capability.rs::ffi_type_refusal";
 
 const FFI_PORTABLE: Behaviour = lower(w(CHECK_FFI, "in the FFI-portable set", SPEC_FFI_TYPES));
 const FFI_NAMED: Behaviour = lower(w(

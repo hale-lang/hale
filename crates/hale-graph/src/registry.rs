@@ -1182,17 +1182,12 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "target_capability",
         layer: Layer::Placement,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Capability,
         answers: "What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability.",
         inputs: &["--target", "a source `target` declaration", "stdlib_surface", "FFI signatures"],
         producer: Some(site(CAPABILITY, "derive_capability_matrix")),
-        legacy: &[
-            legacy(CG, "link_wasm", "the export list, spelled at the link (its `[ffi] link` refusal moved ahead of every tool, into the check and the build's LinkLibrary read, in P3 2 of 3)", "same"),
-            legacy(CG_INST, "lotus_replay_start_ingress", "the replay ingress, emitted where the `ReplayIngress` cell says; the five spines' pool join, wait-abort and ingress quiesce are their cells' since P3 3 of 3 (every spine alike: on wasm32 the wait-abort alone)", "same"),
-            legacy(CG, "is_wasm", "31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory; where the admission reads a cell (an exported locus's run(), an export-only host program) the check refuses first and codegen's refusal is a harness backstop", "emission configuration through TargetSpec only; every capability through the matrix"),
-            legacy(CHECK, "ffi_type_unportable", "FFI portability per type", "a capability row"),
-        ],
+        legacy: &[],
         consumers: &[
             consumer("check"),
             consumer("build"),
@@ -1205,6 +1200,9 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("hale check and hale build: every link input (--link, each package's [ffi] link) held to LinkLibrary before any tool, located at its manifest line or flag", "crates/hale-cli/src/shared/options.rs", "link_refusals"),
             consumer_at("a build handed link libraries (the harness, a library build): LinkLibrary read off the lowering view's column before lowering and before any tool", CG, "Capability::LinkLibrary"),
             consumer_at("lowering: every behaviour and obligation emitted or omitted per target, read off the lowering view's column (`LoweringView::cells`)", CG, "self.cells."),
+            consumer_at("the wasm32 link: the module's fixed exports are ExportSurface's lowering data", CG, "Lowering::Exports(fixed)"),
+            consumer_at("the check of an @ffi or @export signature: the FfiType cells for its ABI on the effective target", CHECK, "ffi_type_refusal"),
+            consumer_at("the teardown spines: the pool join, wait-abort and ingress quiesce each spine owes, in the lifecycle plan's order", CG, "emit_teardown_obligations"),
         ],
         invariants: &[
             "Approximate is legitimate only in layers 5 and 7; everywhere else a target lowers or rejects, with the row's witness",
@@ -1218,6 +1216,9 @@ pub const FAMILIES: &[Family] = &[
             "the program's own sources are the horizon: a use is refused once, at its first site in them, naming the capability, the target and its witness chain; a callee beyond it is refused at the call that crosses into it",
             "an unresolved requirement is never an admission on a target that rejects anything in its family: a hole is refused there and recorded elsewhere",
             "a policy refusal comes before any tool is probed: a link input the target refuses is refused by the check and by the build before clang, wasm-ld or zig is looked up, located at its input (T4)",
+            "emission configuration through TargetSpec only, every capability through the matrix: codegen's remaining wasm-ness reads are the emission choices and the link path, and every behaviour and obligation it emits per target is a read of the lowering view's cells, which the view takes from the effective target and lowering refuses options of another class against",
+            "the matrix selects a target's lifecycle obligations and the lifecycle plan orders them, alike in every teardown spine (the quiesce, then the wait-abort, then the pool join)",
+            "the portable subset prints the same bytes natively and under node; the comparison proves agreement for its programs and admits nothing outside them",
         ],
         missing: Missing::Error,
         tests: &[
@@ -1233,6 +1234,8 @@ pub const FAMILIES: &[Family] = &[
             "crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences)",
             "crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); T2's pinned, pool, async_io and transport refusals at the entry or binding; T3's stub namespaces; T5's @ffi(\"js\") on a native target, called or not; each type-only variant admitted)",
             "crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)",
+            "crates/hale-codegen/tests/target_lifecycle_cells.rs (the five teardown spines on both targets, each owing what its target's cells select, in the plan's order)",
+            "crates/hale-codegen/tests/portable_subset.rs (the design's programs and the playground's examples print the same bytes natively and under node; skipped, naming what is missing, without node, clang or wasm-ld)",
         ],
         spec: &["spec/decisions.md F.35", "spec/ffi.md § The `target` declaration + stdlib gating", "docs/src/systems/webassembly.md"],
         owned: &[site(CAPABILITY_USES, "derive_capability_uses"), site(CAPABILITY_USES, "admission_diags")],
@@ -1242,9 +1245,10 @@ pub const FAMILIES: &[Family] = &[
             Seam {
                 symbol: "derive_capability_matrix(",
                 allowed: &[
-                    // the definition, the document rendering, and the
+                    // the definition, the document rendering, the
                     // lowering view's column (an obligation, a behaviour)
-                    (CAPABILITY, 4),
+                    // and the checker's FFI type cell
+                    (CAPABILITY, 5),
                     ("crates/hale-types/src/capability/laws.rs", 12),
                     (CAPABILITY_USES, 2),
                     // the target model's test, holding has_async_io to the cell
