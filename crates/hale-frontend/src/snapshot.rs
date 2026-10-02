@@ -1055,6 +1055,9 @@ impl Snapshot {
                 // The effect rows on request: a codec binding's purity
                 // assertion demands them, nothing else in the check does.
                 let effects = || self.demand_effects().ok();
+                // The ownership graph on request: the cross-pool spawn law
+                // asks only for a program that places something off main.
+                let ownership = || self.demand_ownership_graph().ok();
                 let inputs = hale_types::check::CheckInputs {
                     top: &scope.top,
                     handlers: self.demand_handlers().map_err(Clone::clone)?,
@@ -1064,6 +1067,7 @@ impl Snapshot {
                     alloc_summary: self.demand_alloc_summary().map_err(Clone::clone)?,
                     forms: self.demand_forms().map_err(Clone::clone)?,
                     placement: self.demand_placement().map_err(Clone::clone)?,
+                    ownership: &ownership,
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
@@ -1273,9 +1277,11 @@ impl Snapshot {
     /// check runs the same laws among its rules, so a gated view has
     /// them already. Blocked with the rows.
     fn demand_lowering_laws(&self) -> Result<Vec<Diag>, Blocked> {
+        let ownership = || self.demand_ownership_graph().ok();
         let inputs = hale_types::lowering_laws::LoweringLawInputs {
             placement: self.demand_placement().map_err(Clone::clone)?,
             bindings: self.demand_bindings().map_err(Clone::clone)?,
+            ownership: &ownership,
         };
         let mut diags = self.with_env(|| hale_types::lowering_laws::lowering_laws(&self.bundle(), &inputs));
         hale_types::finish_check_diags(&mut diags);

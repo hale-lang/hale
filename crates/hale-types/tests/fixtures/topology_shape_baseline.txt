@@ -1012,7 +1012,6 @@ crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
 crates/hale-codegen/tests/ownership_bubble.rs#1 ef3055b186950d67
 crates/hale-codegen/tests/ownership_bubble.rs#2 f81faba0af524049
 crates/hale-codegen/tests/ownership_bubble_crosspool.rs#0 8eda6be7620cbb27
-crates/hale-codegen/tests/ownership_bubble_crosspool.rs#1 3b6eccc3bbab13c5
 crates/hale-codegen/tests/ownership_bubble_multi.rs#0 c965b87b96836c0f
 crates/hale-codegen/tests/ownership_bubble_multi.rs#1 c4b57be34d8f6c5e
 crates/hale-codegen/tests/ownership_bubble_multi.rs#2 bd0dcdbe8679fccf

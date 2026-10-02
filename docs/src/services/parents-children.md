@@ -107,8 +107,11 @@ registry collecting entities that workers spawn on their own pools —
 the child is created over on the owner's thread, so the spawning
 side can't hold onto it. There a cross-pool spawn is
 **fire-and-forget**: write it as a bare statement, not
-`let s = Ship { ... }`. The compiler will tell you if you try to
-keep the value.
+`let s = Ship { ... }`. `hale check` points at the literal if you
+try to keep the value in the spawning locus's own code. (A `Ship`
+built in another locus's `params` default, which that locus's
+instantiation carries across, is refused only by `hale build`, and
+without a location.)
 
 ## The contract: what crosses the boundary
 

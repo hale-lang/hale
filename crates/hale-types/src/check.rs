@@ -539,6 +539,13 @@ pub struct CheckInputs<'a> {
     /// lowering's backstops ([`crate::lowering_laws`]) read which
     /// instance runs pinned and what it realizes.
     pub placement: &'a crate::placement::PlacementTable,
+    /// The ownership graph, on request (F.40 phase 3, C7): the cross-pool
+    /// spawn law ([`crate::lowering_laws`]) reads its bubble plan, and
+    /// asks only when the placement table runs something off the main
+    /// thread, so the editor's path over a program that places nothing
+    /// builds no graph. `None` only if the graph is blocked, which it
+    /// never is once the scope the check reads exists.
+    pub ownership: &'a dyn Fn() -> Option<&'a crate::ownership_graph::OwnershipGraph>,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -564,6 +571,8 @@ pub fn check_bundle(
     let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let forms = crate::form_rows::form_rows(bundle, top, &entry, true);
     let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let graph = std::cell::OnceCell::new();
+    let ownership = || Some(graph.get_or_init(|| crate::ownership_graph::build_ownership_graph(bundle, top)));
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -573,6 +582,7 @@ pub fn check_bundle(
         alloc_summary: &alloc_summary,
         forms: &forms,
         placement: &placement,
+        ownership: &ownership,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -718,13 +728,15 @@ pub fn check_bundle_reporting(
     // F.40 phase 3, C7: the laws that replaced lowering's backstops,
     // the one entry the harness's lowering view demands too: rule 6
     // (a pinned instance's features), rule 17 (GH #826, a root that
-    // pins a field is not built in a loop) and rule 18 (GH #890, every
-    // placement entry is consumed by a locus literal).
+    // pins a field is not built in a loop), rule 18 (GH #890, every
+    // placement entry is consumed by a locus literal) and the cross-pool
+    // spawn, which is fire-and-forget.
     diags.extend(crate::lowering_laws::lowering_laws(
         bundle,
         &crate::lowering_laws::LoweringLawInputs {
             placement: inputs.placement,
             bindings: inputs.bindings,
+            ownership: inputs.ownership,
         },
     ));
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`

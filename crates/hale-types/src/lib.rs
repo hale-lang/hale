@@ -302,6 +302,8 @@ pub fn check_bundle_opts_scoped(
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let forms = form_rows::form_rows(bundle, &top, &entry, diags.is_empty());
     let placement = placement::derive_placement(bundle, &top, &entry);
+    let graph = std::cell::OnceCell::new();
+    let ownership = || Some(graph.get_or_init(|| ownership_graph::build_ownership_graph(bundle, &top)));
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -313,6 +315,7 @@ pub fn check_bundle_opts_scoped(
             alloc_summary: &alloc_summary,
             forms: &forms,
             placement: &placement,
+            ownership: &ownership,
         },
         allow_unowned_subscriber,
         strict_callees,

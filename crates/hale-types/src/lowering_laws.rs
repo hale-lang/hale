@@ -22,6 +22,7 @@ use hale_syntax::ast::{
 use hale_syntax::{Diag, Span};
 
 use crate::binding_rows::BindingRows;
+use crate::ownership_graph::OwnershipGraph;
 use crate::placement::{Decision, DomainKind, Origin, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
 use crate::Bundle;
@@ -33,6 +34,10 @@ pub struct LoweringLawInputs<'a> {
     pub placement: &'a PlacementTable,
     /// The binding rows: the topic an adapter's binding entry names.
     pub bindings: &'a BindingRows,
+    /// The ownership graph, on request: which instantiation sites bubble
+    /// to an owner on another thread. Asked for only when the placement
+    /// table runs something off the main thread.
+    pub ownership: &'a dyn Fn() -> Option<&'a OwnershipGraph>,
 }
 
 /// Every law that replaced a lowering backstop, over `bundle`.
@@ -41,7 +46,69 @@ pub fn lowering_laws(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>) -> Vec
     pinned_features(bundle, inputs, &mut diags);
     pinned_root_in_a_loop(bundle, inputs, &mut diags);
     placement_entry_consumed(bundle, inputs, &mut diags);
+    cross_pool_spawn_used_as_a_value(bundle, inputs, &mut diags);
     diags
+}
+
+/// A cross-pool spawn is fire-and-forget (spec/semantics.md, "accept
+/// bubbling"): a locus literal `I { }` written in a body of `B`, where
+/// `B` does not accept `I` and the nearest acceptor `A` is a singleton
+/// on another thread, is born on `A`'s thread through an async handoff,
+/// so it may only be a bare statement; used as a value (let-bound, an
+/// argument, a field, a sub-expression) it is refused.
+///
+/// Read off the ownership graph's cross-pool bubble plan, keyed
+/// (enclosing locus, child locus) as lowering keys it while it lowers a
+/// literal in that locus's own member bodies. A literal in a params
+/// default is not judged here: lowering expands a default in the scope
+/// that instantiates the locus, under that scope's locus, so which plan
+/// entry it meets depends on the instantiation, a relation no row holds
+/// yet, and lowering keeps its own refusal for that shape.
+fn cross_pool_spawn_used_as_a_value(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>, diags: &mut Vec<Diag>) {
+    // A cross-pool edge needs a locus placed off the main thread; a
+    // table whose one domain is main has none, and the graph is not
+    // built.
+    if inputs.placement.domains.len() <= 1 {
+        return;
+    }
+    let Some(ownership) = (inputs.ownership)() else { return };
+    let crosspool = ownership.bubble_plans().crosspool;
+    if crosspool.is_empty() {
+        return;
+    }
+    fn loci<'a>(items: &'a [TopDecl], out: &mut Vec<&'a LocusDecl>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => out.push(l),
+                TopDecl::Module(m) => loci(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut all: Vec<&LocusDecl> = Vec::new();
+    for program in bundle.programs.values() {
+        loci(&program.items, &mut all);
+    }
+    for l in all {
+        let enclosing = l.name.name.as_str();
+        let mut walk = literals(|e, bare| {
+            let Expr::Struct { path, span, .. } = e else { return };
+            if bare {
+                return;
+            }
+            let Some(child) = path.segments.last().map(|s| s.name.as_str()) else { return };
+            let Some(owner) = crosspool.get(&(enclosing.to_string(), child.to_string())) else { return };
+            diags.push(Diag::ty(
+                *span,
+                format!(
+                    "cross-pool spawn `{child}{{ }}` is fire-and-forget: the instance is created on \
+                     `{owner}`'s thread and cannot be used here. Write it as a bare statement \
+                     (`{child} {{ ... }};`), not as a value (let-binding, sub-expression, or field)."
+                ),
+            ));
+        });
+        walk.locus_bodies(l);
+    }
 }
 
 /// Rule 18 (GH #890): every `placement { }` entry is consumed by the
@@ -85,11 +152,19 @@ fn placement_entry_consumed(bundle: &Bundle<'_>, inputs: &LoweringLawInputs<'_>,
     };
     // Each construction's field inits.
     let wanted: BTreeSet<SiteRef> = root.constructions.iter().map(|c| c.literal).collect();
-    let mut found = RootLiterals { ids: &bundle.snapshot, wanted: &wanted, sites: Vec::new() };
-    for program in bundle.programs.values() {
-        found.items(&program.items);
+    let mut sites: Vec<&[StructInit]> = Vec::new();
+    {
+        let mut found = literals(|e, _bare| {
+            if let Expr::Struct { inits, id, .. } = e {
+                if bundle.snapshot.site_id(*id).is_some_and(|s| wanted.contains(&SiteRef::user(s))) {
+                    sites.push(inits.as_slice());
+                }
+            }
+        });
+        for program in bundle.programs.values() {
+            found.items(&program.items);
+        }
     }
-    let sites = found.sites;
 
     for entry in &pb.entries {
         let field = entry.field.name.as_str();
@@ -177,40 +252,56 @@ fn placement_unconsumed_diag(field: &str, ty_name: &str, init: &Expr, entry_span
     .with_related(entry_span, format!("`{}` is placed here", field))
 }
 
-/// The field inits of the literals the placement table lists as the
-/// root's constructions, found where the table's scopes find them: every
-/// fn body (its parameters' defaults included) and every locus member
-/// body, at any nesting.
-struct RootLiterals<'a, 'b> {
-    ids: &'b Snapshot,
-    wanted: &'b BTreeSet<SiteRef>,
-    sites: Vec<&'a [StructInit]>,
+/// Every struct literal written in a body, handed to `f` with whether it
+/// is a bare expression statement (`T { … };`, its value discarded),
+/// found where the placement table's scopes find literals: every fn body
+/// (its parameters' defaults included) and every locus member body, at
+/// any nesting, through every statement and expression form.
+struct Literals<F> {
+    f: F,
 }
 
-impl<'a> RootLiterals<'a, '_> {
+fn literals<'a, F: FnMut(&'a Expr, bool)>(f: F) -> Literals<F> {
+    Literals { f }
+}
+
+impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
     fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) => self.fn_decl(fd),
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        match m {
-                            LocusMember::Fn(fd) => self.fn_decl(fd),
-                            LocusMember::Lifecycle(ld) => self.block(&ld.body),
-                            LocusMember::Mode(md) => self.block(&md.body),
-                            LocusMember::Failure(fd) => self.block(&fd.body),
-                            LocusMember::BirthCheck(bc) => {
-                                self.expr(&bc.cond);
-                                if let Some(p) = &bc.payload {
-                                    self.expr(p);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                TopDecl::Locus(l) => self.locus_bodies(l),
                 TopDecl::Module(m) => self.items(&m.items),
                 _ => {}
+            }
+        }
+    }
+
+    /// A locus's member bodies: not its params defaults, which lowering
+    /// expands in the instantiating scope, not the locus's own.
+    fn locus_bodies(&mut self, l: &'a LocusDecl) {
+        for m in &l.members {
+            match m {
+                LocusMember::Fn(fd) => self.fn_decl(fd),
+                LocusMember::Lifecycle(ld) => self.block(&ld.body),
+                LocusMember::Mode(md) => self.block(&md.body),
+                LocusMember::Failure(fd) => self.block(&fd.body),
+                LocusMember::BirthCheck(bc) => {
+                    self.expr(&bc.cond);
+                    if let Some(p) = &bc.payload {
+                        self.expr(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn literal(&mut self, e: &'a Expr, bare: bool) {
+        (self.f)(e, bare);
+        if let Expr::Struct { inits, .. } = e {
+            for i in inits {
+                self.expr(&i.value);
             }
         }
     }
@@ -290,6 +381,7 @@ impl<'a> RootLiterals<'a, '_> {
                 }
             }
             Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Expr(e @ Expr::Struct { .. }) => self.literal(e, true),
             Stmt::Expr(e) => self.expr(e),
             Stmt::Block(b) => self.block(b),
             Stmt::Recovery { args, modifier, .. } => {
@@ -326,14 +418,7 @@ impl<'a> RootLiterals<'a, '_> {
 
     fn expr(&mut self, e: &'a Expr) {
         match e {
-            Expr::Struct { inits, id, .. } => {
-                if self.ids.site_id(*id).is_some_and(|s| self.wanted.contains(&SiteRef::user(s))) {
-                    self.sites.push(inits.as_slice());
-                }
-                for i in inits {
-                    self.expr(&i.value);
-                }
-            }
+            Expr::Struct { .. } => self.literal(e, false),
             Expr::Binary { left, right, .. } => {
                 self.expr(left);
                 self.expr(right);

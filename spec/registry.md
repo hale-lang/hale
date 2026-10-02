@@ -45,7 +45,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | — | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
-| `law_backstops` | Layer 8 | Migrating | law | `lowering_laws` | 1 | The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements. |
+| `law_backstops` | Layer 8 | Migrating | law | `lowering_laws` | 1 | The laws that replaced lowering's own refusals of rules the spec states, and the refusals still left: self-containment, and a cross-pool spawn used as a value in another locus's params default. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Migrating | law | `claim_law_diags` | 3 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
 | `view` | The law engine | Reserved | derivation | — | 0 | A named query over the tables: a node selector, a relation set and an adequacy policy, rendered by a backend (hale ui, after phase 2). |
@@ -465,7 +465,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Also owned.** `crates/hale-types/src/ownership.rs` · `resolve_binding_facts`; `crates/hale-types/src/ownership_graph.rs` · `bubble_plans`; `crates/hale-types/src/ownership_graph.rs` · `compute_forwarding_sets`; `crates/hale-types/src/ownership_graph.rs` · `classify_owner_kind`; `crates/hale-types/src/ownership_graph.rs` · `classify_edge`; `crates/hale-types/src/ownership.rs` · `fresh_factories`
 
-**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model (dynamic births: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`); alloc_summary (eager-only accept sets)
+**Consumers.** codegen (`crates/hale-codegen/src/locus/instantiation.rs` · `site_owner`); borrow_lifetime (`crates/hale-types/src/borrow_lifetime.rs` · `borrow_lifetime_diags`); model (dynamic births: the snapshot's graph) (`crates/hale-frontend/src/snapshot.rs` · `demand_ownership_graph`); alloc_summary (eager-only accept sets); check and the harness (the cross-pool spawn law reads the bubble plan) (`crates/hale-types/src/lowering_laws.rs` · `cross_pool_spawn_used_as_a_value`)
 
 **Invariants.**
 
@@ -484,11 +484,11 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 **Guarded seams.**
 
 - `resolve_owners(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1
-- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `build_ownership_graph(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `fresh_factories(` may be referenced from: `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/check.rs` ×1
 - `resolve_binding_facts(` may be referenced from: `crates/hale-types/src/ownership.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
 - `returned_bindings(` may be referenced from: `crates/hale-types/src/ownership.rs` ×3
-- `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1
+- `bubble_plans(` may be referenced from: `crates/hale-types/src/ownership_graph.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-types/src/lowering_laws.rs` ×1
 
 ### `bus_graph` — Migrating · derivation
 
@@ -1221,31 +1221,32 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 ### `law_backstops` — Migrating · law
 
-**Answers.** The laws that replaced lowering's own refusals of rules the checker states, and the refusals still left: self-containment, cross-pool bare statements.
+**Answers.** The laws that replaced lowering's own refusals of rules the spec states, and the refusals still left: self-containment, and a cross-pool spawn used as a value in another locus's params default.
 
-**Inputs.** the AST; the placement table; the binding rows
+**Inputs.** the AST; the placement table; the binding rows; the ownership graph
 
 **Producer (today's authority, migrating).** `crates/hale-types/src/lowering_laws.rs` · `lowering_laws`
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering for rules the checker already states (self-containment, cross-pool bare statements), kept for harness builds that skip the checker. *Removed when:* phase 3, C7: each moves to `lowering_laws` once a law covers every program it refused, and is deleted.
+- `crates/hale-codegen/src/locus/instantiation.rs` · `CodegenError::Unsupported` — spanless refusals at lowering, two left: self-containment (GH #813), and the cross-pool spawn used as a value where the literal sits in another locus's params default (lowering expands the default under the instantiating locus's self and keys the bubble plan by it, so the plan entry the literal meets depends on who instantiates its locus). *Removed when:* the cross-pool residue: a row giving each params-default literal its instantiation context, the locus whose self lowering expands it under; self-containment: C7, 5.
 
 **Consumers.** the check (every verb and the LSP) (`crates/hale-types/src/check.rs` · `lowering_laws`); the harness's lowering view (`Config::harness`), which is not gated on the check (`crates/hale-frontend/src/snapshot.rs` · `lowering_laws`)
 
 **Invariants.**
 
 - a law is judged once, with a span
-- lowering judges no rule `lowering_laws` states: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so a refusal reaches no entry point unlocated (C7)
+- lowering judges no shape a law in `lowering_laws` covers: the check runs the laws among its rules, and the harness's lowering view demands them before it lowers, so those refusals reach no entry point unlocated (C7)
 - rule 6 is judged per pinned instance, by the locus it realizes (an override literal's, a stdlib locus's), over the placement table's rows: a `pinned` entry's field and each replica, and an adapter inline in `bindings { }` (C7, 1)
 - rule 17 is judged per root construction over the placement table: a literal of the root declaration (as resolved) written inside a loop body, whose template holds a row a `pinned` entry decides (C7, 2)
 - rule 18 is judged per entry of the lowering root (the placement table's root) over the inits its constructions supply, or the params default when one leaves the field or none builds the root (C7, 3)
+- a cross-pool spawn is judged per locus literal in a locus's own member bodies, against the ownership graph's cross-pool bubble plan keyed (that locus, the literal's locus) as lowering keys it there: one that is not a bare statement is refused at the literal (C7, 4)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`); crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check); crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness); crates/hale-codegen/tests/placement_factory_default.rs (rule 18 at the harness); crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
+**Focused tests.** crates/hale-types/tests/placement.rs; crates/hale-cli/tests/check_lowering_laws.rs (`hale check` and `hale build`); crates/hale-codegen/tests/harness_lowering_laws.rs (the harness, which skips the check); crates/hale-codegen/tests/deferred_slot_per_iteration.rs (rule 17 at the harness); crates/hale-codegen/tests/placement_factory_default.rs (rule 18 at the harness); crates/hale-types/tests/ownership_graph.rs (the cross-pool spawn law and its residue); crates/hale-types/tests/self_containing_locus.rs; crates/hale-codegen/tests/self_containing_locus.rs
 
-**Spec.** spec/semantics.md rules 6, 17, 18; GH #813, #876
+**Spec.** spec/semantics.md rules 6, 17, 18 and § accept bubbling; GH #813, #876
 
 ## The law engine
 

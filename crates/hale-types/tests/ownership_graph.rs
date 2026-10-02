@@ -424,6 +424,89 @@ fn forwarding_set_singleton_owner_yields_nothing() {
     );
 }
 
+// --- The cross-pool spawn law (F.40 phase 3, C7) -----------------
+//
+// A cross-pool `I { }` is fire-and-forget: born on the owner's thread,
+// it may only be a bare statement. Until C7 lowering was the only
+// evaluator (`hale check` passed a value use; `hale build` refused it
+// without a span). The law reads the graph's cross-pool bubble plan
+// (`hale_types::lowering_laws`). The programs are spelled without raw
+// strings so the corpus does not harvest them.
+
+/// `Driver` on pool `workers` writes `Ship { }`; `World`, a singleton
+/// on main, accepts it: a cross-pool bubble. `body` is `Driver.run()`'s.
+fn crosspool_src(body: &str) -> String {
+    [
+        "locus Ship { params { hull: Int = 0; } contract { expose hull: Int; } }\n",
+        "locus Box { params { s: Ship; } }\n",
+        "locus Holder { params { s: Ship = Ship { hull: 1 }; } }\n",
+        "fn keep(s: Ship) { }\n",
+        "locus Driver {\n    run() {\n",
+        body,
+        "\n    }\n}\n",
+        "main locus World {\n",
+        "    params { driver: Driver = Driver { }; }\n",
+        "    placement { driver: cooperative(pool = workers); }\n",
+        "    accept(s: Ship) { }\n",
+        "    run() { }\n",
+        "}\n",
+        "fn main() { World { }; }\n",
+    ]
+    .concat()
+}
+
+const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget: the instance is created on \
+                               `World`'s thread and cannot be used here";
+
+fn crosspool_errors(body: &str) -> Vec<(String, String)> {
+    let src = crosspool_src(body);
+    let prog = parse_source(&src).expect("parse failed");
+    hale_types::check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| (d.message.clone(), src[d.span.start.as_usize()..d.span.end.as_usize()].to_string()))
+        .collect()
+}
+
+#[test]
+fn a_cross_pool_spawn_used_as_a_value_is_refused_at_the_literal() {
+    for (body, what) in [
+        ("        let s = Ship { hull: 7 };", "let-bound"),
+        ("        keep(Ship { hull: 7 });", "an argument"),
+        ("        Box { s: Ship { hull: 7 } };", "a field of a bare literal"),
+    ] {
+        let errs = crosspool_errors(body);
+        assert_eq!(errs.len(), 1, "{what}: the law's refusal and nothing else: {errs:?}");
+        let (msg, at) = &errs[0];
+        assert!(msg.starts_with(FIRE_AND_FORGET), "{what}: {msg}");
+        assert_eq!(at, "Ship { hull: 7 }", "{what}: located at the literal");
+    }
+}
+
+#[test]
+fn a_bare_cross_pool_spawn_is_clean() {
+    let errs = crosspool_errors("        Ship { hull: 7 };");
+    assert!(errs.is_empty(), "a bare statement is the legal spelling: {errs:?}");
+}
+
+/// The residue lowering still refuses alone: `Driver` spawns `Ship`
+/// itself (bare, legal), so the plan holds (Driver, Ship); `Holder`'s
+/// params default builds a `Ship` too, and lowering expands it under
+/// `Driver`'s self, where that entry applies. The graph keys the literal
+/// by `Holder`, whose edge to `World` is same-thread, so the law cannot
+/// see it; the harness pin is in hale-codegen's
+/// `harness_lowering_laws.rs`.
+#[test]
+fn a_cross_pool_spawn_in_another_locus_default_is_not_judged_by_the_law() {
+    let g = graph(&crosspool_src("        Ship { hull: 7 };\n        Holder { };"));
+    assert!(g.bubble_plans().crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
+    let errs = crosspool_errors("        Ship { hull: 7 };\n        Holder { };");
+    assert!(
+        !errs.iter().any(|(m, _)| m.contains("fire-and-forget")),
+        "the law judges a locus's own bodies only: {errs:?}"
+    );
+}
+
 // --- Real corpus regression ---------------------------------------
 
 fn examples_dir() -> PathBuf {

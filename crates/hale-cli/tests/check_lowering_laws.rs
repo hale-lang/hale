@@ -37,6 +37,17 @@ const PINNED_ROOT_IN_A_LOOP: &str = "locus Worker { run() { } }\n\
 
 const RULE_17: &str = "locus `App` is instantiated inside a loop, but its `placement { }` block pins field `w`";
 
+/// A cross-pool spawn used as a value: `Driver` runs on pool `workers`,
+/// `World` (main, a singleton) accepts `Ship`. The literal is line 2,
+/// column 32.
+const XPOOL_VALUE: &str = "locus Ship { params { hull: Int = 0; } }\n\
+     locus Driver { run() { let s = Ship { hull: 7 }; } }\n\
+     main locus World { params { driver: Driver = Driver { }; } placement { driver: cooperative(pool = workers); } \
+     accept(s: Ship) { } run() { } }\n\
+     fn main() { World { }; }\n";
+
+const FIRE_AND_FORGET: &str = "cross-pool spawn `Ship{ }` is fire-and-forget";
+
 fn seed(tag: &str, src: &str) -> PathBuf {
     let d: PathBuf = std::env::temp_dir().join(format!(
         "hale_check_lowering_laws_{}_{}",
@@ -86,10 +97,11 @@ fn build_refuses_it_at_the_check_with_the_same_span() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-#[test]
-fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
+/// `hale check` and `hale build` both refuse `src` with `message` at
+/// `at` (`:line:col:`), and nothing is lowered.
+fn both_verbs_refuse(tag: &str, src: &str, message: &str, at: &str) {
     for verb in ["check", "build"] {
-        let d = seed(&format!("rule17_{verb}"), PINNED_ROOT_IN_A_LOOP);
+        let d = seed(&format!("{tag}_{verb}"), src);
         let bin = d.join("out");
         let dir = d.to_string_lossy().to_string();
         let out_path = bin.to_string_lossy().to_string();
@@ -99,8 +111,18 @@ fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
         };
         let (ok, out) = hale(&args);
         assert!(!ok, "{verb} must fail:\n{out}");
-        assert!(out.contains(RULE_17) && out.contains(":4:21:"), "{verb}: located at the literal:\n{out}");
+        assert!(out.contains(message) && out.contains(at), "{verb}: located at the literal:\n{out}");
         assert!(!bin.exists(), "nothing was lowered");
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+#[test]
+fn check_and_build_refuse_a_pinned_root_in_a_loop_at_the_literal() {
+    both_verbs_refuse("rule17", PINNED_ROOT_IN_A_LOOP, RULE_17, ":4:21:");
+}
+
+#[test]
+fn check_and_build_refuse_a_cross_pool_spawn_used_as_a_value_at_the_literal() {
+    both_verbs_refuse("xpool", XPOOL_VALUE, FIRE_AND_FORGET, ":2:32:");
 }

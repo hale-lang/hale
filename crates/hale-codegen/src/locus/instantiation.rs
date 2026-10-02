@@ -486,6 +486,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         if let Some(owner_name) = crosspool_owner {
+            // A literal in the enclosing locus's own member bodies is
+            // judged before lowering, located (`hale_types::lowering_laws`,
+            // F.40 phase 3, C7). This refusal stays for the one shape the
+            // law cannot see: a literal in another locus's params default,
+            // expanded here under `current_self`, the instantiating
+            // locus, which no row relates to the literal.
             if !is_bare_stmt {
                 return Err(CodegenError::Unsupported(format!(
                     "cross-pool spawn `{child}{{ }}` is fire-and-forget: \
