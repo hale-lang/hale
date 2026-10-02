@@ -1885,6 +1885,16 @@ static inline int lotus_process_draining(void) {
 typedef void (*lotus_failure_fn)(void *parent, void *child, void *err);
 typedef void (*lotus_resume_fn)(void *child, int64_t phase, int64_t pre);
 
+#ifdef LOTUS_LIFECYCLE_TRACE
+/* The lifecycle trace (F.40 phase 3, L2), defined at the end of this
+ * file: the hold and the settle report the construction-time delivery
+ * the compiler cannot see. */
+int lotus_lc_skips(const char *what);
+void lotus_lc_ev(const char *kind, const char *point, void *self,
+                 const char *spine, const char *type);
+void lotus_lc_parked_abandoned(void *self);
+#endif
+
 /* One held failure. A node stays linked until its handler has
  * returned (state DONE), so a failing child can find it — to defer its
  * reclaim behind the handler (#1067), or to learn what the handler
@@ -1958,6 +1968,11 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
                            const void *err, int64_t err_size) {
     if (__atomic_load_n(&g_params_open_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
+#ifdef LOTUS_LIFECYCLE_TRACE
+    /* A negative control: no hold, so the handler runs in place while
+     * the parent's params are still open. */
+    if (lotus_lc_skips("ConstructionDelivery")) return 0;
+#endif
     pthread_mutex_lock(&g_params_open_lock);
     lotus_params_open_t *open = NULL;
     for (size_t i = g_params_open_len; i-- > 0;) {
@@ -1984,6 +1999,9 @@ int64_t lotus_failure_hold(void *parent, void *fn, void *child,
     g_held_tail = node;
     __atomic_add_fetch(&lotus_held_failure_count, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_params_open_lock);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("ConstructionDelivery", "Entered", child, "Settle", NULL);
+#endif
     return 1;
 }
 
@@ -2068,6 +2086,9 @@ void lotus_params_settle(void *parent) {
         }
     }
     pthread_mutex_unlock(&g_params_open_lock);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    lotus_lc_ev("ParamsSettle", "Completed", parent, "Instantiation", NULL);
+#endif
     /* Deliver this parent's failures in arrival order, outside the
      * lock: a handler may build a locus that opens and settles in
      * turn. The node stays linked while its handler runs. */
@@ -2084,6 +2105,10 @@ void lotus_params_settle(void *parent) {
         pthread_mutex_unlock(&g_params_open_lock);
 
         node->fn(node->parent, node->child, node->err);
+#ifdef LOTUS_LIFECYCLE_TRACE
+        lotus_lc_ev("FailureDelivery", "Completed", node->child, "Settle", NULL);
+        lotus_lc_ev("ConstructionDelivery", "Completed", node->child, "Settle", NULL);
+#endif
 
         pthread_mutex_lock(&g_params_open_lock);
         void *child = node->child;
@@ -9565,6 +9590,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             if (c->parked_fd >= 0) {
                 lotus_poll_del(p->epoll_fd, c->parked_fd);
             }
+#ifdef LOTUS_LIFECYCLE_TRACE
+            lotus_lc_parked_abandoned(c->self_ptr);
+#endif
             lotus_coro_free(c);
             c = next;
         }
@@ -24427,3 +24455,197 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
     if (scratch) lotus_bus_call_arena_close(scratch);
     if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
 }
+
+#ifdef LOTUS_LIFECYCLE_TRACE
+/* ===================================================================
+ * The lifecycle trace (F.40 phase 3, L2). Compiled only into a build
+ * made with `HALE_LIFECYCLE_TRACE=1` (`BuildOptions::lifecycle_trace`):
+ * a release runtime has none of this, and a release program's IR calls
+ * none of it. A debug aid, not a contract (spec/runtime.md § The
+ * lifecycle trace).
+ *
+ * One line per lifecycle event, on stderr, in one write(2):
+ *
+ *   lc <seq> <Kind> <Point> spine=<Spine> dom=<domain> type=<T> inst=<n> inc=<n>
+ *
+ * Kind is a `hale_types::lifecycle::ObligationKind` name, Point is
+ * `Entered`, `Completed` or `Terminal(<terminal>)`, Spine a `Spine`
+ * name. The domain is the thread the event happened on: `main`,
+ * `pool:<name>` for a cooperative pool's worker, `pinned:<n>` for a
+ * pinned locus's thread, `thread:<n>` for any other. A
+ * process-level obligation (the pool join, the wait-abort, a pre-drain)
+ * prints `type=- inst=- inc=-`. `hale_types::lifecycle::trace` parses
+ * the form back into `Event`s.
+ *
+ * The runtime mints the subject: the first event naming a struct gives
+ * it the next instance number and incarnation 0; `Restart Entered`
+ * begins its next incarnation; `Reclaim Completed` retires the number,
+ * so a struct recycled at the same address is a new instance. This is
+ * the one place a runtime subject comes from; the table never mints
+ * one.
+ *
+ * Nothing here takes a lock. The subject table is open addressing with
+ * a relaxed CAS on the key, and the sequence number a relaxed
+ * fetch_add, so the trace adds no happens-before edge between the
+ * threads it watches. What it does give: on one thread, seq order is
+ * program order; and if event a happens before event b, seq(a) <
+ * seq(b) (one atomic's modification order), so a seq order that
+ * contradicts a required edge is a real violation. The converse does
+ * not hold (a serialized log is evidence of an execution, not a proof
+ * of a happens-before edge), and the write(2) itself serializes in the
+ * kernel, which is the one perturbation the trace makes.
+ *
+ * `LOTUS_LIFECYCLE_SKIP` (read once, at load) is a comma list of steps
+ * a negative control removes: a kind name (`PoolJoin`) makes
+ * `lotus_lc_enter` answer 0, so the emitted step and both its events
+ * are skipped, and the steps the runtime performs itself check the same
+ * name (`ConstructionDelivery`: no failure is held, so it is delivered
+ * in place while the params are still open); `<Kind>.<Point>` drops
+ * that one event line and nothing else.
+ * =================================================================== */
+#define LOTUS_LC_SLOTS (1u << 18)
+#define LOTUS_LC_TOMB ((void *)1)
+
+typedef struct {
+    void *key;          /* the instance's struct; NULL empty, TOMB retired */
+    const char *type;   /* the declaration's name, once an event named it */
+    uint64_t inst;
+    uint32_t inc;
+    int running;        /* Run entered and not ended: the parked coro's name */
+} lotus_lc_slot_t;
+
+static lotus_lc_slot_t g_lc_slots[LOTUS_LC_SLOTS];
+static uint64_t g_lc_seq = 0;
+static uint64_t g_lc_next_inst = 0;
+static uint32_t g_lc_next_thread = 0;
+static pthread_t g_lc_main;
+static char g_lc_skip[256];
+static __thread uint32_t t_lc_thread = 0;
+static __thread int t_lc_pinned = 0;
+
+/* A pinned locus's thread names itself at its start (the emitted
+ * thread function calls this in a trace build). */
+void lotus_lc_pinned_thread(void) {
+    t_lc_pinned = 1;
+}
+
+__attribute__((constructor)) static void lotus_lc_init(void) {
+    g_lc_main = pthread_self();
+    const char *s = getenv("LOTUS_LIFECYCLE_SKIP");
+    if (s) snprintf(g_lc_skip, sizeof g_lc_skip, ",%s,", s);
+}
+
+/* 1 when LOTUS_LIFECYCLE_SKIP names `what` (a kind, or Kind.Point). */
+int lotus_lc_skips(const char *what) {
+    if (!g_lc_skip[0]) return 0;
+    char needle[128];
+    snprintf(needle, sizeof needle, ",%s,", what);
+    return strstr(g_lc_skip, needle) != NULL;
+}
+
+static lotus_lc_slot_t *lotus_lc_subject(void *self, const char *type) {
+    if (!self) return NULL;
+    uint64_t h = ((uint64_t)(uintptr_t)self >> 4) * 0x9E3779B97F4A7C15ull;
+    size_t start = (size_t)(h >> 46);
+    for (size_t i = 0; i < LOTUS_LC_SLOTS; i++) {
+        lotus_lc_slot_t *s = &g_lc_slots[(start + i) & (LOTUS_LC_SLOTS - 1)];
+        void *k = __atomic_load_n(&s->key, __ATOMIC_RELAXED);
+        if (k == self) {
+            if (type && !s->type) s->type = type;
+            return s;
+        }
+        if (k == NULL) {
+            void *expected = NULL;
+            if (__atomic_compare_exchange_n(&s->key, &expected, self, 0,
+                                            __ATOMIC_RELAXED,
+                                            __ATOMIC_RELAXED)) {
+                s->type = type;
+                s->inc = 0;
+                s->running = 0;
+                s->inst = __atomic_add_fetch(&g_lc_next_inst, 1,
+                                             __ATOMIC_RELAXED);
+                return s;
+            }
+            if (expected == self) return s;
+        }
+    }
+    return NULL; /* the table is full: the line says inst=- */
+}
+
+static void lotus_lc_domain(char *buf, size_t n) {
+    if (pthread_equal(pthread_self(), g_lc_main)) {
+        snprintf(buf, n, "main");
+        return;
+    }
+    if (g_current_pool_tls) {
+        snprintf(buf, n, "pool:%s", g_current_pool_tls->name);
+        return;
+    }
+    if (!t_lc_thread)
+        t_lc_thread = __atomic_add_fetch(&g_lc_next_thread, 1,
+                                         __ATOMIC_RELAXED);
+    snprintf(buf, n, "%s:%u",
+             (t_lc_pinned || g_current_pinned_mailbox) ? "pinned" : "thread",
+             t_lc_thread);
+}
+
+static void lotus_lc_write(const char *kind, const char *point,
+                           lotus_lc_slot_t *s, const char *spine) {
+    char dom[96];
+    lotus_lc_domain(dom, sizeof dom);
+    uint64_t seq = __atomic_add_fetch(&g_lc_seq, 1, __ATOMIC_RELAXED);
+    char line[384];
+    int len;
+    if (s)
+        len = snprintf(line, sizeof line,
+                       "lc %" PRIu64 " %s %s spine=%s dom=%s type=%s inst=%" PRIu64
+                       " inc=%u\n",
+                       seq, kind, point, spine, dom, s->type ? s->type : "?",
+                       s->inst, s->inc);
+    else
+        len = snprintf(line, sizeof line,
+                       "lc %" PRIu64 " %s %s spine=%s dom=%s type=- inst=- inc=-\n",
+                       seq, kind, point, spine, dom);
+    if (len > (int)sizeof line - 1) len = (int)sizeof line - 1;
+    ssize_t w = write(2, line, (size_t)len);
+    (void)w;
+}
+
+/* A step's entry. 0: LOTUS_LIFECYCLE_SKIP names the kind, and the
+ * caller skips the step and its completion. Else the Entered line, 1. */
+int32_t lotus_lc_enter(const char *kind, void *self, const char *spine,
+                       const char *type) {
+    if (lotus_lc_skips(kind)) return 0;
+    lotus_lc_ev(kind, "Entered", self, spine, type);
+    return 1;
+}
+
+/* One event line: a completion, or a terminal, or an Entered whose
+ * step the runtime performs itself. */
+void lotus_lc_ev(const char *kind, const char *point, void *self,
+                 const char *spine, const char *type) {
+    lotus_lc_slot_t *s = lotus_lc_subject(self, type);
+    int entered = strcmp(point, "Entered") == 0;
+    if (s && entered && strcmp(kind, "Restart") == 0) s->inc++;
+    if (s && strcmp(kind, "Run") == 0) s->running = entered;
+    char drop[128];
+    snprintf(drop, sizeof drop, "%s.%s", kind, point);
+    if (!lotus_lc_skips(drop)) lotus_lc_write(kind, point, s, spine);
+    if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
+        __atomic_store_n(&s->key, LOTUS_LC_TOMB, __ATOMIC_RELAXED);
+}
+
+/* R20a: a parked coroutine the worker abandons at shutdown. Its
+ * cancellation is an obligation of its own; when the coroutine is a
+ * started run() (its subject's Run entered and not ended), the run
+ * ends CanceledAfterStart, named here, where its stack is freed. */
+void lotus_lc_parked_abandoned(void *self) {
+    lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
+    lotus_lc_write("Cancellation", "Entered", s, "PoolRun");
+    if (s && s->running) {
+        s->running = 0;
+        lotus_lc_write("Run", "Terminal(CanceledAfterStart)", s, "PoolRun");
+    }
+    lotus_lc_write("Cancellation", "Completed", s, "PoolRun");
+}
+#endif /* LOTUS_LIFECYCLE_TRACE */

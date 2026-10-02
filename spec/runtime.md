@@ -1895,6 +1895,63 @@ says so and records today's behaviour.
   failure whose destination queue is full has no regression yet
   (L5).
 
+#### The lifecycle trace
+
+A debug aid, not a contract. A build made with
+`HALE_LIFECYCLE_TRACE=1` (`BuildOptions::lifecycle_trace`; native
+host targets only) compiles the runtime with `LOTUS_LIFECYCLE_TRACE`
+and emits each lifecycle step between an entry call and its
+completion event, so the program writes one line per obligation
+event on stderr:
+
+```text
+lc <seq> <Kind> <Point> spine=<Spine> dom=<domain> type=<T> inst=<n> inc=<n>
+```
+
+`Kind` is an `ObligationKind`, `Point` is `Entered`, `Completed` or
+`Terminal(<terminal>)`, and `Spine` is the spine that emitted the
+step (`-` where the site cannot name it: a failure delivered in
+place, a restart). The domain is the thread the event ran on: `main`,
+`pool:<name>` for a cooperative pool's worker, `pinned:<n>` for a
+pinned locus's thread, `thread:<n>` for any other. `type`, `inst` and
+`inc` name the subject; a process-level obligation (the pool join, a
+wait-abort, a pre-drain) prints `-` for all three.
+
+The runtime mints the subject, and this is the one place a runtime
+subject comes from: the first event naming a struct gives it the
+next instance number and incarnation 0, `Restart Entered` begins
+its next incarnation, and `Reclaim Completed` retires the number,
+so a struct recycled at the same address is a new instance. The
+events: `ParamsSettle` (the bracket's entry, and its settle),
+`Accept`, `Birth`, `Run` (and `Run Terminal(CanceledAfterStart)` for
+a started run whose parked coroutine a pool worker abandons at
+shutdown, with that `Cancellation`), `FailureDelivery` (entered
+where the failure is raised, completed when the handler returns,
+in place or at settle), `ConstructionDelivery` (a held failure,
+from the hold to its handler's return at settle), `Restart`, `Drain`,
+`Dissolve` (the dissolve-epoch closures and `dissolve()`),
+`Reclaim` (the arena's release past the `__arena` latch), `PreDrain`,
+`WaitAbort`, `PoolJoin` and `PinnedJoin`. Readiness, subscription and
+the run's admission have no events yet.
+
+The trace adds no happens-before edge between the threads it
+watches: the sequence number is one relaxed counter and the subject
+table takes no lock. On one thread `seq` order is program order, and
+if event a happens before event b then `seq(a) < seq(b)`, so a `seq`
+order that contradicts a required edge is a real violation, and one
+that agrees with it is evidence of an execution, not a proof. The
+write itself (one `write(2)` per line) is the trace's one
+perturbation. `hale_types::lifecycle::trace` parses the lines back
+into `Event`s and checks them against what a run owes.
+
+`LOTUS_LIFECYCLE_SKIP`, read by a trace build's runtime at start, is
+a comma list of steps a negative control removes: a kind's name
+skips that step and both its events where it is emitted (and, for
+`ConstructionDelivery`, holds no failure, so the handler runs in
+place while the params are open); `<Kind>.<Point>` drops that one
+line and nothing else. A build without the knob emits nothing of
+the trace and its IR is the same.
+
 ### Native observation emission (iris P4, 2026-07-27)
 
 With `LOTUS_OBS=1` the runtime publishes an iris-protocol
@@ -3152,6 +3209,7 @@ build.
 | `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
 | `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
 | `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject on stderr. | off |
+| `HALE_LIFECYCLE_TRACE` | `lifecycle_trace` | The lifecycle trace: one line per obligation event on stderr (§ "The lifecycle trace"). A debug build; native host targets only. | off |
 | `HALE_TIME` (*set*) | `time_phases` | Print per-phase wall times of the build on stderr. | off |
 | `HALE_CC_WARNINGS` | `cc_warnings` | Let the runtime's C warnings through instead of `-w`. For work on the runtime itself. | off |
 | `HALE_NO_LLD` | `no_lld` | Link with the default linker even when `ld.lld` is on PATH (Linux only; lld is otherwise used). | off |
@@ -3210,6 +3268,7 @@ its behavior as described in this document.
 | `LOTUS_BUS_UDP_RCVBUF=<N>` | the kernel's | `SO_RCVBUF`, in bytes, for the udp bus readers. Ignored unless a positive `int`. |
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
+| `LOTUS_LIFECYCLE_SKIP=<steps>` | unset | Test only, and read only by a lifecycle-trace build (`HALE_LIFECYCLE_TRACE=1`; a release runtime has no such code): a comma list of steps a negative control removes, a kind (`PoolJoin`) or one event line (`Reclaim.Completed`). See *The lifecycle trace*. |
 | `LOTUS_OBS=1` | off | Native observation emission (iris): the process creates its observation segment and its probes emit. Implied by `LOTUS_OBS_RECORD` and `LOTUS_REPLAY`. See *Native observation emission*. |
 | `LOTUS_OBS_RINGS=<N>` | 8 (64 when recording) | Rings in the observation segment, 1 to 64; a value outside that falls back to the default. |
 | `LOTUS_OBS_SLOTS=<N>` | 4096 | Slots per ring: a power of two, at least 64; anything else falls back to the default. |

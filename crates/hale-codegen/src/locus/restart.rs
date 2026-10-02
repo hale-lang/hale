@@ -510,6 +510,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fields: info.fields.clone(),
         });
         let prev_ipd = std::mem::replace(&mut self.in_params_default, false);
+        // The trace: a restart performed begins the instance's next
+        // incarnation (the runtime counts it at this event). Its spine
+        // is the deciding thread's, which this fn cannot name.
+        let lc_outer = std::mem::replace(&mut self.lc_spine, "-");
+        self.lc_event("Restart", "Entered", Some(self_arg), Some(name))?;
 
         // restart_in_place: back to the params as built first.
         let rip_ptr = self
@@ -551,13 +556,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(e)?;
         self.builder.build_store(dr_ptr, i64_t.const_zero()).map_err(e)?;
-        if let Some(birth) = info.methods.get("birth") {
-            if !info.empty_lifecycle.contains("birth") {
-                self.builder
-                    .build_call(*birth, &[self_arg.into()], "restart.birth")
-                    .map_err(e)?;
+        let birth_call =
+            info.methods.get("birth").copied().filter(|_| !info.empty_lifecycle.contains("birth"));
+        self.lc_step("Birth", Some(self_arg), Some(name), |cx| {
+            if let Some(birth) = birth_call {
+                cx.builder.build_call(birth, &[self_arg.into()], "restart.birth").map_err(e)?;
             }
-        }
+            Ok(())
+        })?;
         if let Some(bc) = info.birth_closures_fn {
             let ps_ptr = self
                 .builder
@@ -578,6 +584,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_call(bc, &[self_arg.into(), ps.into(), h.into()], "restart.birth_closures")
                 .map_err(e)?;
         }
+        self.lc_event("Restart", "Completed", Some(self_arg), Some(name))?;
+        self.lc_spine = lc_outer;
         self.builder.build_return(None).map_err(e)?;
 
         self.in_params_default = prev_ipd;

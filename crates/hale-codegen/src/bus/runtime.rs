@@ -62,10 +62,12 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_bus_wait_abort_all")
             .expect("lotus_bus_wait_abort_all declared");
-        self.builder
-            .build_call(f, &[], "bus.wait.abort_all")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok(())
+        self.lc_step("WaitAbort", None, None, |cx| {
+            cx.builder
+                .build_call(f, &[], "bus.wait.abort_all")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            Ok(())
+        })
     }
 
     /// GH #255 phase 2: attach shed/refuse bounds to the

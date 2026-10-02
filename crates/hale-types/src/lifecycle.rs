@@ -139,6 +139,8 @@ use hale_graph::ids::SiteId;
 
 use crate::ty::Ty;
 
+pub mod trace;
+
 // ------------------------------------------------------------ identity
 
 /// A row's static identity: the declaration built and the template
@@ -247,6 +249,15 @@ impl Incarnation {
 
     pub fn raw(self) -> u32 {
         self.0
+    }
+}
+
+impl RuntimeSubject {
+    /// The subject a trace event carried: the runtime's instance and
+    /// incarnation numbers, read back. `trace::parse_line` is the one
+    /// caller; nothing else mints a subject.
+    pub fn observed(instance: u64, incarnation: u32) -> RuntimeSubject {
+        RuntimeSubject { instance: RuntimeInstance::observed(instance), incarnation: Incarnation::observed(incarnation) }
     }
 }
 
@@ -409,6 +420,11 @@ impl ObligationKind {
         ObligationKind::ProcessDrain,
     ];
 
+    /// The kind a trace line names (the inverse of [`ObligationKind::name`]).
+    pub fn from_name(name: &str) -> Option<ObligationKind> {
+        ObligationKind::ALL.iter().copied().find(|k| k.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             ObligationKind::ParamsSettle => "ParamsSettle",
@@ -545,6 +561,49 @@ pub enum Spine {
     Process,
 }
 
+impl Spine {
+    pub const ALL: &'static [Spine] = &[
+        Spine::Instantiation,
+        Spine::PoolRun,
+        Spine::PinnedMain,
+        Spine::EagerTeardown,
+        Spine::DeferredEntry,
+        Spine::DeferredMainEntry,
+        Spine::MainFallThrough,
+        Spine::MainTestFailure,
+        Spine::MainReturn,
+        Spine::Reclaim,
+        Spine::Cascade,
+        Spine::Settle,
+        Spine::QueueDrain,
+        Spine::Process,
+    ];
+
+    /// The name a trace line carries.
+    pub fn name(self) -> &'static str {
+        match self {
+            Spine::Instantiation => "Instantiation",
+            Spine::PoolRun => "PoolRun",
+            Spine::PinnedMain => "PinnedMain",
+            Spine::EagerTeardown => "EagerTeardown",
+            Spine::DeferredEntry => "DeferredEntry",
+            Spine::DeferredMainEntry => "DeferredMainEntry",
+            Spine::MainFallThrough => "MainFallThrough",
+            Spine::MainTestFailure => "MainTestFailure",
+            Spine::MainReturn => "MainReturn",
+            Spine::Reclaim => "Reclaim",
+            Spine::Cascade => "Cascade",
+            Spine::Settle => "Settle",
+            Spine::QueueDrain => "QueueDrain",
+            Spine::Process => "Process",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Spine> {
+        Spine::ALL.iter().copied().find(|s| s.name() == name)
+    }
+}
+
 /// The domain an obligation runs on, relative to its instance. The
 /// producer resolves a role to P1's domain id; a role is what the rule
 /// says, a domain id is what a deployment makes of it.
@@ -628,6 +687,74 @@ pub enum Terminal {
     Dissolved,
 }
 
+impl Terminal {
+    /// The form a trace line writes: `CanceledAfterStart`,
+    /// `NotStarted(Shutdown(PoolShutdown))`.
+    pub fn name(self) -> String {
+        match self {
+            Terminal::Completed => "Completed".into(),
+            Terminal::NotStarted(NotStarted::Acknowledged) => "NotStarted(Acknowledged)".into(),
+            Terminal::NotStarted(NotStarted::Shutdown(c)) => format!("NotStarted(Shutdown({}))", c.name()),
+            Terminal::CanceledAfterStart => "CanceledAfterStart".into(),
+            Terminal::FailureDelivered => "FailureDelivered".into(),
+            Terminal::ClosureViolation => "ClosureViolation".into(),
+            Terminal::Dissolved => "Dissolved".into(),
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Terminal> {
+        const ALL: &[Terminal] = &[
+            Terminal::Completed,
+            Terminal::NotStarted(NotStarted::Acknowledged),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::PoolShutdown)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::OwnerTeardown)),
+            Terminal::NotStarted(NotStarted::Shutdown(ShutdownCause::ProcessDrain)),
+            Terminal::CanceledAfterStart,
+            Terminal::FailureDelivered,
+            Terminal::ClosureViolation,
+            Terminal::Dissolved,
+        ];
+        ALL.iter().copied().find(|t| t.name() == name)
+    }
+}
+
+impl Point {
+    /// `Entered`, `Completed`, `Ended`, or `Terminal(<terminal>)`.
+    pub fn name(self) -> String {
+        match self {
+            Point::Entered => "Entered".into(),
+            Point::Completed => "Completed".into(),
+            Point::Ended => "Ended".into(),
+            Point::Terminal(t) => format!("Terminal({})", t.name()),
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Point> {
+        match name {
+            "Entered" => Some(Point::Entered),
+            "Completed" => Some(Point::Completed),
+            "Ended" => Some(Point::Ended),
+            _ => name.strip_prefix("Terminal(")?.strip_suffix(')').and_then(Terminal::from_name).map(Point::Terminal),
+        }
+    }
+
+    /// Whether an event at `self` (as a trace writes it: `Entered`,
+    /// `Completed` or a terminal) is the point `want` names. `Ended`
+    /// is any end; `Completed` and `Terminal(Completed)` are one.
+    pub fn satisfies(self, want: Point) -> bool {
+        let end = |p: Point| match p {
+            Point::Completed => Some(Terminal::Completed),
+            Point::Terminal(t) => Some(t),
+            _ => None,
+        };
+        match want {
+            Point::Entered => self == Point::Entered,
+            Point::Ended => end(self).is_some(),
+            _ => end(self).is_some() && end(self) == end(want),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NotStarted {
     /// Rejected before admission: the domain is shutting down.
@@ -645,6 +772,16 @@ pub enum ShutdownCause {
     OwnerTeardown,
     /// The process drains (a signal raised the draining flag).
     ProcessDrain,
+}
+
+impl ShutdownCause {
+    pub fn name(self) -> &'static str {
+        match self {
+            ShutdownCause::PoolShutdown => "PoolShutdown",
+            ShutdownCause::OwnerTeardown => "OwnerTeardown",
+            ShutdownCause::ProcessDrain => "ProcessDrain",
+        }
+    }
 }
 
 /// How often an obligation is owed.
