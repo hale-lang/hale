@@ -283,11 +283,14 @@ fn a_certificate_sees_a_carrier_through_the_stdlib_router() {
     );
 }
 
-/// CONTROL — the same chain with a clean handler certifies: the
-/// empty middleware list (`Middleware` has no conformer here) is
-/// dead, not fail-closed, and clean fan-out targets add nothing.
+/// The same chain with a clean handler: the empty middleware list
+/// (`Middleware` has no conformer here) is dead, not fail-closed, and
+/// clean fan-out targets add nothing — but the router's fn-route
+/// dispatch (`let __route_fn = e.handler_fn; __route_fn(cur)`) is an
+/// indirect call, so the assertion cannot hold (F.40 E5, a classified
+/// correction: that call reached nothing, and the chain certified).
 #[test]
-fn a_clean_handler_through_the_stdlib_router_still_certifies() {
+fn a_clean_handler_through_the_stdlib_router_meets_the_indirect_fn_route() {
     let src = r#"
         effect money;
         locus Hello {
@@ -317,8 +320,9 @@ fn a_clean_handler_through_the_stdlib_router_still_certifies() {
     "#;
     let ds = diags(src);
     assert!(
-        !ds.iter().any(|m| m.contains("effect assertion violated")),
-        "a clean handler through the router must certify: {:?}",
+        ds.iter().any(|m| m.contains("effect assertion violated")
+            && m.contains("`__route_fn` — an indirect call through a function value")),
+        "the router's fn-route dispatch is indirect: {:?}",
         ds
     );
 }

@@ -175,9 +175,15 @@ fn a_stdlib_interior_crossing_emits_no_foreign_span() {
         }
     "#;
     let ds = all_diags(src);
+    // F.40 E5, a classified correction: the router's fn-route dispatch
+    // (`let __route_fn = e.handler_fn; __route_fn(cur)`) is an indirect
+    // call, so the claim cannot be certified rather than violated with
+    // the `Hello::handle` witness it had while that call reached
+    // nothing.
     assert!(
-        ds.iter().any(|d| d.message.contains("claim `iso` violated")),
-        "the through-stdlib path must violate: {:?}",
+        ds.iter().any(|d| d.message.contains("claim `iso` cannot be certified")
+            && d.message.contains("`__http_run_chain`")),
+        "the through-stdlib path is uncertifiable: {:?}",
         ds.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     for d in &ds {
@@ -189,13 +195,6 @@ fn a_stdlib_interior_crossing_emits_no_foreign_span() {
             d.message
         );
     }
-    assert!(
-        ds.iter().any(|d| d.message.contains(
-            "the forbidden destination `Hello` is declared here"
-        )),
-        "the bundle-side destination decl still gets its span: {:?}",
-        ds.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
 }
 
 // =====================================================================

@@ -68,7 +68,7 @@ Claim [425..428] claim `iso` violated: `a_side` reaches `b_side` — witness: `A
 Claim [170..184] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [21..22] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/artifact_integrity.rs#1 ---
-Claim [358..361] claim `iso` cannot be certified: `Src::go` (reachable from `srcs`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+Claim [358..361] claim `iso` cannot be certified: `Src::go` (reachable from `srcs`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/artifact_law_projection.rs#0 ---
 Claim [245..248] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `quiet`
 Claim [124..132] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -134,7 +134,7 @@ Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 Claim [257..260] claim `iso` violated: `b_side` reaches `a_side` — witness: `A::go`
 Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
 --- crates/hale-types/tests/claims.rs#13 ---
-Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/claims_edges.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
@@ -270,7 +270,7 @@ Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [88..92] claim `iso`: the forbidden destination `leak` is declared here
 --- crates/hale-types/tests/judgment_reachability.rs#1 ---
-Claim [245..248] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+Claim [245..248] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/judgment_reachability.rs#2 ---
 Claim [190..193] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `sink`
 Claim [72..78] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -283,7 +283,7 @@ Claim [440..448] claim `boundary` violated: un-granted edge `Ops::act` -(publish
 Claim [162..180] claim `boundary`: the un-granted publish happens here
 Claim [235..265] claim `boundary`: received here. Grant this edge with `publish Sneaky;` if it is intended
 --- crates/hale-types/tests/judgment_reachability.rs#5 ---
-Claim [282..290] claim `boundary` cannot be certified: `A::go` calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+Claim [282..290] claim `boundary` cannot be certified: `A::go` calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/judgment_reachability.rs#7 ---
 Claim [163..169] claim `tagged` violated: a fn performs `alloc` with no declared purpose — classify it (`@effects(is: {...})`) with a user effect class so the operation is attributable: main
 --- crates/hale-types/tests/judgment_reachability.rs#8 ---
@@ -336,8 +336,7 @@ Claim [137..153] claim `iso`: the crossing publish happens here
 Claim [237..257] claim `iso`: delivered at this subscription
 Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/model_provenance.rs#2 ---
-Claim [654..657] claim `iso` violated: `gates` reaches `handlers` — witness: `Gate::probe` -> `std::http::Router::dispatch` -> `__http_run_chain` -(dispatches std::http::RouteHandler.handle)-> `Hello::handle`
-Claim [15..20] claim `iso`: the forbidden destination `Hello` is declared here
+Claim [654..657] claim `iso` cannot be certified: `__http_run_chain` (reachable from `gates`) calls through a function value, whose target is not knowable statically. An unresolvable edge fails closed
 --- crates/hale-types/tests/model_provenance.rs#3 ---
 Claim [422..427] claim `iso`: phase `PHASE` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
 --- crates/hale-types/tests/quantitative_budgets.rs#1 ---

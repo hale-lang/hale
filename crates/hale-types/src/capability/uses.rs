@@ -164,7 +164,7 @@ fn hole_of(e: &CallEdge) -> Option<&'static str> {
         // not unknown (`CallEdge::via_interface`).
         return None;
     }
-    if e.indirect {
+    if e.through_param {
         return Some("it is called through a function-typed parameter, whose target is not known here");
     }
     // A computed callee (`pick()(x)`), worded as the member walk words it.

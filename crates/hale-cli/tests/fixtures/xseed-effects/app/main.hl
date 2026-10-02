@@ -18,6 +18,9 @@ fn certified_no_block() -> Int { return p::far_block(); }
 @budget(stack_bytes = 40)
 fn certified_thin_stack() -> Int { return p::far_wide(); }
 
+@no_syscall
+fn certified_through_a_value() -> Int { return p::far_value(); }
+
 // In-seed control: genuinely clean, must stay silent.
 @no_syscall
 fn control_clean() -> Int { return 7; }
@@ -25,5 +28,6 @@ fn control_clean() -> Int { return 7; }
 fn main() {
     println(certified_no_syscall() + certified_zero_alloc()
             + certified_deterministic() + control_clean()
-            + certified_no_block() + certified_thin_stack());
+            + certified_no_block() + certified_thin_stack()
+            + certified_through_a_value());
 }

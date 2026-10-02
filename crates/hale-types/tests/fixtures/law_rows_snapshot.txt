@@ -168,5 +168,5 @@ crates/hale-types/tests/judgment_reachability.rs#8	cap	bound money <= 1 on paths
 crates/hale-types/tests/library_claims.rs#1	single	count subscribers(topic T) <= 1	Violated	None
 crates/hale-types/tests/library_claims.rs#2	single	count subscribers(topic T) <= 1	Holds	None
 crates/hale-types/tests/model_provenance.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
-crates/hale-types/tests/model_provenance.rs#2	iso	forbid reaches(gates, handlers)	Violated	None
+crates/hale-types/tests/model_provenance.rs#2	iso	forbid reaches(gates, handlers)	Uncertified	None
 crates/hale-types/tests/model_provenance.rs#3	iso	forbid reaches(a_side, b_side) during PHASE	Invalid	None

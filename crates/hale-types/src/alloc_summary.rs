@@ -434,7 +434,18 @@ pub struct CallEdge {
     /// else, and without it the edge is indistinguishable from a call
     /// to an unknown free fn. That indistinguishability is what let an
     /// indirect call void every certificate.
+    ///
+    /// E5 (F.40 phase 3): a call through a local the body's bindings do
+    /// not follow to a fn (`unresolved_local`) and a computed callee
+    /// (`pick()(x)`) are indirect too: a function value whose target
+    /// this body does not name is the same unknown as a parameter's, and
+    /// every certificate and budget reader takes it as one (a classified
+    /// correction: such a call was a call to nothing). The capability
+    /// admission words the shapes apart (`through_param`).
     pub indirect: bool,
+    /// The indirect call is through a function-typed parameter of the
+    /// enclosing fn (#353's shape), not a local or a computed callee.
+    pub through_param: bool,
     /// The call is through a local the body's bindings follow to a fn
     /// (`let f = pid; f()`): the local's name, and the edge's callee is
     /// what a direct call of the bound name or path reaches. A local bound
@@ -442,10 +453,10 @@ pub struct CallEdge {
     /// with the local's name).
     pub via_local: Option<String>,
     /// The call is through a local the body's bindings do not follow to
-    /// a fn (`let f = self.g; f()`, a parameter, a reassigned local). The
-    /// edge is the one it always was, an `Unresolved` call named for the
-    /// local; only the capability admission reads this, as a hole in the
-    /// program's own code.
+    /// a fn (`let f = self.g; f()`, a parameter, a reassigned local): an
+    /// `Unresolved` call named for the local, and `indirect`. The
+    /// capability admission reads this as a hole in the program's own
+    /// code.
     pub unresolved_local: bool,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
@@ -527,6 +538,15 @@ impl CallEdge {
     /// edge). That edge is dead, not unknown — see the field doc.
     pub fn opaque_method_call(&self) -> bool {
         self.receiver_present && self.recv_ty.is_none()
+    }
+
+    /// What an indirect call goes through, as a diagnostic says it.
+    pub fn indirect_through(&self) -> &'static str {
+        if self.through_param {
+            "a function-typed parameter"
+        } else {
+            "a function value"
+        }
     }
 }
 
@@ -3643,6 +3663,7 @@ impl<'a> Walker<'a> {
         let mut receiver_present = false;
         let mut via_local: Option<String> = None;
         let mut unresolved_local = false;
+        let mut computed = false;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -3720,19 +3741,25 @@ impl<'a> Walker<'a> {
                 // receiver-present so soundness judgments fail
                 // closed.
                 receiver_present = true;
+                computed = true;
                 Callee::Unresolved("<expr>".to_string())
             }
         };
-        let indirect = match &resolved {
+        // A call through a function-typed parameter, a local the bindings
+        // do not follow to a fn, or a computed callee: a function value
+        // whose target this body does not name.
+        let through_param = match &resolved {
             Callee::Unresolved(n) if via_local.is_none() => self.fn_params.iter().any(|p| p == n),
             _ => false,
         };
+        let indirect = through_param || unresolved_local || computed;
         let spelling = CallSpelling::of(callee);
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,
             callee: resolved,
             indirect,
+            through_param,
             via_local,
             unresolved_local,
             loop_depth: depth,
@@ -5459,6 +5486,13 @@ mod tests {
         (callee.to_string(), None, false)
     }
 
+    /// A call through a function value the walk does not name: indirect
+    /// (F.40 E5, a classified correction: through a local, it was the
+    /// edge as written and a call to nothing).
+    fn indirect(callee: &str) -> (String, Option<String>, bool) {
+        (callee.to_string(), None, true)
+    }
+
     /// A call through a local bound to a fn name or path reaches what a
     /// direct call of the name or path reaches, the local on the edge
     /// (P3 2 of 3, a classified correction: the edge was `Unresolved`
@@ -5535,13 +5569,13 @@ mod tests {
         "#;
         assert_eq!(
             local_calls(src, "g"),
-            vec![written("make"), written("?f"), written("?o"), written("make"), through("target", "f")],
+            vec![written("make"), indirect("?f"), indirect("?o"), written("make"), through("target", "f")],
         );
     }
 
     /// A reassigned local holds whichever value the run took last, and a
-    /// tuple binding is not followed: either call is the edge it always
-    /// was, `Unresolved` with the local's name.
+    /// tuple binding is not followed: either call is `Unresolved` with
+    /// the local's name, and indirect.
     #[test]
     fn a_reassigned_or_tuple_bound_local_is_not_followed() {
         let src = r#"
@@ -5557,12 +5591,12 @@ mod tests {
             }
             fn main() { }
         "#;
-        assert_eq!(local_calls(src, "g"), vec![written("?f"), written("?t"), written("?u")]);
+        assert_eq!(local_calls(src, "g"), vec![indirect("?f"), indirect("?t"), indirect("?u")]);
     }
 
     /// A call through a function-typed parameter stays indirect (#353);
-    /// a local bound to one is not followed, and its call is the edge it
-    /// always was.
+    /// a local bound to one is not followed, and its call is indirect
+    /// too.
     #[test]
     fn a_function_typed_parameter_stays_indirect() {
         let src = r#"
@@ -5573,7 +5607,10 @@ mod tests {
             }
             fn main() { }
         "#;
-        assert_eq!(local_calls(src, "g"), vec![written("?h"), ("?cb".to_string(), None, true)]);
+        assert_eq!(local_calls(src, "g"), vec![indirect("?h"), indirect("?cb")]);
+        let s = summarize(src);
+        let param: Vec<bool> = fns(&s, &FnKey::free_fn("g")).calls.iter().map(|c| c.through_param).collect();
+        assert_eq!(param, [false, true], "only the parameter's own call is through the parameter");
     }
 
     /// A call through a local the bindings do not follow is marked for
@@ -5660,10 +5697,10 @@ mod tests {
         assert_eq!(
             local_calls(src, "g"),
             vec![
-                written("?f"),
-                written("?f"),
-                written("?q"),
-                written("?h"),
+                indirect("?f"),
+                indirect("?f"),
+                indirect("?q"),
+                indirect("?h"),
                 through("width", "k"),
                 through("other", "s"),
                 through("width", "s"),

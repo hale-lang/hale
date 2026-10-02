@@ -1370,11 +1370,15 @@ fn check_class(
             // `return f(v);` passed while the program performed the
             // syscall, and `@budget(alloc_per_call = 0)` leaked the
             // same way.
+            //
+            // E5: through a local the summary cannot follow to a fn, or
+            // a computed callee, the same: the edge is indirect.
             if edge.indirect {
                 return Some(format!(
-                    "`{}` — an indirect call through a function-typed \
-                     parameter, whose target this fn cannot determine",
-                    name
+                    "`{}` — an indirect call through {}, whose target \
+                     this fn cannot determine",
+                    name,
+                    edge.indirect_through()
                 ));
             }
             // #382 receiver-typing: a method call on a receiver that

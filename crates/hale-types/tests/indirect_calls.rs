@@ -142,3 +142,56 @@ fn a_certificate_sees_a_call_through_a_let_bound_fn() {
     );
     assert!(ds.is_empty(), "a local bound to a syscall-free fn certifies: {:?}", ds);
 }
+
+/// F.40 E5, a classified correction: a call through a local the
+/// summary cannot follow to one fn is indirect, as a call through a
+/// function-typed parameter is. It was a call to nothing, so
+/// `@no_syscall` certified both of the #1318 review's programs while
+/// each performed the syscall: a binding chosen by a branch, and a
+/// binding a loop reassigns after the call (the second iteration calls
+/// what the first assigned).
+#[test]
+fn a_certificate_cannot_pass_through_an_unresolved_function_value() {
+    const FNS: &str = "fn pure() -> Int { return 1; }\n\
+                       fn pid() -> Int { return std::process::pid(); }\n";
+    for body in [
+        "let f = if len(\"ab\") == 2 { pid } else { pure };\n return f();",
+        "let mut f = pure;\n let mut i = 0;\n let mut n = 0;\n \
+         while i < 2 { n = f(); f = pid; i = i + 1; }\n return n;",
+    ] {
+        let ds = errs(&format!(
+            "{FNS}@no_syscall\nfn via() -> Int {{\n {body}\n}}\nfn main() {{ println(via()); }}"
+        ));
+        let d = ds
+            .iter()
+            .find(|m| m.contains("effect assertion violated"))
+            .unwrap_or_else(|| panic!("`f()` may call `pid`, so `via` may syscall: {body}\n{:?}", ds));
+        assert!(d.contains("indirect call through a function value"), "{d}");
+    }
+    // The control: a binding nothing reassigns is followed to its fn,
+    // and a syscall-free one still certifies.
+    let ds = errs(&format!(
+        "{FNS}@no_syscall\nfn via() -> Int {{\n let f = pure;\n let mut n = 0;\n \
+         let mut i = 0;\n while i < 2 {{ n = n + f(); i = i + 1; }}\n return n;\n}}\n\
+         fn main() {{ println(via()); }}"
+    ));
+    assert!(ds.is_empty(), "a stable binding to a syscall-free fn certifies: {:?}", ds);
+}
+
+/// The budget reads the same edge: an allocation behind an unresolved
+/// function value counts as unbounded, not zero.
+#[test]
+fn a_budget_cannot_pass_through_an_unresolved_function_value() {
+    let ds = errs(
+        "fn allocates() -> String { return \"x\" + \"y\"; }\n\
+         fn empty() -> String { return \"\"; }\n\
+         @budget(alloc_per_call = 0)\n\
+         fn via() -> String { let f = if len(\"ab\") == 2 { allocates } else { empty }; return f(); }\n\
+         fn main() { println(via()); }",
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")),
+        "`alloc_per_call = 0` must not hold over a call to an unresolved function value: {:?}",
+        ds
+    );
+}
