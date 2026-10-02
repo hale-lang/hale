@@ -142,6 +142,43 @@ fn nested_and_failure_bodies_are_walked() {
     );
 }
 
+/// A call in an index operand is a use: the summary walks the subscript
+/// as any operand (the review of #1318: the admission read the summary's
+/// call rows, and `xs[std::process::pid()]` reached neither a row nor a
+/// hole).
+#[test]
+fn an_index_operand_is_refused_at_the_call() {
+    refused_on_wasm32(
+        "fn main() {\n    let xs = [0];\n    let _ = xs[std::process::pid()];\n}\n",
+        &[(3, 16, &format!("`std::process::pid` is unavailable under {{selector}}: {PROCESS}"))],
+    );
+}
+
+/// The graph's own walk of what the summary keys no body for — a params
+/// initializer, an `on_failure` handler — evaluates a method's receiver,
+/// so an index operand under it is a use too.
+#[test]
+fn an_index_operand_under_a_method_receiver_is_walked() {
+    const HELPER: &str = "locus Helper {\n    params { v: Int = 0; }\n    fn ping() -> Int { return self.v; }\n}\n\n";
+    refused_on_wasm32(
+        &format!(
+            "{HELPER}locus Kid {{\n    params {{ n: Int = [Helper {{ v: 1 }}][std::process::pid()].ping(); }}\n    \
+             run() {{ println(self.n); }}\n}}\n\nfn main() {{ Kid {{ }}; }}\n"
+        ),
+        &[(7, 41, &format!("`std::process::pid` is unavailable under {{selector}}: {PROCESS}"))],
+    );
+    refused_on_wasm32(
+        &format!(
+            "{HELPER}locus Once {{\n    params {{ runs: Int = 0; }}\n    closure fuse {{ captures: runs; epoch inline; }}\n    \
+             run() {{\n        self.runs = self.runs + 1;\n        if self.runs < 2 {{ violate fuse; }}\n    }}\n}}\n\n\
+             main locus App {{\n    params {{ early: Once = Once {{ }}; seen: Int = 0; }}\n    \
+             on_failure(c: Once, err: ClosureViolation) {{\n        let hs = [Helper {{ v: 1 }}];\n        \
+             self.seen = hs[std::process::pid()].ping();\n    }}\n}}\n\nfn main() {{ App {{ }}; }}\n"
+        ),
+        &[(19, 24, &format!("`std::process::pid` is unavailable under {{selector}}: {PROCESS}"))],
+    );
+}
+
 /// A hole: a call through a function-typed parameter has requirements
 /// the graph cannot establish. Refused where the column rejects anything
 /// in the stdlib family (wasm32); recorded, never silent, elsewhere.
