@@ -4423,7 +4423,8 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
         return Vec::new();
     }
     let model = crate::model_builder::derive_application_model(bundle);
-    claim_law_diags_over(bundle, &model, &crate::effects::effect_certificates(bundle))
+    let summary = crate::alloc_summary::derive_alloc_summary(bundle);
+    claim_law_diags_over(bundle, &model, &crate::effects::effect_certificates(bundle), &summary)
 }
 
 /// [`claim_law_diags`] over a model the caller already holds: the
@@ -4432,11 +4433,14 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// [`has_claim_surface`]; a bundle with no surface judges nothing here
 /// either, but its model was paid for. `effects` is the effects
 /// certificate report the caller's check produced, which the evidence
-/// reads rather than running the engine again.
+/// reads rather than running the engine again, and `summary` the
+/// allocation summary the check read, which the `@budget` engines
+/// count over.
 pub fn claim_law_diags_over(
     bundle: &crate::symbol::Bundle<'_>,
     model: &hale_model::ApplicationModel,
     effects: &crate::effects::EffectCertificates,
+    summary: &crate::alloc_summary::AllocSummary,
 ) -> Vec<Diag> {
     let table = crate::claim_lowering::lower_claims(bundle, model);
     // Law-SELECTION invalidity (unknown/cyclic constitution, illegal
@@ -4452,8 +4456,8 @@ pub fn claim_law_diags_over(
     // check path calls it alongside this. The table still carries
     // them for the artifact, whose law account must show every
     // issue in one document.
-    let evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &table, model, effects,
+    let evidence = crate::evidence::derive_certificate_evidence_over(
+        bundle, &table, model, effects, summary,
     );
     let (pre, judged) = crate::topology_projection::judge_all(
         &table,

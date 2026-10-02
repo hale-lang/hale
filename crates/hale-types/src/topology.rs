@@ -219,6 +219,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         bundle,
         &crate::derive_application_model(bundle),
         &crate::effects::effect_certificates(bundle),
+        &alloc_summary::derive_alloc_summary(bundle),
     )
 }
 
@@ -236,22 +237,19 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
 /// direction; Change 9 deleted the legacy gathering that had stayed
 /// behind as the corpus differential's comparison arm). `effects` is
 /// the effects certificate report of the same check, which the law
-/// evidence reads.
+/// evidence reads, and `summary` the allocation summary that check read
+/// (`demand_alloc_summary`).
 pub fn dump_topology_over(
     bundle: &Bundle<'_>,
     app_model: &hale_model::ApplicationModel,
     effects: &crate::effects::EffectCertificates,
+    summary: &alloc_summary::AllocSummary,
 ) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     // User code only — an app's artifact describes the app, the
     // same ruling as the effects manifest (a library's own artifact
-    // comes from checking that library).
-    let summary = alloc_summary::summarize_programs_with_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
+    // comes from checking that library): the summary's own rows.
 
     // Author-spelling map: mangled -> alias::Name.
     let demangle: BTreeMap<&str, String> = bundle
@@ -317,7 +315,7 @@ pub fn dump_topology_over(
         }
     };
     for k in summary.fns.keys() {
-        if user_key(k) {
+        if summary.is_own(k) && user_key(k) {
             fns.insert(fn_name(k));
         }
     }
@@ -335,11 +333,6 @@ pub fn dump_topology_over(
     // one contracted edge, so reachability over the artifact matches
     // reachability as evaluated. `looped` is conservative: true if
     // ANY contraction path crosses a loop-nested or unbounded edge.
-    let merged = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-        &programs,
-        &bundle.snapshot,
-        &bundle.import_renames,
-    );
     // ---- the normalized model (#392): phases, seeds, decl spans ----
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);
@@ -369,11 +362,11 @@ pub fn dump_topology_over(
     let ffi = crate::effects::ffi_names(&programs);
     let mut derived_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
-    for k in merged.fns.keys() {
+    for k in summary.fns.keys() {
         if !user_key(k) {
             continue;
         }
-        let e = crate::frontier::infer_effects(&merged, k, &ffi);
+        let e = crate::frontier::infer_effects(summary, k, &ffi);
         let classes =
             crate::frontier::render_effects_named(e, &effect_names);
         if !classes.is_empty() {
@@ -387,7 +380,7 @@ pub fn dump_topology_over(
 
     // ---- labels: declared effect carriers (`is:` tags) ----
     for (k, set) in &summary.carries {
-        if !user_key(k) {
+        if !summary.is_own(k) || !user_key(k) {
             continue;
         }
         let classes =
@@ -411,8 +404,8 @@ pub fn dump_topology_over(
     );
     let vmodel = app_model;
     let law_table = crate::claim_lowering::lower_claims(bundle, vmodel);
-    let law_evidence = crate::evidence::derive_certificate_evidence(
-        bundle, &law_table, vmodel, effects,
+    let law_evidence = crate::evidence::derive_certificate_evidence_over(
+        bundle, &law_table, vmodel, effects, summary,
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();

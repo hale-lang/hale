@@ -37,12 +37,16 @@ fn topology_artifact<'c>(
     doing: &str,
 ) -> Result<&'c str, u8> {
     if cell.get().is_none() {
-        match snap.demand_model().and_then(|model| Ok((model, snap.demand_effect_certificates()?))) {
-            Ok((model, effects)) => {
+        match snap
+            .demand_model()
+            .and_then(|model| Ok((model, snap.demand_effect_certificates()?, snap.demand_alloc_summary()?)))
+        {
+            Ok((model, effects, summary)) => {
                 // The artifact's environment label is the snapshot's own
                 // (outside review of #1283, finding 1). Its law evidence
-                // reads the check's effects certificate report.
-                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects));
+                // reads the check's effects certificate report and the
+                // allocation summary the check read.
+                let art = snap.with_env(|| hale_types::topology::dump_topology_over(&snap.bundle(), model, effects, summary));
                 let _ = cell.set(art);
             }
             Err(b) => return Err(refuse_without_model(target, doing, b)),

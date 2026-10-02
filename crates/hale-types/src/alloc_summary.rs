@@ -652,6 +652,8 @@ pub struct AllocSummary {
     pub analysis_copy: BTreeSet<FnKey>,
     /// The loci of the stdlib's analysis copy, likewise.
     pub analysis_copy_loci: BTreeSet<String>,
+    /// The interfaces of the stdlib's analysis copy, likewise.
+    pub analysis_copy_interfaces: BTreeSet<String>,
 }
 
 impl AllocSummary {
@@ -673,6 +675,89 @@ impl AllocSummary {
     /// Whether the locus `name` is the program's own.
     pub fn is_own_locus(&self, name: &str) -> bool {
         !self.analysis_copy_loci.contains(name)
+    }
+
+    /// The program's own rows, as the user-program readers (the model,
+    /// the `@budget` engines, the artifact's rows) project them: the
+    /// program's fns and loci only, and a call into the stdlib's
+    /// analysis copy is the unresolved call it is when the program is
+    /// summarized alone — the method's bare name, the receiver kept. A
+    /// dispatch through an interface keeps its alternatives among the
+    /// program's own loci, renumbered in key order; through the copy's
+    /// interface it is no dispatch at all, and through the program's
+    /// own with no conformer of its own left it is the dead site. The
+    /// model is a user-program model and its `shape_hash` is the build
+    /// and replay identity, so it reads these rows and the program
+    /// alone decides it.
+    pub fn own_rows(&self) -> AllocSummary {
+        let copy = |k: &FnKey| self.analysis_copy.contains(k);
+        // A group whose every alternative is the copy's, or whose
+        // interface is the copy's, collapses to its written call.
+        let mut collapsed: BTreeSet<u32> = BTreeSet::new();
+        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+            let mut own_alt: BTreeMap<u32, bool> = BTreeMap::new();
+            for c in &f.calls {
+                if let (Some(g), Callee::Resolved(k)) = (c.dispatch_group, &c.callee) {
+                    let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                    *own_alt.entry(g).or_default() |= !copy(k) && !through_copy;
+                }
+            }
+            collapsed.extend(own_alt.into_iter().filter(|(_, own)| !own).map(|(g, _)| g));
+        }
+        let mut renumber: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut emitted: BTreeSet<u32> = BTreeSet::new();
+        let mut fns: BTreeMap<FnKey, FnSummary> = BTreeMap::new();
+        for f in self.fns.values().filter(|f| self.is_own(&f.key)) {
+            let mut calls: Vec<CallEdge> = Vec::with_capacity(f.calls.len());
+            for c in &f.calls {
+                let mut e = c.clone();
+                match (c.dispatch_group, &c.callee) {
+                    (Some(g), Callee::Resolved(k)) if collapsed.contains(&g) => {
+                        if !emitted.insert(g) {
+                            continue;
+                        }
+                        let through_copy = c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i));
+                        e.callee = Callee::Unresolved(k.fn_name.clone());
+                        e.dispatch_group = None;
+                        if through_copy {
+                            e.via_interface = None;
+                        }
+                    }
+                    (Some(_), Callee::Resolved(k)) if copy(k) => continue,
+                    (Some(g), Callee::Resolved(_)) => {
+                        let next = renumber.len() as u32;
+                        e.dispatch_group = Some(*renumber.entry(g).or_insert(next));
+                    }
+                    (None, Callee::Resolved(k)) if copy(k) => {
+                        e.callee = Callee::Unresolved(k.fn_name.clone());
+                    }
+                    (_, Callee::Unresolved(_)) => {
+                        if c.via_interface.as_ref().is_some_and(|i| self.analysis_copy_interfaces.contains(i)) {
+                            e.via_interface = None;
+                        }
+                    }
+                    _ => {}
+                }
+                calls.push(e);
+            }
+            fns.insert(f.key.clone(), FnSummary { calls, ..f.clone() });
+        }
+        let own_locus = |l: &String| self.is_own_locus(l);
+        let own_key = |k: &FnKey| self.is_own(k);
+        AllocSummary {
+            eager_only_loci: self.eager_only_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            fns,
+            bounded_loci: self.bounded_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            sync_holding_loci: self.sync_holding_loci.iter().filter(|l| own_locus(l)).cloned().collect(),
+            sync_forms: self.sync_forms.iter().filter(|l| own_locus(l)).cloned().collect(),
+            carries: self.carries.iter().filter(|(k, _)| own_key(k)).map(|(k, v)| (k.clone(), *v)).collect(),
+            unbounded_fns: self.unbounded_fns.iter().filter(|k| own_key(k)).cloned().collect(),
+            locus_shapes: self.locus_shapes.iter().filter(|(l, _)| own_locus(l)).map(|(l, s)| (l.clone(), s.clone())).collect(),
+            reached: None,
+            analysis_copy: BTreeSet::new(),
+            analysis_copy_loci: BTreeSet::new(),
+            analysis_copy_interfaces: BTreeSet::new(),
+        }
     }
 }
 
@@ -1148,26 +1233,9 @@ pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary 
 /// The summary of `programs`, all minted with `ids` (the identities a
 /// body's escape tags read which declaration a use names from).
 pub fn summarize_programs(programs: &[&Program], ids: &crate::snapshot::Snapshot) -> AllocSummary {
-    summarize_programs_with_renames(programs, ids, &[])
-}
-
-/// Same, with the bundle's cross-seed import renames.
-///
-/// A call written `alias::name` reaches the callgraph as a qualified
-/// path, while the imported decl was merged under a MANGLED symbol.
-/// Without the table the two never meet, so every cross-seed call was
-/// an unresolved edge — which is why effect assertions, budgets and
-/// taint all stopped dead at a seed boundary while still reporting
-/// success. Codegen has always had this table; the analysis phases
-/// did not.
-pub fn summarize_programs_with_renames(
-    programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
-    import_renames: &[(Vec<String>, String)],
-) -> AllocSummary {
     let identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
         programs.iter().map(|p| (*p, ids)).collect();
-    summarize_identified(&identified, import_renames)
+    summarize_identified(&identified, &[])
 }
 
 /// Every top-level locus of `programs` with a param whose type is one of
@@ -1243,7 +1311,15 @@ impl AllocSummary {
 
 /// The summary of programs minted by different snapshots — a bundle's
 /// programs beside the stdlib's (`stdlib_bodies`), each with its own
-/// identities.
+/// identities — with the bundle's cross-seed import renames.
+///
+/// A call written `alias::name` reaches the callgraph as a qualified
+/// path, while the imported decl was merged under a MANGLED symbol.
+/// Without the table the two never meet, so every cross-seed call was
+/// an unresolved edge — which is why effect assertions, budgets and
+/// taint all stopped dead at a seed boundary while still reporting
+/// success. Codegen has always had this table; the analysis phases
+/// did not.
 pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
@@ -1958,10 +2034,13 @@ pub fn summarize_identified(
         BTreeMap::new();
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
-    for program in programs {
-        for item in &program.items {
+    for (program, ids) in identified {
+        for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Interface(i) => {
+                    if is_stdlib_copy(ids) {
+                        summary.analysis_copy_interfaces.insert(i.name.name.clone());
+                    }
                     ifaces.insert(
                         i.name.name.clone(),
                         i.methods
@@ -2052,7 +2131,7 @@ pub fn summarize_identified(
         let mut started: BTreeSet<String> = BTreeSet::new();
         let mut pending: Vec<String> = Vec::new();
         for (program, ids) in identified {
-            for item in &program.items {
+            for item in program.items.iter().filter(|item| !shadowed(ids, item)) {
                 let TopDecl::Locus(l) = item else { continue };
                 let held = param_starts.entry(l.name.name.clone()).or_default();
                 for m in &l.members {

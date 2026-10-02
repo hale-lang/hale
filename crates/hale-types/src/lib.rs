@@ -326,7 +326,7 @@ pub fn check_bundle_opts_scoped(
     // the evidence reads the check's effects certificate report.
     if denotes_a_model(&diags) && judgment::has_claim_surface(bundle) {
         let model = model_over_scope(bundle, &top, &handlers, alloc_summary.clone(), &forms);
-        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates));
+        diags.extend(judgment::claim_law_diags_over(bundle, &model, &effect_certificates, &alloc_summary));
     }
     finish_check_diags(&mut diags);
     diags

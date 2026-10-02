@@ -427,10 +427,10 @@ fn count_dim(
 /// the bus graph); callers without a graph pass a `|_| 1`.
 pub fn quantitative_diags(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
+    summary: &crate::alloc_summary::AllocSummary,
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<Diag> {
-    quantitative_report(programs, ids, &[], fanout_of).0
+    quantitative_report(programs, summary, fanout_of).0
 }
 
 /// #392 §8: every quantitative `@budget(<dim> = N)` contract as a
@@ -438,16 +438,15 @@ pub fn quantitative_diags(
 /// diagnostics, so the two cannot disagree.
 pub fn certificate_rows(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
+    summary: &crate::alloc_summary::AllocSummary,
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<crate::effects::LoweredCertificate> {
-    quantitative_report(programs, ids, &[], fanout_of).1
+    quantitative_report(programs, summary, fanout_of).1
 }
 
 fn quantitative_report(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
-    import_renames: &[(Vec<String>, String)],
+    summary: &crate::alloc_summary::AllocSummary,
     fanout_of: &FanoutOf<'_>,
 ) -> (
     Vec<Diag>,
@@ -486,13 +485,11 @@ fn quantitative_report(
     if roots.is_empty() {
         return (Vec::new(), Vec::new(), Vec::new());
     }
-    // With the rename table: a cross-seed call must RESOLVE, or its
-    // costs vanish behind the seed boundary.
-    let summary = alloc_summary::summarize_programs_with_renames(
-        programs,
-        ids,
-        import_renames,
-    );
+    // The `alloc_summary` family's own rows: a cross-seed call
+    // RESOLVES (the summary read the rename table), or its costs would
+    // vanish behind the seed boundary; a call into the stdlib's
+    // analysis copy is the unresolved call it has always been here.
+    let summary = summary.own_rows();
     let frames = frame_map(programs);
     let classes = crate::effect_classes::EffectClassTable::of(programs);
     let mut diags = Vec::new();
@@ -618,20 +615,20 @@ fn quantitative_report(
 /// Measuring stays this engine's question; the evidence sidecar
 /// carries what it measured, and the VERDICT becomes the
 /// judgment's — the duplicate authority #476 removes.
-/// Round 4: the RENAME TABLE is threaded through. Without it a
-/// cross-seed call written `lib::expensive()` stays an unresolved
+/// Round 4: the summary resolves through the RENAME TABLE. Without it
+/// a cross-seed call written `lib::expensive()` stays an unresolved
 /// qualified free call, and the quantity traversal — which treats
 /// only indirect and opaque-receiver calls as unbounded — counts it
 /// as ZERO. `@budget(publish = 0)` could then certify over an
-/// imported publisher. Every dimension had the defect.
+/// imported publisher. Every dimension had the defect. `summary` is
+/// the `alloc_summary` family's, which read the table.
 pub fn certificate_groups(
     programs: &[&Program],
-    ids: &crate::snapshot::Snapshot,
-    import_renames: &[(Vec<String>, String)],
+    summary: &AllocSummary,
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
     let (diags, rows, ranges) =
-        quantitative_report(programs, ids, import_renames, fanout_of);
+        quantitative_report(programs, summary, fanout_of);
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {

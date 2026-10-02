@@ -76,10 +76,10 @@ fn diff_one(
         &bundle.snapshot,
         &[],
     );
+    let summary = hale_types::alloc_summary::derive_alloc_summary(&bundle);
     old_lowered.extend(hale_types::budget_check::certificate_rows(
         &programs_v,
-        &bundle.snapshot,
-        &[],
+        &summary,
     ));
         // Change 5h: fan-out is a publish-SITE question, answered by
     // the model. Both arms take the SAME supplier — fan-out
@@ -87,7 +87,7 @@ fn diff_one(
     let fanout = hale_types::evidence::model_fanout(&model);
     old_lowered.extend(hale_types::quantitative::certificate_rows(
         &programs_v,
-        &bundle.snapshot,
+        &summary,
         &fanout,
     ));
     let mut n = 0usize;

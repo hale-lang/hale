@@ -102,7 +102,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let mut budget_diags =
         hale_types::budget_check::budget_diags_with_renames(
             &programs_b,
-            &bundle.snapshot,
+            &summary,
             &[],
         );
         // Change 5h: fan-out is a publish-SITE question, answered by
@@ -111,7 +111,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let fanout = hale_types::evidence::model_fanout(&model);
     budget_diags.extend(hale_types::quantitative::quantitative_diags(
         &programs_b,
-        &bundle.snapshot,
+        &summary,
         &fanout,
     ));
     let old: Vec<(String, hale_syntax::Span)> = p1

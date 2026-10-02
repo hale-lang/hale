@@ -268,6 +268,7 @@ fn hale_check_of_a_program_with_claims_builds_the_model_once() {
                 &s.bundle(),
                 s.demand_model().expect("the check's model"),
                 s.demand_effect_certificates().expect("the same report"),
+                summary,
             )
         });
         assert!(artifact.contains("\"claims\""), "the artifact carries the law");

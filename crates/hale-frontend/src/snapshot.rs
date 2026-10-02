@@ -1141,7 +1141,8 @@ impl Snapshot {
                     if let Ok(model) = self.demand_model() {
                         self.count("claims");
                         let effects = self.demand_effect_certificates().map_err(Clone::clone)?;
-                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model, effects));
+                        let summary = self.demand_alloc_summary().map_err(Clone::clone)?;
+                        diags.extend(hale_types::judgment::claim_law_diags_over(&bundle, model, effects, summary));
                     }
                 }
                 hale_types::finish_check_diags(&mut diags);
