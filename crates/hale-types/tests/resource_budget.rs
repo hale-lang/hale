@@ -112,6 +112,16 @@ fn an_adapter_counts_once_under_several_root_constructions() {
     assert_eq!(b.threads(), Ok(5));
 }
 
+/// Checkpoint 4: a nested alternative under `pinned(replicas = 3)`. The
+/// alternatives below a replica choose what it holds, never how many
+/// threads anchor it: 3 threads, not 6 and not 9. Two constructions of
+/// that root sum: 3 + 3.
+#[test]
+fn a_nested_alternative_under_replicas_never_multiplies_threads() {
+    assert_eq!(budget("alternatives_under_replicas.hl").threads(), Ok(3));
+    assert_eq!(budget("alternatives_two_constructions.hl").threads(), Ok(6));
+}
+
 /// R-7 (U-2): `pool = main` is the program's main thread, never a worker
 /// pool; the dump shows main on a line of its own whether or not a
 /// program spells it.

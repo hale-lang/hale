@@ -82,12 +82,12 @@ checker	K-6	Doubler	known-old-bug	1	dna/friction/f5-bus-reply-at-drain
 checker	K-6	Failing	known-old-bug	3	dna/tests/workflow_children_test.hl
 checker	K-6	Holder	known-old-bug	1	crates/hale-types/tests/fixtures/placement/aliased.hl
 checker	K-6	LaunchBearer	known-old-bug	1	dna/api
-checker	K-6	Leaf	known-old-bug	2	crates/hale-types/tests/fixtures/placement/aliased.hl
+checker	K-6	Leaf	known-old-bug	3	crates/hale-types/tests/fixtures/placement/aliased.hl
 checker	K-6	Left	known-old-bug	1	crates/hale-types/tests/model_fanout.rs
 checker	K-6	NoReview	known-old-bug	1	dna/tests/law/apply_gate_pass
 checker	K-6	Noop	known-old-bug	1	crates/hale-types/tests/interface_slot_override.rs
 checker	K-6	OidcBearer	known-old-bug	1	dna/api
-checker	K-6	Pair	known-old-bug	1	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
+checker	K-6	Pair	known-old-bug	2	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
 checker	K-6	Raced	known-old-bug	1	dna/tests/workflow_step_test.hl
 checker	K-6	Refusing	known-old-bug	3	dna/tests/workflow_attempt_test.hl
 checker	K-6	RouterV1	known-old-bug	8	crates/hale-codegen/tests/fixtures/examples/60-perspective-slot/main.hl
@@ -748,8 +748,8 @@ model	M-5	Doubler	known-old-bug	1	dna/friction/f5-bus-reply-at-drain
 model	M-5	Failing	known-old-bug	3	dna/tests/workflow_children_test.hl
 model	M-5	Holder	known-old-bug	1	crates/hale-types/tests/fixtures/placement/aliased.hl
 model	M-5	LaunchBearer|OidcBearer	known-old-bug	1	dna/api
-model	M-5	Leaf	known-old-bug	7	crates/hale-types/tests/fixtures/placement/aliased.hl
-model	M-5	Leaf|Pair	known-old-bug	3	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
+model	M-5	Leaf	known-old-bug	13	crates/hale-types/tests/fixtures/placement/aliased.hl
+model	M-5	Leaf|Pair	known-old-bug	6	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
 model	M-5	Left	known-old-bug	1	crates/hale-types/tests/model_fanout.rs
 model	M-5	NoReview	known-old-bug	1	dna/tests/law/apply_gate_pass
 model	M-5	Noop	known-old-bug	1	crates/hale-types/tests/interface_slot_override.rs
@@ -1352,8 +1352,8 @@ receiver	K-6	Doubler	known-old-bug	1	dna/friction/f5-bus-reply-at-drain
 receiver	K-6	Failing	known-old-bug	3	dna/tests/workflow_children_test.hl
 receiver	K-6	Holder	known-old-bug	1	crates/hale-types/tests/fixtures/placement/aliased.hl
 receiver	K-6	LaunchBearer|OidcBearer	known-old-bug	1	dna/api
-receiver	K-6	Leaf	known-old-bug	3	crates/hale-types/tests/fixtures/placement/aliased.hl
-receiver	K-6	Leaf|Pair	known-old-bug	1	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
+receiver	K-6	Leaf	known-old-bug	5	crates/hale-types/tests/fixtures/placement/aliased.hl
+receiver	K-6	Leaf|Pair	known-old-bug	2	crates/hale-types/tests/fixtures/placement/alternatives_under_replicas.hl
 receiver	K-6	Left	known-old-bug	1	crates/hale-types/tests/model_fanout.rs
 receiver	K-6	NoReview	known-old-bug	1	dna/tests/law/apply_gate_pass
 receiver	K-6	Noop	known-old-bug	1	crates/hale-types/tests/interface_slot_override.rs
