@@ -737,6 +737,50 @@ impl<'a> Decls<'a> {
     }
 }
 
+/// The locus declarations of both universes, by site, and the locus a
+/// written name denotes, resolved as the table resolves it: what the
+/// lifecycle producer reads beside the table's rows
+/// ([`crate::lifecycle::derive`]), so the two read one resolution.
+pub(crate) struct LocusIndex<'a> {
+    decls: Decls<'a>,
+}
+
+impl<'a> LocusIndex<'a> {
+    pub(crate) fn of(bundle: &Bundle<'a>) -> LocusIndex<'a> {
+        let stdlib = match (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
+            (Some(p), Some(ids)) => Some((p, ids)),
+            _ => None,
+        };
+        LocusIndex { decls: Decls::of(bundle, stdlib) }
+    }
+
+    /// The declaration at `site`.
+    pub(crate) fn decl(&self, site: SiteRef) -> Option<&'a LocusDecl> {
+        let all = match site.universe {
+            SiteUniverse::User => &self.decls.user,
+            SiteUniverse::StdlibAnalysis => &self.decls.stdlib,
+        };
+        all.iter().find(|e| e.site == site).map(|e| e.decl)
+    }
+
+    /// The locus a type written in `from`'s universe denotes, when it
+    /// denotes one.
+    pub(crate) fn names(&self, ty: &TypeExpr, from: SiteUniverse) -> Option<SiteRef> {
+        let TypeExpr::Named { path, .. } = ty else { return None };
+        match self.decls.resolve(&segments(path), from) {
+            Named::Locus(e) => Some(e.site),
+            _ => None,
+        }
+    }
+
+    /// Whether a type written in `from`'s universe denotes a locus, an
+    /// interface or a perspective: a field holding an instance.
+    pub(crate) fn holds_instance(&self, ty: &TypeExpr, from: SiteUniverse) -> bool {
+        let TypeExpr::Named { path, .. } = ty else { return false };
+        matches!(self.decls.resolve(&segments(path), from), Named::Locus(_) | Named::Contract)
+    }
+}
+
 fn segments(path: &hale_syntax::ast::QualifiedName) -> Vec<&str> {
     path.segments.iter().map(|s| s.name.as_str()).collect()
 }
