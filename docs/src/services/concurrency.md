@@ -263,6 +263,12 @@ cross-pool method call — which the compiler rejects (see below).
 Nesting is the supported pattern for "many loci, one pinned
 thread."
 
+A nested locus's bus handlers run there too. If a helper nested
+under the pinned gateway (or under a locus on `pool = io`)
+subscribes to a topic, its handler runs on the gateway's thread (or
+on `io`'s worker), wherever the publisher is: the runtime routes
+the helper's subscriptions to its anchor's thread.
+
 ## The bus crosses threads for you
 
 When a cooperative locus on one pool publishes to a subscriber on

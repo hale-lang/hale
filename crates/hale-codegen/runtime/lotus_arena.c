@@ -12178,6 +12178,26 @@ void lotus_bus_quarantine_self(void *self_ptr) {
     if (subscribed) bus_dead_add(self_ptr);
 }
 
+/* U-6 (F.40 phase 3, P1): retire every registration routed to `mb`
+ * before the mailbox is destroyed. A pinned anchor's mailbox is the
+ * route of its own subscriptions and of every subscription in the tree
+ * nested under it. Each of those deregisters in its own dissolve, on
+ * the anchor's thread; the anchor's join calls this after that thread
+ * has drained the mailbox and exited, as the backstop for any entry
+ * still routed here, so no registration outlives its route: a later
+ * publish skips the retired entries instead of posting to freed
+ * memory. Each retired self is marked dead, as quarantine does, so a
+ * cell already taken for it is dropped. */
+void lotus_bus_retire_mailbox(void *mb) {
+    if (!mb) return;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        if (g_bus_entries[i].mailbox == mb && g_bus_entries[i].subject) {
+            g_bus_entries[i].subject = NULL;
+            bus_dead_add(g_bus_entries[i].self_ptr);
+        }
+    }
+}
+
 void lotus_bus_router_destroy(void) {
     /* Gap B: release String-key copies (single-threaded teardown —
      * the only safe point; see the key_str field comment). */
