@@ -60,6 +60,8 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::capability::TargetRow;
+use hale_types::target::TargetSpec;
 use hale_types::bus_graph::BusGraph;
 use hale_types::effect_rows::EffectRows;
 use hale_types::effects::EffectCertificates;
@@ -87,13 +89,15 @@ use crate::source::SourceProvider;
 /// view over the resolved program whose tables are lowering's ownership,
 /// bus-graph, dispatch and handler-routing rows. Until the check runs
 /// over the resolved program, a snapshot that is checked for its model
-/// and lowered holds both shapes' graphs. `sync_inference` counts the
-/// form rows ([`Snapshot::demand_forms`]).
-pub const FAMILIES: [&str; 16] = [
+/// and lowered holds both shapes' graphs. `target_capability` counts the
+/// effective-target row, which no consumer demands yet; `sync_inference`
+/// counts the form rows ([`Snapshot::demand_forms`]).
+pub const FAMILIES: [&str; 17] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
     "entrypoint",
+    "target_capability",
     "top_scope",
     "sync_inference",
     "expression_typing",
@@ -108,26 +112,32 @@ pub const FAMILIES: [&str; 16] = [
     "lowering_view",
 ];
 
-/// The target a snapshot is checked for: what `where async_io` may
-/// assume, and how a refusal names the platform.
+/// The target a snapshot is configured for: `--target`, or the host.
+/// The checker asks it what `where async_io` may assume and how a
+/// refusal names the platform; the effective-target row
+/// ([`Snapshot::demand_target`]) records it beside the source
+/// declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     /// The target's name: `host`, or the triple a build names.
     pub name: String,
-    pub has_async_io: bool,
-    /// The platform as the `async_io` diagnostic names it.
-    pub label: &'static str,
+    pub spec: TargetSpec,
 }
 
 impl Target {
     /// The machine the compiler runs on: every check's target.
     pub fn host() -> Self {
-        let b = Bundle::new(BTreeMap::new());
-        Target {
-            name: "host".to_string(),
-            has_async_io: b.target_has_async_io,
-            label: b.target_label,
-        }
+        Target { name: "host".to_string(), spec: TargetSpec::host() }
+    }
+
+    /// Whether the target's runtime has the `async_io` pool backend.
+    pub fn has_async_io(&self) -> bool {
+        self.spec.has_async_io()
+    }
+
+    /// The platform as the `async_io` diagnostic names it.
+    pub fn label(&self) -> &'static str {
+        self.spec.platform_label()
     }
 }
 
@@ -228,8 +238,13 @@ impl Config {
     fn digest(&self) -> u64 {
         let mut d = Digest::new();
         d.field(self.target.name.as_bytes());
-        d.flag(self.target.has_async_io);
-        d.field(self.target.label.as_bytes());
+        // The spec's identity beside the name, so two configured
+        // targets that share a name never share a digest (design §1.7).
+        d.field(self.target.spec.arch.llvm_name().as_bytes());
+        d.field(self.target.spec.os.name().as_bytes());
+        d.field(self.target.spec.env.name().as_bytes());
+        d.flag(self.target.has_async_io());
+        d.field(self.target.label().as_bytes());
         d.option(self.api.as_deref());
         d.option(self.api_roles.as_deref());
         match &self.environment {
@@ -388,6 +403,7 @@ pub struct Snapshot {
     /// scope blocks.
     unlinked: Option<CheckableFailure>,
     entry: OnceCell<Result<EntryRow, Blocked>>,
+    target: OnceCell<Result<TargetRow, Blocked>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -563,6 +579,7 @@ impl Snapshot {
             unreadable: loaded.unreadable,
             unlinked: loaded.unlinked,
             entry: OnceCell::new(),
+            target: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             forms: OnceCell::new(),
@@ -832,8 +849,8 @@ impl Snapshot {
         );
         b.import_renames = self.import_renames.clone();
         b.sources = self.source_map.clone();
-        b.target_has_async_io = self.config.target.has_async_io;
-        b.target_label = self.config.target.label;
+        b.target_has_async_io = self.config.target.has_async_io();
+        b.target_label = self.config.target.label();
         b.snapshot = self.identities.clone();
         b
     }
@@ -878,6 +895,31 @@ impl Snapshot {
                 }
                 self.count("entrypoint");
                 Ok(hale_types::entry::entry_row(&self.bundle()))
+            })
+            .as_ref()
+    }
+
+    /// The effective-target row (the `target_capability` family,
+    /// `hale_types::capability::target_row`): the configured target,
+    /// the first source `target wasm`/`browser_js` declaration, and the
+    /// precedence today's readers apply between them, recorded as a
+    /// fact. Its inputs are the key's configured target and the
+    /// sources, so a cached row never serves another target's snapshot.
+    /// It reads declarations only; a seed with a hole has no programs
+    /// to read, so its row is blocked with its scope. No consumer reads
+    /// it yet (P3 2 of 3 makes it the target every entry point acts on).
+    pub fn demand_target(&self) -> Result<&TargetRow, &Blocked> {
+        self.target
+            .get_or_init(|| {
+                if self.has_hole() {
+                    return Err(Blocked { family: "target_capability", ..self.hole_blocked() });
+                }
+                self.count("target_capability");
+                Ok(hale_types::capability::target_row(
+                    &self.bundle(),
+                    &self.config.target.name,
+                    self.config.target.spec,
+                ))
             })
             .as_ref()
     }
@@ -1629,12 +1671,16 @@ mod tests {
         let mut musl = Config::editor();
         musl.target = Target {
             name: "x86_64-unknown-linux-musl".to_string(),
-            has_async_io: false,
-            label: "musl Linux",
+            spec: TargetSpec::parse("x86_64-unknown-linux-musl").unwrap(),
         };
         let musl = load(&app, &Disk, musl);
         assert_ne!(disk.key().target, musl.key().target);
         assert_ne!(disk.key().config_digest, musl.key().config_digest);
+        // The spec is folded beside the name: one name over two specs
+        // is two digests.
+        let mut renamed = Config::editor();
+        renamed.target = Target { name: "host".to_string(), spec: musl.config.target.spec };
+        assert_ne!(Config::editor().digest(), renamed.digest());
 
         assert_ne!(disk.key().entry, load(&other, &Disk, Config::editor()).key().entry);
 
@@ -1647,6 +1693,57 @@ mod tests {
         assert_eq!(musl.builds()["expression_typing"], 0, "never demanded");
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(other.parent().unwrap());
+    }
+
+    /// The effective-target row (design §1.3, §1.7): a function of the
+    /// key's configured target and the sources, demanded once per
+    /// snapshot, with today's precedence recorded as it is. A host and a
+    /// wasm32 snapshot of one seed differ in `target` and
+    /// `config_digest` and each derive their own row; nothing else is
+    /// computed for it.
+    #[test]
+    fn the_target_row_is_the_configured_target_and_the_sources() {
+        use hale_types::capability::TargetClass;
+        let d = scratch("target-row");
+        let app = d.join("app.hl");
+        std::fs::write(&app, "fn main() {\n    let _ = std::process::pid();\n}\n").unwrap();
+        let wasm = Target { name: "wasm32-unknown-unknown".to_string(), spec: TargetSpec::parse("wasm32").unwrap() };
+
+        let host = load(&app, &Disk, Config::build(Target::host()));
+        let on_wasm = load(&app, &Disk, Config::build(wasm.clone()));
+        assert_ne!(host.key().target, on_wasm.key().target);
+        assert_ne!(host.key().config_digest, on_wasm.key().config_digest);
+
+        let row = host.demand_target().expect("the row reads declarations only");
+        assert_eq!(row.configured_name, "host");
+        assert_eq!(row.declaration, None);
+        assert_eq!(row.precedence.backend, Some(TargetClass::PosixAsync));
+        assert_eq!(row.precedence.stdlib_gate, None);
+        let row = on_wasm.demand_target().unwrap();
+        assert_eq!(row.configured_name, "wasm32-unknown-unknown");
+        assert_eq!(row.precedence.backend, Some(TargetClass::Wasm32));
+        assert_eq!(row.precedence.async_io_gate, Some(TargetClass::Wasm32));
+        // Today `--target wasm32` alone does not gate the stdlib: the
+        // fact P3 2 of 3 corrects (T1(b)).
+        assert_eq!(row.precedence.stdlib_gate, None);
+        let _ = on_wasm.demand_target();
+        for s in [&host, &on_wasm] {
+            assert_eq!(s.builds()["target_capability"], 1, "one derivation per snapshot");
+            assert_eq!(s.builds()["expression_typing"], 0, "the row computes nothing else");
+        }
+
+        // A declaration: today the stdlib gate reads it, and the backend
+        // does not.
+        std::fs::write(&app, "target wasm { }\n\nfn main() {\n    println(\"hi\");\n}\n").unwrap();
+        let declared = load(&app, &Disk, Config::build(Target::host()));
+        assert_ne!(declared.key().sources_digest, host.key().sources_digest);
+        let row = declared.demand_target().unwrap();
+        let decl = row.declaration.as_ref().expect("the declaration is recorded");
+        assert_eq!((decl.name.as_str(), decl.span.start.0), ("wasm", 0));
+        assert!(decl.file.ends_with("app.hl"), "{}", decl.file);
+        assert_eq!(row.precedence.stdlib_gate, Some(TargetClass::Wasm32));
+        assert_eq!(row.precedence.backend, Some(TargetClass::PosixAsync));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Contract 3: a seed with a file that did not parse has no scope,

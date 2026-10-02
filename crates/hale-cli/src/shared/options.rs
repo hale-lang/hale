@@ -494,8 +494,7 @@ pub(crate) fn build_config(
             hale_codegen::CompileTarget::Native => "host".to_string(),
             _ => spec.triple.to_string(),
         },
-        has_async_io: spec.has_async_io(),
-        label: spec.platform_label(),
+        spec,
     };
     let mut config = hale_frontend::snapshot::Config::build(target);
     config.api = options.api.clone();

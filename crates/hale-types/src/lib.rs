@@ -29,6 +29,7 @@ pub mod budget_check;
 pub mod bus_graph;
 pub mod bus_inert;
 pub mod callgraph;
+pub mod capability;
 pub mod effect_classes;
 pub mod effect_rows;
 pub mod effects;
@@ -70,6 +71,7 @@ pub mod sealability;
 pub mod symbol;
 pub mod sync_inference;
 pub mod form_rows;
+pub mod target;
 pub mod ty;
 pub mod working_set;
 
