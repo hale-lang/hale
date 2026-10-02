@@ -3218,6 +3218,49 @@ pub fn derive_application_model_over(
                 provenance: pid,
             });
         }
+        // The CPU sets (U-5): each arranged domain's resolved affinity,
+        // read from the table's domain, never from the written entries,
+        // so two entries naming one pool give one row. A CPU set is a
+        // column of a thread domain and never a domain of its own: a
+        // pool's is the set its one worker may run on, a pinned
+        // replica's its own thread's. Where the table's domains behind
+        // one name (one per construction template) disagree, or name an
+        // empty set, the domain has no row.
+        let mut cpu_sets: BTreeMap<String, BTreeSet<Vec<u32>>> = BTreeMap::new();
+        let mut clause: BTreeMap<String, hale_syntax::Span> = BTreeMap::new();
+        for d in &table.domains {
+            let cores = match &d.kind {
+                DomainKind::Pool { affinity: Some(c), .. } | DomainKind::Pinned { affinity: Some(c), .. } => c,
+                _ => continue,
+            };
+            let name = domain_name(d.id);
+            if !domain_id.contains_key(&name) {
+                continue;
+            }
+            let set: BTreeSet<u32> = cores.0.iter().filter_map(|c| u32::try_from(*c).ok()).collect();
+            cpu_sets.entry(name.clone()).or_default().insert(set.into_iter().collect());
+            // The affinity clause: the entry that decided a row in the
+            // domain.
+            let entry = table.instances.values().find_map(|r| match &r.decided_by {
+                crate::placement::Decision::Entry { entry, .. } if r.domain == d.id => Some(*entry),
+                _ => None,
+            });
+            if let Some(span) = entry.and_then(|s| bundle.snapshot.site(s.id)).map(|s| s.span) {
+                clause.entry(name).or_insert(span);
+            }
+        }
+        for (name, sets) in &cpu_sets {
+            let Some(cores) = sets.iter().next().filter(|c| sets.len() == 1 && !c.is_empty()) else { continue };
+            let pid = match clause.get(name) {
+                Some(span) => intern_span(&mut records, *span),
+                None => intern_synth(&mut records, "affinity"),
+            };
+            r.affined_to.push(hale_model::AffinedTo {
+                domain: domain_id[name],
+                cores: hale_model::CoreSet(cores.clone()),
+                provenance: pid,
+            });
+        }
         // Instances in canonical (path-sorted) order.
         arranged.sort_by(|a, b| a.path.cmp(&b.path));
         let inst_id: BTreeMap<&String, LocusInstanceId> =
@@ -3927,6 +3970,20 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         m.capabilities.exact_placement,
         m.capabilities.exact_routes
     ));
+    // U-5 (F.40 phase 3, P1): the CPU set each thread domain may run on.
+    // Printed only where a domain has one, so a program with no affinity
+    // dumps as it did.
+    if !m.relations.affined_to.is_empty() {
+        s.push_str(&format!("affined_to ({}):\n", m.relations.affined_to.len()));
+        for a in &m.relations.affined_to {
+            let cores: Vec<String> = a.cores.0.iter().map(|c| c.to_string()).collect();
+            s.push_str(&format!(
+                "  {} cpus [{}]\n",
+                m.entities.thread_domains[a.domain.index()].name,
+                cores.join(",")
+            ));
+        }
+    }
     // GH #476 Change 8: the derived lowering plan. Not model rows —
     // a CONCLUSION, printed here because this dump is the survey
     // surface #464's stage 0 asks its question of ("how much queued

@@ -392,3 +392,56 @@ fn main() { build(true); }
     }
     identities_hold(m, "7a3dab914ecdbe5c", "23e954518d6a8109");
 }
+
+/// U-5: the model projects `affined_to` from the table's resolved domain
+/// affinity, never from the written entries. Two entries name pool `io`
+/// and one carries `cores = 2..4`: one row for the pool, the set its one
+/// worker may run on. `pinned(cores = { 5, 6 }, replicas = 2)` gives each
+/// replica's thread its own core. A CPU set is a column of a thread
+/// domain and never a domain of its own, so the domains are the ones the
+/// instances run in, and a pinned field with no affinity has no row. The
+/// model dump gains its `affined_to` lines only where a domain has a set;
+/// shape identity's own check is separate (contract 1: the arrangement,
+/// this column included, is outside the shape half).
+#[test]
+fn the_affinity_column_is_projected() {
+    let s = snapshot(
+        "locus Worker { }\n\nmain locus App {\n    params {\n        a: Worker = Worker { };\n        b: Worker = Worker { };\n        \
+         w: Worker = Worker { };\n        free: Worker = Worker { };\n    }\n    placement {\n        \
+         a: cooperative(pool = io, cores = 2..4);\n        b: cooperative(pool = io);\n        \
+         w: pinned(cores = { 5, 6 }, replicas = 2);\n        free: pinned;\n    }\n}\n\nfn main() { App { }; }\n",
+    );
+    let m = model(&s);
+    let domains: Vec<&str> = m.entities.thread_domains.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(domains, ["main", "pinned:App.free", "pinned:App.w[0]", "pinned:App.w[1]", "pool:io"]);
+    let rows: Vec<(String, Vec<u32>)> = m
+        .relations
+        .affined_to
+        .iter()
+        .map(|a| (m.entities.thread_domains[a.domain.0 as usize].name.clone(), a.cores.0.clone()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("pinned:App.w[0]".to_string(), vec![5]),
+            ("pinned:App.w[1]".to_string(), vec![6]),
+            ("pool:io".to_string(), vec![2, 3]),
+        ]
+    );
+    let dump = hale_types::model_builder::render_internal(m);
+    let at = dump.find("affined_to (3):\n").expect("the dump lists the CPU sets");
+    assert_eq!(
+        &dump[at..at + dump[at..].find("dispatch_plan").unwrap()],
+        "affined_to (3):\n  pinned:App.w[0] cpus [5]\n  pinned:App.w[1] cpus [6]\n  pool:io cpus [2,3]\n"
+    );
+    identities_hold(m, "6e7cb77bb037547e", "6f7ec26b0442cb4d");
+}
+
+/// U-5: a program with no affinity dumps no `affined_to` lines.
+#[test]
+fn a_program_with_no_affinity_dumps_no_cpu_sets() {
+    let s = snapshot(M5);
+    let m = model(&s);
+    assert!(m.relations.affined_to.is_empty());
+    assert!(!hale_types::model_builder::render_internal(m).contains("affined_to"));
+}
