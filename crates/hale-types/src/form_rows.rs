@@ -282,7 +282,7 @@ pub fn form_rows(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow, resolved
         return rows;
     }
     let pool_map = crate::check::compute_pool_of_locus_type(bundle, top, entry);
-    let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, &pool_map);
+    let inferred = crate::sync_inference::infer_sync_for_bundle(bundle, top, &pool_map, &rows);
     for row in &mut rows.rows {
         // Inference keys its candidates by name over the top level: a
         // module's form of the same name is not one of them.

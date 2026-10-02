@@ -3888,9 +3888,12 @@ fn check_placement_single_thread(
     //    fall back to OK (they need richer flow analysis we
     //    defer to v1.x).
     // F.32-0 (2026-05-24): collect locus types whose state is
-    // held in `@form(...)` cells AND that carry an explicit
-    // `sync = X` kwarg with X != `none`. The cross-pool
-    // diagnostic is skipped only for these.
+    // held in `@form(...)` cells AND whose discipline synchronizes
+    // cross-domain access. The cross-pool diagnostic is skipped
+    // only for these. F.40 phase 3, C1: one predicate, the form
+    // row's `safe_for_cross_domain_access` — `serialized`,
+    // `striped` or `lockfree`, written or inferred; an explicit
+    // `sync = none` is configured, not safe.
     //
     // History: 3ec6391 (2026-05-24, first cut) admitted any
     // `@form(...)` locus into this set on the assumption that
@@ -3910,15 +3913,9 @@ fn check_placement_single_thread(
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
-                if let Some(form) = &l.form {
+                if l.form.is_some() {
                     form_bearing_loci.insert(l.name.name.clone());
-                    // The written discipline, or the one sync inference
-                    // gave a form its author left unconfigured (its form
-                    // row's, F.40 phase 3, C1).
-                    let inferred_safe = forms
-                        .of(l)
-                        .is_some_and(|r| r.inferred.is_some() && r.safe_for_cross_domain_access());
-                    if form_has_explicit_sync_discipline(form) || inferred_safe {
+                    if forms.of(l).is_some_and(|r| r.safe_for_cross_domain_access()) {
                         cross_pool_safe_loci.insert(l.name.name.clone());
                     }
                 }
@@ -3926,16 +3923,16 @@ fn check_placement_single_thread(
         });
     }
 
-    // F.32-1∞ (2026-05-25): pre-compute sync inference for
-    // every `@form(hashmap)` locus without explicit `sync = `.
-    // The F.32-0 diagnostic below consults this map to name
-    // the specific discipline the rule would pick, instead of
-    // suggesting a generic "choose one of serialized/striped".
-    let inferred_sync = crate::sync_inference::infer_sync_for_bundle(
-        bundle,
-        top,
-        &pool_of_locus_type,
-    );
+    // F.32-1∞ (2026-05-25): sync inference's reasoning for every
+    // `@form(hashmap)` locus its author did not configure, from
+    // the form rows. The F.32-0 diagnostic below consults it to
+    // name the specific discipline the rule would pick, instead
+    // of suggesting a generic "choose one of serialized/striped".
+    let inferred_sync: BTreeMap<String, crate::sync_inference::InferredSync> = forms
+        .rows()
+        .iter()
+        .filter_map(|r| Some((r.locus.clone(), r.inferred.clone()?)))
+        .collect();
 
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
@@ -4636,54 +4633,25 @@ fn locus_member_body(member: &LocusMember) -> Option<&Block> {
     }
 }
 
-/// F.32-0 (2026-05-24): true when a form annotation carries an
-/// explicit `sync = X` kwarg where X names a recognized sync
-/// discipline (`serialized`, `striped`, or `lockfree`). The
-/// cross-pool exemption applies only to such loci — the
-/// substrate's runtime gives no thread-safety to plain
-/// `@form(...)` cells (the 3ec6391 commit's "form ABI
-/// serializes" claim was aspirational; see
-/// `notes/f32-cache-aware-delivery-plan.md` § F.32-0).
-///
-/// Unknown / malformed `sync = X` values return false here
-/// (so the cross-pool diagnostic still fires). F.32-1α/β2
-/// validates the recognized values; `lockfree` (γ) is in the
-/// accept set syntactically but the per-locus check rejects
-/// it as deferred. This helper only gates the cross-pool
-/// exemption — codegen does its own mapping to SyncMode.
-fn form_has_explicit_sync_discipline(form: &FormAnnotation) -> bool {
-    form.args.iter().any(|arg| {
-        if arg.name.name != "sync" {
-            return false;
-        }
-        match &arg.value {
-            Expr::Ident(i) => matches!(
-                i.name.as_str(),
-                "serialized" | "striped" | "lockfree"
-            ),
-            _ => false,
-        }
-    })
-}
-
 /// Visitor context for the cross-pool call walk. Carried by
 /// reference so the recursive Stmt/Expr traversal doesn't pay
 /// a closure-capture allocation per node.
 struct PoolCheckCx<'a> {
     enclosing_locus: &'a LocusDecl,
     caller_pool: Option<&'a PoolId>,
-    /// F.32-0 (2026-05-24): locus type names that opt in to
-    /// cross-pool access by declaring `@form(<name>, sync = X)`
-    /// where X is a recognized discipline (`serialized` /
-    /// `striped` / `lockfree`; F.32-1α/β/γ). Cross-pool method
-    /// calls into receivers landing in this set skip the
-    /// diagnostic — the chosen sync discipline carries the
+    /// F.32-0 (2026-05-24): locus type names whose form row is
+    /// safe for cross-domain access: a discipline of `serialized`
+    /// / `striped` / `lockfree` (F.32-1α/β/γ), written or inferred.
+    /// Cross-pool method calls into receivers landing in this set
+    /// skip the diagnostic — the sync discipline carries the
     /// substrate's safety contract.
     ///
-    /// Plain `@form(hashmap)` / `@form(vec)` / `@form(ring_buffer)`
-    /// (no sync kwarg) does NOT land in this set: the runtime
-    /// has no synchronization on those paths and concurrent
-    /// writers corrupt the structure (`lotus_arena.c:1869+` —
+    /// A form left unsynchronized — `sync = none`, an argument
+    /// naming no discipline, or a plain `@form(hashmap)` /
+    /// `@form(vec)` / `@form(ring_buffer)` inference did not
+    /// synchronize — does NOT land in this set: the runtime has no
+    /// synchronization on those paths and concurrent writers
+    /// corrupt the structure (`lotus_arena.c:1869+` —
     /// `lotus_hashmap_set` / `_grow` are non-atomic single-
     /// threaded code).
     cross_pool_safe_loci: &'a BTreeSet<String>,
@@ -4694,8 +4662,8 @@ struct PoolCheckCx<'a> {
     /// "declare `sync = ...` to opt in" upgrade hint.
     form_bearing_loci: &'a BTreeSet<String>,
     /// F.32-1∞ (2026-05-25): sync-inference results keyed by
-    /// locus type name. Present only for `@form(hashmap)`
-    /// loci without explicit `sync = `. The cross-pool
+    /// locus type name, the form rows' `inferred` column. Present
+    /// only for `@form(hashmap)` loci not explicitly configured. The cross-pool
     /// diagnostic reads this to name the specific discipline
     /// the rule picks (so the upgrade hint is actionable, not
     /// generic).

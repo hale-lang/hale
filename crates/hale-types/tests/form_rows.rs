@@ -213,6 +213,39 @@ fn an_inferred_discipline_admits_a_cross_pool_call() {
     assert_eq!(cross_pool_errors(", sync = serialized"), Vec::<String>::new());
 }
 
+/// The F.31 cross-pool check asks one question of the receiver's form
+/// row, `safe_for_cross_domain_access`. An explicit `sync = none` is
+/// configured, so inference leaves it alone, and it is not safe: the
+/// cross-pool read is refused, as it was before the rows (the checker's
+/// own predicate admitted only `serialized`, `striped` and `lockfree`).
+#[test]
+fn the_cross_pool_check_asks_whether_the_form_is_safe() {
+    for admitted in ["", ", sync = serialized", ", sync = striped", ", sync = lockfree, cap = 64"] {
+        assert_eq!(cross_pool_errors(admitted), Vec::<String>::new(), "{admitted}");
+    }
+    let none = cross_pool_errors(", sync = none");
+    assert_eq!(none.len(), 1, "{none:?}");
+    assert!(none[0].contains("`self.reg.has`"), "{}", none[0]);
+    let r = rows(&cross_pool(", sync = none"));
+    let row = r.named("Registry").unwrap();
+    assert!(row.explicitly_configured() && !row.safe_for_cross_domain_access());
+    assert!(row.inferred.is_none(), "inference does not run over an explicit none");
+
+    assert_eq!(cross_pool_errors(", sync = fast").len(), 1, "an argument naming no discipline is not safe");
+
+    // A plain map: only `App` touches it, so inference leaves it
+    // unsynchronized, and the read across pools is refused.
+    let plain = cross_pool("").replace("self.reg.set(Entry { k: t.n, v: 1 });", "");
+    let program = hale_syntax::parse_source(&plain).expect("parse");
+    let r = rows_of(&program);
+    assert_eq!(r.named("Registry").unwrap().effective, Discipline::None);
+    let errors: Vec<_> = hale_types::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error() && d.message.contains("cross-pool method call"))
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+}
+
 fn decl<'a>(program: &'a Program, locus: &str) -> &'a hale_syntax::ast::LocusDecl {
     program
         .items

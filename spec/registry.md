@@ -2,7 +2,7 @@
 
 GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `registry_matches_spec`. Do not edit: change the table and run `HALE_REGEN_REGISTRY=1 cargo test -p hale-graph --test registry_matches_spec`. The contract this index serves is `spec/model.md` § *The graph registry*.
 
-44 families: 10 canonical, 30 migrating (with 140 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
+44 families: 10 canonical, 30 migrating (with 139 permitted legacy producers), 4 reserved. 19 spec rules with evaluators. 31 frozen Debug-string sites, of which 11 decide a fact.
 
 ## Families
 
@@ -11,7 +11,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 | `seed_loading` | Layer 1 | Canonical | desugar | `collect_checkable` | 0 | Which source units form the snapshot: the entry, every imported seed, their merge order and the spans' virtual bases. |
 | `qualified_names` | Layer 1 | Migrating | desugar | `resolve_imports` | 5 | What a qualified or aliased name denotes: the library identity, the mangled declaration, the construction target, the bus subject a path names. |
 | `desugar_sequence` | Layer 1 | Migrating | desugar | `desugar_before_check` | 1 | Which rewrites the program receives before checking, in which order: the declaration-shaping passes only (JSON parsers, the api surface, unit returns, construction aliases, the omitted `run`, repr accessors). Sync inference is not a rewrite: its pick is a form row (`sync_inference`). The topic-reference and intra-locus rewrites are not desugars: they erase a written declaration reference the checker's laws and the model read, and run in lowering's resolved program, after the check. |
-| `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 2 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access. |
+| `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 1 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the pools its methods are called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
@@ -163,18 +163,18 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `form_has_explicit_sync_discipline` — the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check). *Removed when:* one predicate over the form rows.
-- `crates/hale-types/src/sync_inference.rs` · `form_has_explicit_sync` — sync inference's own predicate, which counts `sync = none` where the checker's does not. *Removed when:* one predicate over the form rows.
+- `crates/hale-types/src/alloc_summary.rs` · `summarize_identified` — the allocation summary reads a written `sync =` argument for `sync_forms`, the only answer for the stdlib's analysis copy, which no snapshot's rows hold; the effects engine adds the rows' (`add_sync_forms`). *Removed when:* the stdlib's forms are rows of the snapshot (the stdlib merged once).
 
 **Also owned.** `crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`
 
-**Consumers.** the snapshot (one row set per snapshot, after the mint, over its scope and entry row) (`crates/hale-frontend/src/snapshot.rs` · `demand_forms`); check (F.31 cross-pool verdicts); check (instance aliasing: a field behind a sync discipline) (`crates/hale-types/src/check.rs` · `locus_has_unsynchronized_state`); the effects certificate engine (a call into a sync-bearing form or its holder can take its lock) (`crates/hale-types/src/alloc_summary.rs` · `add_sync_forms`); model (`sync_form`, read by the `depends` law) (`crates/hale-types/src/model_builder.rs` · `derive_application_model_over`); the lowering view (the snapshot's rows, and the merged stdlib's as written) (`crates/hale-types/src/resolved.rs` · `resolve_program`); codegen (the slot layout) (`crates/hale-codegen/src/locus/decl.rs` · `sync_mode`); lsp
+**Consumers.** the snapshot (one row set per snapshot, after the mint, over its scope and entry row) (`crates/hale-frontend/src/snapshot.rs` · `demand_forms`); check (F.31 cross-pool verdicts: the one predicate, safe for cross-domain access) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (instance aliasing: a field behind a sync discipline) (`crates/hale-types/src/check.rs` · `locus_has_unsynchronized_state`); the effects certificate engine (a call into a sync-bearing form or its holder can take its lock) (`crates/hale-types/src/alloc_summary.rs` · `add_sync_forms`); sync inference (its candidates: the forms not explicitly configured) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); model (`sync_form`, read by the `depends` law) (`crates/hale-types/src/model_builder.rs` · `derive_application_model_over`); the lowering view (the snapshot's rows, and the merged stdlib's as written) (`crates/hale-types/src/resolved.rs` · `resolve_program`); codegen (the slot layout) (`crates/hale-codegen/src/locus/decl.rs` · `sync_mode`); lsp
 
 **Invariants.**
 
 - every entry point sees the same discipline for the same program
 - one row per `@form` declaration, found by the identity the load minted (a monomorph by its template's) or by name: the configuration and the effective discipline are separate columns
 - an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access
+- one predicate per question: inference's candidates are the forms not explicitly configured, and the F.31 cross-pool exemption is safe for cross-domain access; sync inference runs once per snapshot, and the cross-pool diagnostic's hint reads its reasoning from the rows
 - nothing writes the discipline into the program: the check, the effects engine, the model and lowering read the row, and a declaration with no row (the stdlib's, merged for lowering) reads its written argument
 - the readers that ask whether a form carries a sync discipline as one question (the model's `sync_form`, the effects engine, instance aliasing) ask explicitly configured or safe for cross-domain access (`FormRows::carries_sync`), so an explicit `sync = none` still counts for them
 
@@ -182,7 +182,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Focused tests.** crates/hale-types/tests/form_rows.rs; crates/hale-frontend/src/snapshot.rs (the_form_rows_are_one_family_by_identity); crates/hale-types/tests/placement.rs
 
-**Spec.** spec/forms.md; spec/semantics.md § Placement block (F.31)
+**Spec.** spec/forms.md § Cross-pool sync disciplines; spec/semantics.md § A form's sync discipline
 
 **Guarded seams.**
 

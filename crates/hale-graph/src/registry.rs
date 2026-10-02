@@ -374,14 +374,14 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["placement (the entry row's pool map)", "top_scope", "form declarations", "method call sites"],
         producer: Some(site(FORM_ROWS, "form_rows")),
         legacy: &[
-            legacy(CHECK, "form_has_explicit_sync_discipline", "the checker's `has a sync discipline` predicate (one caller, the F.31 single-thread check)", "one predicate over the form rows"),
-            legacy(SYNC, "form_has_explicit_sync", "sync inference's own predicate, which counts `sync = none` where the checker's does not", "one predicate over the form rows"),
+            legacy(ALLOC, "summarize_identified", "the allocation summary reads a written `sync =` argument for `sync_forms`, the only answer for the stdlib's analysis copy, which no snapshot's rows hold; the effects engine adds the rows' (`add_sync_forms`)", "the stdlib's forms are rows of the snapshot (the stdlib merged once)"),
         ],
         consumers: &[
             consumer_at("the snapshot (one row set per snapshot, after the mint, over its scope and entry row)", SNAPSHOT, "demand_forms"),
-            consumer("check (F.31 cross-pool verdicts)"),
+            consumer_at("check (F.31 cross-pool verdicts: the one predicate, safe for cross-domain access)", CHECK, "check_placement_single_thread"),
             consumer_at("check (instance aliasing: a field behind a sync discipline)", CHECK, "locus_has_unsynchronized_state"),
-            consumer_at("the effects certificate engine (a call into a sync-bearing form or its holder can take its lock)", "crates/hale-types/src/alloc_summary.rs", "add_sync_forms"),
+            consumer_at("the effects certificate engine (a call into a sync-bearing form or its holder can take its lock)", ALLOC, "add_sync_forms"),
+            consumer_at("sync inference (its candidates: the forms not explicitly configured)", SYNC, "infer_sync_for_bundle"),
             consumer_at("model (`sync_form`, read by the `depends` law)", MODEL_BUILDER, "derive_application_model_over"),
             consumer_at("the lowering view (the snapshot's rows, and the merged stdlib's as written)", TY_RESOLVED, "resolve_program"),
             consumer_at("codegen (the slot layout)", CG_DECL, "sync_mode"),
@@ -391,12 +391,13 @@ pub const FAMILIES: &[Family] = &[
             "every entry point sees the same discipline for the same program",
             "one row per `@form` declaration, found by the identity the load minted (a monomorph by its template's) or by name: the configuration and the effective discipline are separate columns",
             "an explicit `sync = none` is configuration: inference does not run over it, and the row does not call it safe for cross-domain access",
+            "one predicate per question: inference's candidates are the forms not explicitly configured, and the F.31 cross-pool exemption is safe for cross-domain access; sync inference runs once per snapshot, and the cross-pool diagnostic's hint reads its reasoning from the rows",
             "nothing writes the discipline into the program: the check, the effects engine, the model and lowering read the row, and a declaration with no row (the stdlib's, merged for lowering) reads its written argument",
             "the readers that ask whether a form carries a sync discipline as one question (the model's `sync_form`, the effects engine, instance aliasing) ask explicitly configured or safe for cross-domain access (`FormRows::carries_sync`), so an explicit `sync = none` still counts for them",
         ],
         missing: Missing::Error,
         tests: &["crates/hale-types/tests/form_rows.rs", "crates/hale-frontend/src/snapshot.rs (the_form_rows_are_one_family_by_identity)", "crates/hale-types/tests/placement.rs"],
-        spec: &["spec/forms.md", "spec/semantics.md § Placement block (F.31)"],
+        spec: &["spec/forms.md § Cross-pool sync disciplines", "spec/semantics.md § A form's sync discipline"],
         owned: &[site(SYNC, "infer_sync_for_bundle")],
         seams: &[
             // The snapshot's, and the entries of a bundle no snapshot

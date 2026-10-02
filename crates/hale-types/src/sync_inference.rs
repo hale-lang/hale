@@ -110,19 +110,23 @@ const READ_METHODS: &[&str] =
 /// Public entry point. Walks every locus method body in the
 /// bundle and collects per-`@form(hashmap)`-locus inference
 /// data. Returns a map keyed by locus type name; only loci
-/// without an explicit `sync = X` kwarg are present in the
+/// whose form row is not explicitly configured (no `sync =`
+/// argument, `sync = none` counting as one) are present in the
 /// map.
 ///
 /// `pool_of_locus_type` is the F.31 placement-driven map
 /// (locus type name → pool the type's instances run on). Same
-/// shape `check_placement_single_thread` consumes.
+/// shape `check_placement_single_thread` consumes. `forms` holds
+/// each declaration's written configuration
+/// ([`crate::form_rows::FormRows::configured`]).
 pub fn infer_sync_for_bundle(
     bundle: &Bundle<'_>,
     top: &TopScope,
     pool_of_locus_type: &BTreeMap<String, PoolId>,
+    forms: &crate::form_rows::FormRows,
 ) -> BTreeMap<String, InferredSync> {
-    // Find form-bearing loci without explicit sync. Those are
-    // the candidates the inference picks for.
+    // Find form-bearing loci the author did not configure. Those
+    // are the candidates the inference picks for.
     let candidates: BTreeSet<String> = bundle
         .programs
         .values()
@@ -133,7 +137,7 @@ pub fn infer_sync_for_bundle(
                 if !is_form_hashmap(form) {
                     return None;
                 }
-                if form_has_explicit_sync(form) {
+                if forms.of(l).is_none_or(|row| row.explicitly_configured()) {
                     return None;
                 }
                 Some(l.name.name.clone())
@@ -235,9 +239,6 @@ fn is_form_hashmap(form: &FormAnnotation) -> bool {
     form.name.name == "hashmap"
 }
 
-fn form_has_explicit_sync(form: &FormAnnotation) -> bool {
-    form.args.iter().any(|arg| arg.name.name == "sync")
-}
 
 /// Receivers we recognize at inference time: `self.field`
 /// where `field` is a locus-typed param on the enclosing
@@ -556,7 +557,8 @@ mod tests {
                 }
             }
         }
-        infer_sync_for_bundle(&bundle, &top, &pool_map)
+        let forms = crate::form_rows::FormRows::configured(bundle.programs.values().flat_map(|p| p.items.iter()));
+        infer_sync_for_bundle(&bundle, &top, &pool_map, &forms)
     }
 
     #[test]

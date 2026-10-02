@@ -3508,6 +3508,50 @@ safe. Without it, multi-pool deployments would silently race
 on locus arenas (which are unsynchronized bump allocators by
 design).
 
+### A form's sync discipline
+
+Step 3 has one exemption, and it belongs to the receiver's form.
+Every `@form` declaration has one resolved row (F.40 phase 3, C1)
+that keeps two facts apart:
+
+- **Its configuration**, what the author wrote: no `sync =`
+  argument; `sync = none`, `serialized`, `striped` or `lockfree`;
+  or a `sync =` argument that names no discipline (`sync = fast`),
+  which the form check refuses.
+- **Its effective discipline**: the written one; for a
+  `@form(hashmap)` declared at the top level with no `sync =`
+  argument, the one sync inference picks from the pools its
+  `set` / `bump` / `remove` (writers) and `get` / `has` / `len` /
+  `key_at` / `entry_at` (readers) are called from — none when one
+  pool calls them, `serialized` for at most one writer pool, `striped` for
+  several writer pools when a mutate is hot (inside a loop or an
+  `on_` handler), else `serialized`; none for any other form.
+
+Two questions are asked of the row:
+
+1. **Is it explicitly configured?** Any `sync =` argument, `none`
+   included. Inference runs only over a form that is not, so an
+   author who writes `sync = none` keeps the map unsynchronized.
+2. **Is it safe for cross-domain access?** Its effective
+   discipline synchronizes: `serialized`, `striped` or `lockfree`,
+   written or inferred. A cross-pool method call into a receiver
+   whose form is safe is accepted; any other is rejected by
+   step 3. `sync = none` is configured and not safe, so a
+   cross-pool call into a `sync = none` map is rejected, as one
+   into a map inference left unsynchronized is.
+
+The build lays each map out by the same row: the discipline a
+program runs with is its form's effective one, and no `sync =`
+argument is ever written into the program on the author's
+behalf. Three readers ask whether a form *carries* a discipline
+as one question — the `depends` law (a held form is an input
+channel outside the bus graph), the effects contracts (a call
+into the form or a locus holding it may take its lock, which
+`@no_block` and `@deterministic` refuse) and the instance-aliasing
+rule (a field behind a discipline is not unsynchronized state) —
+and they count a form that is explicitly configured or safe, so a
+`sync = none` form counts for them.
+
 ### Nested instantiation
 
 Loci instantiated nested in another locus's body (`birth` /
