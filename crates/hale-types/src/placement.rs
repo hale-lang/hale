@@ -261,6 +261,19 @@ pub enum Bound {
     Unbounded(String),
 }
 
+/// The reason a literal written inside a loop is unbounded.
+const BUILT_IN_A_LOOP: &str = "built in a loop";
+
+impl Bound {
+    /// The literal is written inside a loop, so one site builds an
+    /// occurrence per iteration. Distinct from a literal in a scope that
+    /// runs many times (a factory called in a loop, a locus body), each
+    /// run of which builds one occurrence at its own site.
+    pub fn built_in_a_loop(&self) -> bool {
+        matches!(self, Bound::Unbounded(why) if why == BUILT_IN_A_LOOP)
+    }
+}
+
 /// One literal of the root declaration: a construction template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Construction {
@@ -1814,7 +1827,7 @@ impl<'a> Scopes<'a> {
 
     fn bound(&self, s: &Scope<'a>, in_loop: bool) -> Bound {
         if in_loop {
-            return Bound::Unbounded("built in a loop".to_string());
+            return Bound::Unbounded(BUILT_IN_A_LOOP.to_string());
         }
         let i = self
             .scopes

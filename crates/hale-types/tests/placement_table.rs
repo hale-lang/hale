@@ -441,11 +441,15 @@ fn dynamic_sites_carry_their_domains_and_bounds() {
     let root = t.root.as_ref().unwrap();
     assert_eq!(root.constructions.len(), 1);
     assert!(matches!(&root.constructions[0].bound, Bound::Unbounded(why) if why.contains("loop")));
+    // The pinned-in-a-loop rule reads the cause: the root's literal is in
+    // a factory called in a loop, each call of which joins its own
+    // threads, not in a loop itself.
+    assert!(!root.constructions[0].bound.built_in_a_loop(), "{:?}", root.constructions[0].bound);
     let user: Vec<_> = t.dynamic.iter().filter(|d| d.literal.universe == SiteUniverse::User).collect();
     let job = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Job")).expect("Job");
     assert!(matches!(&job.enclosing, Enclosing::Locus(d) if d.lowered == "App"));
     assert_eq!(job.domains, [PlacementTable::MAIN].into_iter().collect());
-    assert!(matches!(&job.bound, Bound::Unbounded(why) if why == "built in a loop"));
+    assert!(job.bound.built_in_a_loop(), "{:?}", job.bound);
     let child = user.iter().find(|d| d.realizes.as_ref().is_some_and(|r| r.lowered == "Child")).expect("Child");
     assert!(matches!(&child.enclosing, Enclosing::Locus(d) if d.lowered == "Hub"));
     assert_eq!(child.domains, [PlacementTable::MAIN].into_iter().collect());
