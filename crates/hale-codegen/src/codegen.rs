@@ -10235,7 +10235,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // Resolve the locus's `send` method. The typechecker has
         // already confirmed it exists with the right shape via
-        // `check_satisfies_bus_adapter`; we still defensively
+        // `conformance_witness` (the adapter contract); we still defensively
         // emit a clear diagnostic if the lookup fails (e.g. a
         // future codegen-side rename diverges from typecheck).
         let info = self.user_loci.get(&locus.name).cloned().ok_or_else(|| {

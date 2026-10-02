@@ -474,6 +474,9 @@ pub fn resolve_rewritten(
     // and a written-configuration row for every declaration they do not
     // hold (the stdlib's).
     let forms = forms.clone().extended(crate::form_rows::FormRows::configured(&merged.items));
+    // The snapshot's typed-body table, found by the identities the merge
+    // kept, and the conformance of every pair the merged stdlib adds.
+    let typed = typed.extended(&merged.items, &top);
 
     Ok(LoweringView {
         merged,
@@ -486,7 +489,7 @@ pub fn resolve_rewritten(
         flows,
         forms,
         bindings: bindings.clone(),
-        typed: typed.clone(),
+        typed,
         bus_inert,
         bus,
         plan,

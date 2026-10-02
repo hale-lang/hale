@@ -29,7 +29,8 @@
 //!    writes.
 //! 4. `conformance`, per (concrete locus, interface) pair of declared
 //!    declarations: whether the locus satisfies the interface, with the
-//!    witness when it does not.
+//!    witness when it does not, marked [`Unsatisfied::NameOnly`] when
+//!    the methods match by name.
 //! 5. `fallible_calls`, per call site whose callee is fallible, stdlib
 //!    callees included: the callee and its error type.
 //!
@@ -274,13 +275,93 @@ pub fn mangle_token(t: &Ty) -> Option<String> {
     }
 }
 
+/// Why a locus does not satisfy an interface: the first requirement it
+/// leaves unmet, in the interface's method order (the checker's one
+/// conformance function, `check::conformance_witness`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unsatisfied {
+    /// The type is no locus (a monomorph of a generic locus included:
+    /// the checker's scope declares no locus by its name).
+    NotALocus,
+    Missing { method: String },
+    Arity { method: String, want: usize, got: usize },
+    Param { method: String, index: usize, want: Ty, got: Ty },
+    Ret { method: String, want: Ty, got: Ty },
+    /// GH #732: the method's error channel is not the interface's.
+    ErrorChannel { method: String, why: &'static str, iface_sig: String, locus_sig: String },
+    /// Every method the interface declares is one of the locus's by
+    /// name (a generic locus's specialization: its template's), and
+    /// `unmet` is the requirement still unmet. Never the checker's
+    /// verdict, only the column's: the mark storage routing reads as
+    /// satisfying, the rule it had when it compared method names.
+    NameOnly { unmet: Box<Unsatisfied> },
+}
+
+impl Unsatisfied {
+    /// The witness as an interface conformance's diagnostic.
+    pub fn interface_message(&self, locus: &str, iface: &str) -> String {
+        match self {
+            Unsatisfied::NotALocus => {
+                format!("type `{locus}` cannot satisfy interface `{iface}` — only loci satisfy interfaces")
+            }
+            Unsatisfied::Missing { method } => {
+                format!("locus `{locus}` does not satisfy interface `{iface}`: missing method `{method}`")
+            }
+            Unsatisfied::Arity { method, want, got } => format!(
+                "locus `{locus}` method `{method}` arity does not match interface `{iface}`: expected {want} arg(s), locus has {got}"
+            ),
+            Unsatisfied::Param { method, index, want, got } => format!(
+                "locus `{locus}` method `{method}` arg #{index} type mismatch: interface `{iface}` requires `{}`, locus has `{}`",
+                want.display(),
+                got.display()
+            ),
+            Unsatisfied::Ret { method, want, got } => format!(
+                "locus `{locus}` method `{method}` return type mismatch: interface `{iface}` requires `{}`, locus returns `{}`",
+                want.display(),
+                got.display()
+            ),
+            Unsatisfied::ErrorChannel { method, why, iface_sig, locus_sig } => format!(
+                "locus `{locus}` method `{method}` {why}: interface `{iface}` declares `{iface_sig}`, locus declares `{locus_sig}`"
+            ),
+            Unsatisfied::NameOnly { unmet } => unmet.interface_message(locus, iface),
+        }
+    }
+
+    /// The witness as the bus adapter contract's diagnostic (`iface` is
+    /// `__StdBusAdapter`).
+    pub fn adapter_message(&self, locus: &str, iface: &str) -> String {
+        match self {
+            Unsatisfied::NotALocus => format!("`{locus}` is not a locus"),
+            Unsatisfied::Missing { method } => {
+                format!("locus `{locus}` does not satisfy `{iface}`: missing method `{method}`")
+            }
+            Unsatisfied::Arity { method, want, got } => format!(
+                "locus `{locus}` method `{method}` arity does not match `{iface}`: expected {want} arg(s), locus has {got}"
+            ),
+            Unsatisfied::Param { method, index, want, got } => format!(
+                "locus `{locus}` method `{method}` arg #{index} type mismatch: `{iface}` requires `{}`, locus has `{}`",
+                want.display(),
+                got.display()
+            ),
+            Unsatisfied::Ret { method, want, got } => format!(
+                "locus `{locus}` method `{method}` return type mismatch: `{iface}` requires `{}`, locus returns `{}`",
+                want.display(),
+                got.display()
+            ),
+            // The adapter contract does not judge the error channel.
+            Unsatisfied::ErrorChannel { .. } => self.interface_message(locus, iface),
+            Unsatisfied::NameOnly { unmet } => unmet.adapter_message(locus, iface),
+        }
+    }
+}
+
 /// Whether a concrete locus satisfies an interface, with the witness
 /// when it does not.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conformance {
     pub concrete: NodeId,
     pub interface: NodeId,
-    pub verdict: Result<(), String>,
+    pub verdict: Result<(), Unsatisfied>,
 }
 
 /// What the checker records as it walks: the body rows and the
@@ -337,6 +418,7 @@ pub struct TypedBodies {
     sites: BTreeMap<u32, u32>,
     monomorphs: Monomorphs,
     conformance: BTreeMap<(u32, u32), Conformance>,
+    monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
 }
 
 impl TypedBodies {
@@ -403,38 +485,117 @@ impl TypedBodies {
     pub fn conformance_rows(&self) -> impl Iterator<Item = &Conformance> {
         self.conformance.values()
     }
+
+    /// Whether the specialization `mono` of a generic locus satisfies
+    /// the interface declared at `interface`: the checker's verdict for
+    /// the monomorph's name, which its scope declares no locus by.
+    pub fn monomorph_conformance(&self, mono: &Monomorph, interface: NodeId) -> Option<&Result<(), Unsatisfied>> {
+        self.monomorph_conformance
+            .iter()
+            .find(|(m, i, _)| m.template.0 == mono.template.0 && m.args == mono.args && *i == interface.0)
+            .map(|(_, _, verdict)| verdict)
+    }
+
+    /// These rows and the conformance of every pair of `items`' loci and
+    /// interfaces they do not hold, judged by the same function over
+    /// `top`: the lowering view's, whose merged program declares the
+    /// bundled stdlib, which the check does not walk. Its declarations
+    /// are found by the identities the view's mint gave them.
+    pub fn extended(&self, items: &[TopDecl], top: &crate::resolve::TopScope) -> TypedBodies {
+        let mut decls = Declared::default();
+        decls.add(items);
+        self.extended_by(&decls, top)
+    }
+
+    fn extended_by(&self, decls: &Declared<'_>, top: &crate::resolve::TopScope) -> TypedBodies {
+        let mut out = self.clone();
+        for &(i, iname) in &decls.interfaces {
+            for &(l, ln) in &decls.loci {
+                out.conformance.entry((l.0, i.0)).or_insert_with(|| Conformance {
+                    concrete: l,
+                    interface: i,
+                    verdict: column_verdict(top, ln, ln, iname),
+                });
+            }
+        }
+        for &(i, iname) in &decls.interfaces {
+            for m in self.monomorphs.rows().iter().filter(|m| m.kind == TemplateKind::Locus) {
+                if out.monomorph_conformance(m, i).is_none() {
+                    let template = decls.templates.iter().find(|(t, _)| t.0 == m.template.0).map_or("", |&(_, n)| n);
+                    let verdict = column_verdict(top, &m.name, template, iname);
+                    out.monomorph_conformance.push((m.clone(), i.0, verdict));
+                }
+            }
+        }
+        out
+    }
 }
 
-/// The producer: the checker's record, with the conformance column
-/// judged over `top` for every concrete locus and every interface the
-/// bundle declares, by the checker's conformance function.
-pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, record: &TypingRecord) -> TypedBodies {
-    let mut loci: Vec<(NodeId, &str)> = Vec::new();
-    let mut interfaces: Vec<(NodeId, &str)> = Vec::new();
-    for p in bundle.programs.values() {
-        for item in hale_syntax::ast::flat_decls(&p.items) {
+/// The column's verdict for the locus named `judged` against the
+/// interface named `iface`: the checker's witness, marked
+/// [`Unsatisfied::NameOnly`] when every method the interface declares is
+/// one of the locus named `named`'s by name (a specialization is judged
+/// by its own name and named by its template's).
+fn column_verdict(top: &crate::resolve::TopScope, judged: &str, named: &str, iface: &str) -> Result<(), Unsatisfied> {
+    use crate::symbol::TopSymbol;
+    let by_name = match (top.lookup(iface), top.lookup(named)) {
+        (Some(TopSymbol::Interface(i)), Some(TopSymbol::Locus(l))) => {
+            i.methods.iter().all(|im| l.methods.iter().any(|lm| lm.name == im.name))
+        }
+        _ => false,
+    };
+    match crate::check::conformance_witness(top, judged, iface, true) {
+        Err(unmet) if by_name => Err(Unsatisfied::NameOnly { unmet: Box::new(unmet) }),
+        verdict => verdict,
+    }
+}
+
+/// The concrete loci, the generic loci and the interfaces declarations
+/// declare, by identity.
+#[derive(Default)]
+struct Declared<'a> {
+    loci: Vec<(NodeId, &'a str)>,
+    templates: Vec<(NodeId, &'a str)>,
+    interfaces: Vec<(NodeId, &'a str)>,
+}
+
+impl<'a> Declared<'a> {
+    fn add(&mut self, items: &'a [TopDecl]) {
+        for item in hale_syntax::ast::flat_decls(items) {
             match item {
-                TopDecl::Locus(l) if l.generics.is_empty() && !l.id.is_none() => {
-                    loci.push((l.id, l.name.name.as_str()))
+                TopDecl::Locus(l) if !l.id.is_none() => {
+                    let row = (l.id, l.name.name.as_str());
+                    if l.generics.is_empty() {
+                        self.loci.push(row)
+                    } else {
+                        self.templates.push(row)
+                    }
                 }
-                TopDecl::Interface(i) if !i.id.is_none() => interfaces.push((i.id, i.name.name.as_str())),
+                TopDecl::Interface(i) if !i.id.is_none() => self.interfaces.push((i.id, i.name.name.as_str())),
                 _ => {}
             }
         }
     }
-    let mut conformance = BTreeMap::new();
-    for &(iface, iface_name) in &interfaces {
-        for &(locus, locus_name) in &loci {
-            let verdict = crate::check::conformance(top, locus_name, iface_name);
-            conformance.insert((locus.0, iface.0), Conformance { concrete: locus, interface: iface, verdict });
-        }
-    }
-    TypedBodies {
+}
+
+/// The producer: the checker's record, with the conformance column
+/// judged by the checker's conformance function over `top`, for every
+/// pair of a concrete locus and an interface the bundle declares, and
+/// for every specialization of a generic locus the monomorph table
+/// holds against every interface.
+pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, record: &TypingRecord) -> TypedBodies {
+    let table = TypedBodies {
         bodies: record.bodies.clone(),
         sites: record.sites.clone(),
         monomorphs: record.monomorphs.clone(),
-        conformance,
+        conformance: BTreeMap::new(),
+        monomorph_conformance: Vec::new(),
+    };
+    let mut decls = Declared::default();
+    for p in bundle.programs.values() {
+        decls.add(&p.items);
     }
+    table.extended_by(&decls, top)
 }
 
 

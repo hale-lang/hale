@@ -1043,68 +1043,50 @@ fn monomorph_table(
     }
 }
 
+use crate::typed_bodies::Unsatisfied;
+
 /// Whether the locus named `locus_name` satisfies the interface named
-/// `iface_name` under `top`: every interface method present with its
-/// arity, parameter, return and error types (F.20, GH #732). `Ok` when
-/// `iface_name` names no interface; the message is the witness.
-pub(crate) fn conformance(top: &TopScope, locus_name: &str, iface_name: &str) -> Result<(), String> {
+/// `iface_name` under `top` (F.20, GH #732): the one conformance
+/// function. Every interface method present, with its arity, its
+/// parameter and return types and — when `error_channels` — its error
+/// type; the first requirement unmet, in the interface's method order,
+/// is the witness. `Ok` when `iface_name` names no interface.
+///
+/// The bus adapter's contract (`__StdBusAdapter`) is judged without the
+/// error channel, as it always has been; every interface conformance
+/// with it.
+pub(crate) fn conformance_witness(
+    top: &TopScope,
+    locus_name: &str,
+    iface_name: &str,
+    error_channels: bool,
+) -> Result<(), Unsatisfied> {
     let iface = match top.lookup(iface_name) {
         Some(TopSymbol::Interface(i)) => i,
         _ => return Ok(()),
     };
     let locus = match top.lookup(locus_name) {
         Some(TopSymbol::Locus(l)) => l,
-        _ => {
-            return Err(format!(
-                "type `{}` cannot satisfy interface `{}` — only loci satisfy interfaces",
-                locus_name, iface_name
-            ));
-        }
+        _ => return Err(Unsatisfied::NotALocus),
     };
     for im in &iface.methods {
-        let lm = locus.methods.iter().find(|lm| lm.name == im.name);
-        let lm = match lm {
-            Some(m) => m,
-            None => {
-                return Err(format!(
-                    "locus `{}` does not satisfy interface `{}`: missing method `{}`",
-                    locus_name, iface_name, im.name
-                ));
-            }
+        let method = im.name.clone();
+        let Some(lm) = locus.methods.iter().find(|lm| lm.name == im.name) else {
+            return Err(Unsatisfied::Missing { method });
         };
         if lm.params.len() != im.params.len() {
-            return Err(format!(
-                "locus `{}` method `{}` arity does not match interface `{}`: expected {} arg(s), locus has {}",
-                locus_name,
-                im.name,
-                iface_name,
-                im.params.len(),
-                lm.params.len()
-            ));
+            return Err(Unsatisfied::Arity { method, want: im.params.len(), got: lm.params.len() });
         }
-        for (i, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
-            let want = &ip.1;
-            if !want.assignable_from(lp) {
-                return Err(format!(
-                    "locus `{}` method `{}` arg #{} type mismatch: interface `{}` requires `{}`, locus has `{}`",
-                    locus_name,
-                    im.name,
-                    i,
-                    iface_name,
-                    want.display(),
-                    lp.display()
-                ));
+        for (index, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
+            if !ip.1.assignable_from(lp) {
+                return Err(Unsatisfied::Param { method, index, want: ip.1.clone(), got: lp.clone() });
             }
         }
         if !im.ret.assignable_from(&lm.ret) {
-            return Err(format!(
-                "locus `{}` method `{}` return type mismatch: interface `{}` requires `{}`, locus returns `{}`",
-                locus_name,
-                im.name,
-                iface_name,
-                im.ret.display(),
-                lm.ret.display()
-            ));
+            return Err(Unsatisfied::Ret { method, want: im.ret.clone(), got: lm.ret.clone() });
+        }
+        if !error_channels {
+            continue;
         }
         // GH #732: an infallible method satisfies a fallible
         // interface method; a fallible one never satisfies an
@@ -1116,15 +1098,21 @@ pub(crate) fn conformance(top: &TopScope, locus_name: &str, iface_name: &str) ->
             _ => None,
         };
         if let Some(why) = clash {
-            let iface_sig = sig_text(&im.name, im.params.iter().map(|(_, t)| t), &im.ret, im.fallible.as_ref());
-            let locus_sig = sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref());
-            return Err(format!(
-                "locus `{}` method `{}` {}: interface `{}` declares `{}`, locus declares `{}`",
-                locus_name, im.name, why, iface_name, iface_sig, locus_sig
-            ));
+            return Err(Unsatisfied::ErrorChannel {
+                method,
+                why,
+                iface_sig: sig_text(&im.name, im.params.iter().map(|(_, t)| t), &im.ret, im.fallible.as_ref()),
+                locus_sig: sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref()),
+            });
         }
     }
     Ok(())
+}
+
+/// [`conformance_witness`] with the error channel judged, its witness
+/// rendered as an interface conformance's diagnostic.
+pub(crate) fn conformance(top: &TopScope, locus_name: &str, iface_name: &str) -> Result<(), String> {
+    conformance_witness(top, locus_name, iface_name, true).map_err(|w| w.interface_message(locus_name, iface_name))
 }
 
 /// True if `parent` declares `accept(c: <child_name>)` — i.e. it
@@ -4858,80 +4846,6 @@ fn sig_text<'a>(
     s
 }
 
-/// Wave B: verify an adapter-binding locus satisfies the bus's
-/// `__StdBusAdapter` contract (currently a single `send(subject:
-/// String, bytes: Bytes)` method). Stand-alone shape — same logic
-/// as `Checker::check_structural_impl` but callable from
-/// `check_main_and_bindings` which doesn't construct a `Checker`.
-fn check_satisfies_bus_adapter(
-    top: &TopScope,
-    locus_name: &str,
-) -> Result<(), String> {
-    const IFACE: &str = "__StdBusAdapter";
-    let iface = match top.lookup(IFACE) {
-        Some(TopSymbol::Interface(i)) => i,
-        _ => {
-            // The stdlib seed defines this interface; absence means
-            // the seed wasn't loaded. Treat as OK rather than
-            // failing user code with a stdlib-shape diagnostic.
-            return Ok(());
-        }
-    };
-    let locus = match top.lookup(locus_name) {
-        Some(TopSymbol::Locus(l)) => l,
-        _ => return Err(format!("`{}` is not a locus", locus_name)),
-    };
-    for im in &iface.methods {
-        let lm = match locus.methods.iter().find(|lm| lm.name == im.name) {
-            Some(m) => m,
-            None => {
-                return Err(format!(
-                    "locus `{}` does not satisfy `{}`: missing method `{}`",
-                    locus_name, IFACE, im.name
-                ));
-            }
-        };
-        if lm.params.len() != im.params.len() {
-            return Err(format!(
-                "locus `{}` method `{}` arity does not match `{}`: \
-                 expected {} arg(s), locus has {}",
-                locus_name,
-                im.name,
-                IFACE,
-                im.params.len(),
-                lm.params.len()
-            ));
-        }
-        for (i, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
-            let want = &ip.1;
-            if !want.assignable_from(lp) {
-                return Err(format!(
-                    "locus `{}` method `{}` arg #{} type mismatch: \
-                     `{}` requires `{}`, locus has `{}`",
-                    locus_name,
-                    im.name,
-                    i,
-                    IFACE,
-                    want.display(),
-                    lp.display()
-                ));
-            }
-        }
-        if !im.ret.assignable_from(&lm.ret) {
-            return Err(format!(
-                "locus `{}` method `{}` return type mismatch: \
-                 `{}` requires `{}`, locus returns `{}`",
-                locus_name,
-                im.name,
-                IFACE,
-                im.ret.display(),
-                lm.ret.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Form K4a (2026-05-20): validate the operational constraints
 /// declared via the `where ...` clause on a binding entry.
 ///
@@ -5759,9 +5673,12 @@ fn check_main_and_bindings<'e>(
         {
             match top.lookup(&locus.name) {
                 Some(TopSymbol::Locus(_)) => {
-                    if let Err(msg) = check_satisfies_bus_adapter(
-                        top, &locus.name,
-                    ) {
+                    // Wave B: the bus's adapter contract, by the one
+                    // conformance function (its error channel unjudged).
+                    const ADAPTER: &str = "__StdBusAdapter";
+                    if let Err(msg) = conformance_witness(top, &locus.name, ADAPTER, false)
+                        .map_err(|w| w.adapter_message(&locus.name, ADAPTER))
+                    {
                         diags.push(Diag::ty(
                             locus.span,
                             format!(

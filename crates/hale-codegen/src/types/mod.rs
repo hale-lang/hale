@@ -1115,38 +1115,54 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .struct_type(&[i32_t.into(), body_t.into()], false)
     }
 
-    /// G20 / F.20 Phase B follow-up: does `locus_name` cover every
-    /// method declared by `iface_name` by name? Method-name-only
-    /// (signature compatibility is the typechecker's job). Used by
-    /// the m90 return-routing extension to decide whether a fresh
-    /// locus instantiation inside an `-> Interface(I)` fn body
-    /// could plausibly be the returned value and therefore needs
-    /// program-lifetime allocation.
+    /// G20 / F.20 Phase B follow-up: does `locus_name` satisfy
+    /// `iface_name`? The m90 return-routing extension asks, to decide
+    /// whether a fresh locus instantiation inside an `-> Interface(I)`
+    /// fn body could be the returned value and therefore needs
+    /// program-lifetime allocation. The answer is the checker's: the
+    /// typed-body table's conformance column (F.40 phase 3, E4), the
+    /// pair found by the declarations' identities, a generic locus's
+    /// specialization by its monomorph row. A pair whose methods match
+    /// the interface's by name only carries the `NameOnly` mark and
+    /// counts as satisfying, the rule this question had when it
+    /// compared method names. A name that declares no interface is
+    /// satisfied by nothing; a pair the column holds no row for is
+    /// refused.
     pub(crate) fn locus_satisfies_interface(
         &self,
         locus_name: &str,
         iface_name: &str,
-    ) -> bool {
+    ) -> Result<bool, CodegenError> {
         // GH #884: module nesting flattened.
-        let iface_methods: Vec<&str> = match hale_syntax::ast::flat_decls(
-            &self.program.items,
-        )
-            .find_map(|item| match item {
-                TopDecl::Interface(i) if i.name.name == iface_name => {
-                    Some(i.methods.iter().map(|m| m.name.name.as_str()).collect())
-                }
-                _ => None,
-            }) {
-            Some(v) => v,
-            None => return false,
+        let decls = || hale_syntax::ast::flat_decls(&self.program.items);
+        let Some(iface) = decls().find_map(|item| match item {
+            TopDecl::Interface(i) if i.name.name == iface_name => Some(i.id),
+            _ => None,
+        }) else {
+            return Ok(false);
         };
-        let info = match self.user_loci.get(locus_name) {
-            Some(i) => i,
-            None => return false,
+        let locus = decls().find_map(|item| match item {
+            TopDecl::Locus(l) if l.name.name == locus_name => Some(l.id),
+            _ => None,
+        });
+        let verdict = match locus {
+            Some(locus) => self.typed.conformance(locus, iface).map(|c| &c.verdict),
+            None => self
+                .typed
+                .monomorphs()
+                .named(locus_name)
+                .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus)
+                .and_then(|m| self.typed.monomorph_conformance(m, iface)),
         };
-        iface_methods
-            .iter()
-            .all(|m| info.user_methods.contains_key(*m))
+        match verdict {
+            Some(v) => Ok(matches!(v, Ok(()) | Err(hale_types::typed_bodies::Unsatisfied::NameOnly { .. }))),
+            None => Err(CodegenError::Unsupported(format!(
+                "locus `{}` against interface `{}`: the conformance column holds \
+                 no row for the pair (a specialization the monomorph table does \
+                 not name), so its storage cannot be routed",
+                locus_name, iface_name
+            ))),
+        }
     }
 
     /// F.20 Phase B: build a fat-pointer interface value from a

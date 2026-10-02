@@ -8,7 +8,7 @@
 use hale_frontend::snapshot::{Config, Snapshot, Target};
 use hale_syntax::ast::{LocusMember, NodeId, Program, Stmt, TopDecl};
 use hale_types::ty::Ty;
-use hale_types::typed_bodies::{AccumulatorKind, CalleeKind, TemplateKind, Typed};
+use hale_types::typed_bodies::{AccumulatorKind, CalleeKind, TemplateKind, Typed, Unsatisfied};
 
 const PROGRAM: &str = r#"
 type Fault { why: String = ""; }
@@ -160,7 +160,7 @@ fn each_column_holds_the_checker_s_answer_by_identity() {
     let sensor = table.conformance(id_of(decl(p, "Sensor")), reading).expect("a row");
     assert_eq!(sensor.verdict, Ok(()));
     let mute = table.conformance(id_of(decl(p, "Mute")), reading).expect("a row");
-    assert!(mute.verdict.as_ref().unwrap_err().contains("missing method `value`"));
+    assert_eq!(mute.verdict, Err(Unsatisfied::Missing { method: "value".into() }));
 
     // 5. the fallible calls: the user's, typed `Fallible`, and the
     // stdlib's, the signature table's mark.
@@ -238,6 +238,62 @@ fn a_generic_fn_s_calls_are_specialized_per_monomorph() {
         assert_eq!((call.template.0, &call.type_args), (first.0, &vec![want.clone()]));
         assert!(table.monomorphs().of(first, &[want]).is_some());
     }
+}
+
+/// The conformance column is the checker's one function: a locus whose
+/// method matches the interface's by name and not by return type does
+/// not satisfy it (the witness says which requirement, marked `NameOnly`
+/// since every method matches by name, as a generic locus's
+/// specialization's does by its template's), and the lowering view
+/// extends the snapshot's column with the merged stdlib's pairs, found
+/// by the identities its mint gave them.
+#[test]
+fn conformance_is_judged_by_signature_and_the_view_adds_the_stdlib_s_pairs() {
+    let src = "interface Greeter { fn greet() -> Int; }\n\
+               locus Hi { params { n: Int = 1; } fn greet() -> Int { return self.n; } }\n\
+               locus Odd { params { n: Int = 2; } fn greet() -> String { return \"x\"; } }\n\
+               locus Holder<T> { params { v: T; } fn greet() -> Int { return 7; } }\n\
+               locus Sink { params { n: Int = 0; } fn send(subject: String, bytes: Bytes) { } }\n\
+               fn make() -> Greeter { let h: Holder<Int> = Holder { v: 3 }; return Hi { }; }\n\
+               fn main() { let g = make(); println(g.greet()); }\n";
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(s) = Snapshot::from_program(program, Vec::new(), Config::build(Target::host())) else {
+        panic!("not refused")
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = s.program().unwrap();
+    let greeter = id_of(decl(p, "Greeter"));
+    let odd = table.conformance(id_of(decl(p, "Odd")), greeter).expect("a row");
+    assert_eq!(
+        odd.verdict,
+        Err(Unsatisfied::NameOnly {
+            unmet: Box::new(Unsatisfied::Ret {
+                method: "greet".into(),
+                want: Ty::Prim(hale_syntax::ast::PrimType::Int),
+                got: Ty::Prim(hale_syntax::ast::PrimType::String),
+            })
+        })
+    );
+    assert_eq!(table.conformance(id_of(decl(p, "Hi")), greeter).expect("a row").verdict, Ok(()));
+    let holder = table.monomorphs().named("Holder_Int").expect("the specialization");
+    assert_eq!(
+        table.monomorph_conformance(holder, greeter),
+        Some(&Err(Unsatisfied::NameOnly { unmet: Box::new(Unsatisfied::NotALocus) }))
+    );
+
+    let view = s.demand_lowering().expect("lowered");
+    let adapter = view
+        .merged
+        .items
+        .iter()
+        .find_map(|i| match i {
+            TopDecl::Interface(f) if f.name.name == "__StdBusAdapter" => Some(f.id),
+            _ => None,
+        })
+        .expect("the merged stdlib declares the adapter contract");
+    let sink = id_of(decl(p, "Sink"));
+    assert_eq!(view.typed.conformance(sink, adapter).expect("the view's row").verdict, Ok(()));
+    assert!(table.conformance(sink, adapter).is_none(), "the check's bundle does not declare it");
 }
 
 /// A site the checker could not type is a hole with its reason.

@@ -16,7 +16,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
 | `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
 | `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 2 | Which monomorph a generic call instantiates and how its bindings unify. |
-| `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
+| `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 31 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
@@ -313,28 +313,27 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Spec.** spec/types.md
 
-### `surfaces` — Migrating · law
+### `surfaces` — Canonical · law
 
 **Answers.** Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance.
 
 **Inputs.** type, interface, contract, perspective declarations; locus members
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_structural_impl`
+**Producer.** `crates/hale-types/src/check.rs` · `conformance_witness`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/check.rs` · `conformance`
 
-- `crates/hale-types/src/check.rs` · `check_satisfies_bus_adapter` — a second copy of the structural-impl check (its own comment: same logic). *Removed when:* one conformance function.
-- `crates/hale-codegen/src/types/mod.rs` · `locus_satisfies_interface` — codegen decides interface conformance by method names only, for storage routing. *Removed when:* codegen reads the conformance row.
-
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_contract_expose_validity`); check (`crates/hale-types/src/check.rs` · `check_serves_conformance`); check (`crates/hale-types/src/check.rs` · `check_reperspective`); codegen (vtable swap, storage routing)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_contract_expose_validity`); check (`crates/hale-types/src/check.rs` · `check_serves_conformance`); check (`crates/hale-types/src/check.rs` · `check_reperspective`); check (interface coercion, F.20) (`crates/hale-types/src/check.rs` · `check_structural_impl`); check (a bus adapter binding's `__StdBusAdapter` contract) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); the typed-body table (the conformance column: every declared locus and interface pair, every generic locus specialization, the merged stdlib's pairs in the lowering view) (`crates/hale-types/src/typed_bodies.rs` · `typed_bodies`); codegen (storage routing: the conformance column) (`crates/hale-codegen/src/types/mod.rs` · `locus_satisfies_interface`); codegen (vtable swap)
 
 **Invariants.**
 
 - F.8 compatibility, F.14 and F.20 satisfaction are judged once, with a witness
+- one conformance function (`conformance_witness`), its witness the first requirement unmet in the interface's method order, rendered by each caller in its own words; the bus adapter's contract is judged without the error channel, as it always was
+- storage routing asks the conformance column, never the method names; a pair whose methods all match the interface's by name and not by signature (a generic locus's specialization by its template's methods) carries the column's `NameOnly` mark, which routing reads as satisfying, the rule it had when it compared method names: its literal goes to the program-lifetime payload arena
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/duplicate_member.rs
+**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/duplicate_member.rs; crates/hale-types/tests/typed_bodies.rs
 
 **Spec.** spec/types.md; spec/semantics.md
 

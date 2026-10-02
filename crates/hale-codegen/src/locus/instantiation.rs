@@ -545,18 +545,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // fn returning `X` that hands back something else is the
         // frame's and is reclaimed at its flush instead of living to
         // process exit.
-        let escapes_by_declared_return = self
-            .current_user_fn_ret
-            .as_ref()
-            .and_then(|r| r.as_ref())
-            .map(|t| match t {
-                CodegenTy::LocusRef(n) => n == locus_name,
-                CodegenTy::Interface(iface) => {
-                    self.locus_satisfies_interface(locus_name, iface)
+        let escapes_by_declared_return =
+            match self.current_user_fn_ret.as_ref().and_then(|r| r.as_ref()) {
+                Some(CodegenTy::LocusRef(n)) => n == locus_name,
+                Some(CodegenTy::Interface(iface)) => {
+                    self.locus_satisfies_interface(locus_name, iface)?
                 }
                 _ => false,
-            })
-            .unwrap_or(false);
+            };
         let returns_this_locus =
             matches!(site_owner, crate::ownership::Owner::Caller);
         // A literal codegen builds for a program-lifetime slot — a
