@@ -3317,6 +3317,7 @@ its behavior as described in this document.
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
 | `LOTUS_LIFECYCLE_SKIP=<steps>` | unset | Test only, and read only by a lifecycle-trace build (`HALE_LIFECYCLE_TRACE=1`; a release runtime has no such code): a comma list of steps a negative control removes, a kind (`PoolJoin`) or one event line (`Reclaim.Completed`). See *The lifecycle trace*. |
+| `HALE_MATRIX=full` | the sample | Test only, read by the test suite (`ownership_matrix.rs`, `lifecycle_matrix.rs`), never by a program: `full` runs every cell of the generated ownership and lifecycle matrices instead of the default deterministic sample. |
 | `LOTUS_OBS=1` | off | Native observation emission (iris): the process creates its observation segment and its probes emit. Implied by `LOTUS_OBS_RECORD` and `LOTUS_REPLAY`. See *Native observation emission*. |
 | `LOTUS_OBS_RINGS=<N>` | 8 (64 when recording) | Rings in the observation segment, 1 to 64; a value outside that falls back to the default. |
 | `LOTUS_OBS_SLOTS=<N>` | 4096 | Slots per ring: a power of two, at least 64; anything else falls back to the default. |
