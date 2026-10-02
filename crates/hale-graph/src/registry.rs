@@ -252,6 +252,7 @@ const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_DEPLOY: &str = "crates/hale-codegen/src/deployment.rs";
 const CG_TARGET: &str = "crates/hale-codegen/src/target.rs";
+const LOTUS: &str = "crates/hale-codegen/runtime/lotus_arena.c";
 const FRONTEND: &str = "crates/hale-frontend/src/frontend.rs";
 const IMPORTS: &str = "crates/hale-frontend/src/imports.rs";
 const SNAPSHOT: &str = "crates/hale-frontend/src/snapshot.rs";
@@ -1183,6 +1184,7 @@ pub const FAMILIES: &[Family] = &[
             legacy(CG, "__reclaim_", "the reclaim spine", "same"),
             legacy(CG_DISSOLVE, "emit_locus_arena_destroy", "the cascade (field drains, field dissolves, arena destroy)", "same"),
             legacy(CG_RESTART, "define_restart_fns", "restart and resume", "same"),
+            legacy(LOTUS, "lotus_failure_hold", "the hold/settle/defer/await protocol in the C runtime; the trace oracle holds it to the plan over the corpus (L2, done), and the generated matrix half is L3's, still to come", "the matrix half holds (L3)"),
         ],
         consumers: &[consumer("codegen (emission reads the order)"), consumer("closures (the event alphabet)"), consumer("transitions (reserved)"), consumer("deployment (reserved)")],
         invariants: &[
