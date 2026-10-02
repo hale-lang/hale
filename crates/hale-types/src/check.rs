@@ -5073,6 +5073,7 @@ fn render_impurity(
 }
 
 fn check_binding_constraints(
+    row: &crate::binding_rows::BindingRow,
     entry: &BindingEntry,
     top: &TopScope,
     diags: &mut Vec<Diag>,
@@ -5139,7 +5140,7 @@ fn check_binding_constraints(
 
     // (2) transport-constraint compatibility.
     for c in &entry.constraints {
-        if let Some(msg) = transport_satisfies(&entry.transport, c.kind) {
+        if let Some(msg) = crate::capability::transport::guarantee(row.transport, c.kind).refusal() {
             diags.push(Diag::ty(
                 c.span,
                 format!("binding for topic `{}`: {}", entry.topic.name, msg),
@@ -5179,66 +5180,6 @@ fn check_binding_constraints(
                 ));
             }
         }
-    }
-}
-
-/// Returns `Some(reason)` if `transport` cannot satisfy
-/// `constraint`. Returns `None` when the transport satisfies it
-/// (or when the satisfaction can't be determined and trust
-/// defaults to "OK" — adapter loci for scope constraints).
-fn transport_satisfies(
-    transport: &TransportSpec,
-    constraint: BindingConstraint,
-) -> Option<String> {
-    use BindingConstraint::*;
-    match (transport, constraint) {
-        // unix: intra-machine substrate, kernel-memcpy at the
-        // socket boundary.
-        (TransportSpec::Unix { .. }, IntraProcess) => Some(
-            "`unix` transport crosses OS process boundaries; cannot \
-             satisfy `intra_process`"
-                .into(),
-        ),
-        (TransportSpec::Unix { .. }, IntraMachine) => None,
-        (TransportSpec::Unix { .. }, CrossMachine) => Some(
-            "`unix` transport is host-local (AF_UNIX); cannot satisfy \
-             `cross_machine`"
-                .into(),
-        ),
-        (TransportSpec::Unix { .. }, ZeroCopy) => Some(
-            "`unix` transport memcpys at the kernel boundary; cannot \
-             satisfy `zero_copy`"
-                .into(),
-        ),
-
-        // Adapter: user-supplied. Trust for scope constraints
-        // (the adapter body knows where it routes). Reject
-        // zero_copy — the Adapter contract (`fn send(subject: \
-        // String, bytes: Bytes)`) requires serialization.
-        (TransportSpec::Adapter { .. }, ZeroCopy) => Some(
-            "`Adapter` transports cannot satisfy `zero_copy` — the \
-             Adapter contract (`fn send(subject, bytes)`) requires \
-             serialization to Bytes"
-                .into(),
-        ),
-        (TransportSpec::Adapter { .. }, _) => None,
-
-        // shm_ring: POSIX SHM ring substrate. Cross-process by
-        // design (different procs mmap the same fd); host-local
-        // (POSIX SHM doesn't traverse the network); satisfies
-        // zero_copy intrinsically.
-        (TransportSpec::ShmRing { .. }, IntraProcess) => Some(
-            "`shm_ring` is cross-process by design (POSIX SHM); \
-             cannot satisfy `intra_process`"
-                .into(),
-        ),
-        (TransportSpec::ShmRing { .. }, IntraMachine) => None,
-        (TransportSpec::ShmRing { .. }, CrossMachine) => Some(
-            "`shm_ring` is host-local (POSIX SHM); cannot satisfy \
-             `cross_machine`"
-                .into(),
-        ),
-        (TransportSpec::ShmRing { .. }, ZeroCopy) => None,
     }
 }
 
@@ -5827,7 +5768,7 @@ fn check_main_and_bindings<'e>(
         // transport compatibility, and
         // payload-shape compatibility.
         check_binding_constraints(
-            entry, top, diags,
+            row, entry, top, diags,
         );
 
         // F.36 Slice 2 (2026-05-28): pluggable

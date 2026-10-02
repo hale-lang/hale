@@ -973,6 +973,22 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The matrix's cell for a binding row's transport kind on the
+    /// effective target: `RemoteTransport(kind)` × the target row's
+    /// backend class ([`Snapshot::demand_target`]). `Lower` where the
+    /// target realizes the transport; `Reject` where it does not (the
+    /// adapter's on wasm32, which is a late link refusal today, so the
+    /// check reports nothing from it: P3 2 of 3 makes the target every
+    /// entry point acts on). `None` for a target with no class (a planned
+    /// tier). Blocked with the target row.
+    pub fn binding_cell(
+        &self,
+        row: &hale_types::binding_rows::BindingRow,
+    ) -> Result<Option<&'static hale_types::capability::Behaviour>, &Blocked> {
+        let class = self.demand_target()?.precedence.backend;
+        Ok(class.map(|class| hale_types::capability::transport::transport_cell(class, row.transport)))
+    }
+
     /// The form rows ([`hale_types::form_rows`]): every `@form`
     /// declaration's written `sync` configuration and the discipline it
     /// gets, sync inference's pick for a `hashmap` form its author did
@@ -2038,6 +2054,19 @@ mod tests {
         let bound = rows.bound_subjects();
         assert!(bound.contains("Out") && bound.contains("demo.out"), "both grains: {bound:?}");
         assert_eq!(rows.bound_names().len(), 5);
+        // The transport kind is admitted by the matrix's cell on the
+        // effective target: every kind lowers on the host.
+        for r in &rows.rows {
+            assert!(s.binding_cell(r).expect("the target row").expect("a class").is_lower(), "{}", r.topic);
+        }
+        let wasm = Target { name: "wasm32-unknown-unknown".to_string(), spec: TargetSpec::parse("wasm32").unwrap() };
+        let on_wasm = load(&d.join("app.hl"), &Disk, Config::build(wasm));
+        let wasm_rows = on_wasm.demand_bindings().expect("binding rows");
+        let lowered = |t: Transport| {
+            let r = wasm_rows.rows.iter().find(|r| r.transport == t).expect("a row of the kind");
+            on_wasm.binding_cell(r).unwrap().unwrap().is_lower()
+        };
+        assert!(lowered(Transport::Unix) && lowered(Transport::ShmRing), "today's wasm admits both substrates");
         // The bus graph's gate reads the projection.
         let graph = s.demand_bus_graph().expect("bus graph");
         for wire in ["Out", "In", "Both"] {
