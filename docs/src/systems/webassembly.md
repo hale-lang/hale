@@ -58,17 +58,18 @@ error: `std::process` is unavailable under `target wasm`: OS process control (`s
 
 A helper you write yourself is refused once, inside it, not at every
 call. A type that only names a stdlib handle (a parameter typed
-`std::io::tcp::Stream`) is fine. And a call the compiler cannot see
-through — a method on a value whose type it doesn't know, or a call
-through a function-typed parameter — is refused under wasm32 too, since
-it can't promise what that call needs. A call through a local is
-followed to the function the local holds (`let f = pid; f()` needs what
-`pid` needs, and the refusal's witness names `f`); in your own code and
-in a library locus's params default, a local holding a field, a call's
-result or an `if` value can't be followed, and is refused the same way.
-So is a local you reassign — and a loop that reassigns one anywhere
-inside it makes it unfollowable for the whole loop, since the next
-iteration calls whatever the assignment stored.
+`std::io::tcp::Stream`) is fine. A call through a local is followed to
+the function the local holds (`let f = pid; f()` needs what `pid` needs,
+and the refusal's witness names `f`). A call through a function value
+the compiler can't pin to one function — a function-typed parameter, a
+local holding a field, a call's result or an `if` value, a local you
+reassign (a loop that reassigns one anywhere inside it counts for the
+whole loop) — needs what any function of its type that your program
+passes around as a value needs: those are the only functions it can
+reach. What the compiler cannot see through at all — a method on a value
+whose type it doesn't know, or such a call in a library locus's params
+default or `on_failure` handler — is refused under wasm32, since it
+can't promise what that call needs.
 
 The **in-process typed bus** — `topic` / `bus { publish … }` /
 `bus { subscribe … }` across loci — runs under wasm exactly as it
