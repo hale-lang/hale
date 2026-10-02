@@ -15,7 +15,16 @@
 //!   relation demands no effects fixpoint): a declaration whose body
 //!   calls a fn or a method of another reads it, and the readers close
 //!   transitively — the reveal rule's transparency is a fixpoint over the
-//!   bodies a call reaches.
+//!   bodies a call reaches. A body the reveal rule reads that is no row
+//!   (an `on_failure` handler, a params initializer, a constant's value,
+//!   a callee that is no name…) is summarized beside the rows
+//!   ([`AllocSummary::declaration_bodies`]), keyed to its declaration's
+//!   site, and its calls are that declaration's. A call to a fn the
+//!   summary has no row for is unresolved, and its bare name joins the
+//!   fns of that name. A call the summary records no edge for at all
+//!   (one in a position no summary body covers: a closure's clauses, a
+//!   type's field defaults) makes the declaration holding it a dependent
+//!   of every declaration.
 //! - **The ownership graph**: a locus and the loci it instantiates,
 //!   accepts or is instantiated by.
 //! - **The bus graph**: every publisher and subscriber of one subject,
@@ -57,9 +66,9 @@ use std::path::PathBuf;
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{Program, TopDecl};
-use hale_syntax::sites::for_each_site_in_item;
+use hale_syntax::sites::{for_each_site_in_item, SiteKind};
 use hale_syntax::Span;
-use hale_types::alloc_summary::{AllocSummary, Callee, FnKey};
+use hale_types::alloc_summary::{AllocSummary, CallEdge, Callee, FnKey};
 use hale_types::bus_graph::BusGraph;
 use hale_types::flows::FlowRows;
 use hale_types::ownership_graph::OwnershipGraph;
@@ -150,7 +159,8 @@ pub(crate) struct DependencyIndex {
     callers: Vec<BTreeSet<usize>>,
     neighbours: Vec<BTreeSet<usize>>,
     /// Declarations holding a placement hole that leaves the declaration
-    /// its literal realizes unresolved: a dependent of every declaration.
+    /// its literal realizes unresolved, or a call the summary records no
+    /// edge for: a dependent of every declaration.
     always: BTreeSet<usize>,
     /// Site index → the declaration it sits in.
     owner_of: BTreeMap<u32, usize>,
@@ -170,12 +180,24 @@ pub(crate) struct Families<'a> {
 impl DependencyIndex {
     pub(crate) fn build(f: &Families<'_>) -> DependencyIndex {
         let n = f.decls.len();
+        // Every call of the program's own the summary records an edge
+        // for, by its span: a call it does not (one the walk does not
+        // descend to) is read below.
+        let recorded: BTreeSet<(u32, u32)> = f
+            .summary
+            .fns
+            .values()
+            .filter(|fs| f.summary.is_own(&fs.key))
+            .chain(f.summary.declaration_bodies.iter().map(|b| &b.summary))
+            .flat_map(|fs| fs.calls.iter().map(|e| (e.span.start.0, e.span.end.0)))
+            .collect();
         // Each declaration's own items, modules flattened: what a name
         // in a family row joins to.
         let mut loci: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         let mut fns: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         let mut topics: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         let mut owner_of: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut always = BTreeSet::new();
         for (i, d) in f.decls.iter().enumerate() {
             let item = &f.programs[&d.program].items[d.index];
             for decl in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
@@ -187,9 +209,15 @@ impl DependencyIndex {
                 };
                 into.entry(kind_and_name(decl).1).or_default().insert(i);
             }
-            for_each_site_in_item(item, &mut |_, _, id| {
+            for_each_site_in_item(item, &mut |kind, span, id| {
                 if !id.is_none() {
                     owner_of.insert(id.0, i);
+                }
+                // A call no edge records names a callee the relation
+                // cannot join: the declaration holding it is a dependent
+                // of every declaration.
+                if kind == SiteKind::Call && !recorded.contains(&(span.start.0, span.end.0)) {
+                    always.insert(i);
                 }
             });
         }
@@ -206,15 +234,31 @@ impl DependencyIndex {
             (s.universe == SiteUniverse::User).then(|| owner_of.get(&s.id.index).copied()).flatten()
         };
 
+        // What a call names: a resolved fn or method, or a fn the summary
+        // could not resolve it to by the bare name it was written with.
+        let callees = |edge: &CallEdge| -> Vec<usize> {
+            match &edge.callee {
+                Callee::Resolved(target) => of_key(target),
+                Callee::Unresolved(name) if !edge.receiver_present => named(&fns, name),
+                Callee::Unresolved(_) => Vec::new(),
+            }
+        };
         let mut callers = vec![BTreeSet::new(); n];
         for (key, fs) in &f.summary.fns {
             for caller in of_key(key) {
                 for edge in &fs.calls {
-                    if let Callee::Resolved(target) = &edge.callee {
-                        for callee in of_key(target) {
-                            callers[callee].insert(caller);
-                        }
+                    for callee in callees(edge) {
+                        callers[callee].insert(caller);
                     }
+                }
+            }
+        }
+        // The bodies that are no row, each its declaration's own.
+        for body in &f.summary.declaration_bodies {
+            let Some(&caller) = owner_of.get(&body.declaration.index) else { continue };
+            for edge in &body.summary.calls {
+                for callee in callees(edge) {
+                    callers[callee].insert(caller);
                 }
             }
         }
@@ -291,7 +335,6 @@ impl DependencyIndex {
             }
             join(&ends, &ends);
         }
-        let mut always = BTreeSet::new();
         for hole in &f.placement.holes {
             if !matches!(hole.kind, HoleKind::UnresolvedDeclaration { .. } | HoleKind::UnresolvedArguments) {
                 continue;

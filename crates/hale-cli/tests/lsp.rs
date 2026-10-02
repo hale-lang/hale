@@ -1763,6 +1763,128 @@ fn the_incremental_typing_stage_is_the_full_one_over_the_dna_host() {
     }
 }
 
+/// A revealed secret reaches the wire through `enc` in `Api`'s
+/// `on_failure` handler, `enc`'s only caller (outside review of #1321).
+/// `enc` sits after its caller, so editing it moves nothing in `Api`
+/// and only the dependents relation can say `Api` reads it.
+const REVEAL_ON_FAILURE: &str = "locus Child { }
+
+locus Api {
+    params {
+        token: std::secret::Credential =
+            std::secret::Credential { vault: \"api\" };
+    }
+    on_failure(c: Child, err: ClosureViolation) {
+        let r = std::http::post(
+            \"http://127.0.0.1:1/t\",
+            std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())),
+            \"text/plain\"
+        ) or std::http::ClientResponse {
+            status: 0, headers: \"\", body: b\"\"
+        };
+    }
+}
+
+fn main() { let a = Api { }; }
+
+fn enc(s: String) -> String { return s + \"!\"; }
+";
+
+/// The same reveal in a block-valued params initializer, `enc`'s only
+/// caller (outside review of #1321).
+const REVEAL_INITIALIZER: &str = "locus Api {
+    params {
+        token: std::secret::Credential =
+            std::secret::Credential { vault: \"api\" };
+        sent: Int = {
+            let r = std::http::post(
+                \"http://127.0.0.1:1/t\",
+                std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())),
+                \"text/plain\"
+            ) or std::http::ClientResponse {
+                status: 0, headers: \"\", body: b\"\"
+            };
+            1
+        };
+    }
+}
+
+fn main() { let a = Api { }; }
+
+fn enc(s: String) -> String { return s + \"!\"; }
+";
+
+/// The edit both reveal seeds take: a print in `enc`, which makes it
+/// opaque to the reveal rule, so the reveal in `Api` is refused.
+fn enc_edited(text: &str) -> String {
+    let edited = text.replace("{ return s + \"!\"; }", "{ println(\"changed\"); return s + \"!\"; }");
+    assert_ne!(edited, text, "the seed has `enc`");
+    edited
+}
+
+const ENC_OPAQUE: &str = "here it reaches `enc`, which is not a wire write";
+
+/// The incremental typing stage is the full one when the only caller of
+/// an edited helper is an `on_failure` handler or a params initializer,
+/// bodies that are no fn's row in the allocation summary (outside review
+/// of #1321): the edit is reused around, never over, the declaration
+/// that reads it.
+#[test]
+fn the_incremental_typing_stage_is_the_full_one_through_handler_and_initializer_calls() {
+    use hale_frontend::typing_reuse::TypingReuse;
+    for (tag, text) in [("on-failure", REVEAL_ON_FAILURE), ("initializer", REVEAL_INITIALIZER)] {
+        let root = scratch_root(&format!("x2-reveal-{tag}"));
+        let dir = root.canonicalize().expect("canonical dir");
+        let entry = dir.join("main.hl");
+        std::fs::write(&entry, text).expect("write seed");
+        let edited = enc_edited(text);
+        let steps = vec![
+            std::collections::BTreeMap::from([(entry.clone(), edited.clone())]),
+            std::collections::BTreeMap::from([(entry.clone(), text.to_string())]),
+        ];
+        let reuses = incremental_equals_full(tag, &entry, &steps);
+        // Not vacuous: the edit refuses the reveal, and the stage reused
+        // what the edit does not reach.
+        let (_, fresh) = typed_snapshot(&entry, &steps[0], None);
+        assert!(fresh.iter().any(|d| d.contains(ENC_OPAQUE)), "{tag}: the edit refuses the reveal: {fresh:?}");
+        for (n, reuse) in reuses.iter().enumerate() {
+            assert!(
+                matches!(reuse, TypingReuse::Reused { checked, reused } if *checked >= 2 && *reused >= 1),
+                "{tag}, step {n}: `enc` and `Api` checked, the rest reused: {reuse:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// The LSP's `didChange` publication after the helper's body edit is
+/// `hale check --json`'s over the same text (outside review of #1321):
+/// the reveal reached only through an `on_failure` handler or a params
+/// initializer is refused in the editor as at the command line.
+#[test]
+fn lsp_publishes_what_check_reports_after_a_helper_edit_through_handler_and_initializer_calls() {
+    for (tag, text) in [("on-failure", REVEAL_ON_FAILURE), ("initializer", REVEAL_INITIALIZER)] {
+        let root = scratch_root(&format!("x2-reveal-lsp-{tag}"));
+        let dir = root.canonicalize().expect("canonical dir");
+        let main = dir.join("main.hl");
+        std::fs::write(&main, text).expect("write seed");
+        let edited = enc_edited(text);
+        let mut lsp = LspSession::start();
+        lsp.lsp.send(open(&main, text));
+        let opened = lsp.published();
+        lsp.lsp.send(change(&main, 2, &edited));
+        let changed = lsp.published();
+        lsp.close();
+        std::fs::write(&main, &edited).expect("write the edit");
+        let (check, _) = check_json(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(opened.is_empty(), "{tag}: the seed checks clean: {opened:?}");
+        assert!(check.iter().any(|(.., m)| m.contains(ENC_OPAQUE)), "{tag}: hale check refuses the reveal: {check:?}");
+        assert_eq!(changed, check, "{tag}: the didChange publication and `hale check --json` disagree");
+    }
+}
+
 /// The overlay parity fixture (F.40 phase 2.1a): one seed, checked
 /// three ways, one answer.
 ///

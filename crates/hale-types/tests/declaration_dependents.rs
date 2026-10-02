@@ -119,8 +119,17 @@ fn a_declarations_dependents_cover_what_a_fresh_check_rederives() {
     let mut seeds: Vec<PathBuf> =
         std::fs::read_dir(&examples).expect("the corpus").flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
     seeds.sort();
-    let chain = scratch_seed("reveal-chain", REVEAL_CHAIN);
-    seeds.push(chain.clone());
+    let scratch: Vec<PathBuf> = [
+        ("reveal-chain", REVEAL_CHAIN),
+        ("reveal-on-failure", REVEAL_ON_FAILURE),
+        ("reveal-initializer", REVEAL_INITIALIZER),
+        ("reveal-module", REVEAL_MODULE),
+        ("reveal-index", REVEAL_INDEX),
+    ]
+    .into_iter()
+    .map(|(name, text)| scratch_seed(name, text))
+    .collect();
+    seeds.extend(scratch.iter().cloned());
     let (mut edits, mut whole, mut beyond, mut answered) = (0usize, 0usize, 0usize, 0usize);
     // the negative control: what an answer of the edited declaration
     // alone would miss, and where
@@ -211,18 +220,31 @@ fn a_declarations_dependents_cover_what_a_fresh_check_rederives() {
         "{} seeds, {edits} edits: {answered} answered by the relation, {whole} whole; {beyond} declarations re-derived beyond the edited one",
         seeds.len()
     );
-    let _ = std::fs::remove_dir_all(&chain);
+    for dir in &scratch {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     println!("re-derived beyond the edited declaration:\n{}", alone_misses.join("\n"));
     assert!(edits > 500, "the mutation covers the corpus: {edits} edits");
     assert!(misses.is_empty(), "{} misses:\n{}", misses.len(), misses.join("\n"));
     // The control: the edited declaration alone is not an answer. A
     // print added to `inner` makes it, `mid` and `enc` opaque to the
     // reveal rule, so `Api`'s reveal, two calls away, is refused: only
-    // the callgraph's readers, closed, reach it.
-    assert!(
-        alone_misses.iter().any(|m| m.ends_with("reveal-chain fn `inner` (a print added) -> locus `Api`")),
-        "the transitive reader is re-derived: {alone_misses:?}"
-    );
+    // the callgraph's readers, closed, reach it. The same print in an
+    // `enc` called only from `Api`'s `on_failure` handler, only from a
+    // params initializer, or only through a module-nested fn reaches
+    // `Api` through a body that is no fn's row; in an `idx` called only
+    // inside an index expression, through a subexpression the walk does
+    // not descend into.
+    for (seed, helper) in [
+        ("reveal-chain", "inner"),
+        ("reveal-on-failure", "enc"),
+        ("reveal-initializer", "enc"),
+        ("reveal-module", "enc"),
+        ("reveal-index", "idx"),
+    ] {
+        let edge = format!("{seed} fn `{helper}` (a print added) -> locus `Api`");
+        assert!(alone_misses.iter().any(|m| m.ends_with(&edge)), "the reader is re-derived ({edge}): {alone_misses:?}");
+    }
 }
 
 /// The relation's domain is a body: an edit to what a declaration
@@ -265,6 +287,69 @@ fn go() -> Bool {\n        \
 let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };\n        \
 return true;\n    }\n}\n\
 fn main() { let a = Api { }; }\n";
+
+/// The reveal reaches the wire through `enc` in `Api`'s `on_failure`
+/// handler, the only caller of `enc` (outside review of #1321). `enc`
+/// sits after its caller, so the edit moves nothing in `Api`.
+const REVEAL_ON_FAILURE: &str = "locus Child { }\n\n\
+locus Api {\n    params {\n        token: std::secret::Credential =\n            std::secret::Credential { vault: \"api\" };\n    }\n    \
+on_failure(c: Child, err: ClosureViolation) {\n        \
+let r = std::http::post(\n            \"http://127.0.0.1:1/t\",\n            \
+std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())),\n            \"text/plain\"\n        \
+) or std::http::ClientResponse {\n            status: 0, headers: \"\", body: b\"\"\n        };\n    }\n}\n\n\
+fn main() { let a = Api { }; }\n\n\
+fn enc(s: String) -> String { return s + \"!\"; }\n";
+
+/// The same reveal in a block-valued params initializer, `enc`'s only
+/// caller (outside review of #1321).
+const REVEAL_INITIALIZER: &str = "locus Api {\n    params {\n        token: std::secret::Credential =\n            \
+std::secret::Credential { vault: \"api\" };\n        sent: Int = {\n            \
+let r = std::http::post(\n                \"http://127.0.0.1:1/t\",\n                \
+std::bytes::from_string(\"secret=\" + enc(self.token.reveal_text())),\n                \"text/plain\"\n            \
+) or std::http::ClientResponse {\n                status: 0, headers: \"\", body: b\"\"\n            };\n            \
+1\n        };\n    }\n}\n\n\
+fn main() { let a = Api { }; }\n\n\
+fn enc(s: String) -> String { return s + \"!\"; }\n";
+
+/// The reveal through `wrap`, a module-nested fn, which calls `enc`.
+const REVEAL_MODULE: &str = "locus Api {\n    params { token: std::secret::Credential = std::secret::Credential { vault: \"api\" }; }\n    \
+fn go() -> Bool {\n        \
+let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"secret=\" + wrap(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };\n        \
+return true;\n    }\n}\n\n\
+fn main() { let a = Api { }; }\n\n\
+module codec {\n    fn wrap(s: String) -> String { return enc(s); }\n}\n\n\
+fn enc(s: String) -> String { return s + \"!\"; }\n";
+
+/// The reveal through `pick`, whose transparency rests on `idx`, called
+/// only inside an index expression, which the summary's walk of a body
+/// does not descend into.
+const REVEAL_INDEX: &str = "locus Api {\n    params { token: std::secret::Credential = std::secret::Credential { vault: \"api\" }; }\n    \
+fn go() -> Bool {\n        \
+let r = std::http::post(\"http://127.0.0.1:1/t\", std::bytes::from_string(\"secret=\" + pick(self.token.reveal_text())), \"text/plain\") or std::http::ClientResponse { status: 0, headers: \"\", body: b\"\" };\n        \
+return true;\n    }\n}\n\n\
+fn main() { let a = Api { }; }\n\n\
+fn pick(s: String) -> String {\n    let t = [\"a\", \"b\"];\n    return s + t[idx()];\n}\n\n\
+fn idx() -> Int { return 0; }\n";
+
+/// A call no summary body records (a type's field default, a position
+/// the summary does not walk) leaves the relation no edge to join, so the
+/// declaration holding it is a dependent of every declaration.
+#[test]
+fn a_call_no_summary_body_records_makes_its_declaration_everyones_dependent() {
+    let text = "type Rec {\n    n: Int = start();\n}\n\n\
+fn start() -> Int { return 1; }\n\n\
+fn unrelated() -> Int { return 2; }\n\n\
+fn main() { let r = Rec { }; println(r.n + unrelated()); }\n";
+    let dir = scratch_seed("unrecorded-call", text);
+    let snap = load(&dir, &BTreeMap::new()).expect("the seed checks");
+    let all = keys(snap.declarations());
+    let rec = all.iter().find(|k| k.2 == "Rec").expect("Rec");
+    for name in ["start", "unrelated", "main"] {
+        let k = all.iter().find(|k| k.2 == name).expect("the fn");
+        assert!(answer(&snap, k).expect("a fn is placed").contains(rec), "`Rec` answers for `{name}`");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
 /// A one-file seed of this test's own: the pid keeps two runs apart, the
 /// name two tests of one run (each removes its own directory).
