@@ -2669,7 +2669,15 @@ in the RECORDED order (Phase 4): dequeued cells that arrive ahead
 of their recorded turn are held per-consumer and released in
 order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
-reports rather than deadlocks.
+reports rather than deadlocks. A run its child's reclaim canceled
+in the queue (decision line 19) is dropped before the gate compares
+it, as the recording dropped it, with no consume; a live run the
+gate holds keeps its retention on the child and is admitted only
+when it is dispatched. The hold belongs to its consumer thread for
+the thread's life: a pool worker or a pinned thread frees it when
+it exits at the pools' or the owner's join, and a cell found still
+held then ends as one the pools' teardown frees undequeued, never
+dropped with the hold.
 
 **Async pools replay (Phase 6).** The nondeterminism of a `where
 async_io` pool is its drain's SCHEDULING: which cell starts when,
