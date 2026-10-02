@@ -18,8 +18,9 @@
 //! sequences that must hold within one domain, and the edges between
 //! [`Event`]s that must hold across domains. [`Expected::check`]
 //! evaluates a trace against it and [`laws`] checks what every trace
-//! owes whatever the plan: an end has an entry, an entry has an end, a
-//! subject's reclaim happens once and after its birth.
+//! owes whatever the plan: an end has an entry (not started has none),
+//! an entry has an end, a subject's reclaim happens once and after its
+//! birth.
 //!
 //! What a trace can and cannot show. The runtime numbers events with
 //! one relaxed counter, so on one thread `seq` order is program order,
@@ -32,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use super::{Event, Multiplicity, ObligationId, ObligationKind, Point, RuntimeSubject, Spine};
+use super::{Event, Multiplicity, ObligationId, ObligationKind, Point, RuntimeSubject, Spine, Terminal};
 
 /// Every trace line starts with this.
 pub const LINE_PREFIX: &str = "lc ";
@@ -417,8 +418,9 @@ fn subject_key(s: Option<RuntimeSubject>, per_incarnation: bool) -> SubjectKey {
     s.map(|s| (s.instance.raw(), per_incarnation.then(|| s.incarnation.raw())))
 }
 
-/// What every trace owes, whatever the plan: an end has an entry; a
-/// declared obligation is not re-entered while open; in a run that
+/// What every trace owes, whatever the plan: an end has an entry, except
+/// not started, which has none; a declared obligation is not re-entered
+/// while open; in a run that
 /// ended normally, every entry has an end; a subject is reclaimed at
 /// most once, and only after it was born (a second teardown of a
 /// reclaimed struct shows as a reclaim of a subject never born, since
@@ -497,10 +499,12 @@ pub fn laws(trace: &Trace, complete: bool) -> Vec<Violation> {
                         }
                         _ => {}
                     }
-                } else if *n == 0 {
-                    out.push(what("ended, never entered"));
-                } else {
+                } else if *n > 0 {
                     *n -= 1;
+                } else if !matches!(e.point, Point::Terminal(Terminal::NotStarted(_))) {
+                    // Not started is the one end that has no entry: a run
+                    // admitted and canceled before it began (line 19).
+                    out.push(what("ended, never entered"));
                 }
             }
             None => {
@@ -731,5 +735,25 @@ mod tests {
         let v: Vec<String> = laws(&t, false).iter().map(|v| v.to_string()).collect();
         assert_eq!(v.len(), 1, "{v:?}");
         assert!(v[0].contains("Run of a subject never built"), "{v:?}");
+    }
+
+    /// A run canceled before it started ends with no entry (decision
+    /// line 19); any other end without one breaks the laws.
+    #[test]
+    fn only_not_started_ends_without_an_entry() {
+        let t = trace(&[
+            "lc 1 Birth Entered spine=Instantiation dom=pool:side type=K inst=1 inc=0",
+            "lc 2 Birth Completed spine=Instantiation dom=pool:side type=K inst=1 inc=0",
+            "lc 3 Run Terminal(NotStarted(Acknowledged)) spine=PoolRun dom=pool:side type=K inst=1 inc=0",
+        ]);
+        assert_eq!(laws(&t, true), vec![]);
+        let t = trace(&[
+            "lc 1 Birth Entered spine=Instantiation dom=pool:side type=K inst=1 inc=0",
+            "lc 2 Birth Completed spine=Instantiation dom=pool:side type=K inst=1 inc=0",
+            "lc 3 Run Completed spine=PoolRun dom=pool:side type=K inst=1 inc=0",
+        ]);
+        let v: Vec<String> = laws(&t, true).iter().map(|v| v.to_string()).collect();
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert!(v[0].contains("ended, never entered"), "{v:?}");
     }
 }

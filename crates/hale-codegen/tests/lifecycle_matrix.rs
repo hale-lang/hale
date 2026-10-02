@@ -70,7 +70,9 @@
 //!
 //!   1. **outcome**: the owner's handler heard each subject's failure
 //!      once, each subject dissolved once, and `fn main` reached its
-//!      end (`delivered-once`; `clean` for phase `none`).
+//!      end (`delivered-once`; `clean` for phase `none`; `not-started`
+//!      where the run() that would raise the failure is canceled before
+//!      it starts, decision line 19, and the owner hears nothing).
 //!   2. **trace**: the laws every trace owes (`trace::laws`, among them
 //!      that nothing is done to an instance nothing built: a step on a
 //!      reclaimed struct), and the cell's plan.
@@ -88,14 +90,21 @@
 //! asserted to show exactly that profile, so a departure outside it
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
-//! it has been seen to show, and a run shows exactly one of them. 39
-//! cells in five families:
+//! it has been seen to show, and a run shows exactly one of them. 18
+//! cells in three families:
 //! a handler run in place off the owner's domain (C36, L5's), a pinned
-//! locus's fields undrained (C9), a pinned locus's `birth_check` never
-//! evaluated (C38), and a child's `run()` posted to the worker that is
-//! tearing its owner down, which either runs on the reclaimed struct or
-//! is freed unrun (R19). `handler/grandchild/pinned` shows both C9 and
+//! locus's fields undrained (C9), and a pinned locus's `birth_check`
+//! never evaluated (C38). `handler/grandchild/pinned` shows both C9 and
 //! C36.
+//!
+//! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
+//! assert the adopted outcome and plan; its first cell stays in the
+//! sample, under ASan, as one of the [`REGRESSIONS`]. R19's 21 cells
+//! (L5's first part) are these: a child's `run()` posted to the worker
+//! that is tearing its owner down ran on the reclaimed struct, or, for
+//! a subscriber, was freed unrun and unnamed. The teardown now cancels
+//! it before the reclaim, and the cell's plan owes the named terminal,
+//! `Run=NotStarted(Acknowledged)`.
 //!
 //! ## Size
 //!
@@ -103,8 +112,9 @@
 //! path. The default runs a deterministic sample ([`default_sample`])
 //! of sixty programs, ASan included, in about 10 s;
 //! `HALE_MATRIX=full` runs all 121, for a nightly job, in about 12 s
-//! (ASan stays on the sample). `HALE_MATRIX_CELL=<id>,<id>` prints the
-//! named cells' programs, plans and traces.
+//! (ASan stays on the sample; `HALE_MATRIX_ASAN=full` puts it on every
+//! cell run). `HALE_MATRIX_CELL=<id>,<id>` prints the named cells'
+//! programs, plans and traces.
 //!
 //! ## Corpus note
 //!
@@ -393,40 +403,19 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     // while its owner `Mid` is pinned: C36 as well as C9.
     ("handler/grandchild/pinned", &[("C9", UNDRAINED), ("C36", IN_PLACE)], &[&[NO_DRAIN, RAN_ON_MAIN_FOR_PINNED]]),
     // The drain that would raise the failure never runs.
-    ("drain/grandchild/pinned", &[("C9", UNDRAINED)], &[&[UNHEARD, NO_DRAIN, NO_DELIVERY, RECLAIMED_UNHEARD]]),
+    ("drain/grandchild/pinned", &[("C9", UNDRAINED)], &[&[UNHEARD, NO_DRAIN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
     ("none/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN]]),
     ("birth/root_child/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
     ("birth/replica/pinned", &[("C38", NO_BIRTH_CHECK)], &[&[UNHEARD_2, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD_2]]),
-    // A child's run() posted to the worker that tears its owner down: a
-    // use-after-free today (inventory R19). L5's first part fixes it and
-    // removes these entries. `none/accepted_child/pool`'s run on the
-    // reclaimed struct finishes on Linux and crashes on Apple Silicon.
-    ("birth/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[SIGNAL, RUN_RECLAIMED, ASAN_UAF]]),
-    ("run/root_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, RECLAIMED_UNHEARD]]),
-    ("run/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, RECLAIMED_UNHEARD]]),
-    (
-        "run/accepted_child/pool",
-        &[("R19", RUN_AFTER_RECLAIM)],
-        &[&[SIGNAL, RUN_RECLAIMED, TWO_DRAINS, TWO_DISSOLVES, RECLAIMED_UNHEARD]],
-    ),
-    ("run/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, RECLAIMED_UNHEARD, ASAN_UAF]]),
-    ("run/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, RECLAIMED_UNHEARD]]),
-    ("drain/root_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED]]),
-    ("drain/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, ASAN_UAF]]),
-    ("drain/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[SIGNAL, RUN_RECLAIMED]]),
-    ("drain/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED]]),
-    ("drain/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED]]),
-    ("none/root_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, ASAN_UAF]]),
-    ("none/grandchild/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED]]),
-    ("none/accepted_child/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED], &[RUN_RECLAIMED, SIGNAL_CLEAN]]),
-    ("none/iface_field/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED]]),
-    ("none/persp_slot/pool", &[("R19", RUN_AFTER_RECLAIM)], &[&[RUN_RECLAIMED, ASAN_UAF]]),
-    ("handler/root_child/pool", &[("R19", RUN_FREED_UNRUN)], &[&[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
-    ("handler/grandchild/pool", &[("R19", RUN_FREED_UNRUN)], &[&[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD]]),
-    ("handler/accepted_child/pool", &[("R19", RUN_FREED_UNRUN)], &[&[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD, ASAN_UNHEARD]]),
-    ("handler/iface_field/pool", &[("R19", RUN_FREED_UNRUN)], &[&[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD]]),
-    ("handler/persp_slot/pool", &[("R19", RUN_FREED_UNRUN)], &[&[UNHEARD, NO_RUN, NO_DELIVERY, RECLAIMED_UNHEARD]]),
 ];
+
+/// Cells a fixed defect is held to, sampled with ASan on every PR: a
+/// family's first cell, as it was while the family was in
+/// [`KNOWN_OPEN`]. R19 (L5's first part): a child's run() posted to the
+/// worker that tears its owner down started on the reclaimed struct, or
+/// a subscriber's was freed unrun and unnamed; each is now canceled by
+/// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]).
+const REGRESSIONS: &[&str] = &["birth/accepted_child/pool", "handler/root_child/pool"];
 
 const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
 const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main";
@@ -442,17 +431,6 @@ const NO_DRAIN: &str = "trace: missing: Subj.Drain";
 // locus. The checker does not refuse it: L4's birth spine runs the check
 // on the pinned thread before run().
 const NO_BIRTH_CHECK: &str = "the pinned thread function runs birth() without the locus's birth_check, so the check never fires and the owner hears nothing";
-
-const RUN_AFTER_RECLAIM: &str = "the subject's run(), posted to the worker that is running its owner's eager teardown, is accepted and starts only after that teardown reclaimed the subject, on the reclaimed struct: undefined behaviour, so its manifestation varies by platform and allocator (heap-use-after-free under ASan; a double teardown for an accepted child)";
-const RUN_RECLAIMED: &str = "trace: law: Run of a subject never built: Subj (inst _) on pool:side (a step on a reclaimed struct?)";
-const SIGNAL: &str = "outcome: signal, adopted delivered-once";
-const SIGNAL_CLEAN: &str = "outcome: signal, adopted clean";
-const TWO_DRAINS: &str = "trace: count: Subj.Drain has 2 subjects, owes 1";
-const TWO_DISSOLVES: &str = "trace: count: Subj.Dissolve has 2 subjects, owes 1";
-const ASAN_UAF: &str = "asan: [\"ERROR: AddressSanitizer\", \"heap-use-after-free\"]";
-
-const RUN_FREED_UNRUN: &str = "the subscriber's run(), posted to the worker that is running its owner's eager teardown, is never run and its terminal is never named, so the cell it would publish never reaches its handler";
-const NO_RUN: &str = "trace: missing: Subj.Run";
 
 // The owner hears nothing: no handler runs, the failure is never
 // delivered, and each subject is reclaimed without its delivery.
@@ -719,7 +697,13 @@ fn render(c: Cell) -> Result<Program, &'static str> {
         return Err(why);
     }
     let plan = plan_for(c);
-    let outcome = if c.phase.fails() { "delivered-once" } else { "clean" };
+    let outcome = if raises(c) {
+        "delivered-once"
+    } else if c.phase.fails() {
+        "not-started"
+    } else {
+        "clean"
+    };
     let head = header(c, &plan, outcome);
     let src = source(c, false, &head);
     let twin = (c.position == Position::LetLiteral).then(|| source(c, true, &head));
@@ -778,6 +762,35 @@ fn held(c: Cell) -> bool {
     born_on_it && (at_birth || (c.phase == Phase::Run && run_inline))
 }
 
+/// Whether the subject's run() is canceled before it starts (decision
+/// line 19, inventory R19). In the pool domain `Own` is a statement
+/// literal in `Spawner`'s run(), so the worker tears it down as soon as
+/// it is built; a subject whose run() was posted to that worker (a
+/// field, or an accepted child; a literal in a handler or a `let` runs
+/// inline) is still queued behind the teardown, which cancels the run,
+/// `NotStarted(Acknowledged)`, before it reclaims the subject. A field
+/// that failed at birth has no run posted; an accepted child that
+/// failed its `birth_check` does.
+fn run_canceled(c: Cell) -> bool {
+    if c.domain != Domain::Pool {
+        return false;
+    }
+    match c.position {
+        Position::RootChild | Position::Grandchild | Position::IfaceField | Position::PerspSlot => {
+            matches!(c.phase, Phase::Run | Phase::Handler | Phase::Drain | Phase::None)
+        }
+        Position::AcceptedChild => true,
+        _ => false,
+    }
+}
+
+/// Whether the subject's failure is raised: it fails, and not in a
+/// run() (or the handler of the cell its run() publishes) that never
+/// starts.
+fn raises(c: Cell) -> bool {
+    c.phase.fails() && !(run_canceled(c) && matches!(c.phase, Phase::Run | Phase::Handler))
+}
+
 /// The cell's plan, from L1's plans for the lines it touches.
 fn plan_for(c: Cell) -> String {
     let n = c.position.instances();
@@ -795,17 +808,23 @@ fn plan_for(c: Cell) -> String {
     } else {
         format!("FailureDelivery!{}", owner_domain(c))
     };
+    // A canceled run has no entry to order; its own line below.
+    let canceled = run_canceled(c);
     match c.phase {
         Phase::ParamsSettle | Phase::Birth => steps.push(delivery.clone()),
+        Phase::Run | Phase::Handler if canceled => {}
         Phase::Run | Phase::Handler => {
             steps.push(run.clone());
             steps.push(delivery.clone());
         }
         Phase::Drain => {
-            steps.push(run.clone());
+            if !canceled {
+                steps.push(run.clone());
+            }
             steps.push("Drain".into());
             steps.push(delivery.clone());
         }
+        Phase::None if canceled => {}
         Phase::None => steps.push(run.clone()),
     }
     if c.phase != Phase::Drain {
@@ -817,12 +836,19 @@ fn plan_for(c: Cell) -> String {
         format!("{owner}: Birth Drain Dissolve Reclaim"),
         format!("{subj}: {}", steps.join(" ")),
     ];
-    if c.phase.fails() {
+    if raises(c) {
         // The failed child is kept until its handler completes
         // (`lotus_failure_hold`, decision line 8).
         lines.push("edge Subj.FailureDelivery.Completed -> Subj.Reclaim.Entered".into());
     }
-    if c.phase.fails() && held(c) {
+    if canceled {
+        // The teardown that reclaims the subject cancels its queued run
+        // and names it, on the worker, before the reclaim completes.
+        lines.push(format!("{subj}: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side"));
+        lines.push("edge Subj.Run.Ended -> Subj.Reclaim.Completed".into());
+        lines.push("edge Subj.Cancellation.Completed -> Subj.Reclaim.Completed".into());
+    }
+    if raises(c) && held(c) {
         lines[0] = format!("{owner}: ParamsSettle Birth Drain Dissolve Reclaim");
         lines.push(format!("edge {owner}.ParamsSettle.Completed -> Subj.FailureDelivery.Completed"));
         lines.push(format!("edge Subj.FailureDelivery.Completed -> {owner}.Birth.Entered"));
@@ -911,9 +937,10 @@ fn outcome(c: Cell, r: &Ran) -> String {
     let want = c.position.instances();
     let heard = count(&r.stdout, HANDLER);
     let dissolved = count(&r.stdout, SUBJ_DISSOLVE);
-    let want_heard = if c.phase.fails() { want } else { 0 };
+    let want_heard = if raises(c) { want } else { 0 };
     match (heard == want_heard, dissolved == want) {
-        (true, true) if c.phase.fails() => "delivered-once".into(),
+        (true, true) if raises(c) => "delivered-once".into(),
+        (true, true) if c.phase.fails() => "not-started".into(),
         (true, true) => "clean".into(),
         _ => format!("handler {heard}/{want_heard}, dissolve {dissolved}/{want}"),
     }
@@ -1084,7 +1111,8 @@ fn is_program(c: Cell) -> bool {
 }
 
 /// The default sample: the first `KNOWN_OPEN` cell of each family (one
-/// reason), so every known defect is held to its failure on every PR;
+/// reason), so every known defect is held to its failure on every PR,
+/// and the [`REGRESSIONS`], so every fixed one is held to its fix;
 /// one program per (phase, position) pair, walking the domains so each
 /// appears; then a co-prime stride over the programs to
 /// [`TARGET_SAMPLE`]. Per family rather than per open cell: a family
@@ -1102,6 +1130,10 @@ fn default_sample() -> Vec<Cell> {
                 picked.insert(c);
             }
         }
+    }
+    for id in REGRESSIONS {
+        let c = *programs.iter().find(|c| cell_id(**c) == *id).unwrap_or_else(|| panic!("REGRESSIONS names {id}, not a program"));
+        picked.insert(c);
     }
     for (i, &phase) in PHASES.iter().enumerate() {
         for (j, &position) in POSITIONS.iter().enumerate() {
@@ -1121,6 +1153,12 @@ fn default_sample() -> Vec<Cell> {
         k += 1;
     }
     picked.into_iter().collect()
+}
+
+/// `HALE_MATRIX_ASAN=full`: ASan on every selected cell, not only the
+/// sample's.
+fn asan_everywhere() -> bool {
+    matches!(std::env::var("HALE_MATRIX_ASAN").as_deref(), Ok("full"))
 }
 
 fn selected_cells() -> Vec<Cell> {
@@ -1162,7 +1200,7 @@ fn run_shard(domain: Domain, phase: Phase) {
     for c in cells {
         let id = cell_id(c);
         let started = Instant::now();
-        let asan = sample.contains(&c);
+        let asan = sample.contains(&c) || asan_everywhere();
         let failures = run_cell(c, asan);
         eprintln!("{id}: {} failure(s) in {:?}", failures.len(), started.elapsed());
         match open_entry(&id) {
@@ -1298,6 +1336,10 @@ fn every_cell_is_written_or_named() {
     );
 
     let mut open_ids = BTreeSet::new();
+    for id in REGRESSIONS {
+        assert!(ids.contains(*id), "REGRESSIONS names {id}, which is not a cell");
+        assert!(open_entry(id).is_none(), "{id} is both a regression and KNOWN_OPEN");
+    }
     for (id, opens, profiles) in KNOWN_OPEN {
         assert!(ids.contains(*id), "KNOWN_OPEN names {id}, which is not a cell");
         assert!(open_ids.insert(*id), "KNOWN_OPEN names {id} twice; a cell's rows go in one entry");

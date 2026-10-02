@@ -1876,19 +1876,25 @@ its `KNOWN_OPEN` table.
   separate witness of the worker's quiescence; the trace build
   records both (inventory row R20a, `l19_parked_started_coroutine.hl`).
   No release build observes a run's terminal, so the name lives
-  there. Not yet shipped: the post's ABI is `void`, and a run refused
-  at shutdown or freed unrun is silent (inventory row R19). An
-  admitted run is also not retained against its child's teardown, and
-  that is an open memory-safety defect: when an owner is torn down on
-  a pool worker, a child's `run()` posted to that same worker starts
-  after the teardown has reclaimed the child, on the freed struct (a
-  heap-use-after-free under AddressSanitizer; an accepted child is
-  torn down twice). The adopted rule: a teardown on a worker cancels
-  the runs queued on it for the dying child before reclaiming it, each
-  ending not started with an acknowledgement, and the child is
-  retained until each of its queued runs is admitted or canceled. The
-  lifecycle matrix's pool cells pin the defect until F.40 phase 3's L5
-  fixes it. The regressions: a full ring and an empty ring after the last check
+  there. An admitted run is retained against its child's teardown:
+  from admission until the worker starts it or a teardown cancels it,
+  the run holds its child. A teardown on a worker cancels the runs
+  queued on it for the dying child before reclaiming it, each ending
+  not started with an acknowledgement, so a child torn down by its
+  owner on the worker its `run()` was posted to is reclaimed without
+  that run starting, and is torn down once; a run that started before
+  the teardown began is ordered against it by the join, as before.
+  Shipped (F.40 phase 3, L5): the cancellation is named in the trace
+  build where the reclaim makes it, before the child's struct is
+  released, and the release build runs the same path
+  (`l19_queued_run_canceled.hl`, and the lifecycle matrix's pool
+  cells, which assert the named terminal). Before it, the run started
+  on the freed struct (a heap-use-after-free under AddressSanitizer;
+  an accepted child was torn down twice), or, for a subscriber, was
+  freed unrun with no terminal named. Not yet shipped: the post's ABI
+  is `void`, and a run refused at shutdown or freed unrun when the
+  pools are torn down is silent (inventory row R19). The regressions:
+  a full ring and an empty ring after the last check
   (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
   only until L5's handshake can drive them), self-post overflow
   (`l19_self_post_overflow.hl`, every admitted run completes

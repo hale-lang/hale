@@ -1893,7 +1893,13 @@ int lotus_lc_skips(const char *what);
 void lotus_lc_ev(const char *kind, const char *point, void *self,
                  const char *spine, const char *type);
 void lotus_lc_parked_abandoned(void *self);
+void lotus_lc_run_canceled(void *self);
 #endif
+
+/* Run retention (decision line 19), defined with the cooperative pool:
+ * a reclaim cancels the child's runs still queued before it frees the
+ * child. */
+static void lotus_run_cancel_queued(void *child);
 
 /* One held failure. A node stays linked until its handler has
  * returned (state DONE), so a failing child can find it — to defer its
@@ -2254,9 +2260,15 @@ void *lotus_child_struct_alloc(lotus_arena_t *owner, uint64_t size,
  * will wholesale-free the block anyway. Never touches offset 0 of
  * `child` — that byte range is the child's own NULL'd teardown
  * latch, and leaving it NULL keeps any stale teardown path a
- * no-op. */
+ * no-op.
+ *
+ * Every reclaim of a locus ends here, once (past its `__arena` latch),
+ * so this is where a run still queued for the child is canceled
+ * (decision line 19): before the struct is listed for reuse, or left
+ * in the owner's arena to be freed with it. */
 void lotus_child_struct_release(void *owner_self, void *child,
                                 uint64_t size) {
+    if (child) lotus_run_cancel_queued(child);
     if (!owner_self || !child || size < LOTUS_CHILD_STRUCT_MIN) return;
     lotus_arena_t *owner = *(lotus_arena_t **)owner_self;
     if (!owner) return;
@@ -6541,6 +6553,14 @@ typedef struct lotus_bus_cell {
      * run/create cell). Consumed by the drain paths' consume
      * stamp and by replay's order enforcement. */
     uint64_t rec_pub_id;
+    /* F.40 L5 (decision line 19): a cooperative pool's run cell holds
+     * its child's retention, a `lotus_run_ticket_t` (see "Run
+     * retention"); NULL on a bus delivery and on every other builder's
+     * cell, so replay's ordering gate, which every queued drain shares,
+     * can ask whether a cell is a canceled run. Set only by the pool's
+     * post; it sits in the padding before
+     * `payload_inline`, so the cell's size is unchanged. */
+    void  *run_ticket;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
      * bus payload struct, which may carry an i128 / Decimal (align-16)
      * field. A subscriber handler reads such a field with an aligned
@@ -6844,6 +6864,7 @@ static inline void lotus_bus_note_consume(void *subscriber_self,
  *
  * All of this is dead code unless lotus_replay_active. */
 #define LOTUS_REPLAY_HOLD_NS 1000000000LL /* 1s */
+static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell);
 static __thread lotus_bus_cell_t *t_rp_pending = NULL;
 static __thread size_t t_rp_pending_len = 0, t_rp_pending_cap = 0;
 static __thread int64_t t_rp_hold_since = 0;
@@ -6877,8 +6898,23 @@ static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
     if (t_rp_pending_len == 1) t_rp_hold_since = lotus_rp_now_ns();
 }
 
+/* Decision line 19: a held run whose child was reclaimed while it
+ * was held is ended here, before any held cell's identity is read
+ * (its `self_ptr` is the reclaimed child) and before the timeout can
+ * release it as a divergence. */
+static void lotus_rp_pending_drop_canceled(void) {
+    size_t kept = 0;
+    for (size_t i = 0; i < t_rp_pending_len; i++) {
+        if (lotus_run_cell_drop_canceled(&t_rp_pending[i])) continue;
+        if (kept != i) t_rp_pending[kept] = t_rp_pending[i];
+        kept++;
+    }
+    t_rp_pending_len = kept;
+}
+
 static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
                                  lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     for (size_t i = 0; i < t_rp_pending_len; i++) {
         if (t_rp_pending[i].rec_pub_id == want_msg &&
             (uint32_t)(lotus_obs_pub_inst_id
@@ -6899,10 +6935,14 @@ static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
  * delivery identity is (target locus, msg_id) — two subscribers of
  * one publish on one consumer are distinguishable (review round 2,
  * finding 5). Returns 1 = dispatch *cell now (possibly swapped for
- * a held one), 0 = cell was parked; dequeue more (or wait). */
+ * a held one), 0 = cell was parked or dropped; dequeue more (or
+ * wait). A run its child's reclaim already canceled is dropped
+ * first, on every drain that gates: it has no recorded consume to
+ * match (decision line 19). */
 static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
     uint64_t exp_msg;
     uint32_t exp_locus;
+    if (lotus_run_cell_drop_canceled(cell)) return 0;
     if (!lotus_replay_expected_consume ||
         !lotus_replay_expected_consume(&exp_msg, &exp_locus)) {
         /* Recorded stream exhausted (or consumer unknown to the
@@ -6929,6 +6969,7 @@ static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
  * (returns 0) or — past the hold timeout — degrade by releasing the
  * oldest held cell into *out (returns 1). */
 static int lotus_replay_gate_idle(lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     if (t_rp_pending_len == 0) return 0;
     uint64_t exp_msg;
     uint32_t exp_locus;
@@ -7172,6 +7213,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->payload_heap = heap_buf;
     slot->deserialize  = g_bus_pending_wire_deser;
     slot->rec_pub_id   = g_bus_pending_rec_pub;
+    slot->run_ticket   = NULL;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
@@ -7795,6 +7837,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     cell.payload_heap = heap_buf;
     cell.deserialize  = g_bus_pending_wire_deser;
     cell.rec_pub_id   = g_bus_pending_rec_pub;
+    cell.run_ticket   = NULL;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -8188,6 +8231,150 @@ typedef struct lotus_coop_overflow {
     struct lotus_coop_overflow  *next;
 } lotus_coop_overflow_t;
 
+/* ===================================================================
+ * Run retention (F.40 phase 3, L5; decision line 19, inventory R19).
+ *
+ * A child's run() posted to a pool is admitted when its cell is
+ * enqueued. From then until the worker starts it or a teardown cancels
+ * it, the cell holds a retention on the child: a ticket, linked here
+ * under the child's address. The worker starts the run only by
+ * unlinking its ticket (`lotus_run_admit`). A reclaim of the child
+ * first cancels every ticket still linked (`lotus_run_cancel_queued`,
+ * from `lotus_child_struct_release`), and names each run's terminal,
+ * not started with an acknowledgement; the cell, dequeued later, is
+ * dropped unrun. Without it, an owner torn down on the worker its
+ * child's run was posted to reclaimed the child while the run sat in
+ * the queue behind the teardown, and the run then started on the freed
+ * struct (a heap-use-after-free, and a second teardown of an accepted
+ * child at its run end).
+ *
+ * A run already started is not canceled: its ticket is gone, and the
+ * teardown's ordering against it is the join's, as before. The ticket
+ * memory belongs to the cell: whoever ends the cell (the drain, a post
+ * that cannot enqueue, the registry's teardown) frees it, after
+ * unlinking it if no cancel did.
+ *
+ * One mutex: a ticket is linked at a run post and unlinked at its start
+ * or its cancel, rare next to bus traffic (a bus delivery carries no
+ * ticket). `g_run_tickets_live` lets the reclaim of a child with
+ * nothing queued, nearly every reclaim, skip the lock.
+ * =================================================================== */
+#define LOTUS_RUN_TICKET_BUCKETS 256
+
+typedef struct lotus_run_ticket {
+    void                    *child;
+    int                      canceled;   /* written and read under the lock */
+    struct lotus_run_ticket *prev;
+    struct lotus_run_ticket *next;
+} lotus_run_ticket_t;
+
+static lotus_run_ticket_t *g_run_tickets[LOTUS_RUN_TICKET_BUCKETS];
+static size_t              g_run_tickets_live = 0;  /* atomic; linked tickets */
+static pthread_mutex_t     g_run_tickets_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static inline size_t lotus_run_ticket_bucket(void *child) {
+    uint64_t h = ((uint64_t)(uintptr_t)child >> 4) * 0x9E3779B97F4A7C15ull;
+    return (size_t)(h >> 56) & (LOTUS_RUN_TICKET_BUCKETS - 1);
+}
+
+/* Under the lock. */
+static void lotus_run_ticket_unlink(lotus_run_ticket_t *t) {
+    if (t->prev) t->prev->next = t->next;
+    else g_run_tickets[lotus_run_ticket_bucket(t->child)] = t->next;
+    if (t->next) t->next->prev = t->prev;
+    t->prev = t->next = NULL;
+    __atomic_sub_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+}
+
+/* The retention a run post takes on its child; NULL when it cannot be
+ * allocated (the post then fails as a payload allocation does). */
+static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
+    lotus_run_ticket_t *t =
+        (lotus_run_ticket_t *)malloc(sizeof(lotus_run_ticket_t));
+    if (!t) return NULL;
+    t->child    = child;
+    t->canceled = 0;
+    t->prev     = NULL;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    size_t b = lotus_run_ticket_bucket(child);
+    t->next = g_run_tickets[b];
+    if (t->next) t->next->prev = t;
+    g_run_tickets[b] = t;
+    __atomic_add_fetch(&g_run_tickets_live, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    return t;
+}
+
+/* A run cell ends without starting (a post that cannot enqueue, the
+ * registry's teardown): release its retention and free the ticket. */
+static void lotus_run_ticket_drop(lotus_run_ticket_t *t) {
+    if (!t) return;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    if (!t->canceled) lotus_run_ticket_unlink(t);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    free(t);
+}
+
+/* The worker is about to start a dequeued run cell: 1 when the run is
+ * admitted to start (its retention released, the child live), 0 when
+ * the child's reclaim canceled it first. Frees the ticket either way. */
+static int lotus_run_admit(lotus_run_ticket_t *t) {
+    pthread_mutex_lock(&g_run_tickets_lock);
+    int canceled = t->canceled;
+    if (!canceled) lotus_run_ticket_unlink(t);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    free(t);
+    return !canceled;
+}
+
+/* Replay's ordering gate meets a run cell before the drain starts it:
+ * 1 when its child's reclaim already canceled it, and the cell is
+ * then ended here (ticket freed, `run_ticket` cleared) so that it is
+ * never compared with the recorded consume stream — the recording
+ * dropped it the same way, with no consume record. 0 for a live run
+ * or any other cell, which keeps its ticket LINKED: this is a look,
+ * not the admission. A live run the gate holds out of order stays
+ * protected for as long as it is held (a reclaim meanwhile cancels
+ * it, and the gate's next sweep ends it here); it is admitted only
+ * by `lotus_run_admit`, when the drain dispatches it. */
+static int lotus_run_cell_drop_canceled(lotus_bus_cell_t *cell) {
+    lotus_run_ticket_t *t = (lotus_run_ticket_t *)cell->run_ticket;
+    if (!t) return 0;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    int canceled = t->canceled;
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    if (!canceled) return 0;
+    free(t);
+    cell->run_ticket = NULL;
+    if (cell->payload_heap) {
+        free(cell->payload_heap);
+        cell->payload_heap = NULL;
+    }
+    return 1;
+}
+
+static void lotus_run_cancel_queued(void *child) {
+    if (__atomic_load_n(&g_run_tickets_live, __ATOMIC_ACQUIRE) == 0) return;
+    int canceled = 0;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    lotus_run_ticket_t *t = g_run_tickets[lotus_run_ticket_bucket(child)];
+    while (t) {
+        lotus_run_ticket_t *next = t->next;
+        if (t->child == child) {
+            t->canceled = 1;
+            lotus_run_ticket_unlink(t);
+            canceled++;
+        }
+        t = next;
+    }
+    pthread_mutex_unlock(&g_run_tickets_lock);
+#ifdef LOTUS_LIFECYCLE_TRACE
+    for (int i = 0; i < canceled; i++) lotus_lc_run_canceled(child);
+#else
+    (void)canceled;
+#endif
+}
+
 typedef struct lotus_coop_pool {
     /* Name as registered (null-terminated, <= 63 chars). Stored
      * inline so lookup doesn't chase an extra pointer. Pool
@@ -8455,6 +8642,9 @@ static const char *lotus_locus_label(void *self_ptr) {
 
 static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
                                           lotus_bus_cell_t *cell) {
+    /* Decision line 19: a run whose child was reclaimed while it sat
+     * in the queue was canceled, and named, by that reclaim. */
+    if (cell->run_ticket && !lotus_run_admit(cell->run_ticket)) return;
     /* Wire cell? Deserialize into the subscriber's arena HERE, on
      * its owner thread (bug 3, downstream handoff 2026-07-15). */
     if (!lotus_bus_cell_materialize(cell)) return;
@@ -8488,11 +8678,15 @@ static void lotus_coop_pool_wake_producers(lotus_coop_pool_t *p) {
     }
 }
 
-void lotus_coop_pool_post(lotus_coop_pool_t *p,
-                          void *handler,
-                          void *self_ptr,
-                          const void *payload_src,
-                          size_t payload_size) {
+/* `run`: the cell is a child's run() (the compiler's only post, through
+ * `lotus_coop_pool_post`), which takes a retention on the child; a bus
+ * delivery (`lotus_coop_pool_post_bus`) takes none. */
+static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
+                                      void *handler,
+                                      void *self_ptr,
+                                      const void *payload_src,
+                                      size_t payload_size,
+                                      int run) {
     if (!p) return;
     /* Two-tier payload storage; see queue_enqueue for the design
      * rationale. Build the cell once, up front, so the lock-free enqueue
@@ -8505,6 +8699,14 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
             memcpy(heap_buf, payload_src, payload_size);
         }
     }
+    lotus_run_ticket_t *ticket = NULL;
+    if (run) {
+        ticket = lotus_run_ticket_take(self_ptr);
+        if (!ticket) {
+            if (heap_buf) free(heap_buf);
+            return;
+        }
+    }
     lotus_bus_cell_t cell;
     cell.handler      = handler;
     cell.self_ptr     = self_ptr;
@@ -8512,6 +8714,7 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
     cell.payload_heap = heap_buf;
     cell.deserialize  = g_bus_pending_wire_deser;
     cell.rec_pub_id   = g_bus_pending_rec_pub;
+    cell.run_ticket   = ticket;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -8539,6 +8742,7 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
             if (atomic_load_explicit(&p->shutdown, memory_order_relaxed)) {
                 pthread_mutex_unlock(&p->lock);
                 if (heap_buf) free(heap_buf);
+                lotus_run_ticket_drop(ticket);
                 return;                          /* drop — shutting down */
             }
             atomic_fetch_add_explicit(&p->producers_waiting, 1,
@@ -8597,6 +8801,7 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
             malloc(sizeof(lotus_coop_overflow_t));
         if (!node) {
             if (heap_buf) free(heap_buf);
+            lotus_run_ticket_drop(ticket);
             return;
         }
         node->cell = cell;
@@ -8609,6 +8814,27 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
         p->overflow_tail = node;
         return;
     }
+}
+
+/* A child's run(), posted by the compiled instantiation:
+ * `lotus_coop_pool_post(pool, __coop_pool_run_<L>, self, NULL, 0)`. */
+void lotus_coop_pool_post(lotus_coop_pool_t *p,
+                          void *handler,
+                          void *self_ptr,
+                          const void *payload_src,
+                          size_t payload_size) {
+    lotus_coop_pool_post_cell(p, handler, self_ptr, payload_src,
+                              payload_size, 1);
+}
+
+/* A bus delivery to a subscriber on a cooperative pool. */
+static void lotus_coop_pool_post_bus(lotus_coop_pool_t *p,
+                                     void *handler,
+                                     void *self_ptr,
+                                     const void *payload_src,
+                                     size_t payload_size) {
+    lotus_coop_pool_post_cell(p, handler, self_ptr, payload_src,
+                              payload_size, 0);
 }
 
 /* Drain a single cell on the pool's worker thread. Blocks on
@@ -9257,6 +9483,9 @@ static void lotus_async_note_live_action(lotus_coop_pool_t *p) {
 static int lotus_async_start_cell(lotus_coop_pool_t *p,
                                   lotus_bus_cell_t *cell_copy,
                                   uint64_t ord) {
+    /* Decision line 19: a run canceled by its child's reclaim. */
+    if (cell_copy->run_ticket && !lotus_run_admit(cell_copy->run_ticket))
+        return 1;
     /* Wire cell from a cross-thread publisher: deserialize into the
      * subscriber's arena here, on this pool's worker (bug 3,
      * downstream handoff 2026-07-15). Completes before the coro is
@@ -9352,6 +9581,7 @@ static void lotus_async_resume_coro(lotus_coop_pool_t *p,
 /* Oldest held cell, unconditionally — used when the tape is dry
  * (no expected-consume constraint remains; free consumption). */
 static int lotus_rp_pending_pop_oldest(lotus_bus_cell_t *out) {
+    lotus_rp_pending_drop_canceled();
     if (t_rp_pending_len == 0) return 0;
     *out = t_rp_pending[0];
     memmove(&t_rp_pending[0], &t_rp_pending[1],
@@ -10222,11 +10452,13 @@ void lotus_coop_pool_destroy_all(void) {
         lotus_bus_cell_t cell;
         while (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
             if (cell.payload_heap) free(cell.payload_heap);
+            lotus_run_ticket_drop(cell.run_ticket);
         }
         while (p->overflow_head) {
             lotus_coop_overflow_t *node = p->overflow_head;
             p->overflow_head = node->next;
             if (node->cell.payload_heap) free(node->cell.payload_heap);
+            lotus_run_ticket_drop(node->cell.run_ticket);
             free(node);
         }
         p->overflow_tail = NULL;
@@ -11024,7 +11256,7 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
         lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                            payload, size);
     } else if (e->coop_pool) {
-        lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+        lotus_coop_pool_post_bus(e->coop_pool, e->handler, e->self_ptr,
                              payload, size);
     } else if (queue) {
         lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
@@ -19249,7 +19481,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
              * receive via the global queue and run on the publisher's
              * drain thread instead of their pool's worker, silently
              * violating the single-threaded-method invariant. */
-            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+            lotus_coop_pool_post_bus(e->coop_pool, e->handler, e->self_ptr,
                                  struct_buf, (size_t)struct_size);
         } else if (g_bus_queue_for_remote) {
             lotus_bus_queue_enqueue(
@@ -19298,7 +19530,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                     e->mailbox, e->handler, e->self_ptr,
                     struct_buf, (size_t)struct_size);
             } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler,
+                lotus_coop_pool_post_bus(e->coop_pool, e->handler,
                                      e->self_ptr, struct_buf,
                                      (size_t)struct_size);
             } else if (g_bus_queue_for_remote) {
@@ -19798,7 +20030,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                 lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                                    payload, (size_t)size);
             } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                lotus_coop_pool_post_bus(e->coop_pool, e->handler, e->self_ptr,
                                      payload, (size_t)size);
             } else {
                 /* same-thread: the whole point — run it now. */
@@ -24652,6 +24884,17 @@ void lotus_lc_parked_abandoned(void *self) {
         s->running = 0;
         lotus_lc_emit("Run", "Terminal(CanceledAfterStart)", s, "PoolRun");
     }
+    lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
+}
+
+/* Decision line 19: a run admitted to a pool's queue whose child is
+ * reclaimed before the worker starts it is canceled by that reclaim
+ * (`lotus_run_cancel_queued`) and ends NotStarted(Acknowledged), named
+ * here while the child is still live. */
+void lotus_lc_run_canceled(void *self) {
+    lotus_lc_slot_t *s = lotus_lc_subject(self, NULL);
+    lotus_lc_emit("Cancellation", "Entered", s, "PoolRun");
+    lotus_lc_emit("Run", "Terminal(NotStarted(Acknowledged))", s, "PoolRun");
     lotus_lc_emit("Cancellation", "Completed", s, "PoolRun");
 }
 #endif /* LOTUS_LIFECYCLE_TRACE */

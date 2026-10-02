@@ -169,7 +169,9 @@ cells, 121 of them programs; the rest are named as unwritable under
 the rule that refuses them, or as having no path) and holds each to
 its outcome word, the lifecycle trace against its plan, ASan on the
 sample and the `let`-bound differential. The default is a 60-program
-sample (~10 s); `HALE_MATRIX=full` runs all 121 (~12 s):
+sample (~10 s); `HALE_MATRIX=full` runs all 121 (~12 s), and
+`HALE_MATRIX_ASAN=full` puts ASan on every cell it runs, not only the
+sample's:
 
 ```sh
 cargo test --release -p hale-codegen --test lifecycle_matrix
