@@ -95,16 +95,18 @@
 //! asserted to show exactly that profile, so a departure outside it
 //! fails the cell, and when the fix lands the entry has to change or
 //! go. A cell whose defect is undefined behaviour lists every profile
-//! it has been seen to show, and a run shows exactly one of them. 44
-//! cells in four families:
+//! it has been seen to show, and a run shows exactly one of them. 41
+//! cells in three families:
 //! a handler run in place off the owner's domain (C36, L5's), a pinned
-//! locus's fields undrained (C9), a contract-typed field drained after
-//! its owner's dissolve (C32), and a field nested under a pool-placed
-//! field run inline off its pool (C12). `handler/grandchild/pinned`
-//! shows both C9 and C36; the failing cross-pool grandchildren C36 and
-//! C12. A pinned locus's `birth_check`, never evaluated until L4's
-//! birth spine (C38), now runs on its thread before `run()`; its two
-//! cells show only the in-place delivery that is L5's (C36).
+//! locus's fields undrained (C9), and a contract-typed field drained
+//! after its owner's dissolve (C32). `handler/grandchild/pinned` shows
+//! both C9 and C36. A pinned locus's `birth_check`, never evaluated
+//! until L4's birth spine (C38), now runs on its thread before `run()`;
+//! its two cells show only the in-place delivery that is L5's (C36). A
+//! field nested under a pool-placed field ran its `run()` inline on
+//! the instantiating thread, off the pool the table gives it (C12),
+//! until L4's reclaim spine posted it there: its four cells left, three
+//! of them clean and `drain/grandchild/cross_pool` with C36 alone.
 //!
 //! A family whose fix has landed leaves [`KNOWN_OPEN`], and its cells
 //! assert the adopted outcome and plan; its first cell stays in the
@@ -396,23 +398,11 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
     ("handler/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("handler/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
     ("handler/root_child/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_SIDE]]),
-    // `Subj`, a field of the pool-placed `Mid`, runs on main: C12 as
-    // well as C36.
-    (
-        "handler/grandchild/cross_pool",
-        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
-        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
-    ),
     ("drain/root_child/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1]]),
     ("drain/replica/pinned", &[("C36", IN_PLACE)], &[&[RAN_ON_PINNED_1, RAN_ON_PINNED_2]]),
-    (
-        "drain/grandchild/cross_pool",
-        &[("C36", IN_PLACE), ("C12", NESTED_INLINE)],
-        &[&[RAN_ON_MAIN_FOR_SIDE, RUN_ON_MAIN_FOR_SIDE]],
-    ),
-    // A field nested under a pool-placed field runs inline.
-    ("run/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
-    ("none/grandchild/cross_pool", &[("C12", NESTED_INLINE)], &[&[RUN_ON_MAIN_FOR_SIDE]]),
+    // `Subj`, a field of the pool-placed `Mid`, drains on the teardown
+    // thread, `main`, where its owner's handler hears it in place.
+    ("drain/grandchild/cross_pool", &[("C36", IN_PLACE)], &[&[RAN_ON_MAIN_FOR_SIDE]]),
     // A pinned locus's own fields.
     ("params_settle/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
     ("birth/grandchild/pinned", &[("C9", UNDRAINED)], &[&[NO_DRAIN, MID_DRAIN_ORDER]]),
@@ -467,8 +457,11 @@ const KNOWN_OPEN: &[(&str, &[Open], &[Profile])] = &[
 /// [`KNOWN_OPEN`]. R19 (L5's first part): a child's run() posted to the
 /// worker that tears its owner down started on the reclaimed struct, or
 /// a subscriber's was freed unrun and unnamed; each is now canceled by
-/// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]).
-const REGRESSIONS: &[&str] = &["birth/accepted_child/pool", "handler/root_child/pool"];
+/// the teardown, `NotStarted(Acknowledged)` ([`run_canceled`]). C12
+/// (L4's reclaim spine): a field nested under a pool-placed field ran
+/// its run() inline on the instantiating thread; it is posted to the
+/// pool the placement table gives it.
+const REGRESSIONS: &[&str] = &["birth/accepted_child/pool", "handler/root_child/pool", "handler/grandchild/cross_pool"];
 
 const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
 const RAN_ON_PINNED_1: &str = "trace: domain: Subj.FailureDelivery (inst _ inc 0) ran on pinned:1, claimed main";
@@ -485,9 +478,6 @@ const MID_DRAIN_ORDER: &str = "trace: edge: Mid.Drain.Entered (inst _ inc 0) wit
 
 const CONTRACT_LATE: &str = "an interface- or perspective-typed field is torn down through its recorded reclaim, its whole spine after its owner's dissolve, so `Own`'s drain starts before `Subj`'s (decision line 12)";
 const OWN_DRAIN_ORDER: &str = "trace: edge: Own.Drain.Entered (inst _ inc 0) with Subj.Drain.Completed not reached";
-
-const NESTED_INLINE: &str = "a field nested under a pool-placed field carries that pool in the placement table, and its run() runs inline on the instantiating thread (decision line 3)";
-const RUN_ON_MAIN_FOR_SIDE: &str = "trace: domain: Subj.Run (inst _ inc 0) ran on main, claimed pool:side";
 
 // The owner hears nothing: no handler runs, the failure is never
 // delivered, and each subject is reclaimed without its delivery.
@@ -783,11 +773,11 @@ fn held(c: Cell) -> bool {
     let born_on_it = !(c.domain == Domain::Pinned && c.position != Position::Grandchild);
     // A run() inline on the instantiating thread runs inside the params
     // loop (the fixture l01_held_failure_settle): on main, and for a
-    // grandchild whose placed parent's params run on main (inventory
-    // C9). On a pool worker the field's run() is posted, and where a
-    // pool locus's lifecycle runs waits on decision line 3.
-    let run_inline =
-        c.domain == Domain::Main || (c.position == Position::Grandchild && c.domain != Domain::Pool);
+    // grandchild whose pinned parent's params run on main (inventory
+    // C9). On a pool the field's run() is posted, a grandchild under a
+    // pool-placed parent's included (C12, L4), and where a pool locus's
+    // other lifecycle methods run waits on decision line 3.
+    let run_inline = c.domain == Domain::Main || (c.position == Position::Grandchild && c.domain == Domain::Pinned);
     born_on_it && (at_birth || (c.phase == Phase::Run && run_inline))
 }
 

@@ -845,9 +845,9 @@ impl<'b, 'a> Builder<'b, 'a> {
     }
 
     /// A field nested under a pool-placed field: the table gives it its
-    /// owner's pool, and no pool is chosen for its `run()`, which runs
-    /// inline on the instantiating thread (inventory C12, R17 and R18).
-    fn inline_off_its_pool(&self, i: usize) -> bool {
+    /// owner's pool, and its `run()` is posted there, as its owner's is
+    /// (inventory C12, shipped by L4).
+    fn nested_under_a_placed_pool(&self, i: usize) -> bool {
         let s = &self.subjects[i];
         self.is_pool(s.own) && !s.placed && s.own != s.it
     }
@@ -1043,13 +1043,13 @@ impl<'b, 'a> Builder<'b, 'a> {
             }
             let mut o = self.row(i, K::Run, run_holder);
             o.multiplicity = Multiplicity::OncePerIncarnation;
-            // A field nested under a pool-placed field owes its run() to
-            // the pool the table gives it, and runs it inline on the
-            // instantiating thread today (line 3, inventory C12).
+            // A field nested under a pool-placed field runs its run() on
+            // the pool the table gives it (line 3, inventory C12, shipped
+            // by L4's reclaim spine).
             o.runs_on = if self.under_pinned(i) {
                 None
-            } else if self.inline_off_its_pool(i) {
-                Self::on(own, open("3", "C12"))
+            } else if self.nested_under_a_placed_pool(i) {
+                Self::on(own, shipped("3"))
             } else {
                 Self::on(own, Rule::SHIPPED)
             };

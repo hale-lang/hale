@@ -104,7 +104,7 @@
 //! line  kinds                                    status
 //! 1     ConstructionDelivery ParamsSettle        Shipped; Pending (pool-placed owner)
 //! 2     Closures Run                             Pending (no option chosen)
-//! 3     Accept Birth Run Dissolve                Pending (no option chosen); KnownOpen C12
+//! 3     Accept Birth Run Dissolve                Pending (no option chosen); Shipped (C12, L4)
 //! 4     FailureDelivery Reclaim                  KnownOpen C25; KnownOpen C31
 //! 5     Accept                                   Shipped
 //! 6     Subscribe Readiness                      Shipped; Shipped (L4)
@@ -985,8 +985,8 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         statuses: &[
             (Status::Pending { condition: NO_OPTION }, "birth, accept and dissolve of a pool-placed locus"),
             (
-                Status::KnownOpen { inventory_row: "C12" },
-                "a field nested under a pool-placed field runs its run() inline on the instantiating thread, off the pool the placement table gives it",
+                Status::Shipped,
+                "a field nested under a pool-placed field runs its run() on the pool the placement table gives it (L4)",
             ),
         ],
     },

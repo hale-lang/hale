@@ -1744,10 +1744,10 @@ its `KNOWN_OPEN` table.
   classes", Phase 4 v1 limit, says otherwise. One case is decided:
   a locus field nested under a pool-placed field is in that pool
   (the placement table gives it its owner's pool), and its `run()`
-  runs on the pool's worker, as a placed locus's does. Not yet
-  shipped (inventory row C12): no pool is chosen for its `run()`,
-  which runs inline on the instantiating thread (the lifecycle
-  matrix's cross-pool grandchild cells).
+  is posted to the pool's worker, as a placed locus's is. Shipped
+  (inventory row C12, F.40 phase 3's L4; the lifecycle matrix's
+  cross-pool grandchild cells): before, no pool was chosen for its
+  `run()`, which ran inline on the instantiating thread.
 - **Line 4, the failure route bound at birth, in every spine.**
   Every spine that evaluates a child's closures reads the failure
   route the child bound at its birth, so one instance has one
@@ -1924,10 +1924,15 @@ its `KNOWN_OPEN` table.
   that run starting, and is torn down once; a run that started before
   the teardown began is ordered against it by the join, as before.
   Shipped (F.40 phase 3, L5): the cancellation is named in the trace
-  build where the reclaim makes it, before the child's struct is
-  released, and the release build runs the same path
-  (`l19_queued_run_canceled.hl`, and the lifecycle matrix's pool
-  cells, which assert the named terminal). Before it, the run started
+  build where the reclaim makes it, and the release build runs the
+  same path (`l19_queued_run_canceled.hl`, and the lifecycle matrix's
+  pool cells, which assert the named terminal). The reclaim is emitted
+  in the order the lifecycle plan places its steps (L4): the owned
+  children's reclaims, the latch, the cancellation of the runs still
+  queued for the instance on any pool, then the release of its arena
+  and of its struct, so a run queued on another pool's worker finds
+  the child whole or its ticket canceled, never a released arena.
+  Before it, the run started
   on the freed struct (a heap-use-after-free under AddressSanitizer;
   an accepted child was torn down twice), or, for a subscriber, was
   freed unrun with no terminal named. Not yet shipped: the post's ABI

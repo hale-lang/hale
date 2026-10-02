@@ -403,8 +403,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut self.cooperative_pool_for_next_locus_instantiation,
         );
         let prev_current_coop_pool = self.current_cooperative_pool.take();
-        if coop_pool_override.is_some() {
-            self.current_cooperative_pool = coop_pool_override;
+        // C12 (L4): the pool this instance is in, which its own params
+        // fields inherit: a placed field's, or, for a field owned
+        // through its owner's params, its owner's (the placement table
+        // gives it its owner's domain). Its run() is posted there and
+        // its subscriptions registered there, as a placed field's are.
+        let run_pool = coop_pool_override
+            .clone()
+            .or_else(|| if parent_owns_via_field { self.field_run_pool.clone() } else { None });
+        let prev_field_run_pool = std::mem::replace(&mut self.field_run_pool, run_pool.clone());
+        if run_pool.is_some() {
+            self.current_cooperative_pool = run_pool;
         }
         let mut info = self
             .user_loci
@@ -501,6 +510,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).
             self.current_cooperative_pool = prev_current_coop_pool;
+            self.field_run_pool = prev_field_run_pool;
             self.current_instantiation_replica_index = prev_replica_index;
             return self.emit_crosspool_bubble_spawn(
                 locus_name,
@@ -4431,6 +4441,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
             // F.31 Phase 4: pinned-branch restore mirror.
             self.current_cooperative_pool = prev_current_coop_pool;
+            self.field_run_pool = prev_field_run_pool;
             self.current_instantiation_replica_index = prev_replica_index;
             return Ok(self_ptr);
         }
@@ -5066,6 +5077,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prev_current_coop_pool; we restore it here so
         // nesting works correctly.
         self.current_cooperative_pool = prev_current_coop_pool;
+        self.field_run_pool = prev_field_run_pool;
         self.current_instantiation_replica_index = prev_replica_index;
         Ok(self_ptr)
     }

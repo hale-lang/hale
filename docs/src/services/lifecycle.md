@@ -497,6 +497,9 @@ so nothing tears it down twice. The rules that order gives you:
   own sends included, waits and is delivered afterwards, in order.
 - **A pinned locus checks its birth on its own thread.** Its
   `birth_check` runs there, after `birth()` and before `run()`.
+- **A field inherits its owner's pool.** A locus field inside a
+  field placed on a cooperative pool runs its `run()` on that pool,
+  as its owner does.
 - **A failure is a `ClosureViolation`, delivered when it happens.**
   A failing birth closure, `birth_check`, `violate` or closure
   reaches the parent's `on_failure` at that moment, not at the
@@ -522,8 +525,6 @@ behaviour until it changes:
   dissolved;
 - a field typed by an interface or a perspective is drained after
   its owner's `dissolve()`, not before its owner's `drain()`;
-- a locus field inside a field placed on a pool runs its `run()` on
-  the thread that built it, not on that pool;
 - a restart asked for while `main`'s exit is already joining the
   pools still runs;
 - a pool-placed publisher waiting in `or wait` on a queue only

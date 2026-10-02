@@ -1478,6 +1478,7 @@ pub fn build_resolved(
         in_params_default: false,
         params_init_initialized: None,
         cooperative_pool_for_next_locus_instantiation: None,
+        field_run_pool: None,
         current_cooperative_pool: None,
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
@@ -3843,6 +3844,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// to the prior value at function exit. None means
     /// "default — main pool / global queue."
     pub(crate) current_cooperative_pool: Option<String>,
+    /// The cooperative pool the instance being built is in, for its own
+    /// params fields to inherit (inventory C12, L4): a locus field nested
+    /// under a pool-placed field is in that pool (the placement table
+    /// gives it its owner's), so its `run()` is posted there and its
+    /// subscriptions registered there, as a placed field's are
+    /// (`current_cooperative_pool` for its instantiation). Set for the
+    /// duration of one instantiation, restored at its exit.
+    pub(crate) field_run_pool: Option<String>,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()

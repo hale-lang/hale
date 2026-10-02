@@ -11,12 +11,19 @@
 // at settle, before Owner's birth(). The thread it ran on is L5's
 // assertion (`failure_delivery_domain`).
 //
+// Boom fails its `birth_check`: its birth runs on the instantiating
+// thread inside Owner's params (decision line 3, pending), so the
+// failure is raised while they are open. Its run() is posted to the
+// pool the placement table gives it, its owner's (C12, L4), where a
+// failure would race Owner's settle.
+//
 // Expected terminal outcome today: `outcome: delivered-at-settle`.
 
 locus Boom {
     params { name: String = ""; }
     closure fuse { captures: name; epoch inline; }
-    run() { violate fuse; }
+    birth_check { self.name == "c" } -> violate fuse;
+    run() { println("ev boom-run"); }
 }
 
 locus Owner {
