@@ -284,14 +284,18 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
    for the child's interface is the **owner** (innermost-wins —
    interest-based ownership / accept bubbling; see below and
-   `runtime.md`). Its `accept(c)` runs first; if it rejects,
-   instantiation fails (no region allocated). With no accepting
-   ancestor the child is a transient throwaway (no owner).
+   `runtime.md`). Its `accept(c)` runs once the child's region
+   exists and its params are built, before the child's `birth()`,
+   and it cannot reject (`runtime.md` § "Lifecycle obligations",
+   line 5). With no accepting ancestor the child is a transient
+   throwaway (no owner).
 3. Region allocated as a sub-region of the **owner's** region
    (the accepting ancestor — not necessarily the direct parent);
    size determined by projection class.
-4. `birth(args)` runs synchronously.
-5. Bus subscriptions wire up.
+4. Bus subscriptions wire up, before `birth()`, so that
+   `birth()` may publish to its own subscriptions (`runtime.md`
+   § "Lifecycle obligations", line 6).
+5. `birth(args)` runs synchronously.
 6. Modes are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's
    scheduler. For a locus placed `pinned` or on a
@@ -389,8 +393,9 @@ lowered in (`spec/decisions.md` F.39).
   drain → dissolve all fire at the statement boundary.
   Fire-and-forget. The handle is discarded.
 - **Let-bound literal** (`let h = LocusName { ... };`): birth
-  + run + drain fire at the construction site. Dissolve is
-  **deferred to the enclosing fn's scope-exit flush**. The
+  + run fire at the construction site. Drain and dissolve are
+  **deferred to the enclosing fn's scope-exit flush**
+  (`runtime.md` § "Lifecycle obligations", line 11). The
   user-visible binding `h` is the handle; the locus instance
   lives until `h` goes out of scope. This is what makes
   `let s = Stream { conn_fd: fd }; s.send(msg) or raise;` work — `s`
@@ -1199,21 +1204,24 @@ parent retains ownership of the underlying allocator.
 ### `birth()`
 
 Runs once, synchronously, after region allocation and before
-the locus is "live" for any other purpose. Failure during
-birth: region freed, parent's `on_failure(self,
-StructuralFailure { ... })` invoked.
+the locus is "live" for any other purpose. A failure during
+birth (a birth-epoch closure or `birth_check`) is a
+`ClosureViolation`: the region is kept, and the parent's
+`on_failure(c, ClosureViolation { ... })` runs at that epoch,
+held while the parent's params are open, so the handler can read
+the child and restart it (`runtime.md` § "Lifecycle obligations",
+line 8). There is no `StructuralFailure`.
 
 ### `accept(c)`
 
-Runs **before** child c's region is allocated (per F.7).
-Receives c's declared params (not its running state). Can:
+Runs after child c's region is allocated and its params are
+built, and before its `birth()`. Receives c with its params set
+(not its running state). Its result is not read: `accept` admits
+the child and cannot reject it; an admission interface is
+separate work (`runtime.md` § "Lifecycle obligations", line 5).
 
-- Return normally (accept) — child proceeds to allocation +
-  birth.
-- Panic / return error (reject) — child instantiation fails.
-
-After accept returns normally, child registers in
-`self.children` (per F.11).
+After accept returns, the child registers in `self.children`
+(per F.11).
 
 A locus declares **at most one** `accept` (single-accept-type per
 parent, `types.md` F.11). A second `accept` clause is a typecheck
@@ -1240,8 +1248,10 @@ empty run completes, right after its birth, whether the empty `run()
 because the hook was left out. A resident is unaffected: an empty
 run means "ready" either way.
 
-If run() panics, parent's `on_failure(self, StructuralFailure
-{ ... })` invoked.
+A `violate` in run(), or a closure that fails there, is a
+`ClosureViolation`, delivered to the parent's `on_failure(c,
+ClosureViolation { ... })` at that point (`runtime.md` §
+"Lifecycle obligations", lines 8 and 9). run() has no panic.
 
 ### `drain()`
 
@@ -1262,23 +1272,23 @@ drained).
 
 ### `dissolve()`
 
-Runs once, after drain completes. Executes user-supplied
-cleanup code if any. Then:
+Runs once, after drain completes, in this order
+(`runtime.md` § "Lifecycle obligations", line 10):
 
-- Closure tests at `dissolve` epoch fire (per F.9). Failure
-  records explosion flag.
+- Closure tests at `dissolve` epoch fire (per F.9). A failure
+  is delivered then, to the parent's `on_failure(c,
+  ClosureViolation { ... })`.
+- The user-supplied cleanup code runs, if any.
 - Region freed wholesale.
-- If exploded, parent's `on_failure(self, ClosureViolation
-  { ... })` invoked alongside region release.
-- Otherwise, parent sees normal child-dissolution.
+- Without a failure, the parent sees normal child-dissolution.
 
 Default dissolve: free region.
 
 ### `on_failure(c, err)`
 
-Runs when a child of self fails (any failure type:
-StructuralFailure, ClosureViolation, etc.). Receives the
-child handle and the typed error.
+Runs when a child of self fails: a `ClosureViolation`, or, for
+main's bindings, a transport's loss. Receives the child handle
+and the typed error.
 
 The handler may:
 - Return normally (absorb): treat as collapsed — the child
@@ -4351,8 +4361,10 @@ A closure violation at any epoch:
 1. Runtime emits `ClosureViolation` event.
 2. Locus's exploded flag is set.
 3. Subsequent epochs may also fail; flag persists.
-4. At dissolve, parent's `on_failure(self, ClosureViolation
-   { ... })` invoked.
+4. At the failing epoch, parent's `on_failure(self,
+   ClosureViolation { ... })` invoked; held while the parent's
+   params are open (`runtime.md` § "Lifecycle obligations",
+   line 9).
 5. Parent's policy decides: absorb, recover, bubble.
 6. If bubbled, propagates to grandparent; recursively until
    absorbed or reaching root (process exit).

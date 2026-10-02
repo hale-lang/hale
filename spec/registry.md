@@ -1174,7 +1174,7 @@ GENERATED from `crates/hale-graph/src/registry.rs` and held byte-equal by `regis
 
 **Focused tests.** crates/hale-codegen/tests/lifecycle_flow.rs; crates/hale-codegen/tests/reclamation_spine.rs; crates/hale-codegen/tests/main_locus_deferred_pool_join.rs; crates/hale-codegen/tests/teardown_pinned_join_order.rs; crates/hale-types/src/lifecycle.rs (the schema's laws: every decision line binds a kind, the Pending lines are the named ones, the doc table is the data)
 
-**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/semantics.md § lifecycle
+**Spec.** spec/runtime.md (failure delivery; pool join rule b); spec/runtime.md § Lifecycle obligations (the decision lines, adopted and shipped told apart); spec/semantics.md § lifecycle
 
 ### `bus_inert` — Canonical · derivation
 

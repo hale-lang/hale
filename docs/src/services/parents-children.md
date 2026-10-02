@@ -22,8 +22,8 @@ locus GameSession {
 
 locus Room {
     accept(g: GameSession) {
-        // runs before g's region is allocated — the gatekeeper.
-        // return normally to admit; route through on_failure to reject.
+        // runs once g's params are built, before g's birth().
+        // It admits g; it cannot turn it away.
     }
 
     fn on_join(p: Player) {
@@ -34,8 +34,10 @@ locus Room {
 ```
 
 When `GameSession { ... }` is evaluated inside `Room`'s body, the
-runtime runs `Room.accept(g)` first, then allocates the child's
-region *inside* the parent's, then births and runs it. The
+runtime allocates the child's region *inside* the parent's, builds
+its params, runs `Room.accept(g)`, then births and runs it.
+`accept` sees the child's params but not its running state, and
+whatever it does, the child is admitted. The
 parent's `self.children` holds its accepted children (with
 `self.children.count` and `self.children.is_empty` for quick
 summaries).
