@@ -293,8 +293,10 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    (the accepting ancestor — not necessarily the direct parent);
    size determined by projection class.
 4. Bus subscriptions wire up, before `birth()`, so that
-   `birth()` may publish to its own subscriptions (`runtime.md`
-   § "Lifecycle obligations", line 6).
+   `birth()` may publish to its own subscriptions; delivery to the
+   locus becomes eligible once `birth()` (and its `birth_check`)
+   has completed, and what was published to it before waits, in
+   order (`runtime.md` § "Lifecycle obligations", line 6).
 5. `birth(args)` runs synchronously.
 6. Modes are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's
@@ -2796,7 +2798,10 @@ unambiguous, the desugar pass rewrites the publisher's
 - **Intra-locus (same-type):** publisher locus type == subscriber
   locus type. Every Send happens inside an instance of the same
   locus that hosts the handler. Rewrite: `Foo <- v` →
-  `self.handler(v)`.
+  `self.handler(v)`, except in `birth()`: delivery to an instance
+  is eligible once its birth has completed (`runtime.md`
+  § "Lifecycle obligations", line 6), so a send there stays on the
+  bus, which holds it until then.
 - **Intra-tower (parent → child):** publisher locus type P has
   exactly one direct singleton field (declared in `params { }`)
   whose type names the subscriber locus type S. Every Send in
