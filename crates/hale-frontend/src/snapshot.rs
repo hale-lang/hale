@@ -75,6 +75,7 @@ use hale_syntax::api_gen::ApiSurface;
 use hale_syntax::ast::{Import, Program, TopDecl};
 use hale_syntax::Diag;
 use hale_types::alloc_summary::AllocSummary;
+use hale_types::capability::uses::CapabilityUses;
 use hale_types::capability::TargetRow;
 use hale_types::binding_rows::BindingRows;
 use hale_types::bus_graph::BusGraph;
@@ -441,6 +442,7 @@ pub struct Snapshot {
     unlinked: Option<CheckableFailure>,
     entry: OnceCell<Result<EntryRow, Blocked>>,
     target: OnceCell<Result<TargetRow, Blocked>>,
+    capability_uses: OnceCell<Result<CapabilityUses, Blocked>>,
     scope: OnceCell<Result<Scope, Blocked>>,
     /// The editor's scope over the members that parsed, for a seed with
     /// a hole ([`Snapshot::demand_editor_scope`]).
@@ -639,6 +641,7 @@ impl Snapshot {
             unlinked: loaded.unlinked,
             entry: OnceCell::new(),
             target: OnceCell::new(),
+            capability_uses: OnceCell::new(),
             scope: OnceCell::new(),
             partial_scope: OnceCell::new(),
             bindings: OnceCell::new(),
@@ -995,6 +998,23 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The use rows (the `target_capability` family's second product,
+    /// `hale_types::capability::uses`): every way the program asks its
+    /// target for a capability, over the resolved graph the allocation
+    /// summary holds, each with its witness chain. The check holds them
+    /// to the effective target's cells (the admission law), so the
+    /// check, the build and the editor refuse alike. Blocked with the
+    /// summary. The family's count is its row's: the uses are its second
+    /// product, derived once beside it, never a second derivation.
+    pub fn demand_capability_uses(&self) -> Result<&CapabilityUses, &Blocked> {
+        self.capability_uses
+            .get_or_init(|| {
+                let summary = self.alloc_summary().map_err(Clone::clone)?.clone();
+                Ok(hale_types::capability::uses::derive_capability_uses(&self.bundle(), &summary))
+            })
+            .as_ref()
+    }
+
     /// The `top_scope` family's producer over the programs held, counted.
     fn build_scope(&self) -> (TopScope, Vec<Diag>) {
         self.count("top_scope");
@@ -1144,6 +1164,7 @@ impl Snapshot {
             intra_locus: &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus,
             placement: self.demand_placement().map_err(Clone::clone)?,
             target: self.demand_target().map_err(Clone::clone)?,
+            uses: self.demand_capability_uses().map_err(Clone::clone)?,
         };
         self.count("expression_typing");
         // The editor's previous snapshot of the seed, if it offered
@@ -1638,6 +1659,16 @@ impl Snapshot {
                         checked.diags.iter().filter(|d| d.is_error()).cloned().collect();
                     if !errors.is_empty() {
                         return Err(Blocked { family: "lowering_view", because: errors, refused: None });
+                    }
+                } else {
+                    // A lowering the check does not gate (the harness's)
+                    // still lowers no use the target refuses: the
+                    // admission law, read here as the check reads it.
+                    let row = self.demand_target().map_err(Clone::clone)?;
+                    let uses = self.demand_capability_uses().map_err(Clone::clone)?;
+                    let refused = hale_types::capability::uses::admission_diags(uses, row, &self.import_renames);
+                    if !refused.is_empty() {
+                        return Err(Blocked { family: "target_capability", because: refused, refused: None });
                     }
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
@@ -2158,6 +2189,35 @@ mod tests {
             TargetSpec::host().triple
         );
         assert_eq!(messages, vec![(0, want.as_str())]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// No target leaks across the editor's snapshots (design §1.7, P3 2
+    /// of 3): one session's buffer gains a `target wasm { }` line and
+    /// loses it again. The stdlib refusal appears and disappears with the
+    /// line, each snapshot derives its own row once, and the use rows
+    /// are the same three times: what changed is the target, not the
+    /// program's uses.
+    #[test]
+    fn the_editor_follows_a_target_line_in_and_out() {
+        let d = scratch("target-edit");
+        let app = d.join("app.hl");
+        let body = "fn main() {\n    let _ = std::process::pid();\n}\n";
+        std::fs::write(&app, body).unwrap();
+        let mut uses = Vec::new();
+        for (text, refused) in
+            [(body.to_string(), false), (format!("{body}\ntarget wasm {{ }}\n"), true), (body.to_string(), false)]
+        {
+            let mut buffers = BTreeMap::new();
+            buffers.insert(app.clone(), text);
+            let s = load(&app, &Overlay::new(&buffers), Config::editor());
+            let diags = &s.demand_check().expect("the check runs").diags;
+            let gate = diags.iter().filter(|d| d.message.contains("is unavailable under `target wasm`")).count();
+            assert_eq!(gate, usize::from(refused), "{diags:?}");
+            assert_eq!(s.builds()["target_capability"], 1, "one derivation per snapshot");
+            uses.push(s.demand_capability_uses().expect("the use rows").clone());
+        }
+        assert!(uses.windows(2).all(|w| w[0] == w[1]), "the uses do not depend on the target");
         let _ = std::fs::remove_dir_all(&d);
     }
 

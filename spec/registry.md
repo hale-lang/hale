@@ -41,7 +41,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
-| `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 6 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
+| `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 5 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Migrating | derivation | `derive_lifecycle` | 9 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
@@ -956,7 +956,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Guarded seams.**
 
-- `summarize_identified(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×4
+- `summarize_identified(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×4, `crates/hale-types/src/capability/uses.rs` ×1
 - `allocating_recv(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×2
 - `check_hot_path_alloc(` may be referenced from: `crates/hale-types/src/check.rs` ×2
 - `derive_alloc_summary(` may be referenced from: `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×2, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/evidence.rs` ×1, `crates/hale-types/src/judgment.rs` ×1, `crates/hale-types/src/topology.rs` ×1, `crates/hale-types/src/resource_budget.rs` ×1
@@ -1123,14 +1123,15 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-types/src/check.rs` · `wasm_unavailable_stdlib` — a hand-kept slice-pattern table keyed by leading namespace, consulted when the effective target is wasm32, and only for call forms. *Removed when:* one CapabilityMatrix consulted by the driver before lowering.
 - `crates/hale-codegen/src/codegen.rs` · `link_wasm` — link-time refusals (link_libs) and the export list. *Removed when:* same.
 - `crates/hale-codegen/src/locus/instantiation.rs` · `lotus_replay_start_ingress` — one of the per-site wasm skips; on wasm the eager main-locus spine emits the pool join where every other spine omits it, and every spine but the deferred entry emits wait-abort. *Removed when:* same.
 - `crates/hale-codegen/src/codegen.rs` · `is_wasm` — 31 sites read it: 14 are emission choices (a TargetSpec query, never a cell), the rest decide a behaviour, the link path or an obligation, each classified in the lowering shadow's site inventory. *Removed when:* emission configuration through TargetSpec only; every capability through the matrix.
 - `crates/hale-types/src/check.rs` · `ffi_type_unportable` — FFI portability per type. *Removed when:* a capability row.
-- `crates/hale-types/src/target.rs` · `TargetSpec` — has_async_io is true for wasm32; the checker's `where async_io` gate reads it of the effective target. *Removed when:* the matrix is the one statement, on every entry point.
+- `crates/hale-types/src/target.rs` · `TargetSpec` — has_async_io is true for wasm32, where the AsyncIoPool cell the admission reads is still Lower. *Removed when:* the matrix is the one statement, on every entry point.
 
-**Consumers.** check; build; docs (systems/webassembly.md § What wasm32 can do, and spec/ffi.md's refused-namespace table: regions rendered from the cells) (`crates/hale-types/src/capability.rs` · `render_markdown`); the effective-target row, on the snapshot: the check's target and its conflict refusal, the editor's alike (`crates/hale-frontend/src/snapshot.rs` · `demand_target`); hale build's backend and artifact naming, from the effective target (`crates/hale-cli/src/verbs/build.rs` · `compile_target(row.effective)`); hale run and replay refuse a program whose effective target is wasm32 (`crates/hale-cli/src/shared/options.rs` · `refuse_unexecutable`)
+**Also owned.** `crates/hale-types/src/capability/uses.rs` · `derive_capability_uses`; `crates/hale-types/src/capability/uses.rs` · `admission_diags`
+
+**Consumers.** check; build; docs (systems/webassembly.md § What wasm32 can do, and spec/ffi.md's refused-namespace table: regions rendered from the cells) (`crates/hale-types/src/capability.rs` · `render_markdown`); the effective-target row, on the snapshot: the check's target and its conflict refusal, the editor's alike (`crates/hale-frontend/src/snapshot.rs` · `demand_target`); hale build's backend and artifact naming, from the effective target (`crates/hale-cli/src/verbs/build.rs` · `compile_target(row.effective)`); hale run and replay refuse a program whose effective target is wasm32 (`crates/hale-cli/src/shared/options.rs` · `refuse_unexecutable`); the use rows, on the snapshot: the check's input beside the row (`crates/hale-frontend/src/snapshot.rs` · `demand_capability_uses`); the admission law: every use's cell for the effective target, in the check of every entry point (`crates/hale-types/src/check.rs` · `admission_diags`)
 
 **Invariants.**
 
@@ -1141,17 +1142,20 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - a capability refusal depends only on the program, the configuration and the target; a failure that depends on the machine running the compiler stays a toolchain error
 - a target's class comes from its (arch, os, env), never from a triple's name; the effective target is a function of the snapshot key's configured target and its sources
 - one effective target for analysis and emission alike (T1(b)): an explicit `--target`, else a written `target wasm`/`browser_js` declaration (wasm32), else the host; a `--target` of another class than a written declaration's is refused at the declaration, and a declaration `--wrap-main` injects never selects
+- every use is read off resolved identities (a call, a method through its receiver's type, a cross-seed alias, a construction and the lifecycle it implies), never a `std::` spelling of the call; a type-only mention is not a use
+- the program's own sources are the horizon: a use is refused once, at its first site in them, naming the capability, the target and its witness chain; a callee beyond it is refused at the call that crosses into it
+- an unresolved requirement is never an admission on a target that rejects anything in its family: a hole is refused there and recorded elsewhere
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/wasm_target_gating.rs; crates/hale-codegen/tests/wasm_target.rs; crates/hale-cli/tests/target_model.rs; crates/hale-cli/tests/target_precedence.rs (the precedence table: source x --target, check, build and the editor agreeing per cell; wasm-flower built for its declared target; run refusing a declared program; the agreement test: every wasm-relevant program's located refusals equal on check, build and the editor, with and without --target wasm32); crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires, KNOWN_OPEN still today's answer); crates/hale-types/tests/shadow_capability.rs (the checker rows against their cells over the corpus, tests/hale, the DNA seeds and the wasm programs, on three columns: 0 divergences); crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi("js") against their cells, both targets built; 7 classified divergences, all the design's: 3 PoolJoin, 4 @ffi("js") native links); crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences); crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)
+**Focused tests.** crates/hale-types/tests/wasm_target_gating.rs; crates/hale-codegen/tests/wasm_target.rs; crates/hale-cli/tests/target_model.rs; crates/hale-cli/tests/target_precedence.rs (the precedence table: source x --target, check, build and the editor agreeing per cell; wasm-flower built for its declared target; run refusing a declared program; the agreement test: every wasm-relevant program's located refusals equal on check, build and the editor, with and without --target wasm32); crates/hale-types/src/capability/laws.rs (the matrix's laws: one cell per pair, anchored witnesses, premises, requires, KNOWN_OPEN still today's answer); crates/hale-types/tests/shadow_capability.rs (the checker rows against their cells over the corpus, tests/hale, the DNA seeds and the wasm programs, on three columns: 0 divergences); crates/hale-codegen/tests/shadow_capability_lowering.rs (the codegen rows, the thread behaviours and @ffi("js") against their cells, both targets built, a harness build refused by the admission before lowering; 10 classified divergences, all the design's: 2 PoolJoin, 4 @ffi("js") native links, 4 declared export-only programs a harness lowers natively anyway, where codegen still says `program has no fn main()`); crates/hale-cli/tests/shadow_capability_cli.rs (run, replay, record and --wrap-main against their cells; 0 divergences); crates/hale-types/tests/capability_uses.rs (the use producer's acceptance cases: a stdlib call, a construction with its lifecycle, a handle's method, a wrapper refused once, module-nested and on_failure bodies, a hole, declaration rows, an export-only program, an exported run(); each type-only variant admitted); crates/hale-types/tests/capability_doc_matches.rs (both document regions equal the rendered matrix)
 
 **Spec.** spec/decisions.md F.35; spec/ffi.md § The `target` declaration + stdlib gating; docs/src/systems/webassembly.md
 
 **Guarded seams.**
 
-- `wasm_unavailable_stdlib(` may be referenced from: `crates/hale-types/src/check.rs` ×2
-- `derive_capability_matrix(` may be referenced from: `crates/hale-types/src/capability.rs` ×2, `crates/hale-types/src/capability/transport.rs` ×1, `crates/hale-types/src/capability/laws.rs` ×12
+- `derive_capability_matrix(` may be referenced from: `crates/hale-types/src/capability.rs` ×2, `crates/hale-types/src/capability/transport.rs` ×1, `crates/hale-types/src/capability/laws.rs` ×12, `crates/hale-types/src/capability/uses.rs` ×2
+- `derive_capability_uses(` may be referenced from: `crates/hale-types/src/capability/uses.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×1
 - `target_row(` may be referenced from: `crates/hale-types/src/capability.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1, `crates/hale-types/src/check.rs` ×1, `crates/hale-types/src/lib.rs` ×1
 
 ### `deployment` — Reserved · derivation

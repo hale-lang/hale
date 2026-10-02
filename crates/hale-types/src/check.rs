@@ -520,6 +520,10 @@ pub struct CheckInputs<'a> {
     /// one target the check judges the program against, and the row's
     /// own refusals, which the check reports.
     pub target: &'a crate::capability::TargetRow,
+    /// The use rows (the `target_capability` family's): every way the
+    /// program asks its target for a capability, which the admission law
+    /// holds to the effective target's cells.
+    pub uses: &'a crate::capability::uses::CapabilityUses,
 }
 
 /// The check of a bundle no snapshot holds, over `top` (the tests'
@@ -561,6 +565,7 @@ fn check_numbered_bundle(
     let bus = crate::bundle_bus_graph(bundle, top, &bindings);
     let intra_locus = crate::bundle_intra_locus(bundle);
     let target = crate::capability::target_row(bundle);
+    let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -574,6 +579,7 @@ fn check_numbered_bundle(
         intra_locus: &intra_locus,
         placement: &placement,
         target: &target,
+        uses: &uses,
     };
     check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
 }
@@ -692,6 +698,10 @@ pub fn check_bundle_by_declaration(
     // The effective target's own refusal: an explicit `--target` a
     // written declaration contradicts (T1(b)).
     diags.extend(inputs.target.refusals.iter().cloned());
+    // The admission law (F.40 phase 3, P3): every use whose cell is
+    // `Reject` on the effective target, located at its first site in
+    // the program's own sources, with its witness.
+    diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //
@@ -738,7 +748,6 @@ pub fn check_bundle_by_declaration(
             in_on_failure: false,
             fallible_ctx: None,
             return_ctx: None,
-            target: inputs.target,
             strict_callees,
             strict_idents,
             or_value_discarded: false,
@@ -7364,46 +7373,6 @@ fn ffi_type_unportable(ty: &Ty) -> Option<&'static str> {
     }
 }
 
-/// WASM plan — stdlib portability table. Returns a one-line reason +
-/// browser alternative for a `std::` path unavailable under `target
-/// wasm` (no syscalls in the browser sandbox), or `None` for the
-/// portable surface (str/bytes/json/text/math/crypto/rand/decimal/bus/
-/// diag/time/env/iter/...). Keyed on the leading namespace so every
-/// call under it is covered.
-fn wasm_unavailable_stdlib(segs: &[&str]) -> Option<&'static str> {
-    match segs {
-        ["std", "io", "tcp", ..] => Some(
-            "raw TCP sockets don't exist in the browser; use a WebSocket \
-             bus adapter (`ws://`) for networking",
-        ),
-        ["std", "io", "udp", ..] => {
-            Some("raw UDP sockets don't exist in the browser")
-        }
-        ["std", "io", "tls", ..] => Some(
-            "raw TLS isn't available; the browser performs TLS transparently \
-             for `wss://` / `https://`",
-        ),
-        ["std", "io", "fs", ..] | ["std", "io", "file", ..] => Some(
-            "filesystem access isn't available in the browser sandbox; use \
-             `fetch` (via an `@ffi(\"js\")` host import) or a bus message",
-        ),
-        ["std", "io", "stdin", ..] | ["std", "io", "stdout", ..] => Some(
-            "raw terminal I/O isn't available; use `println(...)` (the loader \
-             routes it to the host console)",
-        ),
-        ["std", "term", ..] => {
-            Some("terminal control (`std::term`) isn't available in the browser")
-        }
-        ["std", "process", ..] => Some(
-            "OS process control (`std::process`) isn't available in the browser",
-        ),
-        ["std", "http", ..] => Some(
-            "the `std::http` server is built on raw TCP and isn't available \
-             in the browser",
-        ),
-        _ => None,
-    }
-}
 
 struct Checker<'a> {
     top: &'a TopScope,
@@ -7428,13 +7397,6 @@ struct Checker<'a> {
     /// `fn f() -> Int { return "s"; }` had no return check at all and
     /// surfaced at codegen as "unsupported in codegen v0".
     return_ctx: Option<Ty>,
-    /// The effective target (T1(b)): `--target`, else a written
-    /// `target wasm`/`browser_js` declaration, else the host. Under
-    /// wasm32 it gates the POSIX-only stdlib (no syscalls in the
-    /// browser sandbox) — see `wasm_unavailable_stdlib` — and its
-    /// `async_io` backend, never the host's (GH #970), judges
-    /// `where async_io`.
-    target: &'a crate::capability::TargetRow,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -9398,34 +9360,12 @@ impl<'a> Checker<'a> {
             for c in &entry.constraints {
                 match c.kind {
                     PlacementConstraint::AsyncIo => {
-                        // The async_io pool backend is epoll (Linux)
-                        // or kqueue (macOS, GH #970) over ucontext
-                        // coroutines. Where the TARGET's runtime has
-                        // none — musl, whose libc declares ucontext and
-                        // implements nothing — reject `where async_io`
-                        // at compile time with actionable guidance,
-                        // mirroring the wasm-target stdlib gating: the
-                        // C runtime's async_io functions are inert stubs
-                        // there (LOTUS_HAVE_ASYNC_IO == 0), so this is
-                        // the clean-failure path (vs a link error). The
-                        // target, not the host: this asked
-                        // `cfg!(target_os = "macos")` until GH #970.
-                        if !self.target.effective.has_async_io() {
-                            self.diags.push(Diag::ty(
-                                c.span,
-                                format!(
-                                    "placement entry `{}`: `async_io` pools \
-                                     aren't supported on {} yet — use a \
-                                     cooperative pool (drop `where async_io`), \
-                                     or build for glibc Linux or macOS. (The \
-                                     backend is epoll or kqueue over ucontext \
-                                     coroutines; this target's libc has no \
-                                     ucontext.)",
-                                    entry.field.name,
-                                    self.target.effective.platform_label()
-                                ),
-                            ));
-                        }
+                        // Whether the TARGET's runtime has the async_io
+                        // backend (epoll on Linux, kqueue on macOS, over
+                        // ucontext coroutines; none on musl, GH #970) is
+                        // the `AsyncIoPool` cell's, which the capability
+                        // admission holds the entry to. What is checked
+                        // here is the entry's own shape.
                         match &entry.spec {
                             PlacementSpec::Pinned { .. } => {
                                 self.diags.push(Diag::ty(
@@ -14264,30 +14204,10 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Call { callee, args, id: call_id, .. } => {
-                // WASM plan — stdlib target-gating. Under `target wasm`
-                // the browser sandbox has no syscalls, so reject a
-                // POSIX-only `std::` call at compile time with guidance
-                // (rather than letting it become an inert host import).
-                // Typecheck runs on USER code before the stdlib is merged
-                // in codegen, so this never flags the stdlib's own
-                // internals — only the program's calls.
-                if self.target.is_wasm32() {
-                    if let Expr::Path(qn) = callee.as_ref() {
-                        let segs: Vec<&str> =
-                            qn.segments.iter().map(|s| s.name.as_str()).collect();
-                        if let Some(why) = wasm_unavailable_stdlib(&segs) {
-                            self.diags.push(Diag::ty(
-                                qn.span,
-                                format!(
-                                    "`std::{}` is unavailable under {}: {}",
-                                    segs[1..].join("::"),
-                                    self.target.wasm32_selector(),
-                                    why
-                                ),
-                            ));
-                        }
-                    }
-                }
+                // (Stdlib target-gating is the capability admission's:
+                // `crate::capability::uses`, over the resolved graph,
+                // every way a program reaches a namespace, not only a
+                // call spelled `std::…`.)
                 // Typecheck M3 stage 1 (2026-07-02): stdlib fn-name
                 // validation. Within a TABLED namespace an unknown
                 // name is an error with a did-you-mean; untabled

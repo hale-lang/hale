@@ -6,12 +6,12 @@
 //!
 //! The rows, and how each legacy answer is observed:
 //!
-//! - `wasm_unavailable_stdlib` (the table): every `std::` call site,
-//!   checked under wasm32 with the gate on (a `target wasm { }`
-//!   declaration added where the program has none, which is the gate's
-//!   own trigger), against the `StdNamespace` cell of the path's
-//!   namespace, wording included. On the POSIX columns the gate is off
-//!   and every call lowers, which the host check observes.
+//! - the stdlib call sites (the `wasm_unavailable_stdlib` table's, which
+//!   the admission law replaced in P3 2 of 3): every `std::` call site,
+//!   checked under wasm32 (a `target wasm { }` declaration added where
+//!   the program has none), against the `StdNamespace` cell of the
+//!   path's namespace, wording included. On the POSIX columns every call
+//!   lowers, which the host check observes.
 //! - `wasm_target` (the trigger): whether the gate fires, observed by a
 //!   probe call appended to the program, checked with no `--target` and
 //!   with `--target wasm32`, against the effective-target row (T1(b)).
@@ -335,14 +335,19 @@ impl Shadow {
         }
     }
 
-    /// `wasm_unavailable_stdlib` against `StdNamespace`, per call site.
+    /// The stdlib gate's call-site refusals against `StdNamespace`, per
+    /// call site: the table `wasm_unavailable_stdlib` kept until the
+    /// admission law replaced it (P3 2 of 3), held to the cell its path
+    /// names. A refusal with a witness chain is a use the table never
+    /// saw (a construction, a handle's method, a crossing), not a call
+    /// site's.
     fn table(&mut self, class: TargetClass, id: &str, checked: &Checked, calls: &[(usize, String)], src_len: usize) {
         let mut old = Vec::new();
         let mut new = Vec::new();
         let refused: BTreeMap<usize, &str> = checked
             .diags
             .iter()
-            .filter(|d| d.message.contains(GATE))
+            .filter(|d| d.message.contains(GATE) && !d.message.contains(" — witness: "))
             .map(|d| (d.span.start.0 as usize, d.message.as_str()))
             .collect();
         for (at, path) in calls {
@@ -368,7 +373,7 @@ impl Shadow {
             old.push((key.clone(), msg.to_string()));
             new.push((key, self.std_fact(class, path)));
         }
-        self.compare("wasm_unavailable_stdlib", class, id, old, new);
+        self.compare("stdlib call sites", class, id, old, new);
     }
 
     /// The cell's answer for one `std::` call path.
@@ -379,7 +384,7 @@ impl Shadow {
                 let cell = self.m.behaviour(class, Capability::StdNamespace(ns)).expect("every namespace has a row");
                 match cell.refusal() {
                     None => "lower".to_string(),
-                    Some(r) => r.render(&cell.witness, &[("path", &path["std::".len()..])]),
+                    Some(r) => r.render(&cell.witness, &[("path", &path["std::".len()..]), ("selector", "`target wasm`")]),
                 }
             }
         }

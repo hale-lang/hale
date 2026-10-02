@@ -930,9 +930,11 @@ const fn reject(wording: &'static str, guidance: Option<&'static str>, witness: 
 
 // --------------------------------------------------------- behaviours
 
-/// The stdlib refusal on wasm32, the checker's wording verbatim:
-/// `{path}` is the use's call path after `std`.
-pub const STD_WASM_WORDING: &str = "`std::{path}` is unavailable under `target wasm`: {reason}";
+/// The stdlib refusal on wasm32, the stdlib gate's wording verbatim:
+/// `{path}` is the use's call path after `std` (its namespace when the
+/// use reaches it through a chain), `{selector}` what put the program
+/// under wasm32 (`` `target wasm` `` or `` `--target wasm32` ``).
+pub const STD_WASM_WORDING: &str = "`std::{path}` is unavailable under {selector}: {reason}";
 
 const STD_NATIVE: Behaviour = lower(w(
     "crates/hale-types/src/stdlib_surface.rs::SURFACES",
@@ -940,7 +942,7 @@ const STD_NATIVE: Behaviour = lower(w(
     SPEC_STDLIB,
 ));
 const STD_WASM: Behaviour = lower(w(
-    "crates/hale-types/src/check.rs::wasm_unavailable_stdlib",
+    ADMISSION,
     "admitted: outside the browser-unavailable set, lowered through the wasm shim",
     SPEC_WASM_GATE,
 ));
@@ -951,7 +953,7 @@ const fn std_wasm_reject(reason: &'static str, guidance: &'static str) -> Behavi
     reject(
         STD_WASM_WORDING,
         Some(guidance),
-        w("crates/hale-types/src/check.rs::wasm_unavailable_stdlib", reason, SPEC_WASM_GATE),
+        w(ADMISSION, reason, SPEC_WASM_GATE),
     )
 }
 const fn std_ns(
@@ -1146,16 +1148,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     BehaviourRow {
         capability: Capability::EntryInversion(Inversion::ExportOnly),
         cells: Columns {
-            posix_async: reject(
-                "program has no `fn main()`",
-                None,
-                w(CG_HAS_EXPORTS, "a native program's entry is its `fn main`", SPEC_ENTRY),
-            ),
-            posix_no_async: reject(
-                "program has no `fn main()`",
-                None,
-                w(CG_HAS_EXPORTS, "a native program's entry is its `fn main`", SPEC_ENTRY),
-            ),
+            posix_async: reject(EXPORT_ONLY_WORDING, Some(EXPORT_ONLY_GUIDANCE), w(ADMISSION, EXPORT_ONLY_REASON, SPEC_ENTRY)),
+            posix_no_async: reject(EXPORT_ONLY_WORDING, Some(EXPORT_ONLY_GUIDANCE), w(ADMISSION, EXPORT_ONLY_REASON, SPEC_ENTRY)),
             wasm32: lower(w(
                 CG_HAS_EXPORTS,
                 "an export-only module: the host drives it through its exports",
@@ -1406,6 +1400,13 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
 ];
 
 const CG_HAS_EXPORTS: &str = "crates/hale-codegen/src/codegen.rs::has_exports";
+
+/// An `@export`-only program on a native target (design §1.3): located
+/// at its first `@export`. It replaces codegen's late, unlocated
+/// "program has no `fn main()`".
+const EXPORT_ONLY_WORDING: &str = "a program with no `fn main` is an export-only module, which needs wasm32: {guidance}";
+const EXPORT_ONLY_GUIDANCE: &str = "declare `target wasm { }` or build with `--target wasm32`";
+const EXPORT_ONLY_REASON: &str = "a native program's entry is its `fn main`";
 const CG_EXPORT_RUN: &str = "crates/hale-codegen/src/codegen.rs::must not define `run()`";
 const CG_FFI_DECL: &str = "crates/hale-codegen/src/codegen.rs::f.ffi.is_some()";
 const CG_POOL_START: &str = "crates/hale-codegen/src/codegen.rs::lotus_coop_pool_start_all";
@@ -1424,7 +1425,9 @@ const PTHREAD_JOIN_MISMATCH: &str = "wasm-ld: function signature mismatch: pthre
 
 const ADAPTER_NATIVE: &str = "a user adapter locus on its own thread, its `send` handed to the bus runtime";
 const CG_SIGNALS: &str = "crates/hale-codegen/src/codegen.rs::lotus_drain_signals_install";
-const CHECK_ASYNC_IO: &str = "crates/hale-types/src/check.rs::self.target.effective.has_async_io()";
+const CHECK_ASYNC_IO: &str = ADMISSION;
+/// The admission law, which refuses every use whose cell is `Reject`.
+const ADMISSION: &str = "crates/hale-types/src/capability/uses.rs::admission_diags";
 const RT_WAIT_SPACE: &str = "crates/hale-codegen/runtime/lotus_arena.c::lotus_bus_subject_wait_space";
 const V_BUILD_WRAP: &str = "crates/hale-cli/src/verbs/build.rs::WRAP_MAIN_WORDING";
 
@@ -1874,7 +1877,10 @@ pub fn render_markdown(region: DocRegion) -> String {
             }
         }
         DocRegion::Wasm32Statement => {
-            let diag = STD_WASM_WORDING.replace("{path}", "...").replace("{reason}", "<reason>");
+            let diag = STD_WASM_WORDING
+                .replace("{path}", "...")
+                .replace("{selector}", "`target wasm`")
+                .replace("{reason}", "<reason>");
             out.push_str(&format!(
                 "**The standard library.** These namespaces are refused at typecheck, with \
                  ``error: {diag}``:\n\n| Refused | Why | Instead |\n|---|---|---|\n"
@@ -1960,3 +1966,4 @@ pub mod transport;
 
 #[cfg(test)]
 mod laws;
+pub mod uses;

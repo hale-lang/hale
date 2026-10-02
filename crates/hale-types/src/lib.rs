@@ -345,6 +345,7 @@ fn check_numbered_bundle(
     let bindings = binding_rows::derive_binding_rows(bundle, &top);
     let bus = bundle_bus_graph(bundle, &top, &bindings);
     let target = capability::target_row(bundle);
+    let uses = capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let (checked, effect_certificates) = check::check_bundle_reporting(
         bundle,
         &check::CheckInputs {
@@ -360,6 +361,7 @@ fn check_numbered_bundle(
             intra_locus: &bundle_intra_locus(bundle),
             placement: &placement,
             target: &target,
+            uses: &uses,
         },
         allow_unowned_subscriber,
         strict_callees,
