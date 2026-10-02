@@ -14,9 +14,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `sync_inference` | Layer 1 | Migrating | derivation | `form_rows` | 1 | Which sync discipline each `@form` declaration gets: one row per declaration with the author's configuration (omitted, a written discipline, `none` included, or an argument naming none) and the effective discipline, inference's pick for a `hashmap` form left unconfigured, from the domains each of its instances is called from; two queries, explicitly configured and safe for cross-domain access. |
 | `effect_class_table` | Layer 1 | Canonical | derivation | `EffectClasses` | 0 | The user effect classes of a load: one table every seed is parsed through, so a class (its name, its identity in the program's one class namespace) has one `User(i)` index in every seed; which were declared, which are composed, and the one expansion of a composed class. |
 | `top_scope` | Layer 2 | Migrating | derivation | `build_top_scope` | 1 | What every top-level name denotes: the symbol table over the merged program. |
-| `expression_typing` | Layer 2 | Migrating | derivation | `check_bundle_scoped` | 1 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
-| `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 3 | Which monomorph a generic call instantiates and how its bindings unify. |
-| `surfaces` | Layer 2 | Migrating | law | `check_structural_impl` | 2 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
+| `expression_typing` | Layer 2 | Canonical | derivation | `check_bundle_scoped` | 0 | The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from. |
+| `generics` | Layer 2 | Migrating | derivation | `unify_generic_ty` | 2 | Which monomorph a generic call instantiates and how its bindings unify. |
+| `surfaces` | Layer 2 | Canonical | law | `conformance_witness` | 0 | Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance. |
 | `forms` | Layer 2 | Migrating | law | `check_form_shape` | 1 | Whether a form's shape, its capacity slots and its projection class are well formed, and which operation set closes each slot. |
 | `stdlib_surface` | Layer 2 | Migrating | capability | `signature_for` | 6 | What each stdlib function is: its signature, its effect classes, whether it blocks, and what a value of a type can be rendered as. |
 | `entrypoint` | Layer 3 | Migrating | derivation | `entry_row` | 31 | Which locus is the program's `main`, whether the world is closed, and which declarations are imported. |
@@ -256,32 +256,33 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 - `build_top_scope(` may be referenced from: `crates/hale-types/src/resolve.rs` ×1, `crates/hale-types/src/lib.rs` ×3, `crates/hale-types/src/sync_inference.rs` ×1, `crates/hale-types/src/effects.rs` ×1, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
-### `expression_typing` — Migrating · derivation
+### `expression_typing` — Canonical · derivation
 
 **Answers.** The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from.
 
 **Inputs.** top_scope; declarations; bodies
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_bundle_scoped`
+**Producer.** `crates/hale-types/src/check.rs` · `check_bundle_scoped`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`; `crates/hale-types/src/typed_bodies.rs` · `typed_bodies`
 
-- `crates/hale-codegen/src/codegen.rs` · `infer_accumulator_inner_type` — codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across. *Removed when:* the resolved program carries the checker's types.
-
-**Also owned.** `crates/hale-types/src/resolve.rs` · `infer_literal_ty`
-
-**Consumers.** every layer
+**Consumers.** the snapshot (one typed-body table per snapshot, packaged on demand from the check's record) (`crates/hale-frontend/src/snapshot.rs` · `demand_typed_bodies`); codegen (an accumulator slot's element type, the closure's typed-body row) (`crates/hale-codegen/src/codegen.rs` · `accumulator_element_type`); every layer
 
 **Invariants.**
 
 - expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)
-- codegen types a value only where the checker's type is not yet carried across (the accumulator case); that residue is deleted when the resolved program carries types
+- codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span
+- the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/codegen_fixtures_typecheck.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs
+**Focused tests.** crates/hale-types/tests/typed_bodies.rs; crates/hale-types/tests/codegen_fixtures_typecheck.rs; crates/hale-codegen/tests/corpus_check_build_agreement.rs
 
 **Spec.** spec/types.md
+
+**Guarded seams.**
+
+- `typed_bodies(` may be referenced from: `crates/hale-types/src/typed_bodies.rs` ×1, `crates/hale-frontend/src/snapshot.rs` ×1
 
 ### `generics` — Migrating · derivation
 
@@ -293,44 +294,46 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/codegen.rs` · `unify_generic_param_bindings` — a Ty-level mirror of the checker's unification, by its own comment. *Removed when:* codegen reads the checker's monomorph table.
+- `crates/hale-codegen/src/codegen.rs` · `unify_generic_param_bindings` — a Ty-level mirror of the checker's unification, by its own comment. *Removed when:* codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them); blocked until the checker types the bare builtins a generic call's argument can be (`len`, `abs`, `min`, `max`, `to_string`, the numeric casts), which it types `Unknown` today, so `first(len(s))` is a hole the base lowers.
 - `crates/hale-codegen/src/codegen.rs` · `infer_generic_fn_args` — codegen infers generic arguments again from lowered types. *Removed when:* same.
-- `crates/hale-types/src/check.rs` · `resolve_generic_monomorph` — the template lookup parses mangled `Name_Tok` strings; tables are per program, not per snapshot. *Removed when:* keyed by identity, per snapshot.
 
-**Consumers.** check; codegen
+**Also owned.** `crates/hale-types/src/check.rs` · `monomorph_table`; `crates/hale-types/src/check.rs` · `specialize_generic_fns`
+
+**Consumers.** check (a mangled monomorph name: the table's row) (`crates/hale-types/src/check.rs` · `resolve_generic_monomorph`); codegen
 
 **Invariants.**
 
 - one unification; the monomorph set is a row lowering reads
+- one monomorph table per snapshot (the typed-body table's `monomorphs`), keyed by the template's site and its type arguments, never by a name string: its producer parses a mangled name once, for each name the program spells (a written instantiation as the checker resolves it, an annotation, a struct literal's path), against the bundle's templates by identity; the checker's lookups read the row
+- a generic call inside a generic fn's body is typed again for each of the fn's monomorphs, the template's parameters bound to its arguments, and recorded under them; that walk reports nothing
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-codegen/tests/generic_monomorph_agreement.rs
+**Focused tests.** crates/hale-codegen/tests/generic_monomorph_agreement.rs; crates/hale-types/tests/typed_bodies.rs
 
 **Spec.** spec/types.md
 
-### `surfaces` — Migrating · law
+### `surfaces` — Canonical · law
 
 **Answers.** Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance.
 
 **Inputs.** type, interface, contract, perspective declarations; locus members
 
-**Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `check_structural_impl`
+**Producer.** `crates/hale-types/src/check.rs` · `conformance_witness`
 
-**Legacy producers (permitted until removal).**
+**Also owned.** `crates/hale-types/src/check.rs` · `conformance`
 
-- `crates/hale-types/src/check.rs` · `check_satisfies_bus_adapter` — a second copy of the structural-impl check (its own comment: same logic). *Removed when:* one conformance function.
-- `crates/hale-codegen/src/types/mod.rs` · `locus_satisfies_interface` — codegen decides interface conformance by method names only, for storage routing. *Removed when:* codegen reads the conformance row.
-
-**Consumers.** check (`crates/hale-types/src/check.rs` · `check_contract_expose_validity`); check (`crates/hale-types/src/check.rs` · `check_serves_conformance`); check (`crates/hale-types/src/check.rs` · `check_reperspective`); codegen (vtable swap, storage routing)
+**Consumers.** check (`crates/hale-types/src/check.rs` · `check_contract_expose_validity`); check (`crates/hale-types/src/check.rs` · `check_serves_conformance`); check (`crates/hale-types/src/check.rs` · `check_reperspective`); check (interface coercion, F.20) (`crates/hale-types/src/check.rs` · `check_structural_impl`); check (a bus adapter binding's `__StdBusAdapter` contract) (`crates/hale-types/src/check.rs` · `check_main_and_bindings`); the typed-body table (the conformance column: every declared locus and interface pair, every generic locus specialization, the merged stdlib's pairs in the lowering view) (`crates/hale-types/src/typed_bodies.rs` · `typed_bodies`); codegen (storage routing: the conformance column) (`crates/hale-codegen/src/types/mod.rs` · `locus_satisfies_interface`); codegen (vtable swap)
 
 **Invariants.**
 
 - F.8 compatibility, F.14 and F.20 satisfaction are judged once, with a witness
+- one conformance function (`conformance_witness`), its witness the first requirement unmet in the interface's method order, rendered by each caller in its own words; the bus adapter's contract is judged without the error channel, as it always was
+- storage routing asks the conformance column, never the method names, and requires the checker's verdict that the locus satisfies the interface: a locus whose methods match the interface's by name and not by signature, or a generic locus's specialization, is no interface's, so its literal stays the frame's (a classified correction: the name comparison sent both to the program-lifetime payload arena; pinned in `conformance_routing_correction.rs`)
 
 **Missing data.** a missing required row is a compiler error
 
-**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/duplicate_member.rs
+**Focused tests.** crates/hale-types/tests/perspective_serves.rs; crates/hale-types/tests/duplicate_member.rs; crates/hale-types/tests/typed_bodies.rs; crates/hale-codegen/tests/conformance_routing_correction.rs
 
 **Spec.** spec/types.md; spec/semantics.md
 

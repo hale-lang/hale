@@ -37,6 +37,9 @@
 //!   composition of the two stages: the typing's diagnostics followed by
 //!   the laws', ordered and deduplicated as one pass over both would
 //!   leave them.
+//! - [`Snapshot::demand_typed_bodies`]: what the typing's check typed,
+//!   keyed by declaration identity: the table lowering reads instead of
+//!   typing again.
 //! - [`Snapshot::demand_lowering`]: the view codegen lowers
 //!   ([`LoweringView`]), after a check that reported no error.
 //!
@@ -82,6 +85,7 @@ use hale_types::placement::PlacementTable;
 use hale_types::resolve::TopScope;
 use hale_types::resolved::{IntraLocusStage, LoweringView};
 use hale_types::symbol::SourceFile;
+use hale_types::typed_bodies::{TypedBodies, TypingRecord};
 use hale_types::Bundle;
 
 use crate::frontend::{
@@ -102,8 +106,11 @@ use crate::source::SourceProvider;
 /// over the resolved program, a snapshot that is checked for its model
 /// and lowered holds both shapes' graphs. `target_capability` counts the
 /// effective-target row, which no consumer demands yet; `sync_inference`
-/// counts the form rows ([`Snapshot::demand_forms`]).
-pub const FAMILIES: [&str; 19] = [
+/// counts the form rows ([`Snapshot::demand_forms`]); `typed_bodies` the
+/// table the typing's record is packaged into
+/// ([`Snapshot::demand_typed_bodies`]): `expression_typing`'s answers,
+/// carried to lowering.
+pub const FAMILIES: [&str; 20] = [
     "seed_loading",
     "desugar_sequence",
     "snapshot_identity",
@@ -113,6 +120,7 @@ pub const FAMILIES: [&str; 19] = [
     "bindings",
     "sync_inference",
     "expression_typing",
+    "typed_bodies",
     "bus_graph",
     "ownership",
     "handler_routing",
@@ -438,9 +446,12 @@ pub struct Snapshot {
     partial_scope: OnceCell<Result<Scope, Blocked>>,
     bindings: OnceCell<Result<BindingRows, Blocked>>,
     forms: OnceCell<Result<FormRows, Blocked>>,
-    /// The typing's diagnostics, and the effects certificate report its
-    /// check produced ([`Snapshot::demand_effect_certificates`]).
-    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates), Blocked>>,
+    /// The typing's diagnostics, the effects certificate report its
+    /// check produced ([`Snapshot::demand_effect_certificates`]), and
+    /// what it typed, the record the typed-body table is packaged from
+    /// ([`Snapshot::demand_typed_bodies`]).
+    typing: OnceCell<Result<(Vec<Diag>, EffectCertificates, TypingRecord), Blocked>>,
+    typed_bodies: OnceCell<Result<TypedBodies, Blocked>>,
     bus_graph: OnceCell<Result<BusGraph, Blocked>>,
     ownership_graph: OnceCell<Result<OwnershipGraph, Blocked>>,
     handlers: OnceCell<Result<HandlerRouting, Blocked>>,
@@ -622,6 +633,7 @@ impl Snapshot {
             bindings: OnceCell::new(),
             forms: OnceCell::new(),
             typing: OnceCell::new(),
+            typed_bodies: OnceCell::new(),
             bus_graph: OnceCell::new(),
             ownership_graph: OnceCell::new(),
             handlers: OnceCell::new(),
@@ -1088,10 +1100,10 @@ impl Snapshot {
     /// does not typecheck (it reads declarations, not types), so a
     /// family the check reads is never one the check had to clear.
     fn typing(&self) -> Result<&[Diag], &Blocked> {
-        self.typed().map(|(diags, _)| diags.as_slice())
+        self.typed().map(|(diags, _, _)| diags.as_slice())
     }
 
-    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates), &Blocked> {
+    fn typed(&self) -> Result<&(Vec<Diag>, EffectCertificates, TypingRecord), &Blocked> {
         self.typing
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
@@ -1113,7 +1125,7 @@ impl Snapshot {
                 };
                 self.count("expression_typing");
                 let mut diags = scope.diags.clone();
-                let (checked, certificates) = hale_types::check::check_bundle_reporting(
+                let (checked, certificates, record) = hale_types::check::check_bundle_typing(
                     &self.bundle(),
                     &inputs,
                     self.config.allow_unowned_subscriber,
@@ -1121,7 +1133,7 @@ impl Snapshot {
                     self.config.whole_program,
                 );
                 diags.extend(checked);
-                Ok((diags, certificates))
+                Ok((diags, certificates, record))
             })
             .as_ref()
     }
@@ -1132,7 +1144,27 @@ impl Snapshot {
     /// check's laws, and the artifact's), so the engine runs once per
     /// snapshot. Blocked with the typing; no family of its own.
     pub fn demand_effect_certificates(&self) -> Result<&EffectCertificates, &Blocked> {
-        self.typed().map(|(_, certificates)| certificates)
+        self.typed().map(|(_, certificates, _)| certificates)
+    }
+
+    /// The typed-body table ([`hale_types::typed_bodies`], F.40 phase 3,
+    /// E4): what the typing's check typed, keyed by declaration
+    /// identity — each closure's accumulator element types, each generic
+    /// call's type arguments and unified params, the monomorph table,
+    /// each fallible call — with the conformance column judged over the
+    /// scope. The check records as it walks, so this packages that
+    /// record and runs no second check; a site the checker could not
+    /// type is a hole. Blocked with the typing, not with its
+    /// diagnostics.
+    pub fn demand_typed_bodies(&self) -> Result<&TypedBodies, &Blocked> {
+        self.typed_bodies
+            .get_or_init(|| {
+                let (_, _, record) = self.typed().map_err(Clone::clone)?;
+                let scope = self.scope().map_err(Clone::clone)?;
+                self.count("typed_bodies");
+                Ok(hale_types::typed_bodies::typed_bodies(&self.bundle(), &scope.top, record))
+            })
+            .as_ref()
     }
 
     /// The bus graph over the checked programs, with the scope's topic
@@ -1412,6 +1444,7 @@ impl Snapshot {
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
+                let typed = self.demand_typed_bodies().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1421,6 +1454,7 @@ impl Snapshot {
                     self.config.api_roles.as_deref(),
                     forms,
                     bindings,
+                    typed,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })

@@ -778,7 +778,7 @@ locus Parent {
 fn main() { let p = Parent { }; p.spawn(); }
 "#;
     let p = hale_syntax::parse_source(src).expect("parse");
-    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default())
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolve");
     let t = &resolved.owner_table;
     let kids: Vec<&Entry> = t
@@ -866,7 +866,7 @@ fn binding_rows_of(src: &str, decl: &str) -> (OwnerTable, Lets) {
     }
     let p = hale_syntax::parse_source(src)
         .unwrap_or_else(|e| panic!("the fixture does not parse: {e:?}\n{src}"));
-    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default())
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::typed_bodies::TypedBodies::default())
         .unwrap_or_else(|e| panic!("resolve_program refused the fixture: {e}"));
     let mut out = Vec::new();
     for item in &resolved.merged.items {
@@ -997,7 +997,7 @@ fn a_let_in_a_body_no_walk_read_has_a_row_of_falses() {
 fn a_binding_row_carries_the_site_id_the_snapshot_minted() {
     let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
     let p = hale_syntax::parse_source(&src).expect("parse");
-    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default())
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolve");
     let mut rows = 0;
     for (site, _) in resolved.owner_table.binding_rows() {
@@ -1014,7 +1014,7 @@ fn a_binding_row_carries_the_site_id_the_snapshot_minted() {
 fn build_resolved_refuses_options_whose_api_disagrees_with_the_envelope() {
     let src = program("    let a = make(1);\n    println(\"u=\", a.probe());");
     let p = hale_syntax::parse_source(&src).expect("parse");
-    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default())
+    let resolved = hale_types::resolved::resolve_program(&p, &[], &[], None, None, &hale_types::form_rows::FormRows::default(), &hale_types::binding_rows::BindingRows::default(), &hale_types::typed_bodies::TypedBodies::default())
         .expect("resolve");
     let mut options = build_opts::options();
     options.api_roles = Some("admin".to_string());

@@ -241,6 +241,7 @@ const JUDGMENT: &str = "crates/hale-types/src/judgment.rs";
 const CLAIMS: &str = "crates/hale-types/src/claims.rs";
 const SYNC: &str = "crates/hale-types/src/sync_inference.rs";
 const FORM_ROWS: &str = "crates/hale-types/src/form_rows.rs";
+const TYPED_BODIES: &str = "crates/hale-types/src/typed_bodies.rs";
 const TOPIC_ID: &str = "crates/hale-types/src/topic_identity.rs";
 const STDLIB_SURFACE: &str = "crates/hale-types/src/stdlib_surface.rs";
 const STDLIB_BODIES: &str = "crates/hale-types/src/stdlib_bodies.rs";
@@ -487,24 +488,23 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "expression_typing",
         layer: Layer::Declarations,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Derivation,
         answers: "The type of every expression, and the typed edges (calls, sends, field reads) the locus graph is built from.",
         inputs: &["top_scope", "declarations", "bodies"],
         producer: Some(site(CHECK, "check_bundle_scoped")),
-        legacy: &[
-            legacy(CG, "infer_accumulator_inner_type", "codegen infers an accumulator's element type again from lowered values where the checker's type is not carried across", "the resolved program carries the checker's types"),
-        ],
-        consumers: &[consumer("every layer"), ],
+        legacy: &[],
+        consumers: &[consumer_at("the snapshot (one typed-body table per snapshot, packaged on demand from the check's record)", SNAPSHOT, "demand_typed_bodies"), consumer_at("codegen (an accumulator slot's element type, the closure's typed-body row)", CG, "accumulator_element_type"), consumer("every layer"), ],
         invariants: &[
             "expression typing is not a layer: it is the derivation inside layer 3 that produces typed edges, and it stays Rust (final direction)",
-            "codegen types a value only where the checker's type is not yet carried across (the accumulator case); that residue is deleted when the resolved program carries types",
+            "codegen types no value the checker typed: an accumulator's element type is the closure's typed-body row, and a hole is refused at its span",
+            "the checker's answers are carried, never re-derived: the check records them as it walks, and one typed-body table per snapshot packages the record (`demand_typed_bodies`, no second check; a check that never asks builds none), keyed by declaration identity (a body by its declaration's site, a call by its `Call` site, a monomorph by its template's site and type arguments, never by a name string), with five columns: accumulator element types, generic calls' type arguments and unified params, the monomorph table, conformance per (locus, interface) pair, fallible calls; a site the checker could not type is a hole with its reason",
         ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
+        tests: &["crates/hale-types/tests/typed_bodies.rs", "crates/hale-types/tests/codegen_fixtures_typecheck.rs", "crates/hale-codegen/tests/corpus_check_build_agreement.rs"],
         spec: &["spec/types.md"],
-        owned: &[site(RESOLVE, "infer_literal_ty")],
-        seams: &[],
+        owned: &[site(RESOLVE, "infer_literal_ty"), site(TYPED_BODIES, "typed_bodies")],
+        seams: &[Seam { symbol: "typed_bodies(", allowed: &[(TYPED_BODIES, 1), (SNAPSHOT, 1)] }],
     },
     Family {
         name: "generics",
@@ -515,36 +515,49 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["generic declarations", "call arguments", "the mangled token vocabulary"],
         producer: Some(site(CHECK, "unify_generic_ty")),
         legacy: &[
-            legacy(CG, "unify_generic_param_bindings", "a Ty-level mirror of the checker's unification, by its own comment", "codegen reads the checker's monomorph table"),
+            legacy(CG, "unify_generic_param_bindings", "a Ty-level mirror of the checker's unification, by its own comment", "codegen reads the call's typed-body row (its type arguments, and the monomorph table's name for them); blocked until the checker types the bare builtins a generic call's argument can be (`len`, `abs`, `min`, `max`, `to_string`, the numeric casts), which it types `Unknown` today, so `first(len(s))` is a hole the base lowers"),
             legacy(CG, "infer_generic_fn_args", "codegen infers generic arguments again from lowered types", "same"),
-            legacy(CHECK, "resolve_generic_monomorph", "the template lookup parses mangled `Name_Tok` strings; tables are per program, not per snapshot", "keyed by identity, per snapshot"),
         ],
-        consumers: &[consumer("check"), consumer("codegen")],
-        invariants: &["one unification; the monomorph set is a row lowering reads"],
+        consumers: &[consumer_at("check (a mangled monomorph name: the table's row)", CHECK, "resolve_generic_monomorph"), consumer("codegen")],
+        invariants: &[
+            "one unification; the monomorph set is a row lowering reads",
+            "one monomorph table per snapshot (the typed-body table's `monomorphs`), keyed by the template's site and its type arguments, never by a name string: its producer parses a mangled name once, for each name the program spells (a written instantiation as the checker resolves it, an annotation, a struct literal's path), against the bundle's templates by identity; the checker's lookups read the row",
+            "a generic call inside a generic fn's body is typed again for each of the fn's monomorphs, the template's parameters bound to its arguments, and recorded under them; that walk reports nothing",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-codegen/tests/generic_monomorph_agreement.rs"],
+        tests: &["crates/hale-codegen/tests/generic_monomorph_agreement.rs", "crates/hale-types/tests/typed_bodies.rs"],
         spec: &["spec/types.md"],
-        owned: &[],
+        owned: &[site(CHECK, "monomorph_table"), site(CHECK, "specialize_generic_fns")],
         seams: &[],
     },
     Family {
         name: "surfaces",
         layer: Layer::Declarations,
-        state: State::Migrating,
+        state: State::Canonical,
         kind: Kind::Law,
         answers: "Which surface is visible at which depth edge: contract exposure, interface conformance, perspective designation and `serves` conformance.",
         inputs: &["type, interface, contract, perspective declarations", "locus members"],
-        producer: Some(site(CHECK, "check_structural_impl")),
-        legacy: &[
-            legacy(CHECK, "check_satisfies_bus_adapter", "a second copy of the structural-impl check (its own comment: same logic)", "one conformance function"),
-            legacy(CG_TYPES, "locus_satisfies_interface", "codegen decides interface conformance by method names only, for storage routing", "codegen reads the conformance row"),
+        producer: Some(site(CHECK, "conformance_witness")),
+        legacy: &[],
+        consumers: &[
+            consumer_at("check", CHECK, "check_contract_expose_validity"),
+            consumer_at("check", CHECK, "check_serves_conformance"),
+            consumer_at("check", CHECK, "check_reperspective"),
+            consumer_at("check (interface coercion, F.20)", CHECK, "check_structural_impl"),
+            consumer_at("check (a bus adapter binding's `__StdBusAdapter` contract)", CHECK, "check_main_and_bindings"),
+            consumer_at("the typed-body table (the conformance column: every declared locus and interface pair, every generic locus specialization, the merged stdlib's pairs in the lowering view)", TYPED_BODIES, "typed_bodies"),
+            consumer_at("codegen (storage routing: the conformance column)", CG_TYPES, "locus_satisfies_interface"),
+            consumer("codegen (vtable swap)"),
         ],
-        consumers: &[consumer_at("check", CHECK, "check_contract_expose_validity"), consumer_at("check", CHECK, "check_serves_conformance"), consumer_at("check", CHECK, "check_reperspective"), consumer("codegen (vtable swap, storage routing)")],
-        invariants: &["F.8 compatibility, F.14 and F.20 satisfaction are judged once, with a witness"],
+        invariants: &[
+            "F.8 compatibility, F.14 and F.20 satisfaction are judged once, with a witness",
+            "one conformance function (`conformance_witness`), its witness the first requirement unmet in the interface's method order, rendered by each caller in its own words; the bus adapter's contract is judged without the error channel, as it always was",
+            "storage routing asks the conformance column, never the method names, and requires the checker's verdict that the locus satisfies the interface: a locus whose methods match the interface's by name and not by signature, or a generic locus's specialization, is no interface's, so its literal stays the frame's (a classified correction: the name comparison sent both to the program-lifetime payload arena; pinned in `conformance_routing_correction.rs`)",
+        ],
         missing: Missing::Error,
-        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs"],
+        tests: &["crates/hale-types/tests/perspective_serves.rs", "crates/hale-types/tests/duplicate_member.rs", "crates/hale-types/tests/typed_bodies.rs", "crates/hale-codegen/tests/conformance_routing_correction.rs"],
         spec: &["spec/types.md", "spec/semantics.md"],
-        owned: &[],
+        owned: &[site(CHECK, "conformance")],
         seams: &[],
     },
     Family {

@@ -16,9 +16,10 @@ use hale_types::handler_routing::ChildRef;
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
 
+use hale_types::typed_bodies::accumulator_sites;
+
 use crate::codegen::{
-    collect_sum_calls, count_self_field_accesses_in_locus,
-    infer_accumulator_inner_type,
+    accumulator_element_type, count_self_field_accesses_in_locus,
     param_value, AccumulatorKind,
     AccumulatorSlot, CapacitySlotLayout, CodegenError, CodegenTy,
     Cx, DefaultInit, LocusInfo, ParamValue, SlotForm, SyncMode,
@@ -650,8 +651,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // m46: closure accumulators. For each `sum(expr)` call
         // detected in a closure's assertion (left/right/tolerance,
         // in that order), append one struct field of `expr`'s type.
-        // v0 restricts inner exprs to `self.X` reads — type comes
-        // straight from the locus's params. Anything else errors
+        // v0 restricts inner exprs to `self.X` reads — the type is
+        // the checker's, the closure's typed-body row (F.40 phase 3,
+        // E4). Anything else errors
         // with a clear message at struct-decl time. Per-closure
         // persists_through clauses are also stashed here for the
         // recovery-reset gating.
@@ -670,23 +672,36 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             let LocusMember::Closure(c) = member else {
                 continue;
             };
-            let mut accs: Vec<(AccumulatorKind, Option<Expr>)> = Vec::new();
             // v1.x-VIOLATE (F.27): assertion-less inline closures
             // have no accumulator-bearing exprs.
-            if let Some(a) = &c.assertion {
-                collect_sum_calls(&a.left, &mut accs);
-                collect_sum_calls(&a.right, &mut accs);
-                collect_sum_calls(&a.tolerance, &mut accs);
-            }
+            let accs = c
+                .assertion
+                .as_ref()
+                .map(accumulator_sites)
+                .unwrap_or_default();
+            // F.40 phase 3, E4: the element types are the checker's,
+            // the closure's rows in slot order; a generic locus's
+            // monomorph (its template's closure, by the template's
+            // site) reads the rows the checker specialized for it.
+            let rows = match self
+                .typed
+                .monomorphs()
+                .named(&l.name.name)
+                .filter(|m| m.kind == hale_types::typed_bodies::TemplateKind::Locus && m.template.0 == l.id.0)
+            {
+                Some(m) => self.typed.specialized_accumulators(c.id, m),
+                None => self.typed.accumulators(c.id),
+            };
             let mut slots: Vec<AccumulatorSlot> = Vec::new();
-            for (kind, inner_opt) in accs {
-                match kind {
+            for (i, site) in accs.into_iter().enumerate() {
+                match site.kind {
                     AccumulatorKind::Sum => {
-                        let inner = inner_opt.expect("sum carries inner");
-                        let inner_ty = infer_accumulator_inner_type(
+                        let inner = site.inner.expect("sum carries inner").clone();
+                        let inner_ty = accumulator_element_type(
                             &l.name.name,
                             &c.name.name,
                             &inner,
+                            rows.get(i),
                             &fields,
                         )?;
                         let llvm_ty: inkwell::types::BasicTypeEnum =
@@ -720,11 +735,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     AccumulatorKind::Mean => {
                         // Two slots: running sum (inner's type) +
                         // count (i64). Output is always Float.
-                        let inner = inner_opt.expect("mean carries inner");
-                        let inner_ty = infer_accumulator_inner_type(
+                        let inner = site.inner.expect("mean carries inner").clone();
+                        let inner_ty = accumulator_element_type(
                             &l.name.name,
                             &c.name.name,
                             &inner,
+                            rows.get(i),
                             &fields,
                         )?;
                         let llvm_inner: inkwell::types::BasicTypeEnum =

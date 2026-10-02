@@ -41,3 +41,5 @@ mod placement_factory_default;
 mod placement_where_async_io;
 #[path = "pool_affinity.rs"]
 mod pool_affinity;
+#[path = "typed_body_rows.rs"]
+mod typed_body_rows;

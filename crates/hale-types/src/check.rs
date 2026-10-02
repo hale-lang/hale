@@ -610,10 +610,29 @@ pub fn check_bundle_reporting(
     strict_callees: bool,
     strict_idents: bool,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
+    let (diags, certificates, _) =
+        check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
+    (diags, certificates)
+}
+
+/// [`check_bundle_reporting`], with what the checker typed beside it
+/// (F.40 phase 3, E4): the record the snapshot's typed-body table is
+/// packaged from (`crate::typed_bodies`). The checker records its own
+/// answers as it walks, so the table costs no second walk.
+pub fn check_bundle_typing(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+    strict_idents: bool,
+) -> (Vec<Diag>, crate::effects::EffectCertificates, crate::typed_bodies::TypingRecord) {
     let top = inputs.top;
     let mut diags = Vec::new();
     let certificates;
     let known = &top.names;
+    let mut typed = crate::typed_bodies::TypingRecord::default();
+    let templates = GenericTemplates::of(bundle);
+    monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
     let wasm_target = bundle.programs.values().any(|p| {
@@ -682,10 +701,18 @@ pub fn check_bundle_reporting(
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
             unresolved_import_aliases: &unresolved_import_aliases,
+            typed: &mut typed,
+            body: NodeId::NONE,
+            expr_types: None,
+            locus_decl: None,
+            templates: &templates,
+            generic_bindings: BTreeMap::new(),
+            specializing: None,
         };
         for item in &program.items {
             cx.check_top_decl(item);
         }
+        cx.specialize_generic_fns();
     }
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
@@ -866,7 +893,226 @@ pub fn check_bundle_reporting(
     // within the statement, and a `@secret` parameter held to the same.
     diags.extend(crate::secret_reveal::secret_reveal_diags(&bundle.programs, &bundle.import_renames, &bundle.sources));
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    (diags, certificates)
+    (diags, certificates, typed)
+}
+
+/// The bundle's generic type and locus templates, by identity: the
+/// site the snapshot minted, or, for a bundle nothing minted (a test's
+/// check of a parsed program), the check's own ordinal in bundle order,
+/// counted down from the top of the id space; such a bundle is never
+/// lowered. By name too, in the order a mangled name is matched against
+/// them: the types, then the loci, each by name, the last declaration
+/// of a name winning.
+struct GenericTemplates<'a> {
+    by_key: BTreeMap<u32, GenericTemplate<'a>>,
+    types: BTreeMap<&'a str, u32>,
+    loci: BTreeMap<&'a str, u32>,
+}
+
+impl<'a> GenericTemplates<'a> {
+    fn of(bundle: &'a Bundle<'_>) -> Self {
+        let mut out = GenericTemplates { by_key: BTreeMap::new(), types: BTreeMap::new(), loci: BTreeMap::new() };
+        let mut unminted: u32 = 0;
+        let mut key = |id: NodeId| {
+            if id.is_none() {
+                unminted += 1;
+                NodeId::NONE.0 - unminted
+            } else {
+                id.0
+            }
+        };
+        for program in bundle.programs.values() {
+            for item in hale_syntax::ast::flat_decls(&program.items) {
+                match item {
+                    TopDecl::Type(t) if !t.generics.is_empty() => {
+                        let k = key(t.id);
+                        out.by_key.insert(k, GenericTemplate::Type(t));
+                        out.types.insert(t.name.name.as_str(), k);
+                    }
+                    TopDecl::Locus(l) if !l.generics.is_empty() => {
+                        let k = key(l.id);
+                        out.by_key.insert(k, GenericTemplate::Locus(l));
+                        out.loci.insert(l.name.name.as_str(), k);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    fn get(&self, key: NodeId) -> Option<GenericTemplate<'a>> {
+        self.by_key.get(&key.0).copied()
+    }
+
+    /// The monomorph a mangled name spells (`Box_Int`,
+    /// `Cache_Int_String`): the template whose name and `_` prefix it,
+    /// with exactly as many `_`-joined tokens as the template has
+    /// parameters, each token a primitive, a known name, or else
+    /// `Unknown`. The mangle joins tokens with `_`, so a nested
+    /// instantiation's name is no template's. The monomorph table's
+    /// producer runs it once per name the program spells.
+    fn parse(&self, name: &str, known: &KnownNames) -> Option<(NodeId, crate::typed_bodies::TemplateKind, Vec<Ty>)> {
+        use crate::typed_bodies::TemplateKind;
+        let candidates = self
+            .types
+            .iter()
+            .map(|(base, k)| (*base, *k, TemplateKind::Type))
+            .chain(self.loci.iter().map(|(base, k)| (*base, *k, TemplateKind::Locus)));
+        for (base, key, kind) in candidates {
+            let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('_')) else {
+                continue;
+            };
+            let toks: Vec<&str> = rest.split('_').collect();
+            let template = self.by_key[&key];
+            if toks.len() != template.generics().len() {
+                continue;
+            }
+            let args = toks.iter().map(|tok| mangle_token_to_ty(tok, known)).collect();
+            return Some((NodeId(key), kind, args));
+        }
+        None
+    }
+}
+
+/// The monomorph table's type and locus rows (F.40 phase 3, E4), one
+/// table per snapshot: a row for every name the program spells that
+/// names a monomorph — each generic instantiation a type expression
+/// writes (`Box<Int>`, named as the checker resolves it, `Box_Int`),
+/// each name an annotation or a struct literal spells (`Box_Int { }`) —
+/// keyed by its template's site and its type arguments. The mangled
+/// name is parsed here, once per name; every lookup reads the row.
+fn monomorph_table(
+    bundle: &Bundle<'_>,
+    known: &KnownNames,
+    templates: &GenericTemplates<'_>,
+    out: &mut crate::typed_bodies::Monomorphs,
+) {
+    use crate::typed_bodies::{Monomorph, TypeSpelling};
+    if templates.by_key.is_empty() {
+        return;
+    }
+    fn spelled(te: &TypeExpr, known: &KnownNames, names: &mut std::collections::BTreeSet<String>) {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                for a in generic_args {
+                    spelled(a, known, names);
+                }
+                if path.segments.len() != 1 {
+                    return;
+                }
+                if generic_args.is_empty() {
+                    names.insert(path.segments[0].name.clone());
+                } else if let Ty::Named(n) = resolve_type_expr(te, known) {
+                    names.insert(n);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => spelled(inner, known, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => spelled(elem, known, names),
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    spelled(p, known, names);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    spelled(p, known, names);
+                }
+                if let Some(r) = ret {
+                    spelled(r, known, names);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for program in bundle.programs.values() {
+        crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s| match s {
+            TypeSpelling::Annotation(te) => spelled(te, known, &mut names),
+            TypeSpelling::Literal(path) => {
+                if path.segments.len() == 1 {
+                    names.insert(path.segments[0].name.clone());
+                }
+            }
+        });
+    }
+    for name in names {
+        if let Some((template, kind, args)) = templates.parse(&name, known) {
+            out.insert(Monomorph { template, kind, args, name });
+        }
+    }
+}
+
+use crate::typed_bodies::Unsatisfied;
+
+/// Whether the locus named `locus_name` satisfies the interface named
+/// `iface_name` under `top` (F.20, GH #732): the one conformance
+/// function. Every interface method present, with its arity, its
+/// parameter and return types and — when `error_channels` — its error
+/// type; the first requirement unmet, in the interface's method order,
+/// is the witness. `Ok` when `iface_name` names no interface.
+///
+/// The bus adapter's contract (`__StdBusAdapter`) is judged without the
+/// error channel, as it always has been; every interface conformance
+/// with it.
+pub(crate) fn conformance_witness(
+    top: &TopScope,
+    locus_name: &str,
+    iface_name: &str,
+    error_channels: bool,
+) -> Result<(), Unsatisfied> {
+    let iface = match top.lookup(iface_name) {
+        Some(TopSymbol::Interface(i)) => i,
+        _ => return Ok(()),
+    };
+    let locus = match top.lookup(locus_name) {
+        Some(TopSymbol::Locus(l)) => l,
+        _ => return Err(Unsatisfied::NotALocus),
+    };
+    for im in &iface.methods {
+        let method = im.name.clone();
+        let Some(lm) = locus.methods.iter().find(|lm| lm.name == im.name) else {
+            return Err(Unsatisfied::Missing { method });
+        };
+        if lm.params.len() != im.params.len() {
+            return Err(Unsatisfied::Arity { method, want: im.params.len(), got: lm.params.len() });
+        }
+        for (index, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
+            if !ip.1.assignable_from(lp) {
+                return Err(Unsatisfied::Param { method, index, want: ip.1.clone(), got: lp.clone() });
+            }
+        }
+        if !im.ret.assignable_from(&lm.ret) {
+            return Err(Unsatisfied::Ret { method, want: im.ret.clone(), got: lm.ret.clone() });
+        }
+        if !error_channels {
+            continue;
+        }
+        // GH #732: an infallible method satisfies a fallible
+        // interface method; a fallible one never satisfies an
+        // infallible one, and the error types must be the same
+        // type (no subtyping of error payloads).
+        let clash = match (&im.fallible, &lm.fallible) {
+            (None, Some(_)) => Some("is fallible where the interface's is not"),
+            (Some(ie), Some(le)) if ie != le => Some("declares a different error type"),
+            _ => None,
+        };
+        if let Some(why) = clash {
+            return Err(Unsatisfied::ErrorChannel {
+                method,
+                why,
+                iface_sig: sig_text(&im.name, im.params.iter().map(|(_, t)| t), &im.ret, im.fallible.as_ref()),
+                locus_sig: sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref()),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// [`conformance_witness`] with the error channel judged, its witness
+/// rendered as an interface conformance's diagnostic.
+pub(crate) fn conformance(top: &TopScope, locus_name: &str, iface_name: &str) -> Result<(), String> {
+    conformance_witness(top, locus_name, iface_name, true).map_err(|w| w.interface_message(locus_name, iface_name))
 }
 
 /// True if `parent` declares `accept(c: <child_name>)` — i.e. it
@@ -4600,80 +4846,6 @@ fn sig_text<'a>(
     s
 }
 
-/// Wave B: verify an adapter-binding locus satisfies the bus's
-/// `__StdBusAdapter` contract (currently a single `send(subject:
-/// String, bytes: Bytes)` method). Stand-alone shape — same logic
-/// as `Checker::check_structural_impl` but callable from
-/// `check_main_and_bindings` which doesn't construct a `Checker`.
-fn check_satisfies_bus_adapter(
-    top: &TopScope,
-    locus_name: &str,
-) -> Result<(), String> {
-    const IFACE: &str = "__StdBusAdapter";
-    let iface = match top.lookup(IFACE) {
-        Some(TopSymbol::Interface(i)) => i,
-        _ => {
-            // The stdlib seed defines this interface; absence means
-            // the seed wasn't loaded. Treat as OK rather than
-            // failing user code with a stdlib-shape diagnostic.
-            return Ok(());
-        }
-    };
-    let locus = match top.lookup(locus_name) {
-        Some(TopSymbol::Locus(l)) => l,
-        _ => return Err(format!("`{}` is not a locus", locus_name)),
-    };
-    for im in &iface.methods {
-        let lm = match locus.methods.iter().find(|lm| lm.name == im.name) {
-            Some(m) => m,
-            None => {
-                return Err(format!(
-                    "locus `{}` does not satisfy `{}`: missing method `{}`",
-                    locus_name, IFACE, im.name
-                ));
-            }
-        };
-        if lm.params.len() != im.params.len() {
-            return Err(format!(
-                "locus `{}` method `{}` arity does not match `{}`: \
-                 expected {} arg(s), locus has {}",
-                locus_name,
-                im.name,
-                IFACE,
-                im.params.len(),
-                lm.params.len()
-            ));
-        }
-        for (i, (lp, ip)) in lm.params.iter().zip(im.params.iter()).enumerate() {
-            let want = &ip.1;
-            if !want.assignable_from(lp) {
-                return Err(format!(
-                    "locus `{}` method `{}` arg #{} type mismatch: \
-                     `{}` requires `{}`, locus has `{}`",
-                    locus_name,
-                    im.name,
-                    i,
-                    IFACE,
-                    want.display(),
-                    lp.display()
-                ));
-            }
-        }
-        if !im.ret.assignable_from(&lm.ret) {
-            return Err(format!(
-                "locus `{}` method `{}` return type mismatch: \
-                 `{}` requires `{}`, locus returns `{}`",
-                locus_name,
-                im.name,
-                IFACE,
-                im.ret.display(),
-                lm.ret.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Form K4a (2026-05-20): validate the operational constraints
 /// declared via the `where ...` clause on a binding entry.
 ///
@@ -5501,9 +5673,12 @@ fn check_main_and_bindings<'e>(
         {
             match top.lookup(&locus.name) {
                 Some(TopSymbol::Locus(_)) => {
-                    if let Err(msg) = check_satisfies_bus_adapter(
-                        top, &locus.name,
-                    ) {
+                    // Wave B: the bus's adapter contract, by the one
+                    // conformance function (its error channel unjudged).
+                    const ADAPTER: &str = "__StdBusAdapter";
+                    if let Err(msg) = conformance_witness(top, &locus.name, ADAPTER, false)
+                        .map_err(|w| w.adapter_message(&locus.name, ADAPTER))
+                    {
                         diags.push(Diag::ty(
                             locus.span,
                             format!(
@@ -7484,6 +7659,30 @@ struct Checker<'a> {
     /// such an alias gets the same tolerance, so the editor does not
     /// squiggle a program `hale check` accepts.
     unresolved_import_aliases: &'a std::collections::BTreeSet<String>,
+    /// F.40 phase 3, E4: what this walk typed, recorded for the
+    /// snapshot's typed-body table (`crate::typed_bodies`).
+    typed: &'a mut crate::typed_bodies::TypingRecord,
+    /// The declaration whose body is being walked: a fn, a lifecycle
+    /// hook, a mode, an `on_failure`, a closure; else the enclosing
+    /// locus or top-level declaration. The table's rows are its.
+    body: NodeId,
+    /// While a closure assertion is walked: the type the checker gave
+    /// each expression, by node, so its accumulators read the types of
+    /// the very expressions they accumulate.
+    expr_types: Option<Vec<(*const Expr, Ty)>>,
+    /// The locus declaration being walked, if any: a generic one's
+    /// accumulator rows are specialized per monomorph.
+    locus_decl: Option<&'a LocusDecl>,
+    /// The bundle's generic type and locus templates by identity: what
+    /// a monomorph row's template site names.
+    templates: &'a GenericTemplates<'a>,
+    /// While a generic fn's body is walked for one of its monomorphs:
+    /// the template's parameters bound to the monomorph's arguments
+    /// (every annotation the walk resolves substitutes them), and the
+    /// arguments the walk's call rows are recorded under. Empty / `None`
+    /// on the ordinary walk.
+    generic_bindings: BTreeMap<String, Ty>,
+    specializing: Option<Vec<Ty>>,
 }
 
 #[derive(Default)]
@@ -7570,7 +7769,31 @@ enum SealedAccess {
 }
 
 impl<'a> Checker<'a> {
+    /// The declaration a top-level item's rows belong to.
+    fn top_decl_body(decl: &TopDecl) -> Option<NodeId> {
+        match decl {
+            TopDecl::Locus(l) => Some(l.id),
+            TopDecl::Fn(f) => Some(f.id),
+            TopDecl::Const(c) => Some(c.id),
+            _ => None,
+        }
+    }
+
     fn check_top_decl(&mut self, decl: &'a TopDecl) {
+        let prev_body = self.body;
+        let prev_locus = self.locus_decl;
+        if let Some(id) = Self::top_decl_body(decl) {
+            self.body = id;
+        }
+        if let TopDecl::Locus(l) = decl {
+            self.locus_decl = Some(l);
+        }
+        self.check_top_decl_at(decl);
+        self.body = prev_body;
+        self.locus_decl = prev_locus;
+    }
+
+    fn check_top_decl_at(&mut self, decl: &'a TopDecl) {
         match decl {
             TopDecl::Locus(l) => self.check_locus(l),
             TopDecl::Fn(f) => self.check_fn(f, None),
@@ -7578,7 +7801,7 @@ impl<'a> Checker<'a> {
                 // GH #877: the ascription is an annotation like any
                 // other.
                 self.check_type_annotation(&c.ty);
-                let want = resolve_type_expr(&c.ty, self.known);
+                let want = self.resolve_te(&c.ty);
                 let got = self.check_expr(&c.value);
                 if !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
@@ -9010,7 +9233,7 @@ impl<'a> Checker<'a> {
             if !row.is_row_of(fd) {
                 continue;
             }
-            let err_ty = resolve_type_expr(&fd.params[1].ty, self.known);
+            let err_ty = self.resolve_te(&fd.params[1].ty);
             let is_violation = matches!(&err_ty, Ty::Named(n) if n == "ClosureViolation");
             if !is_violation && !matches!(err_ty, Ty::Unknown) {
                 continue;
@@ -9656,7 +9879,7 @@ impl<'a> Checker<'a> {
         ty_expr: &'a TypeExpr,
         slot_label: &str,
     ) {
-        let resolved = resolve_type_expr(ty_expr, self.known);
+        let resolved = self.resolve_te(ty_expr);
         let Ty::Named(name) = &resolved else { return };
         if !matches!(self.top.lookup(name), Some(TopSymbol::Locus(_))) {
             return;
@@ -10626,6 +10849,20 @@ impl<'a> Checker<'a> {
     }
 
     fn check_locus_member(&mut self, member: &'a LocusMember) {
+        let prev_body = self.body;
+        match member {
+            LocusMember::Lifecycle(lc) => self.body = lc.id,
+            LocusMember::Mode(md) => self.body = md.id,
+            LocusMember::Failure(fd) => self.body = fd.id,
+            LocusMember::Closure(cd) => self.body = cd.id,
+            LocusMember::Fn(f) => self.body = f.id,
+            _ => {}
+        }
+        self.check_locus_member_at(member);
+        self.body = prev_body;
+    }
+
+    fn check_locus_member_at(&mut self, member: &'a LocusMember) {
         match member {
             LocusMember::Params(pb) => {
                 // Param defaults ARE typechecked. The Milestone-2
@@ -10686,7 +10923,7 @@ impl<'a> Checker<'a> {
                     }
                     let got = self.check_expr(init);
                     let Some(te) = &p.ty else { continue };
-                    let want = resolve_type_expr(te, self.known);
+                    let want = self.resolve_te(te);
                     // `Unknown` on either side is an unresolved
                     // type, already diagnosed (or deliberately
                     // opaque, as multi-segment stdlib handles are).
@@ -10856,7 +11093,7 @@ impl<'a> Checker<'a> {
                     // locus; an undeclared name is the same typo in
                     // the same position.
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -10868,7 +11105,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &md.params {
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&md.body);
@@ -10901,7 +11138,7 @@ impl<'a> Checker<'a> {
                     ));
                 } else {
                     let err_ty =
-                        resolve_type_expr(&fd.params[1].ty, self.known);
+                        self.resolve_te(&fd.params[1].ty);
                     let is_violation = matches!(
                         &err_ty,
                         Ty::Named(n) if n == "ClosureViolation"
@@ -10922,7 +11159,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 for p in &fd.params {
                     self.check_type_annotation(&p.ty);
-                    let ty = resolve_type_expr(&p.ty, self.known);
+                    let ty = self.resolve_te(&p.ty);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&fd.body);
@@ -11080,6 +11317,7 @@ impl<'a> Checker<'a> {
                 // Original assertion checks for assertion-bearing
                 // closures.
                 if let Some(assertion) = &cd.assertion {
+                    self.expr_types = Some(Vec::new());
                     let lt = self.check_expr(&assertion.left);
                     let rt = self.check_expr(&assertion.right);
                     if !lt.assignable_from(&rt) && !rt.assignable_from(&lt) {
@@ -11108,6 +11346,8 @@ impl<'a> Checker<'a> {
                         ));
                     }
                     let _ = self.check_expr(&assertion.tolerance);
+                    let seen = self.expr_types.take().unwrap_or_default();
+                    self.record_accumulators(assertion, &seen);
                 }
                 self.in_lifecycle = false;
                 self.in_closure = false;
@@ -11181,7 +11421,7 @@ impl<'a> Checker<'a> {
                     }
                     // GH #877: the cell type is an annotation too.
                     self.check_type_annotation(&slot.elem_ty);
-                    let elem_ty = resolve_type_expr(&slot.elem_ty, self.known);
+                    let elem_ty = self.resolve_te(&slot.elem_ty);
                     let kind_word = match slot.kind {
                         CapacitySlotKind::Pool => "pool",
                         CapacitySlotKind::Heap => "heap",
@@ -11346,6 +11586,12 @@ impl<'a> Checker<'a> {
     }
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
+        let prev_body = std::mem::replace(&mut self.body, decl.id);
+        self.check_fn_at(decl, locus);
+        self.body = prev_body;
+    }
+
+    fn check_fn_at(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_locus = self.current_locus;
         if locus.is_some() {
             self.current_locus = locus;
@@ -11385,7 +11631,7 @@ impl<'a> Checker<'a> {
         // C arity).
         if decl.export && locus.is_none() {
             for p in &decl.params {
-                let ty = resolve_type_expr(&p.ty, self.known);
+                let ty = self.resolve_te(&p.ty);
                 if let Some(reason) = ffi_type_unportable(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
@@ -11412,7 +11658,7 @@ impl<'a> Checker<'a> {
                 }
             }
             if let Some(ret_te) = &decl.ret {
-                let ret_ty = resolve_type_expr(ret_te, self.known);
+                let ret_ty = self.resolve_te(ret_te);
                 if let Some(reason) = ffi_type_unportable(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
@@ -11446,7 +11692,7 @@ impl<'a> Checker<'a> {
                 ));
             }
             for p in &decl.params {
-                let ty = resolve_type_expr(&p.ty, self.known);
+                let ty = self.resolve_te(&p.ty);
                 if let Some(reason) = ffi_type_unportable(&ty) {
                     self.diags.push(Diag::ty(
                         p.ty.span(),
@@ -11461,7 +11707,7 @@ impl<'a> Checker<'a> {
                 }
             }
             if let Some(ret_te) = &decl.ret {
-                let ret_ty = resolve_type_expr(ret_te, self.known);
+                let ret_ty = self.resolve_te(ret_te);
                 if let Some(reason) = ffi_type_unportable(&ret_ty) {
                     self.diags.push(Diag::ty(
                         ret_te.span(),
@@ -11485,18 +11731,18 @@ impl<'a> Checker<'a> {
         self.return_ctx = decl
             .ret
             .as_ref()
-            .map(|te| resolve_type_expr(te, self.known));
+            .map(|te| self.resolve_te(te));
         if let Some(payload_te) = &decl.fallible {
             let success_ret = match &decl.ret {
-                Some(te) => resolve_type_expr(te, self.known),
+                Some(te) => self.resolve_te(te),
                 None => Ty::Unit,
             };
-            let payload = resolve_type_expr(payload_te, self.known);
+            let payload = self.resolve_te(payload_te);
             self.fallible_ctx = Some((success_ret, payload));
         }
         self.locals.push();
         for p in &decl.params {
-            let ty = resolve_type_expr(&p.ty, self.known);
+            let ty = self.resolve_te(&p.ty);
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_block(&decl.body);
@@ -11666,7 +11912,7 @@ impl<'a> Checker<'a> {
                         // GH #877: the one annotation that lives in a
                         // body.
                         self.check_type_annotation(te);
-                        let want = resolve_type_expr(te, self.known);
+                        let want = self.resolve_te(te);
                         // GH #911 B5: `let h: Holder<Int> = Holder { };`
                         // — the annotation resolves to the mangled
                         // monomorph `Holder_Int` while the literal
@@ -12984,93 +13230,121 @@ impl<'a> Checker<'a> {
         locus_name: &str,
         iface_name: &str,
     ) -> Result<(), String> {
-        let iface = match self.top.lookup(iface_name) {
-            Some(TopSymbol::Interface(i)) => i,
-            _ => return Ok(()),
-        };
-        let locus = match self.top.lookup(locus_name) {
-            Some(TopSymbol::Locus(l)) => l,
-            _ => {
-                return Err(format!(
-                    "type `{}` cannot satisfy interface `{}` — only loci satisfy interfaces",
-                    locus_name, iface_name
-                ));
+        conformance(self.top, locus_name, iface_name)
+    }
+
+    /// A type expression the walk resolves: through the scope's names,
+    /// and, while a generic fn's body is walked for one of its
+    /// monomorphs, with the template's parameters substituted.
+    fn resolve_te(&self, te: &TypeExpr) -> Ty {
+        if self.generic_bindings.is_empty() {
+            resolve_type_expr(te, self.known)
+        } else {
+            substitute_generic_ty(te, &self.generic_bindings, self.known)
+        }
+    }
+
+    /// The generic fns' monomorphs, typed (F.40 phase 3, E4): a generic
+    /// fn's body types a use of its parameter `T` as `Unknown`, so a
+    /// generic call inside it pins nothing. Each fn monomorph the table
+    /// names is walked again with the template's parameters bound to its
+    /// arguments, as lowering lowers that specialization, and the walk's
+    /// generic call rows are recorded under the monomorph's arguments;
+    /// a specialization a walk instantiates is walked in turn. The walk
+    /// reports nothing: its diagnostics are the template's, reported by
+    /// the ordinary walk, and are dropped.
+    fn specialize_generic_fns(&mut self) {
+        const LIMIT: usize = 1024;
+        let mut next = 0;
+        let mut walked = 0;
+        while next < self.typed.monomorphs.rows().len() && walked < LIMIT {
+            let m = self.typed.monomorphs.rows()[next].clone();
+            next += 1;
+            if m.kind != crate::typed_bodies::TemplateKind::Fn {
+                continue;
             }
-        };
-        for im in &iface.methods {
-            let lm = locus.methods.iter().find(|lm| lm.name == im.name);
-            let lm = match lm {
-                Some(m) => m,
-                None => {
-                    return Err(format!(
-                        "locus `{}` does not satisfy interface `{}`: missing method `{}`",
-                        locus_name, iface_name, im.name
-                    ));
-                }
+            let Some(template) = self.generic_fns.values().copied().find(|f| f.id.0 == m.template.0) else {
+                continue;
             };
-            if lm.params.len() != im.params.len() {
-                return Err(format!(
-                    "locus `{}` method `{}` arity does not match interface `{}`: expected {} arg(s), locus has {}",
-                    locus_name,
-                    im.name,
-                    iface_name,
-                    im.params.len(),
-                    lm.params.len()
-                ));
-            }
-            for (i, (lp, ip)) in
-                lm.params.iter().zip(im.params.iter()).enumerate()
-            {
-                let want = &ip.1;
-                if !want.assignable_from(lp) {
-                    return Err(format!(
-                        "locus `{}` method `{}` arg #{} type mismatch: interface `{}` requires `{}`, locus has `{}`",
-                        locus_name,
-                        im.name,
-                        i,
-                        iface_name,
-                        want.display(),
-                        lp.display()
-                    ));
-                }
-            }
-            if !im.ret.assignable_from(&lm.ret) {
-                return Err(format!(
-                    "locus `{}` method `{}` return type mismatch: interface `{}` requires `{}`, locus returns `{}`",
-                    locus_name,
-                    im.name,
-                    iface_name,
-                    im.ret.display(),
-                    lm.ret.display()
-                ));
-            }
-            // GH #732: an infallible method satisfies a fallible
-            // interface method; a fallible one never satisfies an
-            // infallible one, and the error types must be the same
-            // type (no subtyping of error payloads).
-            let clash = match (&im.fallible, &lm.fallible) {
-                (None, Some(_)) => Some("is fallible where the interface's is not"),
-                (Some(ie), Some(le)) if ie != le => {
-                    Some("declares a different error type")
-                }
-                _ => None,
-            };
-            if let Some(why) = clash {
-                let iface_sig = sig_text(
-                    &im.name,
-                    im.params.iter().map(|(_, t)| t),
-                    &im.ret,
-                    im.fallible.as_ref(),
-                );
-                let locus_sig =
-                    sig_text(&lm.name, lm.params.iter(), &lm.ret, lm.fallible.as_ref());
-                return Err(format!(
-                    "locus `{}` method `{}` {}: interface `{}` declares `{}`, locus declares `{}`",
-                    locus_name, im.name, why, iface_name, iface_sig, locus_sig
-                ));
+            walked += 1;
+            let bindings: BTreeMap<String, Ty> =
+                template.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+            let mark = self.diags.len();
+            let prev_bindings = std::mem::replace(&mut self.generic_bindings, bindings);
+            let prev_specializing = self.specializing.replace(m.args.clone());
+            let prev_locus = self.current_locus.take();
+            self.check_fn(template, None);
+            self.current_locus = prev_locus;
+            self.specializing = prev_specializing;
+            self.generic_bindings = prev_bindings;
+            self.diags.truncate(mark);
+        }
+    }
+
+    /// The closure's accumulator rows (F.40 phase 3, E4): each
+    /// accumulator of `assertion`, with the type this walk gave the
+    /// expression it accumulates (`seen`, by node). An accumulated
+    /// expression the walk did not type, or typed `Unknown`, is a hole.
+    fn record_accumulators(&mut self, assertion: &ClosureAssertion, seen: &[(*const Expr, Ty)]) {
+        use crate::typed_bodies::{AccumulatorRow, Hole, Typed};
+        let rows: Vec<AccumulatorRow> = crate::typed_bodies::accumulator_sites(assertion)
+            .into_iter()
+            .map(|site| {
+                let elem = site.inner.map(|inner| {
+                    let at = inner as *const Expr;
+                    match seen.iter().find(|(e, _)| *e == at).map(|(_, t)| t) {
+                        Some(Ty::Unknown) | None => Typed::Hole(Hole {
+                            span: inner.span(),
+                            reason: "the checker gave the accumulated expression no type".to_string(),
+                        }),
+                        Some(t) => Typed::Known(t.clone()),
+                    }
+                });
+                AccumulatorRow { kind: site.kind, span: site.span, elem }
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        // A generic locus's closure: its `self.X` reads are typed again
+        // for each of the template's monomorphs, the field's declared
+        // type with the monomorph's arguments substituted, as a field
+        // read through the monomorph types (`field_ty`).
+        let mut specialized: Vec<(Vec<Ty>, Vec<AccumulatorRow>)> = Vec::new();
+        if let Some(l) = self.locus_decl.filter(|l| !l.generics.is_empty() && !l.id.is_none()) {
+            let sites = crate::typed_bodies::accumulator_sites(assertion);
+            for m in self.typed.monomorphs.rows().iter().filter(|m| m.template.0 == l.id.0) {
+                let bindings: BTreeMap<String, Ty> =
+                    l.generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+                let rows: Vec<AccumulatorRow> = rows
+                    .iter()
+                    .zip(&sites)
+                    .map(|(row, site)| {
+                        let field = match site.inner {
+                            Some(Expr::Field { receiver, name, .. }) if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                                name
+                            }
+                            _ => return row.clone(),
+                        };
+                        let declared = l.members.iter().find_map(|mem| match mem {
+                            LocusMember::Params(pb) => {
+                                pb.params.iter().find(|p| p.name.name == field.name).and_then(|p| p.ty.as_ref())
+                            }
+                            _ => None,
+                        });
+                        let elem = match declared.map(|te| substitute_generic_ty(te, &bindings, self.known)) {
+                            Some(Ty::Unknown) | None => row.elem.clone(),
+                            Some(t) => Some(Typed::Known(t)),
+                        };
+                        AccumulatorRow { elem, ..row.clone() }
+                    })
+                    .collect();
+                specialized.push((m.args.clone(), rows));
             }
         }
-        Ok(())
+        let body = self.typed.body(self.body);
+        body.accumulators = rows;
+        body.specialized_accumulators = specialized;
     }
 
     /// GH #436: `@sealed` — a sealed locus's `params` are reachable
@@ -14038,6 +14312,28 @@ impl<'a> Checker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
+        let ty = self.check_expr_at(expr);
+        if let Some(seen) = &mut self.expr_types {
+            seen.push((expr as *const Expr, ty.clone()));
+        }
+        // The fallible column (F.40 phase 3, E4): a call this walk
+        // typed `Fallible` (the ordinary walk's; a specialization's walk
+        // records its generic calls only).
+        if let (Expr::Call { id, span, .. }, Ty::Fallible { payload, .. }, None) = (expr, &ty, &self.specializing) {
+            self.typed.fallible_call(
+                self.body,
+                *id,
+                crate::typed_bodies::FallibleCall {
+                    span: *span,
+                    kind: crate::typed_bodies::CalleeKind::Typed,
+                    payload: (**payload).clone(),
+                },
+            );
+        }
+        ty
+    }
+
+    fn check_expr_at(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
                 // GH #607: a Time literal is an instant, parsed here so
@@ -14124,7 +14420,7 @@ impl<'a> Checker<'a> {
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
                 }
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, id: call_id, .. } => {
                 // WASM plan — stdlib target-gating. Under `target wasm`
                 // the browser sandbox has no syscalls, so reject a
                 // POSIX-only `std::` call at compile time with guidance
@@ -14255,6 +14551,19 @@ impl<'a> Checker<'a> {
                         if let Some(sig) =
                             crate::stdlib_surface::signature_for(&segs)
                         {
+                            // The fallible column (F.40 phase 3, E4):
+                            // the table's mark, read at the call.
+                            if let (Some((_, payload)), None) = (sig.or_types(), &self.specializing) {
+                                self.typed.fallible_call(
+                                    self.body,
+                                    *call_id,
+                                    crate::typed_bodies::FallibleCall {
+                                        span: expr.span(),
+                                        kind: crate::typed_bodies::CalleeKind::Stdlib,
+                                        payload,
+                                    },
+                                );
+                            }
                             // (bounded-intrinsic block is below —
                             // stdlib paths never collide with it.)
                             if args.len() != sig.params.len() {
@@ -14600,6 +14909,7 @@ impl<'a> Checker<'a> {
                             .collect();
                         let mut bindings: BTreeMap<String, Ty> =
                             BTreeMap::new();
+                        let mut conflicted = false;
                         for (p, at) in
                             template.params.iter().zip(arg_tys.iter())
                         {
@@ -14611,6 +14921,7 @@ impl<'a> Checker<'a> {
                                     &mut bindings,
                                 )
                             {
+                                conflicted = true;
                                 self.diags.push(Diag::ty(
                                     callee.span(),
                                     format!(
@@ -14649,6 +14960,77 @@ impl<'a> Checker<'a> {
                                     ));
                                 }
                             }
+                        }
+                        // The call's row (F.40 phase 3, E4): the
+                        // bindings this unification made, by the
+                        // template's parameter order, and the params
+                        // they substitute into. An unpinned or
+                        // conflicting parameter, or a wrong arity,
+                        // leaves the call a hole.
+                        let row = {
+                            use crate::typed_bodies::{GenericCall, Hole, Typed};
+                            let unpinned = template
+                                .generics
+                                .iter()
+                                .find(|g| !bindings.contains_key(&g.name.name));
+                            if args.len() != template.params.len() {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}` takes {} argument(s), this call passes {}",
+                                        id.name,
+                                        template.params.len(),
+                                        args.len()
+                                    ),
+                                })
+                            } else if let Some(g) = unpinned {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}`: no argument of this call pins `{}`",
+                                        id.name, g.name.name
+                                    ),
+                                })
+                            } else if conflicted {
+                                Typed::Hole(Hole {
+                                    span: callee.span(),
+                                    reason: format!(
+                                        "generic fn `{}`: this call's arguments bind a parameter twice",
+                                        id.name
+                                    ),
+                                })
+                            } else {
+                                let type_args: Vec<Ty> = template
+                                    .generics
+                                    .iter()
+                                    .map(|g| bindings[&g.name.name].clone())
+                                    .collect();
+                                let params: Vec<Ty> = template
+                                    .params
+                                    .iter()
+                                    .map(|p| substitute_generic_ty(&p.ty, &bindings, self.known))
+                                    .collect();
+                                Typed::Known(GenericCall { template: template.id, type_args, params })
+                            }
+                        };
+                        if let crate::typed_bodies::Typed::Known(call) = &row {
+                            let tokens: Option<Vec<String>> =
+                                call.type_args.iter().map(crate::typed_bodies::mangle_token).collect();
+                            if let (Some(tokens), false) = (tokens, template.id.is_none()) {
+                                self.typed.monomorphs.insert(crate::typed_bodies::Monomorph {
+                                    template: template.id,
+                                    kind: crate::typed_bodies::TemplateKind::Fn,
+                                    args: call.type_args.clone(),
+                                    name: format!("{}_{}", id.name, tokens.join("_")),
+                                });
+                            }
+                        }
+                        match &self.specializing {
+                            Some(args) => {
+                                let args = args.clone();
+                                self.typed.specialized_generic_call(self.body, args, *call_id, row);
+                            }
+                            None => self.typed.generic_call(self.body, *call_id, row),
                         }
                         // Args vs substituted params.
                         for ((p, at), a) in template
@@ -16293,14 +16675,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// M3 stage 3 tranche 2: match a mangled monomorph name
-    /// (`Box_Int`, `Pair_Int_String`) against a generic
-    /// template, producing the generic→Ty bindings. The mangle
-    /// joins single tokens with `_`; template base names
-    /// containing `_` are handled by prefix match. None when no
-    /// template matches or the token count disagrees.
+    /// M3 stage 3 tranche 2: the monomorph a mangled name (`Box_Int`,
+    /// `Pair_Int_String`) names, with the generic→Ty bindings: the
+    /// snapshot's monomorph table row the name is (F.40 phase 3, E4),
+    /// keyed by its template's site and its arguments, and the template
+    /// that site declares. None for a name the table holds no row for:
+    /// one no template prefixes, whose token count disagrees, or that
+    /// the program never spells.
     ///
-    /// GH #911 B5: generic LOCI are searched too (`Cache_Int_String`
+    /// GH #911 B5: generic LOCI are rows too (`Cache_Int_String`
     /// against `locus Cache<K, V>`). The answer says which kind of
     /// declaration it found, because a caller's site decides whether
     /// a locus may appear there — see
@@ -16309,34 +16692,11 @@ impl<'a> Checker<'a> {
         &self,
         name: &str,
     ) -> Option<(GenericTemplate<'a>, BTreeMap<String, Ty>)> {
-        let templates = self
-            .generic_types
-            .iter()
-            .map(|(base, t)| (base, GenericTemplate::Type(*t)))
-            .chain(
-                self.generic_loci
-                    .iter()
-                    .map(|(base, l)| (base, GenericTemplate::Locus(*l))),
-            );
-        for (base, template) in templates {
-            let prefix = format!("{}_", base);
-            let Some(rest) = name.strip_prefix(&prefix) else {
-                continue;
-            };
-            let toks: Vec<&str> = rest.split('_').collect();
-            if toks.len() != template.generics().len() {
-                continue;
-            }
-            let mut bindings: BTreeMap<String, Ty> = BTreeMap::new();
-            for (g, tok) in template.generics().iter().zip(toks.iter()) {
-                bindings.insert(
-                    g.name.name.clone(),
-                    mangle_token_to_ty(tok, self.known),
-                );
-            }
-            return Some((template, bindings));
-        }
-        None
+        let m = self.typed.monomorphs.named(name)?;
+        let template = self.templates.get(m.template)?;
+        let bindings: BTreeMap<String, Ty> =
+            template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+        Some((template, bindings))
     }
 
     /// GH #911 B5: are `want` and `got` the two spellings of ONE
