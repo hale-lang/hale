@@ -1217,6 +1217,42 @@ pub fn summarize_identified(
 ) -> AllocSummary {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
+    // Each seed's names resolve in its own scope. The programs minted
+    // with one set of identities are one scope (a bundle's programs; the
+    // stdlib's analysis copy beside them is another): a body's bare
+    // free-fn name names a fn of its own scope, so a stdlib body's
+    // builtin `count(...)` is the builtin, never a user fn that happens
+    // to be called `count`. The import renames are the bundle's names;
+    // the stdlib's copy imports nothing.
+    let mut scopes: Vec<&crate::snapshot::Snapshot> = Vec::new();
+    for (_, ids) in identified {
+        if !scopes.iter().any(|s| std::ptr::eq(*s, *ids)) {
+            scopes.push(ids);
+        }
+    }
+    let scope_index = |ids: &crate::snapshot::Snapshot| {
+        scopes.iter().position(|s| std::ptr::eq(*s, ids)).expect("every program's identities are a scope")
+    };
+    let mut scope_fns: Vec<BTreeSet<String>> = vec![BTreeSet::new(); scopes.len()];
+    {
+        fn collect_fns(items: &[TopDecl], out: &mut BTreeSet<String>) {
+            for item in items {
+                match item {
+                    TopDecl::Fn(f) => {
+                        out.insert(f.name.name.clone());
+                    }
+                    TopDecl::Module(m) => collect_fns(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        for (program, ids) in identified {
+            collect_fns(&program.items, &mut scope_fns[scope_index(ids)]);
+        }
+    }
+    let is_stdlib_copy = |ids: &crate::snapshot::Snapshot| {
+        crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
+    };
     // #345: what each `@effects(is: {…})` declares, through the bundle's
     // one class table.
     let classes = crate::effect_classes::EffectClassTable::of(programs);
@@ -1599,6 +1635,7 @@ pub fn summarize_identified(
         .iter()
         .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
         .collect();
+    let no_renames: BTreeMap<String, String> = BTreeMap::new();
 
     // #382 receiver-typing: struct TYPE field -> type-name map (a
     // chained receiver may pass through a plain struct: `route.
@@ -1783,7 +1820,8 @@ pub fn summarize_identified(
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
-            rename_map: &rename_map,
+            scope_fns: &scope_fns[scope_index(ids)],
+            rename_map: if is_stdlib_copy(ids) { &no_renames } else { &rename_map },
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
             fn_body: body,
@@ -2309,7 +2347,11 @@ struct Walker<'a> {
     escaping: &'a Escaping<'a>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
-    /// `alias::name` -> mangled symbol (cross-seed imports).
+    /// The free fns of the body's own scope (its seed's programs,
+    /// modules included): the only fns a bare name resolves to.
+    scope_fns: &'a BTreeSet<String>,
+    /// `alias::name` -> mangled symbol (cross-seed imports), empty for
+    /// the stdlib's analysis copy.
     rename_map: &'a BTreeMap<String, String>,
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
@@ -2502,7 +2544,7 @@ impl<'a> Walker<'a> {
                     })
             }
             Expr::Call { callee, .. } => match callee.as_ref() {
-                Expr::Ident(f) => {
+                Expr::Ident(f) if self.scope_fns.contains(&f.name) => {
                     self.fn_ret_types.get(&f.name).cloned()
                 }
                 // `entries.get(j)` on a collection locus with ONE
@@ -2532,6 +2574,9 @@ impl<'a> Walker<'a> {
                         .get(&path)
                         .cloned()
                         .unwrap_or(path);
+                    if !self.scope_fns.contains(&name) {
+                        return None;
+                    }
                     self.fn_ret_types.get(&name).cloned()
                 }
                 _ => None,
@@ -3028,7 +3073,7 @@ impl<'a> Walker<'a> {
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
-                if self.known.contains(&key) {
+                if self.known.contains(&key) && self.scope_fns.contains(&id.name) {
                     Callee::Resolved(key)
                 } else {
                     Callee::Unresolved(id.name.clone())
@@ -3048,7 +3093,7 @@ impl<'a> Walker<'a> {
                 match self.rename_map.get(&path) {
                     Some(mangled) => {
                         let key = FnKey::free_fn(mangled.clone());
-                        if self.known.contains(&key) {
+                        if self.known.contains(&key) && self.scope_fns.contains(mangled) {
                             Callee::Resolved(key)
                         } else {
                             Callee::Unresolved(path)
