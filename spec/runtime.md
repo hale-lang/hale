@@ -1692,7 +1692,11 @@ paragraph names the inventory row where they differ, and the
 fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
 pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 `KNOWN_OPEN` table and fails once the outcome changes, so the
-entry has to go with the fix. A line still waiting on a condition
+entry has to go with the fix. Each fixture also runs under the
+lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
+a departure the trace shows and the outcome cannot (a missing step,
+a step on the wrong thread) is in the same file's
+`TRACE_KNOWN_OPEN` table. A line still waiting on a condition
 says so and records today's behaviour.
 
 - **Line 1, construction-time delivery.** Construction, readiness
@@ -1798,9 +1802,11 @@ says so and records today's behaviour.
 - **Line 14, order.** There is no runtime state machine: order is
   the order the compiler emits, and latches keep a step from
   running twice (§ "Lifecycle", "Order by construction"). Shipped
-  (`l14_reclaim_exactly_once.hl`). The obligation table becomes the
-  state the trace build checks each run against (F.40 phase 3, L2);
-  adopted, not yet built.
+  (`l14_reclaim_exactly_once.hl`), and verified: the trace build
+  (§ "The lifecycle trace") checks every fixture's run, and every
+  runnable example's, against laws that hold whatever the plan (an
+  instance is reclaimed once, and only after it was born; every step
+  entered ends), and each adopted line's fixture against its plan.
 - **Line 15, signals.** SIGINT and SIGTERM raise the process's
   draining flag, from a watcher thread; nothing on the signal path
   calls a lifecycle method. The `run()`s that read `self.draining`
@@ -1832,8 +1838,9 @@ says so and records today's behaviour.
   spine (inventory row C13). No program shows the difference
   today: a body that may have published drains at its own exit,
   and a main locus's ingress quiesce ends in a drain
-  (`l18_eager_pre_drain.hl` guards the outcome); the missing step
-  is the trace build's to show.
+  (`l18_eager_pre_drain.hl` guards the outcome). The trace build
+  shows the missing step: the eager spine's run has no `PreDrain`
+  before its first teardown step.
 - **Line 19, a run's admission and its terminal outcome.** A run
   posted to a pool is attempted by the caller and then admitted or
   rejected; "attempted" is what the caller knows, not a third
@@ -1853,10 +1860,14 @@ says so and records today's behaviour.
   rejected. Run admission is separate from the admission of a
   failure decision, which shutdown never refuses while its child
   waits (join progress, below). Whatever the outcome, the child is
-  torn down exactly once. Not yet shipped: the post's ABI is
-  `void`, a run refused at shutdown or freed unrun is silent
-  (inventory row R19), and an abandoned parked run has no named
-  outcome (row R20a, `l19_parked_started_coroutine.hl`). The
+  torn down exactly once. A started run abandoned by an async pool's
+  shutdown ends canceled after start, named where the worker frees
+  its parked coroutine, and the pool join's completion is the
+  separate witness of the worker's quiescence; the trace build
+  records both (inventory row R20a, `l19_parked_started_coroutine.hl`).
+  No release build observes a run's terminal, so the name lives
+  there. Not yet shipped: the post's ABI is `void`, and a run refused
+  at shutdown or freed unrun is silent (inventory row R19). The
   regressions: a full ring and an empty ring after the last check
   (`l19_full_ring.hl`, `l19_empty_ring_last_check.hl`, compiled
   only until L5's handshake can drive them), self-post overflow
@@ -1889,7 +1900,9 @@ says so and records today's behaviour.
   rules. Today a late failure during a pinned join or during the
   pool join completes (`jp_late_failure_pinned_join.hl`,
   `jp_late_failure_pool_join.hl`), but only because its handler
-  runs in place on the child's thread, outside decision L0-1; once
+  runs in place on the child's thread, outside decision L0-1 (the
+  trace build shows the delivery completing on the child's pinned
+  thread or pool worker, not on `main`, inventory row C36); once
   delivery follows L0-1, the joins, which pump no queue (inventory
   rows C18, R20), are the wait cycle this rule rules out. A late
   failure whose destination queue is full has no regression yet

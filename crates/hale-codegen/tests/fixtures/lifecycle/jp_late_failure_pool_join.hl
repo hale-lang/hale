@@ -1,6 +1,7 @@
 // Join progress, a late failure during the pool join (JoinProgress,
 // FailureDelivery). Known open at inventory row R20 for the domain the
-// handler runs on, which is L5's assertion; the outcome is pinned
+// handler runs on: the trace build (L2) shows the delivery completing
+// on the pool's worker, not on main (row C36); the outcome is pinned
 // here.
 //
 // `p` runs on pool `side` and fails 200ms into its run(), while fn

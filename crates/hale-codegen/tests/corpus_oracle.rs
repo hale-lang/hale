@@ -406,8 +406,10 @@ enum Outcome {
 }
 
 /// Build one fixture to a unique temp binary and run it under the
-/// oracles.
-fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
+/// oracles. With `traced` it is built with the lifecycle trace (F.40
+/// phase 3, L2), and a run that passes them must also keep the laws
+/// every trace owes (`hale_types::lifecycle::trace::laws`).
+fn check_fixture(name: &str, main_hl: &Path, deadline: Duration, traced: bool) -> Outcome {
     let src = match std::fs::read_to_string(main_hl) {
         Ok(s) => s,
         Err(e) => return Outcome::Fail(format!("read: {e}")),
@@ -417,7 +419,8 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
         Err(d) => return Outcome::Fail(format!("parse: {d:?}")),
     };
     let bin = harness::unique_bin(&format!("lotus_corpus_{}_{}", name.replace(['/', '-'], "_"), std::process::id()));
-    if let Err(e) = build_executable_with_options(&program, &bin, &[], &build_opts::options()) {
+    let opts = hale_codegen::BuildOptions { lifecycle_trace: traced, ..build_opts::options() };
+    if let Err(e) = build_executable_with_options(&program, &bin, &[], &opts) {
         let msg = format!("{e:?}");
         // A codegen feature gap is ACKNOWLEDGED only when the fixture
         // is on the interpreter-only list; otherwise it's a
@@ -474,6 +477,21 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
                 return Outcome::Fail(format!("CRASH: killed by signal {sig} (UAF / overflow?)"));
             }
             let nonzero_ok = expects_nonzero_exit(name);
+            if traced {
+                let trace = match hale_types::lifecycle::trace::parse(&stderr) {
+                    Ok(t) => t,
+                    Err(e) => return Outcome::Fail(format!("TRACE: does not parse: {e}")),
+                };
+                if trace.events.is_empty() {
+                    return Outcome::Fail("TRACE: a traced build wrote no lifecycle event".to_string());
+                }
+                let complete = code == Some(0) && !nonzero_ok;
+                let laws = hale_types::lifecycle::trace::laws(&trace, complete);
+                if !laws.is_empty() {
+                    let shown: Vec<String> = laws.iter().take(6).map(|v| v.to_string()).collect();
+                    return Outcome::Fail(format!("TRACE LAWS:\n{}", shown.join("\n")));
+                }
+            }
             match code {
                 Some(0) if !nonzero_ok => Outcome::Pass,
                 Some(0) => Outcome::Fail(
@@ -494,6 +512,17 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
 /// entry points.
 fn run_corpus(
     deadline: Duration,
+) -> (
+    Vec<(String, String)>,
+    Vec<(String, String)>,
+    Vec<(String, String)>,
+) {
+    run_corpus_with(deadline, false)
+}
+
+fn run_corpus_with(
+    deadline: Duration,
+    traced: bool,
 ) -> (
     Vec<(String, String)>,
     Vec<(String, String)>,
@@ -520,7 +549,7 @@ fn run_corpus(
         handles.push(std::thread::spawn(move || loop {
             let next = queue.lock().unwrap().next();
             let Some((name, path)) = next else { break };
-            match check_fixture(&name, &path, deadline) {
+            match check_fixture(&name, &path, deadline, traced) {
                 Outcome::Pass => {}
                 Outcome::Fail(reason) => failures.lock().unwrap().push((name, reason)),
                 Outcome::Uncompilable(reason) => {
@@ -596,6 +625,15 @@ fn report(
 #[test]
 fn corpus_terminates_and_exits_clean() {
     report(run_corpus(DEADLINE));
+}
+
+/// The lifecycle trace over the corpus (F.40 phase 3, L2): every
+/// runnable fixture built with the trace passes the same oracles and
+/// keeps the trace's laws. The per-line plans and the negative
+/// controls are `lifecycle_fixtures.rs`'.
+#[test]
+fn corpus_traces_keep_the_lifecycle_laws() {
+    report(run_corpus_with(DEADLINE, true));
 }
 
 /// Full oracle battery including AddressSanitizer + LeakSanitizer.

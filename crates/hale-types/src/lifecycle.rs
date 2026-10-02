@@ -75,17 +75,16 @@
 //! Each row, each retention and each progress rule carries a
 //! [`Status`]: [`Status::Shipped`] when the code does what the rule
 //! says, [`Status::Adopted`] when the rule is decided and nothing
-//! today contradicts it (a verification the trace build adds),
-//! [`Status::KnownOpen`] when the rule is decided and today's
-//! behaviour differs at a named inventory row, and [`Status::Pending`]
-//! when the rule itself waits on a named condition. The fixtures
-//! under `crates/hale-codegen/tests/fixtures/lifecycle/` pin today's
-//! outcome of each `KnownOpen` row a program can show
-//! (`lifecycle_fixtures.rs`, its `KNOWN_OPEN` table). Two cannot: the
-//! eager spine's missing pre-drain (line 18), which a body's exit flush
-//! covers in every program, and the domain a handler runs on (join
-//! progress), which no program observes; the trace build (L2) and
-//! L5's thread assertions carry those.
+//! today contradicts it, [`Status::KnownOpen`] when the rule is
+//! decided and today's behaviour differs at a named inventory row, and
+//! [`Status::Pending`] when the rule itself waits on a named condition.
+//! The fixtures under `crates/hale-codegen/tests/fixtures/lifecycle/`
+//! pin today's outcome of each `KnownOpen` row a program can show
+//! (`lifecycle_fixtures.rs`, its `KNOWN_OPEN` table). Two no program
+//! can show, the eager spine's missing pre-drain (line 18), which a
+//! body's exit flush covers, and the domain a handler runs on (join
+//! progress); the trace build ([`trace`], L2) shows both, and the same
+//! file's `TRACE_KNOWN_OPEN` table pins them.
 //!
 //! ## The decision lines
 //!
@@ -109,12 +108,12 @@
 //! 11    Drain                                    Shipped
 //! 12    Drain                                    KnownOpen C9
 //! 13    Resume RunAdmission                      KnownOpen C43
-//! 14    Reclaim                                  Shipped; Adopted (L2 verification)
+//! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
 //! 15    ProcessDrain                             Shipped
 //! 16    PoolJoin WaitAbort                       Pending (P3's capability matrix)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
-//! 19    RunAdmission Run Cancellation            KnownOpen R19; KnownOpen R20a
+//! 19    RunAdmission Run Cancellation            KnownOpen R19; Shipped (R20a, named by L2)
 //! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
 //! JP    JoinProgress FailureDelivery             KnownOpen C18; KnownOpen R20
 //! ```
@@ -982,7 +981,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::Reclaim],
         statuses: &[
             (Status::Shipped, "emission order and the latches"),
-            (Status::Adopted, "the trace build verifies the table (L2)"),
+            (Status::Shipped, "verified by the trace build (L2): each instance reclaimed once, after its birth, its children before it"),
         ],
     },
     DecisionLine {
@@ -1023,7 +1022,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::RunAdmission, K::Run, K::Cancellation],
         statuses: &[
             (Status::KnownOpen { inventory_row: "R19" }, "a post refused at shutdown, or freed unrun, is silent"),
-            (Status::KnownOpen { inventory_row: "R20a" }, "an abandoned parked run has no named outcome"),
+            (Status::Shipped, "an abandoned parked run ends CanceledAfterStart, named by the trace build (L2)"),
         ],
     },
     DecisionLine {

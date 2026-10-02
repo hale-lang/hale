@@ -20,6 +20,23 @@
 //! The fixtures stay out of the example corpus on purpose: a known-open
 //! fixture may hang today (decision line 7), and the corpus oracle runs
 //! every example to completion.
+//!
+//! **The trace oracle (L2).** Every fixture is built with the lifecycle
+//! trace (`BuildOptions::lifecycle_trace`; spec/runtime.md § The
+//! lifecycle trace), and beside the outcome word its trace is checked:
+//! against the laws every trace owes (`lifecycle::trace::laws`), and,
+//! for a line with an adopted rule, against [`PLANS`], the line's
+//! obligations with their entry and completion edges, order-insensitive
+//! across threads and ordered within a domain. A fixture whose trace
+//! shows today's departure from the plan is in [`TRACE_KNOWN_OPEN`],
+//! with the inventory row and the violation the trace shows; when the
+//! fix lands the violation goes, the assertion fails, and so does the
+//! entry. A pending line's fixture is held to the laws alone.
+//!
+//! [`CONTROLS`] are the negative controls: a step removed or reordered
+//! (`LOTUS_LIFECYCLE_SKIP` in the trace build, or today's own order for
+//! a rule not yet shipped), each asserted to make the oracle fail, and
+//! with the violation that says why.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -27,6 +44,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
+use hale_types::lifecycle::trace::{self, Count, Expected, Owed, Trace, Violation};
+use hale_types::lifecycle::{Event, Multiplicity, ObligationId, ObligationKind, Point, Spine, Terminal};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -59,9 +78,19 @@ enum RunMode {
 
 struct Ran {
     stdout: String,
+    /// stderr without the trace's lines.
     stderr: String,
+    trace: Trace,
     code: Option<i32>,
     timed_out: bool,
+}
+
+impl Ran {
+    /// The process ended on its own and cleanly, so an obligation
+    /// entered and never ended is a violation, not a cut-off.
+    fn complete(&self) -> bool {
+        !self.timed_out && self.code == Some(0)
+    }
 }
 
 const FIXTURES: &[Fixture] = &[
@@ -110,7 +139,6 @@ const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l07_pool_or_wait_teardown.hl", "R34", "hang-in-pool-join"),
     ("l12_pinned_fields_drain.hl", "C9", "inner-not-drained"),
     ("l13_resume_pool_child.hl", "C43", "resumed-inline"),
-    ("l19_parked_started_coroutine.hl", "R20a", "exit-clean-unnamed"),
     ("l19_full_ring.hl", "R19", "not-run"),
     ("l19_empty_ring_last_check.hl", "R19", "not-run"),
     ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
@@ -126,6 +154,314 @@ const PENDING: &[(&str, &str)] = &[
     ("l17_pinned_join_deferred.hl", "final-dropped"),
 ];
 
+/// Each adopted line's plan, as the trace oracle reads it (a fixture on
+/// a pending line, or compiled only, has none). One line per
+/// declaration, its steps in the order they hold within one domain:
+///
+/// ```text
+/// <Decl>[*N|*+]: <Kind>[@Spine][*N][=Terminal][!domain] ...
+/// edge <Decl>.<Kind>[@Spine].<Point> -> <Decl>.<Kind>[@Spine].<Point>
+/// ```
+///
+/// `Decl` is the lowered declaration name, `-` for a process-level
+/// obligation. A step is owed once by each of `N` subjects (default 1;
+/// `*+` at least one): instances, or incarnations for `Birth` and
+/// `Run`. `=Terminal` names the end it reaches (default `Completed`);
+/// `!domain` claims the thread it runs on. An edge's `Point` is
+/// `Entered`, `Completed` or `Ended`; within one declaration it holds
+/// per instance, across declarations for every instance of the first.
+const PLANS: &[(&str, &str)] = &[
+    (
+        "l01_held_failure_settle.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Boom: Birth Run FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
+         edge App.ParamsSettle.Completed -> Boom.FailureDelivery.Completed
+         edge Boom.FailureDelivery.Completed -> App.Birth.Entered
+         edge Boom.Reclaim.Completed -> App.Reclaim.Entered",
+    ),
+    (
+        "l01_neg_same_pool_held.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
+         Owner: ParamsSettle!pool:side Birth Run Drain Dissolve Reclaim
+         Late: Birth*2 FailureDelivery!pool:side ConstructionDelivery Restart Run Drain Dissolve Reclaim
+         edge Owner.ParamsSettle.Completed -> Late.FailureDelivery.Completed
+         edge Late.FailureDelivery.Completed -> Owner.Birth.Entered
+         edge Late.FailureDelivery.Completed -> Late.Restart.Entered",
+    ),
+    (
+        "l01_neg_it_waits_worker_queue.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Failer: Birth Run!pool:side FailureDelivery ConstructionDelivery Drain Dissolve Reclaim
+         Quick: Birth Run!pool:side Drain Dissolve Reclaim
+         Slow: Birth Run!main Drain Dissolve Reclaim
+         edge App.ParamsSettle.Completed -> Failer.FailureDelivery.Completed
+         edge Failer.FailureDelivery.Completed -> App.Birth.Entered",
+    ),
+    (
+        "l04_dissolve_route_reclaim.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Flowing: Accept Birth Run Drain Dissolve FailureDelivery Reclaim
+         edge Flowing.FailureDelivery.Completed -> Flowing.Reclaim.Entered",
+    ),
+    (
+        "l04_dissolve_route_cascade.hl",
+        "App: ParamsSettle Birth Drain Dissolve Reclaim
+         Kid: Birth Drain Dissolve FailureDelivery Reclaim
+         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
+    ),
+    (
+        "l05_accept_position.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid: Accept Birth Drain Dissolve Reclaim
+         edge Kid.Accept.Completed -> Kid.Birth.Entered",
+    ),
+    // Line 6's readiness has no trace event yet; the plan holds the rest.
+    ("l06_readiness_main.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
+    ("l06_readiness_pool.hl", "App: Birth Run Drain Dissolve Reclaim\n Sub: Birth Drain Dissolve Reclaim"),
+    (
+        "l07_pool_or_wait_teardown.hl",
+        "-: WaitAbort@EagerTeardown PoolJoin@EagerTeardown
+         edge -.WaitAbort@EagerTeardown.Completed -> -.PoolJoin@EagerTeardown.Entered",
+    ),
+    (
+        "l08_birth_failure_kept.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid: Birth FailureDelivery Drain Dissolve Reclaim
+         edge Kid.Birth.Completed -> Kid.FailureDelivery.Entered
+         edge Kid.FailureDelivery.Completed -> Kid.Reclaim.Entered",
+    ),
+    (
+        "l09_delivery_at_epoch.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid: Birth Run FailureDelivery Drain Dissolve Reclaim
+         edge Kid.FailureDelivery.Completed -> Kid.Run.Completed",
+    ),
+    // The violation exits the process inside the cascade's Dissolve.
+    (
+        "l10_dissolve_closures_first.hl",
+        "App: ParamsSettle Birth Drain Dissolve
+         Kid: Birth Drain Dissolve
+         edge App.Dissolve.Completed -> Kid.Dissolve.Entered",
+    ),
+    (
+        "l11_let_bound_drain.hl",
+        "Kid: Birth Run Drain@DeferredEntry Dissolve@DeferredEntry Reclaim
+         -: PreDrain@MainFallThrough
+         edge Kid.Run.Completed -> -.PreDrain@MainFallThrough.Entered
+         edge -.PreDrain@MainFallThrough.Completed -> Kid.Drain@DeferredEntry.Entered",
+    ),
+    (
+        "l12_pinned_fields_drain.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Outer: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
+         Inner: Birth Drain Dissolve Reclaim
+         edge Inner.Drain.Completed -> Outer.Drain.Entered
+         edge Outer.Dissolve.Completed -> Outer.PinnedJoin.Completed",
+    ),
+    (
+        "l13_resume_pool_child.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Kid: Birth FailureDelivery ConstructionDelivery Run!pool:side Drain Dissolve Reclaim
+         edge App.ParamsSettle.Completed -> Kid.FailureDelivery.Completed
+         edge Kid.FailureDelivery.Completed -> Kid.Run.Entered",
+    ),
+    // Line 14's verification: each child torn down once, by its run
+    // end's reclaim, and before its owner's arena goes.
+    (
+        "l14_reclaim_exactly_once.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         Kid*3: Accept Birth Run Drain@Reclaim Dissolve@Reclaim Reclaim@Reclaim
+         edge Kid.Run.Completed -> Kid.Drain@Reclaim.Entered
+         edge Kid.Reclaim@Reclaim.Completed -> App.Reclaim.Entered",
+    ),
+    (
+        "l15_sigint_flag.hl",
+        "App: Birth Drain Dissolve Reclaim
+         Loop: Birth!pinned Run!pinned Drain!pinned Dissolve!pinned PinnedJoin!main Reclaim
+         edge Loop.Run.Completed -> Loop.Drain.Entered
+         edge Loop.Dissolve.Completed -> Loop.PinnedJoin.Completed",
+    ),
+    (
+        "l18_eager_pre_drain.hl",
+        "Hub: Birth Run Drain Dissolve Reclaim
+         Sub: Birth Drain Dissolve Reclaim
+         -: PreDrain@EagerTeardown
+         edge Hub.Run.Completed -> -.PreDrain@EagerTeardown.Entered
+         edge -.PreDrain@EagerTeardown.Completed -> Sub.Drain.Entered",
+    ),
+    // R20a: the started run parked in accept() is abandoned at the pool
+    // join and named; the worker's quiescence is the join's completion.
+    (
+        "l19_parked_started_coroutine.hl",
+        "App: Birth Run Drain Dissolve Reclaim
+         __StdIoTcpListener: Birth Run=CanceledAfterStart!pool:io Cancellation!pool:io Drain Dissolve Reclaim
+         -: PoolJoin@EagerTeardown
+         edge __StdIoTcpListener.Cancellation.Completed -> -.PoolJoin@EagerTeardown.Completed
+         edge __StdIoTcpListener.Run.Ended -> __StdIoTcpListener.Drain.Entered",
+    ),
+    (
+        "l19_self_post_overflow.hl",
+        "App: Birth Drain Dissolve Reclaim
+         Spawner: Birth Run!pool:side Drain Dissolve Reclaim
+         Kid*20: Birth Run!pool:side Drain Dissolve Reclaim
+         edge Kid.Run.Completed -> Kid.Drain.Entered",
+    ),
+    (
+        "l19_resumed_run_at_shutdown.hl",
+        "App: ParamsSettle Birth Drain Dissolve Reclaim
+         Kid: Birth FailureDelivery ConstructionDelivery Run Drain Dissolve Reclaim
+         edge Kid.Run.Ended -> Kid.Dissolve.Entered",
+    ),
+    (
+        "rd_restart_during_teardown.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Kid: Birth Run FailureDelivery Restart*0 Drain Dissolve Reclaim",
+    ),
+    (
+        "jp_late_failure_pinned_join.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Late: Birth!pinned Run!pinned FailureDelivery!main Drain!pinned Dissolve!pinned PinnedJoin Reclaim
+         edge Late.FailureDelivery.Completed -> Late.PinnedJoin.Completed",
+    ),
+    (
+        "jp_late_failure_pool_join.hl",
+        "App: ParamsSettle Birth Run Drain Dissolve Reclaim
+         Late: Birth Run!pool:side FailureDelivery!main Drain Dissolve Reclaim
+         -: PoolJoin@EagerTeardown
+         edge Late.FailureDelivery.Completed -> -.PoolJoin@EagerTeardown.Completed",
+    ),
+];
+
+/// Fixtures whose trace departs from their plan today: (file,
+/// inventory row, the violation the trace shows, as it starts). Each is
+/// asserted to show it; when the fix lands it does not, and the entry
+/// has to go.
+const TRACE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
+    ("l04_dissolve_route_reclaim.hl", "C25", "missing: Flowing.FailureDelivery"),
+    ("l04_dissolve_route_cascade.hl", "C31", "missing: Kid.FailureDelivery"),
+    // Line 7: the host joins the pools and only then aborts the waits,
+    // and the join never returns.
+    ("l07_pool_or_wait_teardown.hl", "R34", "edge: -.PoolJoin@EagerTeardown.Entered"),
+    ("l12_pinned_fields_drain.hl", "C9", "missing: Inner.Drain"),
+    ("l13_resume_pool_child.hl", "C43", "domain: Kid.Run"),
+    // Line 18: the step the outcome cannot show.
+    ("l18_eager_pre_drain.hl", "C13", "missing: -.PreDrain@EagerTeardown"),
+    ("rd_restart_during_teardown.hl", "C42", "count: Kid.Restart"),
+    // Join progress: the late failure completes only because its
+    // handler runs in place on the child's thread (decision L0-1).
+    ("jp_late_failure_pinned_join.hl", "C36", "domain: Late.FailureDelivery"),
+    ("jp_late_failure_pool_join.hl", "C36", "domain: Late.FailureDelivery"),
+];
+
+// ------------------------------------------------------------ the plans
+
+/// The kinds owed once per incarnation; the rest once per instance.
+fn multiplicity(kind: ObligationKind) -> Multiplicity {
+    match kind {
+        ObligationKind::Birth | ObligationKind::Run | ObligationKind::RunEnd | ObligationKind::Closures => {
+            Multiplicity::OncePerIncarnation
+        }
+        _ => Multiplicity::OncePerInstance,
+    }
+}
+
+fn parse_count(s: &str) -> Count {
+    match s {
+        "+" => Count::AtLeast(1),
+        n => Count::Exactly(n.parse().unwrap_or_else(|_| panic!("plan: bad count {n:?}"))),
+    }
+}
+
+/// `Kind[@Spine]` into its parts.
+fn kind_spine(s: &str) -> (ObligationKind, Option<Spine>) {
+    let (k, sp) = match s.split_once('@') {
+        Some((k, sp)) => (k, Some(Spine::from_name(sp).unwrap_or_else(|| panic!("plan: unknown spine {sp}")))),
+        None => (s, None),
+    };
+    (ObligationKind::from_name(k).unwrap_or_else(|| panic!("plan: unknown kind {k}")), sp)
+}
+
+fn decl_of(s: &str) -> Option<String> {
+    (s != "-").then(|| s.to_string())
+}
+
+/// A plan in [`PLANS`]' notation.
+fn plan(text: &str) -> Expected {
+    let mut exp = Expected::default();
+    let mut edges: Vec<(&str, &str)> = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(edge) = line.strip_prefix("edge ") {
+            let (a, b) = edge.split_once(" -> ").unwrap_or_else(|| panic!("plan: bad edge {line:?}"));
+            edges.push((a, b));
+            continue;
+        }
+        let (head, steps) = line.split_once(':').unwrap_or_else(|| panic!("plan: bad line {line:?}"));
+        let (decl, line_count) = match head.split_once('*') {
+            Some((d, c)) => (d, parse_count(c)),
+            None => (head, Count::Exactly(1)),
+        };
+        let mut seq = Vec::new();
+        for step in steps.split_whitespace() {
+            let (step, domain) = match step.split_once('!') {
+                Some((s, d)) => (s, Some(d.to_string())),
+                None => (step, None),
+            };
+            let (step, ends) = match step.split_once('=') {
+                Some((s, t)) => {
+                    (s, Point::Terminal(Terminal::from_name(t).unwrap_or_else(|| panic!("plan: unknown terminal {t}"))))
+                }
+                None => (step, Point::Completed),
+            };
+            let (step, count) = match step.split_once('*') {
+                Some((s, c)) => (s, parse_count(c)),
+                None => (step, line_count),
+            };
+            let (kind, spine) = kind_spine(step);
+            seq.push(ObligationId(exp.owed.len() as u32));
+            exp.owed.push(Owed {
+                decl: decl_of(decl),
+                kind,
+                spine,
+                multiplicity: multiplicity(kind),
+                count,
+                ends,
+                domain,
+            });
+        }
+        exp.sequences.push(seq);
+    }
+    for (a, b) in edges {
+        let ev = |r: &str| -> Event {
+            let parts: Vec<&str> = r.split('.').collect();
+            let [decl, ks, point] = parts[..] else { panic!("plan: bad edge end {r:?}") };
+            let (kind, spine) = kind_spine(ks);
+            let decl = decl_of(decl);
+            let i = exp
+                .owed
+                .iter()
+                .position(|o| o.decl == decl && o.kind == kind && o.spine == spine)
+                .unwrap_or_else(|| panic!("plan: edge names {r:?}, which no line owes"));
+            Event {
+                obligation: ObligationId(i as u32),
+                point: Point::from_name(point).unwrap_or_else(|| panic!("plan: bad point {point}")),
+            }
+        };
+        exp.edges.push((ev(a), ev(b)));
+    }
+    exp
+}
+
+/// What the trace oracle says about a run of `file`: the laws, then the
+/// plan's violations.
+fn trace_violations(file: &str, ran: &Ran) -> Vec<Violation> {
+    let mut v = trace::laws(&ran.trace, ran.complete());
+    if let Some((_, text)) = PLANS.iter().find(|(f, _)| *f == file) {
+        v.extend(plan(text).check(&ran.trace, ran.complete()));
+    }
+    v
+}
+
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lifecycle")
 }
@@ -139,8 +475,9 @@ fn source(file: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// Check, build and run one fixture; its judged outcome.
-fn run_fixture(f: &Fixture) -> String {
+/// Check one fixture and build it with the lifecycle trace; `None` when
+/// it is compiled only.
+fn build_fixture(f: &Fixture) -> Option<PathBuf> {
     let program = hale_syntax::parse_source(&source(f.file)).unwrap_or_else(|e| panic!("{}: parse: {e:?}", f.file));
     let errs: Vec<String> = hale_types::check_program(&program)
         .iter()
@@ -149,21 +486,39 @@ fn run_fixture(f: &Fixture) -> String {
         .collect();
     assert!(errs.is_empty(), "{}: `hale check` refuses it: {errs:?}", f.file);
     let bin = harness::unique_bin(&format!("hale_lifecycle_{}", f.file.trim_end_matches(".hl")));
-    build_executable_with_options(&program, &bin, &[], &build_opts::options())
-        .unwrap_or_else(|e| panic!("{}: build: {e:?}", f.file));
+    let opts = hale_codegen::BuildOptions { lifecycle_trace: true, ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("{}: build: {e:?}", f.file));
     if f.run == RunMode::CompileOnly {
         let _ = std::fs::remove_file(&bin);
-        return "not-run".to_string();
+        return None;
     }
-    let ran = run_bin(&bin, f.run);
-    let _ = std::fs::remove_file(&bin);
-    let got = (f.judge)(&ran);
-    eprintln!("{}: outcome {got}\n--- stdout\n{}--- stderr\n{}", f.file, ran.stdout, ran.stderr);
-    got
+    Some(bin)
 }
 
-fn run_bin(bin: &Path, mode: RunMode) -> Ran {
+/// Build and run one fixture, the runtime given `env`; what it did.
+fn run_fixture(f: &Fixture, env: &[(&str, &str)]) -> Option<Ran> {
+    let bin = build_fixture(f)?;
+    let ran = run_bin(&bin, f.run, env);
+    let _ = std::fs::remove_file(&bin);
+    eprintln!("{}: --- stdout\n{}--- stderr\n{}--- trace", f.file, ran.stdout, ran.stderr);
+    for e in &ran.trace.events {
+        eprintln!(
+            "{} {} {} {:?} {} {} {:?}",
+            e.seq,
+            e.kind.name(),
+            e.point.name(),
+            e.spine.map(Spine::name),
+            e.domain,
+            e.decl.as_deref().unwrap_or("-"),
+            e.subject.map(|s| (s.instance.raw(), s.incarnation.raw()))
+        );
+    }
+    Some(ran)
+}
+
+fn run_bin(bin: &Path, mode: RunMode, env: &[(&str, &str)]) -> Ran {
     let mut child = Command::new(bin)
+        .envs(env.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -213,9 +568,12 @@ fn run_bin(bin: &Path, mode: RunMode) -> Ran {
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    let stderr = err_reader.join().unwrap_or_default();
+    let trace = trace::parse(&stderr).unwrap_or_else(|e| panic!("{}: the trace does not parse: {e}", bin.display()));
     Ran {
         stdout: reader.join().unwrap_or_default(),
-        stderr: err_reader.join().unwrap_or_default(),
+        stderr: trace.rest.clone(),
+        trace,
         code: status.and_then(|s| s.code()),
         timed_out,
     }
@@ -356,11 +714,18 @@ fn delivered_before_teardown(r: &Ran) -> String {
     }
 }
 
+/// The abandoned run's outcome is named where the trace build records
+/// it: its `Run` ends in `Terminal(CanceledAfterStart)`.
 fn parked_cancellation(r: &Ran) -> String {
     if r.timed_out {
         return "timeout".to_string();
     }
-    if r.stdout.contains("canceled-after-start") || r.stderr.contains("canceled-after-start") {
+    let named = r
+        .trace
+        .events
+        .iter()
+        .any(|e| e.kind == ObligationKind::Run && e.point == Point::Terminal(Terminal::CanceledAfterStart));
+    if named {
         return "named:canceled-after-start".to_string();
     }
     if r.code == Some(0) {
@@ -437,11 +802,49 @@ fn every_fixture_is_listed_and_formatted() {
     for f in FIXTURES.iter().filter(|f| f.adopted.is_none()) {
         assert!(PENDING.iter().any(|(p, _)| *p == f.file), "{} has no adopted outcome and no PENDING entry", f.file);
     }
+    // Every adopted line that runs has a plan; a pending or compiled-only
+    // fixture has none; every plan parses and names steps that exist.
+    for f in FIXTURES {
+        let has_plan = PLANS.iter().any(|(p, _)| *p == f.file);
+        let wants_plan = f.adopted.is_some() && f.run != RunMode::CompileOnly;
+        assert_eq!(has_plan, wants_plan, "{}: a plan is owed exactly by an adopted line that runs", f.file);
+    }
+    for (file, text) in PLANS {
+        fixture(file);
+        assert!(!plan(text).owed.is_empty(), "{file}: an empty plan");
+    }
+    for (file, _, _) in TRACE_KNOWN_OPEN {
+        assert!(PLANS.iter().any(|(p, _)| p == file), "{file} is TRACE_KNOWN_OPEN but has no plan");
+    }
+}
+
+/// The trace oracle over one run: clean, or, for a known-open trace,
+/// showing the violation its entry names.
+fn assert_trace(file: &str, ran: &Ran) {
+    let v = trace_violations(file, ran);
+    let shown: Vec<String> = v.iter().map(Violation::to_string).collect();
+    eprintln!("{file}: trace oracle: {shown:#?}");
+    if let Some((_, row, shows)) = TRACE_KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
+        assert!(
+            shown.iter().any(|s| s.starts_with(shows)),
+            "{file}: the trace no longer shows `{shows}`: the fix for inventory row {row} has landed, so its TRACE_KNOWN_OPEN entry has to go; it shows {shown:#?}"
+        );
+    } else {
+        assert!(shown.is_empty(), "{file}: the trace oracle fails: {shown:#?}");
+    }
 }
 
 fn assert_fixture(file: &str) {
     let f = fixture(file);
-    let got = run_fixture(f);
+    let ran = run_fixture(f, &[]);
+    let got = match &ran {
+        Some(ran) => (f.judge)(ran),
+        None => "not-run".to_string(),
+    };
+    eprintln!("{file}: outcome {got}");
+    if let Some(ran) = &ran {
+        assert_trace(file, ran);
+    }
     if let Some((_, row, today)) = KNOWN_OPEN.iter().find(|(k, _, _)| *k == file) {
         assert!(
             Some(got.as_str()) != f.adopted,
