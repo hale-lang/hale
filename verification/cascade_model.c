@@ -1,6 +1,8 @@
 /* GenMC model of the lotus FAILURE CASCADE: construction-time delivery
  * (the hold, the settle, the deferred reclaim, the cross-thread await)
- * and a queued run's cancel against the pool worker's admission.
+ * and a run's retention against its child's reclaim: a queued run's
+ * cancel against the pool worker's admission, and a started run's hold,
+ * which the reclaim waits for.
  * F.40 phase 3, L5 (spec/runtime.md § Lifecycle obligations, decision
  * lines 1 and 19; notes/f40-lifecycle-inventory.md rows R19, R19a).
  *
@@ -28,10 +30,14 @@
  *     `lotus_held_failure_count`, then defer_reclaim) and the reclaim
  *     bracket of emit_locus_arena_destroy (the `__arena` latch, then
  *     lotus_run_cancel_queued first, then the arena released);
- *   - the run tickets: lotus_run_ticket_take (in the run post),
- *     lotus_run_admit (the worker's dispatch), lotus_run_cell_drop_canceled
- *     (replay's ordering gate, which looks before it admits),
- *     lotus_run_cancel_queued (live-count fast path, then the walk);
+ *   - the run tickets and holds: lotus_run_ticket_take (in the run
+ *     post), lotus_run_admit (the worker's dispatch: the ticket becomes
+ *     the run's hold, still linked), lotus_run_hold_release (the run
+ *     returned), lotus_run_cell_drop_canceled (replay's ordering gate,
+ *     which looks before it admits), lotus_run_cancel_queued
+ *     (live-count fast path, the walk that cancels the queued tickets
+ *     and counts the started ones other than the caller's own, then
+ *     lotus_run_hold_wait); the worker's `t_run_running` around the run;
  *   - the cell's transport: the cooperative pool's Vyukov MPSC ring
  *     (`lotus_mpsc_ring_t`, the same ring the pinned mailbox uses),
  *     transcribed as coop_pool_model.c / mailbox_model.c have it. Its
@@ -40,7 +46,9 @@
  *
  * REDUCTIONS (not the production code):
  *   - `pthread_self()` / `pthread_equal()` are a model thread id passed
- *     in: the opener test in lotus_failure_await compares ids.
+ *     in: the opener test in lotus_failure_await compares ids, and the
+ *     thread-local `t_run_running` (the caller's own run, which its
+ *     reclaim does not wait for) is an array indexed by that id.
  *   - The open table and the ticket table are fixed-size (no realloc
  *     growth; the growth runs under the same lock and adds no surface),
  *     and the ticket table is one bucket (the hash only spreads it).
@@ -56,7 +64,14 @@
  *     spin until a later broadcast, relock, re-check the predicate;
  *     the settle's `pthread_cond_broadcast` bumps the epoch under the
  *     lock. The re-check under the relocked mutex is what orders, as in
- *     pthread_cond_wait.
+ *     pthread_cond_wait. The reclaim's wait for run holds
+ *     (`pthread_cond_timedwait(&g_run_holds_cv, ...)`, a millisecond at
+ *     a time) is reduced the same way, and the hold's release bumps its
+ *     epoch. Between its timed waits production services the reclaiming
+ *     thread's queue (the main bus queue, the pinned mailbox, or, on an
+ *     async pool's coroutine, a timer park instead of the condvar); no
+ *     cell travels back to the reclaiming thread here, so that is not
+ *     modeled.
  *   - The trace build's naming (`lotus_lc_run_canceled`) is a counter.
  *
  * BOUNDED CONFIGURATION (exhaustive within it, nothing beyond):
@@ -70,19 +85,25 @@
  *     pool: its run() is posted (one ticket, one ring cell) and fails
  *     on the worker, held or delivered in place depending on where the
  *     owner's settle falls, then awaits the decision and reclaims
- *     itself. The handler restarts nothing (no resume path).
- *   Phase 2, a queued run's cancel against its admission: one child,
- *     one queued run, one pool worker; two threads. The instantiating
- *     thread posts the child's run, then begins its Reclaim (the latch,
- *     the cancel) while the worker dequeues the cell, passes replay's
- *     gate look, and admits it. When the cancel won, the arena is
- *     released at once (the production order); when the admission won,
- *     the release waits for the pool join, because a started run's
- *     ordering against its child's reclaim is the join's, not the
- *     ticket's (lotus_arena.c, "Run retention": "A run already started
- *     is not canceled: its ticket is gone, and the teardown's ordering
- *     against it is the join's"). The teardown spines join before they
- *     reclaim, a sub-case of these interleavings.
+ *     itself, inside its own run: that reclaim's cancel finds the run's
+ *     own hold and does not wait for it. The handler restarts nothing
+ *     (no resume path).
+ *   Phase 2, a reclaim no join orders, against the run's admission and
+ *     its start: one child, one run, one pool worker; two threads. The
+ *     instantiating thread posts the child's run, then begins its
+ *     Reclaim (the latch, the cancel and its wait) and releases the
+ *     arena as soon as lotus_run_cancel_queued returns, with no join
+ *     before it, the order of a placed field reassigned on one thread
+ *     while its run is queued or running on another pool's worker. The
+ *     worker meanwhile dequeues the cell, passes replay's gate look,
+ *     admits it, runs it and releases its hold. Every point at which the
+ *     reclaim can fall is explored: before the post is admitted (the
+ *     cancel wins, the cell is dropped), and after (the reclaim waits
+ *     for the run's return). This is the order -DMODEL_RECLAIM_UNJOINED
+ *     selected when the started run was this model's open boundary;
+ *     with the hold it is the checked configuration, part of the gate,
+ *     and the macro is gone. A teardown spine that joins before it
+ *     reclaims is a sub-case of these interleavings.
  *
  * SAFETY ASSERTIONS GenMC checks across every interleaving (plus its
  * automatic data-race, use-after-free and double-free detection):
@@ -104,6 +125,12 @@
  *       delivery machinery is up at settle). The handler reads the last
  *       param plainly, so an early or unordered delivery is an assertion
  *       failure or a reported data race. Each failure is delivered once.
+ *   (5) A STARTED RUN HOLDS ITS CHILD UNTIL IT RETURNS: a run that was
+ *       not canceled has returned before its child's arena is released,
+ *       and finds the arena whole as it returns, whatever the reclaim
+ *       did meanwhile; a run's own reclaim of its child (phase 1's B) is
+ *       not held up by its own hold. Every ticket is unlinked by the
+ *       end of each phase.
  *
  * WHAT IT DOES NOT ESTABLISH:
  *   - LIVENESS. Condition-variable liveness is excluded: GenMC has no
@@ -113,23 +140,20 @@
  *     deadlocks with a child waiting for its parent; the pool join
  *     returns) rest on the deadline oracle and the lifecycle matrix
  *     (crates/hale-codegen/tests/lifecycle_matrix.rs, the l01_* /
- *     l19_* fixtures), not on this model.
- *   - A STARTED RUN AGAINST A RECLAIM NO JOIN ORDERS. The ticket lock
- *     decides which of the cancel and the admission wins; it does not
- *     hold the child for a run that won. A reclaim that is not ordered
- *     after that run's end (for example a placed field reassigned on
- *     one thread while its run has started on another pool's worker)
- *     is outside this model. -DMODEL_RECLAIM_UNJOINED releases the
- *     arena right after the cancel whatever it found, the production
- *     order on such a spine; GenMC is expected to report the race on
- *     the child, and that configuration is not part of the gate.
+ *     l19_* fixtures), not on this model. So does the reclaim's wait
+ *     ending: that a started run returns (a run that never returns keeps
+ *     its child, and its reclaim waits, by the retention's design), and
+ *     that a run publishing back to the reclaiming thread is answered
+ *     while that thread waits, which rests on the queue servicing and
+ *     the l19_started_run_publishes_back fixtures.
  *   - The resume path (await returning 2, the restart a handler asks
  *     for), more than one held failure per child, nested opens, a
  *     handler that opens and settles a locus of its own, the async
- *     pool's coroutine drain and its abandonment (R20a), the pools'
- *     teardown freeing undequeued cells (R21), a post refused at
- *     shutdown, the self-publish overflow list, and replay's hold
- *     buffer (thread-local, no cross-thread surface).
+ *     pool's coroutine drain, its abandonment (R20a) and the hold
+ *     released there, the wait's timer park on a coroutine and its two
+ *     aborting guards, the pools' teardown freeing undequeued cells
+ *     (R21), a post refused at shutdown, the self-publish overflow list,
+ *     and replay's hold buffer (thread-local, no cross-thread surface).
  *   - What the handler does to the owner beyond reading its params:
  *     a handler running on the child's thread after settle, beside the
  *     owner's birth(), is the execution-domain question (decision line
@@ -152,6 +176,13 @@
  *                                   itself under its running handler
  *   -DMODEL_BUG_ADMIT_IGNORES_CANCEL the worker starts a canceled run:
  *                                   (3), started and canceled both
+ *   -DMODEL_BUG_RECLAIM_SKIPS_WAIT  the cancel does not wait for the
+ *                                   started runs' holds (admission frees
+ *                                   nothing, but nothing waits): (5),
+ *                                   phase 2 releases the arena before the
+ *                                   admitted run returns (GenMC may name
+ *                                   it first as the race or the
+ *                                   use-after-free on the child's arena)
  *
  * Memory model: GenMC's default (release-acquire), the faithful one for
  * the runtime's orders. No GENMC-FLAGS pin.
@@ -195,6 +226,7 @@ static int g_delivered[NCHILD];   /* handler completions per child     (4) */
 static int g_run_started[NCHILD]; /* runs admitted and started         (3) */
 static int g_run_canceled[NCHILD];/* runs named NotStarted(Acknowledged) */
 static int g_run_dropped;         /* canceled cells the worker dropped   */
+static _Atomic int g_run_returned;/* phase 2's started run has returned (5) */
 
 static child_t *child_create(owner_t *owner, int id) {
     child_t *c = malloc(sizeof *c);
@@ -213,6 +245,7 @@ static child_t *child_create(owner_t *owner, int id) {
 typedef struct lotus_run_ticket {
     void                    *child;
     int                      canceled;   /* written and read under the lock */
+    int                      held;       /* admitted: the run's hold; under the lock */
     struct lotus_run_ticket *prev;
     struct lotus_run_ticket *next;
 } lotus_run_ticket_t;
@@ -220,6 +253,10 @@ typedef struct lotus_run_ticket {
 static lotus_run_ticket_t *g_run_tickets;          /* one bucket */
 static _Atomic size_t      g_run_tickets_live;
 static pthread_mutex_t     g_run_tickets_lock;
+/* pthread_cond_t g_run_holds_cv, reduced as g_held_delivered is. */
+static _Atomic int         g_run_holds_epoch;
+/* t_run_running: the hold of the run executing on each model thread. */
+static lotus_run_ticket_t *g_run_running[2];
 
 /* Under the lock. */
 static void lotus_run_ticket_unlink(lotus_run_ticket_t *t) {
@@ -234,6 +271,7 @@ static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
     lotus_run_ticket_t *t = malloc(sizeof *t);
     t->child    = child;
     t->canceled = 0;
+    t->held     = 0;
     t->prev     = NULL;
     pthread_mutex_lock(&g_run_tickets_lock);
     t->next = g_run_tickets;
@@ -245,41 +283,89 @@ static lotus_run_ticket_t *lotus_run_ticket_take(void *child) {
 }
 
 /* The worker is about to start a dequeued run cell: 1 = admitted (the
- * ticket unlinked, the child live), 0 = its reclaim canceled it first.
- * Frees the ticket either way. */
+ * child live, the ticket now the run's hold, still linked), 0 = its
+ * reclaim canceled it first, and the ticket is freed. */
 static int lotus_run_admit(lotus_run_ticket_t *t) {
     pthread_mutex_lock(&g_run_tickets_lock);
     int canceled = t->canceled;
-    if (!canceled) lotus_run_ticket_unlink(t);
+    if (!canceled) t->held = 1;
     pthread_mutex_unlock(&g_run_tickets_lock);
-    free(t);
 #ifdef MODEL_BUG_ADMIT_IGNORES_CANCEL
-    return 1;
+    return 1;     /* started anyway; the cancel already unlinked it */
 #endif
+    if (canceled) free(t);
     return !canceled;
 }
 
-/* The first step of the Reclaim bracket. Returns the number it canceled
- * (production returns void and names each in the trace build). */
-static int lotus_run_cancel_queued(void *child) {
+/* The run returned: its hold ends, and a waiting reclaim proceeds. */
+static void lotus_run_hold_release(lotus_run_ticket_t *t) {
+    if (!t) return;
+    pthread_mutex_lock(&g_run_tickets_lock);
+    lotus_run_ticket_unlink(t);
+    atomic_fetch_add_explicit(&g_run_holds_epoch, 1, memory_order_relaxed);
+    pthread_mutex_unlock(&g_run_tickets_lock);
+    free(t);
+}
+
+/* The child's holds other than `own`. Under the lock. */
+static int lotus_run_holds_outstanding(void *child, lotus_run_ticket_t *own) {
+    int held = 0;
+    for (lotus_run_ticket_t *t = g_run_tickets; t; t = t->next)
+        if (t->child == child && t->held && t != own) held++;
+    return held;
+}
+
+/* Wait until every started run of `child` but the caller's own has
+ * returned. The condvar is reduced as the await's is: read the epoch
+ * under the lock, unlock, spin until a later release, relock, re-check.
+ * The production wait services its thread's queue between its timed
+ * waits; that adds no shared state here (no cell travels back). */
+static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
+#ifdef MODEL_BUG_RECLAIM_SKIPS_WAIT
+    (void)child; (void)own;
+    return;
+#endif
+    pthread_mutex_lock(&g_run_tickets_lock);
+    while (lotus_run_holds_outstanding(child, own)) {
+        int e = atomic_load_explicit(&g_run_holds_epoch, memory_order_relaxed);
+        pthread_mutex_unlock(&g_run_tickets_lock);
+        while (atomic_load_explicit(&g_run_holds_epoch,
+                                    memory_order_relaxed) == e) { /* asleep */ }
+        pthread_mutex_lock(&g_run_tickets_lock);
+    }
+    pthread_mutex_unlock(&g_run_tickets_lock);
+}
+
+/* The first step of the Reclaim bracket: cancel the queued runs, then
+ * wait for the started ones. Returns the number it canceled (production
+ * returns void and names each in the trace build). `self_tid` stands in
+ * for the thread-local lookup of the caller's own run. */
+static int lotus_run_cancel_queued(void *child, int self_tid) {
     if (!child) return 0;
     if (atomic_load_explicit(&g_run_tickets_live, memory_order_acquire) == 0)
         return 0;
+    lotus_run_ticket_t *own = g_run_running[self_tid];
     int canceled = 0;
+    int held = 0;
     pthread_mutex_lock(&g_run_tickets_lock);
     lotus_run_ticket_t *t = g_run_tickets;
     while (t) {
         lotus_run_ticket_t *next = t->next;
         if (t->child == child) {
-            t->canceled = 1;
-            lotus_run_ticket_unlink(t);
-            canceled++;
+            if (t->held) {
+                if (t != own) held++;
+            } else {
+                t->canceled = 1;
+                lotus_run_ticket_unlink(t);
+                canceled++;
+            }
         }
         t = next;
     }
     pthread_mutex_unlock(&g_run_tickets_lock);
     /* lotus_lc_run_canceled, once per canceled run */
     g_run_canceled[((child_t *)child)->id] += canceled;
+    if (held) lotus_run_hold_wait(child, own);
     return canceled;
 }
 
@@ -386,7 +472,8 @@ static int lotus_run_cell_drop_canceled(run_cell_t *cell) {
 }
 
 /* The worker: dequeue one run cell, the replay gate's look, then
- * lotus_coop_pool_dispatch_cell's admission and the run. */
+ * lotus_coop_pool_dispatch_cell's admission, the run with its hold
+ * marked the worker's own, and the hold's release once it returns. */
 static void *pool_worker(void *_) {
     (void)_;
     run_cell_t cell;
@@ -396,11 +483,15 @@ static void *pool_worker(void *_) {
         g_run_dropped++;
         return NULL;
     }
-    if (cell.run_ticket && !lotus_run_admit(cell.run_ticket)) {
+    lotus_run_ticket_t *hold = cell.run_ticket;
+    if (hold && !lotus_run_admit(hold)) {
         g_run_dropped++;
         return NULL;
     }
+    g_run_running[TID_WORKER] = hold;
     cell.handler((child_t *)cell.self_ptr);
+    g_run_running[TID_WORKER] = NULL;
+    lotus_run_hold_release(hold);
     return NULL;
 }
 
@@ -628,26 +719,30 @@ static void lotus_params_settle(void *parent) {
  * The compiled side: the reclaim bracket and the reclaim spine
  * ==================================================================== */
 
-/* emit_locus_arena_destroy: the `__arena` latch, the cancel first, then
- * the arena released. */
-static void child_teardown(void *cv) {
-    child_t *c = cv;
+/* emit_locus_arena_destroy: the `__arena` latch, the cancel (and the
+ * wait for started runs) first, then the arena released. */
+static void child_teardown(child_t *c, int self_tid) {
     arena_t *a = c->arena;
     if (!a) return;                          /* already reclaimed */
-    lotus_run_cancel_queued(c);
+    lotus_run_cancel_queued(c, self_tid);
     a->alive = 0;
     free(a);
     c->arena = NULL;                         /* the latch */
     g_teardowns[c->id]++;
 }
 
+/* A deferred reclaim, run by the settle on the instantiating thread. */
+static void child_teardown_at_settle(void *cv) {
+    child_teardown(cv, TID_INSTANTIATING);
+}
+
 /* `__reclaim_<L>`: one monotonic load, then ask whether a held handler
  * still needs the child. */
-static void child_reclaim_spine(child_t *c) {
+static void child_reclaim_spine(child_t *c, int self_tid) {
     if (atomic_load_explicit(&lotus_held_failure_count, memory_order_relaxed) != 0) {
-        if (lotus_failure_defer_reclaim(c, child_teardown)) return;
+        if (lotus_failure_defer_reclaim(c, child_teardown_at_settle)) return;
     }
-    child_teardown(c);
+    child_teardown(c, self_tid);
 }
 
 /* The owner's on_failure. */
@@ -675,9 +770,11 @@ static void child_run_fails(child_t *c, int self_tid) {
     if (!lotus_failure_hold(c->owner, owner_on_failure, c, &err))
         owner_on_failure(c->owner, c, &err);
     lotus_failure_await(c, 0, self_tid);
-    child_reclaim_spine(c);
+    child_reclaim_spine(c, self_tid);
 }
 
+/* Its run end reclaims its own child on the worker, inside the run: the
+ * hold it waits past is its own (`g_run_running`), never waited for. */
 static void child_b_run(child_t *c) {        /* runs on the pool worker */
     g_run_started[c->id]++;
     child_run_fails(c, TID_WORKER);
@@ -688,6 +785,9 @@ static void child_c_run(child_t *c) {        /* a run that starts and returns */
     assert(a != NULL);                       /* (3) whole, never released */
     assert(a->alive == 1);
     g_run_started[c->id]++;
+    /* (5) still whole as it returns, whatever the reclaim did meanwhile */
+    assert(c->arena == a && a->alive == 1);
+    atomic_store_explicit(&g_run_returned, 1, memory_order_relaxed);
 }
 
 static void reset(void) {
@@ -695,9 +795,12 @@ static void reset(void) {
     atomic_store_explicit(&lotus_held_failure_count, 0, memory_order_relaxed);
     atomic_store_explicit(&g_held_delivered_epoch, 0, memory_order_relaxed);
     atomic_store_explicit(&g_run_tickets_live, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_run_holds_epoch, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_run_returned, 0, memory_order_relaxed);
     g_params_open_len = 0;
     g_held_head = g_held_tail = NULL;
     g_run_tickets = NULL;
+    g_run_running[TID_INSTANTIATING] = g_run_running[TID_WORKER] = NULL;
     for (int i = 0; i < NCHILD; i++) {
         g_teardowns[i] = g_delivered[i] = 0;
         g_run_started[i] = g_run_canceled[i] = 0;
@@ -737,8 +840,8 @@ static void phase1_construction_delivery(void) {
     /* Teardown: the pool join, then the owner's cascade over its
      * fields, each through the latch. */
     pthread_join(w, NULL);
-    child_teardown(a);
-    child_teardown(b);
+    child_teardown(a, TID_INSTANTIATING);
+    child_teardown(b, TID_INSTANTIATING);
 
     assert(g_teardowns[0] == 1 && g_teardowns[1] == 1);   /* (1) */
     assert(g_delivered[0] == 1 && g_delivered[1] == 1);   /* (4) once each */
@@ -746,15 +849,19 @@ static void phase1_construction_delivery(void) {
     assert(atomic_load_explicit(&lotus_held_failure_count,
                                 memory_order_relaxed) == 0);
     assert(g_held_head == NULL);
+    assert(atomic_load_explicit(&g_run_tickets_live, memory_order_relaxed) == 0);
+    assert(g_run_tickets == NULL);
     free(a);
     free(b);
     free(owner);
 }
 
 /* ==================================================================== *
- * Phase 2 — a queued run's cancel against the worker's admission.
+ * Phase 2 — a reclaim no join orders, against the run's admission and
+ * its start: a placed field reassigned while its run is queued, being
+ * admitted, or already running on the worker.
  * ==================================================================== */
-static void phase2_cancel_vs_admission(void) {
+static void phase2_unjoined_reclaim(void) {
     reset();
     pthread_t w;
     pthread_create(&w, NULL, pool_worker, NULL);
@@ -765,30 +872,19 @@ static void phase2_cancel_vs_admission(void) {
     child_t *c = child_create(owner, 2);
     lotus_coop_pool_post_run(child_c_run, c);
 
-    /* The Reclaim: the latch, then the cancel first. */
+    /* The Reclaim, with no join before it: the latch, the cancel (which
+     * waits for a started run's hold), then the arena released at once,
+     * with the cell possibly still in the ring. */
     arena_t *arena = c->arena;
-    int canceled = lotus_run_cancel_queued(c);
-#ifndef MODEL_RECLAIM_UNJOINED
-    if (canceled) {
-#endif
-        /* The cancel won (or, unjoined, whatever it found): the arena
-         * goes now, with the cell possibly still in the ring. */
-        arena->alive = 0;
-        free(arena);
-        c->arena = NULL;
-        g_teardowns[2]++;
-        pthread_join(w, NULL);
-#ifndef MODEL_RECLAIM_UNJOINED
-    } else {
-        /* The admission won: the started run is ordered before the
-         * release by the pool join. */
-        pthread_join(w, NULL);
-        arena->alive = 0;
-        free(arena);
-        c->arena = NULL;
-        g_teardowns[2]++;
-    }
-#endif
+    int canceled = lotus_run_cancel_queued(c, TID_INSTANTIATING);
+    /* (5) a run that was not canceled has returned before the release */
+    assert(canceled ||
+           atomic_load_explicit(&g_run_returned, memory_order_relaxed) == 1);
+    arena->alive = 0;
+    free(arena);
+    c->arena = NULL;
+    g_teardowns[2]++;
+    pthread_join(w, NULL);
 
     /* (3) exactly one terminal: started, or canceled and dropped. */
     assert(g_run_started[2] + g_run_canceled[2] == 1);
@@ -805,6 +901,6 @@ int main(void) {
     pthread_mutex_init(&g_params_open_lock, NULL);
     pthread_mutex_init(&g_run_tickets_lock, NULL);
     phase1_construction_delivery();
-    phase2_cancel_vs_admission();
+    phase2_unjoined_reclaim();
     return 0;
 }

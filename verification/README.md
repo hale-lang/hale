@@ -38,7 +38,7 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `bus_grow_model.c` | the GROW branch of `bus_queue_enqueue_inner` vs. `lotus_bus_queue_drain` in `lotus_arena.c` — a producer reallocs and frees the `cells` array while a consumer is between its unlock and its use of the popped cell. The pop-snapshot-under-lock is what makes that safe. | ✅ verified: **6 executions, no errors** |
 | `hashmap_iter_model.c` | `lotus_hashmap_iter_next` (LOCKFREE arm) in `lotus_arena.c` — iteration is a SEQUENCE of enter/exit steps, so a grow can land between them. Pinned to `--sc`; see "the RA question" below. | ⚠️ verified under `--sc` only: **13 executions**; fails under the default RA model |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
-| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued`) over the pool's MPSC ring. Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, and no delivery before the owner's params settle. Its header states the proof boundary (see "The failure cascade's boundary" below). | ⏳ added 2026-10-02 without a local GenMC: the CI `genmc` job is its first exploration |
+| `cascade_model.c` | the failure cascade in `lotus_arena.c` (F.40 phase 3, L5): `lotus_params_open` / `lotus_params_settle`, `lotus_failure_hold`, `lotus_failure_defer_reclaim`, `lotus_failure_await`, the compiled `__reclaim_<L>` fast path and reclaim bracket, and the run tickets and holds (`lotus_run_ticket_take`, `lotus_run_admit`, `lotus_run_hold_release`, `lotus_run_cell_drop_canceled`, `lotus_run_cancel_queued` and its `lotus_run_hold_wait`) over the pool's MPSC ring. Checks exactly-once teardown, the child and violation retained until the handler completes, a run finding its child whole or its ticket canceled, no delivery before the owner's params settle, and a started run holding its child until it returns against a reclaim no join orders. Its header states the proof boundary (see "The failure cascade's boundary" below). | ⏳ added 2026-10-02 without a local GenMC: the CI `genmc` job is its first exploration |
 
 ## Coverage gaps and drift (audited 2026-08-02)
 
@@ -194,30 +194,37 @@ the wake handshake).
 `cascade_model.c` is the first model of a *protocol* rather than a
 data structure, so its header states what it proves and what it does
 not, in one place: the functions and synchronization it mirrors, the
-bounded configuration (one owner, two children, one queued run, one
-pool worker, in two phases), the four safety assertions, and the
+bounded configuration (one owner, two children, one run per phase,
+one pool worker, in two phases), the five safety assertions, and the
 exclusions.
 
-Two exclusions carry weight. **Condition-variable liveness is out**:
-the await's `pthread_cond_wait` is reduced to its safety core (above),
-so missed-wakeup and join-progress claims (a parent waiting for a
-child never deadlocks with a child waiting for its parent; the pool
-join returns) rest on the deadline oracle and the lifecycle matrix
+**Condition-variable liveness is out**: the await's
+`pthread_cond_wait` and the reclaim's timed wait for run holds are
+reduced to their safety core (above), so missed-wakeup and
+join-progress claims (a parent waiting for a child never deadlocks
+with a child waiting for its parent; the pool join returns; a run
+that publishes back to the reclaiming thread is answered while that
+thread waits) rest on the deadline oracle and the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`, the `l01_*` /
-`l19_*` fixtures), not on GenMC. And **a started run against a
-reclaim no join orders is out**: the ticket lock decides which of the
-cancel and the admission wins, but it does not hold the child for a
-run that won, so the model releases the arena after the pool join
-when the admission wins. `-DMODEL_RECLAIM_UNJOINED` releases it right
-after the cancel instead, the order a reclaim with no join before it
-has; GenMC is expected to report the race there, and that
-configuration is not part of the gate.
+`l19_*` fixtures), not on GenMC.
+
+**A started run against a reclaim no join orders is in.** It was the
+model's open boundary while admission freed the ticket and nothing
+held the child: `-DMODEL_RECLAIM_UNJOINED` released the arena right
+after the cancel, the order of a placed field reassigned while its run
+is running on another pool, and the race was expected there. With the
+run hold (admission turns the ticket into a hold the run releases when
+it returns, and the reclaim waits for it), that order is phase 2's
+checked configuration and part of the gate. The macro is gone.
 
 Its negative controls are `-DMODEL_BUG_NO_HOLD`,
-`-DMODEL_BUG_RECLAIM_NOW`, `-DMODEL_BUG_DELIVERED_BEFORE_HANDLER` and
-`-DMODEL_BUG_ADMIT_IGNORES_CANCEL`, each named in the header with the
-assertion it is expected to fail. Like the model itself, they have not
-yet run under GenMC.
+`-DMODEL_BUG_RECLAIM_NOW`, `-DMODEL_BUG_DELIVERED_BEFORE_HANDLER`,
+`-DMODEL_BUG_ADMIT_IGNORES_CANCEL` and `-DMODEL_BUG_RECLAIM_SKIPS_WAIT`
+(the reclaim does not wait for the started run's hold: assertion (5),
+the arena released before the run returns). Each is named in the
+header with the assertion it is expected to fail. Like the model
+itself, they have not yet run under GenMC, and `run_genmc.sh` runs
+only the default configuration.
 
 ## Roadmap
 
