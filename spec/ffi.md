@@ -461,6 +461,13 @@ admitted.
 | `std::term` | (no terminal in the browser) |
 | `std::process` | (no OS process control) |
 | `std::http` | (server is built on raw TCP) |
+| `std::env` | configuration handed in through an `@ffi("js")` host import or an `@export` fn's arguments |
+| `std::io::mirror` | (no shared memory in the browser) |
+| `std::io::sockopt` | (no sockets in the browser) |
+| `std::io::unix` | a WebSocket bus adapter (`ws://`), or an `@ffi("js")` host import |
+| `std::ring` | (no shared memory in the browser) |
+| `std::time` | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
+| `std::ts` | parsing on the host, through an `@ffi("js")` host import |
 
 <!-- /capability-matrix -->
 
@@ -473,9 +480,15 @@ wire codec. Those codecs follow the `lotus_serialize_fn` /
 `lotus_deserialize_fn` ABI (`ssize_t(const void *, …, size_t)`), whose
 `ssize_t` / `size_t` widths are **target-pointer-width** — i32 on wasm32,
 i64 on the native 64-bit targets — so the runtime's `lotus_bus_dispatch`
-indirect call matches the codec on both. Only the *cross-process /
-network* transports (`shm_ring`, `unix`, and CONNECT-role bindings) are
-unavailable in the sandbox, since they need syscalls.
+indirect call matches the codec on both. The *cross-process /
+network* transports need syscalls the sandbox does not have, and the
+module runs on its host's one thread, so under wasm32 the check refuses
+every `bindings { }` entry (`unix`, `shm_ring`, an adapter) at the
+binding, and every placement that asks for a thread of its own or a
+pool's — `pinned`, `cooperative(pool = X)` with X other than `main`,
+`where async_io` — at the placement entry. (Before, a `unix` or
+`shm_ring` binding and a pool were admitted and never ran, and a
+`pinned` locus or an adapter failed late in wasm-ld.)
 
 Reach the outside world through `@ffi("js")` host imports and the
 inbox/state seam below instead.
@@ -510,6 +523,13 @@ supplies a built-in `console_log` plus the libm set
 under wasm with no app glue); an app wires its own imports through
 `run(glue)`. Position and the generic / defaulted restrictions are the
 same as `@ffi("c")`.
+
+Only the wasm32 loader supplies a `js` import. On a native target an
+`@ffi("js")` declaration is refused at the declaration, called or not
+(the declaration is the use): ``` `@ffi("js")` fn `name` is a host import
+of the wasm32 loader, and this program is built for `<triple>`: … ```,
+where it used to become an undefined symbol at the native link, and only
+once something called it.
 
 ### `@export` — exports (Hale → callable by the host)
 

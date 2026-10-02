@@ -438,7 +438,11 @@ impl Shadow {
                     Some(e) if calls_js(built) => refusal_text(e),
                     Some(e) => format!("{} (and the module calls no `@ffi(\"js\")` fn)", refusal_text(e)),
                 };
-                let new = self.behaviour_fact(class, Capability::ForeignAbi(Abi::Js), &[]);
+                let new = self.behaviour_fact(
+                    class,
+                    Capability::ForeignAbi(Abi::Js),
+                    &[("fn", &js[0]), ("selector", hale_types::target::TargetSpec::host().triple)],
+                );
                 self.compare("foreign abi", class, &id, vec![("ForeignAbi(Js)".to_string(), old)], vec![("ForeignAbi(Js)".to_string(), new)]);
             }
         }
@@ -593,7 +597,11 @@ fn every_legacy_lowering_row_agrees_with_its_cell_or_is_classified() {
         shadow.failed.join("\n  "),
         shadow.admission_refused.join("\n  ")
     );
-    assert!(parsed.len() - shadow.failed.len() > 20, "the lowering shadow built too few programs on both targets");
+    // 18 since T2 and T3 (P3 2 of 3): the sample is chosen by the
+    // features a spine reads (pools, `pinned`, `sleep`, bindings), and
+    // wasm32 now refuses those at the check (it was 23, the rest built
+    // never to run).
+    assert!(parsed.len() - shadow.failed.len() >= 15, "the lowering shadow built too few programs on both targets");
     assert!(
         shadow.unattributed.is_empty(),
         "a build failed for a cause no cell names (not the entry inversion, an owned thread's \

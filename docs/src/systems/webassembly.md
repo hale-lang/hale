@@ -94,18 +94,13 @@ compiler consults, with the reasons it gives.
 | `std::term` | terminal control (`std::term`) isn't available in the browser | (no terminal in the browser) |
 | `std::process` | OS process control (`std::process`) isn't available in the browser | (no OS process control) |
 | `std::http` | the `std::http` server is built on raw TCP and isn't available in the browser | (server is built on raw TCP) |
-
-These namespaces type-check and build under wasm32, and what they do there is a stub:
-
-| Namespace | Under wasm32 |
-|---|---|
-| `std::env` | admitted, and a stub: every operation reads the shim's inline `getenv`, which returns NULL |
-| `std::io::mirror` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::io::sockopt` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::io::unix` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::ring` | admitted, and syscall-backed: its calls become imports the loader stubs with `() => 0` |
-| `std::time` | admitted, and mixed: the clock reads go through the shim's inline `clock_gettime`, which writes zero, and `sleep` calls `clock_nanosleep`, an import stubbed to 0; the conversions compute on their argument |
-| `std::ts` | admitted, and a stub: the wasm link returns before the tree-sitter shim is linked |
+| `std::env` | the browser has no process environment: the shim's inline `getenv` returns NULL | configuration handed in through an `@ffi("js")` host import or an `@export` fn's arguments |
+| `std::io::mirror` | a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have | (no shared memory in the browser) |
+| `std::io::sockopt` | socket options are syscalls the browser sandbox does not have | (no sockets in the browser) |
+| `std::io::unix` | AF_UNIX sockets are syscalls the browser sandbox does not have | a WebSocket bus adapter (`ws://`), or an `@ffi("js")` host import |
+| `std::ring` | a shared-memory ring is mapped with `shm_open` and `mmap`, which the browser sandbox does not have | (no shared memory in the browser) |
+| `std::time` | the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
+| `std::ts` | the tree-sitter parser is a native static library the wasm link never reaches | parsing on the host, through an `@ffi("js")` host import |
 
 Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::io`, `std::iter`, `std::json`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::yaml`.
 
@@ -113,12 +108,12 @@ Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::
 
 | Construct | Under wasm32 | Why |
 |---|---|---|
-| a `pinned` placement, or an adapter binding | refused: `wasm-ld failed: exit status: 1` | wasm-ld: function signature mismatch: pthread_join; codegen declares `pthread_join(i64, ptr)` while the wasm shim's `pthread_t` is i32, and the only emitted call is the pinned-child join: a late, unlocated refusal after clang has run |
-| `cooperative(pool = X)`, X other than `main` | admitted | admitted: `pthread_create` is an import the loader stubs with `() => 0`, so a pool's `run()` is posted and never executes; the module links with wasm-ld's signature-mismatch warnings on `lotus_coop_pool_post` and `lotus_bus_dispatch_keyed`, a trap if either call executes |
-| `where async_io` | admitted | admitted: the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, so the pool never runs |
-| a `unix(...)` binding | admitted | admitted: the bindings prelude is ungated and the socket calls are imports the loader stubs with `() => 0`, so the binding never connects |
-| a `shm_ring(...)` binding | admitted | admitted: the bindings prelude is ungated and `shm_open` and `mmap` are imports the loader stubs with `() => 0`, so the ring never maps |
-| an adapter binding (`T: MyAdapter { ... }`) | refused: `wasm-ld failed: exit status: 1` | an adapter's instance runs on its own thread, so its binding requires `PinnedThreads`, and meets the same late refusal: wasm-ld: function signature mismatch: pthread_join |
+| a `pinned` placement | refused: ``placement entry `<field>`: `pinned` is not available under `target wasm` — a pinned locus owns a thread of its own, and the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`); place it `cooperative` (pool `main`)`` | the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`) |
+| `cooperative(pool = X)`, X other than `main` | refused: ``placement entry `<field>`: a cooperative pool other than `main` is not available under `target wasm` — its workers are threads, and the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`); place it `cooperative` (pool `main`)`` | the wasm32 module runs on its host's one thread (the loader stubs `pthread_create` with `() => 0`) |
+| `where async_io` | refused: ``placement entry `<field>`: `async_io` pools aren't supported on wasm32 — use a cooperative pool on `main` (drop `where async_io` and the pool). (the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, and the pool's workers are threads the module does not have.)`` | the runtime's LOTUS_HAVE_ASYNC_IO is 1 over epoll and eventfd imports the loader stubs with `() => 0`, and the pool's workers are threads the module does not have |
+| a `unix(...)` binding | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — the browser sandbox has no AF_UNIX sockets; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | the browser sandbox has no AF_UNIX sockets |
+| a `shm_ring(...)` binding | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — the browser sandbox has no shared memory to map; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | the browser sandbox has no shared memory to map |
+| an adapter binding (`T: MyAdapter { ... }`) | refused: ``bindings entry `<Topic>`: this transport is not available under `target wasm` — an adapter's instance runs on a thread of its own, which the wasm32 module does not have; keep the topic in-process, or reach the host through an `@ffi("js")` host import`` | an adapter's instance runs on a thread of its own, which the wasm32 module does not have |
 | `or wait` on an `on_full: fail` topic | admitted | the publisher spins on its own pump (the 1 ms nap is the shim's inline no-op) until the queue empties, or wait-abort ends the wait |
 
 **Linking.** `[ffi] link` is refused:
@@ -162,6 +157,10 @@ const inst = await run((h) => ({
   draw_line: (x1,y1,z1,x2,y2,z2) => { /* push to a WebGL buffer */ },
 }));
 ```
+
+Only the wasm32 loader can supply a `js` import, so a native build of a
+program that declares one is refused at the declaration — even if
+nothing calls it. Keep browser imports in the browser build.
 
 ## Letting the host call you: `@export` + the app locus
 
