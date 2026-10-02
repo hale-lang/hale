@@ -38,7 +38,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `alloc_summary` | Layer 4 | Migrating | derivation | `derive_alloc_summary` | 1 | Where each allocation lands and when it is reclaimed: per-fn allocation, escape, scratch eligibility, method-scratch elision, stack arrays, arena elision. |
 | `borrow_lifetime` | Layer 4 | Canonical | law | `borrow_lifetime_diags` | 0 | Whether a borrowed handle outlives its holder (GH #730), decided from position over the owner structure. |
 | `bare_fallible` | Layer 4 | Migrating | law | `bare_fallible_calls` | 1 | Whether a fallible call's error is addressed. |
-| `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 2 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
+| `nonreturning` | Layer 4 | Migrating | law | `run_statically_nonreturning` | 1 | Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it. |
 | `working_set` | Layer 4 | Canonical | derivation | `compute_program_working_set` | 0 | The estimated working set per locus and program, and the locality law over it. |
 | `placement` | Layer 5 | Migrating | derivation | `derive_placement` | 7 | Which thread domain each instance runs in: pools, pinned threads, replicas, affinity, and the deployment plan. |
 | `target_capability` | Layer 5 | Migrating | capability | `derive_capability_matrix` | 4 | What a target can lower and what it refuses: the wasm stdlib refusals, link refusals, per-site skips, async_io availability, FFI portability. |
@@ -1022,14 +1022,15 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Answers.** Which `run()` bodies never return, which children are long-running, and whether the birth order or a pool starves because of it.
 
-**Inputs.** run bodies; params order; placement
+**Inputs.** run bodies; params order; placement (the table's rows for the deployed root's fields)
 
 **Producer (today's authority, migrating).** `crates/hale-types/src/check.rs` · `run_statically_nonreturning`
 
 **Legacy producers (permitted until removal).**
 
 - `crates/hale-types/src/check.rs` · `check_nested_long_running_child` — a second `long-running` predicate (a hand table naming std::http::Server) that disagrees with the first. *Removed when:* one predicate.
-- `crates/hale-types/src/check.rs` · `check_cooperative_pool_blocking` — the starvation and birth-order phases live inside the blocking check. *Removed when:* laws over rows.
+
+**Also owned.** `crates/hale-types/src/check.rs` · `check_pool_starvation`; `crates/hale-types/src/check.rs` · `check_birth_order`
 
 **Consumers.** check
 
@@ -1085,7 +1086,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `crates/hale-codegen/src/codegen.rs` · `collect_main_placement` — codegen's DeploymentPlan, keyed by field name and locus type name. *Removed when:* codegen reads the table.
 - `crates/hale-codegen/src/deployment.rs` · `DeploymentPlan` — the plan type lowering reads today. *Removed when:* becomes the layer-5 table.
 
-**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check's three phases, blocking calls, pool starvation and the birth-order trap: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
+**Consumers.** check (rules 2-5, 13-18); check (F.31: the caller per instance, the receiver by its row's `owner_relative`) (`crates/hale-types/src/check.rs` · `check_placement_single_thread`); check (the blocking check and the starvation and birth-order laws: where each of the deployed root's fields runs, its pool's `async_io`, and the declarations it realizes) (`crates/hale-types/src/check.rs` · `root_field_placements`); check (rule 17, pinned in a loop: the root's pinned rows, and each construction whose bound is built in a loop) (`crates/hale-types/src/check.rs` · `check_pinned_locus_in_loop`); check (type-check rule 20: the construction paths of a handler birth's enclosing locus, `OwnershipGraph::construction_paths` over the table handed in, derived only when that locus does not accept the child itself) (`crates/hale-types/src/check.rs` · `check_unowned_subscriber_locus`); sync_inference (accessor domains per instance) (`crates/hale-types/src/sync_inference.rs` · `infer_sync_for_bundle`); dispatch (domains); model (placed_in, affined_to); codegen (pools, mailboxes, affinity); lsp (hale/placement); deployment (reserved)
 
 **Invariants.**
 

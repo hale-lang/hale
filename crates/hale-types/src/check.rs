@@ -840,7 +840,17 @@ pub fn check_bundle_by_declaration(
     // discover that by overflowing its own stack in
     // `lower_locus_instantiation`. See `check_self_containing_locus`.
     check_self_containing_locus(bundle, &mut diags);
-    check_cooperative_pool_blocking(bundle, inputs.bus, inputs.placement, &mut diags);
+    // F.40 phase 3, E2: the three rules that ask where a root field runs
+    // read the placement table's rows for the root lowering deploys (a
+    // `main locus` lowering does not deploy places nothing, so it starves
+    // nothing). The blocking check first; the starvation law leaves a
+    // pool the dead-receiver error already reported.
+    if let Some(main) = inputs.placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) {
+        let fields = root_field_placements(bundle, inputs.placement);
+        let errored_pools = check_cooperative_pool_blocking(bundle, inputs.bus, &fields, &mut diags);
+        check_pool_starvation(main, &fields, &errored_pools, &mut diags);
+        check_birth_order(main, &fields, &mut diags);
+    }
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
     // loop. Warnings that steer toward the allocation-free shape
@@ -2587,12 +2597,17 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 ///     **warning** — it stalls co-scheduled loci on the pool.
 /// An event-driven subscriber (no blocking call — handlers + a sleep
 /// loop, or `where async_io`) is flagged by neither: it receives fine.
+///
+/// The fields it reads are the deployed root's that a placement entry
+/// decides, in the entries' order. Returns the pools where the
+/// dead-receiver error fired, which the starvation law
+/// ([`check_pool_starvation`]) leaves alone.
 fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     bus: &crate::bus_graph::BusGraph,
-    placement: &crate::placement::PlacementTable,
+    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
     diags: &mut Vec<Diag>,
-) {
+) -> BTreeSet<String> {
     // GH #825: the index of free fns flattens `module { … }`. It is
     // what the interprocedural blocking call graph is built from, so a
     // module-nested helper that blocks has to be in it or a top-level
@@ -2609,21 +2624,13 @@ fn check_cooperative_pool_blocking(
     // block (directly or via another blocking free fn).
     let blocking_free = blocking_free_fns(&free_fns);
 
-    // The root lowering deploys, and where each of its params fields
-    // runs: the placement table's (F.40 phase 3, P1). A `main locus`
-    // lowering does not deploy (an imported one, a module-nested one
-    // beside the root) places nothing, so it starves nothing.
-    let Some(main) = placement.root.as_ref().and_then(|r| r.decl.decl(bundle)) else {
-        return;
-    };
-    let fields = root_field_placements(bundle, placement);
     // Pools where the dead-receiver ERROR fired — the pool-
-    // starvation warning (phase 2) is suppressed there; the
-    // error already says the pool thread is monopolized.
+    // starvation warning is suppressed there; the error already
+    // says the pool thread is monopolized.
     let mut errored_pools: BTreeSet<String> = BTreeSet::new();
 
-    // Phase 1 reads the fields a `placement { }` entry decides,
-    // in the block's order.
+    // The fields a `placement { }` entry decides, in the block's
+    // order.
     let mut placed: Vec<(&str, &RootFieldPlacement)> =
         fields.iter().filter(|(_, f)| f.entry.is_some()).map(|(n, f)| (*n, f)).collect();
     placed.sort_by_key(|(_, fp)| fp.entry);
@@ -2756,18 +2763,25 @@ fn check_cooperative_pool_blocking(
             }
         }
     }
+    errored_pools
+}
 
-    // === phase 2: pool starvation ======================
-    //
-    // Two (or more) statically non-returning `run()` bodies on
-    // one cooperative pool: the pool runs each `run()` cell to
-    // completion in birth order, so the first-born runs forever
-    // and the later `run()` bodies never start. Distinct from
-    // the blocking-call diagnostics above — the archetypal
-    // shape (a `sleep` metronome) contains no blocking call,
-    // and the starved locus needn't be a subscriber. A locus
-    // can legitimately draw both warnings (blocking AND
-    // starving a sibling); they name different defects.
+/// Pool starvation, a law over the deployed root's placement rows: two
+/// (or more) statically non-returning `run()` bodies on one cooperative
+/// pool. The pool runs each `run()` cell to completion in birth order,
+/// so the first-born runs forever and the later `run()` bodies never
+/// start. Distinct from the blocking-call diagnostics — the archetypal
+/// shape (a `sleep` metronome) contains no blocking call, and the
+/// starved locus needn't be a subscriber. A locus can legitimately draw
+/// both warnings (blocking AND starving a sibling); they name different
+/// defects. Not reported on a pool where the dead-receiver error fired
+/// (`errored_pools`): that error already says the thread is monopolized.
+fn check_pool_starvation(
+    main: &LocusDecl,
+    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
+    errored_pools: &BTreeSet<String>,
+    diags: &mut Vec<Diag>,
+) {
     let mut by_pool: BTreeMap<String, Vec<(String, Span)>> =
         BTreeMap::new();
     for m in &main.members {
@@ -2876,115 +2890,121 @@ fn check_cooperative_pool_blocking(
             ),
         ));
     }
+}
 
-    // === birth-order trap (2026-08-03, downstream handoff) ===
-    //
-    // Strictly worse than the pool-starvation warning above,
-    // and not implied by it. That one needs TWO non-returning
-    // `run()` bodies and claims only that the later `run()`
-    // never starts. This one needs ONE: a locus field whose
-    // `run()` runs INLINE on the main thread (default
-    // placement, or an explicit `cooperative(pool = main)`)
-    // and never returns means every param declared after it
-    // is never even BORN — its `birth()` never runs, so the
-    // subscriptions it registers, the sockets it binds and
-    // the children it accepts silently never exist.
-    //
-    // Measured 2026-08-03 (all four placements):
-    //   default                    -> blocks later births
-    //   cooperative(pool = main)    -> blocks later births
-    //   cooperative(pool = io)      -> posted to a worker, no
-    //   pinned                      -> own thread, no
-    // The LATER field's own placement is irrelevant — the
-    // instantiation itself runs inline on main, so even a
-    // `pinned` sibling declared after the blocker is stuck.
-    // Only the blocker's placement matters.
-    //
-    // This is what a downstream handoff reported as "a bus
-    // handler's write to a `self` param isn't observed by
-    // `run()`", which we in turn mis-filed as a cooperative-
-    // child handler-cadence question. It is neither: the
-    // drain is fine and the cadence is fine; the publisher
-    // simply had not been born yet.
-    {
-        // Params in declaration order, tagged with whether
-        // each one blocks the births that follow it.
-        let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
-        for m in &main.members {
-            let LocusMember::Params(params) = m else { continue };
-            for pd in &params.params {
-                let field = pd.name.name.as_str();
-                let fp = fields.get(field);
-                // Only an inline-on-main run() blocks. A
-                // pinned or off-main-pool field runs
-                // elsewhere; `where async_io` parks (and is
-                // refused on pool `main`).
-                let inline_on_main = matches!(fp.map(|fp| &fp.runs), Some(Runs::Main) | None);
-                let segs: Vec<&str> = match &pd.ty {
-                    Some(TypeExpr::Named { path, .. }) => path
-                        .segments
-                        .iter()
-                        .map(|s| s.name.as_str())
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                let display = if segs.is_empty() {
-                    field.to_string()
-                } else {
-                    format!("{}: {}", field, segs.join("::"))
-                };
-                // Non-returning: a proven-terminal loop in a
-                // local locus, or a stdlib locus on the
-                // known-long-running allowlist (whose body
-                // typecheck cannot see).
-                let nonreturning = is_known_long_running_stdlib(&segs)
-                    || fp.is_some_and(|fp| fp.decls.iter().any(|d| run_nonreturning(d).is_some()));
-                ordered.push((
-                    field,
-                    pd.span,
-                    inline_on_main && nonreturning,
-                    display,
-                ));
-            }
-        }
-        // Report the FIRST blocker only: every later one is a
-        // consequence of it, not an independent defect.
-        if let Some(i) = ordered.iter().position(|(_, _, b, _)| *b) {
-            let starved: Vec<&str> = ordered[i + 1..]
-                .iter()
-                .map(|(_, _, _, d)| d.as_str())
-                .collect();
-            if !starved.is_empty() {
-                let (field, span, _, _) = &ordered[i];
-                diags.push(Diag::warn(
-                    *span,
-                    format!(
-                        "params field `{}` runs inline on the main \
-                         thread and its `run()` statically never \
-                         returns (terminal `while` loop with no \
-                         `break`/`return`/`terminate`), so the \
-                         params declared after it are never BORN: \
-                         {}. Their `birth()` bodies never run, so \
-                         any subscription they register, socket \
-                         they bind or child they accept silently \
-                         never exists — the process looks like it \
-                         booted and then idles. Either declare \
-                         them BEFORE `{}`, or move `{}` off the \
-                         main thread with `placement {{ {}: \
-                         pinned; }}` (own thread) or \
-                         `cooperative(pool = io)` (posted to a \
-                         worker); both let the remaining params \
-                         finish being born.",
-                        field,
-                        starved.join(", "),
-                        field,
-                        field,
-                        field,
-                    ),
-                ));
-            }
+/// The birth-order trap (2026-08-03, downstream handoff), a law over
+/// the deployed root's placement rows.
+///
+/// Strictly worse than the pool-starvation warning, and not implied by
+/// it. That one needs TWO non-returning `run()` bodies and claims only
+/// that the later `run()` never starts. This one needs ONE: a locus
+/// field whose `run()` runs INLINE on the main thread (default
+/// placement, or an explicit `cooperative(pool = main)`) and never
+/// returns means every param declared after it is never even BORN — its
+/// `birth()` never runs, so the subscriptions it registers, the sockets
+/// it binds and the children it accepts silently never exist.
+///
+/// ```text
+/// Measured 2026-08-03 (all four placements):
+///   default                    -> blocks later births
+///   cooperative(pool = main)    -> blocks later births
+///   cooperative(pool = io)      -> posted to a worker, no
+///   pinned                      -> own thread, no
+/// ```
+///
+/// The LATER field's own placement is irrelevant — the instantiation
+/// itself runs inline on main, so even a `pinned` sibling declared
+/// after the blocker is stuck. Only the blocker's placement matters.
+///
+/// This is what a downstream handoff reported as "a bus handler's write
+/// to a `self` param isn't observed by `run()`", which we in turn
+/// mis-filed as a cooperative-child handler-cadence question. It is
+/// neither: the drain is fine and the cadence is fine; the publisher
+/// simply had not been born yet.
+fn check_birth_order(
+    main: &LocusDecl,
+    fields: &BTreeMap<&str, RootFieldPlacement<'_>>,
+    diags: &mut Vec<Diag>,
+) {
+    // Params in declaration order, tagged with whether
+    // each one blocks the births that follow it.
+    let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
+    for m in &main.members {
+        let LocusMember::Params(params) = m else { continue };
+        for pd in &params.params {
+            let field = pd.name.name.as_str();
+            let fp = fields.get(field);
+            // Only an inline-on-main run() blocks. A
+            // pinned or off-main-pool field runs
+            // elsewhere; `where async_io` parks (and is
+            // refused on pool `main`).
+            let inline_on_main = matches!(fp.map(|fp| &fp.runs), Some(Runs::Main) | None);
+            let segs: Vec<&str> = match &pd.ty {
+                Some(TypeExpr::Named { path, .. }) => path
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let display = if segs.is_empty() {
+                field.to_string()
+            } else {
+                format!("{}: {}", field, segs.join("::"))
+            };
+            // Non-returning: a proven-terminal loop in a
+            // local locus, or a stdlib locus on the
+            // known-long-running allowlist (whose body
+            // typecheck cannot see).
+            let nonreturning = is_known_long_running_stdlib(&segs)
+                || fp.is_some_and(|fp| fp.decls.iter().any(|d| run_nonreturning(d).is_some()));
+            ordered.push((
+                field,
+                pd.span,
+                inline_on_main && nonreturning,
+                display,
+            ));
         }
     }
+    // Report the FIRST blocker only: every later one is a
+    // consequence of it, not an independent defect.
+    let Some(i) = ordered.iter().position(|(_, _, b, _)| *b) else {
+        return;
+    };
+    let starved: Vec<&str> = ordered[i + 1..]
+        .iter()
+        .map(|(_, _, _, d)| d.as_str())
+        .collect();
+    if starved.is_empty() {
+        return;
+    }
+    let (field, span, _, _) = &ordered[i];
+    diags.push(Diag::warn(
+        *span,
+        format!(
+            "params field `{}` runs inline on the main \
+             thread and its `run()` statically never \
+             returns (terminal `while` loop with no \
+             `break`/`return`/`terminate`), so the \
+             params declared after it are never BORN: \
+             {}. Their `birth()` bodies never run, so \
+             any subscription they register, socket \
+             they bind or child they accept silently \
+             never exists — the process looks like it \
+             booted and then idles. Either declare \
+             them BEFORE `{}`, or move `{}` off the \
+             main thread with `placement {{ {}: \
+             pinned; }}` (own thread) or \
+             `cooperative(pool = io)` (posted to a \
+             worker); both let the remaining params \
+             finish being born.",
+            field,
+            starved.join(", "),
+            field,
+            field,
+            field,
+        ),
+    ));
 }
 
 /// Where a root params field runs, as the blocking check reads it.
