@@ -60,6 +60,7 @@ Lowering = Emit | Absent { because: Capability }       -- Absent: the obligation
 | `AsyncIoPool` | `where async_io` | 5 | `TargetSpec::has_async_io` |
 | `Threads` | `pinned` placement; `cooperative(pool = X)`, X ≠ `main` | 5 | (none: admitted silently, §2.5) |
 | `RemoteTransport(kind)` | a `bindings { }` entry: `shm_ring`, `unix`, `udp`, CONNECT roles | 5 | (none: spec/ffi.md:423 says "unavailable in the sandbox"; CG:9813 lowers the prelude) |
+| `BoundedWait` | `or wait` on a topic with `on_full: fail` capacity (GH #255 phase 2), bound or not | 5 | (none: admitted on every target, CHECK:13103) |
 | `ReplayIngress` | record, replay, observation identity | 6 | INST:4584, CG:9673, CG:9824 |
 | `ProcessSignals` | the SIGINT drain flag, SIGPIPE, the drain observer | 6 | CG:9444, CG:9849, CG:33668, `dissolve.rs:227`, `restart.rs:169`, `stdlib/time.rs:495` |
 | obligations `PoolJoin` (R20), `WaitAbort` (R34), `IngressQuiesce` (R35) | the teardown spines | 6 | INST:4859–4865, CG:7125, CG:6954, CG:9984, CG:10029, CG:22585 |
@@ -328,7 +329,7 @@ The spines on wasm32 today. The C-numbers are `notes/f40-lifecycle-inventory.md`
 The inventory's line 16 ("C13 emits R20 and R34 on wasm; the others do not") and the registry's sentence both undercount R34. The divergence is C13 against C19 for R20, and C19 against the other four for R34. Both are harmless today for incidental reasons:
 
 - R20 is emitted only when `main_cooperative_pools` is non-empty (CG:6784, `emit_coop_pool_shutdown_all`).
-- R34 is one atomic store (RT:19079–19081).
+- R34 is one atomic store (RT:19079–19081). Emitting it where no waiter exists costs nothing; omitting it where one can exist is the hazard (§3.2).
 
 The cost is the `pthread_join`/`pthread_cond_broadcast` imports R20 drags in (RT:10149–10179). `start_all` (CG:9643) already brings in `pthread_create` whenever pools exist.
 
@@ -339,14 +340,31 @@ An obligation is required on a target exactly when some behaviour the target adm
 | obligation | needed by | wasm32 after T2 |
 |---|---|---|
 | R20 pool join | a cooperative pool other than `main`, or an `async_io` pool (`Threads`, `AsyncIoPool`) | both `Reject` → `PoolJoin × Wasm32 = Lower(Absent { because: Threads })` |
-| R34 wait-abort | an `or wait` publisher parked on a full bounded queue. `or wait` is legal only on a transport-bound topic (GH #255, the bound-topic set at CHECK:596–618), so it needs `RemoteTransport`; and only a pool or pinned consumer drains concurrently (`Threads`) | `RemoteTransport` `Reject` → `WaitAbort × Wasm32 = Lower(Absent { because: RemoteTransport })` |
+| R34 wait-abort | an `or wait` publisher parked in either admitted wait form (below): the binding-loss wait (`RemoteTransport`) or the local capacity wait (`BoundedWait`) | the binding-loss wait is refused (`RemoteTransport` `Reject`), the local capacity wait is admitted (`BoundedWait` `Lower`), so the omission needs the single-thread proof below. Until that proof lands, **`WaitAbort × Wasm32` stays emitted** |
 | R35 ingress quiesce | a LISTEN binding (`RemoteTransport`) | `Absent { because: RemoteTransport }` (identical to today: every spine skips it on wasm) |
 | pinned join (C18's `pthread_join`, CG:7182) | `pinned` (`Threads`) | no pinned entry can exist; nothing to gate |
 
-**The order is the decision's condition.** An obligation is removed for a target only after the matrix rejects, or legitimately lowers, every behaviour that needs it. The J commit (P3 2 of 3) lands `Threads`, `AsyncIoPool` and `RemoteTransport` as `Reject` on wasm32 first. P3 3 of 3 then makes all five spines read `cells.lowering(PoolJoin | WaitAbort | IngressQuiesce)` in one commit. The result:
+**The admitted wait forms.** `or wait` is legal on a topic that is transport-bound **or** has `on_full: fail` capacity: `*full_fail || self.bound_topics.contains(name)` (CHECK:13103, with the diagnostic at :13106–13111 naming both). Codegen emits both waits at every `or wait` publish, the binding wait first (`bus/dispatch.rs:450`, :515). There are therefore two wait forms, and R34 ends both:
 
-- on wasm32 no spine emits any of the three, so C13 and C21–C23 lose R20/R34 there;
-- on the host every spine emits all three exactly where it does today.
+| wait form | runtime loop | admitted by | ended by | behaviour |
+|---|---|---|---|---|
+| binding-loss wait | `lotus_bus_binding_wait_ready` (RT:19083): parks while a served CONNECT binding of the subject is `lost` | the bound-topic disjunct (the set built at CHECK:604–612) | the loss handler's `restart`, which is dispatched only on the queue owner's thread (RT:19059–19062), or R34 | `RemoteTransport` |
+| local capacity wait | `lotus_bus_subject_wait_space` (RT:19124): parks while a registration for the subject sits at its refuse bound | the `full_fail` disjunct, **with no binding at all** | a consumer emptying the queue, or R34 | `BoundedWait` |
+
+Both loops read the same flag (RT:19107, RT:19129) and pump `lotus_bus_queue_drain` every slice, which is owner-guarded: on the queue's owner it runs the pending cells, elsewhere it does nothing. On wasm32 the 1 ms `nanosleep` between slices is the inline no-op (SHIM:486), so a waiter spins on its own pump.
+
+**Each lifecycle cell's omission is derived from the waits actually admitted**, not from the bindings alone. On wasm32 after T2 the binding-loss wait cannot arise, but the local capacity wait can: `BoundedWait × Wasm32 = Lower`, and an `on_full: fail` topic with `or wait` and no binding is a legal wasm32 program. Removing R34 there needs its own proof that no admitted local waiter can be live when a teardown spine runs. Its shape:
+
+1. **One thread.** After T2, wasm32 admits no pool other than `main`, no `pinned` locus and no `async_io` pool (premises: `Threads`, `AsyncIoPool` `Reject`). Every waiter and every spine run on the one thread.
+2. **So liveness means reentrancy.** A waiter is live during a spine only if the spine is entered while the waiter's frame is on the stack: from a cell its own pump runs (`lotus_bus_queue_drain` → a handler), or from the host re-entering the module through an export while the waiter is inside a host import.
+3. **The Hale side.** No handler reaches a teardown spine. The spines are emitted only in `fn main`'s exits and the main locus's entry and dissolve (C13, C19, C21–C23), so this holds if `main` and the main locus's lifecycle cannot be reached from a cell. That is a claim for a checker rule and a test, not an assumption.
+4. **The embedding side.** The loader (CG:2983) and every `@ffi("js")` import must not re-enter `main`, `_hale_start` or any export that runs a spine while an export is on the stack. The loader states no such contract today. The proof needs either an emitted reentrancy guard on those exports (a flag that traps on reentry, observable in a test) or a stated embedding contract that the loader enforces.
+5. **Only then** is `WaitAbort × Wasm32` omitted, its premise naming the proof and its tests. Until both 3 and 4 are shown, R34 stays emitted on wasm32 in **all five** spines (C19 gains it; today it skips it). It is one release store and drags in no import (RT:19079–19081). The other way to discharge the obligation, refusing `or wait` on wasm32 (`BoundedWait × Wasm32 = Reject`), is not recommended: it removes a working feature to save that store.
+
+**The order is the decision's condition.** An obligation is removed for a target only after the matrix rejects, or legitimately lowers, every behaviour that needs it, and every admitted wait form is accounted for. The J commit (P3 2 of 3) lands `Threads`, `AsyncIoPool` and `RemoteTransport` as `Reject` on wasm32 first. P3 3 of 3 then makes all five spines read `cells.lowering(PoolJoin | WaitAbort | IngressQuiesce)` in one commit. The result:
+
+- on wasm32 no spine emits R20 or R35, so C13 loses R20; every spine emits R34 until the proof of points 1–5 lands, so C19 gains it;
+- on the host every spine emits all three.
 
 The interim correction line 16 permits (gating C13 like the others) is unnecessary if P3 3 of 3 lands in wave 2. If L-line work needs it earlier, it must gate R20 **and** R34 together and leave C21–C23 alone, so the spines do not diverge a third way. The rule is stated in the matrix, not in each spine, so L1's plan reads it: an obligation row exists for `(instance, action)` only if its cell is `Lower(Emit)` for the snapshot's effective target.
 
@@ -358,12 +376,19 @@ The program shapes:
 - **deferred:** a let-bound one, `fn main() { let a = App { }; }` (C19);
 - **return:** `fn main() -> Int { App { }; return 0; }` (C23).
 
-Each is built twice, once with a pool field and an `or wait` publish on a bound topic, once without. Per spine (P3 3 of 3, `crates/hale-codegen/tests/target_lifecycle_cells.rs`, joining the area that holds `wasm_target.rs`):
+Each is built in four variants that change one behaviour at a time, so each obligation's presence or omission is witnessed by the behaviour it depends on: a pool field only; an `or wait` publish on a bound topic only; an `or wait` publish on a local `on_full: fail` topic with no binding only; none of them. No variant removes the pool and the bound topic together. Per spine (P3 3 of 3, `crates/hale-codegen/tests/target_lifecycle_cells.rs`, joining the area that holds `wasm_target.rs`):
 
 - **Host, with pool and bound topic:** the emitted module calls `lotus_coop_pool_shutdown_all`, `lotus_bus_wait_abort_all` and `lotus_bus_ingress_quiesce`, in that order, before the first pinned join or the cascade. The IR-shape assertion follows `corpus_oracle.rs`'s module inspection.
-- **wasm32, without them** (the program with them is refused, and the test pins the refusal): the module calls none of the three, and its import list contains no `pthread_*`, `epoll_*` or `eventfd`. This extends `wasm_build_emits_valid_module`'s byte check (`wasm_target.rs:787`) from one program to the three spines.
+- **wasm32, the pool and bound-topic variants** are refused, and the test pins each refusal at its placement entry or binding. **The local bounded-topic variant and the bare one** build: the module calls neither `lotus_coop_pool_shutdown_all` nor `lotus_bus_ingress_quiesce`, calls `lotus_bus_wait_abort_all` in every spine (until the proof of §3.2 lands), and its import list contains no `pthread_*`, `epoll_*` or `eventfd`. This extends `wasm_build_emits_valid_module`'s byte check (`wasm_target.rs:787`) from one program to the spines.
 - **wasm32, the C21/C22 spines too** (fall-through, and a `std::test::assert` failure), so all five agree; they share `emit_frame_teardown`.
-- **L1/L2 linkage:** once L1's plan exists, the plan of each wasm32 program has no R20/R34/R35 obligation and the host plan has them. Until then, the IR assertion is the oracle.
+
+The wait forms have their own acceptance tests, beside the spine tests:
+
+- **The local capacity wait, no binding.** A topic with `on_full: fail` capacity, an `or wait` publish and no `bindings` entry: admitted by `hale check`, `hale build` and the editor under wasm32 alike; built and run under node with the queue filled first, so the publish parks and main's own pump empties the queue; the publish completes and stdout is pinned. The same program on the host, with the consumer on a pool, is the case below.
+- **The binding-loss wait.** A CONNECT binding with `or wait`: refused at the binding under wasm32 (T2); on the host it emits R34 in every spine (the existing `or_wait_loss_window` tests, now per spine).
+- **Teardown with a live waiter (host).** A local-capacity waiter on a pool worker at teardown completes in bounded time and raises (the L line's `l07_pool_or_wait_teardown.hl`, KNOWN_OPEN in PR #1300).
+- **Reentrancy (wasm32, only if the proof is pursued).** An exported fn parks in a local capacity wait; a handler its pump runs calls an `@ffi("js")` import that re-enters `main` or `_hale_start`. The reentry traps, or the embedding contract refuses it, as point 4 chose. Without this test the omission is not taken.
+- **L1/L2 linkage:** once L1's plan exists, the plan of each wasm32 program has no R20 or R35 obligation and keeps R34 (until the §3.2 proof), and the host plan has all three. Until then, the IR assertion is the oracle.
 
 ## 4. The generated documentation
 
