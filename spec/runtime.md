@@ -1692,7 +1692,10 @@ fixture under `crates/hale-codegen/tests/fixtures/lifecycle/` that
 pins today's outcome; `lifecycle_fixtures.rs` lists it in its
 `KNOWN_OPEN` table and fails once the outcome changes, so the
 entry has to go with the fix. Each fixture also runs under the
-lifecycle trace (§ "The lifecycle trace"), held to its line's plan;
+lifecycle trace (§ "The lifecycle trace"), held to the plan the
+table's producer (`hale_types::lifecycle::derive`) derives for its
+program, on its line's rules (three of line 19's, whose shapes the
+producer does not derive yet, to a hand-written plan);
 a departure the trace shows and the outcome cannot (a missing step,
 a step on the wrong thread) is in the same file's
 `TRACE_KNOWN_OPEN` table. A line still waiting on a condition
@@ -1700,7 +1703,7 @@ says so and records today's behaviour. The same rules are evidenced
 across shapes by the lifecycle matrix
 (`crates/hale-codegen/tests/lifecycle_matrix.rs`): a generated
 program for each failure phase, tree position and domain, held to
-its outcome, its trace plan and AddressSanitizer, with the cells
+its outcome, the producer's plan for it and AddressSanitizer, with the cells
 that fail today, the inventory row each fails at (two, for a cell
 that shows two known defects), and the departures each shows, in
 its `KNOWN_OPEN` table.

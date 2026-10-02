@@ -45,8 +45,13 @@
 //!
 //! Each cell's program names the obligations it exercises in its
 //! header, as the fixtures do, with its expected outcome word; its
-//! expected trace plan is derived from L1's plan for the lines it
-//! touches ([`plan_for`]).
+//! expected trace plan is the one the producer derives for the program
+//! (`hale_types::lifecycle::derive`, [`derived_plan`]), rendered along
+//! the cell's run ([`run_path`]: where `Subj` fails, whether the
+//! failure is held, whether the teardown cancels `Subj`'s queued run,
+//! how many body literals the program builds, and
+//! `Subj` and its handler's owner as what the cell holds) and held to
+//! [`MATRIX_LINES`]' known-open rules.
 //!
 //! ## Cells that are not programs
 //!
@@ -83,14 +88,6 @@
 //!      position's inline twin, the receiver literal, is the same
 //!      program by `spec/semantics.md` § "Dissolve timing rules", and
 //!      must print the same.
-//!
-//! The trace is also judged by the plan the producer derives for the
-//! cell's program (`hale_types::lifecycle::derive`), rendered along the
-//! cell's run ([`run_path`]: where `Subj` fails, whether the failure is
-//! held, how many body literals the program builds, and `Subj` and its
-//! handler's owner as what the cell holds), against [`MATRIX_LINES`]'
-//! known-open rules; it must find what the generated plan finds, to the
-//! word.
 //!
 //! [`KNOWN_OPEN`] names the cells that fail today, each with its
 //! inventory row (two, for a cell that shows two known defects), the
@@ -244,12 +241,6 @@ impl Position {
     /// while the owner's params are open.
     fn is_field(self) -> bool {
         !matches!(self, Position::AcceptedChild | Position::HandlerBorn | Position::LetLiteral)
-    }
-
-    /// The subject is a field of the deployment root, so a placement
-    /// entry can name it.
-    fn is_placeable(self) -> bool {
-        matches!(self, Position::RootChild | Position::IfaceField | Position::PerspSlot | Position::Replica)
     }
 
     fn instances(self) -> usize {
@@ -523,7 +514,6 @@ struct Program {
     src: String,
     /// The receiver-literal spelling of a `let_literal` cell.
     twin: Option<String>,
-    plan: String,
     outcome: &'static str,
 }
 
@@ -737,20 +727,21 @@ fn source(c: Cell, twin: bool, header: &str) -> String {
 }
 
 /// The obligation kinds a plan names, in declaration order.
-fn kinds_of(plan: &str) -> Vec<&'static str> {
-    let exp = lifecycle_plan::plan(plan);
-    let mut kinds: Vec<ObligationKind> = exp.owed.iter().map(|o| o.kind).collect();
+fn kinds_of(plan: &Expected) -> Vec<&'static str> {
+    let mut kinds: Vec<ObligationKind> = plan.owed.iter().map(|o| o.kind).collect();
     kinds.sort();
     kinds.dedup();
     kinds.into_iter().map(ObligationKind::name).collect()
 }
 
-fn header(c: Cell, plan: &str, outcome: &str) -> String {
+/// The header names the obligations the producer's plan holds the cell
+/// to; a cell the front end refuses has none.
+fn header(c: Cell, kinds: &[&str], outcome: &str) -> String {
     [
         "// Lifecycle matrix cell ",
         &cell_id(c),
         " (",
-        &kinds_of(plan).join(", "),
+        &kinds.join(", "),
         ").\n//\n// `Subj` ",
         c.phase.prose(),
         "; it is ",
@@ -769,7 +760,6 @@ fn render(c: Cell) -> Result<Program, &'static str> {
     if let Some(why) = no_path(c) {
         return Err(why);
     }
-    let plan = plan_for(c);
     let outcome = if raises(c) {
         "delivered-once"
     } else if c.phase.fails() {
@@ -777,45 +767,17 @@ fn render(c: Cell) -> Result<Program, &'static str> {
     } else {
         "clean"
     };
-    let head = header(c, &plan, outcome);
+    // The plan does not read the header's comments.
+    let kinds = plan_of(c, &source(c, false, "")).map(|p| kinds_of(&p)).unwrap_or_default();
+    let head = header(c, &kinds, outcome);
     let src = source(c, false, &head);
     let twin = (c.position == Position::LetLiteral).then(|| source(c, true, &head));
-    Ok(Program { src, twin, plan, outcome })
+    Ok(Program { src, twin, outcome })
 }
 
 // ===================================================================
 // The plan
 // ===================================================================
-
-/// The domain the subject's `run()` is claimed on, when the cell
-/// determines it: its own placement, or the one thread its whole tree
-/// is built on.
-fn subj_run_domain(c: Cell) -> Option<&'static str> {
-    match c.domain {
-        Domain::Main => Some("main"),
-        Domain::Pool => Some("pool:side"),
-        Domain::Pinned if c.position == Position::Grandchild => None,
-        Domain::Pinned => Some("pinned"),
-        Domain::CrossPool if c.position.is_placeable() => Some("pool:side"),
-        // A field of the pool-placed `Mid` owes its run() to `Mid`'s pool
-        // (decision line 3; run inline on main today, C12).
-        Domain::CrossPool if c.position == Position::Grandchild => Some("pool:side"),
-        Domain::CrossPool => None,
-    }
-}
-
-/// The handler owner's domain: where a failure's delivery completes
-/// (decision L0-1).
-fn owner_domain(c: Cell) -> &'static str {
-    match c.domain {
-        Domain::Main => "main",
-        Domain::Pool => "pool:side",
-        Domain::Pinned if c.position.is_field() && c.position != Position::Grandchild => "main",
-        Domain::Pinned => "pinned",
-        Domain::CrossPool if c.position == Position::Grandchild => "pool:side",
-        Domain::CrossPool => "main",
-    }
-}
 
 /// Whether the failure is raised while the handler owner's params are
 /// open on the thread that settles them, so it is held and delivered
@@ -867,81 +829,6 @@ fn raises(c: Cell) -> bool {
     c.phase.fails() && !(run_canceled(c) && matches!(c.phase, Phase::Run | Phase::Handler))
 }
 
-/// The cell's plan, from L1's plans for the lines it touches.
-fn plan_for(c: Cell) -> String {
-    let n = c.position.instances();
-    let subj = if n == 1 { "Subj".to_string() } else { format!("Subj*{n}") };
-    let owner = handler_owner(c);
-    let mut steps: Vec<String> = vec!["Birth".into()];
-    let run = match subj_run_domain(c) {
-        Some(d) => format!("Run!{d}"),
-        None => "Run".into(),
-    };
-    let delivery = if held(c) {
-        // A held failure's delivery completes on the settling thread;
-        // where that is for an owner placed off main waits on line 1.
-        if c.domain == Domain::Main { "FailureDelivery!main ConstructionDelivery".to_string() } else { "FailureDelivery ConstructionDelivery".to_string() }
-    } else {
-        format!("FailureDelivery!{}", owner_domain(c))
-    };
-    // A canceled run has no entry to order; its own line below.
-    let canceled = run_canceled(c);
-    match c.phase {
-        Phase::ParamsSettle | Phase::Birth => steps.push(delivery.clone()),
-        Phase::Run | Phase::Handler if canceled => {}
-        Phase::Run | Phase::Handler => {
-            steps.push(run.clone());
-            steps.push(delivery.clone());
-        }
-        Phase::Drain => {
-            if !canceled {
-                steps.push(run.clone());
-            }
-            steps.push("Drain".into());
-            steps.push(delivery.clone());
-        }
-        Phase::None if canceled => {}
-        Phase::None => steps.push(run.clone()),
-    }
-    if c.phase != Phase::Drain {
-        steps.push("Drain".into());
-    }
-    steps.push("Dissolve".into());
-    steps.push("Reclaim".into());
-    let mut lines = vec![
-        format!("{owner}: Birth Drain Dissolve Reclaim"),
-        format!("{subj}: {}", steps.join(" ")),
-    ];
-    if raises(c) {
-        // The failed child is kept until its handler completes
-        // (`lotus_failure_hold`, decision line 8).
-        lines.push("edge Subj.FailureDelivery.Completed -> Subj.Reclaim.Entered".into());
-    }
-    if canceled {
-        // The teardown that reclaims the subject cancels its queued run
-        // and names it, on the worker, inside the reclaim's bracket.
-        lines.push(format!("{subj}: Run=NotStarted(Acknowledged)!pool:side Cancellation!pool:side"));
-        lines.push("edge Subj.Run.Ended -> Subj.Reclaim.Completed".into());
-        lines.push("edge Subj.Reclaim.Entered -> Subj.Cancellation.Entered".into());
-        lines.push("edge Subj.Cancellation.Completed -> Subj.Reclaim.Completed".into());
-    }
-    if raises(c) && held(c) {
-        lines[0] = format!("{owner}: ParamsSettle Birth Drain Dissolve Reclaim");
-        lines.push(format!("edge {owner}.ParamsSettle.Completed -> Subj.FailureDelivery.Completed"));
-        lines.push(format!("edge Subj.FailureDelivery.Completed -> {owner}.Birth.Entered"));
-    }
-    // An owned field drains before its owner does (decision line 12): a
-    // pinned locus's never drains today (C9), and a contract-typed one
-    // drains after its owner's dissolve (C32).
-    let pinned_mid = c.position == Position::Grandchild && c.domain == Domain::Pinned;
-    if pinned_mid || matches!(c.position, Position::IfaceField | Position::PerspSlot) {
-        lines.push(format!("edge Subj.Drain.Completed -> {owner}.Drain.Entered"));
-    }
-    // Children before their owner's arena (decision line 14).
-    lines.push(format!("edge Subj.Reclaim.Completed -> {owner}.Reclaim.Entered"));
-    lines.join("\n")
-}
-
 /// The decision lines a cell's run is held to: the ones a failure's
 /// delivery, the hold that keeps the failed child, and the teardown that
 /// follows are about, and line 3's known-open rule for a field nested
@@ -978,7 +865,8 @@ fn run_path(c: Cell) -> RunPath {
     p
 }
 
-/// The plan the producer derives for a cell's program, on its run.
+/// The plan the producer derives for a cell's program, on its run: what
+/// the trace is held to.
 fn derived_plan(c: Cell, program: &hale_syntax::ast::Program) -> Expected {
     let snap = Snapshot::from_program(program.clone(), Vec::new(), Config::harness(Target::host()))
         .unwrap_or_else(|_| panic!("{}: no snapshot", cell_id(c)));
@@ -986,22 +874,13 @@ fn derived_plan(c: Cell, program: &hale_syntax::ast::Program) -> Expected {
     project::expected(plan, Focus::Lines(MATRIX_LINES), &run_path(c)).unwrap_or_else(|e| panic!("{}: {e}", cell_id(c)))
 }
 
-/// The two plans' verdicts on one run, compared: `None` when they agree
-/// to the word, else what differs.
-fn derived_disagrees(c: Cell, program: &hale_syntax::ast::Program, hand: &str, ran: &Ran) -> Option<String> {
-    let judged = |e: &Expected| -> BTreeSet<String> {
-        e.check(&ran.trace, ran.complete()).iter().map(|v| lifecycle_plan::normalized(&v.to_string())).collect()
-    };
-    let derived = derived_plan(c, program);
-    let (by_hand, by_producer) = (judged(&lifecycle_plan::plan(hand)), judged(&derived));
-    (by_producer != by_hand).then(|| {
-        format!(
-            "derived: the producer's plan judges the run otherwise: only it shows {:?}, only the generated plan {:?}; it is\n{}",
-            by_producer.difference(&by_hand).collect::<Vec<_>>(),
-            by_hand.difference(&by_producer).collect::<Vec<_>>(),
-            lifecycle_plan::render(&derived)
-        )
-    })
+/// The same plan for a source the front end may refuse: `None` where it
+/// does not parse or has no plan.
+fn plan_of(c: Cell, src: &str) -> Option<Expected> {
+    let program = hale_syntax::parse_source(src).ok()?;
+    let snap = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())).ok()?;
+    let plan = snap.demand_lifecycle().ok()?;
+    project::expected(plan, Focus::Lines(MATRIX_LINES), &run_path(c)).ok()
 }
 
 // ===================================================================
@@ -1152,6 +1031,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let id = cell_id(c);
     let Form::Program(p) = form(c) else { panic!("{id} is not a program") };
     let program = front_end(&p.src).expect("judged already");
+    let plan = derived_plan(c, &program);
     let mut failures = Vec::new();
     let bin = harness::unique_bin(&["lcmatrix_", &slug(c)].concat());
     let _ = std::fs::write(bin.with_extension("hl"), &p.src);
@@ -1161,7 +1041,7 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let ran = run_bin(&bin, &[]);
     let _ = std::fs::remove_file(&bin);
     if verbose(c) {
-        dump(&id, &p, &ran);
+        dump(&id, &p, &plan, &ran);
     }
 
     // --- 1: the outcome word ---------------------------------------
@@ -1172,10 +1052,8 @@ fn run_cell(c: Cell, asan: bool) -> Vec<String> {
 
     // --- 2: the trace ----------------------------------------------
     let mut v: Vec<Violation> = trace::laws(&ran.trace, ran.complete());
-    v.extend(lifecycle_plan::plan(&p.plan).check(&ran.trace, ran.complete()));
+    v.extend(plan.check(&ran.trace, ran.complete()));
     failures.extend(v.iter().map(|v| format!("trace: {v}")));
-    // The producer's plan for the program judges the same run alike.
-    failures.extend(derived_disagrees(c, &program, &p.plan, &ran));
 
     // --- 4: the differential ---------------------------------------
     if let Some(twin) = &p.twin {
@@ -1224,8 +1102,14 @@ fn verbose(c: Cell) -> bool {
     std::env::var("HALE_MATRIX_CELL").is_ok_and(|f| f.split(',').any(|s| cell_id(c).contains(s)))
 }
 
-fn dump(id: &str, p: &Program, ran: &Ran) {
-    eprintln!("==== {id}\n{}\n---- plan\n{}\n---- stdout\n{}---- stderr\n{}---- trace", p.src, p.plan, ran.stdout, ran.stderr);
+fn dump(id: &str, p: &Program, plan: &Expected, ran: &Ran) {
+    eprintln!(
+        "==== {id}\n{}\n---- plan\n{}\n---- stdout\n{}---- stderr\n{}---- trace",
+        p.src,
+        lifecycle_plan::render(plan),
+        ran.stdout,
+        ran.stderr
+    );
     for e in &ran.trace.events {
         eprintln!(
             "{} {} {} {} {} {} {:?}",
@@ -1456,7 +1340,8 @@ fn every_cell_is_written_or_named() {
                     let formatted = hale_syntax::fmt::format_source(src).unwrap_or_else(|e| panic!("{}: fmt: {e:?}", cell_id(*c)));
                     assert!(formatted == *src, "{} is not `hale fmt` clean; formatted:\n{formatted}\ngenerated:\n{src}", cell_id(*c));
                 }
-                assert!(!lifecycle_plan::plan(&p.plan).owed.is_empty(), "{}: an empty plan", cell_id(*c));
+                let program = front_end(&p.src).expect("judged already");
+                assert!(!derived_plan(*c, &program).owed.is_empty(), "{}: an empty plan", cell_id(*c));
                 // The header names the cell, its obligations and its
                 // expected outcome, as a fixture's does.
                 let head = format!("// Lifecycle matrix cell {} (", cell_id(*c));
