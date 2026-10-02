@@ -2755,6 +2755,15 @@ entry, so its world is not closed and `--env` refuses it, and its
 placement is still checked as the top-level one's is, because the
 build still runs it.
 
+Whether a thread runs beside the bus's main drain, so that the bus
+queue takes its lock, is decided from what the build deploys (F.40
+phase 3, E2): a domain of the placement table that is not main (a
+`pinned` field, a non-main cooperative pool, an adapter binding, the
+`api` binding's pool), or an entry of the deployed `main locus`'s
+`bindings { }`, a module-nested one included. An imported `main
+locus`'s `placement { }` block and `bindings { }` start nothing, so a
+program that imports one keeps the single-threaded queue.
+
 Bundle-wide rules:
 
 1. At most one `main` locus per bundle, counting the entry program's

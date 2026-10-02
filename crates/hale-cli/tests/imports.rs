@@ -1,4 +1,4 @@
-//! The `imports` integration-test binary: 13 test files of this area, kept
+//! The `imports` integration-test binary: 14 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -29,5 +29,7 @@ mod imported_literal_fields;
 mod imported_main_claims;
 #[path = "imported_type_annotation.rs"]
 mod imported_type_annotation;
+#[path = "offthread_imported_main.rs"]
+mod offthread_imported_main;
 #[path = "two_hop_qualified_literal.rs"]
 mod two_hop_qualified_literal;

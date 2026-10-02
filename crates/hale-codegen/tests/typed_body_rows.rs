@@ -23,6 +23,7 @@ fn lower_without_a_table(tag: &str, src: &str) -> Result<(), CodegenError> {
         None,
         &FormRows::default(),
         &hale_types::binding_rows::BindingRows::default(),
+        &hale_types::placement::PlacementTable::default(),
         &TypedBodies::default(),
     )
     .expect("resolves");

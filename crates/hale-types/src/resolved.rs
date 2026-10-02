@@ -105,6 +105,10 @@ pub struct LoweringView {
     /// transport, role, adapter, codec and producer-versus-attach here,
     /// and the bus graph's bound-topic set is their projection.
     pub bindings: crate::binding_rows::BindingRows,
+    /// The placement table (F.40 phase 3, P1): the snapshot's, where each
+    /// instance the deployed program builds runs. Lowering asks it
+    /// whether any thread crosses the bus boundary (E2).
+    pub placement: crate::placement::PlacementTable,
     /// The typed-body table (F.40 phase 3, E4): the snapshot's, what the
     /// checker typed over the program this view lowers, keyed by the
     /// identities the merge kept. Lowering reads the checker's answers
@@ -228,6 +232,7 @@ pub fn resolve_program(
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
     bindings: &crate::binding_rows::BindingRows,
+    placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
     resolve_rewritten(
@@ -238,6 +243,7 @@ pub fn resolve_program(
         api_roles,
         forms,
         bindings,
+        placement,
         typed,
     )
 }
@@ -262,6 +268,10 @@ pub fn resolve_program(
 /// to. `bindings` is the snapshot's binding rows (`Snapshot::demand_bindings`);
 /// a caller with none passes `&BindingRows::default()`, and a program
 /// with a `bindings { }` entry then has no row for lowering to read.
+/// `placement` is the snapshot's placement table
+/// (`Snapshot::demand_placement`); a caller with none passes
+/// `&PlacementTable::default()`, and lowering then sees no thread off
+/// main, so such a view is fit only for a program that places nothing.
 /// `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
 /// gets its written discipline. `typed` is the snapshot's typed-body
@@ -278,6 +288,7 @@ pub fn resolve_rewritten(
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
     bindings: &crate::binding_rows::BindingRows,
+    placement: &crate::placement::PlacementTable,
     typed: &crate::typed_bodies::TypedBodies,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
@@ -489,6 +500,7 @@ pub fn resolve_rewritten(
         flows,
         forms,
         bindings: bindings.clone(),
+        placement: placement.clone(),
         typed,
         bus_inert,
         bus,
