@@ -1959,35 +1959,12 @@ fn hot_factory_locus(
     }
 }
 
-/// An allocating recv path-call (the result Bytes/String lands in the
-/// caller's scratch). `recv_into` is the zero-alloc alternative.
+/// An allocating recv (the result Bytes/String lands in the caller's
+/// scratch), as written. `recv_into` is the zero-alloc alternative.
+/// The list is the allocation summary's
+/// (`CallSpelling::allocating_recv`), which `@budget` reads too.
 fn allocating_recv_name(callee: &Expr) -> Option<String> {
-    match callee {
-        // Path-call form: `std::io::udp::recv(fd, n)`.
-        Expr::Path(qn) => {
-            let segs: Vec<&str> =
-                qn.segments.iter().map(|s| s.name.as_str()).collect();
-            match segs.as_slice() {
-                ["std", "io", "tcp", "recv"]
-                | ["std", "io", "tcp", "recv_bytes"]
-                | ["std", "io", "udp", "recv"]
-                | ["std", "io", "udp", "recv_with_source"]
-                | ["std", "io", "tls", "recv_bytes"] => Some(segs.join("::")),
-                _ => None,
-            }
-        }
-        // Method-call form: `stream.recv_bytes(n)`. The Stream receiver
-        // types as Unknown in the checker (stdlib handle locus), so key
-        // off the method name. `recv_bytes` / `recv_with_source` are
-        // stdlib-specific enough that false positives are rare; plain
-        // `recv` (a common user-method name) is only flagged in the
-        // path-call form above.
-        Expr::Field { name, .. } => match name.name.as_str() {
-            "recv_bytes" | "recv_with_source" => Some(name.name.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
+    crate::alloc_summary::CallSpelling::of(callee).allocating_recv()
 }
 
 fn hot_walk_block(b: &Block, cx: &mut HotPathCx) {

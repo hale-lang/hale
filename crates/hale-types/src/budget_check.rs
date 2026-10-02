@@ -86,26 +86,6 @@ struct Offender {
     note: String,
 }
 
-/// The known-allocating opaque stdlib calls: the `recv` family, which
-/// each return a freshly-allocated result buffer. `recv_into` is the
-/// zero-alloc alternative. This is exactly the set the hot-path lint
-/// (`check_hot_path_alloc`) flags in a loop — the two levers agree on
-/// what "allocating recv" means. Path-call form carries the full
-/// `std::io::udp::recv` path; method-call form carries just the bare
-/// name (the receiver types as Unknown).
-fn opaque_recv_allocates(name: &str) -> bool {
-    matches!(
-        name,
-        "std::io::tcp::recv"
-            | "std::io::tcp::recv_bytes"
-            | "std::io::udp::recv"
-            | "std::io::udp::recv_with_source"
-            | "std::io::tls::recv_bytes"
-            | "recv_bytes"
-            | "recv_with_source"
-    )
-}
-
 fn describe_kind(kind: &AllocKind) -> String {
     match kind {
         AllocKind::StructLit(n) => format!("a `{}` instantiation", n),
@@ -223,9 +203,11 @@ impl FactVisitor for BudgetVisitor {
             }
             return Count::Unbounded;
         }
-        if !opaque_recv_allocates(name) {
-            // Any other opaque call is outside what the budget can
-            // see (documented boundary).
+        // The known-allocating opaque calls are the allocating receives,
+        // the edge's column (`CallSpelling::allocating_recv`, the list
+        // the hot-path lint reads too). Any other opaque call is outside
+        // what the budget can see (documented boundary).
+        if edge.allocating_recv.is_none() {
             return Count::zero();
         }
         if in_loop {
