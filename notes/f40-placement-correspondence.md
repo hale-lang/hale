@@ -1,6 +1,6 @@
 # F.40 phase 3, P1 — the placement correspondence
 
-**What this is.** The correspondence P1 requires before its producer is built (hale-lang/hale#1212; the phase-3 plan's § 3 Line P, step P1, and § 6). It does five things. It fixes the schema of the one placement table and the stage that produces it. It reads each of the eight legacy producers the registry lists under `placement`, and states which answers the table keeps. It classifies every known divergence and gives its spec witness and the test that will pin it. It orders the consumer switches. Last, it proposes answers to the open decisions (§ 7) and records what the implementation has to get right (§ 8). The decisions it applies are the wave-2 decisions § P1: instance identity includes field path and replica (and here, after the outside review of #1296, the construction the instance comes from); budgets count the resource; and a runtime test checks the receiving thread of the nested off-thread subscriber.
+**What this is.** The correspondence P1 requires before its producer is built (hale-lang/hale#1212; the phase-3 plan's § 3 Line P, step P1, and § 6). It does five things. It fixes the schema of the one placement table and the stage that produces it. It reads each of the eight legacy producers the registry lists under `placement`, and states which answers the table keeps. It classifies every known divergence and gives its spec witness and the test that will pin it. It orders the consumer switches. Last, it proposes answers to the open decisions (§ 7), records what the implementation has to get right (§ 8), and states the checkpoints the producer PRs are verified against (§ 9). The decisions it applies are the wave-2 decisions § P1: instance identity includes field path and replica (and here, after the outside review of #1296, the construction the instance comes from); budgets count the resource; and a runtime test checks the receiving thread of the nested off-thread subscriber.
 
 The step is read-only on code. It was measured at `main` 13e5f352 (origin/main after #1293), and line numbers refer to that tree. One thing was run: the existing shadow, `cargo test --release -p hale-types --test shadow_placement`, which passes (21 classified rows, none unexplained, none stale). Everything else is **by reading**, and is marked so wherever a claim is about execution rather than code. Running a probe program through `hale` was not available in this session. § 4's test is what settles the execution claims.
 
@@ -20,6 +20,31 @@ Where a row says **agreement**, the table and the legacy producer give the same 
 ### Schema
 
 ```rust
+/// Which store minted a site. The two stores number independently, each from
+/// seed 0 and index 0, so a `SiteId` names a site only with its universe
+/// (§ 1, the input universe).
+pub enum SiteUniverse {
+    User,                                  // the snapshot's identities: the seed's files and the imports linked in
+    StdlibAnalysis,                        // the stdlib analysis copy's (`stdlib_bodies::identities()`)
+}
+
+/// A site the table names: the universe that minted it and its id there.
+/// Every site in the table is one; no bare `SiteId` leaves the producer.
+/// Equality, ordering and hashing compare the universe first.
+pub struct SiteRef {
+    pub universe: SiteUniverse,
+    pub id: SiteId,
+}
+
+/// Provenance (kind, span, origin) of a site, from the store its universe
+/// names and from no other.
+pub fn provenance<'a>(site: SiteRef, user: &'a Snapshot, stdlib: &'a Snapshot) -> Option<&'a Site> {
+    match site.universe {
+        SiteUniverse::User => user.site(site.id),
+        SiteUniverse::StdlibAnalysis => stdlib.site(site.id),
+    }
+}
+
 /// One per snapshot: `Snapshot::demand_placement`, a new FAMILIES entry
 /// "placement", demanded after the desugar sequence and the mint over the
 /// snapshot's identities (see "The stage" below). `stdlib` is the analysis
@@ -45,13 +70,13 @@ pub struct InstanceKey {
 }
 
 pub enum Origin {
-    Construction(SiteId),                  // a root literal (`App { … }`): one template per literal site, the root at []
-    Binding(SiteId),                       // an adapter literal in the root's `bindings { }` entry: built once, in the bindings prelude (cg:9813)
+    Construction(SiteRef),                 // a root literal (`App { … }`): one template per literal site, the root at []
+    Binding(SiteRef),                      // an adapter literal in the root's `bindings { }` entry: built once, in the bindings prelude (cg:9813)
 }
 
 pub struct Step {
     pub field: String,
-    pub alternative: Option<SiteId>,       // the literal taken, when the field's initializer chooses among literals; None when it has one
+    pub alternative: Option<SiteRef>,      // the literal taken, when the field's initializer chooses among literals; None when it has one
 }
 
 pub struct RootRow {
@@ -61,13 +86,13 @@ pub struct RootRow {
 }
 
 pub struct Construction {
-    pub literal: SiteId,                   // the root literal; `Origin::Construction` of every key under it
+    pub literal: SiteRef,                  // the root literal; `Origin::Construction` of every key under it
     pub bound: Bound,                      // how many occurrences of this template can be live at once
 }
 
 pub struct InstanceRow {
     pub realizes: DeclRef,                 // the declaration actually built (an override literal's, not the field's declared type)
-    pub literal: Option<SiteId>,           // the literal that builds it (default or override); None = a hole
+    pub literal: Option<SiteRef>,          // the literal that builds it (default or override); None = a hole
     pub owner: Option<InstanceKey>,        // None only at an origin's top ([] path)
     pub domain: DomainId,
     pub decided_by: Decision,
@@ -76,14 +101,14 @@ pub struct InstanceRow {
 }
 
 pub struct DeclRef {
-    pub site: SiteId,                      // the locus declaration; for a monomorph, the template's
+    pub site: SiteRef,                     // the locus declaration; for a monomorph, the template's
     pub args: Vec<Ty>,                     // the substitution; empty unless generic
     pub lowered: String,                   // the name lowering keys on (`__StdIoTcpListener`, `Cache_Int_String`)
 }
 
 pub enum Decision {
-    Entry { block: SiteId, entry: SiteId },// the root's `placement { }` entry for this field
-    Binding { entry: SiteId },             // an adapter locus inline in `bindings { }`: pinned-equivalent (cg:10494-10508)
+    Entry { block: SiteRef, entry: SiteRef }, // the root's `placement { }` entry for this field
+    Binding { entry: SiteRef },            // an adapter locus inline in `bindings { }`: pinned-equivalent (cg:10494-10508)
     Inherited { from: InstanceKey },       // nested: the owner's domain (sem:3511-3542, rt:364-371)
     Default,                               // a root field with no entry: pool main (sem:3544-3552)
 }
@@ -95,8 +120,8 @@ pub enum DomainKind {
 }
 
 pub struct DynamicSite {                   // a locus literal in a method body, `accept`ed child, let-bound locus
-    pub literal: SiteId,
-    pub enclosing: Enclosing,              // Locus(DeclRef) | Fn(SiteId): a free function or `fn main` can enclose a literal (§ 8)
+    pub literal: SiteRef,
+    pub enclosing: Enclosing,              // Locus(DeclRef) | Fn(SiteRef): a free function or `fn main` can enclose a literal (§ 8)
     pub domains: BTreeSet<DomainId>,       // the domains the enclosing scope runs in; empty = unknown, never defaulted to main
     pub bound: Bound,                      // Once | AtMost(n) | Unbounded(reason)
 }
@@ -104,22 +129,33 @@ pub struct DynamicSite {                   // a locus literal in a method body, 
 
 ### The stage
 
-**After shaping and minting.** The frontend's load runs the desugar sequence over the loaded programs and then mints them (`fs:597-631`). `placement` is demanded from that snapshot, as `entrypoint` is (`fs:856`), so every `SiteId` in the table is one the snapshot minted. The producer is never called where sync inference runs today. `apply_sync_inference` runs per program **before** the sequence and the mint (`fs:590-596`), over a `Bundle::new` it builds itself, whose identity snapshot is empty (`lib.rs:438-454`). Its `entry_row` serves the root only as `MainLocus.site: Option<SiteId>`, `None` on a bundle nothing minted (`ent:41-44`). The table's `SiteId`s are not optional and cannot be built there, and a placeholder id would alias a real declaration.
+**After shaping and minting.** The frontend's load runs the desugar sequence over the loaded programs and then mints them (`fs:597-631`). `placement` is demanded from that snapshot, as `entrypoint` is (`fs:856`), so every site in the table is one a mint has already numbered: a `User` site the snapshot minted, or a `StdlibAnalysis` site the analysis copy minted (the input universe, below). The producer is never called where sync inference runs today. `apply_sync_inference` runs per program **before** the sequence and the mint (`fs:590-596`), over a `Bundle::new` it builds itself, whose identity snapshot is empty (`lib.rs:438-454`). Its `entry_row` serves the root only as `MainLocus.site: Option<SiteId>`, `None` on a bundle nothing minted (`ent:41-44`). The table's `SiteRef`s are not optional and cannot be built there, and a placeholder id would alias a real declaration.
 
 **Sync inference moves after placement, and nothing cycles.** Placement reads no `sync` argument. The readers of `sync` are the checker (`chk:4626`, `chk:10825`, `chk:17912`), `alloc_summary.rs:1396`, `frontier.rs:1155`, `mb:485` and lowering, and none of them is a placement producer. Sync inference reads placement. The one ordering that holds both is sequence → mint → entry → placement → the inferred discipline. Today's apparent cycle is only that the checker and lowering read the `sync =` the pre-pass wrote into the AST. C1's form row, as amended, removes it: the explicit configuration (what the source wrote) and the effective discipline (what inference decides from placement) are separate columns, and a reader that asks "has a sync discipline" reads the effective one. So K-5's switch is **C1's**, stacked on P1's producer commit, and not P1 PR 3's.
 
 **Until C1 lands, the pre-mint computation is its own contract.** It stays what it is: a per-program map from locus declaration name to pool, built over the single-program bundle, with no `SiteId` in it. It is typed as such (`PreMintPoolMap`), and it is never converted into table rows. Its correspondence into the table is verified rather than assumed. The shadow gains a column that, for every `@form(hashmap)` locus over the corpus, `tests/hale` and `dna/`, compares the discipline inferred from the pre-mint map with the discipline K-5's rule infers from the table, joined by declaration name within the program. Because the pre-pass runs per file, a multi-file seed's per-file map can lack the root that the table has. Each such divergence is a fixture row with an id, like any other.
 
-**The input universe.** The snapshot mints the programs the frontend loaded: the seed's files and the imports linked into them (`fs:628-631`). The bundled stdlib is not among them. The typecheck bundle never holds it (`stdlib_bodies.rs:16-20`). The analyses read a separate copy, minted alone under `STDLIB_SEED` (`stdlib_bodies.rs:35-44`). Lowering appends the bundled stdlib to the user program inside `resolve_program` and mints the merged program, numbering the stdlib's sites past the user's (`res:238-276`). So the two stdlib mints give one declaration two different ids, and the table has to say which it uses and how the other joins.
+**The input universe.** The snapshot mints the programs the frontend loaded: the seed's files and the imports linked into them (`fs:628-631`). The bundled stdlib is not among them. The typecheck bundle never holds it (`stdlib_bodies.rs:16-20`). The analyses read a separate copy, minted alone (`stdlib_bodies.rs:35-44`). Lowering appends the bundled stdlib to the user program inside `resolve_program` and mints the merged program, numbering the stdlib's sites past the user's (`res:238-276`). So there are three mints. Two of them, the snapshot's and the analysis copy's, reach the table; the merged one is lowering's.
 
-- **Stdlib declarations** come from the analysis copy. A `DeclRef` for a stdlib locus carries that copy's `SiteId` (seed `STDLIB_SEED`) and its `lowered` name, the bundled declaration's own `__Std…` name (res:226-228). Both copies are clones of one parsed program (`bundled_stdlib`), so the name is the same in each.
-- **Lowering joins by `lowered`.** The lowering view (PR 2) re-keys every `DeclRef` it reads into the merged mint by `lowered` name. It asserts that the re-keying is total and injective over the rows it reads. A row whose name the merged program lacks, or a name two declarations share, is a compiler bug that refuses the build and names the row.
-- **User sites join directly.** `resolve_program` keeps the ids the bundle minted (`res:209-216`; minting is idempotent).
-- **Lowering-generated sites are not inputs.** The table is over the checked program, and no row names a node that a lowering rewrite creates. A consumer that needs one joins through that rewrite's relation (`IntraLocusRewrite`).
+**The two universes collide numerically.** `mint` numbers every site from one counter that starts at 0, and numbers seeds from 0 (`snapshot.rs:185-232`). In the user snapshot, seed 0 is the first source unit. The analysis copy is minted with no source map, so its one seed, the program named `STDLIB_SEED`, is also seed 0 (`snapshot.rs:220-222`), and its counter also starts at 0. A user declaration and a stdlib locus can therefore carry the same `SiteId`, and the re-review's probe found one: against 500 user locus declarations, `SiteId 0:99` named a stdlib locus in the analysis copy and a user locus in the snapshot. `STDLIB_SEED` is a seed's display string (`snapshot.rs:168`), recorded in one store's `seeds`, not a reserved numeric seed. Reading it presupposes knowing which store to ask, and a bare id does not say. (The merged mint numbers the stdlib's seed after the source units, a third numeric seed for the same string.)
+
+**Every site carries its minting universe.** Every site the table names is a `SiteRef`, its universe beside its id, wherever the table can reference either universe: declaration identities (`DeclRef.site`, and so `InstanceRow.realizes` and `Enclosing::Locus`), literal identities (`InstanceRow.literal`, `Construction.literal`), alternative identities (`Step.alternative`), dynamic-site identities (`DynamicSite.literal`, `Enclosing::Fn`), origins (`InstanceKey.origin`, through `Origin`) and steps (`Step`). The decisions' sites (`Decision::Entry`, `Decision::Binding`) are always `User`, since only the seed's root has a placement block or bindings, and are `SiteRef`s too, so that no bare `SiteId` leaves the producer. The root's `MainLocus` stays the entry row's type: the entry row is computed over the user snapshot alone, and the producer qualifies its site as `User` when it reads it. Provenance lookup (span, kind, origin) dispatches on the universe (`provenance`): a `User` site is looked up in the snapshot's identities, a `StdlibAnalysis` site in `stdlib_bodies::identities()`, and never the other way.
+
+**Three identities, three roles.** One stdlib declaration has three identities, and none stands in for another:
+
+- **Analysis identity:** the analysis copy's `SiteId`, inside `stdlib_bodies::identities()`. The analyses and the producer's resolution of a qualified field read it. It means something only in that store.
+- **Placement identity:** `SiteRef`. The table's keys and rows hold it, and every consumer of the table compares it: the shadow, sync inference after C1, the model projection, the budget, L1's rows. A stdlib site's `SiteRef` is its analysis identity qualified by `StdlibAnalysis`.
+- **Lowering identity:** `DeclRef.lowered`, the name lowering keys on: the bundled declaration's own `__Std…` name (res:226-228), the same in both copies because both are clones of one parsed program (`bundled_stdlib`).
+
+**Lowering joins once, in the lowering view.** The lowering view (PR 2) resolves every `SiteRef` it reads into the merged mint. A `User` site joins directly: `resolve_program` keeps the ids the bundle minted (`res:209-216`; minting is idempotent). A `StdlibAnalysis` declaration joins by `lowered`, the declaration-to-lowering join. A `StdlibAnalysis` literal or alternative has no name to join by. It joins by position: both copies are clones of `bundled_stdlib` that no pass touches between the clone and the mint (`res:246-264` asserts it of the merged tail's items), so the two walks visit the same sites in the same order. The view pairs them in that order, asserts each pair's kind and span equal, and asserts that the pairing agrees with `lowered` on every declaration. It asserts the resolution is total and injective over the refs it reads: each resolves exactly once. A ref the merged program lacks, or two refs resolving to one merged site, is a compiler bug that refuses the build and names the row.
+
+**A name join at one seam never repairs a collision at another.** Re-keying by `lowered` corrects only what lowering reads, and only for declarations. The producer, the shadow and every other consumer above read the table's ids directly, and a literal, an alternative or a dynamic site has no name to re-key. So the universe is in the id from the moment the producer writes a row, and no consumer reconstructs it.
+
+**Lowering-generated sites are not inputs.** The table is over the checked program, and no row names a node that a lowering rewrite creates. A consumer that needs one joins through that rewrite's relation (`IntraLocusRewrite`).
 
 Until the producer resolves a qualified field through the analysis copy, a stdlib-typed field's `realizes` is a hole (invariant 6). It is never a row with an invented id. K-1, B-3 and M-2 are promised only on that resolution.
 
-**Tested on the entry paths that exist.** PR 1's cases run through the frontend's load as every verb does (load, sequence, mint, demand), not only through a bundle the test mints itself. One of them holds a qualified stdlib field and a multi-file seed, and asserts the stdlib row's seed is `STDLIB_SEED`. C1's switch is tested through the actual sync-inference entry path, the frontend load: `two_owners_on_two_pools_infer_none` and the sync-inference shadow are driven from `Snapshot::load`.
+**Tested on the entry paths that exist.** PR 1's cases run through the frontend's load as every verb does (load, sequence, mint, demand), not only through a bundle the test mints itself. One of them holds a qualified stdlib field and a multi-file seed, and asserts the stdlib row's universe is `StdlibAnalysis`, not its seed's display string (§ 3 case 12). C1's switch is tested through the actual sync-inference entry path, the frontend load: `two_owners_on_two_pools_infer_none` and the sync-inference shadow are driven from `Snapshot::load`.
 
 ### Invariants
 
@@ -148,7 +184,7 @@ A count over the table (threads, pinned anchors, arenas) is a sum over the templ
 - **Across the alternatives of one step, take the maximum.** One occurrence takes exactly one alternative, so its guarded subtrees are exclusive. The maximum is over each alternative's own subtree count.
 - **Replicas are already rows.** `replicas = K` is K rows in the template, so it is counted by the sum over rows and never multiplied again.
 - **A binding origin is `Once`.** The bindings prelude runs once per process, in `lower_program` (`cg:9813`), so an adapter's subtree is counted once and never multiplied by any root construction's bound.
-- **Count domains, not rows.** A count of threads is over distinct `DomainId`s, each counted in the one scope that creates it (§ 2.8), so a domain is never counted twice by two terms.
+- **Count domains, not rows.** A count of threads is over distinct `DomainId`s, each counted in the one scope that creates it (§ 2.8), so a domain is never counted twice by two terms. Domains anchored under the exclusive alternatives of one step combine by the maximum like any other subtree count (§ 9, checkpoint 4).
 
 ### What each legacy question becomes
 
@@ -334,6 +370,11 @@ Threads the runtime spawns outside placement are not placement facts. Examples a
 9. **Adapter bindings.** An inline adapter in `bindings { }`: a row under `Origin::Binding` with `Decision::Binding` and a pinned domain anchored at itself, beside a root field placed `pinned`: two pinned domains, disjoint. The same program with the root built at two sites keeps one adapter row and gains a second root field row (G-4, R-6, § 2.8's partition).
 10. **Dynamic sites.** A locus literal in a root method in a loop, an `accept`ed child, and the root built by a factory called in a loop. These produce `DynamicSite` rows with the enclosing domains and the bound, and the factory's literal is one construction template with an `Unbounded` bound (R-5).
 11. **Two constructions of one root with different nested overrides.** `App { gw: Gateway { router: RouterV2 { } } }` in one function and `App { gw: Gateway { router: RouterV3 { } } }` in another, with `gw` placed `pinned` and `RouterV3` generic. Two `Construction` rows, and two keys for each of `gw` and `gw.router`, which differ only in their origin: each `gw.router` row has its own `realizes`, `literal` and `args`, and each `gw` its own pinned domain. A third construction `App { gw: if c { Gateway { router: RouterV2 { } } } else { Gateway { } } }` gives two `alternative` steps at `gw`, every row under them `guarded`, and its budget contribution is the larger of the two subtrees, not their sum. The case first pins whether rule 3 and the checker admit a literal-armed `if` as a param initializer; if they refuse it, the third construction is dropped from the case and `alternative` stays for `match` arms only if those are admitted, else it is removed from the schema.
+12. **Two universes, one numeric id** (the acceptance test for § 1's input universe). A seed with a user locus declaration minted with the same numeric `SiteId` as a stdlib locus in the analysis copy. The seed is padded with user locus declarations until one lands on a stdlib locus's id, as the re-review's probe did (`0:99` with 500 declarations), and the case first asserts the collision is present, so it cannot pass vacuously. The root holds a qualified stdlib field (`l: std::io::tcp::Listener`) beside user fields, one of them typed by the colliding user locus, and the stdlib locus has a params field with a default literal. Asserted:
+    - the two declarations' `DeclRef.site` have equal `id` and different `universe`, and their canonical declaration keys stay distinct: two `realizes`, two entries in a set keyed by `DeclRef`, and no row of one answering for the other;
+    - default-literal provenance resolves into the right store: the stdlib locus's default literal through `provenance` into the analysis copy, naming a stdlib span, and the user locus's into the snapshot, naming the user file;
+    - the lowering correspondence resolves each relevant site (both declarations, both default literals, the root's field literals) into the merged mint exactly once;
+    - checking the seed's display string alone is insufficient, and the case says so beside the assertion: `seeds[id.seed] == STDLIB_SEED` holds only when the store is already known, and asked of the snapshot, seed 0 is the first user file. The case asserts the universe.
 
 ## 4. The runtime test the correction needs
 
@@ -376,7 +417,7 @@ Six PRs follow this document. Each consumer switches in a commit of its own, and
 
 | # | PR | shape | carries | oracle |
 |---|---|---|---|---|
-| 1 | **The producer.** `crates/hale-types/src/placement.rs` · `placement_table`, `Snapshot::demand_placement` and a `FAMILIES` entry. The shadow rewritten as § 3 describes, with the fixture extended and every row cited by id. `placement_table.rs` with § 3's eleven cases. The registry names the producer. No consumer reads it. | S · Opus | the producer commit; the shadow commit; the cases commit; the registry commit | shadow: zero unexplained or stale over the corpus, `tests/hale` and `dna/`; `cargo nextest run --release --workspace`. **L1 stacks on this PR's producer commit.** |
+| 1 | **The producer.** `crates/hale-types/src/placement.rs` · `placement_table`, `Snapshot::demand_placement` and a `FAMILIES` entry. The shadow rewritten as § 3 describes, with the fixture extended and every row cited by id. `placement_table.rs` with § 3's twelve cases. The registry names the producer. No consumer reads it. | S · Opus | the producer commit; the shadow commit; the cases commit; the registry commit | shadow: zero unexplained or stale over the corpus, `tests/hale` and `dna/`; `cargo nextest run --release --workspace`. **L1 stacks on this PR's producer commit.** `hale_types::lifecycle` (#1300) copies the key field for field, so when P1's type lands its `SourceSite`/`DeclRef` take `SiteRef` (with `Origin`, `Step.alternative` and `Template::Dynamic`'s literal), and no bare `SiteId` survives in a lifecycle row. |
 | 2 | **The lowering view.** The desugar's read (D, agreement), then `DeploymentPlan` as the table's lowering view, with replicas folded in and the type sets from `realizes.lowered`. Each of G-2 and G-3 that § 3 confirmed lands first as its own J commit with a runtime test. | S, with J for confirmed G rows · Opus | registry: `collect_off_owner_thread_fields`, `collect_main_placement` and `DeploymentPlan` leave the legacy list, and the seam `collect_main_placement(` goes | dispatch-plan digest and build identity identical over the corpus; `IntraLocusRewrite` relation identical; `LOTUS_ASAN=1 … --test corpus_oracle -- --ignored`; the ownership-matrix sample |
 | 3 | **The checker.** F.31 reads `domain` and `owner_relative` (K-1, J). Pinned-in-a-loop and entry-consumed read the root rows (S). Instance aliasing reads them too (intentional correction, J). `enclosing_field_placement` goes. `compute_pool_of_locus_type` stays only as the pre-mint map sync inference reads until C1 (§ 1, the stage). | J + S · Opus for K-1, Sonnet for the rest | the K-1 test; the shadow column comparing the pre-mint map's inferred discipline with the table's; `an_imported_seeds_aliasing_is_not_reported`; the registry's checker row narrowed to the pre-mint map, and the seam `compute_pool_of_locus_type(` narrowed to sync inference's one call; a fragment for the qualified-field diagnostic; sem § Placement block (rule 3 names qualified stdlib loci) and the docs chapter `docs/src/services/concurrency.md` | diagnostics identical over the corpus and `tests/hale` except the pinned K-1 cases |
 | 4 | **`PlacedIn`.** The model's arrangement projected from the table: M-1 (J), M-3 (J), M-5 (J), and the M-2 and M-4 projections as U-4 and U-5 decide. | J · Sonnet after PR 3 | `--dump-model` pins; § 2.4's three contracts, each stated in the body: `shape_hash` identical, obs ids and digest identical except M-1's listed cases, and the instance-id remapping tables for M-1, M-3 and M-5; the registry row removed; a fragment | `hale check --dump-model` over the corpus differs only in the pinned cases |
@@ -427,7 +468,7 @@ Each answer below is **proposed, pending the owner**. Until the owner confirms o
 
 **Dynamic sites need a policy for what the static tree does not reach.**
 
-- **Enclosing scopes.** `DynamicSite.enclosing` names a locus declaration today, which cannot express the sites that matter here. It becomes `Locus(DeclRef) | Fn(SiteId)`, so a free function can enclose a literal.
+- **Enclosing scopes.** `DynamicSite.enclosing` names a locus declaration today, which cannot express the sites that matter here. It becomes `Locus(DeclRef) | Fn(SiteRef)`, so a free function, the user's or the stdlib's, can enclose a literal.
 - **A bare `fn main`.** With no `main locus`, `root` is `None` and there are no static rows. Every locus literal is a dynamic site. A literal directly in `fn main` runs on main, so its domain set is `{Main}`.
 - **Free factories.** A factory's literals take the union of its callers' domains where the call graph resolves every caller, and are unknown otherwise.
 - **Domains absent from the static root tree.** A site whose enclosing scope has no static instance (a locus only ever built dynamically) has an unknown domain set.
@@ -442,3 +483,23 @@ Unknown is never defaulted to main. It disables the proofs and optimizations tha
 - **The resource budget.** The unknown site makes its count an uncertainty, with the hole's reason.
 - **The model.** A hole.
 - **Lowering.** Tolerates it unchanged: entries are root-only, so no dynamic site has a placement decision, and a dynamic locus is born in its enclosing thread's domain at runtime.
+
+## 9. Implementation checkpoints
+
+These are verification requirements, not new decisions. A producer or consumer PR that touches the area meets its checkpoint, and its body names the test that shows it.
+
+1. **Domains are templates.** A `DomainId` belongs to a template, as the key that anchors it does (§ 1, templates, occurrences, incarnations). A pinned domain anchored by a construction template has one anchor per live occurrence of that template, and so one thread per live occurrence. Required:
+   - a thread observation (§ 4's `Seen.tid`, an observation in P2's stream) is compared with the anchor of the occurrence that produced it, never with one tid recorded for the domain;
+   - the budget multiplies the template's anchors by its bound (§ 2.8's `bound(c) × |pinned anchors under c|`);
+   - no structure maps a `DomainId` to one physical thread id shared by occurrences.
+
+   Tested by a root built at one site twice, both live, with one pinned field nesting a subscriber: each occurrence's handshake records its own `Ready.tid`, every `Seen.tid` equals its own occurrence's anchor, the two anchors' tids differ, and the budget counts 2.
+2. **Unknown-domain synchronization is proved conservatively.** The static inventory has one row per site or declaration, but the runtime can execute one accessor site, or one declaration's instances, from several domains. Such a site is never inferred single-threaded because its inventory has one row: a dynamic site contributes every domain its enclosing scope runs in, and an unknown domain set counts as a domain apart from every other (§ 8, sync inference). C1's tests include a dynamically instantiated `@form(hashmap)` owner called from two domains (main and a pinned field), whose inferred discipline is synchronized, never `none`.
+3. **U-1's lifetime tests discriminate.** A test that passes under both the resolved-owner lowering and the transient one shows nothing. Required:
+   - the differential control (`LOTUS_NO_OWNERSHIP_BUBBLE=1`) changes the expected ownership behaviour: under it the test asserts the transient outcome for at least one of acceptance, child count, retention, release and teardown, so the main arm's assertions are shown to be able to fail;
+   - child counts are sampled only after the test has synchronized with the cross-pool birth. The pinned arm's birth is a post to the root's thread (sem:308-317), so the root's count is read after a message the birth itself sends on completion, never right after the constructing call returns and never after a sleep.
+4. **Alternative bounds and domain counts stay consistent.** Guarded alternatives of one step take a maximum, and independent constructions take a sum (§ 1, how live bounds combine). That holds for every count over the table, distinct domains and pinned anchors included: domains anchored under exclusive alternatives are never summed, and replica rows, already K rows, are never multiplied by K again. Tested by a nested alternative under replicas, in `placement_table.rs` and `resource_budget.rs`:
+   - a root field placed `pinned(replicas = 3)` whose own initializer chooses between two literals: six rows, three per alternative, six `DomainId`s, a thread count of 3, not 6 and not 9;
+   - the same field with the alternative one step down (`w.inner`, between a leaf and a subtree of two): every row under `w[i].inner` carries `Some(i)` and is `guarded`, the instance count is `3 × (1 + max(1, 2))`, and the thread count stays 3.
+
+   Both shapes depend on case 11's admission of a literal-armed initializer and are dropped with it.
