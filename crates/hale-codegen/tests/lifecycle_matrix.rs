@@ -57,20 +57,45 @@
 //! silently: both are counted, and the guard test holds the tables to
 //! what the generator and the checker say.
 //!
-//! ## Building
+//! ## The oracles
 //!
 //! Each selected cell's program is written beside its binary, both
-//! named through `harness::unique_bin`, and built with the lifecycle
-//! trace (`BuildOptions::lifecycle_trace`), as is the `let_literal`
-//! position's receiver-literal twin. A program that does not build is
-//! a generator bug.
+//! named through `harness::unique_bin` (the program is kept when the
+//! cell fails), built with the lifecycle trace
+//! (`BuildOptions::lifecycle_trace`) and run under a deadline.
+//!
+//!   1. **outcome**: the owner's handler heard each subject's failure
+//!      once, each subject dissolved once, and `fn main` reached its
+//!      end (`delivered-once`; `clean` for phase `none`).
+//!   2. **trace**: the laws every trace owes (`trace::laws`), the
+//!      matrix's own law that nothing is done to an instance nothing
+//!      built ([`never_born`]: a step on a reclaimed struct), and the
+//!      cell's plan.
+//!   3. **ASan**, on the cells of the default sample:
+//!      `harness::build_asan`, chunk pooling off (GH #816), and the
+//!      instrumented build must give the same outcome.
+//!   4. **differential**, where it applies: the `let_literal`
+//!      position's inline twin, the receiver literal, is the same
+//!      program by `spec/semantics.md` § "Dissolve timing rules", and
+//!      must print the same.
+//!
+//! [`KNOWN_OPEN`] names the cells that fail today, each with its
+//! inventory row, the reason, and the failure it shows; an entry is
+//! asserted to fail with that failure, so when the fix lands the entry
+//! has to go. 39 cells in five families: a handler run in place off the
+//! owner's domain (C36, L5's), a pinned locus's fields undrained (C9),
+//! a pinned locus's `birth_check` never evaluated (C38), and a child's
+//! `run()` posted to the worker that is tearing its owner down, which
+//! either runs on the reclaimed struct or is freed unrun (R19).
 //!
 //! ## Size
 //!
 //! 6 × 8 × 4 = 192 cells: 121 programs, 59 unwritable, 12 with no
-//! path. The default builds a deterministic sample
-//! ([`default_sample`]) of sixty programs; `HALE_MATRIX=full` builds
-//! all 121, for a nightly job.
+//! path. The default runs a deterministic sample ([`default_sample`])
+//! of sixty programs, ASan included, in about 10 s;
+//! `HALE_MATRIX=full` runs all 121, for a nightly job, in about 12 s
+//! (ASan stays on the sample). `HALE_MATRIX_CELL=<id>,<id>` prints the
+//! named cells' programs, plans and traces.
 //!
 //! ## Corpus note
 //!
@@ -80,9 +105,14 @@
 //! `tests` directory (the ownership matrix's note).
 
 use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable_with_options;
+use hale_types::lifecycle::trace::{self, Trace, Violation};
 use hale_types::lifecycle::ObligationKind;
 
 #[path = "support/harness.rs"]
@@ -309,6 +339,74 @@ const NO_PARAMS_BRACKET: &str =
 fn no_path(c: Cell) -> Option<&'static str> {
     (c.phase == Phase::ParamsSettle && !c.position.is_field()).then_some(NO_PARAMS_BRACKET)
 }
+
+// ===================================================================
+// Expected failures
+// ===================================================================
+
+/// Cells that fail today: (cell, inventory row, the reason in one
+/// sentence, the failure it shows as it starts). Each is asserted to
+/// fail with that failure; when the fix lands it does not, and the
+/// entry has to go.
+const KNOWN_OPEN: &[(&str, &str, &str, &str)] = &[
+    // L5's: a failure raised off the owner's thread.
+    ("run/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("run/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("run/root_child/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("handler/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("handler/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("handler/root_child/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("handler/grandchild/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("drain/root_child/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("drain/replica/pinned", "C36", IN_PLACE, SHOWS_DOMAIN),
+    ("drain/grandchild/cross_pool", "C36", IN_PLACE, SHOWS_DOMAIN),
+    // A pinned locus's own fields.
+    ("params_settle/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("birth/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("run/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("handler/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("drain/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("none/grandchild/pinned", "C9", UNDRAINED, SHOWS_UNDRAINED),
+    ("birth/root_child/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
+    ("birth/replica/pinned", "C38", NO_BIRTH_CHECK, SHOWS_UNDELIVERED),
+    // A child's run() posted to the worker that tears its owner down.
+    ("birth/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("run/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("run/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("run/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("run/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("run/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("drain/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("drain/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("drain/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("drain/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("drain/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("none/root_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("none/grandchild/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("none/accepted_child/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("none/iface_field/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("none/persp_slot/pool", "R19", RUN_AFTER_RECLAIM, SHOWS_RECLAIMED),
+    ("handler/root_child/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+    ("handler/grandchild/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+    ("handler/accepted_child/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+    ("handler/iface_field/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+    ("handler/persp_slot/pool", "R19", RUN_FREED_UNRUN, SHOWS_UNRUN),
+];
+
+const IN_PLACE: &str = "the owner's handler runs in place on the thread that raised the failure (the subject's pinned thread or pool worker, or the teardown thread), not on the owner's domain (decision L0-1)";
+const SHOWS_DOMAIN: &str = "trace: domain: Subj.FailureDelivery";
+
+const UNDRAINED: &str = "a pinned locus's own fields are never drained, so `Mid`'s field `Subj` is dissolved without its drain";
+const SHOWS_UNDRAINED: &str = "trace: missing: Subj.Drain";
+
+const NO_BIRTH_CHECK: &str = "the pinned thread function runs birth() without the locus's birth_check, so the check never fires and the owner hears nothing";
+const SHOWS_UNDELIVERED: &str = "trace: missing: Subj.FailureDelivery";
+
+const RUN_AFTER_RECLAIM: &str = "the subject's run(), posted to the worker that is running its owner's eager teardown, is accepted and starts only after that teardown reclaimed the subject, on the reclaimed struct (heap-use-after-free under ASan; a double teardown for an accepted child)";
+const SHOWS_RECLAIMED: &str = "trace: law: Run of a subject never built";
+
+const RUN_FREED_UNRUN: &str = "the subscriber's run(), posted to the worker that is running its owner's eager teardown, is never run and its terminal is never named, so the cell it would publish never reaches its handler";
+const SHOWS_UNRUN: &str = "trace: missing: Subj.Run";
 
 // ===================================================================
 // Rendering
@@ -677,8 +775,101 @@ fn plan_for(c: Cell) -> String {
 }
 
 // ===================================================================
-// Building
+// Running
 // ===================================================================
+
+/// Generated programs answer in milliseconds; a hang is a failure of
+/// its own, not a stalled suite.
+const DEADLINE: Duration = Duration::from_secs(10);
+
+struct Ran {
+    stdout: String,
+    /// stderr without the trace's lines.
+    stderr: String,
+    trace: Trace,
+    code: Option<i32>,
+    timed_out: bool,
+}
+
+impl Ran {
+    fn complete(&self) -> bool {
+        !self.timed_out && self.code == Some(0)
+    }
+}
+
+/// Run `bin` with output to files, so a large report can never fill a
+/// pipe, killing it at [`DEADLINE`].
+fn run_bin(bin: &Path, envs: &[(&str, &str)]) -> Ran {
+    let out_path = bin.with_extension("out");
+    let err_path = bin.with_extension("err");
+    let mut cmd = Command::new(bin);
+    cmd.stdin(Stdio::null())
+        .stdout(File::create(&out_path).expect("create stdout file"))
+        .stderr(File::create(&err_path).expect("create stderr file"));
+    cmd.envs(envs.iter().copied());
+    let mut child = cmd.spawn().expect("spawn the generated binary");
+    let start = Instant::now();
+    let (code, timed_out) = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(s) => break (s.code(), false),
+            None if start.elapsed() > DEADLINE => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break (None, true);
+            }
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    let read = |p: &Path| -> String {
+        let mut s = String::new();
+        let _ = File::open(p).and_then(|mut f| f.read_to_string(&mut s));
+        let _ = std::fs::remove_file(p);
+        s
+    };
+    let stdout = read(&out_path);
+    let stderr = read(&err_path);
+    let trace = trace::parse(&stderr).unwrap_or_else(|e| panic!("{}: the trace does not parse: {e}", bin.display()));
+    Ran { stdout, stderr: trace.rest.clone(), trace, code, timed_out }
+}
+
+fn count(stdout: &str, line: &str) -> usize {
+    stdout.lines().filter(|l| l.trim_end() == line).count()
+}
+
+/// The outcome word.
+fn outcome(c: Cell, r: &Ran) -> String {
+    if r.timed_out {
+        return "timeout".into();
+    }
+    match r.code {
+        Some(0) => {}
+        Some(_) if r.stderr.contains("ClosureViolation") => return "structural-exit".into(),
+        Some(n) => return format!("exit-{n}"),
+        None => return "signal".into(),
+    }
+    if count(&r.stdout, END) != 1 {
+        return "main-did-not-end".into();
+    }
+    let want = c.position.instances();
+    let heard = count(&r.stdout, HANDLER);
+    let dissolved = count(&r.stdout, SUBJ_DISSOLVE);
+    let want_heard = if c.phase.fails() { want } else { 0 };
+    match (heard == want_heard, dissolved == want) {
+        (true, true) if c.phase.fails() => "delivered-once".into(),
+        (true, true) => "clean".into(),
+        _ => format!("handler {heard}/{want_heard}, dissolve {dissolved}/{want}"),
+    }
+}
+
+const SANITIZER_MARKERS: &[&str] = &[
+    "ERROR: AddressSanitizer",
+    "ERROR: LeakSanitizer",
+    "heap-use-after-free",
+    "double-free",
+    "heap-buffer-overflow",
+    "stack-buffer-overflow",
+    "SEGV on unknown address",
+];
 
 fn slug(c: Cell) -> String {
     cell_id(c).replace('/', "_")
@@ -723,27 +914,128 @@ fn form(c: Cell) -> Form {
     }
 }
 
-/// Write a cell's program beside its binary and build it, and its twin,
-/// with the lifecycle trace; what went wrong, if anything.
-fn build_cell(c: Cell) -> Vec<String> {
+/// Every way a cell failed, each as `<oracle>: <what>`.
+fn run_cell(c: Cell, asan: bool) -> Vec<String> {
     let id = cell_id(c);
     let Form::Program(p) = form(c) else { panic!("{id} is not a program") };
+    let program = front_end(&p.src).expect("judged already");
     let mut failures = Vec::new();
-    let spellings = std::iter::once((&p.src, "lcmatrix_")).chain(p.twin.as_ref().map(|t| (t, "lcmatrix_twin_")));
-    for (src, stem) in spellings {
-        let program = front_end(src).unwrap_or_else(|e| panic!("{id}: the front end refuses a spelling: {e:#?}\n{src}"));
-        let bin = harness::unique_bin(&[stem, &slug(c)].concat());
-        let hl = bin.with_extension("hl");
-        let _ = std::fs::write(&hl, src);
-        match trace_build(&program, &bin) {
+    let bin = harness::unique_bin(&["lcmatrix_", &slug(c)].concat());
+    let _ = std::fs::write(bin.with_extension("hl"), &p.src);
+    if let Err(e) = trace_build(&program, &bin) {
+        return vec![format!("build: {e}")];
+    }
+    let ran = run_bin(&bin, &[]);
+    let _ = std::fs::remove_file(&bin);
+    if verbose(c) {
+        dump(&id, &p, &ran);
+    }
+
+    // --- 1: the outcome word ---------------------------------------
+    let got = outcome(c, &ran);
+    if got != p.outcome {
+        failures.push(format!("outcome: {got}, adopted {}", p.outcome));
+    }
+
+    // --- 2: the trace ----------------------------------------------
+    let mut v: Vec<Violation> = trace::laws(&ran.trace, ran.complete());
+    v.extend(never_born(&ran.trace));
+    v.extend(lifecycle_plan::plan(&p.plan).check(&ran.trace, ran.complete()));
+    failures.extend(v.iter().map(|v| format!("trace: {v}")));
+
+    // --- 4: the differential ---------------------------------------
+    if let Some(twin) = &p.twin {
+        let tprogram = front_end(twin).unwrap_or_else(|e| panic!("{id}: the twin is refused: {e:#?}\n{twin}"));
+        let tbin = harness::unique_bin(&["lcmatrix_twin_", &slug(c)].concat());
+        match trace_build(&tprogram, &tbin) {
+            Err(e) => failures.push(format!("differential: the twin does not build: {e}")),
             Ok(()) => {
-                let _ = std::fs::remove_file(&bin);
-                let _ = std::fs::remove_file(&hl);
+                let tran = run_bin(&tbin, &[]);
+                let _ = std::fs::remove_file(&tbin);
+                if tran.stdout != ran.stdout || tran.code != ran.code {
+                    failures.push(format!(
+                        "differential: the let-bound and receiver spellings differ\nlet:\n{}receiver:\n{}",
+                        ran.stdout, tran.stdout
+                    ));
+                }
             }
-            Err(e) => failures.push(format!("build: {e} (the program is kept at {})", hl.display())),
         }
     }
+
+    // --- 3: the sanitizer ------------------------------------------
+    if asan {
+        let abin = harness::unique_bin(&["lcmatrix_asan_", &slug(c)].concat());
+        harness::build_asan(&program, &abin);
+        let arun = run_bin(&abin, &[("ASAN_OPTIONS", "detect_leaks=1"), ("LOTUS_NO_CHUNK_POOL", "1")]);
+        let _ = std::fs::remove_file(&abin);
+        let report = [arun.stdout.as_str(), arun.stderr.as_str()].concat();
+        let hits: Vec<&str> = SANITIZER_MARKERS.iter().copied().filter(|m| report.contains(m)).collect();
+        if !hits.is_empty() {
+            failures.push(format!("asan: {hits:?}\n{report}"));
+        } else if outcome(c, &arun) != p.outcome {
+            failures.push(format!("asan: the instrumented build gives {}", outcome(c, &arun)));
+        }
+    }
+    if failures.is_empty() {
+        let _ = std::fs::remove_file(bin.with_extension("hl"));
+    } else {
+        failures.push(format!("(the program is kept at {})", bin.with_extension("hl").display()));
+    }
     failures
+}
+
+/// The matrix's law beside `trace::laws`: no instance's obligation is
+/// entered before the instance was constructed. The runtime retires an
+/// instance's number at its reclaim, so a step taken on a reclaimed
+/// struct shows as a step of a number nothing built (the laws say the
+/// same of a reclaim alone). A pinned join may come first: the frame
+/// that instantiated the locus enters it while the pinned thread has
+/// not yet begun the birth.
+fn never_born(t: &Trace) -> Vec<Violation> {
+    let mut built: BTreeSet<u64> = BTreeSet::new();
+    let mut out = Vec::new();
+    for e in &t.events {
+        let Some(s) = e.subject else { continue };
+        let inst = s.instance.raw();
+        if matches!(
+            e.kind,
+            ObligationKind::ParamsSettle | ObligationKind::Accept | ObligationKind::Birth | ObligationKind::PinnedJoin
+        ) {
+            built.insert(inst);
+        } else if e.point == hale_types::lifecycle::Point::Entered && built.insert(inst) {
+            out.push(Violation::Law {
+                what: format!(
+                    "{} of a subject never built: {} (inst {inst}) on {} (a step on a reclaimed struct?)",
+                    e.kind.name(),
+                    e.decl.as_deref().unwrap_or("-"),
+                    e.domain
+                ),
+            });
+        }
+    }
+    out
+}
+
+/// `HALE_MATRIX_CELL=<substrings of cell ids, comma-separated>` prints
+/// the matching cells' programs, plans and traces.
+fn verbose(c: Cell) -> bool {
+    std::env::var("HALE_MATRIX_CELL").is_ok_and(|f| f.split(',').any(|s| cell_id(c).contains(s)))
+}
+
+fn dump(id: &str, p: &Program, ran: &Ran) {
+    eprintln!("==== {id}\n{}\n---- plan\n{}\n---- stdout\n{}---- stderr\n{}---- trace", p.src, p.plan, ran.stdout, ran.stderr);
+    for e in &ran.trace.events {
+        eprintln!(
+            "{} {} {} {} {} {} {:?}",
+            e.seq,
+            e.kind.name(),
+            e.point.name(),
+            e.spine.map(|s| s.name()).unwrap_or("-"),
+            e.domain,
+            e.decl.as_deref().unwrap_or("-"),
+            e.subject.map(|s| (s.instance.raw(), s.incarnation.raw()))
+        );
+    }
 }
 
 // ===================================================================
@@ -764,13 +1056,24 @@ fn is_program(c: Cell) -> bool {
     matches!(form(c), Form::Program(_))
 }
 
-/// The default sample: one program per (phase, position) pair, walking
-/// the domains so each appears; then a co-prime stride over the
-/// programs to [`TARGET_SAMPLE`].
+/// The default sample: the first `KNOWN_OPEN` cell of each family (one
+/// reason), so every known defect is held to its failure on every PR;
+/// one program per (phase, position) pair, walking the domains so each
+/// appears; then a co-prime stride over the programs to
+/// [`TARGET_SAMPLE`]. Per family rather than per open cell: a family
+/// fails across a whole axis, and its cells are all held in the full
+/// run.
 fn default_sample() -> Vec<Cell> {
     let all = all_cells();
     let programs: Vec<Cell> = all.iter().copied().filter(|c| is_program(*c)).collect();
     let mut picked: BTreeSet<Cell> = BTreeSet::new();
+    let mut families: BTreeSet<&str> = BTreeSet::new();
+    for (id, _, reason, _) in KNOWN_OPEN {
+        let c = *programs.iter().find(|c| cell_id(**c) == *id).unwrap_or_else(|| panic!("KNOWN_OPEN names {id}, not a program"));
+        if families.insert(reason) {
+            picked.insert(c);
+        }
+    }
     for (i, &phase) in PHASES.iter().enumerate() {
         for (j, &position) in POSITIONS.iter().enumerate() {
             for k in 0..DOMAINS.len() {
@@ -799,17 +1102,41 @@ fn selected_cells() -> Vec<Cell> {
 // The shards
 // ===================================================================
 
-/// Build the selected cells of one domain and one phase.
+fn open_entry(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str)> {
+    KNOWN_OPEN.iter().find(|(k, ..)| *k == id)
+}
+
+/// Run the selected cells of one domain and one phase, each held to the
+/// verdict `KNOWN_OPEN` declares for it.
 fn run_shard(domain: Domain, phase: Phase) {
+    let sample: BTreeSet<Cell> = default_sample().into_iter().collect();
     let cells: Vec<Cell> = selected_cells().into_iter().filter(|c| c.domain == domain && c.phase == phase).collect();
-    let mut failed = Vec::new();
+    let mut unexpected_fail = Vec::new();
+    let mut unexpected_pass = Vec::new();
     for c in cells {
-        let failures = build_cell(c);
-        if !failures.is_empty() {
-            failed.push(format!("{}\n  {}", cell_id(c), failures.join("\n  ")));
+        let id = cell_id(c);
+        let started = Instant::now();
+        let failures = run_cell(c, sample.contains(&c));
+        eprintln!("{id}: {} failure(s) in {:?}", failures.len(), started.elapsed());
+        match open_entry(&id) {
+            Some((_, row, reason, shows)) => {
+                if !failures.iter().any(|f| f.starts_with(shows)) {
+                    unexpected_pass.push(format!(
+                        "{id} (KNOWN_OPEN at {row}: {reason}) no longer shows `{shows}`: the fix has landed, so the entry has to go; it shows {failures:#?}"
+                    ));
+                }
+            }
+            None if failures.is_empty() => {}
+            None => unexpected_fail.push(format!("{id}\n  {}", failures.join("\n  "))),
         }
     }
-    assert!(failed.is_empty(), "{} generated program(s) do not build:\n\n{}", failed.len(), failed.join("\n\n"));
+    assert!(
+        unexpected_fail.is_empty(),
+        "{} cell(s) fail a lifecycle oracle and are not in KNOWN_OPEN:\n\n{}",
+        unexpected_fail.len(),
+        unexpected_fail.join("\n\n")
+    );
+    assert!(unexpected_pass.is_empty(), "{}", unexpected_pass.join("\n\n"));
 }
 
 macro_rules! shards {
@@ -902,6 +1229,11 @@ fn every_cell_is_written_or_named() {
         unwritable.len(),
         default_sample().len()
     );
+
+    for (id, row, reason, shows) in KNOWN_OPEN {
+        assert!(ids.contains(*id), "KNOWN_OPEN names {id}, which is not a cell");
+        assert!(!row.is_empty() && !reason.is_empty() && !shows.is_empty(), "{id}: an entry owes its row, reason and failure");
+    }
 
     let sample = default_sample();
     assert!(sample.len() >= TARGET_SAMPLE, "the sample shrank to {}", sample.len());
