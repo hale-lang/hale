@@ -34,6 +34,13 @@ pub trait SourceProvider {
     fn overlay_digest(&self) -> u64 {
         0
     }
+    /// The parse products a load through this provider may reuse
+    /// ([`crate::parse_cache`]): none by default, so every file is
+    /// parsed afresh. Not part of a snapshot's key — a reused parse is
+    /// the parse.
+    fn parses(&self) -> Option<&crate::parse_cache::ParseCache> {
+        None
+    }
 }
 
 /// The file system, as it is.
@@ -76,11 +83,18 @@ impl SourceProvider for Disk {
 /// disk has no canonical form of its own).
 pub struct Overlay<'a> {
     overlays: &'a BTreeMap<PathBuf, String>,
+    parses: Option<&'a crate::parse_cache::ParseCache>,
 }
 
 impl<'a> Overlay<'a> {
     pub fn new(overlays: &'a BTreeMap<PathBuf, String>) -> Self {
-        Self { overlays }
+        Self { overlays, parses: None }
+    }
+
+    /// The same provider, its loads reusing the parses `cache` keeps:
+    /// the language server's, one cache across every load it makes.
+    pub fn reusing(self, cache: &'a crate::parse_cache::ParseCache) -> Self {
+        Self { parses: Some(cache), ..self }
     }
 
     fn buffer(&self, path: &Path) -> Option<&'a String> {
@@ -152,6 +166,10 @@ impl SourceProvider for Overlay<'_> {
             d.field(text.as_bytes());
         }
         d.finish()
+    }
+
+    fn parses(&self) -> Option<&crate::parse_cache::ParseCache> {
+        self.parses
     }
 }
 

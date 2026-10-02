@@ -20,6 +20,7 @@ pub mod keywords;
 pub mod lexer;
 pub mod names;
 pub mod parser;
+pub mod shift;
 pub mod sites;
 pub mod span;
 pub mod time_literal;

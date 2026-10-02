@@ -51,6 +51,7 @@ use std::process::ExitCode;
 use serde_json::{json, Value};
 
 use hale_frontend::frontend::{retain_owned_advisories, seed_dir_of, LoadMode};
+use hale_frontend::parse_cache::ParseCache;
 use hale_frontend::snapshot::{unreadable_message, Config, LoadError, Snapshot};
 use hale_frontend::source::{Overlay, SourceProvider};
 use hale_syntax::ast::Program;
@@ -906,8 +907,9 @@ fn placed(snap: &Snapshot, diags: &[hale_syntax::Diag]) -> BTreeMap<PathBuf, Vec
 /// The snapshot every document event and every request reads: the seed
 /// of `changed` as `hale check <dir>` loads it, through the buffers over
 /// the disk (`LoadMode::Editor`), under the editor's config. One load
-/// per event or request — the ~10 ms frontend makes a cache pointless,
-/// and the snapshot's key is what would say whether one is sound. A seed
+/// per event or request, no snapshot kept: the snapshot's key names a
+/// whole load, so it is no key for reusing one member. What is reused is
+/// each file's parse, per path and text ([`PARSES`]). A seed
 /// whose imports did not link is refused as `hale check` refuses it
 /// ([`Snapshot::linked`]); only the outline reads its members
 /// ([`editor_load`]).
@@ -925,8 +927,15 @@ fn editor_load(
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<Snapshot, LoadError> {
-    Snapshot::load(changed, LoadMode::Editor, &Overlay::new(overlays), Config::editor())
+    Snapshot::load(changed, LoadMode::Editor, &Overlay::new(overlays).reusing(&PARSES), Config::editor())
 }
+
+/// The server's parse products, one cache across every load it makes
+/// (F.40 phase 3, X1, `hale_frontend::parse_cache`): an edit reparses
+/// the edited file, and the seed's other files and every library it
+/// imports are reused while their text and the effect-class table they
+/// are parsed from stay as they were.
+static PARSES: ParseCache = ParseCache::new();
 
 /// A diagnostic about a whole file (one that would not read has no
 /// position): the range 0:0–0:0, an error.

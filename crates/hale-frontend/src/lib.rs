@@ -17,12 +17,15 @@
 //!   travel through.
 //! - [`source`]: where the loaders read from — the disk for the CLI,
 //!   the editor's buffers over the disk for the LSP.
+//! - [`parse_cache`]: a file's parse product kept per path and text,
+//!   reused by a provider that carries one (the LSP's).
 //! - [`snapshot`]: one load, shaped and minted, and the families
 //!   derived from it on demand, each at most once.
 
 pub mod diag;
 pub mod frontend;
 pub mod imports;
+pub mod parse_cache;
 pub mod snapshot;
 pub mod source;
 pub mod workspace;

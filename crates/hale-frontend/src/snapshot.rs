@@ -1477,7 +1477,7 @@ fn load_editor(entry: &Path, src: &dyn SourceProvider) -> Result<Loaded, Checkab
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at_in(&source, base, &mut effects) {
+        match crate::parse_cache::parse_file(src, f, &source, base, &mut effects) {
             Ok(p) => {
                 programs.insert(f.clone(), p);
             }
@@ -2233,6 +2233,97 @@ mod tests {
         assert_eq!(view.forms.effective(&registry(&view.merged.items)), Discipline::Striped);
         assert_eq!(s.builds()["sync_inference"], 1, "lowering reads the snapshot's rows");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Everything a snapshot holds that a reader can see, as text: the
+    /// key, the files and their bases, the source map, every member and
+    /// program as parsed, shaped and minted, the identities, the check
+    /// and the families it built.
+    fn observable(s: &Snapshot) -> String {
+        let members: Vec<String> = s.files().iter().map(|f| format!("member {:?}", s.member(f))).collect();
+        format!(
+            "key {:?}\nfiles {:?}\nbases {:?}\nsources {:?}\nmap {:?}\nrenames {:?}\nmembers {members:?}\nprograms {:?}\nids {:?}\ncheck {:?}\nbuilds {:?}",
+            s.key(),
+            s.files(),
+            s.file_bases(),
+            s.sources(),
+            s.source_map(),
+            s.import_renames(),
+            s.programs(),
+            s.identities(),
+            s.demand_check().map(|c| &c.diags),
+            s.builds(),
+        )
+    }
+
+    /// Parse reuse (F.40 phase 3, X1): two loads over the same text share
+    /// each file's parse — the second parses nothing — and differ from
+    /// each other, and from a load that reuses nothing, in nothing a
+    /// reader can see; the first load's shaping and mint did not reach
+    /// the kept products. An edit reparses the edited file alone. The
+    /// seed holds what moves with a base or a table: two members and an
+    /// imported library parsed twice (through its own table and the
+    /// load's), user effect classes, an f-string's interpolation, and,
+    /// last, a member that does not parse.
+    #[test]
+    fn a_reused_parse_is_the_parse() {
+        use crate::parse_cache::ParseCache;
+        let d = scratch("parse-reuse");
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::write(
+            d.join("lib/lib.hl"),
+            "effect audit;\n@effects(is: { audit })\nfn stamp(n: Int) -> Int { return n + 1; }\n",
+        )
+        .unwrap();
+        std::fs::write(d.join("a.hl"), "effect money;\nfn helper(n: Int) -> String { return f\"n = {n + 1}\"; }\n").unwrap();
+        let app = d.join("app.hl");
+        let text = |k: i64| {
+            format!(
+                "import \"lib\" as lib;\n{CLEAN}fn tick() -> Int {{ let s = helper({k}); println(s); return lib::stamp({k}); }}\n"
+            )
+        };
+        let mut buffers = BTreeMap::new();
+        buffers.insert(app.clone(), text(1));
+        let cache = ParseCache::new();
+        let plain = load(&app, &Overlay::new(&buffers), Config::editor());
+        let first = load(&app, &Overlay::new(&buffers).reusing(&cache), Config::editor());
+        let parsed = cache.misses();
+        assert!(parsed == 4 && cache.hits() == 0, "two members, the library twice: {parsed}");
+        let second = load(&app, &Overlay::new(&buffers).reusing(&cache), Config::editor());
+        assert_eq!((cache.hits(), cache.misses()), (parsed, parsed), "the second load parses nothing");
+        assert!(errors(&plain) == 0 && s_has_lib(&plain), "a clean, linked seed");
+        assert_eq!(observable(&first), observable(&plain), "a parse kept is the parse");
+        assert_eq!(observable(&second), observable(&plain), "a parse reused is the parse");
+
+        buffers.insert(app.clone(), text(2));
+        let edited = load(&app, &Overlay::new(&buffers).reusing(&cache), Config::editor());
+        assert_eq!(cache.misses(), parsed + 1, "the edited file alone is parsed");
+        let fresh = load(&app, &Overlay::new(&buffers), Config::editor());
+        assert_eq!(observable(&edited), observable(&fresh));
+        assert_ne!(observable(&edited), observable(&plain));
+
+        // The whole seed's load reads through a reusing provider too.
+        let whole = load_as(&d, LoadMode::WholeSeed, &Overlay::new(&buffers).reusing(&cache), Config::check(true, false));
+        let disk_whole = load_as(&d, LoadMode::WholeSeed, &Overlay::new(&buffers), Config::check(true, false));
+        assert_eq!(observable(&whole), observable(&disk_whole));
+
+        // A file that does not parse: its diagnostics, at its base, kept
+        // and reused like a program.
+        std::fs::write(d.join("broken.hl"), "fn broken( {\n").unwrap();
+        let broken = |src: &dyn SourceProvider| {
+            let s = load(&app, src, Config::editor());
+            format!("{:?} {:?}", s.unparsed(), s.file_bases())
+        };
+        let want = broken(&Overlay::new(&buffers));
+        let hits = cache.hits();
+        assert_eq!(broken(&Overlay::new(&buffers).reusing(&cache)), want);
+        assert_eq!(broken(&Overlay::new(&buffers).reusing(&cache)), want);
+        assert!(cache.hits() > hits);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn s_has_lib(s: &Snapshot) -> bool {
+        s.file_bases().iter().any(|(_, p, _)| p.ends_with("lib/lib.hl"))
     }
 
     /// Contract 1 at lowering: the view is resolved once, after the

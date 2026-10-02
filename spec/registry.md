@@ -63,6 +63,8 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Producer.** `crates/hale-frontend/src/frontend.rs` · `collect_checkable`
 
+**Also owned.** `crates/hale-frontend/src/parse_cache.rs` · `ParseCache`; `crates/hale-syntax/src/shift.rs` · `shift_program`
+
 **Consumers.** check; build; run; test; replay; bench; lsp; dna (via the CLI)
 
 **Invariants.**
@@ -70,12 +72,18 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - one loader, one merge order, for every entry point
 - an unresolved import is a diagnostic, never a silently smaller program
 - one seed for every entry point: the editor's load (`LoadMode::Editor`) is `hale check <dir>`'s — the open file's directory, every `import` followed through the buffers (`link_checkable`) — and differs only in tolerance: a member that does not parse or will not read is recorded (`Snapshot::unparsed`, `Snapshot::unreadable`) and blocks the scope instead of failing the load, a link the import graph refuses keeps the members as they parsed with the refusal recorded (`Snapshot::unlinked`) and blocks the scope, which every request but the outline reads as the refused load (`Snapshot::linked`), and the LSP publishes an unreadable member as `seed member <name>: <os error>` against the member and the open file, never a clean seed the CLI cannot load
+- parse reuse (F.40 phase 3, X1, `hale_frontend::parse_cache`): every file a load parses — a seed's own (`parse_files`, the editor's load), an imported library's two parses (through its own effect-class table, then the load's) — is parsed through the provider's cache when it carries one (`SourceProvider::parses`: the LSP's `Overlay::reusing`, one cache per server; the disk carries none). The cache holds the parser's product alone: the program or the diagnostics `parse_source_at_in` gives for the text at base 0, and the effect-class table the parse left, keyed by the path, the exact text and the table the parse started from (#345: the load's one table is an input of each file's parse). Each load recreates the rest: the file's base in its own source map, the product moved there (`hale_syntax::shift::shift_program`, exhaustive over the AST), then its own shaping and mint. Nothing shaped or minted is kept — shaping reads the whole load and its config, identities are snapshot-local — and the snapshot's key, a whole load's, is never a member's. Nothing invalidates an entry (its product is a function of its key); a path keeps its four most recently used entries
 
 **Missing data.** n/a
 
-**Focused tests.** crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key); crates/hale-cli/tests/source_map.rs; crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does, lsp_outline_survives_a_link_failure)
+**Focused tests.** crates/hale-cli/tests/imports.rs (diamond_import, three_hop_import, import_library_key); crates/hale-cli/tests/source_map.rs; crates/hale-cli/tests/lsp.rs (lsp_and_check_agree_over_a_seed_that_imports, lsp_reports_an_unreadable_seed_member_as_check_does, lsp_outline_survives_a_link_failure); crates/hale-frontend/src/snapshot.rs (a_reused_parse_is_the_parse); crates/hale-syntax/src/shift.rs (the oracle over every .hl in the tree)
 
 **Spec.** spec/projects.md
+
+**Guarded seams.**
+
+- `parse_source_at_in(` may be referenced from: `crates/hale-syntax/src/lib.rs` ×2, `crates/hale-syntax/src/shift.rs` ×2, `crates/hale-frontend/src/parse_cache.rs` ×2, `crates/hale-types/src/effect_classes.rs` ×2
+- `parse_in(` may be referenced from: `crates/hale-syntax/src/parser.rs` ×2, `crates/hale-syntax/src/lib.rs` ×1, `crates/hale-frontend/src/imports.rs` ×2
 
 ### `qualified_names` — Canonical · desugar
 
@@ -198,11 +206,11 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Also owned.** `crates/hale-syntax/src/lib.rs` · `parse_source_at_in`; `crates/hale-types/src/effect_classes.rs` · `EffectClassTable`
 
-**Consumers.** the load (own files, the editor's members, every imported seed after its imports) (`crates/hale-frontend/src/frontend.rs` · `parse_source_at_in`); effects (contracts, phase contracts, the declared manifest) (`crates/hale-types/src/effects.rs` · `EffectClassTable::of(`); the effect rows (one table per snapshot, carried on the rows: the model's effect-class rows and atoms, and the inferred manifest's class names, read it there) (`crates/hale-types/src/effect_rows.rs` · `EffectClassTable::of(`); effects (causes) (`crates/hale-types/src/frontier.rs` · `EffectClassTable::of(`); alloc_summary (what `@effects(is: …)` carries) (`crates/hale-types/src/alloc_summary.rs` · `EffectClassTable::of(`); quantitative (user-class budgets) (`crates/hale-types/src/quantitative.rs` · `EffectClassTable::of(`); claims (lowering: class references, undeclared classes) (`crates/hale-types/src/claim_lowering.rs` · `EffectClassTable::of(`); topology (derived effect sets) (`crates/hale-types/src/topology.rs` · `EffectClassTable::of(`)
+**Consumers.** the load (own files, the editor's members, every imported seed after its imports; through the provider's parse cache when it carries one) (`crates/hale-frontend/src/frontend.rs` · `parse_file`); effects (contracts, phase contracts, the declared manifest) (`crates/hale-types/src/effects.rs` · `EffectClassTable::of(`); the effect rows (one table per snapshot, carried on the rows: the model's effect-class rows and atoms, and the inferred manifest's class names, read it there) (`crates/hale-types/src/effect_rows.rs` · `EffectClassTable::of(`); effects (causes) (`crates/hale-types/src/frontier.rs` · `EffectClassTable::of(`); alloc_summary (what `@effects(is: …)` carries) (`crates/hale-types/src/alloc_summary.rs` · `EffectClassTable::of(`); quantitative (user-class budgets) (`crates/hale-types/src/quantitative.rs` · `EffectClassTable::of(`); claims (lowering: class references, undeclared classes) (`crates/hale-types/src/claim_lowering.rs` · `EffectClassTable::of(`); topology (derived effect sets) (`crates/hale-types/src/topology.rs` · `EffectClassTable::of(`)
 
 **Invariants.**
 
-- one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in
+- one class, one index, per load: every seed is parsed through the load's one table (`parse_source_at_in`, `parser::parse_in`, or a parse the provider's cache made from an equal table, which it keys on: `parse_cache`), so merging seeds renumbers nothing; an imported seed is numbered after the seeds it imports (it is parsed again, through the table, once they are), the order the classes have always been numbered in
 - one expansion: a composed class's mask, its atoms and whether its definition is cyclic are `EffectClassTable`'s; no analysis walks a definition itself or reads a program's table directly
 
 **Missing data.** a missing required row is a compiler error
@@ -214,7 +222,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 **Guarded seams.**
 
 - `EffectClassTable::of(` may be referenced from: `crates/hale-types/src/effect_classes.rs` ×1, `crates/hale-types/src/effects.rs` ×3, `crates/hale-types/src/effect_rows.rs` ×1, `crates/hale-types/src/frontier.rs` ×1, `crates/hale-types/src/alloc_summary.rs` ×1, `crates/hale-types/src/quantitative.rs` ×1, `crates/hale-types/src/claim_lowering.rs` ×1, `crates/hale-types/src/topology.rs` ×1
-- `effect_defs` may be referenced from: `crates/hale-syntax/src/ast.rs` ×1, `crates/hale-syntax/src/parser.rs` ×9, `crates/hale-frontend/src/frontend.rs` ×3, `crates/hale-types/src/effect_classes.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
+- `effect_defs` may be referenced from: `crates/hale-syntax/src/ast.rs` ×1, `crates/hale-syntax/src/parser.rs` ×9, `crates/hale-frontend/src/frontend.rs` ×3, `crates/hale-types/src/effect_classes.rs` ×2, `crates/hale-types/src/resolved.rs` ×1, `crates/hale-syntax/src/shift.rs` ×1
 
 ## Layer 2 — declaration graphs
 
