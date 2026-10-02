@@ -8100,7 +8100,17 @@ void lotus_mailbox_drain_pending(lotus_mailbox_t *mb) {
  *   thread: params init → ready → await_go (frees the gate) → birth …
  *
  * After `go` the instantiating thread never touches the gate; the
- * pinned thread frees it once its wait has returned. */
+ * pinned thread frees it once its wait has returned.
+ *
+ * The instantiating thread services its own mailbox while it waits,
+ * exactly as a yield on that thread would: in 1 ms slices it drains
+ * the program-wide queue, whose handlers only its owner, main, runs
+ * (`lotus_bus_queue_drain` is owner-guarded, a no-op elsewhere), and
+ * its own pinned mailbox, the TLS current one (none on main or on a
+ * pool worker). So a nested body that waits during the init for a
+ * reply from a subscriber on the instantiating thread is answered
+ * rather than deadlocked. A handler run here reaches its own
+ * subscriber, not the instantiating frame the init has captured. */
 typedef struct lotus_pinned_start {
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -8114,7 +8124,11 @@ lotus_pinned_start_t *lotus_pinned_start_create(void) {
         abort();
     }
     pthread_mutex_init(&s->lock, NULL);
-    pthread_cond_init(&s->cond, NULL);
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&s->cond, &attr);
+    pthread_condattr_destroy(&attr);
     return s;
 }
 
@@ -8137,9 +8151,47 @@ void lotus_pinned_start_ready(lotus_pinned_start_t *s) {
     lotus_pinned_start_set(s, 1);
 }
 
-/* The instantiating thread: wait for the params. */
-void lotus_pinned_start_await_ready(lotus_pinned_start_t *s) {
-    lotus_pinned_start_wait(s, 1);
+/* Test-only: LOTUS_TEST_PINNED_START_NO_DRAIN=1 makes the readiness
+ * wait a plain block, the negative control of its drain. Unset = the
+ * drain. */
+static int lotus_pinned_start_no_drain(void) {
+    static int cached = -1;
+    int v = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (v < 0) {
+        const char *e = getenv("LOTUS_TEST_PINNED_START_NO_DRAIN");
+        v = (e && *e && *e != '0') ? 1 : 0;
+        __atomic_store_n(&cached, v, __ATOMIC_RELAXED);
+    }
+    return v;
+}
+
+/* The instantiating thread: wait for the params, draining its own
+ * mailbox as a yield would. `queue` is the program-wide queue (NULL in
+ * a bundle that can enqueue nothing). */
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
+    if (lotus_pinned_start_no_drain()) {
+        lotus_pinned_start_wait(s, 1);
+        return;
+    }
+    lotus_mailbox_t *own = g_current_pinned_mailbox;
+    pthread_mutex_lock(&s->lock);
+    while (s->state < 1) {
+        struct timespec slice;
+        clock_gettime(CLOCK_MONOTONIC, &slice);
+        slice.tv_nsec += 1000000;                 /* 1 ms */
+        if (slice.tv_nsec >= 1000000000L) {
+            slice.tv_sec += 1;
+            slice.tv_nsec -= 1000000000L;
+        }
+        pthread_cond_timedwait(&s->cond, &s->lock, &slice);
+        if (s->state >= 1) break;
+        pthread_mutex_unlock(&s->lock);
+        lotus_bus_queue_drain(queue);
+        lotus_mailbox_drain_pending(own);
+        pthread_mutex_lock(&s->lock);
+    }
+    pthread_mutex_unlock(&s->lock);
 }
 
 /* The instantiating thread: the instantiation is complete; its last

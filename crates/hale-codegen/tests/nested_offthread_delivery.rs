@@ -62,9 +62,11 @@
 //! it, and its lifetime by a teardown under ASan. The startup handshake
 //! itself is held by three programs whose nested child waits, during its
 //! anchor's initialization, for a delivery through the anchor's route:
-//! the review's own, one two levels down, and two anchors of one type.
-//! A temporary locus of a pinned default is dissolved when the init
-//! ends, on the anchor's thread.
+//! the review's own, one two levels down, and two anchors of one type;
+//! and by a round trip through the instantiating thread, whose readiness
+//! wait drains its own mailbox as a yield there would, with the drain
+//! switched off as its negative control. A temporary locus of a pinned
+//! default is dissolved when the init ends, on the anchor's thread.
 //!
 //! The outcomes measured today that contradict the spec are listed in
 //! [`KNOWN_OPEN`] and [`KNOWN_OPEN_FLAVORS`], each asserted to FAIL in
@@ -841,14 +843,73 @@ main locus App {
 fn main() { App { }; }
 "#;
 
+/// A round trip through the instantiating thread during the init. `Kid`'s
+/// `run()`, inline in `Owner`'s initialization on `Owner`'s thread,
+/// publishes a `Ping` to `Echo`, a root field on main, and waits for the
+/// `Pong` its handler replies with, which `Kid` receives through
+/// `Owner`'s mailbox. Main, the instantiating thread, is waiting for
+/// `Owner`'s params at that moment, so `Echo`'s handler runs only if that
+/// wait drains main's queue as a yield on main would. `Echo`'s handler
+/// publishes and reads its thread, so it is never a direct call.
+const STARTUP_REPLY: &str = r#"
+@ffi("c") fn pthread_self() -> Int;
+
+type Q { n: Int; }
+type R { n: Int; tid: Int; }
+topic Ping { payload: Q; }
+topic Pong { payload: R; }
+
+locus Echo {
+    bus { subscribe Ping as on_ping; publish Pong; }
+    fn on_ping(q: Q) { Pong <- R { n: q.n, tid: pthread_self() }; }
+}
+
+locus Kid {
+    params { got: Int = 0; etid: Int = 0; htid: Int = 0; }
+    bus { publish Ping; subscribe Pong as on_pong; }
+    fn on_pong(r: R) {
+        self.got = self.got + r.n;
+        self.etid = r.tid;
+        self.htid = pthread_self();
+    }
+    run() {
+        Ping <- Q { n: 1 };
+        let deadline = std::time::monotonic_ns() + 2000000000;
+        while self.got < 1 && std::time::monotonic_ns() < deadline {
+            std::time::sleep(1ms);
+        }
+        if self.got != 1 {
+            println("STARTUP_TIMEOUT");
+            std::process::exit(3);
+        }
+        println("KID_READY echo=" + to_string(self.etid) + " handler=" + to_string(self.htid) + " run=" + to_string(pthread_self()));
+    }
+}
+
+locus Owner { params { k: Kid = Kid { }; } }
+
+main locus App {
+    params { e: Echo = Echo { }; o: Owner = Owner { }; }
+    placement { o: pinned; }
+    run() { println("APP_READY main=" + to_string(pthread_self())); }
+}
+
+fn main() { App { }; }
+"#;
+
 /// Build `src` in `arm`, run it under a 60 s limit; (exit code, stdout,
 /// stderr).
 fn run_startup(name: &str, src: &str, arm: Arm, asan: bool) -> (Option<i32>, String, String) {
+    run_startup_env(name, src, arm, asan, &[])
+}
+
+/// [`run_startup`] with `env` set on the child.
+fn run_startup_env(name: &str, src: &str, arm: Arm, asan: bool, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
     let program = hale_syntax::parse_source(src).unwrap_or_else(|e| panic!("parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&format!("nested_offthread_startup_{name}_{arm:?}").to_lowercase());
     let opts = BuildOptions { asan, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
     build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
-    let out = Command::new("timeout").arg("60").arg(&bin).output().expect("run");
+    let out = Command::new("timeout").arg("60").arg(&bin).envs(env.iter().copied()).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     (
         out.status.code(),
@@ -1009,6 +1070,41 @@ fn a_temporary_locus_in_a_pinned_default_is_dissolved_at_the_end_of_the_init() {
     }
 }
 
+/// The round trip through main during the init, in both arms and under
+/// ASan: `Echo`'s handler ran on main, `Kid`'s handler and `run()` on
+/// the anchor's thread, and `Kid` was ready before the root's `run()`.
+#[test]
+fn a_nested_child_waiting_during_the_init_for_a_reply_from_the_instantiating_thread_receives() {
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) = run_startup("reply", STARTUP_REPLY, arm, true);
+        eprintln!("MEASURE startup reply {arm:?}: exit {code:?}\n{stdout}");
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(code, Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        let order: Vec<&str> = stdout.lines().map(|l| l.split(' ').next().unwrap_or("")).collect();
+        assert_eq!(order, ["KID_READY", "APP_READY"], "{arm:?}\n{stdout}");
+        let kid = stdout.lines().next().expect("KID_READY");
+        let main = stdout.lines().find_map(|l| l.strip_prefix("APP_READY ").and_then(|_| field(l, "main")));
+        assert_eq!(field(kid, "echo"), main, "{arm:?}: Echo's handler ran on main: {kid}");
+        assert_eq!(field(kid, "handler"), field(kid, "run"), "{arm:?}: Kid's handler ran on its own thread: {kid}");
+        assert_ne!(field(kid, "run"), main, "{arm:?}: Kid ran on its anchor's thread: {kid}");
+    }
+}
+
+/// The negative control of the round trip: with the readiness wait's
+/// drain off (`LOTUS_TEST_PINNED_START_NO_DRAIN`, a test-only runtime
+/// flag), main blocks while `Kid` waits for `Echo`, and `Kid`'s deadline
+/// fires: exit 3, `STARTUP_TIMEOUT`, in both arms.
+#[test]
+fn without_the_drain_the_round_trip_through_the_instantiating_thread_times_out() {
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let (code, stdout, stderr) =
+            run_startup_env("reply_nodrain", STARTUP_REPLY, arm, false, &[("LOTUS_TEST_PINNED_START_NO_DRAIN", "1")]);
+        eprintln!("MEASURE startup reply, no drain {arm:?}: exit {code:?}\n{stdout}");
+        assert_eq!(code, Some(3), "{arm:?}: exit\n{stdout}\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), ["STARTUP_TIMEOUT"], "{arm:?}\n{stderr}");
+    }
+}
+
 /// The IR of `case`'s witnessing program.
 fn ir_of(case: Case) -> String {
     let src = program(case, Variant::Witness);
@@ -1057,7 +1153,8 @@ fn at(body: &[&str], needle: &str, what: &str) -> usize {
 /// review of PR #1319 corrected). Under a pinned anchor the instantiating
 /// function creates the anchor's mailbox, then its thread, whose argument
 /// block carries the anchor and its start gate, waits until the thread
-/// reports the params initialized, and releases it after the rest of the
+/// reports the params initialized (draining the program-wide queue the
+/// way a yield on main does), and releases it after the rest of the
 /// instantiation. The thread makes the mailbox current, runs the params
 /// init (`__pinned_init_Owner`, where the nested receiver's
 /// registrations carry the mailbox read back from the anchor's slot),
@@ -1077,7 +1174,11 @@ fn a_nested_registration_carries_its_anchors_route() {
         "call i32 @pthread_create(ptr %Owner.tid, ptr null, ptr @__pinned_main_Owner, ptr %Owner.pinned.start)",
         "the anchor's thread",
     );
-    let awaited = at(&main, "call void @lotus_pinned_start_await_ready(ptr %Owner.pinned.gate)", "the readiness wait");
+    let awaited = at(
+        &main,
+        "call void @lotus_pinned_start_await_ready(ptr %Owner.pinned.gate, ptr %Owner.pinned.queue)",
+        "the readiness wait, draining the program-wide queue",
+    );
     let released = at(&main, "call void @lotus_pinned_start_go(ptr %Owner.pinned.gate)", "the release");
     assert!(
         created < spawned && spawned < awaited && awaited < released,

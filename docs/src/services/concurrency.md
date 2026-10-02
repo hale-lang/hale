@@ -276,6 +276,10 @@ there too, before the gateway's own `birth()`. A helper whose
 `run()` waits for a message through the gateway's mailbox gets it:
 a `std::time::sleep` on that thread drains the mailbox. The
 literal that builds the gateway returns once its params are built.
+While it waits, the thread running the literal keeps handling its
+own messages, as a `std::time::sleep` there would, so a helper
+whose `run()` asks a locus on that thread for something and waits
+for the answer gets it.
 An override written in that literal (`Gateway { started:
 std::time::monotonic_ns() }`) is your code, not the gateway's, and
 is evaluated where the literal is; a helper the override builds

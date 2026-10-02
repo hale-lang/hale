@@ -5219,6 +5219,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.get_function(name).unwrap_or_else(|| {
             let ty = if name == "lotus_pinned_start_create" {
                 ptr_t.fn_type(&[], false)
+            } else if name == "lotus_pinned_start_await_ready" {
+                self.context.void_type().fn_type(&[ptr_t.into(), ptr_t.into()], false)
             } else {
                 self.context.void_type().fn_type(&[ptr_t.into()], false)
             };
@@ -5402,8 +5404,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.emit_pinned_affinity(&info.schedule_class, tid_alloca, locus_name)?;
+        // The wait drains the instantiating thread's own mailbox as a
+        // yield there would: the program-wide queue (owner-guarded, so
+        // only main runs it) and its TLS pinned mailbox. A bundle that
+        // can enqueue nothing passes no queue (`Cx::bus_inert`).
+        let queue = if self.bus_inert {
+            ptr_t.const_null()
+        } else {
+            let queue_global = self
+                .module
+                .get_global("lotus.bus_queue.global")
+                .expect("bus queue global declared");
+            self.builder
+                .build_load(ptr_t, queue_global.as_pointer_value(), &format!("{}.pinned.queue", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value()
+        };
         self.builder
-            .build_call(self.pinned_start_fn("lotus_pinned_start_await_ready"), &[gate.into()], "")
+            .build_call(self.pinned_start_fn("lotus_pinned_start_await_ready"), &[gate.into(), queue.into()], "")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(PinnedStart { thread_main, init_fn: p.init_fn, start_ty, gate, tid_alloca })
     }
@@ -5414,9 +5432,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// names, … — moved into the thread's argument block: each becomes
     /// a load from the block at the init's entry, and the returned list
     /// is what the instantiating function stores there. The block is
-    /// `{ self, gate, captures… }`; the instantiating thread is blocked
-    /// in `lotus_pinned_start_await_ready` for as long as the init runs,
-    /// so a captured pointer into its frame is live and unshared. A
+    /// `{ self, gate, captures… }`; the instantiating thread waits in
+    /// `lotus_pinned_start_await_ready` for as long as the init runs,
+    /// running only the handlers of its own mailbox, which reach their
+    /// own subscribers and not its frame, so a captured pointer into
+    /// that frame is live and unshared. A
     /// branch out of the init, or a value of a third function, is
     /// refused.
     fn capture_into_init(

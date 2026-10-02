@@ -1048,7 +1048,12 @@ one (`std::time::sleep`, an `await`) drains the pinned locus's
 mailbox, as a yield on main drains main's queue. The
 instantiating thread waits until the params are initialized
 (`lotus_pinned_start_await_ready`), so nothing observes the tree
-before it is built. Then it finishes the instantiation (the
+before it is built. While it waits it services its own mailbox
+exactly as a yield on it would: on main it drains main's queue,
+on a pinned thread that thread's mailbox (a yield on a pool
+worker drains neither, and neither does this wait). So a nested
+body that waits during the initialization for a reply from a
+subscriber on the instantiating thread gets it. Then it finishes the instantiation (the
 synthetic fields, the failure route, the locus's own
 subscriptions) and releases the thread (`lotus_pinned_start_go`)
 into `birth()` and the rest of its lifecycle, and continues. An
@@ -1069,7 +1074,9 @@ contract directly (`ptr (ptr)`); pthread_create gets that
 function pointer with the locus's start block as its argument:
 the locus, the start gate, and each value of the instantiating
 function that the params' initialization reads (the
-instantiating thread is blocked while they are read). No C-side
+instantiating thread runs nothing but its own mailbox's handlers
+while they are read, and those reach their own subscribers, not
+its frame). No C-side
 adapter. The synthesized body makes the mailbox current, runs
 the params' initialization (`__pinned_init_<LocusName>`),
 reports ready, waits for its release, calls each declared
