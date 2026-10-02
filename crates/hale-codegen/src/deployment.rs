@@ -61,4 +61,10 @@ pub struct DeploymentPlan {
     /// Locus TYPE names placed on a named cooperative pool —
     /// consumed by the `__coop_pool_run_<L>` wrapper synthesis.
     pub coop_pool_locus_types: BTreeSet<String>,
+    /// Locus TYPE names of the pinned anchors whose nested tree holds a
+    /// subscriber (`LoweringView::route_anchors`, from the placement
+    /// table): each gets a mailbox even when it subscribes to nothing
+    /// itself, so its descendants' subscriptions route to its thread
+    /// (U-6).
+    pub route_anchor_types: BTreeSet<String>,
 }

@@ -18,7 +18,7 @@ bus	B-1	CommandAdmission	known-old-bug	1	dna/api
 bus	B-1	CommandWire	known-old-bug	1	dna/api
 bus	B-1	Head	known-old-bug	1	dna/api/project_service
 bus	B-1	K	known-old-bug	1	crates/hale-types/tests/fixtures/placement/held_subtree.hl
-bus	B-1	Kid	known-old-bug	1	crates/hale-codegen/tests/obs_intra_tree_publish.rs
+bus	B-1	Kid	known-old-bug	2	crates/hale-codegen/tests/obs_intra_tree_publish.rs
 bus	B-1	KnowledgeAdmission	known-old-bug	1	dna/api
 bus	B-1	Leaf	known-old-bug	3	crates/hale-types/tests/dispatch_plan.rs
 bus	B-1	OrganizationCandidateWire	known-old-bug	1	dna/api
@@ -1433,7 +1433,7 @@ ownership	O-1/O-2	CommandAdmission	known-old-bug	1	dna/api
 ownership	O-1/O-2	CommandWire	known-old-bug	1	dna/api
 ownership	O-1/O-2	Head	known-old-bug	1	dna/api/project_service
 ownership	O-1/O-2	K	known-old-bug	1	crates/hale-types/tests/fixtures/placement/held_subtree.hl
-ownership	O-1/O-2	Kid	known-old-bug	1	crates/hale-codegen/tests/obs_intra_tree_publish.rs
+ownership	O-1/O-2	Kid	known-old-bug	2	crates/hale-codegen/tests/obs_intra_tree_publish.rs
 ownership	O-1/O-2	KnowledgeAdmission	known-old-bug	1	dna/api
 ownership	O-1/O-2	Leaf	known-old-bug	3	crates/hale-types/tests/dispatch_plan.rs
 ownership	O-1/O-2	OrganizationCandidateWire	known-old-bug	1	dna/api

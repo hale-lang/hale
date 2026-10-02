@@ -1017,8 +1017,8 @@ Per spec/memory.md, "every locus boundary copies the payload"
 still holds — just with two memcpy's per cell instead of one.
 
 **m28b stage 2 (cross-thread mailboxes):** Each pinned locus
-that declares `bus subscribe` allocates its own
-`lotus_mailbox_t` at instantiation: a bounded ring buffer with
+that declares `bus subscribe`, or nests one that does, allocates
+its own `lotus_mailbox_t` at instantiation: a bounded ring buffer with
 `pthread_mutex_t` + `pthread_cond_t` + a shutdown flag, sharing
 the same inline-payload cell shape as the global queue. The
 locus's struct grows a `__mailbox: ptr` field to hold it.
@@ -1031,6 +1031,21 @@ fn loads `entry.mailbox` and branches: null → enqueue on the
 global cooperative queue (handler runs on the cooperative
 thread); non-null → `lotus_mailbox_post` on the pinned
 subscriber's mailbox (handler runs on the pinned thread).
+
+**Subscriptions follow the tower.** A locus nested under a root
+field placed off main runs on that field's thread (§ Placement
+classes), and so do its bus handlers: its subscriptions register
+with its anchor's route, not the global queue. Under a pinned
+anchor that is the anchor's mailbox, which the anchor has whenever
+anything in its tree subscribes, whether or not it subscribes
+itself; under an anchor on `cooperative(pool = X)` it is pool `X`.
+The route exists before the subscriptions that use it: the anchor's
+mailbox is created before its params are initialized, which is
+where every nested instance registers. It outlives them: each
+nested instance deregisters in its own `dissolve()`, on the
+anchor's thread, before the join below returns, and the join
+retires any registration still routed to the mailbox before
+destroying it.
 
 The synthesized `__pinned_main_<Locus>` body grows a mailbox
 loop between `run()` and `drain()`: it calls

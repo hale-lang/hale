@@ -53,7 +53,7 @@
 //! ([`crate::desugar_sequence::desugar_before_check`]) before its
 //! check, and this step does not run any of it again (F.40 phase 2.1b).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{Program, TopDecl};
 
@@ -137,6 +137,55 @@ pub struct LoweringView {
     /// Where lowering routes an allocation, over `merged`: which free
     /// fns are scratch-local (`crate::alloc_routing`).
     pub alloc_routing: crate::alloc_routing::AllocRouting,
+    /// The pinned anchors whose nested tree holds a subscriber, by the
+    /// name lowering declares them under, from the snapshot's placement
+    /// table ([`route_anchors`]): the anchor's mailbox is their route
+    /// (the placement correspondence's U-6).
+    pub route_anchors: BTreeSet<String>,
+}
+
+/// The pinned anchors of `table` (a root field placed `pinned`, one per
+/// replica, or an adapter in the root's `bindings { }`) with a row
+/// below them, in their own template, that realizes a locus `merged`
+/// declares a `subscribe` in: each by its realized declaration's
+/// lowered name. A locus nested under an anchor runs on the anchor's
+/// thread, so its subscriptions need a route there before they
+/// register; lowering gives these anchors a mailbox for that, whether or
+/// not they subscribe themselves.
+pub fn route_anchors(table: &crate::placement::PlacementTable, merged: &Program) -> BTreeSet<String> {
+    use crate::placement::DomainKind;
+    use hale_syntax::ast::{flat_decls, BusMember, LocusMember};
+    let subscribers: BTreeSet<&str> = flat_decls(&merged.items)
+        .filter_map(|d| match d {
+            TopDecl::Locus(l)
+                if l.members.iter().any(|m| {
+                    matches!(m, LocusMember::Bus(b)
+                        if b.members.iter().any(|bm| matches!(bm, BusMember::Subscribe { .. })))
+                }) =>
+            {
+                Some(l.name.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = BTreeSet::new();
+    for domain in &table.domains {
+        let DomainKind::Pinned { anchor, .. } = &domain.kind else { continue };
+        let Some(anchor_decl) = table.instances.get(anchor).and_then(|r| r.realizes.as_ref()) else {
+            continue;
+        };
+        let nested_subscriber = table.instances.iter().any(|(key, row)| {
+            key.origin == anchor.origin
+                && key.replica == anchor.replica
+                && key.path.len() > anchor.path.len()
+                && key.path.starts_with(&anchor.path)
+                && row.realizes.as_ref().is_some_and(|d| subscribers.contains(d.lowered.as_str()))
+        });
+        if nested_subscriber {
+            out.insert(anchor_decl.lowered.clone());
+        }
+    }
+    out
 }
 
 /// The name the merged program goes by in its bundle view. Nothing is
@@ -216,6 +265,7 @@ pub fn resolve_program(
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
+    placement: &crate::placement::PlacementTable,
 ) -> Result<LoweringView, String> {
     resolve_rewritten(
         &rewrite_intra_locus(program),
@@ -224,6 +274,7 @@ pub fn resolve_program(
         api,
         api_roles,
         forms,
+        placement,
     )
 }
 
@@ -246,7 +297,10 @@ pub fn resolve_program(
 /// with, recorded on the envelope for lowering to hold its options
 /// to. `forms` is the snapshot's form rows (`Snapshot::demand_forms`);
 /// a caller with none passes `&FormRows::default()`, and every form then
-/// gets its written discipline. The error is the message codegen
+/// gets its written discipline. `placement` is the snapshot's placement
+/// table (`Snapshot::demand_placement`); a caller with none passes
+/// `&PlacementTable::default()`, and no anchor then routes its nested
+/// subscriptions (`route_anchors`). The error is the message codegen
 /// reports as `CodegenError::Unsupported`: a bundled stdlib that does
 /// not parse, or a locus-producing node the mint left unnumbered.
 pub fn resolve_rewritten(
@@ -256,6 +310,7 @@ pub fn resolve_rewritten(
     api: Option<&str>,
     api_roles: Option<&str>,
     forms: &crate::form_rows::FormRows,
+    placement: &crate::placement::PlacementTable,
 ) -> Result<LoweringView, String> {
     let t_start = std::time::Instant::now();
     let mut program_owned = stage.program.clone();
@@ -451,6 +506,9 @@ pub fn resolve_rewritten(
     // and a written-configuration row for every declaration they do not
     // hold (the stdlib's).
     let forms = forms.clone().extended(crate::form_rows::FormRows::configured(&merged.items));
+    // The pinned anchors whose nested subscribers route to their mailbox
+    // (U-6), by the names the merged program declares.
+    let route_anchors = route_anchors(placement, &merged);
 
     Ok(LoweringView {
         merged,
@@ -473,6 +531,7 @@ pub fn resolve_rewritten(
         api_roles: api_roles.map(str::to_string),
         top,
         alloc_routing,
+        route_anchors,
     })
 }
 

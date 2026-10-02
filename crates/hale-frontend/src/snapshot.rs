@@ -1285,6 +1285,7 @@ impl Snapshot {
                 }
                 let stage = self.demand_intra_locus().map_err(Clone::clone)?;
                 let forms = self.demand_forms().map_err(Clone::clone)?;
+                let placement = self.demand_placement().map_err(Clone::clone)?;
                 self.count("lowering_view");
                 hale_types::resolved::resolve_rewritten(
                     stage,
@@ -1293,6 +1294,7 @@ impl Snapshot {
                     self.config.api.as_deref(),
                     self.config.api_roles.as_deref(),
                     forms,
+                    placement,
                 )
                 .map_err(|msg| Blocked { family: "lowering_view", because: Vec::new(), refused: Some(msg) })
             })

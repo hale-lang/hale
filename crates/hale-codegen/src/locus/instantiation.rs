@@ -402,6 +402,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &mut self.cooperative_pool_for_next_locus_instantiation,
         );
         let prev_current_coop_pool = self.current_cooperative_pool.take();
+        // A root field placed on a worker pool anchors the pool's route
+        // for everything born in its params (U-6, below).
+        let pool_anchor = coop_pool_override.clone().filter(|p| p != "main");
         if coop_pool_override.is_some() {
             self.current_cooperative_pool = coop_pool_override;
         }
@@ -2319,6 +2322,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // U-6 (the placement correspondence, F.40 phase 3): a locus
+        // nested under a thread anchor runs on the anchor's thread, and
+        // so do its bus handlers. Its subscriptions register while the
+        // anchor's params are initialized, in the loop below, so the
+        // anchor's route has to exist BEFORE the loop: a pinned anchor's
+        // mailbox is created here (and its own subscriptions, after the
+        // loop, reuse it), a pool anchor's pool is published by name.
+        // The route holds for the whole loop, at any depth, and is
+        // restored after it, so a locus born anywhere else keeps its
+        // own. A pinned anchor with no mailbox (nothing in its tree
+        // subscribes) publishes no route, and shadows any outer one.
+        //
+        // Lifetime: the mailbox lives until the anchor's join, which
+        // shuts it down (its thread drains every cell already queued,
+        // then runs the anchor's drain and dissolve), joins the thread,
+        // retires every registration routed to it and only then
+        // destroys it (`emit_pinned_join`). A pool outlives every
+        // arena: pools are joined before any is destroyed.
+        let anchor_route = if matches!(info.schedule_class, ScheduleClass::Pinned(_)) {
+            match info.mailbox_field_idx {
+                Some(mb_idx) => {
+                    let create_fn = self
+                        .module
+                        .get_function("lotus_mailbox_create")
+                        .expect("lotus_mailbox_create declared");
+                    let mb_ptr = self
+                        .builder
+                        .build_call(create_fn, &[], &format!("{}.mailbox.create", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_mailbox_create returns ptr")
+                        .into_pointer_value();
+                    let mb_slot = self
+                        .builder
+                        .build_struct_gep(info.struct_ty, self_ptr, mb_idx, &format!("{}.__mailbox.ptr", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(mb_slot, mb_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    Some(Some(crate::codegen::AnchorRoute::Mailbox(mb_ptr)))
+                }
+                None => Some(None),
+            }
+        } else {
+            pool_anchor.map(|p| Some(crate::codegen::AnchorRoute::Pool(p)))
+        };
+        let prev_anchor_route = match anchor_route {
+            Some(route) => Some(std::mem::replace(&mut self.anchor_route, route)),
+            None => None,
+        };
+
         let prev_params_init_self = self.params_init_self.take();
         // Finding 4 (downstream handoff 2026-07-14): remember whether the
         // code that WROTE this instantiation was itself params-
@@ -3142,6 +3197,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // resolve_failure_route's lookup of params_init_self.
         self.params_init_self = prev_params_init_self;
         self.params_init_initialized = prev_params_init_initialized;
+        // U-6: the anchor's route ends with its params.
+        if let Some(prev) = prev_anchor_route {
+            self.anchor_route = prev;
+        }
         // F.31 Phase 4: cooperative-pool restore is deferred to
         // function exit (after the run_bb code that consumes it
         // — see end of fn + the pinned-branch early-return).
@@ -3921,29 +3980,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let i64_t = self.context.i64_type();
             let i32_t = self.context.i32_type();
 
-            // m28b: if the locus subscribes, allocate its mailbox
-            // and store the pointer in the locus's __mailbox slot.
-            // Then register all subscriptions with that mailbox so
-            // bus dispatch routes cells here instead of to the
-            // global queue.
+            // m28b: if the locus has a mailbox, register all its own
+            // subscriptions with it so bus dispatch routes cells
+            // here instead of to the global queue. The mailbox was
+            // created before the params-init loop (U-6, above), so
+            // the subscriptions of the tree nested under this locus
+            // already route to it too.
             let mailbox_ptr_opt: Option<PointerValue<'ctx>> =
                 if let Some(mb_idx) = info.mailbox_field_idx {
-                    let create_fn = self
-                        .module
-                        .get_function("lotus_mailbox_create")
-                        .expect("lotus_mailbox_create declared");
-                    let mb_ptr = self
-                        .builder
-                        .build_call(
-                            create_fn,
-                            &[],
-                            &format!("{}.mailbox.create", locus_name),
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .try_as_basic_value()
-                        .left()
-                        .expect("lotus_mailbox_create returns ptr")
-                        .into_pointer_value();
                     let mb_slot = self
                         .builder
                         .build_struct_gep(
@@ -3953,9 +3997,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("{}.__mailbox.ptr", locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder
-                        .build_store(mb_slot, mb_ptr)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let mb_ptr = self
+                        .builder
+                        .build_load(ptr_t, mb_slot, &format!("{}.mailbox", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
                     // Phase 3 same setup as the cooperative path
                     // above — set current_self for the key-filter
                     // EXPR's `self.X` reads (and clear

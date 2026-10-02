@@ -449,13 +449,18 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // time; struct layout is type-level uniform.
         let is_pinned_locus_type =
             self.deployment.pinned_locus_types.contains(&l.name.name);
+        //
+        // U-6: so does a pinned anchor whose nested tree subscribes,
+        // though it subscribes to nothing itself: its descendants'
+        // subscriptions route to its mailbox, drained on its thread.
         let has_subscribe = is_pinned_locus_type
-            && l.members.iter().any(|m| match m {
-                LocusMember::Bus(b) => b.members.iter().any(|bm| {
-                    matches!(bm, BusMember::Subscribe { .. })
-                }),
-                _ => false,
-            });
+            && (self.deployment.route_anchor_types.contains(&l.name.name)
+                || l.members.iter().any(|m| match m {
+                    LocusMember::Bus(b) => b.members.iter().any(|bm| {
+                        matches!(bm, BusMember::Subscribe { .. })
+                    }),
+                    _ => false,
+                }));
         let mailbox_field_idx = if has_subscribe {
             let i = idx;
             llvm_field_tys.push(ptr_t.into());

@@ -50,6 +50,10 @@
 //! own subscription runs on the adapter's thread (GH #1032), and the
 //! oracle, asked to find it on main, must report the mismatch.
 //!
+//! The registration route that puts a nested handler on its anchor's
+//! thread (the correspondence's U-6) is pinned at IR level, and its
+//! lifetime by a teardown under ASan.
+//!
 //! The outcomes measured today that contradict the spec are listed in
 //! [`KNOWN_OPEN`] and [`KNOWN_OPEN_FLAVORS`], each asserted to FAIL in
 //! exactly the way it fails today; when a fix closes one, its run goes
@@ -474,23 +478,19 @@ fn quiet_flavor(case: Case) -> &'static str {
     row.flavor.as_str()
 }
 
-/// What each run fails with today, against the spec. The receiving
-/// thread of a nested subscriber is decided by its registration, which
-/// carries no route of its owner's: the cells go to the program-wide
-/// queue, which only main drains, so under a pinned owner (A) and under
-/// a pool owner (B) alike the handler runs on main, in both arms. (The
-/// design read B's registration as carrying the pool; measured, it
-/// carries none.) The quiet variants' counts arrive, so no delivery is
-/// dropped; their thread is the plan's, below.
+/// What each run fails with today, against the spec. A nested
+/// subscriber registers with its anchor's route (U-6): the pinned
+/// owner's mailbox (A), the pool owner's pool (B). So every deferred
+/// delivery runs on the anchor's thread, in both arms. What is left is
+/// the legacy label: the gate still calls the quiet receiver
+/// `SameThread` (B-1) and bakes its subject as a direct-inline call,
+/// whose accessor skips an entry that carries a route, so in the
+/// devirtualized arm the quiet receiver is never called and its count
+/// stays 0 until the deadline (the design's hazard B, now reached by A
+/// as well). The bus graph's switch to the placement table closes it.
 const KNOWN_OPEN: &[(Case, Variant, Arm, &str)] = &[
-    (Case::A, Variant::Witness, Arm::Devirt, "the receiver ran on main, expected the anchor (seq 1)"),
-    (Case::A, Variant::Witness, Arm::NoDevirt, "the receiver ran on main, expected the anchor (seq 1)"),
-    (Case::A, Variant::Quiet, Arm::Devirt, "the count was answered on main, expected the anchor"),
-    (Case::A, Variant::Quiet, Arm::NoDevirt, "the count was answered on main, expected the anchor"),
-    (Case::B, Variant::Witness, Arm::Devirt, "the receiver ran on main, expected the anchor (seq 1)"),
-    (Case::B, Variant::Witness, Arm::NoDevirt, "the receiver ran on main, expected the anchor (seq 1)"),
-    (Case::B, Variant::Quiet, Arm::Devirt, "the count was answered on main, expected the anchor"),
-    (Case::B, Variant::Quiet, Arm::NoDevirt, "the count was answered on main, expected the anchor"),
+    (Case::A, Variant::Quiet, Arm::Devirt, r#"the run did not finish: exit Some(5), Some("TIMEOUT count saw=0")"#),
+    (Case::B, Variant::Quiet, Arm::Devirt, r#"the run did not finish: exit Some(5), Some("TIMEOUT count saw=0")"#),
 ];
 
 /// The quiet receivers' plan flavor today, where it is the direct call:
@@ -582,4 +582,128 @@ fn the_oracle_reports_a_handler_on_the_wrong_thread() {
         Err("the receiver ran on the anchor, expected main (seq 1)".to_string()),
         "a handler on the adapter's thread must fail an expectation of main: {o:?}"
     );
+}
+
+/// The route's lifetime (U-6): a pinned anchor whose only subscriber is
+/// nested, torn down while cells for it are still queued. Each handler
+/// sleeps, so the root's fifty publications are still in the anchor's
+/// mailbox when the root's `run()` returns. The join shuts the mailbox
+/// down, the anchor's thread drains every queued cell (the count is 50)
+/// and dissolves the tree, and only then is the mailbox destroyed; the
+/// root's `dissolve()` publishes once more after that, to a subscriber
+/// that is gone. Run under ASan, which turns chunk recycling off, so a
+/// cell posted to a freed mailbox or a handler run on a freed arena is a
+/// report, not a silent read. Both arms.
+const ROUTE_TEARDOWN: &str = r#"
+type TickP { seq: Int; }
+topic Tick { payload: TickP; }
+
+locus Kid {
+    params { got: Int = 0; tag: String = "k"; }
+    bus { subscribe Tick as on_tick; }
+    fn on_tick(t: TickP) { std::time::sleep(1ms); self.got = self.got + 1; self.tag = self.tag + "."; }
+    dissolve() { println("KID got=" + to_string(self.got) + " tag=" + self.tag); }
+}
+
+locus Owner {
+    params { k: Kid = Kid { }; }
+}
+
+main locus App {
+    params { o: Owner = Owner { }; }
+    placement { o: pinned; }
+    bus { publish Tick; }
+    run() {
+        let mut i = 1;
+        while i <= 50 { Tick <- TickP { seq: i }; i = i + 1; }
+    }
+    dissolve() {
+        Tick <- TickP { seq: 0 };
+        println("APP dissolved");
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_nested_subscribers_route_outlives_its_queued_cells() {
+    let program = hale_syntax::parse_source(ROUTE_TEARDOWN).expect("parse");
+    for arm in [Arm::Devirt, Arm::NoDevirt] {
+        let bin = harness::unique_bin(&format!("nested_offthread_teardown_{arm:?}").to_lowercase());
+        let opts = BuildOptions { asan: true, no_bus_devirt: arm == Arm::NoDevirt, ..build_opts::options() };
+        build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+        let out = Command::new("timeout").arg("60").arg(&bin).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("AddressSanitizer"), "{arm:?}: ASan reported:\n{stderr}");
+        assert_eq!(out.status.code(), Some(0), "{arm:?}: exit\n{stdout}\n{stderr}");
+        assert_eq!(
+            stdout.lines().filter(|l| l.starts_with("KID ") || l.starts_with("APP ")).collect::<Vec<_>>(),
+            [format!("KID got=50 tag=k{}", ".".repeat(50)).as_str(), "APP dissolved"],
+            "{arm:?}: every queued cell is handled before the tree dissolves, and the root outlives it\n{stderr}"
+        );
+    }
+}
+
+/// The IR of `case`'s witnessing program.
+fn ir_of(case: Case) -> String {
+    let src = program(case, Variant::Witness);
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin(&format!("nested_offthread_ir_{case:?}").to_lowercase());
+    let ll = bin.with_extension("ll");
+    let opts = BuildOptions { dump_ir: Some(ll.clone()), ..build_opts::options() };
+    build_executable_with_options(&program, &bin, &[], &opts).unwrap_or_else(|e| panic!("build: {e:?}"));
+    let ir = std::fs::read_to_string(&ll).expect("read IR");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ll);
+    ir
+}
+
+/// The line of `ir` registering `handler`, and its position.
+fn registration(ir: &str, handler: &str) -> (usize, String) {
+    let needle = format!("ptr @{handler}, ");
+    ir.lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("@lotus_bus_register") && l.contains(&needle))
+        .map(|(i, l)| (i, l.to_string()))
+        .unwrap_or_else(|| panic!("no registration of `{handler}`"))
+}
+
+/// The registration route's IR, pinned (U-6). Under a pinned anchor the
+/// anchor's mailbox is created before its params are initialized, and
+/// the nested receiver's registrations carry it; the join retires the
+/// registrations routed to it before destroying it. Under a pool anchor
+/// the nested receiver's registrations carry the pool, looked up by
+/// name, instead of the registering thread's (none, on main). A program
+/// with no route anchor declares no retire.
+#[test]
+fn a_nested_registration_carries_its_anchors_route() {
+    let a = ir_of(Case::A);
+    let created = a
+        .lines()
+        .position(|l| l.contains("%Owner.mailbox.create = call ptr @lotus_mailbox_create()"))
+        .expect("the pinned anchor creates its mailbox");
+    for handler in ["__hwrap_Recv_on_tick", "__hwrap_Recv_on_ask"] {
+        let (at, line) = registration(&a, handler);
+        assert!(at > created, "`{handler}` registers after the anchor's mailbox exists:\n{line}");
+        assert!(line.contains("ptr %Owner.mailbox.create, "), "`{handler}` routes to the anchor's mailbox:\n{line}");
+    }
+    assert!(
+        a.contains("call void @lotus_bus_retire_mailbox(ptr %mailbox.destroy.load)"),
+        "the anchor's join retires the registrations routed to its mailbox"
+    );
+
+    let b = ir_of(Case::B);
+    for handler in ["__hwrap_Recv_on_tick", "__hwrap_Recv_on_ask"] {
+        let (_, line) = registration(&b, handler);
+        assert!(
+            line.contains("ptr null, ") && line.contains("ptr %coop_pool.lookup"),
+            "`{handler}` routes to the anchor's pool, by name:\n{line}"
+        );
+    }
+
+    let c = ir_of(Case::C);
+    assert!(!c.contains("lotus_bus_retire_mailbox"), "no route anchor, no retire");
 }

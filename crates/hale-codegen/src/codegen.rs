@@ -1478,10 +1478,14 @@ pub fn build_resolved(
         params_init_initialized: None,
         cooperative_pool_for_next_locus_instantiation: None,
         current_cooperative_pool: None,
+        anchor_route: None,
         coop_pool_run_wrappers: BTreeMap::new(),
         run_end_fns: BTreeMap::new(),
         restart_fns: BTreeMap::new(),
-        deployment: Default::default(),
+        deployment: crate::deployment::DeploymentPlan {
+            route_anchor_types: resolved.route_anchors.clone(),
+            ..Default::default()
+        },
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
@@ -3838,6 +3842,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// to the prior value at function exit. None means
     /// "default — main pool / global queue."
     pub(crate) current_cooperative_pool: Option<String>,
+    /// The route of the thread anchor whose params are being
+    /// initialized (F.40 phase 3, P1 3 of 6, the correspondence's
+    /// U-6): a pinned anchor's mailbox, or a pool anchor's pool.
+    /// Set by the anchor's instantiation BEFORE its params-init loop
+    /// and restored after it, so every locus born in that loop, at any
+    /// depth, registers its subscriptions with the thread it runs on
+    /// (a nested locus runs on its anchor's thread) instead of the
+    /// program-wide queue only main drains. `None` outside any
+    /// anchor's params: main's queue, as before.
+    pub(crate) anchor_route: Option<AnchorRoute<'ctx>>,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()
@@ -4113,6 +4127,18 @@ pub(crate) struct AccumulatorCtx<'ctx> {
 /// LLVM-side handles the prior `BusState` carried are gone.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BusState;
+
+/// The route a thread anchor's descendants register their
+/// subscriptions with ([`Cx::anchor_route`]).
+#[derive(Debug, Clone)]
+pub(crate) enum AnchorRoute<'ctx> {
+    /// A pinned anchor's mailbox, created before its params-init loop
+    /// and drained by its thread.
+    Mailbox(inkwell::values::PointerValue<'ctx>),
+    /// A pool anchor's pool, by name: one worker per pool, registered
+    /// in the prelude and joined before any arena is destroyed.
+    Pool(String),
+}
 
 /// Form K4c/K6b (2026-05-20): per-shm_ring-binding info kept on
 /// the codegen context, keyed in `shm_ring_subjects` by the
@@ -6232,6 +6258,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_load(ptr_t, mb_slot, "mailbox.destroy.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
+            // U-6: a route anchor's mailbox also carries the
+            // subscriptions of the tree nested under it. Each descendant
+            // deregisters in its own dissolve, on the anchor's thread,
+            // before the join returns; the retire is the backstop for a
+            // registration still routed here once the thread is gone, so
+            // none outlives the mailbox. (Declared here, at its one use,
+            // so a program with no route anchor carries no declaration
+            // of it.)
+            if self.deployment.route_anchor_types.contains(locus_name) {
+                let retire_fn = self.module.get_function("lotus_bus_retire_mailbox").unwrap_or_else(|| {
+                    self.module.add_function(
+                        "lotus_bus_retire_mailbox",
+                        self.context.void_type().fn_type(&[ptr_t.into()], false),
+                        None,
+                    )
+                });
+                self.builder
+                    .build_call(retire_fn, &[mb.into()], &format!("{}.mailbox.retire", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             let destroy_fn = self
                 .module
                 .get_function("lotus_mailbox_destroy")
